@@ -211,11 +211,12 @@ pub fn resolve_extent_precedence_with(
         if p.m_start == WHOLE_FILE_START && p.m_end == WHOLE_FILE_END {
             continue;
         }
-        if let Some((sym_s, sym_e, _name)) = enclosing_symbol_fn(&p.path, (p.m_start, p.m_end)) {
-            p.start = sym_s;
-            p.end = sym_e;
-            p.m_start = sym_s;
-            p.m_end = sym_e;
+        if enclosing_symbol_fn(&p.path, (p.m_start, p.m_end)).is_some() {
+            // Phase F.1: Symbol enclosure exists — promote the source for
+            // precedence and provenance so `best_source` and the
+            // `extent_sources` debug telemetry still see the symbol signal.
+            // start/end/m_start/m_end stay at the hunk extent so the printed
+            // anchor matches what the user actually edited.
             p.extent_source = ExtentSource::Symbol;
         }
     }
@@ -233,7 +234,10 @@ pub fn resolve_extent_precedence_with(
             .collect();
         out.extend(kept);
     }
-    out.sort_by_key(|p| p.op_index);
+    // Phase F.5: no trailing `out.sort_by_key(|p| p.op_index)` — the only
+    // in-tree consumer is `merge_ranges_per_file`, which re-sorts per-file
+    // on `start` internally. No other consumer of the resolved-but-not-yet-
+    // merged participant list exists in the pipeline.
     out
 }
 
