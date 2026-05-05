@@ -646,6 +646,10 @@ fn process_touches(
             }
         };
         let sessions_buf;
+        // Structural enforcement of the single-session constraint: only the
+        // current session's `.git/mesh/advice/<sid>/` store is loaded. The
+        // slice holds exactly one element in the happy path, matching the
+        // `debug_assert_eq!(sessions.len(), 1)` in `run_suggest_pipeline`.
         let sessions: &[_] = if let Some(ref rec) = session_record {
             sessions_buf = std::slice::from_ref(rec);
             sessions_buf

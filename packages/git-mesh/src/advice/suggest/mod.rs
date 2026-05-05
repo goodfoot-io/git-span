@@ -159,6 +159,12 @@ impl SuggestConfig {
 
 /// Run the full v4 suggest pipeline and return scored `Suggestion`s.
 ///
+/// `sessions` is expected to contain exactly one session record in
+/// production — the CLI loads only the current session's evidence.
+/// Multi-session input is accepted by the type signature but the
+/// pipeline applies no cross-session dedup; each session's
+/// canonicals are independent.
+///
 /// `sessions`    — pre-loaded session records (reads + touches).
 /// `repo`        — optional git repository for the history channel.
 /// `repo_root`   — filesystem root used for file I/O in the cohesion stage.
@@ -181,6 +187,16 @@ pub fn run_suggest_pipeline(
     if sessions.is_empty() {
         return Vec::new();
     }
+
+    // Cross-session state is out of scope — only the current session's
+    // `.git/mesh/advice/<sid>/` store is valid evidence. This assertion
+    // catches misuse in debug/test builds; it compiles to a no-op in
+    // release.
+    debug_assert_eq!(
+        sessions.len(),
+        1,
+        "cross-session state is out of scope: run_suggest_pipeline expects exactly one session"
+    );
 
     // ── Stages 3–5: op-stream → locators → participants per session ───────────
     let mut session_participants: Vec<SessionParticipants> = Vec::new();

@@ -1,9 +1,11 @@
 //! Canonical ranges stage (Section 6 of analyze-v4.mjs).
 //!
-//! Two ranges across sessions match when same path AND IoU >= threshold.
+//! Two ranges match when same path AND IoU >= threshold. Participants come
+//! from a single session; per-session precedence resolution already handles
+//! the Whole-vs-narrower case before this stage.
 //! Connected components under this relation become canonical ranges.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::participants::{
@@ -13,7 +15,7 @@ use crate::advice::suggest::participants::{
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A canonical anchor: the bounding box of a connected component of
-/// cross-session participants.
+/// participants within a single session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalRange {
     pub path: String,
@@ -62,8 +64,14 @@ pub fn range_iou(a: &Participant, b: &Participant) -> f64 {
     inter / (a_len + b_len - inter)
 }
 
-/// Build the canonical anchor index from all (merged) participants across all
-/// sessions.
+/// Build the canonical anchor index from all (merged) participants.
+///
+/// `all_parts` is expected to come from a single session in production
+/// (the CLI loads only the current session's reads+touches). Multi-
+/// session input produces independent canonicals per session with no
+/// cross-session dedup — per-session precedence (`resolve_extent_
+/// precedence`) should be applied before this stage to handle
+/// Whole-vs-narrower within each session.
 ///
 /// Ports `buildCanonicalRanges` from `docs/analyze-v4.mjs` line 313.
 ///
@@ -159,91 +167,9 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
         }
     }
 
-    // Cross-session sweep: drop Whole-source canonicals on paths that have
-    // at least one non-Whole canonical for the same path. Mirrors the
-    // per-session precedence in `resolve_extent_precedence` but applies
-    // across sessions after components have been built. Re-densify
-    // `canonical_id_of` so consumers (edges, evidence, emit) see indices
-    // matching the post-sweep `ranges` vec.
-    let paths_with_narrower: BTreeSet<&str> = canonical_ranges
-        .iter()
-        .filter(|r| r.source != ExtentSource::Whole)
-        .map(|r| r.path.as_str())
-        .collect();
-
-    let mut old_to_new: Vec<Option<usize>> = Vec::with_capacity(canonical_ranges.len());
-    let mut new_canonicals: Vec<CanonicalRange> = Vec::new();
-    for r in canonical_ranges.iter() {
-        let drop = r.source == ExtentSource::Whole
-            && paths_with_narrower.contains(r.path.as_str());
-        if drop {
-            crate::advice_debug!(
-                "extent-drop",
-                "path" => r.path.clone(),
-                "source" => format!("{:?}", r.source),
-                "reason" => "cross-session-whole-vs-ranged",
-            );
-            old_to_new.push(None);
-        } else {
-            old_to_new.push(Some(new_canonicals.len()));
-            new_canonicals.push(r.clone());
-        }
-    }
-
-    // For each path that had a Whole canonical dropped, pick a deterministic
-    // surviving narrower canonical on that path to receive the dropped
-    // canonical's `part_key` entries. This preserves cross-session
-    // co-occurrence evidence without widening the printed range.
-    let mut remap_receiver: BTreeMap<&str, usize> = BTreeMap::new();
-    for path in &paths_with_narrower {
-        // Iterate old canonicals in original order; pick the surviving
-        // narrower canonical with smallest (start, end), ties broken by
-        // first occurrence (lowest old index).
-        let mut best: Option<(u32, u32, usize, usize)> = None; // (start, end, old_idx, new_idx)
-        for (old_idx, r) in canonical_ranges.iter().enumerate() {
-            if r.path.as_str() != *path || r.source == ExtentSource::Whole {
-                continue;
-            }
-            if let Some(new_idx) = old_to_new[old_idx] {
-                let cand = (r.start, r.end, old_idx, new_idx);
-                best = Some(match best {
-                    None => cand,
-                    Some(cur) => {
-                        if (cand.0, cand.1, cand.2) < (cur.0, cur.1, cur.2) {
-                            cand
-                        } else {
-                            cur
-                        }
-                    }
-                });
-            }
-        }
-        if let Some((_, _, _, new_idx)) = best {
-            remap_receiver.insert(*path, new_idx);
-            crate::advice_debug!(
-                "extent-remap",
-                "path" => path.to_string(),
-                "cid" => new_idx.to_string(),
-                "reason" => "cross-session-whole-vs-ranged",
-            );
-        }
-    }
-
-    let new_canonical_id_of: BTreeMap<String, usize> = canonical_id_of
-        .into_iter()
-        .filter_map(|(key, old_id)| match old_to_new[old_id] {
-            Some(new_id) => Some((key, new_id)),
-            None => {
-                // Whole canonical dropped — remap to receiver if present.
-                let path = canonical_ranges[old_id].path.as_str();
-                remap_receiver.get(path).map(|&new_id| (key, new_id))
-            }
-        })
-        .collect();
-
     CanonicalIndex {
-        ranges: new_canonicals,
-        canonical_id_of: new_canonical_id_of,
+        ranges: canonical_ranges,
+        canonical_id_of,
     }
 }
 
