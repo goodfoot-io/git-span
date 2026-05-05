@@ -398,13 +398,53 @@ fn apply_compact_attempt(
                 skipped_stale += 1;
             }
             AnchorStatus::Orphaned => {
-                unchanged_by_id.insert(ar.anchor_id.clone(), old_anchor.clone());
-                anchor_records.push(skipped_record(
-                    &ar.anchor_id,
-                    AnchorCompactOutcome::SkippedOrphaned,
-                    &old_anchor,
-                ));
-                skipped_stale += 1;
+                // HEAD-blob fallback: when the anchored commit is unreachable
+                // (e.g. landed on an intermediate rebase commit that was
+                // garbage-collected), but HEAD's blob at the anchored path
+                // still byte-equals the anchored blob, advance to HEAD. The
+                // anchored bytes are unchanged regardless of how the SHA
+                // became unreachable. Only safe for whole-file extent —
+                // ranged extents need the source commit to verify the range
+                // bytes haven't shifted within the file.
+                let head_blob = if matches!(old_anchor.extent, crate::types::AnchorExtent::WholeFile) {
+                    git::path_blob_at(repo, &head_sha, &old_anchor.path).ok()
+                } else {
+                    None
+                };
+                if let Some(blob) = head_blob
+                    && blob == old_anchor.blob
+                {
+                    let new_anchor = crate::types::Anchor {
+                        anchor_sha: head_sha.clone(),
+                        created_at: old_anchor.created_at.clone(),
+                        path: old_anchor.path.clone(),
+                        extent: old_anchor.extent,
+                        blob: blob.clone(),
+                    };
+                    anchor_records.push(AnchorCompactRecord {
+                        anchor_id: ar.anchor_id.clone(),
+                        outcome: AnchorCompactOutcome::Advanced,
+                        old_commit: old_anchor.anchor_sha.clone(),
+                        new_commit: Some(head_sha.clone()),
+                        old_path: old_anchor.path.clone(),
+                        new_path: Some(old_anchor.path.clone()),
+                        old_extent: old_anchor.extent,
+                        new_extent: Some(old_anchor.extent),
+                        old_blob: old_anchor.blob.clone(),
+                        new_blob: Some(blob),
+                    });
+                    advanced_old_anchor_shas.push(old_anchor.anchor_sha.clone());
+                    compacted_by_id.insert(ar.anchor_id.clone(), new_anchor);
+                    advanced += 1;
+                } else {
+                    unchanged_by_id.insert(ar.anchor_id.clone(), old_anchor.clone());
+                    anchor_records.push(skipped_record(
+                        &ar.anchor_id,
+                        AnchorCompactOutcome::SkippedOrphaned,
+                        &old_anchor,
+                    ));
+                    skipped_stale += 1;
+                }
             }
             AnchorStatus::MergeConflict => {
                 unchanged_by_id.insert(ar.anchor_id.clone(), old_anchor.clone());

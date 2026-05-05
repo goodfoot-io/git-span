@@ -68,7 +68,8 @@ pub enum DoctorCode {
 
 const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
 const PRE_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh pre-commit\n";
-const POST_REWRITE_HOOK_BODY: &str = "#!/bin/sh\ngit mesh rewrite\n";
+const POST_REWRITE_HOOK_BODY: &str =
+    "#!/bin/sh\ngit mesh rewrite\ngit mesh stale --compact --no-exit-code\n";
 const POST_COMMIT_MARKER: &str = "git mesh commit";
 const PRE_COMMIT_MARKER: &str = "git mesh pre-commit";
 const POST_REWRITE_MARKER: &str = "git mesh rewrite";
