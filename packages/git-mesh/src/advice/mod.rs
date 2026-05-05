@@ -7,7 +7,6 @@ pub mod debug;
 pub mod detector;
 pub mod fingerprint;
 pub mod path_filter;
-pub mod render;
 pub mod session;
 pub mod structured;
 pub mod suggest;

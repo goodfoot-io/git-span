@@ -1,13 +1,8 @@
-//! Structured-English render primitives for the four-verb advice CLI.
-//!
-//! This module owns the display types, overlap predicate, and instruction
-//! text generators that the `milestone` and `stop` verbs will use in Phase 3.
-//! Phase 1 provides the types and function signatures; Phase 3 will fill
-//! in the full verb behaviour.
+//! Structured-English display types and overlap predicates for the advice CLI.
 
 use std::fmt;
 
-use crate::types::{AnchorExtent, AnchorResolved, AnchorStatus, MeshResolved};
+use crate::types::{AnchorExtent, AnchorResolved, AnchorStatus};
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
@@ -183,63 +178,11 @@ impl fmt::Display for BasicOutput {
         }
         if !self.why.is_empty() {
             writeln!(f)?;
-            writeln!(f, "{}", self.why)?;
+            writeln!(f, "Why: {}", self.why)?;
         }
         Ok(())
     }
 }
-
-// ── Predicates ────────────────────────────────────────────────────────────────
-
-/// Return true when any anchor in `mesh` has a status other than `Fresh`.
-pub fn mesh_is_stale(mesh: &MeshResolved) -> bool {
-    mesh.anchors
-        .iter()
-        .any(|a| !matches!(a.status, AnchorStatus::Fresh))
-}
-
-// ── Instruction text generators ───────────────────────────────────────────────
-
-/// Return the reconciliation instructions block for a stale mesh.
-///
-/// The text matches the tone of the existing renderer's preambles in
-/// `advice/render.rs`. Printed at most once per session
-/// (`SessionFlags::has_printed_reconciliation_instructions`).
-///
-/// # TODO
-/// Align exact wording with the finalized structured-English spec before
-/// Phase 3 ships — the phrasing below follows the existing renderer's
-/// `render_hint_for_reason` output.
-pub fn reconciliation_instructions(mesh: &MeshResolved) -> String {
-    let stale_anchors: Vec<String> = mesh
-        .anchors
-        .iter()
-        .filter(|a| !matches!(a.status, AnchorStatus::Fresh))
-        .map(|a| format!("  {}", format_anchor_resolved(a)))
-        .collect();
-
-    let mut body = String::new();
-    body.push_str("Reconcile the following meshes after your edits:\n");
-    body.push_str(&format!("{} mesh: {}\n", mesh.name, mesh.message));
-    for line in &stale_anchors {
-        body.push_str(line);
-        body.push('\n');
-    }
-    body.push('\n');
-    body.push_str("To re-record an anchor after edits, run:\n");
-    body.push_str("  git mesh add <name> <path>#L<s>-L<e>\n");
-    body.push_str("  git mesh commit <name>\n");
-    wrap_documentation(&body)
-}
-
-/// Wrap an inline-documentation block in `<documentation>` tags with a
-/// trailing blank line so adjacent blocks remain visually separated.
-pub fn wrap_documentation(body: &str) -> String {
-    let trimmed = body.trim_end_matches('\n');
-    format!("<documentation>\n{trimmed}\n</documentation>\n\n")
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Format an `AnchorResolved` as `path#L<start>-L<end>` (range) or `path` (whole-file).
 pub fn format_anchor_resolved(a: &AnchorResolved) -> String {
@@ -248,22 +191,6 @@ pub fn format_anchor_resolved(a: &AnchorResolved) -> String {
         AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
         AnchorExtent::WholeFile => path.into_owned(),
     }
-}
-
-/// Convenience: build an `Action` from a resolved anchor's current location.
-/// Returns `None` when the anchor is terminal (no current location).
-#[allow(dead_code)]
-pub fn action_from_anchor(a: &AnchorResolved) -> Option<Action> {
-    let current = a.current.as_ref()?;
-    let path = current.path.to_string_lossy().into_owned();
-    Some(match &current.extent {
-        AnchorExtent::LineRange { start, end } => Action::Range {
-            path,
-            start: *start,
-            end: *end,
-        },
-        AnchorExtent::WholeFile => Action::WholeFile { path },
-    })
 }
 
 /// Convenience: build an `Action` from a plain repo-relative path string

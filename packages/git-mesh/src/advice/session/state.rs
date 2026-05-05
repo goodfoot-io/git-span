@@ -58,17 +58,9 @@ pub struct TouchInterval {
     pub end: Option<u32>,
 }
 
-/// Per-session print-gate flags persisted at `<session>/flags.state`.
-///
-/// These gates ensure that instruction blocks are printed at most once per
-/// advice session, independent of how many `flush` invocations occur.
+/// Per-session flags persisted at `<session>/flags.state`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct SessionFlags {
-    /// True after reconciliation instructions have been printed at least once
-    /// this session.
-    #[serde(default)]
-    pub has_printed_reconciliation_instructions: bool,
-}
+pub struct SessionFlags {}
 
 /// One entry in `<session>/snapshots/<id>.untracked` — captured at `mark`,
 /// consumed at `flush` to detect untracked-side changes.

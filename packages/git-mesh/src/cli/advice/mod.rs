@@ -464,7 +464,6 @@ fn process_touches(
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{
         Action, BasicOutput, Status, edit_overlaps, format_anchor_resolved,
-        reconciliation_instructions,
     };
 
     let wd = work_dir(repo)?;
@@ -493,9 +492,9 @@ fn process_touches(
             .collect::<Vec<_>>()
     };
     let meshes_seen = store.meshes_seen_set()?;
-    let mut flags = store.read_flags()?;
 
     let mut output = String::new();
+    let mut mesh_blocks: Vec<String> = Vec::new();
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
     let mut emitted_meshes_this_call: Vec<String> = Vec::new();
@@ -572,17 +571,22 @@ fn process_touches(
                 status_if_not_fresh,
                 non_active_anchors,
             };
-            output.push_str(&block.to_string());
+            mesh_blocks.push(block.to_string());
             emitted_meshes_this_call.push(mesh.name.clone());
             new_meshes_seen.push(mesh.name.clone());
             if !new_mesh_candidates.contains(&mesh.name) {
                 new_mesh_candidates.push(mesh.name.clone());
             }
-            if !flags.has_printed_reconciliation_instructions {
-                output.push_str(&reconciliation_instructions(mesh));
-                flags.has_printed_reconciliation_instructions = true;
-            }
         }
+    }
+
+    for (i, block) in mesh_blocks.iter().enumerate() {
+        if i > 0 {
+            output.push_str("\n---\n\n");
+        } else {
+            output.push_str("\n\n");
+        }
+        output.push_str(block);
     }
 
     // Persist the current flush's touches BEFORE building the SessionRecord
@@ -693,25 +697,27 @@ fn process_touches(
                 let mut stanza = String::new();
                 stanza.push_str("Detected possible implicit semantic dependency between:\n");
                 for a in &anchors {
-                    stanza.push_str(&format!("  - {a}\n"));
+                    stanza.push_str(&format!("- {a}\n"));
                 }
-                stanza.push_str("\nIf this is a real implicit semantic dependency, document it with `git mesh`:\n");
-                stanza.push_str("  git mesh add <name> \\\n");
+                stanza.push_str("\nIf this is a real implicit semantic dependency, document it with `git mesh`:\n\n");
+                stanza.push_str("```bash\n");
+                stanza.push_str("git mesh add <mesh-name> \\\n");
                 let last = anchors.len() - 1;
                 for (i, anchor) in anchors.iter().enumerate() {
                     if i == last {
-                        stanza.push_str(&format!("    {anchor}\n"));
+                        stanza.push_str(&format!("  {anchor}\n"));
                     } else {
-                        stanza.push_str(&format!("    {anchor} \\\n"));
+                        stanza.push_str(&format!("  {anchor} \\\n"));
                     }
                 }
-                stanza.push_str("  git mesh why <name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]\n");
+                stanza.push_str("git mesh why <mesh-name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]\n");
+                stanza.push_str("```\n");
                 creation_stanzas.push(stanza);
                 emitted_fps.push(fp);
             }
         }
         for (i, stanza) in creation_stanzas.iter().enumerate() {
-            if i > 0 {
+            if i > 0 || !output.is_empty() {
                 output.push_str("\n---\n\n");
             }
             output.push_str(stanza);
@@ -745,7 +751,6 @@ fn process_touches(
     if !emitted_fps.is_empty() {
         store.append_advice_seen(&emitted_fps)?;
     }
-    store.write_flags(&flags)?;
     // Eager observation: capture meshes committed via this tool call's
     // `git commit` so subsequent reads hit the fast `meshes_committed_set()` path.
     let _ = discover_meshes_committed_this_session(repo, store);
