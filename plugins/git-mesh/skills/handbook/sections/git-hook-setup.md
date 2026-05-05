@@ -7,29 +7,41 @@
 - **`post-rewrite`** — re-anchors meshes after a rebase or
   `git commit --amend`.
 
-Install both at the repository root:
+## Installation
+
+Before installing, check whether the repo uses a non-default hooks directory:
 
 ```sh
-mkdir -p .git/hooks
+git config --get core.hooksPath
+```
 
-cat > .git/hooks/post-commit <<'EOF'
+If set, use that path. Otherwise, default to `.git/hooks`.
+
+Check whether `post-commit` or `post-rewrite` already exist at that path. If
+they do, append the `git mesh` lines rather than overwriting. If not, create
+them.
+
+A minimal `post-commit` hook:
+
+```sh
 #!/bin/sh
 if command -v git-mesh >/dev/null 2>&1; then
   git mesh commit
   git mesh stale --compact --auto-follow --no-exit-code
 fi
-EOF
+```
 
-cat > .git/hooks/post-rewrite <<'EOF'
+A minimal `post-rewrite` hook:
+
+```sh
 #!/bin/sh
 if command -v git-mesh >/dev/null 2>&1; then
   git mesh rewrite
   git mesh stale --compact --auto-follow --no-exit-code
 fi
-EOF
-
-chmod +x .git/hooks/post-commit .git/hooks/post-rewrite
 ```
+
+Make both files executable after writing them.
 
 What each line does:
 
