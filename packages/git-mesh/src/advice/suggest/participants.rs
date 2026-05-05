@@ -4,9 +4,11 @@
 //! near-touching ranges per file.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::op_stream::{Op, OpKind};
+use crate::advice::suggest::symbol_extent::enclosing_symbol_range;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -186,7 +188,38 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
 ///
 /// Output ordering is stable on `op_index` to keep downstream stages
 /// deterministic regardless of the per-path grouping order.
-pub fn resolve_extent_precedence(parts: Vec<Participant>) -> Vec<Participant> {
+pub fn resolve_extent_precedence(parts: Vec<Participant>, workdir: &Path) -> Vec<Participant> {
+    resolve_extent_precedence_with(parts, |rel, range| {
+        let abs = workdir.join(rel);
+        enclosing_symbol_range(&abs, range)
+    })
+}
+
+/// Variant for unit tests: inject the symbol resolver directly so disk
+/// fixtures aren't required to exercise the precedence chain.
+pub fn resolve_extent_precedence_with(
+    mut parts: Vec<Participant>,
+    enclosing_symbol_fn: impl Fn(&str, (u32, u32)) -> Option<(u32, u32, String)>,
+) -> Vec<Participant> {
+    // Symbol promotion: try the resolver on every ranged participant whose
+    // current source is Edit or Read. Failure (None) leaves the participant
+    // tagged at its prior source so the precedence step still runs.
+    for p in parts.iter_mut() {
+        if !matches!(p.extent_source, ExtentSource::Edit | ExtentSource::Read) {
+            continue;
+        }
+        if p.m_start == WHOLE_FILE_START && p.m_end == WHOLE_FILE_END {
+            continue;
+        }
+        if let Some((sym_s, sym_e, _name)) = enclosing_symbol_fn(&p.path, (p.m_start, p.m_end)) {
+            p.start = sym_s;
+            p.end = sym_e;
+            p.m_start = sym_s;
+            p.m_end = sym_e;
+            p.extent_source = ExtentSource::Symbol;
+        }
+    }
+
     let mut by_path: BTreeMap<String, Vec<Participant>> = BTreeMap::new();
     for p in parts {
         by_path.entry(p.path.clone()).or_default().push(p);
@@ -512,7 +545,7 @@ mod tests {
             make_whole_read_op("foo.rs", 1),
         ];
         let parts = participants(&ops);
-        let resolved = resolve_extent_precedence(parts);
+        let resolved = resolve_extent_precedence_with(parts, |_, _| None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].extent_source, ExtentSource::Read);
         assert_eq!(resolved[0].m_start, 1);
@@ -526,7 +559,7 @@ mod tests {
             make_edit_op("foo.rs", None, None, 1),
         ];
         let parts = participants(&ops);
-        let resolved = resolve_extent_precedence(parts);
+        let resolved = resolve_extent_precedence_with(parts, |_, _| None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].extent_source, ExtentSource::Edit);
         assert_eq!(resolved[0].m_start, 88);
@@ -540,7 +573,7 @@ mod tests {
             make_edit_op("foo.rs", Some(20), Some(30), 1),
         ];
         let parts = participants(&ops);
-        let resolved = resolve_extent_precedence(parts);
+        let resolved = resolve_extent_precedence_with(parts, |_, _| None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].extent_source, ExtentSource::Edit);
     }
@@ -549,7 +582,7 @@ mod tests {
     fn whole_file_only_path_keeps_whole_sentinel() {
         let ops = vec![make_whole_read_op("foo.rs", 0)];
         let parts = participants(&ops);
-        let resolved = resolve_extent_precedence(parts);
+        let resolved = resolve_extent_precedence_with(parts, |_, _| None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].extent_source, ExtentSource::Whole);
         assert_eq!(resolved[0].m_start, WHOLE_FILE_START);
@@ -585,7 +618,7 @@ mod tests {
             make_ranged_edit_op("compact.rs", 88, 120, 3),
         ];
         let raw = participants(&ops);
-        let resolved = resolve_extent_precedence(raw);
+        let resolved = resolve_extent_precedence_with(raw, |_, _| None);
 
         // Per-path precedence: compact.rs has Edit + Whole → keep Edit only.
         // stale_output.rs has Read only. mod.rs has Whole only.

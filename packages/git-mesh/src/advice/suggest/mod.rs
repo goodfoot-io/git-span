@@ -18,6 +18,7 @@ pub mod history;
 pub mod locator;
 pub mod op_stream;
 pub mod participants;
+pub mod symbol_extent;
 
 pub use band::{confidence_band, viability_label};
 pub use canonical::{CanonicalIndex, CanonicalRange, build_canonical_ranges, range_iou};
@@ -193,7 +194,7 @@ pub fn run_suggest_pipeline(
         // carry narrower (Edit/Read/Symbol) evidence so the cross-session
         // canonicalizer below sees the narrow ranges and not the (1, u32::MAX)
         // sentinel that would collapse them in the bounding-box step.
-        let resolved = resolve_extent_precedence(raw_parts);
+        let resolved = resolve_extent_precedence(raw_parts, repo_root);
         let merged = merge_ranges_per_file(&resolved, cfg);
         all_parts.extend(merged.clone());
         session_participants.push(SessionParticipants {
