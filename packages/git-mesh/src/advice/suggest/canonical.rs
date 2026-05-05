@@ -190,9 +190,55 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
         }
     }
 
+    // For each path that had a Whole canonical dropped, pick a deterministic
+    // surviving narrower canonical on that path to receive the dropped
+    // canonical's `part_key` entries. This preserves cross-session
+    // co-occurrence evidence without widening the printed range.
+    let mut remap_receiver: BTreeMap<&str, usize> = BTreeMap::new();
+    for path in &paths_with_narrower {
+        // Iterate old canonicals in original order; pick the surviving
+        // narrower canonical with smallest (start, end), ties broken by
+        // first occurrence (lowest old index).
+        let mut best: Option<(u32, u32, usize, usize)> = None; // (start, end, old_idx, new_idx)
+        for (old_idx, r) in canonical_ranges.iter().enumerate() {
+            if r.path.as_str() != *path || r.source == ExtentSource::Whole {
+                continue;
+            }
+            if let Some(new_idx) = old_to_new[old_idx] {
+                let cand = (r.start, r.end, old_idx, new_idx);
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => {
+                        if (cand.0, cand.1, cand.2) < (cur.0, cur.1, cur.2) {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
+                });
+            }
+        }
+        if let Some((_, _, _, new_idx)) = best {
+            remap_receiver.insert(*path, new_idx);
+            crate::advice_debug!(
+                "extent-remap",
+                "path" => path.to_string(),
+                "cid" => new_idx.to_string(),
+                "reason" => "cross-session-whole-vs-ranged",
+            );
+        }
+    }
+
     let new_canonical_id_of: BTreeMap<String, usize> = canonical_id_of
         .into_iter()
-        .filter_map(|(key, old_id)| old_to_new[old_id].map(|new_id| (key, new_id)))
+        .filter_map(|(key, old_id)| match old_to_new[old_id] {
+            Some(new_id) => Some((key, new_id)),
+            None => {
+                // Whole canonical dropped — remap to receiver if present.
+                let path = canonical_ranges[old_id].path.as_str();
+                remap_receiver.get(path).map(|&new_id| (key, new_id))
+            }
+        })
         .collect();
 
     CanonicalIndex {
