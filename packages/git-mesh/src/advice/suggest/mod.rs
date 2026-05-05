@@ -189,10 +189,10 @@ pub fn run_suggest_pipeline(
     }
 
     // Cross-session state is out of scope — only the current session's
-    // `.git/mesh/advice/<sid>/` store is valid evidence. This assertion
-    // catches misuse in debug/test builds; it compiles to a no-op in
-    // release.
-    debug_assert_eq!(
+    // `.git/mesh/advice/<sid>/` store is valid evidence. This guard
+    // catches misuse in all build modes (the function genuinely cannot
+    // handle >1 session correctly).
+    assert_eq!(
         sessions.len(),
         1,
         "cross-session state is out of scope: run_suggest_pipeline expects exactly one session"
@@ -211,9 +211,9 @@ pub fn run_suggest_pipeline(
         attach_locators(&mut ops, cfg);
         let raw_parts = build_participants(&ops);
         // Per-session precedence: drop whole-file siblings on paths that also
-        // carry narrower (Edit/Read/Symbol) evidence so the cross-session
-        // canonicalizer below sees the narrow ranges and not the (1, u32::MAX)
-        // sentinel that would collapse them in the bounding-box step.
+        // carry narrower (Edit/Read/Symbol) evidence so the canonicalizer
+        // below sees the narrow ranges and not the (1, u32::MAX) sentinel
+        // that would collapse them in the bounding-box step.
         let resolved = resolve_extent_precedence(raw_parts, repo_root, &mut symbol_cache);
         let merged = merge_ranges_per_file(&resolved, cfg);
         all_parts.extend(merged.clone());
