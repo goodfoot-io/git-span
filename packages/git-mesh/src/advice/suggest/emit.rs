@@ -16,6 +16,17 @@ use crate::advice::suggestion::{ScoreBreakdown, Suggestion};
 /// Returns true if `big` strictly contains all members of `small`.
 ///
 /// Ports `isSuperset` from `docs/analyze-v4.mjs` line 997.
+fn extent_sources_str(canon_ids: &[usize], canonical: &CanonicalIndex) -> String {
+    canon_ids
+        .iter()
+        .map(|&id| match canonical.ranges.get(id) {
+            Some(r) => format!("{:?}", r.source).to_lowercase(),
+            None => "unknown".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn is_superset(big: &[usize], small: &[usize]) -> bool {
     if big.len() <= small.len() {
         return false;
@@ -81,9 +92,11 @@ pub fn emit(
             );
             continue;
         }
+        let extent_sources = extent_sources_str(&c.canon_ids, canonical);
         crate::advice_debug!(
             "suggester-emit",
             "canonical_ids" => ids_str,
+            "extent_sources" => extent_sources,
             "composite" => c.composite,
             "viability" => "Strong"
         );
@@ -103,9 +116,11 @@ pub fn emit(
             .filter(|k| is_superset(&k.canon_ids, &p.canon_ids))
             .collect();
         if containers.is_empty() {
+            let extent_sources = extent_sources_str(&p.canon_ids, canonical);
             crate::advice_debug!(
                 "suggester-emit",
                 "canonical_ids" => ids_str,
+                "extent_sources" => extent_sources,
                 "composite" => p.composite,
                 "viability" => "Strong"
             );
@@ -117,9 +132,11 @@ pub fn emit(
             .map(|c| c.composite)
             .fold(f64::NEG_INFINITY, f64::max);
         if p.composite >= best + cfg.pair_escape_bonus {
+            let extent_sources = extent_sources_str(&p.canon_ids, canonical);
             crate::advice_debug!(
                 "suggester-emit",
                 "canonical_ids" => ids_str,
+                "extent_sources" => extent_sources,
                 "composite" => p.composite,
                 "viability" => "Strong"
             );
@@ -219,6 +236,7 @@ mod tests {
                 path: format!("file{i}.rs"),
                 start: 1,
                 end: 10,
+                source: crate::advice::suggest::participants::ExtentSource::Read,
             })
             .collect();
         CanonicalIndex {

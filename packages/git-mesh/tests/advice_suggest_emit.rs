@@ -3,7 +3,8 @@
 //! Ports Section 16 of `docs/analyze-v4.mjs`: isSuperset and emit.
 
 use git_mesh::advice::suggest::{
-    CandidateScore, CanonicalIndex, CanonicalRange, ComponentBreakdown, SuggestConfig, emit,
+    CandidateScore, CanonicalIndex, CanonicalRange, ComponentBreakdown, ExtentSource,
+    SuggestConfig, emit,
 };
 use git_mesh::advice::suggestion::{ConfidenceBand, Viability};
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ fn make_canonical(n: usize) -> CanonicalIndex {
             path: format!("file{i}.rs"),
             start: 1,
             end: 10,
+            source: ExtentSource::Read,
         })
         .collect();
     CanonicalIndex {

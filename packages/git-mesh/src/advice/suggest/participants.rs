@@ -242,7 +242,7 @@ pub fn resolve_extent_precedence_with(
 /// Precedence order: `Symbol > Edit > Read > Whole`. Panics if `group` is
 /// empty — callers (`resolve_extent_precedence`) only invoke this for
 /// non-empty per-path groups.
-fn best_source(group: &[Participant]) -> ExtentSource {
+pub fn best_source(group: &[Participant]) -> ExtentSource {
     let rank = |s: ExtentSource| match s {
         ExtentSource::Symbol => 3,
         ExtentSource::Edit => 2,
@@ -590,12 +590,32 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase E: empty-hull defense + extent-drop debug line"]
     fn empty_hull_falls_back_to_whole_with_debug_line() {
-        // TODO Phase E: construct corrupt participants whose convex hull
-        // computes start > end, run through canonical-range step, and assert
-        // the result is whole-file with a `git-mesh-advice-debug` line of
-        // event=extent-drop, reason=empty-hull.
+        // Phase E: a corrupt participant with m_start > m_end forces the
+        // canonical-range step's bounding box to compute lo > hi. The defense
+        // replaces the range with the whole-file sentinel and tags it Whole.
+        use crate::advice::suggest::canonical::build_canonical_ranges;
+
+        let corrupt = Participant {
+            path: "foo.rs".to_string(),
+            start: 50,
+            end: 10,
+            op_index: 0,
+            kind: ParticipantKind::Edit,
+            m_start: 50,
+            m_end: 10,
+            anchored: true,
+            locator_distance: None,
+            locator_forward: None,
+            extent_source: ExtentSource::Edit,
+        };
+        let canonical = build_canonical_ranges(&[corrupt], &cfg());
+        assert_eq!(canonical.ranges.len(), 1);
+        let r = &canonical.ranges[0];
+        assert_eq!(r.path, "foo.rs");
+        assert_eq!(r.start, WHOLE_FILE_START);
+        assert_eq!(r.end, WHOLE_FILE_END);
+        assert_eq!(r.source, ExtentSource::Whole);
     }
 
     #[test]

@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 
 use crate::advice::suggest::SuggestConfig;
-use crate::advice::suggest::participants::Participant;
+use crate::advice::suggest::participants::{
+    ExtentSource, Participant, WHOLE_FILE_END, WHOLE_FILE_START, best_source,
+};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -17,6 +19,7 @@ pub struct CanonicalRange {
     pub path: String,
     pub start: u32,
     pub end: u32,
+    pub source: ExtentSource,
 }
 
 /// Maps each participant's key to a canonical anchor id (index into
@@ -126,11 +129,28 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
                 .map(|&k| all_parts[sorted[k]].m_end)
                 .max()
                 .unwrap();
+            let comp_parts: Vec<Participant> = comp
+                .iter()
+                .map(|&k| all_parts[sorted[k]].clone())
+                .collect();
+            let original_source = best_source(&comp_parts);
+            let (start, end, source) = if lo > hi {
+                crate::advice_debug!(
+                    "extent-drop",
+                    "path" => path.to_string(),
+                    "source" => format!("{:?}", original_source),
+                    "reason" => "empty-hull",
+                );
+                (WHOLE_FILE_START, WHOLE_FILE_END, ExtentSource::Whole)
+            } else {
+                (lo, hi, original_source)
+            };
             let cid = canonical_ranges.len();
             canonical_ranges.push(CanonicalRange {
                 path: path.to_string(),
-                start: lo,
-                end: hi,
+                start,
+                end,
+                source,
             });
             for &k in comp {
                 let key = part_key(&all_parts[sorted[k]]);
