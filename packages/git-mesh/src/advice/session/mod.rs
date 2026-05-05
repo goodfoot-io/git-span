@@ -38,7 +38,7 @@ fn open_with_mode(opts: &mut OpenOptions, mode: u32) -> &mut OpenOptions {
     opts
 }
 
-use state::{ReadRecord, SessionFlags, TouchInterval};
+use state::{ReadRecord, TouchInterval};
 use store::{LockGuard, LockTimeout};
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -166,26 +166,6 @@ impl SessionStore {
         for entry in entries.flatten() {
             let _ = std::fs::remove_file(entry.path());
         }
-    }
-
-    /// Read `flags.state`. Returns `SessionFlags::default()` when absent.
-    pub fn read_flags(&self) -> Result<SessionFlags> {
-        let path = self.dir.join("flags.state");
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(SessionFlags::default());
-            }
-            Err(e) => return Err(e).with_context(|| format!("read `{}`", path.display())),
-        };
-        let flags: SessionFlags = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("parse `{}`: {e}", path.display()))?;
-        Ok(flags)
-    }
-
-    pub fn write_flags(&self, flags: &SessionFlags) -> Result<()> {
-        let bytes = serde_json::to_vec(flags).with_context(|| "serialize SessionFlags")?;
-        store::atomic_write(&self.dir.join("flags.state"), &bytes)
     }
 
     pub fn append_read(&self, record: &ReadRecord, _timeout: LockTimeout) -> Result<()> {

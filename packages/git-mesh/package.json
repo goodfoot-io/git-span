@@ -12,8 +12,9 @@
     "build:local": "mkdir -p \"$HOME/.local/bin\" \"$HOME/.local/share/man/man1\" && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build\" cargo build --release && install -m 0755 \"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build/release/git-mesh\" \"$HOME/.local/bin/git-mesh\" && yarn build:man && install -m 0644 man/git-mesh.1 \"$HOME/.local/share/man/man1/git-mesh.1\"",
     "build:clean": "rm -rf \"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}\" && yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build\" cargo build --release",
     "test": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/test\" cargo nextest run --build-jobs 1",
-    "lint": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/lint\" cargo clippy --quiet -- -D warnings",
-    "typecheck": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/typecheck\" cargo check --quiet --locked"
+    "lint": "env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/lint\" cargo clippy --quiet -- -D warnings",
+    "typecheck": "env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/typecheck\" cargo check --quiet --locked",
+    "udeps": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/udeps\" cargo +nightly udeps"
   },
   "files": [
     "bin/",

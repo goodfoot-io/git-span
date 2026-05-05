@@ -58,9 +58,6 @@ pub struct TouchInterval {
     pub end: Option<u32>,
 }
 
-/// Per-session flags persisted at `<session>/flags.state`.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct SessionFlags {}
 
 /// One entry in `<session>/snapshots/<id>.untracked` — captured at `mark`,
 /// consumed at `flush` to detect untracked-side changes.

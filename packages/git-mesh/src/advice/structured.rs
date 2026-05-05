@@ -2,52 +2,7 @@
 
 use std::fmt;
 
-use crate::types::{AnchorExtent, AnchorResolved, AnchorStatus};
-
-// ── Status ────────────────────────────────────────────────────────────────────
-
-/// Anchor staleness status, mapped from `crate::types::AnchorStatus`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    Fresh,
-    Moved,
-    Changed,
-    Orphaned,
-    MergeConflict,
-    Submodule,
-    ContentUnavailable(String),
-}
-
-impl Status {
-    /// Map from the resolver's `AnchorStatus`.
-    pub fn from_anchor_status(s: &AnchorStatus) -> Self {
-        match s {
-            AnchorStatus::Fresh => Self::Fresh,
-            AnchorStatus::Moved => Self::Moved,
-            AnchorStatus::Changed => Self::Changed,
-            AnchorStatus::Orphaned => Self::Orphaned,
-            AnchorStatus::MergeConflict => Self::MergeConflict,
-            AnchorStatus::Submodule => Self::Submodule,
-            AnchorStatus::ContentUnavailable(reason) => {
-                Self::ContentUnavailable(format!("{reason:?}"))
-            }
-        }
-    }
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Fresh => write!(f, "FRESH"),
-            Self::Moved => write!(f, "MOVED"),
-            Self::Changed => write!(f, "CHANGED"),
-            Self::Orphaned => write!(f, "ORPHANED"),
-            Self::MergeConflict => write!(f, "MERGE_CONFLICT"),
-            Self::Submodule => write!(f, "SUBMODULE"),
-            Self::ContentUnavailable(reason) => write!(f, "CONTENT_UNAVAILABLE({reason})"),
-        }
-    }
-}
+use crate::types::{AnchorExtent, AnchorResolved};
 
 // ── Action ────────────────────────────────────────────────────────────────────
 
@@ -158,10 +113,6 @@ pub struct BasicOutput {
     pub mesh_name: String,
     /// One-sentence description from `git mesh why`.
     pub why: String,
-    /// Non-`Fresh` status of the active anchor, or `None` when fresh.
-    /// Retained on the struct for callers that still surface status elsewhere;
-    /// no longer emitted on the header line.
-    pub status_if_not_fresh: Option<Status>,
     /// The other anchors in the mesh (excluding the active anchor).
     pub non_active_anchors: Vec<String>,
 }

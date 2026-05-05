@@ -463,7 +463,7 @@ fn process_touches(
 ) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{
-        Action, BasicOutput, Status, edit_overlaps, format_anchor_resolved,
+        Action, BasicOutput, edit_overlaps, format_anchor_resolved,
     };
 
     let wd = work_dir(repo)?;
@@ -552,12 +552,6 @@ fn process_touches(
                 continue;
             }
             let active_anchor_str = format_anchor_resolved(active);
-            let status_if_not_fresh = if matches!(active.status, crate::types::AnchorStatus::Fresh)
-            {
-                None
-            } else {
-                Some(Status::from_anchor_status(&active.status))
-            };
             let non_active_anchors: Vec<String> = mesh
                 .anchors
                 .iter()
@@ -568,7 +562,6 @@ fn process_touches(
                 active_anchor: active_anchor_str,
                 mesh_name: mesh.name.clone(),
                 why: mesh.message.clone(),
-                status_if_not_fresh,
                 non_active_anchors,
             };
             mesh_blocks.push(block.to_string());
@@ -1057,7 +1050,7 @@ fn run_advice_read(
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
     use crate::advice::structured::{
-        BasicOutput, Status, action_from_spec, format_anchor_resolved, read_overlaps,
+        BasicOutput, action_from_spec, format_anchor_resolved, read_overlaps,
     };
 
     let wd = work_dir(repo)?;
@@ -1135,11 +1128,6 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
             continue;
         }
         let active_anchor_str = format_anchor_resolved(active);
-        let status_if_not_fresh = if matches!(active.status, crate::types::AnchorStatus::Fresh) {
-            None
-        } else {
-            Some(Status::from_anchor_status(&active.status))
-        };
         let non_active_anchors: Vec<String> = mesh
             .anchors
             .iter()
@@ -1150,7 +1138,6 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
             active_anchor: active_anchor_str,
             mesh_name: mesh.name.clone(),
             why: mesh.message.clone(),
-            status_if_not_fresh,
             non_active_anchors,
         };
         blocks.push(block.to_string());
