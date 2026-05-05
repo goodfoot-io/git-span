@@ -3,7 +3,7 @@
 //! Two ranges across sessions match when same path AND IoU >= threshold.
 //! Connected components under this relation become canonical ranges.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::participants::{
@@ -159,9 +159,45 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
         }
     }
 
+    // Cross-session sweep: drop Whole-source canonicals on paths that have
+    // at least one non-Whole canonical for the same path. Mirrors the
+    // per-session precedence in `resolve_extent_precedence` but applies
+    // across sessions after components have been built. Re-densify
+    // `canonical_id_of` so consumers (edges, evidence, emit) see indices
+    // matching the post-sweep `ranges` vec.
+    let paths_with_narrower: BTreeSet<&str> = canonical_ranges
+        .iter()
+        .filter(|r| r.source != ExtentSource::Whole)
+        .map(|r| r.path.as_str())
+        .collect();
+
+    let mut old_to_new: Vec<Option<usize>> = Vec::with_capacity(canonical_ranges.len());
+    let mut new_canonicals: Vec<CanonicalRange> = Vec::new();
+    for r in canonical_ranges.iter() {
+        let drop = r.source == ExtentSource::Whole
+            && paths_with_narrower.contains(r.path.as_str());
+        if drop {
+            crate::advice_debug!(
+                "extent-drop",
+                "path" => r.path.clone(),
+                "source" => format!("{:?}", r.source),
+                "reason" => "cross-session-whole-vs-ranged",
+            );
+            old_to_new.push(None);
+        } else {
+            old_to_new.push(Some(new_canonicals.len()));
+            new_canonicals.push(r.clone());
+        }
+    }
+
+    let new_canonical_id_of: BTreeMap<String, usize> = canonical_id_of
+        .into_iter()
+        .filter_map(|(key, old_id)| old_to_new[old_id].map(|new_id| (key, new_id)))
+        .collect();
+
     CanonicalIndex {
-        ranges: canonical_ranges,
-        canonical_id_of,
+        ranges: new_canonicals,
+        canonical_id_of: new_canonical_id_of,
     }
 }
 

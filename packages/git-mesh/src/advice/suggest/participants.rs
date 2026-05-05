@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::op_stream::{Op, OpKind};
-use crate::advice::suggest::symbol_extent::enclosing_symbol_range;
+use crate::advice::suggest::symbol_extent::SymbolCache;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -188,10 +188,18 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
 ///
 /// Output ordering is stable on `op_index` to keep downstream stages
 /// deterministic regardless of the per-path grouping order.
-pub fn resolve_extent_precedence(parts: Vec<Participant>, workdir: &Path) -> Vec<Participant> {
+pub fn resolve_extent_precedence(
+    parts: Vec<Participant>,
+    workdir: &Path,
+    cache: &mut SymbolCache,
+) -> Vec<Participant> {
+    // RefCell: closure passed to `_with` is `Fn`, but `cache.enclosing`
+    // takes `&mut self`. The closure is called sequentially in a single
+    // thread, so a RefCell borrow is sound and avoids restructuring `_with`.
+    let cell = std::cell::RefCell::new(cache);
     resolve_extent_precedence_with(parts, |rel, range| {
         let abs = workdir.join(rel);
-        enclosing_symbol_range(&abs, range)
+        cell.borrow_mut().enclosing(&abs, range)
     })
 }
 

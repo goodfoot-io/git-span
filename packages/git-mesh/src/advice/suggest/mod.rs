@@ -185,6 +185,10 @@ pub fn run_suggest_pipeline(
     // ── Stages 3–5: op-stream → locators → participants per session ───────────
     let mut session_participants: Vec<SessionParticipants> = Vec::new();
     let mut all_parts: Vec<Participant> = Vec::new();
+    // One SymbolCache per pipeline run: bounded memory, no cross-flush
+    // staleness. Reused across every session so a file touched by N sessions
+    // is parsed once.
+    let mut symbol_cache = symbol_extent::SymbolCache::new();
 
     for rec in sessions {
         let mut ops = build_op_stream(rec, cfg);
@@ -194,7 +198,7 @@ pub fn run_suggest_pipeline(
         // carry narrower (Edit/Read/Symbol) evidence so the cross-session
         // canonicalizer below sees the narrow ranges and not the (1, u32::MAX)
         // sentinel that would collapse them in the bounding-box step.
-        let resolved = resolve_extent_precedence(raw_parts, repo_root);
+        let resolved = resolve_extent_precedence(raw_parts, repo_root, &mut symbol_cache);
         let merged = merge_ranges_per_file(&resolved, cfg);
         all_parts.extend(merged.clone());
         session_participants.push(SessionParticipants {
