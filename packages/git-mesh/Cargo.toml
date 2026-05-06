@@ -43,3 +43,7 @@ uuid = { version = "1.23.1", features = ["v4"] }
 [[bench]]
 name = "stale_head_only"
 harness = false
+
+[[bench]]
+name = "stale_warm"
+harness = false
