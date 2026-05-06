@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 pub mod attribution;
+pub(crate) mod cache;
 pub(crate) mod engine;
 pub(crate) mod layers;
 pub(crate) mod session;

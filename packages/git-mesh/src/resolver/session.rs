@@ -38,6 +38,7 @@
 
 use crate::Result;
 use crate::git;
+use crate::resolver::cache::Cache;
 use crate::resolver::trail_cache::{self, TrailCacheEntry};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
@@ -55,6 +56,7 @@ use std::collections::{HashMap, HashSet};
 /// finds no rename rows. `parent` still references the prior commit in
 /// the walk so an interesting commit later in the walk diffs against the
 /// correct baseline.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommitDelta {
     pub(crate) parent: String,
     pub(crate) commit: String,
@@ -64,6 +66,7 @@ pub(crate) struct CommitDelta {
 /// One grouped walk: the rev list (oldest-first) from `anchor_sha..HEAD`,
 /// plus per-commit deltas. Computed exactly once per `(repo,
 /// anchor_sha)`.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct GroupedWalk {
     pub(crate) anchor_sha: String,
     pub(crate) head_sha: String,
@@ -108,10 +111,18 @@ pub(crate) struct ResolveSession {
     pub(crate) trail_cache_hits: u64,
     /// Counter: cache misses (including I/O errors) in the trail cache.
     pub(crate) trail_cache_misses: u64,
+    /// SQLite-backed content-addressed cache (Phase 2+).  Open on session
+    /// construction; no probes are wired until Phase 3.
+    #[allow(dead_code)]
+    pub(crate) cache: Cache,
 }
 
 impl ResolveSession {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(repo: &gix::Repository) -> Self {
+        let cache = Cache::open(repo).unwrap_or_else(|_| {
+            // Cache failures degrade silently to a disabled cache.
+            Cache::open_disabled()
+        });
         Self {
             walks: HashMap::new(),
             ensure_calls: 0,
@@ -121,6 +132,7 @@ impl ResolveSession {
             pass1_ms: 0,
             trail_cache_hits: 0,
             trail_cache_misses: 0,
+            cache,
         }
     }
 
@@ -719,7 +731,7 @@ mod candidate_filter_tests {
         commit_file(dir, "tracked.txt", "v3\n", "edit tracked again");
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("tracked.txt".to_string());
         let mut warnings = Vec::new();
@@ -757,7 +769,7 @@ mod candidate_filter_tests {
         commit_file(dir, "trail.txt", "y\n", "trail");
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("old.txt".to_string());
         let mut warnings = Vec::new();
@@ -802,7 +814,7 @@ mod candidate_filter_tests {
         run_git(dir, &["commit", "-m", "copy src to dst"]);
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("src.txt".to_string());
         let mut warnings = Vec::new();
@@ -859,7 +871,7 @@ mod candidate_filter_tests {
         commit_file(dir, "noise_c.txt", "x\n", "noise c");
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("foo.rs".to_string());
         let mut warnings = Vec::new();
@@ -924,7 +936,7 @@ mod candidate_filter_tests {
         run_git(dir, &["merge", "--no-ff", "-m", "merge side", "side"]);
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("foo.rs".to_string());
         let mut warnings = Vec::new();
@@ -970,7 +982,7 @@ mod candidate_filter_tests {
         commit_file(dir, "c.txt", "v1\n", "init c");
 
         let repo = gix::open(dir).unwrap();
-        let mut session = ResolveSession::new();
+        let mut session = ResolveSession::new(&repo);
         let mut candidate = HashSet::new();
         candidate.insert("a.txt".to_string());
         candidate.insert("b.txt".to_string());

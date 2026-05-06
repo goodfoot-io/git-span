@@ -258,7 +258,7 @@ pub(crate) fn apply_hunks_to_range(
     (s, e)
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NS {
     Added { path: String },
     Modified { path: String },

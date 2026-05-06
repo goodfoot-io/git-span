@@ -78,7 +78,7 @@ impl EngineState {
             warnings: Vec::new(),
             lfs: None,
             custom_filters: HashMap::new(),
-            session: ResolveSession::new(),
+            session: ResolveSession::new(repo),
             needs_all_layers,
             commit_reachability: HashMap::new(),
             head_blobs: HashMap::new(),
