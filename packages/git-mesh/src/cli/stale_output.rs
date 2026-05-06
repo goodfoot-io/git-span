@@ -73,10 +73,21 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         needs_all_layers,
     };
 
-    // Count total committed meshes before stale_meshes filtering, so the
-    // summary can report "0 stale across N meshes" even when all are clean.
+    // Count total committed meshes and anchors before stale_meshes filtering,
+    // so the summary can report "0 stale across N meshes (A anchors checked)"
+    // even when all are clean.
     let total_committed_mesh_count: usize = crate::mesh::read::list_mesh_refs(repo)
         .map(|refs| refs.len())
+        .unwrap_or(0);
+    let total_committed_anchor_count: usize = crate::mesh::read::list_mesh_refs(repo)
+        .map(|refs| {
+            refs.iter()
+                .filter_map(|(name, oid)| {
+                    crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
+                })
+                .map(|m| m.anchors.len())
+                .sum()
+        })
         .unwrap_or(0);
 
     let mut meshes = if args.paths.is_empty() {
@@ -360,10 +371,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             if !printed && stale_count == 0 {
                 if args.paths.is_empty() {
                     // Scan-all: print summary line with counts.
-                    // Use total_committed_mesh_count (all committed meshes)
-                    // rather than meshes.len() (which only includes meshes
-                    // with findings after stale_meshes filtering).
-                    let total_anchors: usize = meshes.iter().map(|m| m.anchors.len()).sum();
+                    // Use total_committed_mesh_count / total_committed_anchor_count
+                    // (all committed meshes / anchors) rather than meshes.len()
+                    // or meshes[.].anchors.len() (which only includes meshes with
+                    // findings after stale_meshes filtering).
+                    let total_anchors = total_committed_anchor_count;
                     let total_pending: usize = pending.len();
                     let mesh_word = if total_committed_mesh_count == 1 { "mesh" } else { "meshes" };
                     let anchor_word = if total_anchors == 1 {
@@ -840,47 +852,7 @@ fn render_human(
                 )
             })
             .collect();
-        // Prefer the committed why on the mesh ref. If a pending Why
-        // edits it, render an old/new diff block instead of printing
-        // the committed why followed by the new body — that makes the
-        // change explicit.
-        let trimmed_why = m.message.trim();
-        let pending_why_body: Option<&str> = info.iter().find_map(|p| match p {
-            PendingFinding::Why { body, .. } => {
-                let t = body.trim();
-                if t == trimmed_why {
-                    None
-                } else {
-                    Some(t)
-                }
-            }
-            _ => None,
-        });
         // Why text is not printed in stale output per CARD.md spec.
-        // Only pending why changes are shown.
-        match (trimmed_why.is_empty(), pending_why_body) {
-            (_, None) => {}
-            (_, Some(new_body)) if trimmed_why.is_empty() => {
-                println!();
-                println!("Why set to:");
-                println!();
-                println!("{new_body}");
-            }
-            (_, Some(new_body)) => {
-                println!();
-                println!("Why updated from:");
-                println!();
-                println!("```old");
-                println!("{trimmed_why}");
-                println!("```");
-                println!();
-                println!("to:");
-                println!();
-                println!("```new");
-                println!("{new_body}");
-                println!("```");
-            }
-        }
         for p in &info {
             match p {
                 PendingFinding::Why { .. } => {}
