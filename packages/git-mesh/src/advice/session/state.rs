@@ -79,6 +79,12 @@ pub enum TouchProvenance {
         /// Per-field changes that were detected.
         changes: Vec<UntrackedFieldChange>,
     },
+    /// Touch recorded via explicit payload (Edit/Write/MultiEdit), bypassing
+    /// the snapshot diff path entirely.
+    Payload {
+        /// Anchor spec from the caller (e.g. `file.rs#L10-L20` or `file.rs`).
+        anchor: String,
+    },
 }
 
 /// One field that differed between a saved untracked snapshot entry and the

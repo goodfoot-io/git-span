@@ -4,6 +4,9 @@
 
 use anyhow::Result;
 
+#[cfg(unix)]
+use std::os::unix::io::{FromRawFd, RawFd};
+
 use super::{
     collect_touched_paths, format_touch_annotation, parse_diff_files_z, run_advice_end,
     run_advice_flush, run_advice_mark, run_advice_read, run_advice_touch, TouchKindArg,
@@ -766,6 +769,36 @@ fn format_touch_annotation_untracked_empty_changes() -> Result<()> {
     Ok(())
 }
 
+/// `format_touch_annotation` produces the correct format for payload entries.
+#[test]
+fn format_touch_annotation_payload() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let prov = TouchProvenance::Payload {
+        anchor: "file.rs#L10-L20".into(),
+    };
+    let line = format_touch_annotation("file.rs", &TouchKind::Modified, &prov);
+    assert_eq!(
+        line,
+        "file.rs: modified (payload, anchor=file.rs#L10-L20)"
+    );
+    Ok(())
+}
+
+/// `format_touch_annotation` with whole-file payload anchor.
+#[test]
+fn format_touch_annotation_payload_whole_file() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let prov = TouchProvenance::Payload {
+        anchor: "new.txt".into(),
+    };
+    let line = format_touch_annotation("new.txt", &TouchKind::Added, &prov);
+    assert_eq!(
+        line,
+        "new.txt: added (payload, anchor=new.txt)"
+    );
+    Ok(())
+}
+
 /// `parse_diff_files_z` preserves provenance fields from a simulated
 /// `git diff-files -z --raw` byte stream.
 #[test]
@@ -916,43 +949,237 @@ fn basic_output_with_debug_touches() -> Result<()> {
     Ok(())
 }
 
-/// Integration test: flush with debug mode enabled works correctly.
+/// Integration test: flush with debug mode enabled produces annotated blocks.
 ///
-/// Uses `debug::test_only_set` instead of `std::env::set_var` to avoid the
-/// thread-safety hazard of env var manipulation in parallel test execution.
-/// Verifies the full plumming: setting the flag, running the flush pipeline
-/// (which probes `debug::enabled()` during touch→mesh overlap), and the
-/// function succeeds. The exact annotation format is verified by unit tests
-/// for `format_touch_annotation` and `BasicOutput::fmt`.
+/// Creates a mesh using git plumbing, enables debug mode, then asserts that the
+/// flush and touch paths both produce `[Touches that triggered this advice]`
+/// sections with correct annotation content in stdout.
+///
+/// Uses `libc` pipes for stdout capture because `run_advice_flush` and
+/// `run_advice_touch` write directly to `io::stdout()`.
+#[cfg(unix)]
 #[test]
 fn flush_debug_output_with_annotations() -> Result<()> {
+    use std::io::{Read, Write};
+
     crate::advice::debug::test_only_set(true);
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    /// Run `git` and capture stdout.
+    fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String> {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Run `git` with stdin data and capture stdout.
+    fn git_stdin(dir: &std::path::Path, args: &[&str], input: &str) -> Result<String> {
+        let mut child = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        {
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(input.as_bytes())?;
+            stdin.flush()?;
+        }
+        let out = child.wait_with_output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Create a mesh in the test repo via git plumbing.
+    fn create_test_mesh(
+        repo_path: &std::path::Path,
+        name: &str,
+        file_path: &str,
+        anchor_start: u32,
+        anchor_end: u32,
+        message: &str,
+    ) -> Result<()> {
+        let head_sha = git_stdout(repo_path, &["rev-parse", "HEAD"])?;
+        let blob_sha =
+            git_stdout(repo_path, &["rev-parse", &format!("HEAD:{}", file_path)])?;
+        let created_at = chrono::Utc::now().to_rfc3339();
+        let anchor_id = uuid::Uuid::new_v4().to_string();
+
+        let anchor_body = format!(
+            "commit {}\ncreated {}\nextent {} {} {}\t{}\n",
+            head_sha, created_at, anchor_start, anchor_end, blob_sha, file_path
+        );
+        let anchors_content = format!("id {}\n{}", anchor_id, anchor_body);
+
+        let anchors_blob_sha =
+            git_stdin(repo_path, &["hash-object", "-w", "--stdin"], &anchors_content)?;
+
+        let tree_input = format!("100644 blob {}\tanchors\n", anchors_blob_sha);
+        let tree_sha = git_stdin(repo_path, &["mktree"], &tree_input)?;
+
+        let commit_msg = format!("{}\n", message);
+        let commit_sha = git_stdin(
+            repo_path,
+            &["commit-tree", &tree_sha, "-p", &head_sha],
+            &commit_msg,
+        )?;
+
+        FixtureRepo::git(
+            repo_path,
+            &["update-ref", &format!("refs/meshes/v1/{}", name), &commit_sha],
+        )?;
+
+        // Path index
+        let path_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(file_path.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let path_ref = format!("refs/meshes-index/v1/path/{}/{}", &path_hash[..2], path_hash);
+        let index_content =
+            format!("# git-mesh path-index v1\n{}\t{}\t{}\n", name, anchor_start, anchor_end);
+        let idx_blob_sha =
+            git_stdin(repo_path, &["hash-object", "-w", "--stdin"], &index_content)?;
+        FixtureRepo::git(repo_path, &["update-ref", &path_ref, &idx_blob_sha])?;
+
+        Ok(())
+    }
+
+    /// Capture stdout written by `f` using fd-level pipe redirection.
+    fn capture_stdout<F>(f: F) -> Result<String>
+    where
+        F: FnOnce() -> Result<i32>,
+    {
+        let mut fds: [RawFd; 2] = [0, 0];
+        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        anyhow::ensure!(ret == 0, "pipe creation failed");
+
+        let read_fd = fds[0];
+        let write_fd = fds[1];
+
+        let saved_stdout = unsafe { libc::dup(1) };
+        anyhow::ensure!(saved_stdout >= 0, "dup(1) failed");
+
+        // Flush before redirecting fd 1.
+        std::io::stdout().flush().ok();
+        unsafe {
+            libc::dup2(write_fd, 1);
+        }
+        unsafe {
+            libc::close(write_fd);
+        }
+
+        // Run the function. Errors from f are not swallowed — they propagate
+        // after we restore stdout.
+        let fn_result = f();
+
+        // Flush so any buffered data reaches the pipe before we restore.
+        std::io::stdout().flush().ok();
+        unsafe {
+            libc::dup2(saved_stdout, 1);
+        }
+        unsafe {
+            libc::close(saved_stdout);
+        }
+
+        // Propagate the function's error if any.
+        fn_result?;
+
+        // Read captured output from the pipe.
+        let mut output = String::new();
+        let mut reader: std::fs::File = unsafe { std::fs::File::from_raw_fd(read_fd) };
+        reader.read_to_string(&mut output)?;
+        // reader's Drop closes read_fd.
+        Ok(output)
+    }
+
+    // ── Flush path ──────────────────────────────────────────────────────
 
     let repo = FixtureRepo::new()?;
     let gix = repo.gix_repo()?;
+    create_test_mesh(repo.path(), "test-mesh", "file1.txt", 1, 10, "Test mesh for flush debug")?;
 
     let session_id = FixtureRepo::sid("flush-debug");
 
-    // Basic mark → modify → flush cycle with debug mode on.
+    // Read must precede flush for the gate to pass.
     run_advice_read(&gix, session_id.clone(), "file1.txt".into(), None)?;
     run_advice_mark(&gix, session_id.clone(), "debug-tool".into())?;
     std::fs::write(repo.path().join("file1.txt"), "edited content\n")?;
-    let code = run_advice_flush(&gix, session_id.clone(), "debug-tool".into())?;
-    assert_eq!(code, 0, "flush should succeed with debug mode active");
 
-    // Also verify the touch path with debug mode on.
+    let flush_output = capture_stdout(|| {
+        run_advice_flush(&gix, session_id.clone(), "debug-tool".into())
+    })?;
+
+    assert!(
+        flush_output.contains("[Touches that triggered this advice]"),
+        "flush debug output must contain the annotations header; got: {flush_output:?}"
+    );
+    assert!(
+        flush_output.contains("file1.txt: modified"),
+        "flush debug annotation must mention file1.txt modification; got: {flush_output:?}"
+    );
+    assert!(
+        flush_output.contains("(tracked, git diff-files status=M)"),
+        "flush annotation must indicate tracked provenance; got: {flush_output:?}"
+    );
+
+    // ── Touch path ──────────────────────────────────────────────────────
+
     let repo2 = FixtureRepo::new()?;
     let gix2 = repo2.gix_repo()?;
-    let sid2 = FixtureRepo::sid("flush-debug-touch");
-    run_advice_touch(
-        &gix2,
-        sid2.clone(),
-        "debug-touch".into(),
-        "file1.txt".into(),
-        TouchKindArg::Modified,
+    create_test_mesh(
+        repo2.path(),
+        "touch-mesh",
+        "file1.txt",
+        1,
+        10,
+        "Test mesh for touch debug",
     )?;
+    let sid2 = FixtureRepo::sid("flush-debug-touch");
 
-    // Restore cached state (disable debug).
+    let touch_output = capture_stdout(|| {
+        run_advice_touch(
+            &gix2,
+            sid2.clone(),
+            "debug-touch".into(),
+            "file1.txt".into(),
+            TouchKindArg::Modified,
+        )
+    })?;
+
+    assert!(
+        touch_output.contains("[Touches that triggered this advice]"),
+        "touch debug output must contain the annotations header; got: {touch_output:?}"
+    );
+    assert!(
+        touch_output.contains("file1.txt: modified"),
+        "touch debug annotation must mention file1.txt modification; got: {touch_output:?}"
+    );
+    assert!(
+        touch_output.contains("(payload,"),
+        "touch annotation must indicate payload source; got: {touch_output:?}"
+    );
+    assert!(
+        touch_output.contains("anchor=file1.txt"),
+        "touch annotation must include the anchor spec; got: {touch_output:?}"
+    );
+
     crate::advice::debug::test_only_set(false);
     Ok(())
 }

@@ -917,6 +917,15 @@ fn run_advice_touch(
         TouchKindArg::Modified => TouchKind::Modified,
     };
 
+    let mut provenance: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
+        std::collections::HashMap::new();
+    provenance.insert(
+        path_str.clone(),
+        crate::advice::session::state::TouchProvenance::Payload {
+            anchor: anchor.clone(),
+        },
+    );
+
     let touches = vec![TouchInterval {
         path: path_str,
         kind: touch_kind,
@@ -926,9 +935,7 @@ fn run_advice_touch(
         end: line_anchor.map(|(_, e)| e),
     }];
 
-    let empty_provenance: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
-        std::collections::HashMap::new();
-    process_touches(repo, &store, &session_id, "", touches, &empty_provenance)
+    process_touches(repo, &store, &session_id, "", touches, &provenance)
 }
 
 /// Validate an anchor for the `touch added` case. Same as `validate_read_spec`
@@ -1232,6 +1239,9 @@ fn format_touch_annotation(
                 format!("{}: {} (untracked, {})", path, kind_str, details.join(", "))
             }
         }
+        TouchProvenance::Payload { anchor } => {
+            format!("{}: {} (payload, anchor={})", path, kind_str, anchor)
+        }
     }
 }
 
@@ -1343,7 +1353,7 @@ fn run_advice_read(
 
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
-    let mut blocks: Vec<String> = Vec::new();
+    let mut mesh_blocks: Vec<BasicOutput> = Vec::new();
 
     for mesh in &meshes {
         // Step 1: overlap check
@@ -1378,16 +1388,28 @@ fn run_advice_read(
                 }
             })
             .collect();
-        let block = BasicOutput {
+        mesh_blocks.push(BasicOutput {
             active_anchor: active_anchor_str,
             mesh_name: mesh.name.clone(),
             why: mesh.message.clone(),
             non_active_anchors,
             debug_touches: vec![],
-        };
-        blocks.push(block.to_string());
+        });
         new_meshes_seen.push(mesh.name.clone());
     }
+
+    // When debug mode is active, annotate each mesh block with the read
+    // provenance that triggered it.
+    if crate::advice::debug::enabled() {
+        for block in &mut mesh_blocks {
+            block.debug_touches.push(format!(
+                "{}: read (read anchor={})",
+                rec.path, anchor
+            ));
+        }
+    }
+
+    let blocks: Vec<String> = mesh_blocks.iter().map(|b| b.to_string()).collect();
 
     let output = if blocks.is_empty() {
         String::new()
