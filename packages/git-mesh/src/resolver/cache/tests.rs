@@ -352,7 +352,6 @@ fn version_mismatch_drops_and_rebuilds() {
 /// object manipulation, so this test uses a fake SHA that will never appear
 /// in `git rev-list --all --objects` output and asserts it gets swept.
 #[test]
-#[ignore]
 fn gc_drops_unreachable_rows_only() {
     let (_td, repo) = init_repo();
     let dir = _td.path();

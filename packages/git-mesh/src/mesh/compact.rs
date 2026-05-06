@@ -237,7 +237,23 @@ pub fn compact_mesh(
         }
     }
 
-    compact_mesh_with_retry(repo, name, options, initial_tip, None)
+    let outcome = compact_mesh_with_retry(repo, name, options, initial_tip, None)?;
+
+    // Run GC after anchor-advance work completes.  GC is an explicit
+    // user-triggered action (compact), so errors are surfaced rather than
+    // swallowed.
+    match crate::resolver::cache::Cache::open(repo) {
+        Ok(cache) => {
+            if let Err(e) = cache.gc(repo) {
+                eprintln!("git-mesh: cache gc failed: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("git-mesh: cache open for gc failed: {e}");
+        }
+    }
+
+    Ok(outcome)
 }
 
 fn compact_mesh_with_retry(

@@ -435,8 +435,182 @@ impl Cache {
 
     // ── GC ──────────────────────────────────────────────────────────────────
 
-    pub(crate) fn gc(&self, _repo: &gix::Repository) -> Result<GcStats> {
-        Ok(GcStats::default())
+    /// Remove cache rows whose referenced SHAs are no longer reachable in the
+    /// repository.
+    ///
+    /// Live objects are discovered by running `git rev-list --all --objects`
+    /// as a subprocess (the git-dir parent is the working directory).  Each
+    /// line's first whitespace-separated token is a 40-char hex SHA.  We
+    /// collect them into a `HashSet<String>` and then sweep each cache table,
+    /// issuing chunked `DELETE` statements (5 000 rows per chunk, one
+    /// `BEGIN IMMEDIATE` per table).
+    pub(crate) fn gc(&self, repo: &gix::Repository) -> Result<GcStats> {
+        if !self.enabled {
+            return Ok(GcStats::default());
+        }
+
+        // ── 1. Build the live SHA set ────────────────────────────────────────
+        // `git rev-list --all --objects` prints one object per line; the first
+        // token is the SHA (subsequent tokens are optional path names for blobs
+        // and trees).  We use the git work-dir as cwd so that relative paths
+        // inside git's config resolve correctly.
+        let git_dir = repo.git_dir();
+        // For a normal repo git_dir is `.git`; its parent is the work tree.
+        // For a bare repo git_dir *is* the root.  Either way, git can be
+        // invoked from the git_dir itself.
+        let cwd = git_dir.parent().unwrap_or(git_dir);
+
+        let output = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(["rev-list", "--all", "--objects"])
+            .output()
+            .map_err(|e| crate::Error::Git(format!("gc: spawn git rev-list: {e}")))?;
+
+        // `git rev-list --all --objects` exits 0 even on an empty repo, but
+        // may exit non-zero when the repo is corrupt.  Surface that.
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::Error::Git(format!(
+                "gc: git rev-list failed: {stderr}"
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut live: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(4096);
+        for line in stdout.lines() {
+            // Each line: "<sha> [optional path]"
+            let sha = line.split_whitespace().next().unwrap_or("");
+            if sha.len() == 40 {
+                live.insert(sha.to_string());
+            }
+        }
+
+        // ── 2. Sweep name_status_cache ───────────────────────────────────────
+        let dead_ns: Vec<(String, String, i32)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT parent_sha, commit_sha, copy_detection FROM name_status_cache",
+            )
+            .map_err(|e| crate::Error::Git(format!("gc: prepare name_status scan: {e}")))?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                ))
+            })
+            .map_err(|e| crate::Error::Git(format!("gc: name_status scan: {e}")))?
+            .filter_map(|r| r.ok())
+            .filter(|(parent, commit, _)| !live.contains(parent) || !live.contains(commit))
+            .collect()
+        };
+
+        let name_status_removed = dead_ns.len();
+        for chunk in dead_ns.chunks(5000) {
+            let txn = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|e| crate::Error::Git(format!("gc: begin txn name_status: {e}")))?;
+            for (parent, commit, cd) in chunk {
+                txn.execute(
+                    "DELETE FROM name_status_cache \
+                     WHERE parent_sha = ?1 AND commit_sha = ?2 AND copy_detection = ?3",
+                    rusqlite::params![parent, commit, cd],
+                )
+                .map_err(|e| crate::Error::Git(format!("gc: delete name_status: {e}")))?;
+            }
+            txn.commit()
+                .map_err(|e| crate::Error::Git(format!("gc: commit name_status: {e}")))?;
+        }
+
+        // ── 3. Sweep blob_diff_cache ─────────────────────────────────────────
+        let dead_bd: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT old_blob_sha, new_blob_sha FROM blob_diff_cache")
+                .map_err(|e| crate::Error::Git(format!("gc: prepare blob_diff scan: {e}")))?;
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| crate::Error::Git(format!("gc: blob_diff scan: {e}")))?
+            .filter_map(|r| r.ok())
+            .filter(|(old, new)| !live.contains(old) || !live.contains(new))
+            .collect()
+        };
+
+        let blob_diff_removed = dead_bd.len();
+        for chunk in dead_bd.chunks(5000) {
+            let txn = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|e| crate::Error::Git(format!("gc: begin txn blob_diff: {e}")))?;
+            for (old, new) in chunk {
+                txn.execute(
+                    "DELETE FROM blob_diff_cache \
+                     WHERE old_blob_sha = ?1 AND new_blob_sha = ?2",
+                    rusqlite::params![old, new],
+                )
+                .map_err(|e| crate::Error::Git(format!("gc: delete blob_diff: {e}")))?;
+            }
+            txn.commit()
+                .map_err(|e| crate::Error::Git(format!("gc: commit blob_diff: {e}")))?;
+        }
+
+        // ── 4. Sweep grouped_walk_cache ──────────────────────────────────────
+        // Primary key includes more columns; we identify dead rows by
+        // anchor_sha + head_sha (the two commit-SHA columns).
+        #[allow(clippy::type_complexity)]
+        let dead_gw: Vec<(String, String, i32, Vec<u8>, Vec<u8>, Vec<u8>, i64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT anchor_sha, head_sha, copy_detection, \
+                        seed_hash, replace_refs_hash, git_config_hash, rename_budget \
+                 FROM grouped_walk_cache",
+            )
+            .map_err(|e| crate::Error::Git(format!("gc: prepare grouped_walk scan: {e}")))?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|e| crate::Error::Git(format!("gc: grouped_walk scan: {e}")))?
+            .filter_map(|r| r.ok())
+            .filter(|(anchor, head, _, _, _, _, _)| {
+                !live.contains(anchor) || !live.contains(head)
+            })
+            .collect()
+        };
+
+        let grouped_walk_removed = dead_gw.len();
+        for chunk in dead_gw.chunks(5000) {
+            let txn = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|e| crate::Error::Git(format!("gc: begin txn grouped_walk: {e}")))?;
+            for (anchor, head, cd, seed, replace_refs, git_config, budget) in chunk {
+                txn.execute(
+                    "DELETE FROM grouped_walk_cache \
+                     WHERE anchor_sha = ?1 AND head_sha = ?2 AND copy_detection = ?3 \
+                       AND seed_hash = ?4 AND replace_refs_hash = ?5 \
+                       AND git_config_hash = ?6 AND rename_budget = ?7",
+                    rusqlite::params![anchor, head, cd, seed, replace_refs, git_config, budget],
+                )
+                .map_err(|e| crate::Error::Git(format!("gc: delete grouped_walk: {e}")))?;
+            }
+            txn.commit()
+                .map_err(|e| crate::Error::Git(format!("gc: commit grouped_walk: {e}")))?;
+        }
+
+        Ok(GcStats {
+            name_status_removed,
+            blob_diff_removed,
+            grouped_walk_removed,
+        })
     }
 }
 
