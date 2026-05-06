@@ -466,7 +466,6 @@ fn cache_disabled_env_var_skips_reads_and_writes() {
 /// WAL + 500 ms busy_timeout serializes concurrent writers without
 /// application-level retry.
 #[test]
-#[ignore]
 fn concurrent_writers_serialize_within_busy_timeout() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
