@@ -732,7 +732,12 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.log {
         let entries = {
             let _perf = crate::perf::span("show.read-log");
-            mesh_log(repo, &args.name, args.limit)?
+            mesh_log(repo, &args.name, args.limit).map_err(|e| CliError {
+                subcommand: "show",
+                summary: format!("no mesh named `{}`.", args.name),
+                what_happened: format!("{}", e),
+                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            })?
         };
         let _perf = crate::perf::span("show.render-log");
         for info in entries {
@@ -991,7 +996,8 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         }
     } else {
         let noun = if page.len() == 1 { "mesh" } else { "meshes" };
-        println!("{} {noun} match the filters.", page.len());
+        let verb = if page.len() == 1 { "matches" } else { "match" };
+        println!("{} {noun} {verb} the filters.", page.len());
         println!();
         for listing in &page {
             let marker = match listing.state {

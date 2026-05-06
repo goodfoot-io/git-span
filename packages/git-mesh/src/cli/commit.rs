@@ -793,7 +793,7 @@ fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
             let ref_name = format!("refs/meshes/v1/{name}");
             let old = old_sha.as_deref().unwrap_or("(none)");
             println!(
-                "{} {}",
+                "{}{}",
                 format_ref_transition(&ref_name, old, &new_sha),
                 IDEMPOTENT_TAG
             );

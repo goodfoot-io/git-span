@@ -862,6 +862,8 @@ fn render_human(
             (_, None) => {}
             (_, Some(new_body)) if trimmed_why.is_empty() => {
                 println!();
+                println!("Why set to:");
+                println!();
                 println!("{new_body}");
             }
             (_, Some(new_body)) => {
