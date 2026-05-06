@@ -5,8 +5,8 @@
 use anyhow::Result;
 
 use super::{
-    TouchKindArg, collect_touched_paths, run_advice_end, run_advice_flush, run_advice_mark,
-    run_advice_read, run_advice_touch,
+    collect_touched_paths, run_advice_end, run_advice_flush, run_advice_mark, run_advice_read,
+    run_advice_touch, TouchKindArg,
 };
 
 struct FixtureRepo {
@@ -123,7 +123,9 @@ fn mark_flush_records_added_untracked_with_id() -> Result<()> {
 
     let touches = touches_for(&repo.session_dir(&s));
     assert!(
-        touches.iter().any(|t| t.path == "new.txt" && t.id == "tool-A"),
+        touches
+            .iter()
+            .any(|t| t.path == "new.txt" && t.id == "tool-A"),
         "expected a touch for new.txt: {touches:?}"
     );
     Ok(())
@@ -372,9 +374,7 @@ fn touch_does_not_create_snapshot_files() -> Result<()> {
     let session_dir = repo.session_dir(&s);
     let snapshots_dir = session_dir.join("snapshots");
     if snapshots_dir.exists() {
-        let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)?
-            .flatten()
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)?.flatten().collect();
         assert!(
             entries.is_empty(),
             "snapshots dir should be empty after touch, found: {entries:?}"
@@ -437,15 +437,14 @@ fn flush_after_read_writes_to_touches_not_pending() -> Result<()> {
     Ok(())
 }
 
-
 // ── pending-touches-unbounded-growth ─────────────────────────────────────────
 
 /// Appending the same `(path, kind, start, end)` twice must result in only
 /// one row in `pending_touches.jsonl`.
 #[test]
 fn append_pending_touch_is_idempotent_on_same_key() -> Result<()> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::{TouchInterval, TouchKind};
+    use crate::advice::session::SessionStore;
 
     let repo = FixtureRepo::new()?;
     let s = FixtureRepo::sid("dedup-pending");
@@ -487,8 +486,8 @@ fn append_pending_touch_is_idempotent_on_same_key() -> Result<()> {
 /// Different `(path, kind)` pairs must each get their own row.
 #[test]
 fn append_pending_touch_distinct_keys_both_land() -> Result<()> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::{TouchInterval, TouchKind};
+    use crate::advice::session::SessionStore;
 
     let repo = FixtureRepo::new()?;
     let s = FixtureRepo::sid("dedup-distinct");
@@ -650,12 +649,18 @@ fn end_sweeps_leftover_snapshots() -> Result<()> {
     run_advice_mark(&gix, s.clone(), "orphan-snap".into())?;
     let session_dir = repo.session_dir(&s);
     let snapshots_dir = session_dir.join("snapshots");
-    assert!(snapshots_dir.exists(), "snapshots dir should exist after mark");
+    assert!(
+        snapshots_dir.exists(),
+        "snapshots dir should exist after mark"
+    );
     let snap_count = std::fs::read_dir(&snapshots_dir)?.count();
     assert!(snap_count > 0, "should have at least one snapshot file");
 
     let code = run_advice_end(&gix, s.clone())?;
     assert_eq!(code, 0);
-    assert!(!session_dir.exists(), "session dir should be gone after end");
+    assert!(
+        !session_dir.exists(),
+        "session dir should be gone after end"
+    );
     Ok(())
 }

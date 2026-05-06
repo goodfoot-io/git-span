@@ -1,7 +1,8 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh list` — §10.4, §3.4.
 
-use crate::cli::{ListArgs, ShowArgs, parse_range_address};
-use crate::staging::{list_staged_mesh_names, read_staging};
+use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
+use crate::cli::format;
+use crate::staging::{list_staged_mesh_names, read_staging, serialize_copy_detection};
 use crate::types::{Anchor, AnchorExtent};
 use crate::validation::validate_mesh_name_shape;
 use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
@@ -283,6 +284,10 @@ struct MeshListing {
     why: String,
     anchors: Vec<AnchorEntry>,
     state: MeshState,
+    staged_adds: usize,
+    staged_removes: usize,
+    staged_configs: usize,
+    staged_why: bool,
 }
 
 fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
@@ -332,26 +337,37 @@ fn collect_listings_with_options(
                 });
             }
             // Determine if this committed mesh also has staged ops.
-            let state = if include_state && staged_name_set.contains(name.as_str()) {
-                let staging = read_staging(repo, name)?;
-                if staging.adds.is_empty()
-                    && staging.removes.is_empty()
-                    && staging.configs.is_empty()
-                    && staging.why.is_none()
-                {
-                    MeshState::Committed
+            let (state, staged_adds, staged_removes, staged_configs, staged_why) =
+                if include_state && staged_name_set.contains(name.as_str()) {
+                    let staging = read_staging(repo, name)?;
+                    let has_ops = !staging.adds.is_empty()
+                        || !staging.removes.is_empty()
+                        || !staging.configs.is_empty()
+                        || staging.why.is_some();
+                    (
+                        if has_ops {
+                            MeshState::Staged
+                        } else {
+                            MeshState::Committed
+                        },
+                        staging.adds.len(),
+                        staging.removes.len(),
+                        staging.configs.len(),
+                        staging.why.is_some(),
+                    )
                 } else {
-                    MeshState::Staged
-                }
-            } else {
-                MeshState::Committed
-            };
+                    (MeshState::Committed, 0, 0, 0, false)
+                };
             let why = message.trim_end_matches('\n').to_string();
             listings.push(MeshListing {
                 name: name.clone(),
                 why,
                 anchors,
                 state,
+                staged_adds,
+                staged_removes,
+                staged_configs,
+                staged_why,
             });
         }
     }
@@ -364,6 +380,10 @@ fn collect_listings_with_options(
                 continue; // already handled above
             }
             let staging = read_staging(repo, name)?;
+            let staged_adds = staging.adds.len();
+            let staged_removes = staging.removes.len();
+            let staged_configs = staging.configs.len();
+            let staged_why = staging.why.is_some();
             let why = staging.why.unwrap_or_default();
             let anchors = staging
                 .adds
@@ -378,6 +398,10 @@ fn collect_listings_with_options(
                 why,
                 anchors,
                 state: MeshState::Pending,
+                staged_adds,
+                staged_removes,
+                staged_configs,
+                staged_why,
             });
         }
     }
@@ -423,26 +447,37 @@ fn collect_listings_for_names(
             });
         }
         // Determine if this committed mesh also has staged ops.
-        let state = if include_state && staged_name_set.contains(name.as_str()) {
-            let staging = read_staging(repo, name)?;
-            if staging.adds.is_empty()
-                && staging.removes.is_empty()
-                && staging.configs.is_empty()
-                && staging.why.is_none()
-            {
-                MeshState::Committed
+        let (state, staged_adds, staged_removes, staged_configs, staged_why) =
+            if include_state && staged_name_set.contains(name.as_str()) {
+                let staging = read_staging(repo, name)?;
+                let has_ops = !staging.adds.is_empty()
+                    || !staging.removes.is_empty()
+                    || !staging.configs.is_empty()
+                    || staging.why.is_some();
+                (
+                    if has_ops {
+                        MeshState::Staged
+                    } else {
+                        MeshState::Committed
+                    },
+                    staging.adds.len(),
+                    staging.removes.len(),
+                    staging.configs.len(),
+                    staging.why.is_some(),
+                )
             } else {
-                MeshState::Staged
-            }
-        } else {
-            MeshState::Committed
-        };
+                (MeshState::Committed, 0, 0, 0, false)
+            };
         let why = message.trim_end_matches('\n').to_string();
         listings.push(MeshListing {
             name: name.clone(),
             why,
             anchors,
             state,
+            staged_adds,
+            staged_removes,
+            staged_configs,
+            staged_why,
         });
     }
 
@@ -455,6 +490,10 @@ fn collect_listings_for_names(
             continue; // already handled as committed+staged
         }
         let staging = read_staging(repo, name)?;
+        let staged_adds = staging.adds.len();
+        let staged_removes = staging.removes.len();
+        let staged_configs = staging.configs.len();
+        let staged_why = staging.why.is_some();
         let why = staging.why.unwrap_or_default();
         let anchors = staging
             .adds
@@ -469,6 +508,10 @@ fn collect_listings_for_names(
             why,
             anchors,
             state: MeshState::Pending,
+            staged_adds,
+            staged_removes,
+            staged_configs,
+            staged_why,
         });
     }
 
@@ -513,6 +556,10 @@ fn collect_filtered_porcelain_listings_with_staging(
                 why: String::new(),
                 anchors,
                 state: MeshState::Committed,
+                staged_adds: 0,
+                staged_removes: 0,
+                staged_configs: 0,
+                staged_why: false,
             });
         }
     }
@@ -546,6 +593,10 @@ fn collect_staged_porcelain_listings(repo: &gix::Repository) -> Result<Vec<MeshL
     let mut listings = Vec::with_capacity(staged_names.len());
     for name in staged_names {
         let staging = read_staging(repo, &name)?;
+        let staged_adds = staging.adds.len();
+        let staged_removes = staging.removes.len();
+        let staged_configs = staging.configs.len();
+        let _staged_why = staging.why.is_some();
         let anchors: Vec<AnchorEntry> = staging
             .adds
             .into_iter()
@@ -559,6 +610,10 @@ fn collect_staged_porcelain_listings(repo: &gix::Repository) -> Result<Vec<MeshL
             why: String::new(),
             anchors,
             state: MeshState::Pending,
+            staged_adds,
+            staged_removes,
+            staged_configs,
+            staged_why: false,
         });
     }
     Ok(listings)
@@ -600,6 +655,7 @@ fn apply_search(listings: &mut Vec<MeshListing>, re: &regex::Regex) {
     });
 }
 
+#[allow(dead_code)]
 fn render_blocks(page: &[MeshListing]) {
     let total = page.len();
     for (i, listing) in page.iter().enumerate() {
@@ -712,8 +768,15 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             match parse_format(fmt) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("git-mesh: {e}");
-                    return Ok(2);
+                    return Err(CliError {
+                        subcommand: "show",
+                        summary: format!("unrecognized format placeholder in `{fmt}`."),
+                        what_happened: e.to_string(),
+                        next_steps: vec![
+                            NextStep::Prose(format!("Supported placeholders: {SUPPORTED}")),
+                            NextStep::Bash("git mesh show <name> --format \"%H %s\"".into()),
+                        ],
+                    }.into());
                 }
             }
         };
@@ -740,25 +803,51 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.oneline {
         let _perf = crate::perf::span("show.render-oneline");
         for (_id, r) in &mesh.anchors_v2 {
-            println!("{}", render_range_address(&r.path, r.extent));
+            match r.extent {
+                AnchorExtent::LineRange { start, end } => {
+                    println!("{}", format::format_anchor_address(&r.path, Some(start), Some(end)));
+                }
+                AnchorExtent::WholeFile => {
+                    println!("{}", format::format_anchor_address(&r.path, None, None));
+                }
+            }
         }
         return Ok(0);
     }
 
     let _perf = crate::perf::span("show.render-default");
-    println!("mesh {}", mesh.name);
-    println!("commit {}", info.commit_oid);
-    println!("Author: {} <{}>", info.author_name, info.author_email);
-    println!("Date:   {}", info.author_date);
+    println!("# Mesh `{}`", mesh.name);
     println!();
-    for line in mesh.message.trim_end_matches('\n').lines() {
-        println!("    {line}");
-    }
+    let short_sha = &info.commit_oid[..7.min(info.commit_oid.len())];
+    println!(
+        "Commit `{short_sha}` by {} <{}> on {}.",
+        info.author_name, info.author_email, info.author_date
+    );
     println!();
-    println!("Anchors ({}):", mesh.anchors_v2.len());
+    let why = mesh.message.trim_end_matches('\n');
+    println!("Why: {why}");
+    println!();
+    println!("This mesh has {} anchor{}:", mesh.anchors_v2.len(), if mesh.anchors_v2.len() == 1 { "" } else { "s" });
+    println!();
     for (_id, r) in &mesh.anchors_v2 {
-        println!("    {}", render_range_address(&r.path, r.extent));
+        match r.extent {
+            AnchorExtent::LineRange { start, end } => {
+                let addr =
+                    format::format_anchor_address(&r.path, Some(start), Some(end));
+                println!("- `{addr}`");
+            }
+            AnchorExtent::WholeFile => {
+                println!("- `{}` (whole file)", r.path);
+            }
+        }
     }
+    println!();
+    let copy_detection = serialize_copy_detection(mesh.config.copy_detection);
+    println!(
+        "Resolver options: `copy-detection = {copy_detection}`, `ignore-whitespace = {}`, `follow-moves = {}`.",
+        mesh.config.ignore_whitespace,
+        mesh.config.follow_moves,
+    );
     Ok(0)
 }
 
@@ -799,10 +888,33 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         match RegexBuilder::new(pat).case_insensitive(true).build() {
             Ok(re) => apply_search(&mut listings, &re),
             Err(err) => {
-                eprintln!("git-mesh: invalid --search pattern `{pat}`: {err}");
-                return Ok(2);
+                return Err(CliError {
+                    subcommand: "list",
+                    summary: "`--search` regex is invalid.".into(),
+                    what_happened: format!(
+                        "The regex `{pat}` failed to compile: {err}"
+                    ),
+                    next_steps: vec![
+                        NextStep::Prose(
+                            "Try a simpler pattern or check for unescaped special characters."
+                                .into(),
+                        ),
+                        NextStep::Bash(
+                            "git mesh list --search \"pattern\"".into(),
+                        ),
+                    ],
+                }
+                .into());
             }
         }
+    }
+
+    // Filter to staged-only meshes when --staged is passed.
+    if args.staged {
+        let _perf = crate::perf::span("list.filter-staged");
+        listings.retain(|l| {
+            l.staged_adds > 0 || l.staged_removes > 0 || l.staged_configs > 0 || l.staged_why
+        });
     }
 
     let _perf = crate::perf::span("list.sort-page-render");
@@ -815,14 +927,89 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         .collect();
 
     if page.is_empty() {
-        println!("no meshes");
+        println!("No meshes match the filters.");
         return Ok(0);
     }
 
     if args.porcelain {
         render_porcelain(&page);
+    } else if args.staged {
+        let noun = if page.len() == 1 { "mesh has" } else { "meshes have" };
+        println!("{} {noun} pending staging.", page.len());
+        println!();
+        for listing in &page {
+            let marker = match listing.state {
+                MeshState::Staged => " (staged)",
+                MeshState::Pending => " (pending)",
+                MeshState::Committed => "",
+            };
+            let add_word = if listing.staged_adds == 1 { "add" } else { "adds" };
+            let remove_word = if listing.staged_removes == 1 { "remove" } else { "removes" };
+            let config_word = if listing.staged_configs == 1 { "config change" } else { "config changes" };
+            let why_part = if listing.staged_why {
+                "1 why change".to_string()
+            } else {
+                "0 why changes".to_string()
+            };
+            println!(
+                "- `{name}`{marker} — {adds} {aword}, {removes} {rword}, {configs} {cword}, {why}.",
+                name = listing.name,
+                marker = marker,
+                adds = listing.staged_adds,
+                aword = add_word,
+                removes = listing.staged_removes,
+                rword = remove_word,
+                configs = listing.staged_configs,
+                cword = config_word,
+                why = why_part,
+            );
+        }
     } else {
-        render_blocks(&page);
+        let noun = if page.len() == 1 { "mesh" } else { "meshes" };
+        println!("{} {noun} match the filters.", page.len());
+        println!();
+        for listing in &page {
+            let marker = match listing.state {
+                MeshState::Staged => " (staged)",
+                MeshState::Pending => " (pending)",
+                MeshState::Committed => "",
+            };
+            let anchor_word = if listing.anchors.len() == 1 { "anchor" } else { "anchors" };
+            let detail = match listing.state {
+                MeshState::Committed => {
+                    format!("{} {aword}", listing.anchors.len(), aword = anchor_word)
+                }
+                MeshState::Staged => {
+                    let total_staging = listing.staged_adds
+                        + listing.staged_removes
+                        + listing.staged_configs
+                        + (listing.staged_why as usize);
+                    let staging_word = if total_staging == 1 { "change" } else { "changes" };
+                    format!(
+                        "{} {aword} with {total} staged {sword}",
+                        listing.anchors.len(),
+                        aword = anchor_word,
+                        total = total_staging,
+                        sword = staging_word,
+                    )
+                }
+                MeshState::Pending => {
+                    let add_word = if listing.staged_adds == 1 { "add" } else { "adds" };
+                    format!(
+                        "0 anchors, {} staged {aword}",
+                        listing.staged_adds,
+                        aword = add_word,
+                    )
+                }
+            };
+            let why_first_line = listing.why.lines().next().unwrap_or("");
+            println!("- `{name}`{marker} — {detail}. Why: {why}",
+                name = listing.name,
+                marker = marker,
+                detail = detail,
+                why = why_first_line,
+            );
+        }
     }
 
     Ok(0)
@@ -1330,6 +1517,7 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
+            staged: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
@@ -1346,6 +1534,7 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
+            staged: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
@@ -1361,6 +1550,7 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
+            staged: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 1);
@@ -1417,6 +1607,7 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
+            staged: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);

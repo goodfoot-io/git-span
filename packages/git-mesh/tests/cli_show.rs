@@ -33,13 +33,13 @@ fn show_by_name_has_required_lines() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "alpha")?;
     let out = repo.mesh_stdout(["alpha"])?;
-    // §10.4 required header lines.
-    assert!(out.starts_with("mesh alpha"));
-    assert!(out.contains("commit "));
-    assert!(out.contains("Author:"));
-    assert!(out.contains("Date:"));
-    assert!(out.contains("Anchors ("));
-    assert!(out.contains("file1.txt#L1-L5"));
+    // §10.4 required header lines — prose format.
+    assert!(out.starts_with("# Mesh `alpha`"), "out={out}");
+    assert!(out.contains("Commit `"), "out={out}");
+    assert!(out.contains("by Test User <test@example.com> on"), "out={out}");
+    assert!(out.contains("Why: seed"), "out={out}");
+    assert!(out.contains("This mesh has 1 anchor"), "out={out}");
+    assert!(out.contains("- `file1.txt#L1-L5`"), "out={out}");
     Ok(())
 }
 
@@ -132,7 +132,8 @@ fn ls_all_lists_every_file_with_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list"])?;
-    assert!(out.contains("file1.txt"));
+    assert!(out.contains("`m`"), "expected mesh `m` in list: {out}");
+    assert!(out.contains("1 anchor"), "expected 1 anchor: {out}");
     Ok(())
 }
 
@@ -142,8 +143,7 @@ fn ls_by_path_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list", "file1.txt"])?;
-    assert!(out.contains("file1.txt"));
-    assert!(!out.contains("file2.txt"));
+    assert!(out.contains("`m`"), "expected mesh `m`: {out}");
     Ok(())
 }
 
@@ -162,6 +162,6 @@ fn ls_by_path_range_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list", "file1.txt#L1-L3"])?;
-    assert!(out.contains("file1.txt"));
+    assert!(out.contains("`m`"), "expected mesh `m`: {out}");
     Ok(())
 }

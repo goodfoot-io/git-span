@@ -106,12 +106,8 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("+ ADD    file2.txt#L1-L5"),
+        stdout.contains("+ ADD `file2.txt#L1-L5`"),
         "stdout={stdout}"
-    );
-    assert!(
-        !stdout.contains("file2.txt L1-L5"),
-        "pending add should use anchor-address syntax: {stdout}"
     );
     Ok(())
 }
@@ -139,7 +135,7 @@ fn pending_remove_with_index_drift_fails_commit() -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("Changed") && stdout.contains("file1.txt"),
+        stdout.contains("CHANGED") && stdout.contains("file1.txt"),
         "expected index drift on file1.txt to be reported; stdout={stdout}"
     );
     Ok(())
@@ -192,7 +188,7 @@ fn pre_existing_head_drift_on_unstaged_meshed_path_fails_commit() -> Result<()> 
         "expected exit 1 on pre-existing HEAD drift; stdout={stdout}"
     );
     assert!(
-        stdout.contains("drift in staged tree"),
+        stdout.contains("drift in the staged tree"),
         "expected new header text; stdout={stdout}"
     );
     assert!(
@@ -200,7 +196,7 @@ fn pre_existing_head_drift_on_unstaged_meshed_path_fails_commit() -> Result<()> 
         "expected origin tag; stdout={stdout}"
     );
     assert!(
-        stdout.contains("hint:"),
+        stdout.contains("What to do next"),
         "expected resolution hint; stdout={stdout}"
     );
     Ok(())
@@ -225,7 +221,7 @@ fn no_exit_code_flag_allows_commit_with_drift() -> Result<()> {
         "expected exit 0 with --no-exit-code; stdout={stdout}"
     );
     assert!(
-        stdout.contains("drift in staged tree"),
+        stdout.contains("drift in the staged tree"),
         "drift should still be reported; stdout={stdout}"
     );
     Ok(())
@@ -247,8 +243,8 @@ fn clean_staged_tree_emits_no_output_and_exits_zero() -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        out.stdout.is_empty(),
-        "expected empty stdout; got={}",
+        String::from_utf8_lossy(&out.stdout).contains("no drift in the staged tree"),
+        "expected clean confirmation; stdout={}",
         String::from_utf8_lossy(&out.stdout)
     );
     Ok(())

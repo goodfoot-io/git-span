@@ -8,10 +8,10 @@
 
 #![allow(dead_code)]
 
-use crate::cli::{StaleArgs, StaleFormat};
+use crate::cli::format;
+use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::git;
-use crate::validation::validate_mesh_name_shape;
-use crate::mesh::follow::{FollowDecision, follow_moves};
+use crate::mesh::follow::{follow_moves, FollowDecision};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
 };
@@ -20,8 +20,9 @@ use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet,
     MeshResolved, PendingDrift, PendingFinding, StagedOpRef, UnavailableReason,
 };
+use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
@@ -113,9 +114,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                         // Not a committed mesh; check for staging-only mesh before
                         // falling through to path-index lookup. Matches the original
                         // single-mesh path's MeshNotFound → staging check.
-                        if layers.staged_mesh
-                            && !build_pending_findings(repo, arg).is_empty()
-                        {
+                        if layers.staged_mesh && !build_pending_findings(repo, arg).is_empty() {
                             if seen.insert(arg.clone()) {
                                 mesh_names.push(arg.clone());
                             }
@@ -127,9 +126,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
             // Step 2: fall back to path index.
             if !found {
-                let names =
-                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)
-                        .unwrap_or_default();
+                let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)
+                    .unwrap_or_default();
                 for name in names {
                     if seen.insert(name.clone()) {
                         mesh_names.push(name);
@@ -153,12 +151,27 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             }
         }
 
-        // Step 4: any arg that named a non-existent file → exit 1.
+        // Step 4: any arg that named a non-existent file → CliError.
         if !missing_files.is_empty() {
-            for failed in &missing_files {
-                eprintln!("git mesh stale: file not found: '{}'", failed);
+            let all = missing_files.join("`, `");
+            let summary = if missing_files.len() == 1 {
+                format!("`{all}` is not tracked.")
+            } else {
+                format!("`{all}` are not tracked.")
+            };
+            return Err(CliError {
+                subcommand: "stale",
+                summary,
+                what_happened: format!(
+                    "The following files were requested but do not exist in the working tree: `{all}`. \
+                     Git-mesh resolves positional arguments as mesh names, file paths, or globs."
+                ),
+                next_steps: vec![
+                    NextStep::Prose("Check the file paths for typos.".into()),
+                    NextStep::Bash("git mesh list".into()),
+                ],
             }
-            return Ok(1);
+            .into());
         }
 
         // Step 5: resolve candidate mesh names through one shared EngineState.
@@ -312,7 +325,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     match args.format {
         StaleFormat::Human => {
             let _perf = crate::perf::span("stale.render-human");
-            render_human(
+            let printed = render_human(
                 repo,
                 &meshes,
                 &findings,
@@ -325,6 +338,53 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                     show_src: show_src_column,
                 },
             )?;
+
+            // No-drift messages: when nothing was printed and there is no
+            // drift to report, output a summary or clean confirmation.
+            // Silence is the wrong answer when the user names a mesh, and
+            // even scan-all should report a clean result with counts.
+            if !printed && stale_count == 0 {
+                if args.paths.is_empty() {
+                    // Scan-all: print summary line with counts.
+                    let total_anchors: usize = meshes.iter().map(|m| m.anchors.len()).sum();
+                    let total_pending: usize = pending.len();
+                    let mesh_word = if meshes.len() == 1 { "mesh" } else { "meshes" };
+                    let anchor_word = if total_anchors == 1 {
+                        "anchor"
+                    } else {
+                        "anchors"
+                    };
+                    println!(
+                        "git mesh stale: 0 stale, {} pending across {} {} ({} {} checked).",
+                        total_pending,
+                        meshes.len(),
+                        mesh_word,
+                        total_anchors,
+                        anchor_word,
+                    );
+                } else {
+                    // Named target: print clean confirmation per mesh.
+                    for m in &meshes {
+                        let total = m.anchors.len();
+                        if total == 0 {
+                            println!("{} has no anchors.", format::format_mesh_name(&m.name),);
+                        } else {
+                            let anchor_word = if total == 1 {
+                                "anchor is"
+                            } else {
+                                "anchors are"
+                            };
+                            println!(
+                                "{} is clean. {} {} fresh against HEAD, the index, and the working tree.{}",
+                                format::format_mesh_name(&m.name),
+                                total,
+                                anchor_word,
+                                format::IDEMPOTENT_TAG,
+                            );
+                        }
+                    }
+                }
+            }
         }
         StaleFormat::Porcelain => {
             let _perf = crate::perf::span("stale.render-porcelain");
@@ -377,6 +437,100 @@ fn extent_lines(extent: AnchorExtent) -> (u32, u32) {
     match extent {
         AnchorExtent::LineRange { start, end } => (start, end),
         AnchorExtent::WholeFile => (0, 0),
+    }
+}
+
+fn extent_to_options(extent: AnchorExtent) -> (Option<u32>, Option<u32>) {
+    match extent {
+        AnchorExtent::LineRange { start, end } => (Some(start), Some(end)),
+        AnchorExtent::WholeFile => (None, None),
+    }
+}
+
+/// Prose description of an anchor finding's status, source, and destination.
+///
+/// Produces strings like:
+/// - "Changed in the working tree"
+/// - "Moved in the index to `new/path#L1-L10`"
+/// - "Orphaned in HEAD (path no longer exists)"
+fn describe_finding(f: &Finding) -> String {
+    let src_phrase = |src: Option<DriftSource>| -> &'static str {
+        match src {
+            Some(DriftSource::Head) => "in HEAD",
+            Some(DriftSource::Index) => "in the index",
+            Some(DriftSource::Worktree) => "in the working tree",
+            None => "",
+        }
+    };
+
+    match &f.status {
+        AnchorStatus::Changed => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "Changed".to_string()
+            } else {
+                format!("Changed {src}")
+            }
+        }
+        AnchorStatus::Moved => {
+            let src = src_phrase(f.source);
+            if let Some(cur) = &f.current {
+                let (s, e) = extent_to_options(cur.extent);
+                let dest = format::format_anchor_address(&cur.path.to_string_lossy(), s, e);
+                if src.is_empty() {
+                    format!("Moved to `{dest}`")
+                } else {
+                    format!("Moved {src} to `{dest}`")
+                }
+            } else {
+                if src.is_empty() {
+                    "Moved".to_string()
+                } else {
+                    format!("Moved {src}")
+                }
+            }
+        }
+        AnchorStatus::Orphaned => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "Orphaned (path no longer exists)".to_string()
+            } else {
+                format!("Orphaned {src} (path no longer exists)")
+            }
+        }
+        AnchorStatus::MergeConflict => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "Merge conflict".to_string()
+            } else {
+                format!("Merge conflict {src}")
+            }
+        }
+        AnchorStatus::Submodule => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "Submodule".to_string()
+            } else {
+                format!("Submodule {src}")
+            }
+        }
+        AnchorStatus::ContentUnavailable(reason) => {
+            let src = src_phrase(f.source);
+            let detail = match reason {
+                UnavailableReason::LfsNotFetched => "LFS not fetched",
+                UnavailableReason::LfsNotInstalled => "LFS not installed",
+                UnavailableReason::PromisorMissing => "promisor missing",
+                UnavailableReason::SparseExcluded => "sparse excluded",
+                UnavailableReason::FilterFailed { .. } => "filter failed",
+                UnavailableReason::IoError { .. } => "I/O error",
+            };
+            if src.is_empty() {
+                format!("Content unavailable ({detail})")
+            } else {
+                format!("Content unavailable {src} ({detail})")
+            }
+        }
+        AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
     }
 }
 
@@ -478,7 +632,7 @@ fn render_human(
     pending: &[PendingFinding],
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
-) -> Result<()> {
+) -> Result<bool> {
     let mut printed_any_mesh = false;
     for m in meshes.iter() {
         // Include every tracked anchor — Fresh ones synthesized as
@@ -538,18 +692,12 @@ fn render_human(
             .filter(|p| matches!(p, PendingFinding::Remove { .. }))
             .count();
 
-        // Suppress fully-clean meshes — `stale` is a no-news-is-good-news
-        // command. If nothing in this mesh is stale and nothing is staged
-        // as a pending Add/Remove, render no per-mesh block at all (no
-        // header, no anchor list, no why). Matches the no-args sweep,
-        // which already filters clean meshes at the engine level.
+        // Suppress fully-clean meshes.
         if mesh_stale == 0 && pending_adds == 0 && pending_removes == 0 {
             continue;
         }
 
         if printed_any_mesh {
-            println!();
-            println!("---");
             println!();
         }
         printed_any_mesh = true;
@@ -565,26 +713,15 @@ fn render_human(
             continue;
         }
 
-        if mesh_total == 0 {
-            if pending_adds > 0 {
-                println!(
-                    "Mesh {} has {} pending anchors:",
-                    m.name, pending_adds
-                );
-            } else {
-                println!("Mesh {} has no anchors.", m.name);
-            }
-        } else if mesh_stale == 0 {
-            println!("No anchors in {} are stale.", m.name);
-        } else if mesh_stale == mesh_total {
-            println!("All anchors in {} are stale:", m.name);
-        } else {
-            println!(
-                "{} out of {} anchors in mesh {} are stale:",
-                mesh_stale, mesh_total, m.name
-            );
-        }
         if options.stat {
+            if mesh_stale > 0 && mesh_stale == mesh_total {
+                println!("All anchors in {} are stale:", m.name);
+            } else if mesh_stale > 0 {
+                println!(
+                    "{} out of {} anchors in mesh {} are stale:",
+                    mesh_stale, mesh_total, m.name
+                );
+            }
             for f in &mesh_findings {
                 let (insertions, deletions) = diff_counts(repo, f);
                 println!(
@@ -596,90 +733,84 @@ fn render_human(
             }
             continue;
         }
-        for f in &mesh_findings {
-            let mut line = String::new();
-            line.push_str("- ");
-            line.push_str(&render_path_extent_plain(
-                &f.anchored.path,
-                f.anchored.extent,
-            ));
-            if f.status != AnchorStatus::Fresh {
-                // For Moved findings with a known destination, render the arrow.
-                if f.status == AnchorStatus::Moved
-                    && let Some(cur) = &f.current
-                {
-                    line.push_str(&format!(
-                        " → {}",
-                        render_path_extent_plain(&cur.path, cur.extent)
-                    ));
-                }
-                let status_word = status_word(&f.status);
-                let auto_followed = followed_ids.contains(&f.anchor_id);
-                match (options.show_src, f.source) {
-                    (true, Some(src)) => {
-                        if auto_followed {
-                            line.push_str(&format!(
-                                " ({} in {}; anchor automatically updated)",
-                                status_word,
-                                source_word(src)
-                            ));
-                        } else {
-                            line.push_str(&format!(" ({} in {})", status_word, source_word(src)));
-                        }
-                    }
-                    _ => {
-                        if auto_followed {
-                            line.push_str(&format!(" ({}; anchor automatically updated)", status_word));
-                        } else {
-                            line.push_str(&format!(" ({})", status_word));
-                        }
-                    }
-                }
+
+        // --- DEFAULT PROSE OUTPUT ---
+
+        // Mesh drift header and summary line.
+        if mesh_stale > 0 {
+            println!("# Drift in {}", format::format_mesh_name(&m.name));
+            println!();
+            let word = if mesh_stale == 1 {
+                "has drifted"
+            } else {
+                "have drifted"
+            };
+            if mesh_stale == mesh_total {
+                println!("All {} anchors {}.", mesh_total, word);
+            } else {
+                println!("{} of {} anchors {}.", mesh_stale, mesh_total, word);
             }
-            if f.acknowledged_by.is_some() {
-                line.push_str(" (ack)");
-            }
-            println!("{line}");
-            if options.patch {
-                let diff = render_patch(repo, f);
-                if !diff.trim().is_empty() {
-                    println!("{diff}");
+        }
+
+        // Stale anchors — prose bullets with status description.
+        if mesh_stale > 0 {
+            println!();
+            println!("## Stale anchors");
+            println!();
+            for f in &mesh_findings {
+                if f.status == AnchorStatus::Fresh {
+                    continue;
+                }
+                let (s, e) = extent_to_options(f.anchored.extent);
+                let addr = format::format_anchor_address(&f.anchored.path.to_string_lossy(), s, e);
+                let whole_suffix = if matches!(f.anchored.extent, AnchorExtent::WholeFile) {
+                    " (whole file)"
+                } else {
+                    ""
+                };
+                let is_followed = followed_ids.contains(&f.anchor_id);
+                let ack_tag = if f.acknowledged_by.is_some() {
+                    " (acknowledged)"
+                } else {
+                    ""
+                };
+                let desc = describe_finding(f);
+                let auto_tag = if is_followed {
+                    "; anchor automatically updated"
+                } else {
+                    ""
+                };
+                println!("- `{addr}`{whole_suffix} — {desc}{auto_tag}{ack_tag}.");
+                if options.patch {
+                    let diff = render_patch(repo, f);
+                    if !diff.trim().is_empty() {
+                        println!("{diff}");
+                    }
                 }
             }
         }
-        // Pending adds/removes — rendered inline with the same
-        // `- <path> (<Status>)` shape as committed anchor findings.
-        for p in &mesh_pending {
-            match p {
-                PendingFinding::Add {
-                    anchor_id,
-                    op,
-                    drift,
-                    ..
-                } => {
-                    let drift_note = drift_note(drift.as_ref());
-                    println!(
-                        "- {}{} (Pending add){}",
-                        render_path_extent_plain(std::path::Path::new(&op.path), op.extent),
-                        render_pending_range_id(anchor_id),
-                        drift_note,
-                    );
+
+        // Pending staged changes — prose bullets.
+        if pending_adds > 0 || pending_removes > 0 {
+            if mesh_stale > 0 {
+                println!();
+            }
+            println!("## Pending staged changes");
+            println!();
+            for p in &mesh_pending {
+                match p {
+                    PendingFinding::Add { op, .. } => {
+                        let (s, e) = extent_to_options(op.extent);
+                        let addr = format::format_anchor_address(&op.path, s, e);
+                        println!("- Add `{addr}`.");
+                    }
+                    PendingFinding::Remove { op, .. } => {
+                        let (s, e) = extent_to_options(op.extent);
+                        let addr = format::format_anchor_address(&op.path, s, e);
+                        println!("- Remove `{addr}`.");
+                    }
+                    _ => {}
                 }
-                PendingFinding::Remove {
-                    anchor_id,
-                    op,
-                    drift,
-                    ..
-                } => {
-                    let drift_note = drift_note(drift.as_ref());
-                    println!(
-                        "- {}{} (Pending remove){}",
-                        render_path_extent_plain(std::path::Path::new(&op.path), op.extent),
-                        render_pending_range_id(anchor_id),
-                        drift_note,
-                    );
-                }
-                _ => {}
             }
         }
         // Informational pending (Why / ConfigChange) — never drives exit.
@@ -700,7 +831,11 @@ fn render_human(
         let pending_why_body: Option<&str> = info.iter().find_map(|p| match p {
             PendingFinding::Why { body, .. } => {
                 let t = body.trim();
-                if t == trimmed_why { None } else { Some(t) }
+                if t == trimmed_why {
+                    None
+                } else {
+                    Some(t)
+                }
             }
             _ => None,
         });
@@ -740,7 +875,7 @@ fn render_human(
             }
         }
     }
-    Ok(())
+    Ok(printed_any_mesh)
 }
 
 fn diff_counts(repo: &gix::Repository, finding: &Finding) -> (usize, usize) {
@@ -1161,7 +1296,11 @@ pub(crate) fn format_relative(committer_time: i64) -> String {
 }
 
 fn plural(n: i64) -> &'static str {
-    if n == 1 { "" } else { "s" }
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// Auto-follow pass shared by `git mesh stale` and `git mesh stale --compact`.
@@ -1216,14 +1355,11 @@ pub(super) fn run_auto_follow_pass(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let head_file_blob = match git::path_blob_at(
-                repo,
-                &head_sha,
-                cur.path.to_str().unwrap_or(""),
-            ) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
+            let head_file_blob =
+                match git::path_blob_at(repo, &head_sha, cur.path.to_str().unwrap_or("")) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
             if head_file_blob == anchored_file_blob.to_string() {
                 continue;
             }

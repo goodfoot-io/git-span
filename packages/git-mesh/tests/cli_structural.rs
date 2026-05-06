@@ -375,3 +375,58 @@ fn delete_mesh_succeeds_after_restore_clears_staging() -> Result<()> {
     assert!(!repo.ref_exists("refs/meshes/v1/m"));
     Ok(())
 }
+
+#[test]
+fn restore_empty_reports_no_ops() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    let out = repo.run_mesh(["restore", "m"])?;
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("has no staged operations"), "stdout={s}");
+    Ok(())
+}
+
+#[test]
+fn revert_not_ancestor_returns_cli_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "rev")?;
+    // HEAD is not part of the mesh history — revert fails as not-ancestor.
+    let head = repo.head_sha()?;
+    let out = repo.run_mesh(["revert", "rev", &head])?;
+    assert!(!out.status.success(), "revert non-ancestor should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot fast-forward"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn delete_no_such_mesh_returns_cli_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["delete", "nonexistent"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no mesh named"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn move_destination_exists_returns_cli_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "a")?;
+    seed(&repo, "b")?;
+    let out = repo.run_mesh(["move", "a", "b"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("already exists"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}

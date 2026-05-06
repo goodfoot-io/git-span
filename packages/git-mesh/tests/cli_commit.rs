@@ -213,8 +213,7 @@ fn cli_config_stage_override_shows_starred_line() -> Result<()> {
     repo.mesh_stdout(["commit", "m"])?;
     repo.mesh_stdout(["config", "m", "copy-detection", "off"])?;
     let out = repo.mesh_stdout(["config", "m"])?;
-    assert!(out.contains("* copy-detection"));
-    assert!(out.contains("(staged)"));
+    assert!(out.contains("staged change to `off`"));
     Ok(())
 }
 
@@ -253,7 +252,7 @@ fn cli_config_unset_stages_default() -> Result<()> {
     // Final resolved staged value is `false` (default); the committed
     // value is also `false`, so the displayed line is the un-starred
     // default.
-    assert!(out.contains("ignore-whitespace false"));
+    assert!(out.contains("`ignore-whitespace` is `false`."));
     Ok(())
 }
 
@@ -279,7 +278,7 @@ fn cli_config_follow_moves_read_single_key() -> Result<()> {
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
     let out = repo.mesh_stdout(["config", "m", "follow-moves"])?;
-    assert!(out.trim() == "false", "stdout={out}");
+    assert!(out.contains("`follow-moves` is `false` on `m`."), "stdout={out}");
     Ok(())
 }
 
@@ -291,8 +290,7 @@ fn cli_config_follow_moves_set_and_stage() -> Result<()> {
     repo.mesh_stdout(["commit", "m"])?;
     repo.mesh_stdout(["config", "m", "follow-moves", "true"])?;
     let out = repo.mesh_stdout(["config", "m"])?;
-    assert!(out.contains("* follow-moves"), "stdout={out}");
-    assert!(out.contains("(staged)"), "stdout={out}");
+    assert!(out.contains("staged change to `true`"), "stdout={out}");
     Ok(())
 }
 
@@ -317,7 +315,7 @@ fn cli_config_follow_moves_unset_stages_default() -> Result<()> {
     repo.mesh_stdout(["config", "m", "--unset", "follow-moves"])?;
     let out = repo.mesh_stdout(["config", "m"])?;
     // Final resolved value is `false` (default); no star.
-    assert!(out.contains("follow-moves false"), "stdout={out}");
+    assert!(out.contains("`follow-moves` is `false`."), "stdout={out}");
     Ok(())
 }
 
@@ -527,7 +525,7 @@ fn cli_rm_of_range_not_in_mesh_errors() -> Result<()> {
     let out = repo.run_mesh(["remove", "m", "file1.txt#L7-L9"])?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("anchor not in mesh"), "stderr={stderr}");
+    assert!(stderr.contains("is not an anchor on"), "stderr={stderr}");
     Ok(())
 }
 
@@ -554,8 +552,12 @@ fn cli_commit_no_name_commits_all_staged() -> Result<()> {
     repo.mesh_stdout(["add", "b", "file2.txt#L1-L2"])?;
     repo.mesh_stdout(["why", "b", "-m", "mesh b"])?;
     let stdout = repo.mesh_stdout(["commit"])?;
-    assert!(stdout.contains("refs/meshes/v1/a"), "stdout={stdout}");
-    assert!(stdout.contains("refs/meshes/v1/b"), "stdout={stdout}");
+    assert!(
+        stdout.contains("Committed 2 of 2 staged meshes."),
+        "stdout={stdout}"
+    );
+    assert!(stdout.contains("`a`"), "stdout={stdout}");
+    assert!(stdout.contains("`b`"), "stdout={stdout}");
     assert!(repo.ref_exists("refs/meshes/v1/a"));
     assert!(repo.ref_exists("refs/meshes/v1/b"));
     Ok(())
@@ -577,12 +579,12 @@ fn cli_commit_no_name_picks_up_why_only_staging() -> Result<()> {
     repo.mesh_stdout(["why", "m", "-m", "v2 why"])?;
     let stdout = repo.mesh_stdout(["commit"])?;
     assert!(
-        stdout.contains("refs/meshes/v1/m"),
-        "expected commit to update mesh ref; stdout={stdout}"
+        stdout.contains("Committed 1 of 1 staged meshes."),
+        "expected commit success; stdout={stdout}"
     );
     assert!(
-        !stdout.contains("nothing staged"),
-        "should not report 'nothing staged' when a why is staged; stdout={stdout}"
+        stdout.contains("`m`"),
+        "expected mesh m in output; stdout={stdout}"
     );
     let current = repo.mesh_stdout(["why", "m"])?;
     assert!(current.contains("v2 why"), "current={current}");
@@ -599,7 +601,7 @@ fn cli_commit_no_name_nothing_staged_exits_zero() -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("nothing staged"), "stdout={stdout}");
+    assert!(stdout.contains("Nothing is staged."), "stdout={stdout}");
     Ok(())
 }
 

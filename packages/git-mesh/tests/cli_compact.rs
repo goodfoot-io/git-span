@@ -128,7 +128,7 @@ fn test_compact_idempotent() -> Result<()> {
     assert_eq!(out2.status.code(), Some(0));
     let stdout2 = String::from_utf8_lossy(&out2.stdout);
     assert!(
-        stdout2.contains("nothing to compact"),
+        stdout2.contains("nothing to compact") || stdout2.contains("Nothing to compact"),
         "second run should be no-op: {stdout2}"
     );
 
@@ -165,7 +165,7 @@ fn test_compact_moved_skipped() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("nothing to compact"),
+        stdout.contains("Nothing to compact"),
         "changed anchor should not be compacted: {stdout}"
     );
 

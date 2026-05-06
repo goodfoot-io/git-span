@@ -121,7 +121,7 @@ impl fmt::Display for BasicOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "{} is in the {} mesh with:",
+            "{} is in the `{}` mesh with:",
             self.active_anchor, self.mesh_name
         )?;
         for anchor in &self.non_active_anchors {

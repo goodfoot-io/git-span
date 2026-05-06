@@ -28,7 +28,7 @@ pub mod stale_output;
 pub mod structural;
 pub mod sync;
 
-pub use error::{CliError, NextStep, render_error};
+pub use error::{CliError, NextStep, from_lib_error, render_error};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -210,6 +210,10 @@ pub struct ListArgs {
     /// Cap output at N meshes (after filtering and --offset).
     #[arg(long, value_name = "N")]
     pub limit: Option<usize>,
+
+    /// Show only meshes with non-empty staging.
+    #[arg(long)]
+    pub staged: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

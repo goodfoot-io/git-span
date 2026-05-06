@@ -11,6 +11,7 @@
 
 use crate::Error;
 use crate::cli::PreCommitArgs;
+use crate::cli::format;
 use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_meshes_in_order};
 use crate::types::{
@@ -19,8 +20,6 @@ use crate::types::{
 };
 use anyhow::Result;
 use std::collections::HashSet;
-
-const RESOLUTION_HINT: &str = "hint: re-anchor with `git mesh remove <name> <anchor>` and `git mesh add <name> <new-anchor>`,\n      or `git mesh move <name> <new-name>` if the path moved, or revert the change.";
 
 pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32> {
     let options = EngineOptions {
@@ -131,7 +130,15 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
         .collect();
 
     let any_rendered = !rendered_findings.is_empty() || !rendered_pending.is_empty();
-    render_report(&meshes, &rendered_findings, &rendered_pending);
+
+    if any_rendered {
+        render_report(&meshes, &rendered_findings, &rendered_pending);
+    } else {
+        println!(
+            "git mesh pre-commit: no drift in the staged tree.{}",
+            format::IDEMPOTENT_TAG
+        );
+    }
 
     if any_rendered && !args.no_exit_code {
         Ok(1)
@@ -172,7 +179,24 @@ fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&Pen
     if findings.is_empty() && pending.is_empty() {
         return;
     }
-    println!("git mesh pre-commit: drift in staged tree");
+
+    // Count affected meshes.
+    let affected_mesh_count = meshes
+        .iter()
+        .filter(|m| {
+            let has_findings = findings.iter().any(|f| f.mesh == m.name);
+            let has_pending = pending.iter().any(|p| pending_mesh(p) == m.name.as_str());
+            has_findings || has_pending
+        })
+        .count();
+
+    println!("# git mesh pre-commit: drift in the staged tree");
+    println!();
+    println!(
+        "The commit was blocked because staged changes drift from anchored content on {affected_mesh_count} mesh{}.",
+        if affected_mesh_count == 1 { "" } else { "es" }
+    );
+
     for m in meshes {
         let mesh_findings: Vec<&&Finding> = findings.iter().filter(|f| f.mesh == m.name).collect();
         let mesh_pending: Vec<&&PendingFinding> = pending
@@ -182,7 +206,9 @@ fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&Pen
         if mesh_findings.is_empty() && mesh_pending.is_empty() {
             continue;
         }
-        println!("  mesh {}", m.name);
+        println!();
+        println!("## `{}`", m.name);
+
         for f in &mesh_findings {
             let origin = match f.source {
                 Some(DriftSource::Index) => "in-flight",
@@ -193,36 +219,57 @@ fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&Pen
                 .as_ref()
                 .map(|c| c.path.as_path())
                 .unwrap_or(f.anchored.path.as_path());
-            println!(
-                "    {:<8} {}  {}",
-                format!("{:?}", f.status),
-                path.display(),
-                origin
-            );
+            let (s, e) = match &f.anchored.extent {
+                AnchorExtent::LineRange { start, end } => (Some(*start), Some(*end)),
+                AnchorExtent::WholeFile => (None, None),
+            };
+            let addr = format::format_anchor_address(&path.to_string_lossy(), s, e);
+            let status_label = format!("{:?}", f.status).to_uppercase();
+            println!("- {status_label} `{addr}` — {origin}.");
         }
+
         for p in &mesh_pending {
             match p {
-                PendingFinding::Add { op, drift, .. } => {
+                PendingFinding::Add {
+                    op, drift, ..
+                } => {
                     let note = drift_note(drift);
-                    println!(
-                        "    + ADD    {}  in-flight{}",
-                        render_pending_address(&op.path, op.extent),
-                        note
-                    );
+                    let (s, e) = match op.extent {
+                        AnchorExtent::LineRange { start, end } => (Some(start), Some(end)),
+                        AnchorExtent::WholeFile => (None, None),
+                    };
+                    let addr = format::format_anchor_address(&op.path, s, e);
+                    println!("- + ADD `{addr}` — in-flight{note}.");
                 }
-                PendingFinding::Remove { op, drift, .. } => {
+                PendingFinding::Remove {
+                    op, drift, ..
+                } => {
                     let note = drift_note(drift);
-                    println!(
-                        "    - REMOVE {}  in-flight{}",
-                        render_pending_address(&op.path, op.extent),
-                        note
-                    );
+                    let (s, e) = match op.extent {
+                        AnchorExtent::LineRange { start, end } => (Some(start), Some(end)),
+                        AnchorExtent::WholeFile => (None, None),
+                    };
+                    let addr = format::format_anchor_address(&op.path, s, e);
+                    println!("- - REMOVE `{addr}` — in-flight{note}.");
                 }
                 _ => {}
             }
         }
     }
-    println!("{RESOLUTION_HINT}");
+
+    // "What to do next" section.
+    println!();
+    println!("## What to do next");
+    println!();
+    println!("Re-anchor, rename, or revert. Then re-stage and commit again:");
+    println!();
+    println!("```bash");
+    println!("git mesh remove <name> <anchor>");
+    println!("git mesh add <name> <new-anchor>");
+    println!("git mesh move <name> <new-name>");
+    println!("```");
+    println!();
+    println!("To unblock without resolving drift (not recommended), pass `--no-exit-code`.");
 }
 
 fn drift_note(drift: &Option<PendingDrift>) -> &'static str {
@@ -230,13 +277,6 @@ fn drift_note(drift: &Option<PendingDrift>) -> &'static str {
         Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
         Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
         None => "",
-    }
-}
-
-fn render_pending_address(path: &str, extent: AnchorExtent) -> String {
-    match extent {
-        AnchorExtent::WholeFile => format!("{path}  (whole)"),
-        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
     }
 }
 

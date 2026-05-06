@@ -25,7 +25,7 @@ fn push_with_missing_remote_errors() -> Result<()> {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("remote not found: absent"),
+        stderr.contains("no remote named `absent`"),
         "stderr={stderr}"
     );
     Ok(())
@@ -55,7 +55,7 @@ fn fetch_runtime_missing_remote_exits_one() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("remote not found: absent"),
+        stderr.contains("no remote named `absent`"),
         "stderr={stderr}"
     );
     Ok(())
@@ -68,7 +68,7 @@ fn default_origin_missing_remote_errors_as_missing_remote() -> Result<()> {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("remote not found: origin"),
+        stderr.contains("no remote named `origin`"),
         "stderr={stderr}"
     );
     assert!(

@@ -55,8 +55,8 @@ fn auto_follow_flag_rewrites_mesh_next_run_fresh() -> Result<()> {
         "annotation missing; stdout={stdout}"
     );
     assert!(
-        stdout.contains("→"),
-        "arrow missing; stdout={stdout}"
+        stdout.contains("Moved to"),
+        "move annotation missing; stdout={stdout}"
     );
 
     // Second run (no flag): anchor should now be Fresh.
@@ -475,7 +475,7 @@ fn no_flag_no_config_renders_arrow_only() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1), "still stale without flag");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("→"), "arrow must still render; stdout={stdout}");
+    assert!(stdout.contains("Moved to"), "move must still render; stdout={stdout}");
     assert!(
         !stdout.contains("anchor automatically updated"),
         "must not annotate without flag; stdout={stdout}"

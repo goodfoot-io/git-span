@@ -4,9 +4,10 @@
 #[cfg(test)]
 mod tests;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::Subcommand;
 
+use crate::cli::{CliError, NextStep};
 use crate::git::work_dir;
 
 const SESSION_ID_RULE: &str = "non-empty; ASCII letters, digits, `-`, `_`, and `.`; \
@@ -120,8 +121,7 @@ pub(crate) fn canonicalize_repo_relative_path(wd: &std::path::Path, raw: &str) -
     // (e.g. /var → /private/var on macOS) are still resolved symmetrically
     // with the canonical_wd computed below.
     let canonical = if joined.exists() {
-        std::fs::canonicalize(&joined)
-            .unwrap_or_else(|_| lexical_normalize(&joined))
+        std::fs::canonicalize(&joined).unwrap_or_else(|_| lexical_normalize(&joined))
     } else {
         // Walk up until we find an ancestor that exists on disk, then
         // canonicalize it and reattach the unresolved tail.
@@ -145,14 +145,12 @@ pub(crate) fn canonicalize_repo_relative_path(wd: &std::path::Path, raw: &str) -
     // Also canonicalize wd so the prefix strip is symmetric.
     let canonical_wd = std::fs::canonicalize(wd).unwrap_or_else(|_| wd.to_path_buf());
 
-    let rel = canonical
-        .strip_prefix(&canonical_wd)
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "path `{raw}` resolves outside the working directory `{}`",
-                wd.display()
-            )
-        })?;
+    let rel = canonical.strip_prefix(&canonical_wd).map_err(|_| {
+        anyhow::anyhow!(
+            "path `{raw}` resolves outside the working directory `{}`",
+            wd.display()
+        )
+    })?;
 
     let result = rel
         .components()
@@ -209,12 +207,11 @@ fn active_advice_store_prefixes(
     if rel.as_os_str().is_empty() {
         return Vec::new();
     }
-    vec![
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/"),
-    ]
+    vec![rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")]
 }
 
 /// Build a deduped, order-preserving list of candidate mesh names for the
@@ -290,8 +287,8 @@ fn default_engine_options() -> crate::types::EngineOptions {
 // ── mark ────────────────────────────────────────────────────────────────────
 
 fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::UntrackedSnapshotEntry;
+    use crate::advice::session::SessionStore;
 
     if id.is_empty() {
         bail!("git mesh advice <sid> mark <id>: id must not be empty");
@@ -342,6 +339,7 @@ fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Re
         f.sync_all().ok();
     }
     std::fs::rename(&tmp, &untracked_path)?;
+    println!("Snapshot recorded for session `{session_id}` slot `{id}`.");
     Ok(0)
 }
 
@@ -404,8 +402,8 @@ fn ls_files_untracked(wd: &std::path::Path) -> Result<Vec<String>> {
 // ── flush ───────────────────────────────────────────────────────────────────
 
 fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::{TouchInterval, UntrackedSnapshotEntry};
+    use crate::advice::session::SessionStore;
 
     if id.is_empty() {
         bail!("git mesh advice <sid> flush <id>: id must not be empty");
@@ -462,9 +460,7 @@ fn process_touches(
     touches: Vec<crate::advice::session::state::TouchInterval>,
 ) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
-    use crate::advice::structured::{
-        Action, BasicOutput, edit_overlaps, format_anchor_resolved,
-    };
+    use crate::advice::structured::{edit_overlaps, format_anchor_resolved, Action, BasicOutput};
 
     let wd = work_dir(repo)?;
 
@@ -551,12 +547,21 @@ fn process_touches(
             if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
                 continue;
             }
-            let active_anchor_str = format_anchor_resolved(active);
+            let active_anchor_str = format!("`{}`", format_anchor_resolved(active));
             let non_active_anchors: Vec<String> = mesh
                 .anchors
                 .iter()
                 .filter(|a| a.anchor_id != active.anchor_id)
-                .map(format_anchor_resolved)
+                .map(|a| {
+                    let base = format_anchor_resolved(a);
+                    let backticked = format!("`{base}`");
+                    match &a.anchored.extent {
+                        crate::types::AnchorExtent::WholeFile => {
+                            format!("{backticked} (whole file)")
+                        }
+                        _ => backticked,
+                    }
+                })
                 .collect();
             let block = BasicOutput {
                 active_anchor: active_anchor_str,
@@ -571,15 +576,6 @@ fn process_touches(
                 new_mesh_candidates.push(mesh.name.clone());
             }
         }
-    }
-
-    for (i, block) in mesh_blocks.iter().enumerate() {
-        if i > 0 {
-            output.push_str("\n---\n\n");
-        } else {
-            output.push_str("\n\n");
-        }
-        output.push_str(block);
     }
 
     // Persist the current flush's touches BEFORE building the SessionRecord
@@ -618,9 +614,11 @@ fn process_touches(
         s
     };
     let mut emitted_fps: Vec<String> = Vec::new();
+    let mut used_suggest_pipeline = false;
+    let mut creation_stanzas: Vec<String> = Vec::new();
 
     if !gate_seed.is_empty() {
-        use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
+        use crate::advice::suggest::{run_suggest_pipeline, SuggestConfig};
         let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
             Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
             _ => store
@@ -653,10 +651,11 @@ fn process_touches(
         } else {
             &[]
         };
-        let mut creation_stanzas: Vec<String> = Vec::new();
+        used_suggest_pipeline = true;
         if !sessions.is_empty() {
             let cfg = SuggestConfig::from_env();
-            let suggestions = run_suggest_pipeline(sessions, Some(repo), wd, &cfg, Some(store.dir()));
+            let suggestions =
+                run_suggest_pipeline(sessions, Some(repo), wd, &cfg, Some(store.dir()));
             let advice_seen = store.advice_seen_set()?;
             for sug in &suggestions {
                 use crate::advice::suggestion::ConfidenceBand;
@@ -667,9 +666,10 @@ fn process_touches(
                 if advice_seen.contains(&fp) || emitted_fps.contains(&fp) {
                     continue;
                 }
-                let has_deleted_participant = sug.participants.iter().any(|p| {
-                    deleted_paths.contains(p.path.to_string_lossy().as_ref())
-                });
+                let has_deleted_participant = sug
+                    .participants
+                    .iter()
+                    .any(|p| deleted_paths.contains(p.path.to_string_lossy().as_ref()));
                 if has_deleted_participant {
                     continue;
                 }
@@ -688,11 +688,12 @@ fn process_touches(
                     })
                     .collect();
                 let mut stanza = String::new();
-                stanza.push_str("Detected possible implicit semantic dependency between:\n");
+                stanza.push_str("Detected a possible implicit semantic dependency between:\n\n");
                 for a in &anchors {
-                    stanza.push_str(&format!("- {a}\n"));
+                    stanza.push_str(&format!("- `{a}`\n"));
                 }
-                stanza.push_str("\nIf this is a real implicit semantic dependency, document it with `git mesh`:\n\n");
+                stanza
+                    .push_str("\nIf this is a real implicit semantic dependency, document it:\n\n");
                 stanza.push_str("```bash\n");
                 stanza.push_str("git mesh add <mesh-name> \\\n");
                 let last = anchors.len() - 1;
@@ -709,12 +710,38 @@ fn process_touches(
                 emitted_fps.push(fp);
             }
         }
-        for (i, stanza) in creation_stanzas.iter().enumerate() {
-            if i > 0 || !output.is_empty() {
-                output.push_str("\n---\n\n");
+    }
+
+    // Build the output — header first, then blocks, then creation stanzas.
+    let has_mesh_blocks = !mesh_blocks.is_empty();
+    let has_creation_stanzas = !creation_stanzas.is_empty();
+    let has_any_output = has_mesh_blocks || has_creation_stanzas;
+
+    if has_any_output {
+        if has_mesh_blocks {
+            output.push_str(&format!("# Mesh advice for slot `{id}`\n"));
+            for block in &mesh_blocks {
+                output.push_str("\n\n");
+                output.push_str(block);
             }
-            output.push_str(stanza);
         }
+        if has_creation_stanzas {
+            if has_mesh_blocks {
+                output.push_str("\n\n---\n\n");
+            }
+            for (i, stanza) in creation_stanzas.iter().enumerate() {
+                if i > 0 {
+                    output.push_str("\n\n---\n\n");
+                }
+                output.push_str("## Possible new mesh\n\n");
+                output.push_str(stanza);
+            }
+        }
+    } else if used_suggest_pipeline {
+        // Suggest pipeline ran but produced no output.
+        output.push_str(&format!(
+            "No mesh advice for the paths touched in slot `{id}`."
+        ));
     }
 
     use std::io::Write;
@@ -795,8 +822,8 @@ fn run_advice_touch(
     anchor: String,
     kind: TouchKindArg,
 ) -> Result<i32> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::{TouchInterval, TouchKind};
+    use crate::advice::session::SessionStore;
 
     if id.is_empty() {
         bail!("git mesh advice <sid> touch <id>: id must not be empty");
@@ -808,7 +835,7 @@ fn run_advice_touch(
     // Validate the anchor. For Added, skip the EOF check since the file may
     // be brand new. For Modified, reuse validate_read_spec which checks EOF.
     match kind {
-        TouchKindArg::Modified => validate_read_spec(repo, &anchor)?,
+        TouchKindArg::Modified => validate_read_spec_cli(repo, &anchor, "advice touch")?,
         TouchKindArg::Added => validate_touch_anchor_added(repo, &anchor)?,
     }
 
@@ -917,6 +944,7 @@ fn run_advice_end(repo: &gix::Repository, session_id: String) -> Result<i32> {
     }
 
     let _ = std::fs::remove_dir_all(&session_dir);
+    println!("Closed advice session `{session_id}`.");
     Ok(0)
 }
 
@@ -1040,17 +1068,40 @@ fn parse_diff_files_z(
 
 // ── read ────────────────────────────────────────────────────────────────────
 
+/// Validate a read spec and wrap errors in [`CliError`].
+fn validate_read_spec_cli(
+    repo: &gix::Repository,
+    spec: &str,
+    subcommand: &'static str,
+) -> Result<()> {
+    if let Err(e) = validate_read_spec(repo, spec) {
+        let msg = e.to_string();
+        let (summary, what_happened) = if msg.contains("past EOF") {
+            (format!("`{spec}` extends past the end of the file."), msg)
+        } else {
+            (msg.clone(), msg)
+        };
+        return Err(anyhow::Error::from(CliError {
+            subcommand,
+            summary,
+            what_happened,
+            next_steps: vec![NextStep::Prose("Fix the anchor address and retry.".into())],
+        }));
+    }
+    Ok(())
+}
+
 fn run_advice_read(
     repo: &gix::Repository,
     session_id: String,
     anchor: String,
     id: Option<String>,
 ) -> Result<i32> {
-    use crate::advice::session::SessionStore;
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
+    use crate::advice::session::SessionStore;
     use crate::advice::structured::{
-        BasicOutput, action_from_spec, format_anchor_resolved, read_overlaps,
+        action_from_spec, format_anchor_resolved, read_overlaps, BasicOutput,
     };
 
     let wd = work_dir(repo)?;
@@ -1062,7 +1113,7 @@ fn run_advice_read(
     if anchor.is_empty() {
         bail!("git mesh advice <id> read: anchor must not be empty");
     }
-    validate_read_spec(repo, &anchor)?;
+    validate_read_spec_cli(repo, &anchor, "advice read")?;
 
     let now = chrono::Utc::now().to_rfc3339();
     let (path_raw, line_anchor) = match anchor.split_once("#L") {
@@ -1088,7 +1139,7 @@ fn run_advice_read(
         LockTimeout::Bounded(std::time::Duration::from_secs(30)),
     )?;
 
-let action = action_from_spec(&anchor).ok_or_else(|| {
+    let action = action_from_spec(&anchor).ok_or_else(|| {
         anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")
     })?;
     let meshes = {
@@ -1127,12 +1178,21 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
         if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
             continue;
         }
-        let active_anchor_str = format_anchor_resolved(active);
+        let active_anchor_str = format!("`{}`", format_anchor_resolved(active));
         let non_active_anchors: Vec<String> = mesh
             .anchors
             .iter()
             .filter(|a| a.anchor_id != active.anchor_id)
-            .map(format_anchor_resolved)
+            .map(|a| {
+                let base = format_anchor_resolved(a);
+                let backticked = format!("`{base}`");
+                match &a.anchored.extent {
+                    crate::types::AnchorExtent::WholeFile => {
+                        format!("{backticked} (whole file)")
+                    }
+                    _ => backticked,
+                }
+            })
             .collect();
         let block = BasicOutput {
             active_anchor: active_anchor_str,
@@ -1216,7 +1276,9 @@ pub(crate) fn collect_touched_paths(touches_path: &std::path::Path) -> Result<Ve
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
-            return Err(anyhow::Error::from(e).context(format!("open `{}`", touches_path.display())));
+            return Err(
+                anyhow::Error::from(e).context(format!("open `{}`", touches_path.display()))
+            );
         }
     };
 
@@ -1249,10 +1311,18 @@ fn validate_session_id(id: &str) -> Result<()> {
     for ch in id.chars() {
         let ok = ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.');
         if !ok {
-            bail!(
-                "invalid <sessionId> `{id}`: contains disallowed character `{}` ({SESSION_ID_RULE})",
-                ch.escape_debug()
-            );
+            return Err(anyhow::Error::from(CliError {
+                subcommand: "advice",
+                summary: format!("`{id}` is not a valid session id."),
+                what_happened: format!(
+                    "Session ids must be non-empty ASCII letters, digits, `-`, `_`, or `.`. \
+                     The character `{}` is reserved because session ids name on-disk directories.",
+                    ch.escape_debug()
+                ),
+                next_steps: vec![NextStep::Bash(
+                    "git mesh advice s-123 mark pretool-7".into(),
+                )],
+            }));
         }
     }
     if id == "." || id == ".." {

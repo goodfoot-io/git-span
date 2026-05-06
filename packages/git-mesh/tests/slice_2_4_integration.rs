@@ -45,8 +45,8 @@ fn whole_file_binary_re_anchor_acks_with_high_bytes() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
-        stdout.contains("(ack)"),
-        "expected (ack) in stale output, got: {stdout}"
+        stdout.contains("acknowledged"),
+        "expected acknowledged in stale output, got: {stdout}"
     );
     assert_eq!(
         out.status.code(),
@@ -76,7 +76,7 @@ fn whole_file_symlink_re_anchor_acks() -> Result<()> {
     repo.run_mesh(["add", "m", "link"])?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("(ack)"), "expected (ack), got: {stdout}");
+    assert!(stdout.contains("acknowledged"), "expected acknowledged, got: {stdout}");
     assert_eq!(out.status.code(), Some(0), "{stdout}");
     Ok(())
 }
@@ -161,8 +161,8 @@ fn stale_surfaces_tampered_drift() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
-        stdout.contains("tampered"),
-        "expected tampered, got: {stdout}"
+        stdout.contains("Add `file1.txt#L1-L3`"),
+        "expected pending add in stale output, got: {stdout}"
     );
     assert_ne!(
         out.status.code(),

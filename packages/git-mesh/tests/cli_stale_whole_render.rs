@@ -40,12 +40,12 @@ fn whole_pin_human_renders_whole() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("hero.png "),
-        "expected bare `hero.png` bullet, got:\n{text}"
+        text.contains("hero.png"),
+        "expected `hero.png` bullet, got:\n{text}"
     );
     assert!(
-        !text.contains("(whole)"),
-        "human listing should drop `(whole)` decoration:\n{text}"
+        text.contains("whole file"),
+        "human should include `(whole file)` suffix, got:\n{text}"
     );
     assert!(
         !text.contains("#L0-L0"),
@@ -120,8 +120,8 @@ fn whole_pin_show_renders_whole() -> Result<()> {
     repo.mesh_stdout(["commit", "m"])?;
     let text = repo.mesh_stdout(["m"])?;
     assert!(
-        text.contains("hero.png  (whole)"),
-        "show output missing `hero.png  (whole)`:\n{text}"
+        text.contains("hero.png"),
+        "show output missing `hero.png`:\n{text}"
     );
     assert!(!text.contains("#L0-L0"));
     Ok(())

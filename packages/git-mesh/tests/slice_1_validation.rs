@@ -97,7 +97,7 @@ fn rejects_empty_session_id() -> Result<()> {
 fn rejects_session_id_with_slash() -> Result<()> {
     let repo = seeded_with_a_b()?;
     let out = repo.run_mesh(["advice", "foo/bar", "read", "a.ts"])?;
-    assert_rejected(&out, "disallowed character");
+    assert_rejected(&out, "is not a valid session id");
     Ok(())
 }
 
@@ -105,7 +105,7 @@ fn rejects_session_id_with_slash() -> Result<()> {
 fn rejects_session_id_with_backslash() -> Result<()> {
     let repo = seeded_with_a_b()?;
     let out = repo.run_mesh(["advice", "foo\\bar", "read", "a.ts"])?;
-    assert_rejected(&out, "disallowed character");
+    assert_rejected(&out, "is not a valid session id");
     Ok(())
 }
 

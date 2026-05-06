@@ -3,7 +3,8 @@
 //! This module is the only caller of `mesh::compact_mesh`. Everything in
 //! `run_stale` below the `--compact` branch is unchanged and never writes.
 
-use crate::cli::{StaleArgs, StaleFormat};
+use crate::cli::format;
+use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::mesh::compact::{AnchorCompactOutcome, MeshCompactOutcome};
 use crate::resolver::{resolve_named_meshes, stale_meshes};
 use crate::types::{EngineOptions, LayerSet, MeshResolved};
@@ -22,11 +23,18 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
                 StaleFormat::GithubActions => "github-actions",
                 StaleFormat::Human | StaleFormat::Json => unreachable!(),
             };
-            eprintln!(
-                "error: the argument '--compact' cannot be used with '--format {name}' \
-                 (only 'human' and 'json' are supported in compact mode)"
-            );
-            return Ok(2);
+            return Err(CliError {
+                subcommand: "stale",
+                summary: format!("the argument '--compact' cannot be used with '--format {name}'"),
+                what_happened: format!(
+                    "Only 'human' and 'json' are supported in compact mode, but '--format {name}' was requested."
+                ),
+                next_steps: vec![
+                    NextStep::Prose("Use 'human' or 'json' format with --compact:".into()),
+                    NextStep::Bash("git mesh stale --compact".into()),
+                    NextStep::Bash("git mesh stale --compact --format=json".into()),
+                ],
+            }.into());
         }
     }
 
@@ -156,23 +164,33 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
 }
 
 fn render_human(outcomes: &[MeshCompactOutcome]) -> Result<()> {
+    println!("# Compaction");
+    println!();
     for o in outcomes {
         if let Some(err) = &o.hard_error {
-            eprintln!("[{}] error: {}", o.name, err);
+            eprintln!("git mesh stale --compact: `{}` error: {}", o.name, err);
             continue;
         }
         if o.skipped_staged > 0 {
-            println!("[{}] skipped (staging ops present)", o.name);
+            println!(
+                "- {} — skipped: staging ops present.",
+                format::format_mesh_name(&o.name),
+            );
             continue;
         }
         if o.conflicts > 0 {
-            println!("[{}] CAS conflict exhausted retries", o.name);
+            println!(
+                "- {} — CAS conflict exhausted retries.",
+                format::format_mesh_name(&o.name),
+            );
             continue;
         }
         if o.advanced == 0 {
-            println!("[{}] nothing to compact", o.name);
+            println!(
+                "- {} — nothing to compact.",
+                format::format_mesh_name(&o.name),
+            );
         } else {
-            // Show the HEAD sha from any advanced record.
             let head_sha = o
                 .anchors
                 .iter()
@@ -180,23 +198,26 @@ fn render_human(outcomes: &[MeshCompactOutcome]) -> Result<()> {
                 .and_then(|a| a.new_commit.as_deref())
                 .map(|sha| &sha[..12.min(sha.len())])
                 .unwrap_or("unknown");
+            let anchor_word = if o.advanced == 1 { "anchor" } else { "anchors" };
             println!(
-                "[{}] advanced {} anchor(s) to {}",
-                o.name, o.advanced, head_sha
+                "- {} — advanced {} {} to `{}`.{}",
+                format::format_mesh_name(&o.name),
+                o.advanced,
+                anchor_word,
+                head_sha,
+                format::IDEMPOTENT_TAG,
             );
         }
     }
     Ok(())
 }
 
-/// One-line summary trailing the regular stale output when `--compact`
-/// is invoked without `--verbose`. Mentions the words other tooling and
-/// tests look for: `advanced`, `nothing to compact`, `staging ops
-/// present`, `CAS conflict`. Hard errors are still reported on stderr.
+/// Summary trailing the regular stale output when `--compact`
+/// is invoked without `--verbose`.
 fn render_human_summary(outcomes: &[MeshCompactOutcome]) {
     for o in outcomes {
         if let Some(err) = &o.hard_error {
-            eprintln!("[{}] error: {}", o.name, err);
+            eprintln!("git mesh stale --compact: `{}` error: {}", o.name, err);
         }
     }
 
@@ -205,25 +226,32 @@ fn render_human_summary(outcomes: &[MeshCompactOutcome]) {
     let staged_skipped = outcomes.iter().filter(|o| o.skipped_staged > 0).count();
     let conflicts = outcomes.iter().filter(|o| o.conflicts > 0).count();
 
+    let anchor_word = if advanced == 1 { "anchor" } else { "anchors" };
+    let mesh_word = if advanced_meshes == 1 { "mesh" } else { "meshes" };
+
     let mut parts: Vec<String> = Vec::new();
     if advanced > 0 {
         parts.push(format!(
-            "advanced {advanced} anchor(s) across {advanced_meshes} mesh(es)"
+            "advanced {advanced} {anchor_word} across {advanced_meshes} {mesh_word}"
         ));
     }
     if staged_skipped > 0 {
+        let s_word = if staged_skipped == 1 { "mesh" } else { "meshes" };
         parts.push(format!(
-            "{staged_skipped} mesh(es) skipped (staging ops present)"
+            "{staged_skipped} {s_word} skipped (staging ops present)"
         ));
     }
     if conflicts > 0 {
-        parts.push(format!("{conflicts} mesh(es) had CAS conflict"));
+        let c_word = if conflicts == 1 { "mesh" } else { "meshes" };
+        parts.push(format!("{conflicts} {c_word} had CAS conflict"));
     }
     if parts.is_empty() {
-        println!("nothing to compact.");
+        println!("Nothing to compact.");
     } else {
-        println!("{}.", parts.join("; "));
+        println!("{}.{}", parts.join(". "), format::IDEMPOTENT_TAG);
     }
+    println!();
+    println!("Run `git mesh stale` to confirm all meshes are fresh.");
 }
 
 fn render_json_one(o: &MeshCompactOutcome) -> Result<()> {

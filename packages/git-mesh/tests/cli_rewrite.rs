@@ -96,7 +96,11 @@ fn test_rewrite_happy_path() -> Result<()> {
 
     let stdout = String::from_utf8(out.stdout)?;
     assert!(
-        stdout.contains("m: advanced 1/1 anchors"),
+        stdout.contains("`m`"),
+        "human output: {stdout}"
+    );
+    assert!(
+        stdout.contains("advanced 1/1 anchors"),
         "human output: {stdout}"
     );
 
@@ -138,18 +142,18 @@ fn test_rewrite_blob_changed() -> Result<()> {
     let out = run_rewrite(&repo, &input)?;
     assert_eq!(out.status.code(), Some(0), "exit 0 even when blob changed");
 
-    // stdout should be empty (no advances).
     let stdout = String::from_utf8(out.stdout)?;
     assert!(
-        stdout.trim().is_empty(),
-        "no human output for skipped anchor: {stdout}"
+        stdout.contains("Processed 1 old/new SHA"),
+        "expected rewrite header: {stdout}"
     );
-
-    // stderr should mention blob changed.
-    let stderr = String::from_utf8(out.stderr)?;
     assert!(
-        stderr.contains("blob changed"),
-        "stderr reports blob changed: {stderr}"
+        stdout.contains("advanced 0/1"),
+        "expected no advances: {stdout}"
+    );
+    assert!(
+        stdout.contains("blob changed"),
+        "stdout reports blob changed: {stdout}"
     );
 
     // anchor_sha unchanged.
@@ -261,8 +265,9 @@ fn test_rewrite_multiple_meshes() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
 
     let stdout = String::from_utf8(out.stdout)?;
-    assert!(stdout.contains("m1: advanced"), "m1 advanced: {stdout}");
-    assert!(stdout.contains("m2: advanced"), "m2 advanced: {stdout}");
+    assert!(stdout.contains("`m1`"), "m1 not found: {stdout}");
+    assert!(stdout.contains("`m2`"), "m2 not found: {stdout}");
+    assert!(stdout.contains("advanced 1/1"), "advance not found: {stdout}");
 
     let m1_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m1"])?;
     let m2_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m2"])?;

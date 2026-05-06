@@ -90,7 +90,7 @@ fn discovery_clean_head_pinned_mesh_uses_fast_path() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout)?;
     let stderr = String::from_utf8(out.stderr)?;
-    assert!(stdout.trim().is_empty(), "stdout={stdout}");
+    assert!(!stdout.trim().is_empty(), "stdout should have summary line when clean, got: stdout={stdout}");
     assert!(
         stderr.contains("git-mesh perf: resolver.resolve-stale-meshes"),
         "expected discovery resolver span: {stderr}"
@@ -191,10 +191,9 @@ fn human_layered_emits_src_marker() -> Result<()> {
     drift_in_head(&repo)?;
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    // Layered (default) renderer prefixes findings with the src marker.
     assert!(
-        text.contains("(Changed in worktree)"),
-        "expected src-marker on finding line: {text}"
+        text.contains("Changed in the working tree"),
+        "expected prose description of changed anchor, got: {text}"
     );
     Ok(())
 }
@@ -207,9 +206,13 @@ fn discovery_human_includes_staging_only_mesh() -> Result<()> {
     let out = repo.run_mesh(["stale"])?;
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Mesh new-mesh"), "stdout={text}");
+    assert!(text.contains("Pending staged changes"), "stdout={text}");
     assert!(
-        text.contains("file1.txt#L1-L5 (Pending add)"),
+        text.contains("Add"),
+        "stdout={text}"
+    );
+    assert!(
+        text.contains("file1.txt#L1-L5"),
         "stdout={text}"
     );
     Ok(())
@@ -269,20 +272,16 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        out.contains("file2.txt#L1-L5 (Pending add)"),
+        out.contains("Add `file2.txt#L1-L5`"),
         "stdout={out}"
     );
     assert!(
-        out.contains("file1.txt#L1-L5 (Pending remove)"),
+        out.contains("Remove `file1.txt#L1-L5`"),
         "stdout={out}"
     );
     assert!(
-        !out.contains("file2.txt L1-L5") && !out.contains("file1.txt L1-L5"),
-        "pending ops should use anchor-address syntax: {out}"
-    );
-    assert!(
-        !out.contains("()"),
-        "empty anchor-id parentheses should not be rendered: {out}"
+        !out.contains("(Pending add)") && !out.contains("(Pending remove)"),
+        "pending ops should use prose format: {out}"
     );
     Ok(())
 }
@@ -321,9 +320,9 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
-    assert!(out.contains("Mesh new-mesh"), "stdout={out}");
+    assert!(out.contains("Pending staged changes"), "stdout={out}");
     assert!(
-        out.contains("file1.txt#L1-L5 (Pending add)"),
+        out.contains("Add `file1.txt#L1-L5`"),
         "stdout={out}"
     );
     Ok(())
@@ -359,19 +358,18 @@ fn human_moved_row_shows_arrow_with_destination() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stdout);
-    // The bullet should include "→" followed by the new location.
+    // The bullet should include "Moved" followed by the destination.
     assert!(
-        text.contains("file1.txt#L1-L5") && text.contains('→'),
-        "expected arrow in Moved bullet; stdout={text}"
+        text.contains("Moved") && text.contains("file1.txt#L1-L5"),
+        "expected prose description of Moved anchor; stdout={text}"
     );
     Ok(())
 }
 
 #[test]
 fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
-    // In a partially-stale mesh, Fresh siblings must render as bare
-    // `- <path>` with no status word. (Fully-fresh meshes produce no
-    // output at all — see workspace_scan_all_clean_exit_zero.)
+    // In the prose format, Fresh siblings are not rendered at all.
+    // Only the stale anchor appears in the ## Stale anchors section.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
@@ -383,13 +381,17 @@ fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
     )?;
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("- file2.txt"))
-        .unwrap_or_else(|| panic!("no fresh-sibling bullet in stdout={text}"));
     assert!(
-        !line.contains('('),
-        "Fresh bullet must not have trailing parenthesis; line={line}"
+        text.contains("1 of 2 anchors has drifted"),
+        "expected partial-drift summary, got: {text}"
+    );
+    assert!(
+        text.contains("file1.txt#L1-L5"),
+        "stale anchor should appear, got: {text}"
+    );
+    assert!(
+        !text.contains("file2.txt"),
+        "fresh sibling should not appear in stale output, got: {text}"
     );
     Ok(())
 }
@@ -451,8 +453,8 @@ fn missing_file_arg_exits_one_with_diagnostic() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("file not found: 'nonexistent-file'"),
-        "expected file-not-found diagnostic, got: {stderr}"
+        stderr.contains("is not tracked"),
+        "expected file-not-tracked diagnostic, got: {stderr}"
     );
     Ok(())
 }
@@ -464,12 +466,8 @@ fn multiple_missing_file_args_reports_each() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("file not found: 'bad1'"),
-        "expected diagnostic for bad1, got: {stderr}"
-    );
-    assert!(
-        stderr.contains("file not found: 'bad2'"),
-        "expected diagnostic for bad2, got: {stderr}"
+        stderr.contains("bad1") && stderr.contains("bad2") && stderr.contains("are not tracked"),
+        "expected combined diagnostic for both files, got: {stderr}"
     );
     Ok(())
 }

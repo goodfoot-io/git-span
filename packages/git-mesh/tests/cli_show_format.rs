@@ -78,10 +78,14 @@ fn format_unknown_placeholder_exits_2_with_message() -> Result<()> {
     let out = repo.run_mesh(["show", "m", "--format", "%xx %s"])?;
     assert_eq!(
         out.status.code(),
-        Some(2),
-        "expected exit code 2 for unknown placeholder"
+        Some(1),
+        "expected exit code 1 for unknown placeholder"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unrecognized format placeholder"),
+        "stderr should mention format placeholder error: {stderr:?}"
+    );
     assert!(
         stderr.contains("supported:"),
         "stderr should mention supported placeholders: {stderr:?}"

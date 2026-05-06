@@ -89,8 +89,8 @@ fn human_output_has_summary_line() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("are stale:"),
-        "summary 'All anchors in <name> are stale:' or 'N out of M anchors in mesh <name> are stale:'"
+        stdout.contains("have drifted") || stdout.contains("has drifted"),
+        "summary must mention drift count, got: {stdout}"
     );
     Ok(())
 }
@@ -164,6 +164,20 @@ fn workspace_scan_without_name() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn human_output_has_drift_summary_line() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift(&repo, "mutate")?;
+    let out = repo.run_mesh(["stale", "m"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("have drifted") || stdout.contains("has drifted"),
+        "summary must mention drift count, got: {stdout}"
+    );
+    Ok(())
+}
+
 /// Without `--name`, a clean mesh must not appear in output; only the drifted mesh shows.
 #[test]
 fn workspace_scan_omits_clean_mesh() -> Result<()> {
@@ -189,7 +203,7 @@ fn workspace_scan_omits_clean_mesh() -> Result<()> {
     Ok(())
 }
 
-/// Without `--name`, when all meshes are clean, exit 0 and output is empty.
+/// Without `--name`, when all meshes are clean, exit 0 and a summary line is printed.
 #[test]
 fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -198,24 +212,23 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     let out = repo.run_mesh(["stale"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.trim().is_empty(),
-        "output must be empty when all meshes are clean"
+        stdout.contains("0 stale"),
+        "summary must mention 0 stale when all meshes are clean, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
     Ok(())
 }
 
-/// A clean named mesh produces no stdout — `stale` is a
-/// no-news-is-good-news command. Exit 0.
+/// A clean named mesh prints a confirmation line.
 #[test]
-fn named_lookup_clean_mesh_is_silent() -> Result<()> {
+fn named_lookup_clean_mesh_is_confirmed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_mesh(["stale", "quiet"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.trim().is_empty(),
-        "clean named mesh must produce no stdout, got: {stdout}"
+        stdout.contains("is clean"),
+        "clean named mesh must print a confirmation, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())

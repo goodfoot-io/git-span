@@ -1,29 +1,147 @@
 //! Structural handlers (restore, revert, delete, move) + doctor — §6.6, §6.7, §6.8.
 
-use crate::cli::{DeleteArgs, MoveArgs, RestoreArgs, RevertArgs};
+use crate::cli::{CliError, DeleteArgs, MoveArgs, NextStep, RestoreArgs, RevertArgs};
+use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG, format_fast_forward, format_ref_deletion};
 use crate::sync::default_remote;
-use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, restore_mesh, revert_mesh};
-use anyhow::Result;
+use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, revert_mesh, Error};
+use anyhow::{Result, anyhow};
 use std::collections::BTreeSet;
 use std::fs;
 
 pub fn run_restore(repo: &gix::Repository, args: RestoreArgs) -> Result<i32> {
-    restore_mesh(repo, &args.name)?;
+    let staging = crate::staging::read_staging(repo, &args.name)?;
+    let count = staging.adds.len() + staging.removes.len() + staging.configs.len()
+        + staging.why.as_ref().map_or(0, |_| 1);
+    if count == 0 {
+        println!("`{}` has no staged operations.", args.name);
+    } else {
+        crate::staging::clear_staging(repo, &args.name)?;
+        println!(
+            "Cleared the staging area on `{}`. {} staged operations were discarded.{}",
+            args.name, count, DESTRUCTIVE_TAG
+        );
+        println!();
+        println!("Run `git mesh {}` to verify staging is empty.", args.name);
+    }
     Ok(0)
 }
 
 pub fn run_revert(repo: &gix::Repository, args: RevertArgs) -> Result<i32> {
-    revert_mesh(repo, &args.name, &args.commit_ish)?;
+    let ref_name = format!("refs/meshes/v1/{}", args.name);
+    let wd = crate::git::work_dir(repo)?;
+    let current = crate::git::resolve_ref_oid_optional(wd, &ref_name)?
+        .ok_or_else(|| Error::MeshNotFound(args.name.clone()))?;
+
+    // Check if the target commit-ish is an ancestor of the current tip.
+    let is_ancestor = crate::mesh::is_ancestor_commit(repo, &args.name, &args.commit_ish)
+        .map_err(|e| anyhow!("{}", e))?;
+
+    if !is_ancestor {
+        let short_current: String = current.chars().take(7).collect();
+        return Err(CliError {
+            subcommand: "revert",
+            summary: format!("cannot fast-forward `{}` to `{}`.", args.name, args.commit_ish),
+            what_happened: format!(
+                "`{}` is not an ancestor of the current mesh tip `{}`. \
+                 `git mesh revert` only moves a mesh ref backwards along its own history.",
+                args.commit_ish, short_current
+            ),
+            next_steps: vec![
+                NextStep::Prose("List the mesh's history, then pick a commit on it:".into()),
+                NextStep::Bash(format!(
+                    "git mesh {} --log\ngit mesh revert {} <commit-on-the-log>",
+                    args.name, args.name
+                )),
+            ],
+        }
+        .into());
+    }
+
+    let new_commit = revert_mesh(repo, &args.name, &args.commit_ish)?;
+    let short_old: String = current.chars().take(7).collect();
+    let short_new: String = new_commit.chars().take(7).collect();
+    println!(
+        "{}{}",
+        format_fast_forward(&ref_name, &short_old, &short_new),
+        DESTRUCTIVE_TAG
+    );
+    println!();
+    println!("Run `git mesh {}` to verify.", args.name);
     Ok(0)
 }
 
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
+    let ref_name = format!("refs/meshes/v1/{}", args.name);
+    let wd = crate::git::work_dir(repo)?;
+    let current = match crate::git::resolve_ref_oid_optional(wd, &ref_name)? {
+        Some(s) => s,
+        None => {
+            return Err(CliError {
+                subcommand: "delete",
+                summary: format!("no mesh named `{}`.", args.name),
+                what_happened: format!("`{}` does not exist.", ref_name),
+                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            }
+            .into());
+        }
+    };
+
     delete_mesh(repo, &args.name)?;
+    let short: String = current.chars().take(7).collect();
+    println!(
+        "{}{}",
+        format_ref_deletion(&ref_name, &short),
+        DESTRUCTIVE_TAG
+    );
+    println!();
+    println!("Run `git mesh list` to confirm the mesh is gone.");
     Ok(0)
 }
 
 pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
+    let old_ref = format!("refs/meshes/v1/{}", args.old);
+    let new_ref = format!("refs/meshes/v1/{}", args.new);
+
+    // Check destination existence before calling rename_mesh so we can
+    // produce a structured CliError.
+    let wd = crate::git::work_dir(repo)?;
+    if crate::git::resolve_ref_oid_optional(wd, &new_ref)?.is_some() {
+        return Err(CliError {
+            subcommand: "move",
+            summary: format!("`{}` already exists.", args.new),
+            what_happened: format!(
+                "A mesh is already tracked at `{}`, so renaming `{}` over it would lose history.",
+                new_ref, args.old
+            ),
+            next_steps: vec![
+                NextStep::Prose("Pick a different name, or delete the existing mesh first:".into()),
+                NextStep::Bash(format!(
+                    "git mesh move {} <different-name>\ngit mesh delete {} && git mesh move {} {}",
+                    args.old, args.new, args.old, args.new
+                )),
+            ],
+        }
+        .into());
+    }
+
+    // Check source existence early for a structured error.
+    if crate::git::resolve_ref_oid_optional(wd, &old_ref)?.is_none() {
+        return Err(CliError {
+            subcommand: "move",
+            summary: format!("no mesh named `{}`.", args.old),
+            what_happened: format!("`{}` does not exist.", old_ref),
+            next_steps: vec![NextStep::Bash("git mesh list".into())],
+        }
+        .into());
+    }
+
     rename_mesh(repo, &args.old, &args.new)?;
+    println!(
+        "Renamed `{}` to `{}`. The mesh's history is preserved on `{}`.{}",
+        args.old, args.new, new_ref, IDEMPOTENT_TAG
+    );
+    println!();
+    println!("Run `git mesh {}` to verify.", args.new);
     Ok(0)
 }
 
@@ -195,7 +313,7 @@ fn check_hook(
     git_dir: &std::path::Path,
     name: &str,
     marker: &str,
-    suggested_body: &str,
+    _suggested_body: &str,
     code: DoctorCode,
     out: &mut Vec<DoctorFinding>,
 ) {
@@ -204,13 +322,13 @@ fn check_hook(
         .map(|s| s.contains(marker))
         .unwrap_or(false);
     if !ok {
-        let install = hook_path.display().to_string();
-        let suggested = suggested_body.replace('\n', "\\n");
         out.push(DoctorFinding {
             code,
             severity: Severity::Info,
             message: format!("`{name}` hook not installed"),
-            remediation: Some(format!("install at {install} with body: {suggested}")),
+            remediation: Some(format!(
+                "Install it with `npx git-mesh install-hooks` or copy `packages/git-mesh/scripts/{name}` into `.git/hooks/`."
+            )),
         });
     }
 }
@@ -487,30 +605,39 @@ pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Resul
     }
     let findings = doctor_run(repo)?;
     let names = list_mesh_names(repo).unwrap_or_default();
-    println!("mesh doctor: checking refs/meshes/v1/*");
-    for n in &names {
-        println!("  ok      {n}");
-    }
-    for f in &findings {
-        let label = match f.severity {
-            Severity::Info => "INFO  ",
-            Severity::Warn => "WARN  ",
-            Severity::Error => "ERROR ",
-        };
-        match &f.remediation {
-            Some(r) => println!("  {label} {:?}: {} — {}", f.code, f.message, r),
-            None => println!("  {label} {:?}: {}", f.code, f.message),
-        }
-    }
+    let n_meshes = names.len();
+
     if findings.is_empty() {
-        if names.is_empty() {
-            println!("mesh doctor: ok (no meshes)");
-        } else {
-            println!("mesh doctor: ok ({} mesh(es) checked)", names.len());
-        }
+        println!(
+            "mesh doctor: {n_meshes} meshes checked, no findings.{IDEMPOTENT_TAG}",
+        );
         return Ok(0);
     }
-    println!("mesh doctor: found {} finding(s)", findings.len());
+
+    // Print findings report.
+    println!("# mesh doctor");
+    println!();
+    println!("{n_meshes} meshes checked, {} findings.", findings.len());
+    println!();
+    println!("## Findings");
+    println!();
+
+    for f in &findings {
+        let label = match f.severity {
+            Severity::Info => "INFO",
+            Severity::Warn => "WARN",
+            Severity::Error => "ERROR",
+        };
+        let code = format!("{:?}", f.code);
+        print!("- {label} `{code}` — {}", f.message);
+        if let Some(rem) = &f.remediation {
+            println!();
+            println!("  {rem}");
+        } else {
+            println!();
+        }
+    }
+
     // Severity-driven exit codes (§6.7):
     //   ERROR              → exit 1
     //   INFO / WARN only   → exit 0
@@ -522,7 +649,48 @@ pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Resul
             Severity::Info | Severity::Warn | Severity::Error
         )
     });
-    if has_error || (args.strict && has_non_ok) {
+
+    let strict_escalates = args.strict && has_non_ok;
+
+    // Print "What to do next" on stdout for non-strict escalations.
+    // When strict escalates, the CliError on stderr provides the guidance instead.
+    if !strict_escalates {
+        println!();
+        println!("## What to do next");
+        println!();
+        if has_error {
+            println!("Address the ERROR-level findings before staging more work. The other findings are advisory.");
+        } else {
+            println!("All findings are advisory. No action is required.");
+        }
+    }
+
+    if args.strict && has_non_ok {
+        let non_error_count = findings
+            .iter()
+            .filter(|f| f.severity != Severity::Error)
+            .count();
+        let kind = if non_error_count > 0 {
+            "INFO/WARN"
+        } else {
+            "ERROR"
+        };
+        return Err(CliError {
+            subcommand: "doctor",
+            summary: format!(
+                "failing because `--strict` was set and {non_error_count} {kind} finding(s) was reported."
+            ),
+            what_happened: "In strict mode, INFO and WARN findings escalate to a non-zero exit so CI catches advisory drift early."
+                .into(),
+            next_steps: vec![NextStep::Prose(
+                "Fix the finding above, or drop `--strict` if you only want errors to fail the run."
+                    .into(),
+            )],
+        }
+        .into());
+    }
+
+    if has_error {
         Ok(1)
     } else {
         Ok(0)

@@ -1,8 +1,9 @@
 //! `git mesh rewrite` handler — reads old→new SHA pairs from stdin and
 //! advances mesh anchors via CAS (the post-rewrite hook protocol).
 
+use crate::cli::format;
 use crate::cli::RewriteArgs;
-use crate::mesh::rewrite::{AnchorRewriteOutcome, RewriteOutcome, rewrite_meshes};
+use crate::mesh::rewrite::{rewrite_meshes, AnchorRewriteOutcome, RewriteOutcome};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -18,8 +19,18 @@ pub fn run_rewrite(repo: &gix::Repository, args: RewriteArgs) -> Result<i32> {
     let map = match parse_map(&stdin_text) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("git-mesh rewrite: {e}");
-            return Ok(1);
+            return Err(anyhow::Error::from(crate::cli::CliError {
+                subcommand: "rewrite",
+                summary: "malformed input on stdin.".into(),
+                what_happened: format!(
+                    "The post-rewrite hook contract is `<old_sha> <new_sha>` per line. {e}"
+                ),
+                next_steps: vec![crate::cli::NextStep::Prose(
+                    "If you are invoking `git mesh rewrite` manually, format each line as \
+                         two 40-character SHAs separated by a single space."
+                        .into(),
+                )],
+            }));
         }
     };
 
@@ -33,20 +44,29 @@ pub fn run_rewrite(repo: &gix::Repository, args: RewriteArgs) -> Result<i32> {
     let use_json = matches!(args.format, crate::cli::RewriteFormat::Json);
     let mut hard_error = false;
 
-    for outcome in &outcomes {
-        if outcome.is_hard_error() {
-            hard_error = true;
-        }
-        if use_json {
+    if use_json {
+        for outcome in &outcomes {
             if outcome.advanced > 0 || outcome.is_hard_error() {
                 render_json_one(outcome)?;
             }
-        } else {
-            render_human_one(outcome);
+            if outcome.is_hard_error() {
+                hard_error = true;
+            }
+        }
+    } else {
+        render_human(&outcomes);
+        for outcome in &outcomes {
+            if outcome.is_hard_error() {
+                hard_error = true;
+            }
         }
     }
 
-    if hard_error { Ok(1) } else { Ok(0) }
+    if hard_error {
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }
 
 fn parse_map(text: &str) -> Result<HashMap<String, String>, String> {
@@ -91,44 +111,150 @@ fn is_valid_hex40(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
 }
 
-fn render_human_one(outcome: &RewriteOutcome) {
-    if let Some(err) = &outcome.hard_error {
-        eprintln!("git-mesh rewrite: {}: {}", outcome.name, err);
-        return;
-    }
-    if outcome.advanced > 0 {
+fn render_human(outcomes: &[RewriteOutcome]) {
+    // Compute totals for the summary line.
+    let total_anchors: usize = outcomes.iter().map(|o| o.anchors.len()).sum();
+    let total_meshes = outcomes.len();
+
+    println!("# git mesh rewrite");
+    println!();
+    println!(
+        "Processed {total_anchors} old/new SHA pairs across {total_meshes} {}.{}",
+        if total_meshes == 1 { "mesh" } else { "meshes" },
+        format::IDEMPOTENT_TAG,
+    );
+
+    for outcome in outcomes {
+        if outcome.is_hard_error() {
+            println!(
+                "- `{}` — error: {}",
+                outcome.name,
+                outcome.hard_error.as_deref().unwrap_or("unknown")
+            );
+            continue;
+        }
+
+        if outcome.advanced == 0
+            && outcome.skipped_blob_changed == 0
+            && outcome.skipped_path_missing == 0
+        {
+            continue;
+        }
+
         let total = outcome.anchors.len() as u32;
-        println!(
-            "{}: advanced {}/{} anchors",
-            outcome.name, outcome.advanced, total
-        );
-    }
-    // Skipped anchors → stderr.
-    for a in &outcome.anchors {
-        match &a.outcome {
-            AnchorRewriteOutcome::SkippedBlobChanged => {
-                let new_sha = a.new_sha.as_deref().unwrap_or("?");
-                eprintln!(
-                    "{}: {} ({} → {}): blob changed",
-                    outcome.name,
-                    a.path,
-                    &a.old_sha[..12.min(a.old_sha.len())],
-                    &new_sha[..12.min(new_sha.len())]
+
+        if outcome.advanced == total {
+            // All anchors advanced — show SHA transition from first anchor.
+            let first = outcome
+                .anchors
+                .iter()
+                .find(|a| matches!(a.outcome, AnchorRewriteOutcome::Advanced));
+            if let Some(record) = first {
+                let old_short = &record.old_sha[..12.min(record.old_sha.len())];
+                let new_short = record
+                    .new_sha
+                    .as_deref()
+                    .map(|s| s[..12.min(s.len())].to_string())
+                    .unwrap_or_default();
+                println!(
+                    "- `{}` — advanced {}/{} anchors: `{}` → `{}`.",
+                    outcome.name, outcome.advanced, total, old_short, new_short,
+                );
+            } else {
+                println!(
+                    "- `{}` — advanced {}/{} anchors.",
+                    outcome.name, outcome.advanced, total,
                 );
             }
-            AnchorRewriteOutcome::SkippedPathMissing => {
-                let new_sha = a.new_sha.as_deref().unwrap_or("?");
-                eprintln!(
-                    "{}: {} ({} → {}): path missing",
-                    outcome.name,
-                    a.path,
-                    &a.old_sha[..12.min(a.old_sha.len())],
-                    &new_sha[..12.min(new_sha.len())]
+        } else {
+            // Mixed: some advanced, some skipped.
+            let first = outcome
+                .anchors
+                .iter()
+                .find(|a| matches!(a.outcome, AnchorRewriteOutcome::Advanced));
+            if let Some(record) = first {
+                let old_short = &record.old_sha[..12.min(record.old_sha.len())];
+                let new_short = record
+                    .new_sha
+                    .as_deref()
+                    .map(|s| s[..12.min(s.len())].to_string())
+                    .unwrap_or_default();
+                let skip_reasons: Vec<&str> = {
+                    let mut r = Vec::new();
+                    if outcome.skipped_blob_changed > 0 {
+                        r.push("the file no longer contains the anchored blob");
+                    }
+                    if outcome.skipped_path_missing > 0 {
+                        r.push("the path is missing");
+                    }
+                    r
+                };
+                let skip_note = if skip_reasons.is_empty() {
+                    format!(
+                        "{} anchor{} skipped",
+                        outcome.skipped_blob_changed + outcome.skipped_path_missing,
+                        if outcome.skipped_blob_changed + outcome.skipped_path_missing == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                    )
+                } else {
+                    format!(
+                        "{} anchor{} skipped because {}",
+                        outcome.skipped_blob_changed + outcome.skipped_path_missing,
+                        if outcome.skipped_blob_changed + outcome.skipped_path_missing == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        skip_reasons.join(" and "),
+                    )
+                };
+                println!(
+                    "- `{}` — advanced {}/{} anchors: `{}` → `{}`. {}.",
+                    outcome.name, outcome.advanced, total, old_short, new_short, skip_note,
                 );
+            } else {
+                // No advances, only skips.
+                println!("- `{}` — advanced 0/{} anchors.", outcome.name, total,);
             }
-            _ => {}
         }
     }
+
+    // Skipped anchors section.
+    let has_skipped = outcomes
+        .iter()
+        .any(|o| o.skipped_blob_changed > 0 || o.skipped_path_missing > 0);
+    if has_skipped {
+        println!();
+        println!("## Skipped anchors");
+        for outcome in outcomes {
+            for a in &outcome.anchors {
+                let reason = match &a.outcome {
+                    AnchorRewriteOutcome::SkippedBlobChanged => "blob changed",
+                    AnchorRewriteOutcome::SkippedPathMissing => "path missing",
+                    _ => continue,
+                };
+                let old_short = &a.old_sha[..12.min(a.old_sha.len())];
+                let new_short = a
+                    .new_sha
+                    .as_deref()
+                    .map(|s| s[..12.min(s.len())].to_string())
+                    .unwrap_or_default();
+                // The spec shows anchor address with line range, but the
+                // AnchorRewriteRecord only carries the file path, not the
+                // extent. Show the file path as-is.
+                println!(
+                    "- `{}` `{}` (`{}` → `{}`) — {reason}.",
+                    outcome.name, a.path, old_short, new_short,
+                );
+            }
+        }
+    }
+
+    println!();
+    println!("Run `git mesh stale` to confirm all meshes are fresh after the rewrite.");
 }
 
 fn render_json_one(outcome: &RewriteOutcome) -> Result<()> {

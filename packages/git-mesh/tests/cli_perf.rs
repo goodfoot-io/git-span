@@ -14,7 +14,7 @@ fn perf_flag_logs_timings_to_stderr_only() -> Result<()> {
     let stdout = String::from_utf8(out.stdout)?;
     let stderr = String::from_utf8(out.stderr)?;
 
-    assert_eq!(stdout.trim(), "no meshes");
+    assert_eq!(stdout.trim(), "No meshes match the filters.");
     assert!(
         stderr.contains("git-mesh perf: command.list"),
         "expected command timing in stderr, got: {stderr}"
@@ -40,7 +40,7 @@ fn perf_env_logs_timings_to_stderr_only() -> Result<()> {
     let stdout = String::from_utf8(out.stdout)?;
     let stderr = String::from_utf8(out.stderr)?;
 
-    assert_eq!(stdout.trim(), "no meshes");
+    assert_eq!(stdout.trim(), "No meshes match the filters.");
     assert!(
         stderr.contains("git-mesh perf: command.list"),
         "expected command timing in stderr, got: {stderr}"

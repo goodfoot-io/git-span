@@ -227,7 +227,7 @@ PAYLOAD8="$(jq -nc --arg c "$REPO8" \
   '{session_id:"never-marked", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
 assert_rc_zero "PostToolUse(no mark)"
-assert_stdout_contains "PostToolUse(no mark)" "demo mesh"
+assert_stdout_contains "PostToolUse(no mark)" "demo"
 
 # Test 9 is deleted: it tested PostToolUse Write resolving the repo from the
 # file path — Write is no longer in the PostToolUse matcher and has no
@@ -364,7 +364,7 @@ unset GIT_MESH_ADVICE_DEBUG
 assert_rc_zero "PostToolUse(debug)"
 # `read` emits BasicOutput for matching meshes. systemMessage must contain
 # the advice text (the demo mesh with partner paths).
-assert_stdout_contains "PostToolUse(debug): systemMessage has advice" "demo mesh"
+assert_stdout_contains "PostToolUse(debug): systemMessage has advice" "demo"
 # When GIT_MESH_ADVICE_DEBUG=1, the debug separator is appended to
 # systemMessage only when the CLI actually emits stderr. The `read` verb
 # produces no stderr for a normal read — so the separator is absent.
