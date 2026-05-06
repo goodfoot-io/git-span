@@ -775,7 +775,11 @@ fn render_human(
                 "have drifted"
             };
             if mesh_stale == mesh_total {
-                println!("All {} anchors {}.", mesh_total, word);
+                if mesh_total == 1 {
+                    println!("The only anchor {}.", word);
+                } else {
+                    println!("All {} anchors {}.", mesh_total, word);
+                }
             } else {
                 println!("{} of {} anchors {}.", mesh_stale, mesh_total, word);
             }
