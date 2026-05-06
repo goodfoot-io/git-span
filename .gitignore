@@ -89,3 +89,5 @@ npm/git-mesh-*/bin/git-mesh.exe
 profiling/
 
 .devcontainer/utilities/deepseek*
+
+reports/*
