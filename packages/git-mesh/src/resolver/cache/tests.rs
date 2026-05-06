@@ -171,7 +171,6 @@ fn blob_diff_round_trip_persists_across_connections() {
 
 /// An exact-key hit returns the same `GroupedWalk` that was stored.
 #[test]
-#[ignore]
 fn grouped_walk_exact_hit_returns_same_walk() {
     let (_td, repo) = init_repo();
     let dir = _td.path();

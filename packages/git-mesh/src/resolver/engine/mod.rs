@@ -474,6 +474,7 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
     crate::perf::counter("session.trail-cache-hits", state.session.trail_cache_hits);
     crate::perf::counter("session.trail-cache-misses", state.session.trail_cache_misses);
+    crate::perf::counter("session.grouped-walk-cache-hits", state.session.grouped_walk_cache_hits);
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);

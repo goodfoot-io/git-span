@@ -109,6 +109,10 @@ impl Cache {
         Cache { conn, enabled: false }
     }
 
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Open (or create) the cache database for `repo`.
     ///
     /// Path: `<git_dir>/mesh/cache/mesh_cache.sqlite`.
@@ -251,11 +255,66 @@ impl Cache {
 
     // ── Tier 3: grouped_walk ────────────────────────────────────────────────
 
-    pub(crate) fn grouped_walk_get_exact(&self, _key: &GroupedWalkKey) -> Option<GroupedWalk> {
+    pub(crate) fn grouped_walk_get_exact(&self, key: &GroupedWalkKey) -> Option<GroupedWalk> {
         if !self.enabled {
             return None;
         }
-        None
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT walk_blob FROM grouped_walk_cache \
+             WHERE anchor_sha = ?1 AND head_sha = ?2 AND copy_detection = ?3 \
+               AND seed_hash = ?4 AND replace_refs_hash = ?5 \
+               AND git_config_hash = ?6 AND rename_budget = ?7",
+            rusqlite::params![
+                key.anchor_sha,
+                key.head_sha,
+                cd_int,
+                key.seed_hash.as_ref(),
+                key.replace_refs_hash.as_ref(),
+                key.git_config_hash.as_ref(),
+                rename_budget,
+            ],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(blob) => bincode::deserialize::<GroupedWalk>(&blob).ok(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(_) => None,
+        }
+    }
+
+    pub(crate) fn grouped_walk_put_exact(
+        &self,
+        txn: &Transaction,
+        key: &GroupedWalkKey,
+        walk: &GroupedWalk,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let blob = bincode::serialize(walk)
+            .map_err(|e| crate::Error::Git(format!("bincode serialize grouped_walk: {e}")))?;
+        txn.execute(
+            "INSERT OR REPLACE INTO grouped_walk_cache \
+             (anchor_sha, head_sha, copy_detection, seed_hash, replace_refs_hash, \
+              git_config_hash, rename_budget, walk_blob) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                key.anchor_sha,
+                key.head_sha,
+                cd_int,
+                key.seed_hash.as_ref(),
+                key.replace_refs_hash.as_ref(),
+                key.git_config_hash.as_ref(),
+                rename_budget,
+                blob,
+            ],
+        )
+        .map_err(|e| crate::Error::Git(format!("grouped_walk insert: {e}")))?;
+        Ok(())
     }
 
     pub(crate) fn grouped_walk_get_ancestor(
@@ -273,12 +332,12 @@ impl Cache {
 
     pub(crate) fn grouped_walk_replace(
         &self,
-        _txn: &Transaction,
+        txn: &Transaction,
         _old_head: Option<&str>,
-        _key: &GroupedWalkKey,
-        _walk: &GroupedWalk,
+        key: &GroupedWalkKey,
+        walk: &GroupedWalk,
     ) -> Result<()> {
-        Ok(())
+        self.grouped_walk_put_exact(txn, key, walk)
     }
 
     // ── GC ──────────────────────────────────────────────────────────────────

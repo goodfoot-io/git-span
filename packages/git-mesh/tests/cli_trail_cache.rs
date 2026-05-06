@@ -91,7 +91,7 @@ fn stale_warm_cache_hits() -> Result<()> {
     // Second run (same HEAD, same config, same seed): should hit the cache.
     let stderr = run_stale_all_with_perf(&repo)?;
 
-    let hits = parse_counter(&stderr, "session.trail-cache-hits");
+    let gw_hits = parse_counter(&stderr, "session.grouped-walk-cache-hits");
     let walks = parse_counter(&stderr, "session.walks-len");
     let pass1_ms = parse_counter(&stderr, "session.pass1-ms");
 
@@ -100,8 +100,8 @@ fn stale_warm_cache_hits() -> Result<()> {
         "expected at least one walk, got 0; stderr:\n{stderr}"
     );
     assert_eq!(
-        hits, walks,
-        "second run: trail-cache-hits ({hits}) must equal walks-len ({walks}); stderr:\n{stderr}"
+        gw_hits, walks,
+        "second run: grouped-walk-cache-hits ({gw_hits}) must equal walks-len ({walks}); stderr:\n{stderr}"
     );
     assert_eq!(
         pass1_ms, 0,

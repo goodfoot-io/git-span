@@ -38,7 +38,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::cache::Cache;
+use crate::resolver::cache::{Cache, GroupedWalkKey};
 use crate::resolver::trail_cache::{self, TrailCacheEntry};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
@@ -111,6 +111,8 @@ pub(crate) struct ResolveSession {
     pub(crate) trail_cache_hits: u64,
     /// Counter: cache misses (including I/O errors) in the trail cache.
     pub(crate) trail_cache_misses: u64,
+    /// Counter: Tier 3 grouped_walk cache hits (exact key).
+    pub(crate) grouped_walk_cache_hits: u64,
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
@@ -131,6 +133,7 @@ impl ResolveSession {
             pass1_ms: 0,
             trail_cache_hits: 0,
             trail_cache_misses: 0,
+            grouped_walk_cache_hits: 0,
             cache,
         }
     }
@@ -166,6 +169,7 @@ impl ResolveSession {
             &mut self.pass1_ms,
             &mut self.trail_cache_hits,
             &mut self.trail_cache_misses,
+            &mut self.grouped_walk_cache_hits,
             &self.cache,
         )?;
         self.walks.insert(key, walk);
@@ -208,6 +212,7 @@ impl ResolveSession {
                 &mut self.pass1_ms,
                 &mut self.trail_cache_hits,
                 &mut self.trail_cache_misses,
+                &mut self.grouped_walk_cache_hits,
                 &self.cache,
             )?;
             self.walks.insert(key.clone(), walk);
@@ -237,9 +242,26 @@ fn build_grouped_walk(
     pass1_ms_counter: &mut u64,
     trail_cache_hits_counter: &mut u64,
     trail_cache_misses_counter: &mut u64,
+    grouped_walk_cache_hits_counter: &mut u64,
     cache: &Cache,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
+
+    // Tier 3 exact-hit probe: skip the entire walk on cache hit.
+    if cache.is_enabled() {
+        let empty_seed = HashSet::<String>::new();
+        let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
+        if let Ok(trail_key) = trail_cache::compute_key(
+            repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
+        ) {
+            let gw_key = GroupedWalkKey::from_trail_key(&trail_key, head_sha.clone());
+            if let Some(cached_walk) = cache.grouped_walk_get_exact(&gw_key) {
+                *grouped_walk_cache_hits_counter += 1;
+                return Ok(cached_walk);
+            }
+        }
+    }
+
     let mut commits =
         git::rev_walk_excluding(repo, &[&head_sha], &[anchor_sha], None).unwrap_or_default();
     commits.reverse(); // oldest-first
@@ -405,13 +427,29 @@ fn build_grouped_walk(
         }
     }
 
-    Ok(GroupedWalk {
+    let walk = GroupedWalk {
         anchor_sha: anchor_sha.to_string(),
-        head_sha,
+        head_sha: head_sha.clone(),
         commits: deltas,
         renames_disabled,
         closed_paths,
-    })
+    };
+
+    // Tier 3 persist: store walk for future exact-hit probes.
+    if cache.is_enabled() {
+        let empty_seed = HashSet::<String>::new();
+        let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
+        if let Ok(trail_key) = trail_cache::compute_key(
+            repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
+        ) {
+            let gw_key = GroupedWalkKey::from_trail_key(&trail_key, head_sha);
+            if let Err(e) = cache.with_write_txn(|txn| cache.grouped_walk_put_exact(txn, &gw_key, &walk)) {
+                eprintln!("grouped_walk cache write error (ignored): {e}");
+            }
+        }
+    }
+
+    Ok(walk)
 }
 
 /// Pass 1: discover every historical name any seed path has had in

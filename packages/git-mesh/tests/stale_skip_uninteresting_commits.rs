@@ -76,6 +76,7 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
         .current_dir(repo.path())
         .args(["stale"])
         .env("GIT_MESH_PERF", "1")
+        .env("GIT_MESH_CACHE", "0")
         .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     let interesting = parse_counter(&stderr, "session.interesting-commits");
