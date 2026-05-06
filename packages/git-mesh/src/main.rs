@@ -28,7 +28,14 @@ fn main() {
             match error.downcast::<clap::Error>() {
                 Ok(clap_err) => clap_err.exit(),
                 Err(error) => {
-                    eprintln!("error: {error:#}");
+                    // If this is a CliError, render it in the structured
+                    // prose shape. Otherwise fall back to anyhow's alternate
+                    // display.
+                    if let Some(cli_err) = error.downcast_ref::<git_mesh::cli::CliError>() {
+                        eprintln!("{}", git_mesh::cli::render_error(cli_err));
+                    } else {
+                        eprintln!("error: {error:#}");
+                    }
                     std::process::exit(1);
                 }
             }

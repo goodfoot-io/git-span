@@ -19,12 +19,16 @@
 pub mod advice;
 pub mod commit;
 pub mod compact;
+pub mod error;
+pub mod format;
 pub mod pre_commit;
 pub mod rewrite;
 pub mod show;
 pub mod stale_output;
 pub mod structural;
 pub mod sync;
+
+pub use error::{CliError, NextStep, render_error};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
