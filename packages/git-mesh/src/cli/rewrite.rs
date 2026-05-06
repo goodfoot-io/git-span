@@ -13,7 +13,16 @@ pub fn run_rewrite(repo: &gix::Repository, args: RewriteArgs) -> Result<i32> {
     let mut stdin_text = String::new();
     std::io::stdin()
         .read_to_string(&mut stdin_text)
-        .map_err(|e| anyhow::anyhow!("failed to read stdin: {e}"))?;
+        .map_err(|e| crate::cli::CliError {
+            subcommand: "rewrite",
+            summary: "failed to read stdin.".into(),
+            what_happened: format!("{e}"),
+            next_steps: vec![crate::cli::NextStep::Prose(
+                "The post-rewrite hook sends old/new SHA pairs on stdin. \
+                 If you are invoking manually, pipe the pairs: `echo '<old> <new>' | git mesh rewrite`."
+                    .into(),
+            )],
+        })?;
 
     // Parse the old→new map.
     let map = match parse_map(&stdin_text) {

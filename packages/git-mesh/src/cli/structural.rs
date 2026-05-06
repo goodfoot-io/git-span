@@ -599,7 +599,7 @@ pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Resul
                 );
             }
             Err(e) => {
-                eprintln!("git-mesh: trail_cache::gc failed: {e}");
+                println!("git-mesh: trail_cache::gc failed: {e}");
             }
         }
     }

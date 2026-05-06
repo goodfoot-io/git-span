@@ -754,11 +754,21 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     let mesh = {
         let _perf = crate::perf::span("show.read-mesh");
-        read_mesh_at(repo, &args.name, args.at.as_deref())?
+        read_mesh_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
+            subcommand: "show",
+            summary: format!("no mesh named `{}`.", args.name),
+            what_happened: format!("{}", e),
+            next_steps: vec![NextStep::Bash("git mesh list".into())],
+        })?
     };
     let info = {
         let _perf = crate::perf::span("show.read-commit-info");
-        mesh_commit_info_at(repo, &args.name, args.at.as_deref())?
+        mesh_commit_info_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
+            subcommand: "show",
+            summary: format!("no mesh named `{}`.", args.name),
+            what_happened: format!("{}", e),
+            next_steps: vec![NextStep::Bash("git mesh list".into())],
+        })?
     };
 
     // --format=<FMT> short-circuits the default rendering (§10.4).
@@ -783,8 +793,14 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
         let meta = {
             let _perf = crate::perf::span("show.read-commit-meta");
+            let short = &info.commit_oid[..7.min(info.commit_oid.len())];
             crate::git::commit_meta(repo, &info.commit_oid)
-                .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?
+                .map_err(|e| CliError {
+                    subcommand: "show",
+                    summary: format!("could not read commit `{short}` metadata."),
+                    what_happened: format!("{e}"),
+                    next_steps: vec![NextStep::Bash("git mesh show <name>".into())],
+                })?
         };
 
         let _perf = crate::perf::span("show.render-format");
@@ -861,13 +877,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
     let resolved_names: Option<Vec<String>> = if args.targets.is_empty() {
         None
     } else {
-        match resolve_targets(repo, &args.targets) {
-            Ok(names) => Some(names),
-            Err(_e) => {
-                // stderr diagnostics already printed by resolve_targets
-                return Ok(1);
-            }
-        }
+        Some(resolve_targets(repo, &args.targets)?)
     };
 
     let include_why = !args.porcelain || args.search.is_some();
@@ -931,7 +941,22 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         return Ok(0);
     }
 
-    if args.porcelain {
+    if args.oneline {
+        let _perf = crate::perf::span("list.render-oneline");
+        for listing in &page {
+            for a in &listing.anchors {
+                let addr = match a.extent {
+                    AnchorExtent::LineRange { start, end } => {
+                        format::format_anchor_address(&a.path, Some(start), Some(end))
+                    }
+                    AnchorExtent::WholeFile => {
+                        format::format_anchor_address(&a.path, None, None)
+                    }
+                };
+                println!("`{}` `{}`", listing.name, addr);
+            }
+        }
+    } else if args.porcelain {
         render_porcelain(&page);
     } else if args.staged {
         let noun = if page.len() == 1 { "mesh has" } else { "meshes have" };
@@ -1103,10 +1128,20 @@ pub(crate) fn resolve_targets(
     }
 
     if !missing_args.is_empty() {
-        for arg in &missing_args {
-            eprintln!("git mesh list: no such file or mesh: '{arg}'");
-        }
-        anyhow::bail!("one or more targets named no existing file or mesh");
+        let all = missing_args.join("`, `");
+        return Err(CliError {
+            subcommand: "list",
+            summary: format!("`{all}` did not match any mesh, file, or path."),
+            what_happened: format!(
+                "The following arguments did not match a mesh name, a file path, \
+                 or a path-index entry: `{all}`. Git-mesh resolves positional \
+                 arguments as mesh names, file paths, or globs."
+            ),
+            next_steps: vec![
+                NextStep::Prose("Check the spelling or list available meshes.".into()),
+                NextStep::Bash("git mesh list".into()),
+            ],
+        }.into());
     }
 
     Ok(result.into_iter().collect())
@@ -1518,6 +1553,7 @@ mod tests {
             offset: 0,
             limit: None,
             staged: false,
+            oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
@@ -1535,13 +1571,14 @@ mod tests {
             offset: 0,
             limit: None,
             staged: false,
+            oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
     }
 
     #[test]
-    fn run_list_zero_match_returns_exit_1() {
+    fn run_list_zero_match_errors_with_cli_error() {
         let (_td, repo) = seed_repo();
         let args = ListArgs {
             targets: vec!["nonexistent".to_string()],
@@ -1551,9 +1588,12 @@ mod tests {
             offset: 0,
             limit: None,
             staged: false,
+            oneline: false,
         };
-        let exit_code = run_list(&repo, args).unwrap();
-        assert_eq!(exit_code, 1);
+        let err = run_list(&repo, args).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("nonexistent"), "{msg}");
+        assert!(msg.contains("did not match"), "{msg}");
     }
 
     #[test]
@@ -1608,6 +1648,7 @@ mod tests {
             offset: 0,
             limit: None,
             staged: false,
+            oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);

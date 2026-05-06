@@ -270,6 +270,10 @@ pub fn parse_address(text: &str) -> Option<(String, AnchorExtent)> {
         }
         return Some((path.to_string(), AnchorExtent::LineRange { start, end }));
     }
+    // A `#` without a following `L` is invalid anchor syntax (e.g., `file.ts#88`).
+    if text.contains('#') {
+        return None;
+    }
     if text.is_empty() {
         return None;
     }

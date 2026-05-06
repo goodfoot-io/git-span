@@ -90,12 +90,22 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
             vec![(*n).clone()]
         }
         _ => {
-            anyhow::bail!(
-                "git mesh stale --compact: expected at most one mesh name, \
-                 got {} positional args (--compact only supports a single \
-                 mesh name or no args for all-mesh)",
-                args.paths.len()
-            );
+            return Err(CliError {
+                subcommand: "stale",
+                summary: format!(
+                    "`--compact` accepts at most one mesh name, got {}.",
+                    args.paths.len()
+                ),
+                what_happened: format!(
+                    "`--compact` only supports a single mesh name or no args for \
+                     all-mesh sweep, but {} positional arguments were given.",
+                    args.paths.len()
+                ),
+                next_steps: vec![
+                    NextStep::Bash("git mesh stale --compact name".into()),
+                    NextStep::Bash("git mesh stale --compact".into()),
+                ],
+            }.into());
         }
     };
 
@@ -168,7 +178,7 @@ fn render_human(outcomes: &[MeshCompactOutcome]) -> Result<()> {
     println!();
     for o in outcomes {
         if let Some(err) = &o.hard_error {
-            eprintln!("git mesh stale --compact: `{}` error: {}", o.name, err);
+            println!("git mesh stale --compact: `{}` error: {}", o.name, err);
             continue;
         }
         if o.skipped_staged > 0 {
@@ -217,7 +227,7 @@ fn render_human(outcomes: &[MeshCompactOutcome]) -> Result<()> {
 fn render_human_summary(outcomes: &[MeshCompactOutcome]) {
     for o in outcomes {
         if let Some(err) = &o.hard_error {
-            eprintln!("git mesh stale --compact: `{}` error: {}", o.name, err);
+            println!("git mesh stale --compact: `{}` error: {}", o.name, err);
         }
     }
 

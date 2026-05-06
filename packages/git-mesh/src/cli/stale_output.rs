@@ -46,7 +46,15 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                         use std::str::FromStr;
                         gix::ObjectId::from_str(&hex).expect("resolve_commit returns valid hex")
                     })
-                    .map_err(|e| anyhow::anyhow!("--since `{s}`: {e}"))?,
+                    .map_err(|e| CliError {
+                        subcommand: "stale",
+                        summary: format!("`--since {s}` could not be resolved."),
+                        what_happened: format!("{e}"),
+                        next_steps: vec![
+                            NextStep::Bash("git rev-parse HEAD".into()),
+                            NextStep::Bash("git log --oneline".into()),
+                        ],
+                    })?,
             )
         }
         None => None,
@@ -64,6 +72,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         since,
         needs_all_layers,
     };
+
+    // Count total committed meshes before stale_meshes filtering, so the
+    // summary can report "0 stale across N meshes" even when all are clean.
+    let total_committed_mesh_count: usize = crate::mesh::read::list_mesh_refs(repo)
+        .map(|refs| refs.len())
+        .unwrap_or(0);
 
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh (preserves existing behavior).
@@ -346,9 +360,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             if !printed && stale_count == 0 {
                 if args.paths.is_empty() {
                     // Scan-all: print summary line with counts.
+                    // Use total_committed_mesh_count (all committed meshes)
+                    // rather than meshes.len() (which only includes meshes
+                    // with findings after stale_meshes filtering).
                     let total_anchors: usize = meshes.iter().map(|m| m.anchors.len()).sum();
                     let total_pending: usize = pending.len();
-                    let mesh_word = if meshes.len() == 1 { "mesh" } else { "meshes" };
+                    let mesh_word = if total_committed_mesh_count == 1 { "mesh" } else { "meshes" };
                     let anchor_word = if total_anchors == 1 {
                         "anchor"
                     } else {
@@ -357,7 +374,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                     println!(
                         "git mesh stale: 0 stale, {} pending across {} {} ({} {} checked).",
                         total_pending,
-                        meshes.len(),
+                        total_committed_mesh_count,
                         mesh_word,
                         total_anchors,
                         anchor_word,
@@ -839,17 +856,15 @@ fn render_human(
             }
             _ => None,
         });
+        // Why text is not printed in stale output per CARD.md spec.
+        // Only pending why changes are shown.
         match (trimmed_why.is_empty(), pending_why_body) {
-            (true, None) => {}
-            (false, None) => {
-                println!();
-                println!("{trimmed_why}");
-            }
-            (true, Some(new_body)) => {
+            (_, None) => {}
+            (_, Some(new_body)) if trimmed_why.is_empty() => {
                 println!();
                 println!("{new_body}");
             }
-            (false, Some(new_body)) => {
+            (_, Some(new_body)) => {
                 println!();
                 println!("Why updated from:");
                 println!();
@@ -1379,7 +1394,7 @@ pub(super) fn run_auto_follow_pass(
                 }
             }
             Err(e) => {
-                eprintln!("git mesh stale: auto-follow failed for {}: {e}", m.name);
+                println!("git mesh stale: auto-follow failed for {}: {e}", m.name);
             }
         }
     }

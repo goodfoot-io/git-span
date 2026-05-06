@@ -85,7 +85,7 @@ fn rejects_empty_path() -> Result<()> {
 fn rejects_empty_session_id() -> Result<()> {
     let repo = seeded_with_a_b()?;
     let out = repo.run_mesh(["advice", "", "read", "a.ts"])?;
-    assert_rejected(&out, "<sessionId>");
+    assert_rejected(&out, "session id must not be empty");
     Ok(())
 }
 

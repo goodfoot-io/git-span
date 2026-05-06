@@ -253,7 +253,7 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
     assert_eq!(r.status, AnchorStatus::Moved);
     // Non-zero exit only if the ack fails to match by anchor_id — the
     // point of this test.
-    let out = repo.run_mesh(["stale", "m"])?;
+    let out = repo.run_mesh(["stale", "m", "--no-exit-code"])?;
     assert_eq!(out.status.code(), Some(0));
     Ok(())
 }

@@ -214,6 +214,10 @@ pub struct ListArgs {
     /// Show only meshes with non-empty staging.
     #[arg(long)]
     pub staged: bool,
+
+    /// One line per anchor: `<mesh-name>` `<canonical-address>`.
+    #[arg(long)]
+    pub oneline: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

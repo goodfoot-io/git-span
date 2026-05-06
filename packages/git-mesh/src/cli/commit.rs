@@ -66,9 +66,73 @@ fn invalid_anchor_error(subcommand: &'static str, addr: &str) -> CliError {
 // add
 // ---------------------------------------------------------------------------
 
+/// Acquire the staging lock with retries. Returns the lock file path and an
+/// open handle. The lock is released by deleting the file after the handle is
+/// closed.
+fn acquire_staging_lock(repo: &gix::Repository) -> std::result::Result<(std::path::PathBuf, std::fs::File), CliError> {
+    let lock_dir = crate::git::mesh_dir(repo).join("staging");
+    std::fs::create_dir_all(&lock_dir).map_err(|e| CliError {
+        subcommand: "add",
+        summary: "could not access staging directory.".into(),
+        what_happened: format!("{}", e),
+        next_steps: vec![NextStep::Prose(
+            "Check that `.git/mesh/staging` exists and is writable.".into(),
+        )],
+    })?;
+    let lock_path = lock_dir.join("staging.lock");
+    for _attempt in 0..3 {
+        match std::fs::File::create_new(&lock_path) {
+            Ok(lock) => return Ok((lock_path, lock)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(CliError {
+                    subcommand: "add",
+                    summary: "could not create staging lock.".into(),
+                    what_happened: format!("{}", e),
+                    next_steps: vec![NextStep::Prose(
+                        "Check that `.git/mesh/staging` is writable.".into(),
+                    )],
+                });
+            }
+        }
+    }
+    Err(CliError {
+        subcommand: "add",
+        summary: "another `git mesh add` holds the staging lock.".into(),
+        what_happened: "The staging lock at `.git/mesh/staging/staging.lock` could not be \
+                         acquired after 3 attempts (50ms apart). This usually means another \
+                         `git mesh add` is running concurrently."
+            .into(),
+        next_steps: vec![
+            NextStep::Prose(
+                "Wait for the other process to finish, then re-run the command. \
+                 Do not parallelize `git mesh add` operations that share the same repository."
+                    .into(),
+            ),
+        ],
+    })
+}
+
+/// Release the staging lock by closing the handle and removing the lock file.
+fn release_staging_lock(lock_path: std::path::PathBuf, _lock: std::fs::File) {
+    drop(_lock);
+    let _ = std::fs::remove_file(&lock_path);
+}
+
 pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
+    // Acquire contention lock so concurrent `git mesh add` calls do not
+    // interleave staging writes.
+    let (lock_path, lock) = acquire_staging_lock(repo)?;
+    let result = run_add_inner(repo, args);
+    release_staging_lock(lock_path, lock);
+    result
+}
+
+fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // Parse every address first; fail-closed with no partial staging.
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
     {
@@ -145,9 +209,35 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     {
         let _perf = crate::perf::span("add.prepare-anchors");
         for (path, extent) in &parsed {
-            prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref())?);
+            prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref()).map_err(|e| {
+                from_lib_error(
+                    "add",
+                    format!("anchor precheck failed for `{}`.", addr_from_extent(path, extent)),
+                    e,
+                    vec![NextStep::Prose(
+                        "Fix the path or choose a different extent.".into(),
+                    )],
+                )
+            })?);
         }
     }
+
+    // Build committed content lookup for unchanged detection.
+    let committed_mesh = read_mesh(repo, &args.name).ok();
+    let committed_content: std::collections::HashMap<(String, AnchorExtent), Vec<u8>> = {
+        let mut m = std::collections::HashMap::new();
+        if let Some(ref mesh) = committed_mesh {
+            for (_id, r) in &mesh.anchors_v2 {
+                if let Ok(oid) = gix::ObjectId::from_hex(r.blob.as_bytes())
+                    && let Ok(blob) = repo.find_object(oid)
+                {
+                    let data = blob.into_blob().detach().data;
+                    m.insert((r.path.clone(), r.extent), data);
+                }
+            }
+        }
+        m
+    };
 
     // Track per-anchor outcomes for the summary.
     struct AddOutcome {
@@ -157,7 +247,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     enum AddOutcomeKind {
         Staged,    // new anchor — sidecar created
         Resolved,  // existing anchor — sidecar updated
-        #[allow(dead_code)]
         Unchanged, // anchor already clean
     }
 
@@ -168,24 +257,40 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
             let anchor_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
             let addr = addr_from_extent(path, extent);
+            let key = (path.clone(), *extent);
 
-            // Determine outcome before writing staging.
-            let is_in_committed = committed_ranges.contains_key(&(path.clone(), *extent));
-            let kind = if anchor_id.is_some() {
-                // Anchor already existed (committed or staged) — updating it.
+            // Track outcome before writing staging.
+            let kind = if let Some(committed_bytes) = committed_content.get(&key) {
+                if committed_bytes == &add.bytes {
+                    // Content matches committed anchor — skip the sidecar write.
+                    AddOutcomeKind::Unchanged
+                } else if anchor_id.is_some() {
+                    // Anchor existed (committed or staged) — updating it.
+                    AddOutcomeKind::Resolved
+                } else {
+                    AddOutcomeKind::Staged
+                }
+            } else if anchor_id.is_some() {
+                // Anchor existed in resolved (staging-aware) but not in committed.
                 AddOutcomeKind::Resolved
             } else {
                 // Brand new anchor.
                 AddOutcomeKind::Staged
             };
 
-            // If anchor was already in committed and content hasn't changed,
-            // we could skip staging. For now, "unchanged" requires byte-level
-            // comparison that we defer; always write the sidecar and label
-            // based on anchor_id presence.
-            let _ = is_in_committed;
-
-            append_prepared_add(repo, &args.name, add, anchor_id)?;
+            // Skip sidecar write for unchanged anchors.
+            if !matches!(kind, AddOutcomeKind::Unchanged) {
+                append_prepared_add(repo, &args.name, add, anchor_id).map_err(|e| {
+                    from_lib_error(
+                        "add",
+                        format!("failed to write staging for `{addr}`."),
+                        e,
+                        vec![NextStep::Prose(
+                            "Check that `.git/mesh/staging` is writable and not corrupt.".into(),
+                        )],
+                    )
+                })?;
+            }
 
             outcomes.push(AddOutcome { addr, kind });
         }
@@ -200,36 +305,30 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         .iter()
         .filter(|o| matches!(o.kind, AddOutcomeKind::Resolved))
         .count();
+    let unchanged_count = outcomes
+        .iter()
+        .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
+        .count();
     let head = short_head_sha(repo).unwrap_or_else(|| "unknown".into());
 
     // Summary line.
-    let summary = if resolved_count == 0 {
-        format!(
-            "Staged {} anchor{} on `{}`, anchored at `HEAD` (`{head}`).",
-            staged_count,
-            if staged_count == 1 { "" } else { "s" },
-            args.name
-        )
-    } else {
-        let mut s = String::new();
-        write!(
-            &mut s,
-            "Staged {} anchor{}",
-            staged_count,
-            if staged_count == 1 { "" } else { "s" }
-        )
-        .unwrap();
-        if resolved_count > 0 {
-            write!(&mut s, " and resolved {resolved_count} in place").unwrap();
-        }
-        write!(
-            &mut s,
-            " on `{}`, anchored at `HEAD` (`{head}`).",
-            args.name
-        )
-        .unwrap();
-        s
-    };
+    let mut summary = format!(
+        "Staged {} anchor{}",
+        staged_count,
+        if staged_count == 1 { "" } else { "s" },
+    );
+    if resolved_count > 0 {
+        write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
+    }
+    if unchanged_count > 0 {
+        write!(&mut summary, "; {} unchanged", unchanged_count).unwrap();
+    }
+    write!(
+        &mut summary,
+        " on `{}`, anchored at `HEAD` (`{head}`).",
+        args.name
+    )
+    .unwrap();
     println!("{summary}");
     println!();
 
@@ -248,7 +347,12 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
                     args.name, o.addr
                 )
             }
-            AddOutcomeKind::Unchanged => unreachable!(),
+            AddOutcomeKind::Unchanged => {
+                format!(
+                    "- unchanged: `{}` `{}` (no staging -- content matches committed anchor)",
+                    args.name, o.addr
+                )
+            }
         };
         println!("{line}");
     }
@@ -256,11 +360,15 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // Follow-up command suggestion.
     if staged_count > 0 {
         let plural = if staged_count == 1 { "" } else { "s" };
-        let extra = if resolved_count > 0 {
-            format!(
-                ". The other{} need no commit",
-                if resolved_count == 1 { "" } else { "s" }
-            )
+        let extra = if resolved_count > 0 || unchanged_count > 0 {
+            let others = if resolved_count > 0 && unchanged_count > 0 {
+                format!("The other {} and {} need no commit", resolved_count, unchanged_count)
+            } else if resolved_count > 0 {
+                format!("The other {} need no commit", resolved_count)
+            } else {
+                format!("The other {} need no commit", unchanged_count)
+            };
+            format!(". {others}")
         } else {
             String::new()
         };
@@ -460,7 +568,15 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
         .status()
         .with_context(|| format!("failed to spawn editor `{editor}`"))?;
     if !status.success() {
-        return Err(anyhow::anyhow!("editor `{editor}` exited with {status}"));
+        return Err(CliError {
+            subcommand: "why",
+            summary: format!("editor `{editor}` exited with {status}."),
+            what_happened: format!(
+                "The editor `{editor}` exited with a non-zero status ({status}), \
+                 so the why body was not staged."
+            ),
+            next_steps: vec![NextStep::Bash(format!("git mesh why {name} --edit"))],
+        }.into());
     }
 
     let raw = std::fs::read_to_string(&edit_path)?;

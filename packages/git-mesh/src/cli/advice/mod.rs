@@ -75,7 +75,15 @@ pub enum TouchKindArg {
 /// Top-level dispatch.
 pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     let session_id = args.session_id.ok_or_else(|| {
-        anyhow::anyhow!("git mesh advice: a <SESSION_ID> is required (e.g. `git mesh advice <id>`)")
+        CliError {
+            subcommand: "advice",
+            summary: "a <SESSION_ID> is required.".into(),
+            what_happened: "The advice subcommand requires a session identifier. \
+                            For example: `git mesh advice s-123 mark pretool-7`.".into(),
+            next_steps: vec![
+                NextStep::Bash("git mesh advice s-123 mark pretool-7".into()),
+            ],
+        }
     })?;
     validate_session_id(&session_id)?;
     match args.command {
@@ -87,9 +95,14 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         }
         Some(AdviceCommand::End) => run_advice_end(repo, session_id),
         Some(AdviceCommand::Touched) => run_advice_touched(repo, session_id),
-        None => bail!(
-            "git mesh advice: a subcommand is required; run `git mesh advice --help` for usage"
-        ),
+        None => {
+            Err(CliError {
+                subcommand: "advice",
+                summary: "a subcommand is required.".into(),
+                what_happened: "The advice command needs a subcommand like `mark`, `flush`, `read`, `touch`, `end`, or `touched`.".into(),
+                next_steps: vec![NextStep::Bash("git mesh advice --help".into())],
+            }.into())
+        }
     }
 }
 
@@ -146,10 +159,19 @@ pub(crate) fn canonicalize_repo_relative_path(wd: &std::path::Path, raw: &str) -
     let canonical_wd = std::fs::canonicalize(wd).unwrap_or_else(|_| wd.to_path_buf());
 
     let rel = canonical.strip_prefix(&canonical_wd).map_err(|_| {
-        anyhow::anyhow!(
-            "path `{raw}` resolves outside the working directory `{}`",
-            wd.display()
-        )
+        CliError {
+            subcommand: "advice",
+            summary: format!("path `{raw}` escapes the working directory."),
+            what_happened: format!(
+                "The path `{raw}` resolves to `{}`, which is outside the repository \
+                 working directory `{}`.",
+                canonical.display(),
+                wd.display()
+            ),
+            next_steps: vec![NextStep::Prose(
+                "Use a repo-relative or absolute path that stays within the working tree.".into(),
+            )],
+        }
     })?;
 
     let result = rel
@@ -878,36 +900,77 @@ fn run_advice_touch(
 /// but skips the EOF check because the file content may be brand new.
 fn validate_touch_anchor_added(repo: &gix::Repository, spec: &str) -> Result<()> {
     if spec.is_empty() {
-        bail!("invalid spec: path must not be empty");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: "touch anchor path must not be empty.".into(),
+            what_happened: "The `touch` command received an empty path.".into(),
+            next_steps: vec![NextStep::Bash("git mesh advice <sid> touch <id> <path>".into())],
+        }.into());
     }
     let (path_str, anchor) = match spec.split_once("#L") {
         Some((p, frag)) => {
             let (s, e) = frag.split_once("-L").ok_or_else(|| {
-                anyhow::anyhow!("invalid anchor `{spec}`; expected <path>#L<start>-L<end>")
+                CliError {
+                    subcommand: "advice",
+                    summary: format!("`{spec}` is not a valid anchor."),
+                    what_happened: format!(
+                        "Expected `<path>#L<start>-L<end>`, got `{spec}`."
+                    ),
+                    next_steps: vec![
+                        NextStep::Bash("git mesh advice <sid> touch <id> <path>#L<start>-L<end>".into()),
+                        NextStep::Bash("git mesh advice <sid> touch <id> <path>".into()),
+                    ],
+                }
             })?;
-            let start: u32 = s
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid anchor start in `{spec}`"))?;
-            let end: u32 = e
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid anchor end in `{spec}`"))?;
+            let start: u32 = s.parse().map_err(|_| CliError {
+                subcommand: "advice",
+                summary: format!("invalid anchor start in `{spec}`."),
+                what_happened: format!("The line number `{s}` is not a valid u32."),
+                next_steps: vec![NextStep::Prose("Use a positive integer for the start line.".into())],
+            })?;
+            let end: u32 = e.parse().map_err(|_| CliError {
+                subcommand: "advice",
+                summary: format!("invalid anchor end in `{spec}`."),
+                what_happened: format!("The line number `{e}` is not a valid u32."),
+                next_steps: vec![NextStep::Prose("Use a positive integer for the end line.".into())],
+            })?;
             if start < 1 {
-                bail!("invalid anchor `{spec}`: start must be at least 1");
+                return Err(CliError {
+                    subcommand: "advice",
+                    summary: format!("invalid anchor `{spec}`: start must be at least 1."),
+                    what_happened: "Line numbers are 1-indexed.".into(),
+                    next_steps: vec![NextStep::Prose("Use line numbers starting from 1.".into())],
+                }.into());
             }
             if end < start {
-                bail!("invalid anchor `{spec}`: end ({end}) is before start ({start})");
+                return Err(CliError {
+                    subcommand: "advice",
+                    summary: format!("invalid anchor `{spec}`: end is before start."),
+                    what_happened: format!("End ({end}) is before start ({start})."),
+                    next_steps: vec![NextStep::Prose("The end line must be >= start.".into())],
+                }.into());
             }
             (p, Some((start, end)))
         }
         None => (spec, None),
     };
     if path_str.is_empty() {
-        bail!("invalid spec `{spec}`: path must not be empty");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: format!("invalid spec `{spec}`: path must not be empty."),
+            what_happened: "The anchor address had an empty path component.".into(),
+            next_steps: vec![NextStep::Prose("Provide a non-empty file path.".into())],
+        }.into());
     }
     let wd = work_dir(repo)?;
     let abs = wd.join(path_str);
     if !abs.exists() {
-        bail!("path not found in worktree: `{path_str}`");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: format!("path not found in worktree: `{path_str}`."),
+            what_happened: format!("The file `{path_str}` does not exist in the working tree."),
+            next_steps: vec![NextStep::Prose("Check the file path for typos.".into())],
+        }.into());
     }
     let _ = anchor;
     Ok(())
@@ -1111,7 +1174,12 @@ fn run_advice_read(
     store.ensure_mesh_baseline(repo)?;
 
     if anchor.is_empty() {
-        bail!("git mesh advice <id> read: anchor must not be empty");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: "read anchor must not be empty.".into(),
+            what_happened: "The `read` subcommand needs an anchor specification.".into(),
+            next_steps: vec![NextStep::Bash("git mesh advice <sid> read <path>#L<start>-L<end>".into())],
+        }.into());
     }
     validate_read_spec_cli(repo, &anchor, "advice read")?;
 
@@ -1140,7 +1208,17 @@ fn run_advice_read(
     )?;
 
     let action = action_from_spec(&anchor).ok_or_else(|| {
-        anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")
+        CliError {
+            subcommand: "advice",
+            summary: format!("could not determine action for `{anchor}`."),
+            what_happened: format!(
+                "Internal: action_from_spec returned None for `{anchor}`. \
+                 This indicates a bug in anchor address parsing."
+            ),
+            next_steps: vec![NextStep::Prose(
+                "Report this as a bug. In the meantime, use a different anchor format.".into(),
+            )],
+        }
     })?;
     let meshes = {
         let _perf = crate::perf::span("advice.read.resolve-candidates");
@@ -1306,7 +1384,12 @@ pub(crate) fn collect_touched_paths(touches_path: &std::path::Path) -> Result<Ve
 
 fn validate_session_id(id: &str) -> Result<()> {
     if id.is_empty() {
-        bail!("invalid <sessionId>: must not be empty ({SESSION_ID_RULE})");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: "session id must not be empty.".into(),
+            what_happened: format!("Session ids must satisfy: {SESSION_ID_RULE}"),
+            next_steps: vec![NextStep::Bash("git mesh advice s-123 mark pretool-7".into())],
+        }.into());
     }
     for ch in id.chars() {
         let ok = ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.');
@@ -1326,7 +1409,12 @@ fn validate_session_id(id: &str) -> Result<()> {
         }
     }
     if id == "." || id == ".." {
-        bail!("invalid <sessionId> `{id}`: reserved path component ({SESSION_ID_RULE})");
+        return Err(CliError {
+            subcommand: "advice",
+            summary: format!("`{id}` is a reserved path component."),
+            what_happened: format!("Session id `{id}` is reserved and cannot be used. {SESSION_ID_RULE}"),
+            next_steps: vec![NextStep::Bash("git mesh advice s-123 mark pretool-7".into())],
+        }.into());
     }
     Ok(())
 }

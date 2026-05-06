@@ -422,8 +422,8 @@ fn list_missing_file_arg_errors() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no such file or mesh: 'no-such-file.txt'"),
-        "expected diagnostic, got: {stderr}"
+        stderr.contains("`no-such-file.txt` did not match"),
+        "expected CliError, got: {stderr}"
     );
     Ok(())
 }
@@ -435,8 +435,8 @@ fn list_missing_path_arg_errors() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no such file or mesh: 'missing/dir/no-such.txt'"),
-        "expected diagnostic, got: {stderr}"
+        stderr.contains("`missing/dir/no-such.txt` did not match"),
+        "expected CliError, got: {stderr}"
     );
     Ok(())
 }
@@ -450,8 +450,8 @@ fn list_unmatched_glob_literal_errors() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no such file or mesh: 'src/missing-*.ts'"),
-        "expected diagnostic, got: {stderr}"
+        stderr.contains("`src/missing-*.ts` did not match"),
+        "expected CliError, got: {stderr}"
     );
     Ok(())
 }
