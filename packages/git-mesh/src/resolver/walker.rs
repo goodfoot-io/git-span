@@ -3,6 +3,7 @@
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
+use crate::resolver::cache::Cache;
 use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
@@ -59,7 +60,7 @@ pub(crate) fn resolve_at_head(
     let mut parent = r.anchor_sha.clone();
     for commit in &commits {
         let entries = name_status(repo, &parent, commit, copy_detection, warnings)?;
-        match advance_with_entries(repo, &parent, commit, &loc, &entries)? {
+        match advance_with_entries(repo, &parent, commit, &loc, &entries, None)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
@@ -82,6 +83,7 @@ pub(crate) fn advance_with_entries(
     commit: &str,
     loc: &Tracked,
     entries: &[NS],
+    cache: Option<&Cache>,
 ) -> Result<Change> {
     let mut next_path: Option<String> = None;
     let mut deleted = false;
@@ -116,7 +118,7 @@ pub(crate) fn advance_with_entries(
     }
     if deleted {
         if let Some(p) = next_path {
-            let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
+            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache)?;
             return Ok(Change::Updated(Tracked {
                 path: p,
                 start: s,
@@ -129,7 +131,7 @@ pub(crate) fn advance_with_entries(
         return Ok(Change::Unchanged);
     }
     let p = next_path.unwrap_or_else(|| loc.path.clone());
-    let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
+    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache)?;
     Ok(Change::Updated(Tracked {
         path: p,
         start: s,
@@ -143,14 +145,36 @@ pub(crate) fn compute_new_range(
     commit: &str,
     loc: &Tracked,
     new_path: &str,
+    cache: Option<&Cache>,
 ) -> Result<(u32, u32)> {
-    let old_text = git::path_blob_at(repo, parent, &loc.path)
-        .and_then(|b| git::read_git_text(repo, &b))
+    let old_blob_oid = git::path_blob_at(repo, parent, &loc.path).ok();
+    let new_blob_oid = git::path_blob_at(repo, commit, new_path).ok();
+
+    // Probe Tier 2 cache when both blob OIDs are available and cache is enabled.
+    if let (Some(old_oid), Some(new_oid), Some(c)) =
+        (old_blob_oid.as_deref(), new_blob_oid.as_deref(), cache)
+    && let Some(cached_hunks) = c.blob_diff_get(old_oid, new_oid)
+    {
+        return Ok(apply_hunks_to_range(&cached_hunks, loc.start, loc.end));
+    }
+
+    let old_text = old_blob_oid
+        .as_deref()
+        .and_then(|b| git::read_git_text(repo, b).ok())
         .unwrap_or_default();
-    let new_text = git::path_blob_at(repo, commit, new_path)
-        .and_then(|b| git::read_git_text(repo, &b))
+    let new_text = new_blob_oid
+        .as_deref()
+        .and_then(|b| git::read_git_text(repo, b).ok())
         .unwrap_or_default();
     let hunks = compute_hunks(&old_text, &new_text);
+
+    // Write to Tier 2 cache on miss when both OIDs and cache are available.
+    if let (Some(old_oid), Some(new_oid), Some(c)) =
+        (old_blob_oid.as_deref(), new_blob_oid.as_deref(), cache)
+    {
+        let _ = c.with_write_txn(|txn| c.blob_diff_put(txn, old_oid, new_oid, &hunks));
+    }
+
     Ok(apply_hunks_to_range(&hunks, loc.start, loc.end))
 }
 

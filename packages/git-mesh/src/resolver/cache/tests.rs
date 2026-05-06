@@ -141,7 +141,6 @@ fn name_status_round_trip_persists_across_connections() {
 /// Write a blob-diff hunk list through one handle, reopen, read back identical
 /// tuples.
 #[test]
-#[ignore]
 fn blob_diff_round_trip_persists_across_connections() {
     let (_td, repo) = init_repo();
 

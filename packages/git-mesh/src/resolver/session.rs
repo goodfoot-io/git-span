@@ -56,7 +56,7 @@ use std::collections::{HashMap, HashSet};
 /// finds no rename rows. `parent` still references the prior commit in
 /// the walk so an interesting commit later in the walk diffs against the
 /// correct baseline.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommitDelta {
     pub(crate) parent: String,
     pub(crate) commit: String,
@@ -626,21 +626,26 @@ pub(crate) fn resolve_at_head_shared(
         AnchorExtent::LineRange { start, end } => (start, end),
         AnchorExtent::WholeFile => (1, 1),
     };
-    let group = session.ensure_group(repo, &r.anchor_sha, copy_detection, warnings)?;
-    let head_sha = group.head_sha.clone();
+    // Clone the walk data so we can release the mutable borrow on `session`
+    // and then freely access `session.cache` during the hunk loop.
+    let (head_sha, commits) = {
+        let group = session.ensure_group(repo, &r.anchor_sha, copy_detection, warnings)?;
+        (group.head_sha.clone(), group.commits.clone())
+    };
     let mut loc = walker::Tracked {
         path: r.path.clone(),
         start: rstart,
         end: rend,
     };
     // Iterate shared per-commit deltas; only the hunk math is per-anchor.
-    for delta in &group.commits {
+    for delta in &commits {
         match walker::advance_with_entries(
             repo,
             &delta.parent,
             &delta.commit,
             &loc,
             &delta.entries,
+            Some(&session.cache),
         )? {
             walker::Change::Unchanged => {}
             walker::Change::Deleted => return Ok(None),

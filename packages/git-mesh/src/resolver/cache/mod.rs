@@ -208,22 +208,44 @@ impl Cache {
 
     pub(crate) fn blob_diff_get(
         &self,
-        _old_blob: &str,
-        _new_blob: &str,
+        old_blob: &str,
+        new_blob: &str,
     ) -> Option<Vec<(u32, u32, u32, u32)>> {
         if !self.enabled {
             return None;
         }
-        None
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT hunks_blob FROM blob_diff_cache \
+             WHERE old_blob_sha = ?1 AND new_blob_sha = ?2",
+            rusqlite::params![old_blob, new_blob],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(blob) => bincode::deserialize::<Vec<(u32, u32, u32, u32)>>(&blob).ok(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(_) => None,
+        }
     }
 
     pub(crate) fn blob_diff_put(
         &self,
-        _txn: &Transaction,
-        _old: &str,
-        _new: &str,
-        _hunks: &[(u32, u32, u32, u32)],
+        txn: &Transaction,
+        old: &str,
+        new: &str,
+        hunks: &[(u32, u32, u32, u32)],
     ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let blob = bincode::serialize(hunks)
+            .map_err(|e| crate::Error::Git(format!("bincode serialize blob_diff: {e}")))?;
+        txn.execute(
+            "INSERT OR REPLACE INTO blob_diff_cache \
+             (old_blob_sha, new_blob_sha, hunks_blob) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![old, new, blob],
+        )
+        .map_err(|e| crate::Error::Git(format!("blob_diff insert: {e}")))?;
         Ok(())
     }
 
