@@ -449,13 +449,16 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
     let touch_ts = chrono::Utc::now().to_rfc3339();
 
+    let mut provenance_map: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
+        std::collections::HashMap::new();
     let all_touches: Vec<TouchInterval> = entries
         .iter()
-        .filter(|(p, _)| !advice_path_is_internal(p, &internal_path_prefixes))
-        .filter_map(|(path, kind)| {
+        .filter(|(p, _, _)| !advice_path_is_internal(p, &internal_path_prefixes))
+        .filter_map(|(path, kind, prov)| {
             // Canonicalize so flush paths agree with read paths on all
             // case/symlink/leading-./ variants. Skip entries that escape wd.
             let canonical_path = canonicalize_repo_relative_path(wd, path).ok()?;
+            provenance_map.insert(canonical_path.clone(), prov.clone());
             Some(TouchInterval {
                 path: canonical_path,
                 kind: *kind,
@@ -467,7 +470,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         })
         .collect();
 
-    process_touches(repo, &store, &session_id, &id, all_touches)
+    process_touches(repo, &store, &session_id, &id, all_touches, &provenance_map)
 }
 
 /// Shared mesh-resolution and emission pipeline. Called by both `flush`
@@ -480,6 +483,7 @@ fn process_touches(
     session_id: &str,
     id: &str,
     touches: Vec<crate::advice::session::state::TouchInterval>,
+    provenance: &std::collections::HashMap<String, crate::advice::session::state::TouchProvenance>,
 ) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{edit_overlaps, format_anchor_resolved, Action, BasicOutput};
@@ -512,10 +516,13 @@ fn process_touches(
     let meshes_seen = store.meshes_seen_set()?;
 
     let mut output = String::new();
-    let mut mesh_blocks: Vec<String> = Vec::new();
+    let mut mesh_blocks: Vec<BasicOutput> = Vec::new();
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
     let mut emitted_meshes_this_call: Vec<String> = Vec::new();
+    #[allow(unused_mut)]
+    let mut debug_annotations: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
 
     // Precompute, per candidate mesh, a path → anchors index so the per-touch
     // emission loop runs an O(1) lookup keyed on `t.path` and only re-checks
@@ -553,9 +560,6 @@ fn process_touches(
             }
         };
         for (mesh, anchor_index) in meshes.iter().zip(mesh_anchor_index.iter()) {
-            if emitted_meshes_this_call.contains(&mesh.name) {
-                continue;
-            }
             let Some(path_anchors) = anchor_index.get(&t.path) else {
                 continue;
             };
@@ -566,6 +570,23 @@ fn process_touches(
             else {
                 continue;
             };
+
+            // Accumulate debug annotation for every overlapping touch, even if
+            // the mesh was already emitted this call (we want ALL touches that
+            // overlap, not just the first one that triggered the block).
+            if crate::advice::debug::enabled()
+                && let Some(prov) = provenance.get(&t.path)
+            {
+                let annotation = format_touch_annotation(&t.path, &t.kind, prov);
+                debug_annotations
+                    .entry(mesh.name.clone())
+                    .or_default()
+                    .push(annotation);
+            }
+
+            if emitted_meshes_this_call.contains(&mesh.name) {
+                continue;
+            }
             if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
                 continue;
             }
@@ -590,12 +611,22 @@ fn process_touches(
                 mesh_name: mesh.name.clone(),
                 why: mesh.message.clone(),
                 non_active_anchors,
+                debug_touches: vec![],
             };
-            mesh_blocks.push(block.to_string());
+            mesh_blocks.push(block);
             emitted_meshes_this_call.push(mesh.name.clone());
             new_meshes_seen.push(mesh.name.clone());
             if !new_mesh_candidates.contains(&mesh.name) {
                 new_mesh_candidates.push(mesh.name.clone());
+            }
+        }
+    }
+
+    // If debug is enabled, attach accumulated touch annotations to each block.
+    if crate::advice::debug::enabled() {
+        for block in &mut mesh_blocks {
+            if let Some(annotations) = debug_annotations.remove(&block.mesh_name) {
+                block.debug_touches = annotations;
             }
         }
     }
@@ -735,14 +766,16 @@ fn process_touches(
     }
 
     // Build the output — header first, then blocks, then creation stanzas.
-    let has_mesh_blocks = !mesh_blocks.is_empty();
+    let mesh_block_strings: Vec<String> =
+        mesh_blocks.iter().map(|b| b.to_string()).collect();
+    let has_mesh_blocks = !mesh_block_strings.is_empty();
     let has_creation_stanzas = !creation_stanzas.is_empty();
     let has_any_output = has_mesh_blocks || has_creation_stanzas;
 
     if has_any_output {
         if has_mesh_blocks {
             output.push_str(&format!("# Mesh advice for slot `{id}`\n"));
-            for block in &mesh_blocks {
+            for block in &mesh_block_strings {
                 output.push_str("\n\n");
                 output.push_str(block);
             }
@@ -893,7 +926,9 @@ fn run_advice_touch(
         end: line_anchor.map(|(_, e)| e),
     }];
 
-    process_touches(repo, &store, &session_id, "", touches)
+    let empty_provenance: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
+        std::collections::HashMap::new();
+    process_touches(repo, &store, &session_id, "", touches, &empty_provenance)
 }
 
 /// Validate an anchor for the `touch added` case. Same as `validate_read_spec`
@@ -1041,9 +1076,9 @@ fn diff_against_saved(
         String,
         crate::advice::session::state::UntrackedSnapshotEntry,
     >,
-) -> Result<Vec<(String, crate::advice::session::state::TouchKind)>> {
-    use crate::advice::session::state::TouchKind;
-    let mut out: Vec<(String, TouchKind)> = Vec::new();
+) -> Result<Vec<(String, crate::advice::session::state::TouchKind, crate::advice::session::state::TouchProvenance)>> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance, UntrackedFieldChange};
+    let mut out: Vec<(String, TouchKind, TouchProvenance)> = Vec::new();
 
     let diff = std::process::Command::new("git")
         .current_dir(wd)
@@ -1068,22 +1103,47 @@ fn diff_against_saved(
     }
     for (path, meta) in &current_map {
         match saved_untracked.get(path) {
-            None => out.push((path.clone(), TouchKind::Added)),
+            None => out.push((path.clone(), TouchKind::Added, TouchProvenance::Untracked { changes: vec![] })),
             Some(prev) => {
                 let now = untracked_entry_from_meta(path, meta);
-                if prev.size != now.size
-                    || prev.mtime_ns != now.mtime_ns
-                    || prev.ctime_ns != now.ctime_ns
-                    || prev.ino != now.ino
-                {
-                    out.push((path.clone(), TouchKind::Modified));
+                let mut changes: Vec<UntrackedFieldChange> = Vec::new();
+                if prev.size != now.size {
+                    changes.push(UntrackedFieldChange {
+                        field: "size".into(),
+                        before: prev.size.to_string(),
+                        after: now.size.to_string(),
+                    });
+                }
+                if prev.mtime_ns != now.mtime_ns {
+                    changes.push(UntrackedFieldChange {
+                        field: "mtime_ns".into(),
+                        before: prev.mtime_ns.to_string(),
+                        after: now.mtime_ns.to_string(),
+                    });
+                }
+                if prev.ctime_ns != now.ctime_ns {
+                    changes.push(UntrackedFieldChange {
+                        field: "ctime_ns".into(),
+                        before: prev.ctime_ns.to_string(),
+                        after: now.ctime_ns.to_string(),
+                    });
+                }
+                if prev.ino != now.ino {
+                    changes.push(UntrackedFieldChange {
+                        field: "ino".into(),
+                        before: prev.ino.to_string(),
+                        after: now.ino.to_string(),
+                    });
+                }
+                if !changes.is_empty() {
+                    out.push((path.clone(), TouchKind::Modified, TouchProvenance::Untracked { changes }));
                 }
             }
         }
     }
     for path in saved_untracked.keys() {
         if !current_map.contains_key(path) {
-            out.push((path.clone(), TouchKind::Deleted));
+            out.push((path.clone(), TouchKind::Deleted, TouchProvenance::Untracked { changes: vec![] }));
         }
     }
     Ok(out)
@@ -1091,9 +1151,9 @@ fn diff_against_saved(
 
 fn parse_diff_files_z(
     bytes: &[u8],
-    out: &mut Vec<(String, crate::advice::session::state::TouchKind)>,
+    out: &mut Vec<(String, crate::advice::session::state::TouchKind, crate::advice::session::state::TouchProvenance)>,
 ) {
-    use crate::advice::session::state::TouchKind;
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
     // With -z, diff-files emits NUL-separated fields. Each entry is two
     // NUL-terminated chunks: ":<src_mode> <dst_mode> <src_sha> <dst_sha> <status>\0<path>\0"
     let mut chunks = bytes.split(|b| *b == 0).filter(|s| !s.is_empty());
@@ -1106,12 +1166,13 @@ fn parse_diff_files_z(
         };
         let header_str = String::from_utf8_lossy(&header[1..]);
         let mut fields = header_str.split(' ');
-        let src_mode = fields.next().unwrap_or("");
-        let dst_mode = fields.next().unwrap_or("");
+        let src_mode = fields.next().unwrap_or("").to_string();
+        let dst_mode = fields.next().unwrap_or("").to_string();
         let _src_sha = fields.next().unwrap_or("");
         let _dst_sha = fields.next().unwrap_or("");
-        let status = fields.next().unwrap_or("");
-        let kind = match status.chars().next().unwrap_or(' ') {
+        let status_str = fields.next().unwrap_or("");
+        let status = status_str.chars().next().unwrap_or(' ');
+        let kind = match status {
             'D' => TouchKind::Deleted,
             'A' => TouchKind::Added,
             'M' => {
@@ -1125,7 +1186,52 @@ fn parse_diff_files_z(
             _ => TouchKind::Modified,
         };
         let path = String::from_utf8_lossy(path_bytes).into_owned();
-        out.push((path, kind));
+        out.push((path, kind, TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        }));
+    }
+}
+
+/// Format a single touch annotation line for debug output.
+///
+/// Format: `{path}: {kind} ({source}, {details})`
+fn format_touch_annotation(
+    path: &str,
+    kind: &crate::advice::session::state::TouchKind,
+    provenance: &crate::advice::session::state::TouchProvenance,
+) -> String {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let kind_str = match kind {
+        TouchKind::Modified => "modified",
+        TouchKind::Added => "added",
+        TouchKind::Deleted => "deleted",
+        TouchKind::ModeChange => "mode change",
+    };
+    match provenance {
+        TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        } => {
+            let mut details = format!("git diff-files status={}", status);
+            if src_mode != dst_mode {
+                details.push_str(&format!(" src_mode={} dst_mode={}", src_mode, dst_mode));
+            }
+            format!("{}: {} (tracked, {})", path, kind_str, details)
+        }
+        TouchProvenance::Untracked { changes } => {
+            if changes.is_empty() {
+                format!("{}: {} (untracked)", path, kind_str)
+            } else {
+                let details: Vec<String> = changes
+                    .iter()
+                    .map(|c| format!("{}: {} -> {}", c.field, c.before, c.after))
+                    .collect();
+                format!("{}: {} (untracked, {})", path, kind_str, details.join(", "))
+            }
+        }
     }
 }
 
@@ -1277,6 +1383,7 @@ fn run_advice_read(
             mesh_name: mesh.name.clone(),
             why: mesh.message.clone(),
             non_active_anchors,
+            debug_touches: vec![],
         };
         blocks.push(block.to_string());
         new_meshes_seen.push(mesh.name.clone());

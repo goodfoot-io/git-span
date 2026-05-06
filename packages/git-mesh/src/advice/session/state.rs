@@ -59,6 +59,37 @@ pub struct TouchInterval {
 }
 
 
+/// Provenance information for a working-tree change, carrying the raw
+/// detection data that was previously discarded.
+///
+/// In-memory only — NOT persisted to JSONL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TouchProvenance {
+    /// Change detected via `git diff-files` (tracked/indexed file).
+    Tracked {
+        /// Raw status character from `diff-files` (`M`, `A`, `D`, `T`).
+        status: char,
+        /// Source mode string (e.g. `100644`).
+        src_mode: String,
+        /// Destination mode string (e.g. `100755`).
+        dst_mode: String,
+    },
+    /// Change detected by comparing untracked-file metadata against snapshot.
+    Untracked {
+        /// Per-field changes that were detected.
+        changes: Vec<UntrackedFieldChange>,
+    },
+}
+
+/// One field that differed between a saved untracked snapshot entry and the
+/// current working-tree metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UntrackedFieldChange {
+    pub field: String,
+    pub before: String,
+    pub after: String,
+}
+
 /// One entry in `<session>/snapshots/<id>.untracked` — captured at `mark`,
 /// consumed at `flush` to detect untracked-side changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]

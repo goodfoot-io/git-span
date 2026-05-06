@@ -5,29 +5,46 @@
 //! with a single cached `OnceLock<bool>` read.
 
 use std::borrow::Cow;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-static ENABLED: OnceLock<bool> = OnceLock::new();
+// 0 = uninitialized, 1 = enabled, 2 = disabled
+static ENABLED: AtomicU8 = AtomicU8::new(0);
 
 /// Returns `true` when `GIT_MESH_ADVICE_DEBUG` is set to `1` or `true`
-/// (case-insensitive, whitespace-trimmed). The result is cached for the
-/// lifetime of the process.
-///
-/// **Caching note:** the env var is read exactly once via [`OnceLock`] and
-/// the result is frozen for the process lifetime. In-process tests that call
-/// `std::env::set_var` after the first call to `enabled()` will not observe
-/// the change. Integration tests that need to toggle the flag must spawn a
-/// child process (e.g. via `Command::new(env!("CARGO_BIN_EXE_git-mesh"))`)
-/// rather than relying on `set_var`.
+/// (case-insensitive, whitespace-trimmed). The result is cached after the
+/// first call.
 pub fn enabled() -> bool {
-    *ENABLED.get_or_init(|| {
-        std::env::var("GIT_MESH_ADVICE_DEBUG")
-            .map(|v| {
-                let t = v.trim().to_ascii_lowercase();
-                t == "1" || t == "true"
-            })
-            .unwrap_or(false)
-    })
+    match ENABLED.load(Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    let result = std::env::var("GIT_MESH_ADVICE_DEBUG")
+        .map(|v| {
+            let t = v.trim().to_ascii_lowercase();
+            t == "1" || t == "true"
+        })
+        .unwrap_or(false);
+    ENABLED.store(if result { 1 } else { 2 }, Ordering::Relaxed);
+    result
+}
+
+/// Reset the cached debug state so the next call to `enabled()` re-reads the
+/// environment variable. Test-only; not available in production builds.
+#[cfg(test)]
+pub fn test_only_reset() {
+    ENABLED.store(0, Ordering::Relaxed);
+}
+
+/// Directly set the cached debug state without touching the environment.
+/// Test-only; avoids the thread-safety hazard of `std::env::set_var` when
+/// tests run concurrently.
+///
+/// Call `test_only_reset()` or `test_only_set(false)` after the test to
+/// restore the default (uninitialized) state.
+#[cfg(test)]
+pub fn test_only_set(enabled: bool) {
+    ENABLED.store(if enabled { 1 } else { 2 }, Ordering::Relaxed);
 }
 
 /// Escape a value for inclusion in a debug line.

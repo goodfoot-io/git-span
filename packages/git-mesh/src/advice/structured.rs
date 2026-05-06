@@ -115,6 +115,9 @@ pub struct BasicOutput {
     pub why: String,
     /// The other anchors in the mesh (excluding the active anchor).
     pub non_active_anchors: Vec<String>,
+    /// Per-touch debug annotation lines, populated only when
+    /// `GIT_MESH_ADVICE_DEBUG=1`. Empty when debug is off.
+    pub debug_touches: Vec<String>,
 }
 
 impl fmt::Display for BasicOutput {
@@ -130,6 +133,13 @@ impl fmt::Display for BasicOutput {
         if !self.why.is_empty() {
             writeln!(f)?;
             writeln!(f, "Why: {}", self.why)?;
+        }
+        if !self.debug_touches.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "[Touches that triggered this advice]")?;
+            for line in &self.debug_touches {
+                writeln!(f, "{line}")?;
+            }
         }
         Ok(())
     }

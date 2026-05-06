@@ -5,8 +5,8 @@
 use anyhow::Result;
 
 use super::{
-    collect_touched_paths, run_advice_end, run_advice_flush, run_advice_mark, run_advice_read,
-    run_advice_touch, TouchKindArg,
+    collect_touched_paths, format_touch_annotation, parse_diff_files_z, run_advice_end,
+    run_advice_flush, run_advice_mark, run_advice_read, run_advice_touch, TouchKindArg,
 };
 
 struct FixtureRepo {
@@ -662,5 +662,297 @@ fn end_sweeps_leftover_snapshots() -> Result<()> {
         !session_dir.exists(),
         "session dir should be gone after end"
     );
+    Ok(())
+}
+
+// ── debug annotation tests ──────────────────────────────────────────────
+
+/// `format_touch_annotation` produces the correct format for tracked entries.
+#[test]
+fn format_touch_annotation_tracked_modified() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let prov = TouchProvenance::Tracked {
+        status: 'M',
+        src_mode: "100644".into(),
+        dst_mode: "100644".into(),
+    };
+    let line = format_touch_annotation("file.txt", &TouchKind::Modified, &prov);
+    assert_eq!(
+        line,
+        "file.txt: modified (tracked, git diff-files status=M)"
+    );
+    Ok(())
+}
+
+/// When modes differ, the annotation includes mode info.
+#[test]
+fn format_touch_annotation_tracked_mode_change() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let prov = TouchProvenance::Tracked {
+        status: 'M',
+        src_mode: "100644".into(),
+        dst_mode: "100755".into(),
+    };
+    let line = format_touch_annotation("script.sh", &TouchKind::ModeChange, &prov);
+    assert_eq!(
+        line,
+        "script.sh: mode change (tracked, git diff-files status=M src_mode=100644 dst_mode=100755)"
+    );
+    Ok(())
+}
+
+/// `format_touch_annotation` produces the correct format for untracked entries
+/// with field changes.
+#[test]
+fn format_touch_annotation_untracked_with_changes() -> Result<()> {
+    use crate::advice::session::state::{
+        TouchKind, TouchProvenance, UntrackedFieldChange,
+    };
+    let prov = TouchProvenance::Untracked {
+        changes: vec![
+            UntrackedFieldChange {
+                field: "size".into(),
+                before: "1024".into(),
+                after: "2048".into(),
+            },
+            UntrackedFieldChange {
+                field: "mtime_ns".into(),
+                before: "1000".into(),
+                after: "2000".into(),
+            },
+        ],
+    };
+    let line = format_touch_annotation("new.txt", &TouchKind::Modified, &prov);
+    assert_eq!(
+        line,
+        "new.txt: modified (untracked, size: 1024 -> 2048, mtime_ns: 1000 -> 2000)"
+    );
+    Ok(())
+}
+
+/// `format_touch_annotation` handles kind mapping for all variants.
+#[test]
+fn format_touch_annotation_kind_mapping() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let tracked = TouchProvenance::Tracked {
+        status: 'A',
+        src_mode: "0".into(),
+        dst_mode: "100644".into(),
+    };
+    let deleted_tracked = TouchProvenance::Tracked {
+        status: 'D',
+        src_mode: "100644".into(),
+        dst_mode: "000000".into(),
+    };
+    assert_eq!(
+        format_touch_annotation("a", &TouchKind::Added, &tracked),
+        "a: added (tracked, git diff-files status=A src_mode=0 dst_mode=100644)"
+    );
+    assert_eq!(
+        format_touch_annotation("d", &TouchKind::Deleted, &deleted_tracked),
+        "d: deleted (tracked, git diff-files status=D src_mode=100644 dst_mode=000000)"
+    );
+    Ok(())
+}
+
+/// `format_touch_annotation` with empty untracked changes still produces a
+/// valid line (no details after source).
+#[test]
+fn format_touch_annotation_untracked_empty_changes() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    let prov = TouchProvenance::Untracked { changes: vec![] };
+    let line = format_touch_annotation("orphan.txt", &TouchKind::Modified, &prov);
+    assert_eq!(line, "orphan.txt: modified (untracked)");
+    Ok(())
+}
+
+/// `parse_diff_files_z` preserves provenance fields from a simulated
+/// `git diff-files -z --raw` byte stream.
+#[test]
+fn parse_diff_files_z_provenance_capture() -> Result<()> {
+    use crate::advice::session::state::{TouchKind, TouchProvenance};
+    // Simulate output of `git diff-files -z --raw --no-renames`.
+    // Format: ":<src_mode> <dst_mode> <src_sha> <dst_sha> <status>\0<path>\0"
+    let mut bytes: Vec<u8> = Vec::new();
+    // Modified file (same mode)
+    bytes.extend_from_slice(b":100644 100644 abc123 def456 M");
+    bytes.push(0);
+    bytes.extend_from_slice(b"file1.txt");
+    bytes.push(0);
+    // Added file
+    bytes.extend_from_slice(b":000000 100644 000000 abc789 A");
+    bytes.push(0);
+    bytes.extend_from_slice(b"new_file.rs");
+    bytes.push(0);
+    // Deleted file
+    bytes.extend_from_slice(b":100644 000000 abc123 000000 D");
+    bytes.push(0);
+    bytes.extend_from_slice(b"removed.py");
+    bytes.push(0);
+    // Mode-change file
+    bytes.extend_from_slice(b":100644 100755 abc123 def456 M");
+    bytes.push(0);
+    bytes.extend_from_slice(b"script.sh");
+    bytes.push(0);
+
+    let mut out: Vec<(String, TouchKind, TouchProvenance)> = Vec::new();
+    parse_diff_files_z(&bytes, &mut out);
+
+    assert_eq!(out.len(), 4, "got: {out:?}");
+
+    // Entry 0: modified file1.txt
+    assert_eq!(out[0].0, "file1.txt");
+    assert_eq!(out[0].1, TouchKind::Modified);
+    match &out[0].2 {
+        TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        } => {
+            assert_eq!(*status, 'M');
+            assert_eq!(src_mode, "100644");
+            assert_eq!(dst_mode, "100644");
+        }
+        other => panic!("expected Tracked, got {other:?}"),
+    }
+
+    // Entry 1: added new_file.rs
+    assert_eq!(out[1].0, "new_file.rs");
+    assert_eq!(out[1].1, TouchKind::Added);
+    match &out[1].2 {
+        TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        } => {
+            assert_eq!(*status, 'A');
+            assert_eq!(src_mode, "000000");
+            assert_eq!(dst_mode, "100644");
+        }
+        other => panic!("expected Tracked, got {other:?}"),
+    }
+
+    // Entry 2: deleted removed.py
+    assert_eq!(out[2].0, "removed.py");
+    assert_eq!(out[2].1, TouchKind::Deleted);
+    match &out[2].2 {
+        TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        } => {
+            assert_eq!(*status, 'D');
+            assert_eq!(src_mode, "100644");
+            assert_eq!(dst_mode, "000000");
+        }
+        other => panic!("expected Tracked, got {other:?}"),
+    }
+
+    // Entry 3: mode-change on script.sh
+    assert_eq!(out[3].0, "script.sh");
+    assert_eq!(out[3].1, TouchKind::ModeChange);
+    match &out[3].2 {
+        TouchProvenance::Tracked {
+            status,
+            src_mode,
+            dst_mode,
+        } => {
+            assert_eq!(*status, 'M');
+            assert_eq!(src_mode, "100644");
+            assert_eq!(dst_mode, "100755");
+        }
+        other => panic!("expected Tracked, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+/// `BasicOutput` with empty `debug_touches` produces byte-identical output
+/// to the original (pre-debug-field) format.
+#[test]
+fn basic_output_no_debug() -> Result<()> {
+    use crate::advice::structured::BasicOutput;
+    let bo = BasicOutput {
+        active_anchor: "`active.rs`".into(),
+        mesh_name: "my-mesh".into(),
+        why: "Some mesh reason.".into(),
+        non_active_anchors: vec!["`other.rs`".into()],
+        debug_touches: vec![],
+    };
+    let rendered = bo.to_string();
+    let expected = "\
+`active.rs` is in the `my-mesh` mesh with:\n\
+- `other.rs`\n\
+\n\
+Why: Some mesh reason.\n";
+    assert_eq!(rendered, expected);
+    Ok(())
+}
+
+/// `BasicOutput` with `debug_touches` includes the annotation block.
+#[test]
+fn basic_output_with_debug_touches() -> Result<()> {
+    use crate::advice::structured::BasicOutput;
+    let bo = BasicOutput {
+        active_anchor: "`active.rs`".into(),
+        mesh_name: "my-mesh".into(),
+        why: "Some mesh reason.".into(),
+        non_active_anchors: vec!["`other.rs`".into()],
+        debug_touches: vec![
+            "file1.txt: modified (tracked, git diff-files status=M)".into(),
+            "file2.txt: modified (untracked, size: 100 -> 200)".into(),
+        ],
+    };
+    let rendered = bo.to_string();
+    assert!(rendered.contains("[Touches that triggered this advice]"));
+    assert!(
+        rendered.contains("file1.txt: modified (tracked, git diff-files status=M)"),
+        "got: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("file2.txt: modified (untracked, size: 100 -> 200)"),
+        "got: {rendered:?}"
+    );
+    Ok(())
+}
+
+/// Integration test: flush with debug mode enabled works correctly.
+///
+/// Uses `debug::test_only_set` instead of `std::env::set_var` to avoid the
+/// thread-safety hazard of env var manipulation in parallel test execution.
+/// Verifies the full plumming: setting the flag, running the flush pipeline
+/// (which probes `debug::enabled()` during touch→mesh overlap), and the
+/// function succeeds. The exact annotation format is verified by unit tests
+/// for `format_touch_annotation` and `BasicOutput::fmt`.
+#[test]
+fn flush_debug_output_with_annotations() -> Result<()> {
+    crate::advice::debug::test_only_set(true);
+
+    let repo = FixtureRepo::new()?;
+    let gix = repo.gix_repo()?;
+
+    let session_id = FixtureRepo::sid("flush-debug");
+
+    // Basic mark → modify → flush cycle with debug mode on.
+    run_advice_read(&gix, session_id.clone(), "file1.txt".into(), None)?;
+    run_advice_mark(&gix, session_id.clone(), "debug-tool".into())?;
+    std::fs::write(repo.path().join("file1.txt"), "edited content\n")?;
+    let code = run_advice_flush(&gix, session_id.clone(), "debug-tool".into())?;
+    assert_eq!(code, 0, "flush should succeed with debug mode active");
+
+    // Also verify the touch path with debug mode on.
+    let repo2 = FixtureRepo::new()?;
+    let gix2 = repo2.gix_repo()?;
+    let sid2 = FixtureRepo::sid("flush-debug-touch");
+    run_advice_touch(
+        &gix2,
+        sid2.clone(),
+        "debug-touch".into(),
+        "file1.txt".into(),
+        TouchKindArg::Modified,
+    )?;
+
+    // Restore cached state (disable debug).
+    crate::advice::debug::test_only_set(false);
     Ok(())
 }

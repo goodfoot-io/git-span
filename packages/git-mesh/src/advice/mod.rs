@@ -14,7 +14,7 @@ pub mod suggestion;
 pub mod workspace_tree;
 
 pub use session::SessionStore;
-pub use session::state::{ReadRecord, TouchInterval, TouchKind};
+pub use session::state::{ReadRecord, TouchInterval, TouchKind, TouchProvenance, UntrackedFieldChange};
 pub use session::store::{LockGuard, LockTimeout};
 pub use workspace_tree::{DiffEntry, LineRange, WorkspaceTree, capture, diff_trees};
 
@@ -30,7 +30,7 @@ pub use suggestion::{ConfidenceBand, DriftMeta, ScoreBreakdown, Suggestion, Viab
 
 /// Re-exported submodules for test access.
 pub mod state {
-    pub use super::session::state::{ReadRecord, TouchInterval, TouchKind};
+    pub use super::session::state::{ReadRecord, TouchInterval, TouchKind, TouchProvenance, UntrackedFieldChange};
 }
 pub mod store {
     pub use super::session::store::{
