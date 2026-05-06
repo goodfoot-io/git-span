@@ -111,9 +111,8 @@ pub(crate) struct ResolveSession {
     pub(crate) trail_cache_hits: u64,
     /// Counter: cache misses (including I/O errors) in the trail cache.
     pub(crate) trail_cache_misses: u64,
-    /// SQLite-backed content-addressed cache (Phase 2+).  Open on session
-    /// construction; no probes are wired until Phase 3.
-    #[allow(dead_code)]
+    /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
+    /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
 }
 
@@ -167,6 +166,7 @@ impl ResolveSession {
             &mut self.pass1_ms,
             &mut self.trail_cache_hits,
             &mut self.trail_cache_misses,
+            &self.cache,
         )?;
         self.walks.insert(key, walk);
         Ok(())
@@ -208,6 +208,7 @@ impl ResolveSession {
                 &mut self.pass1_ms,
                 &mut self.trail_cache_hits,
                 &mut self.trail_cache_misses,
+                &self.cache,
             )?;
             self.walks.insert(key.clone(), walk);
         } else {
@@ -236,6 +237,7 @@ fn build_grouped_walk(
     pass1_ms_counter: &mut u64,
     trail_cache_hits_counter: &mut u64,
     trail_cache_misses_counter: &mut u64,
+    cache: &Cache,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
     let mut commits =
@@ -354,6 +356,9 @@ fn build_grouped_walk(
     };
 
     let mut deltas: Vec<CommitDelta> = Vec::with_capacity(commits.len());
+    // Buffer for Tier 1 cache misses: (parent, commit, cd, entries) to be
+    // batch-inserted at the end of the walk.
+    let mut ns_cache_buffer: Vec<(String, String, CopyDetection, Vec<NS>)> = Vec::new();
     let mut parent = anchor_sha.to_string();
     let prior_warning_count = warnings.len();
 
@@ -368,7 +373,14 @@ fn build_grouped_walk(
         };
         let entries = if interesting {
             *interesting_counter += 1;
-            walker::name_status(repo, &parent, commit, copy_detection, warnings)?
+            // Tier 1 probe: check the name_status cache before calling walker.
+            if let Some(cached) = cache.name_status_get(&parent, commit, copy_detection) {
+                cached
+            } else {
+                let result = walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
+                ns_cache_buffer.push((parent.clone(), commit.clone(), copy_detection, result.clone()));
+                result
+            }
         } else {
             *skipped_counter += 1;
             Vec::new()
@@ -381,6 +393,17 @@ fn build_grouped_walk(
         parent = commit.clone();
     }
     let renames_disabled = pass1_fell_back || warnings.len() > prior_warning_count;
+
+    // Batch-insert all name_status cache misses in a single transaction.
+    if !ns_cache_buffer.is_empty() {
+        let rows: Vec<(&str, &str, CopyDetection, Vec<NS>)> = ns_cache_buffer
+            .iter()
+            .map(|(p, c, cd, entries)| (p.as_str(), c.as_str(), *cd, entries.clone()))
+            .collect();
+        if let Err(e) = cache.with_write_txn(|txn| cache.name_status_put_batch(txn, &rows)) {
+            eprintln!("name_status cache write error (ignored): {e}");
+        }
+    }
 
     Ok(GroupedWalk {
         anchor_sha: anchor_sha.to_string(),

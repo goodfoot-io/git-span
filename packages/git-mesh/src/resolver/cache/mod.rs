@@ -144,22 +144,64 @@ impl Cache {
 
     pub(crate) fn name_status_get(
         &self,
-        _parent: &str,
-        _commit: &str,
-        _cd: CopyDetection,
+        parent: &str,
+        commit: &str,
+        cd: CopyDetection,
     ) -> Option<Vec<NS>> {
         if !self.enabled {
             return None;
         }
-        None
+        let cd_int = copy_detection_to_int(cd);
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT entries_blob FROM name_status_cache \
+             WHERE parent_sha = ?1 AND commit_sha = ?2 AND copy_detection = ?3",
+            rusqlite::params![parent, commit, cd_int],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(blob) => bincode::deserialize::<Vec<NS>>(&blob).ok(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(_) => None,
+        }
     }
 
     pub(crate) fn name_status_put_batch(
         &self,
-        _txn: &Transaction,
-        _rows: &[(&str, &str, CopyDetection, Vec<NS>)],
+        txn: &Transaction,
+        rows: &[(&str, &str, CopyDetection, Vec<NS>)],
     ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        for (parent, commit, cd, entries) in rows {
+            let cd_int = copy_detection_to_int(*cd);
+            let blob = bincode::serialize(entries)
+                .map_err(|e| crate::Error::Git(format!("bincode serialize name_status: {e}")))?;
+            txn.execute(
+                "INSERT OR REPLACE INTO name_status_cache \
+                 (parent_sha, commit_sha, copy_detection, entries_blob) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![parent, commit, cd_int, blob],
+            )
+            .map_err(|e| crate::Error::Git(format!("name_status insert: {e}")))?;
+        }
         Ok(())
+    }
+
+    /// Open a `BEGIN IMMEDIATE` transaction, run `f`, and commit.
+    /// Errors from `f` cause the transaction to roll back; the error is returned.
+    pub(crate) fn with_write_txn<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Transaction) -> Result<R>,
+    {
+        let txn = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| crate::Error::Git(format!("cache begin txn: {e}")))?;
+        let result = f(&txn)?;
+        txn.commit()
+            .map_err(|e| crate::Error::Git(format!("cache commit txn: {e}")))?;
+        Ok(result)
     }
 
     // ── Tier 2: blob_diff ───────────────────────────────────────────────────
@@ -225,6 +267,15 @@ impl Cache {
 }
 
 // ── internals ───────────────────────────────────────────────────────────────
+
+fn copy_detection_to_int(cd: CopyDetection) -> i32 {
+    match cd {
+        CopyDetection::Off => 0,
+        CopyDetection::SameCommit => 1,
+        CopyDetection::AnyFileInCommit => 2,
+        CopyDetection::AnyFileInRepo => 3,
+    }
+}
 
 fn open_and_bootstrap(
     db_path: &std::path::Path,

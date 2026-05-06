@@ -95,7 +95,6 @@ fn make_grouped_walk_key(anchor_sha: &str, head_sha: &str) -> GroupedWalkKey {
 /// Write a `name_status` row through one `Cache` handle, drop it, reopen a
 /// fresh handle against the same DB path, and read back identical data.
 #[test]
-#[ignore]
 fn name_status_round_trip_persists_across_connections() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
