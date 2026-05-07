@@ -10,43 +10,33 @@
  * @see ./advice-common.ts
  */
 
-import { type PreToolUseInput, preToolUseHook, preToolUseOutput } from "@goodfoot/claude-code-hooks";
+import { type PreToolUseInput, preToolUseHook } from "@goodfoot/claude-code-hooks";
 import { type AdviceExecutor, createDefaultAdviceExecutor, resolveRepoRoot } from "./advice-common.js";
 
 /**
  * Tools whose effect on the working tree is captured directly by PostToolUse
- * (Edit/Write/MultiEdit) or whose effect is irrelevant for diff attribution
+ * (Edit/Write) or whose effect is irrelevant for diff attribution
  * (Read/Grep/Glob/LS/WebFetch/WebSearch). Matches the case statement in
  * `advice-pre-tool-use.sh`.
  */
-const SKIPPED_TOOLS = new Set<string>([
-  "Read",
-  "Grep",
-  "Glob",
-  "LS",
-  "WebFetch",
-  "WebSearch",
-  "Edit",
-  "Write",
-  "MultiEdit",
-]);
+const SKIPPED_TOOLS = new Set<string>(["Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "Edit", "Write"]);
 
 export function createPreToolUseHandler(executor: AdviceExecutor) {
   return (input: PreToolUseInput) => {
     const sid = input.session_id;
     const tuid = input.tool_use_id;
-    if (!sid || !tuid) return preToolUseOutput({});
-    if (SKIPPED_TOOLS.has(input.tool_name)) return preToolUseOutput({});
+    if (!sid || !tuid) return null;
+    if (SKIPPED_TOOLS.has(input.tool_name)) return null;
 
     const root = resolveRepoRoot(input.cwd);
-    if (!root) return preToolUseOutput({});
+    if (!root) return null;
 
     executor({ repoRoot: root, sid, verb: "mark", args: [tuid] });
-    return preToolUseOutput({});
+    return null;
   };
 }
 
 export default preToolUseHook(
-  { matcher: "Edit|Write|MultiEdit|Bash|mcp__.*", timeout: 15_000 },
+  { matcher: "Edit|Write|Bash|mcp__.*", timeout: 15_000 },
   createPreToolUseHandler(createDefaultAdviceExecutor()),
 );

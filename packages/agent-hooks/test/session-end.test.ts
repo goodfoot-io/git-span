@@ -41,6 +41,6 @@ describe("session-end", () => {
 
   it("default export returns silent output", async () => {
     const result = await hook(baseInput({ cwd: "/" }) as never, { logger });
-    expect(result).toMatchObject({ _type: "SessionEnd" });
+    expect(result).toBeNull();
   });
 });

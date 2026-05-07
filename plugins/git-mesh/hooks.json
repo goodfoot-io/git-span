@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/session-end.bc2b3fd7.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/session-end.e639c821.mjs",
             "timeout": 15000
           }
         ],
@@ -29,11 +29,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.19106788.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.dd1da83a.mjs",
             "timeout": 15000
           }
         ],
-        "matcher": "Edit|Write|MultiEdit|Bash|mcp__.*"
+        "matcher": "Edit|Write|Bash|mcp__.*"
       }
     ],
     "PostToolUse": [
@@ -41,21 +41,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/post-tool-use.2593c65b.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/post-tool-use.b42210c5.mjs",
             "timeout": 15000
           }
         ],
-        "matcher": "Read|Edit|Write|MultiEdit|Bash|mcp__.*"
+        "matcher": "Read|Edit|Write|Bash|mcp__.*"
       }
     ]
   },
   "__generated": {
     "files": [
       "stop.e6483191.mjs",
-      "session-end.bc2b3fd7.mjs",
-      "pre-tool-use.19106788.mjs",
-      "post-tool-use.2593c65b.mjs"
+      "session-end.e639c821.mjs",
+      "pre-tool-use.dd1da83a.mjs",
+      "post-tool-use.b42210c5.mjs"
     ],
-    "timestamp": "2026-05-07T17:47:02.101Z"
+    "timestamp": "2026-05-07T20:37:11.215Z"
   }
 }

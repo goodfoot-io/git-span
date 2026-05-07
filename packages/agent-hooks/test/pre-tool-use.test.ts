@@ -33,7 +33,7 @@ describe("pre-tool-use", () => {
     const input = baseInput({ cwd: repo.root, tool_name: "Bash" });
     const out = handler(input as never);
     expect(invocations).toEqual([{ repoRoot: repo.root, sid: "sess-1", verb: "mark", args: ["tu-1"] }]);
-    expect(out).toMatchObject({ _type: "PreToolUse" });
+    expect(out).toBeNull();
   });
 
   it.each([
@@ -45,7 +45,6 @@ describe("pre-tool-use", () => {
     "WebSearch",
     "Edit",
     "Write",
-    "MultiEdit",
   ])("no-ops for skipped tool %s", (tool) => {
     const { executor, invocations } = createRecordingExecutor();
     const handler = createPreToolUseHandler(executor);
@@ -76,7 +75,6 @@ describe("pre-tool-use", () => {
 
   it("default export wraps a handler that returns silent output", async () => {
     const result = await hook(baseInput({ cwd: "/" }) as never, { logger });
-    expect(result).toMatchObject({ _type: "PreToolUse" });
-    expect(result).toHaveProperty("stdout");
+    expect(result).toBeNull();
   });
 });

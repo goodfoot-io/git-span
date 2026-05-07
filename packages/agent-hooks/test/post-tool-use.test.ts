@@ -124,7 +124,7 @@ describe("post-tool-use", () => {
     expect(invocations[0]?.args).toEqual(["tu-1", "new.ts", "added"]);
   });
 
-  it("Write without create response uses kind=modified", () => {
+  it("Write update with empty structuredPatch falls back to whole-file modified", () => {
     const { executor, invocations } = createRecordingExecutor();
     const handler = createPostToolUseHandler(executor);
     handler(
@@ -132,10 +132,49 @@ describe("post-tool-use", () => {
         cwd: repo.root,
         tool_name: "Write",
         tool_input: { file_path: `${repo.root}/new.ts` },
-        tool_response: { type: "update" },
+        tool_response: { type: "update", structuredPatch: [] },
       }) as never,
     );
     expect(invocations[0]?.args).toEqual(["tu-1", "new.ts", "modified"]);
+  });
+
+  it("Write update with hunks records one touch per hunk", () => {
+    const { executor, invocations } = createRecordingExecutor();
+    const handler = createPostToolUseHandler(executor);
+    handler(
+      baseInput({
+        cwd: repo.root,
+        tool_name: "Write",
+        tool_input: { file_path: `${repo.root}/a.ts` },
+        tool_response: {
+          type: "update",
+          structuredPatch: [
+            { newStart: 1, newLines: 7 },
+            { newStart: 40, newLines: 2 },
+          ],
+        },
+      }) as never,
+    );
+    expect(invocations.map((i) => i.args)).toEqual([
+      ["tu-1", "a.ts#L1-L7", "modified"],
+      ["tu-1", "a.ts#L40-L41", "modified"],
+    ]);
+  });
+
+  it("Write create ignores structuredPatch and records whole-file added", () => {
+    const { executor, invocations } = createRecordingExecutor();
+    const handler = createPostToolUseHandler(executor);
+    handler(
+      baseInput({
+        cwd: repo.root,
+        tool_name: "Write",
+        tool_input: { file_path: `${repo.root}/new.ts` },
+        tool_response: { type: "create", structuredPatch: [] },
+      }) as never,
+    );
+    expect(invocations).toEqual([
+      { repoRoot: repo.root, sid: "sess-1", verb: "touch", args: ["tu-1", "new.ts", "added"] },
+    ]);
   });
 
   it("Bash routes through the diff verb against cwd's repo root", () => {
@@ -176,7 +215,6 @@ describe("post-tool-use", () => {
 
   it("default export returns silent output for irrelevant cwd", async () => {
     const result = await hook(baseInput({ cwd: "/" }) as never, { logger });
-    expect(result).toMatchObject({ _type: "PostToolUse" });
-    expect(result).toHaveProperty("stdout");
+    expect(result).toBeNull();
   });
 });

@@ -5,18 +5,18 @@
  * @see ./advice-common.ts
  */
 
-import { type SessionEndInput, sessionEndHook, sessionEndOutput } from "@goodfoot/claude-code-hooks";
+import { type SessionEndInput, sessionEndHook } from "@goodfoot/claude-code-hooks";
 import { type AdviceExecutor, createDefaultAdviceExecutor, resolveRepoRoot } from "./advice-common.js";
 
 export function createSessionEndHandler(executor: AdviceExecutor) {
   return (input: SessionEndInput) => {
     const sid = input.session_id;
-    if (!sid) return sessionEndOutput({});
+    if (!sid) return null;
     const root = resolveRepoRoot(input.cwd);
-    if (!root) return sessionEndOutput({});
+    if (!root) return null;
 
     executor({ repoRoot: root, sid, verb: "end", args: [] });
-    return sessionEndOutput({});
+    return null;
   };
 }
 

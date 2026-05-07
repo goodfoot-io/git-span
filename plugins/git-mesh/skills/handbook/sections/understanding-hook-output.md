@@ -19,23 +19,23 @@ Three events drive the delivery layer (`plugins/git-mesh/hooks.json`, generated 
 
 ### PreToolUse — capture a snapshot pair
 
-Matcher: `Edit|Write|MultiEdit|Bash|mcp__.*`. Source: `packages/agent-hooks/src/pre-tool-use.ts`.
+Matcher: `Edit|Write|Bash|mcp__.*`. Source: `packages/agent-hooks/src/pre-tool-use.ts`.
 
 For tools whose effects on the workspace are not visible from their structured input — `Bash` and any `mcp__*` tool — the hook calls `git mesh advice <sid> mark <tool_use_id>` to capture a before snapshot of the working tree. PostToolUse then captures the after snapshot and diffs the pair, so file changes produced as side effects of a shell command or MCP call can be attributed back to the exact tool call that caused them.
 
-For tools the matcher includes but the script's deny-list short-circuits (`Edit`, `Write`, `MultiEdit`, plus the read-only set `Read`/`Grep`/`Glob`/`LS`/`WebFetch`/`WebSearch` if they reach this script), no snapshot is taken — PostToolUse already has structured input that names the affected path and range directly.
+For tools the matcher includes but the script's deny-list short-circuits (`Edit`, `Write`, plus the read-only set `Read`/`Grep`/`Glob`/`LS`/`WebFetch`/`WebSearch` if they reach this script), no snapshot is taken — PostToolUse already has structured input that names the affected path and range directly.
 
 PreToolUse never injects text. Its only job is to leave a snapshot pair on disk so PostToolUse has something to diff.
 
 ### PostToolUse — render advice for what just happened
 
-Matcher: `Read|Edit|Write|MultiEdit|Bash|mcp__.*`. Source: `packages/agent-hooks/src/post-tool-use.ts`. **The only injection point.**
+Matcher: `Read|Edit|Write|Bash|mcp__.*`. Source: `packages/agent-hooks/src/post-tool-use.ts`. **The only injection point.**
 
 Per tool, it picks the right `git mesh advice` verb:
 
-- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in a mesh that was *committed during the current session*, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched. Meshes inherited from prior sessions stay silent on plain reads — their rationale is too far removed from working memory to be actionable. Edit / Write / MultiEdit advice paths are not session-scoped: a deliberate change to a tracked anchor still surfaces any matching mesh.
-- **`Edit` / `MultiEdit`** → For each hunk in the structured patch, `git mesh advice <sid> touch <tuid> <path>#L<new_start>-L<new_end> modified`. If a hunk has `newLines == 0` (whole-file deletion), or no structured patch is present, falls back to a whole-file `touch <tuid> <path> modified` once.
-- **`Write`** → `git mesh advice <sid> touch <tuid> <path> {added|modified}` (`added` when the response reports `type=create`, `modified` otherwise).
+- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in a mesh that was *committed during the current session*, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched. Meshes inherited from prior sessions stay silent on plain reads — their rationale is too far removed from working memory to be actionable. Edit / Write advice paths are not session-scoped: a deliberate change to a tracked anchor still surfaces any matching mesh.
+- **`Edit`** → For each hunk in the structured patch, `git mesh advice <sid> touch <tuid> <path>#L<new_start>-L<new_end> modified`. If a hunk has `newLines == 0` (whole-file deletion), or no structured patch is present, falls back to a whole-file `touch <tuid> <path> modified` once.
+- **`Write`** → For a `type=create` response, a single whole-file `git mesh advice <sid> touch <tuid> <path> added`. Otherwise, per-hunk `touch <tuid> <path>#L<new_start>-L<new_end> modified` from the structured patch, falling back to a whole-file `touch <tuid> <path> modified` when the patch is empty.
 - **`Bash`, `mcp__*`, anything else** → `git mesh advice <sid> flush <tuid>`. This is where the PreToolUse snapshot pair pays off: `flush` diffs the before/after snapshots and routes advice for any anchor the side effects crossed.
 
 The output of the chosen verb is JSON-wrapped into `{hookSpecificOutput: {hookEventName: PostToolUse, additionalContext: <text>}, systemMessage: <text>}`. Empty output writes nothing.

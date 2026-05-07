@@ -33,6 +33,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ printf '\\n--- %s ---\\n' \"$(date -Iseconds)\"; cat; printf '\\n'; } >> /workspace/.cards/logs/tool-response-probe.jsonl 2>&1"
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {
