@@ -132,8 +132,8 @@ fn ls_all_lists_every_file_with_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list"])?;
-    assert!(out.contains("`m`"), "expected mesh `m` in list: {out}");
-    assert!(out.contains("1 anchor"), "expected 1 anchor: {out}");
+    assert!(out.contains("## m"), "expected mesh `m` in list: {out}");
+    assert!(out.contains("- file1.txt#L1-L5"), "expected anchor bullet: {out}");
     Ok(())
 }
 
@@ -143,7 +143,7 @@ fn ls_by_path_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list", "file1.txt"])?;
-    assert!(out.contains("`m`"), "expected mesh `m`: {out}");
+    assert!(out.contains("## m"), "expected mesh `m`: {out}");
     Ok(())
 }
 
@@ -162,6 +162,6 @@ fn ls_by_path_range_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.mesh_stdout(["list", "file1.txt#L1-L3"])?;
-    assert!(out.contains("`m`"), "expected mesh `m`: {out}");
+    assert!(out.contains("## m"), "expected mesh `m`: {out}");
     Ok(())
 }

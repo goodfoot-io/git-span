@@ -82,26 +82,23 @@ fn ls_one_committed_mesh_block_format() -> Result<()> {
         "the parser honors the spec",
     )?;
     let out = repo.mesh_stdout(["list"])?;
-    // Summary line
+    // Heading uses ## and no backticks, no state marker.
+    assert!(out.contains("## alpha"), "expected '## alpha' heading, got: {out}");
     assert!(
-        out.contains("1 mesh match"),
-        "expected summary line, got: {out}"
+        !out.contains("- `alpha`"),
+        "heading must not use backticks: {out}"
     );
-    // Mesh name with backticks
+    // Anchor address rendered in full.
     assert!(
-        out.contains("- `alpha`"),
-        "expected '- `alpha`' line, got: {out}"
+        out.contains("- file1.txt#L1-L5"),
+        "expected anchor bullet, got: {out}"
     );
-    // Why
+    // Why text appears verbatim (no `Why:` prefix).
     assert!(
-        out.contains("Why: the parser honors the spec"),
-        "expected why, got: {out}"
+        out.contains("the parser honors the spec"),
+        "expected why text, got: {out}"
     );
-    // Anchor count
-    assert!(
-        out.contains("1 anchor"),
-        "expected anchor count, got: {out}"
-    );
+    assert!(!out.contains("Why:"), "no `Why:` prefix in new format: {out}");
     // No state marker for committed
     assert!(
         !out.contains("(staged)") && !out.contains("(pending)"),
@@ -116,8 +113,8 @@ fn ls_alphabetical_order() -> Result<()> {
     commit_mesh(&repo, "zebra", "file1.txt#L1-L3", "z why")?;
     commit_mesh(&repo, "alpha", "file1.txt#L4-L5", "a why")?;
     let out = repo.mesh_stdout(["list"])?;
-    let alpha_pos = out.find("`alpha`").expect("alpha in output");
-    let zebra_pos = out.find("`zebra`").expect("zebra in output");
+    let alpha_pos = out.find("## alpha").expect("alpha in output");
+    let zebra_pos = out.find("## zebra").expect("zebra in output");
     assert!(alpha_pos < zebra_pos, "alpha should come before zebra");
     Ok(())
 }
@@ -134,13 +131,20 @@ fn ls_staged_marker_on_committed_mesh_with_staged_ops() -> Result<()> {
     // Stage an additional add without committing.
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     let out = repo.mesh_stdout(["list"])?;
+    // Heading bare, no `(staged)` decoration.
+    assert!(out.contains("## alpha"), "expected '## alpha' heading: {out}");
     assert!(
-        out.contains("`alpha` (staged)"),
-        "expected '`alpha` (staged)' line, got: {out}"
+        !out.contains("(staged)") && !out.contains("(pending)"),
+        "no state markers on heading: {out}"
+    );
+    // Committed anchor rendered bare; staged add carries the suffix.
+    assert!(
+        out.contains("- file1.txt#L1-L5"),
+        "expected committed anchor bullet: {out}"
     );
     assert!(
-        out.contains("1 anchor with 1 staged change"),
-        "expected '1 anchor with 1 staged change': {out}"
+        out.contains("- file2.txt#L1-L3 — pending add"),
+        "expected pending-add bullet: {out}"
     );
     Ok(())
 }
@@ -152,31 +156,37 @@ fn ls_pending_marker_on_staging_only_mesh() -> Result<()> {
     repo.mesh_stdout(["add", "pending-mesh", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "pending-mesh", "-m", "pending relationship"])?;
     let out = repo.mesh_stdout(["list"])?;
+    assert!(out.contains("## pending-mesh"), "expected '## pending-mesh': {out}");
     assert!(
-        out.contains("`pending-mesh` (pending)"),
-        "expected '`pending-mesh` (pending)' line, got: {out}"
+        !out.contains("(pending)") && !out.contains("(staged)"),
+        "no state markers on heading: {out}"
     );
+    // Pending mesh: only the staged add appears, with the suffix.
     assert!(
-        out.contains("Why: pending relationship"),
-        "expected why text, got: {out}"
+        out.contains("- file1.txt#L1-L5 — pending add"),
+        "expected pending-add bullet: {out}"
     );
+    // Full why text rendered verbatim (no `Why:` prefix).
     assert!(
-        out.contains("0 anchors, 1 staged add"),
-        "expected '0 anchors, 1 staged add': {out}"
+        out.contains("pending relationship"),
+        "expected why text: {out}"
     );
+    assert!(!out.contains("Why:"), "no `Why:` prefix: {out}");
     Ok(())
 }
 
 #[test]
-fn ls_multiline_why_renders_all_lines_indented() -> Result<()> {
+fn ls_multiline_why_renders_all_lines() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "multi", "file1.txt#L1-L5"])?;
     // Use -m with newline embedded.
     repo.mesh_stdout(["why", "multi", "-m", "line one\nline two\nline three"])?;
     repo.mesh_stdout(["commit", "multi"])?;
     let out = repo.mesh_stdout(["list"])?;
-    // Only the first line of why is shown in the list summary.
-    assert!(out.contains("Why: line one"), "expected first line: {out}");
+    // Every line of why is rendered verbatim.
+    assert!(out.contains("line one"), "expected line one: {out}");
+    assert!(out.contains("line two"), "expected line two: {out}");
+    assert!(out.contains("line three"), "expected line three: {out}");
     Ok(())
 }
 
@@ -186,13 +196,15 @@ fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
     // Whole-file anchor (no #L anchor).
     commit_mesh(&repo, "wf", "file1.txt", "whole file relationship")?;
     let out = repo.mesh_stdout(["list"])?;
+    assert!(out.contains("## wf"), "expected '## wf' heading: {out}");
+    // Whole-file anchor renders as bare path (no `#L` and no `(whole file)`).
     assert!(
-        out.contains("`wf`"),
-        "expected mesh `wf`, got: {out}"
+        out.contains("- file1.txt\n"),
+        "expected bare-path bullet for whole-file anchor: {out}"
     );
     assert!(
-        out.contains("1 anchor"),
-        "expected anchor count: {out}"
+        !out.contains("(whole"),
+        "no whole-file decoration: {out}"
     );
     Ok(())
 }
@@ -210,19 +222,24 @@ fn ls_staged_flag_shows_only_meshes_with_pending_staging() -> Result<()> {
     repo.mesh_stdout(["add", "dirty", "file1.txt#L5-L6"])?;
 
     let out = repo.mesh_stdout(["list", "--staged"])?;
-    // `clean` has no staging and should not appear.
-    assert!(!out.contains("`clean`"), "clean should be filtered out: {out}");
-    // `pending-m` has staging but no commit.
-    assert!(out.contains("`pending-m`"), "pending-m should appear: {out}");
+    // Top summary line counts meshes with pending staging.
     assert!(
-        out.contains("(pending)"),
-        "pending-m should show pending marker: {out}"
+        out.starts_with("2 meshes have pending staging."),
+        "expected staged summary line: {out}"
     );
-    // `dirty` has committed anchors plus a staged add.
-    assert!(out.contains("`dirty`"), "dirty should appear: {out}");
+    // `clean` has no staging and should not appear.
+    assert!(!out.contains("## clean"), "clean should be filtered out: {out}");
+    // `pending-m` has staging but no commit; rendered as a block heading.
+    assert!(out.contains("## pending-m"), "pending-m should appear: {out}");
+    // `dirty` has committed anchors plus a staged add — both appear.
+    assert!(out.contains("## dirty"), "dirty should appear: {out}");
     assert!(
-        out.contains("1 add"),
-        "dirty should show 1 staged add: {out}"
+        out.contains("- file2.txt#L5-L7"),
+        "dirty's committed anchor should be listed: {out}"
+    );
+    assert!(
+        out.contains("- file1.txt#L5-L6 — pending add"),
+        "dirty's staged add should be listed with suffix: {out}"
     );
     Ok(())
 }
@@ -237,8 +254,8 @@ fn ls_path_filter_includes_matching_mesh() -> Result<()> {
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
     let out = repo.mesh_stdout(["list", "file1.txt"])?;
-    assert!(out.contains("`alpha`"), "alpha should appear: {out}");
-    assert!(!out.contains("`beta`"), "beta should not appear: {out}");
+    assert!(out.contains("## alpha"), "alpha should appear: {out}");
+    assert!(!out.contains("## beta"), "beta should not appear: {out}");
     Ok(())
 }
 
@@ -251,8 +268,15 @@ fn ls_path_filter_renders_full_anchor_list() -> Result<()> {
     repo.mesh_stdout(["why", "alpha", "-m", "dual anchor"])?;
     repo.mesh_stdout(["commit", "alpha"])?;
     let out = repo.mesh_stdout(["list", "file1.txt"])?;
-    // Both anchors should appear in the count, not just the matching one.
-    assert!(out.contains("2 anchors"), "expected 2 anchors: {out}");
+    // Both anchors should appear in the bullet list, not just the matching one.
+    assert!(
+        out.contains("- file1.txt#L1-L5"),
+        "expected file1 anchor: {out}"
+    );
+    assert!(
+        out.contains("- file2.txt#L1-L3"),
+        "expected file2 anchor: {out}"
+    );
     Ok(())
 }
 
@@ -263,9 +287,9 @@ fn ls_path_range_filter_overlaps_correctly() -> Result<()> {
     commit_mesh(&repo, "nooverlap", "file1.txt#L8-L10", "no-overlap why")?;
     // Query L5-L6, should match overlap (L3-L7) but not nooverlap (L8-L10).
     let out = repo.mesh_stdout(["list", "file1.txt#L5-L6"])?;
-    assert!(out.contains("`overlap`"), "expected overlap: {out}");
+    assert!(out.contains("## overlap"), "expected overlap: {out}");
     assert!(
-        !out.contains("`nooverlap`"),
+        !out.contains("## nooverlap"),
         "nooverlap should not appear: {out}"
     );
     Ok(())
@@ -277,7 +301,7 @@ fn ls_whole_file_anchor_matches_any_range_query() -> Result<()> {
     commit_mesh(&repo, "wf", "file1.txt", "whole file")?;
     // A anchor query on the same path should match the whole-file anchor.
     let out = repo.mesh_stdout(["list", "file1.txt#L1-L5"])?;
-    assert!(out.contains("`wf`"), "expected wf: {out}");
+    assert!(out.contains("## wf"), "expected wf: {out}");
     Ok(())
 }
 
@@ -553,8 +577,8 @@ fn ls_search_matches_name() -> Result<()> {
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "some why")?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "other why")?;
     let out = repo.mesh_stdout(["list", "--search", "alpha"])?;
-    assert!(out.contains("`alpha`"), "alpha should match: {out}");
-    assert!(!out.contains("`beta`"), "beta should not match: {out}");
+    assert!(out.contains("## alpha"), "alpha should match: {out}");
+    assert!(!out.contains("## beta"), "beta should not match: {out}");
     Ok(())
 }
 
@@ -569,8 +593,8 @@ fn ls_search_matches_why_line() -> Result<()> {
     )?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "unrelated relationship")?;
     let out = repo.mesh_stdout(["list", "--search", "parser"])?;
-    assert!(out.contains("`alpha`"), "alpha should match via why: {out}");
-    assert!(!out.contains("`beta`"), "beta should not match: {out}");
+    assert!(out.contains("## alpha"), "alpha should match via why: {out}");
+    assert!(!out.contains("## beta"), "beta should not match: {out}");
     Ok(())
 }
 
@@ -580,8 +604,8 @@ fn ls_search_matches_anchor_address() -> Result<()> {
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
     let out = repo.mesh_stdout(["list", "--search", "file2"])?;
-    assert!(!out.contains("`alpha`"), "alpha should not match: {out}");
-    assert!(out.contains("`beta`"), "beta should match via anchor: {out}");
+    assert!(!out.contains("## alpha"), "alpha should not match: {out}");
+    assert!(out.contains("## beta"), "beta should match via anchor: {out}");
     Ok(())
 }
 
@@ -596,7 +620,7 @@ fn ls_search_case_insensitive_by_default() -> Result<()> {
     )?;
     let out = repo.mesh_stdout(["list", "--search", "parser"])?;
     assert!(
-        out.contains("`alpha`"),
+        out.contains("## alpha"),
         "case-insensitive match expected: {out}"
     );
     Ok(())
@@ -657,8 +681,8 @@ fn ls_offset_skips_first_meshes() -> Result<()> {
     commit_mesh(&repo, "beta", "file1.txt#L4-L5", "beta why")?;
     // Offset 1 skips alpha (alphabetically first).
     let out = repo.mesh_stdout(["list", "--offset", "1"])?;
-    assert!(!out.contains("`alpha`"), "alpha should be skipped: {out}");
-    assert!(out.contains("`beta`"), "beta should appear: {out}");
+    assert!(!out.contains("## alpha"), "alpha should be skipped: {out}");
+    assert!(out.contains("## beta"), "beta should appear: {out}");
     Ok(())
 }
 
@@ -668,8 +692,8 @@ fn ls_limit_caps_output() -> Result<()> {
     commit_mesh(&repo, "alpha", "file1.txt#L1-L3", "alpha why")?;
     commit_mesh(&repo, "beta", "file1.txt#L4-L5", "beta why")?;
     let out = repo.mesh_stdout(["list", "--limit", "1"])?;
-    assert!(out.contains("`alpha`"), "alpha should appear: {out}");
-    assert!(!out.contains("`beta`"), "beta should be capped: {out}");
+    assert!(out.contains("## alpha"), "alpha should appear: {out}");
+    assert!(!out.contains("## beta"), "beta should be capped: {out}");
     Ok(())
 }
 
@@ -680,9 +704,9 @@ fn ls_offset_and_limit_select_second_mesh() -> Result<()> {
     commit_mesh(&repo, "beta", "file1.txt#L4-L5", "beta why")?;
     commit_mesh(&repo, "gamma", "file2.txt#L1-L3", "gamma why")?;
     let out = repo.mesh_stdout(["list", "--offset", "1", "--limit", "1"])?;
-    assert!(!out.contains("`alpha`"), "alpha skipped: {out}");
-    assert!(out.contains("`beta`"), "beta selected: {out}");
-    assert!(!out.contains("`gamma`"), "gamma capped: {out}");
+    assert!(!out.contains("## alpha"), "alpha skipped: {out}");
+    assert!(out.contains("## beta"), "beta selected: {out}");
+    assert!(!out.contains("## gamma"), "gamma capped: {out}");
     Ok(())
 }
 
@@ -709,8 +733,8 @@ fn ls_pagination_after_path_filter() -> Result<()> {
     commit_mesh(&repo, "gamma", "file2.txt#L1-L3", "gamma")?;
     // Filter by file1.txt (alpha and beta), then offset 1 → beta only.
     let out = repo.mesh_stdout(["list", "file1.txt", "--offset", "1"])?;
-    assert!(!out.contains("`alpha`"), "alpha skipped: {out}");
-    assert!(out.contains("`beta`"), "beta selected: {out}");
-    assert!(!out.contains("`gamma`"), "gamma not in filter: {out}");
+    assert!(!out.contains("## alpha"), "alpha skipped: {out}");
+    assert!(out.contains("## beta"), "beta selected: {out}");
+    assert!(!out.contains("## gamma"), "gamma not in filter: {out}");
     Ok(())
 }

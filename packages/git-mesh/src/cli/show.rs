@@ -283,6 +283,8 @@ struct MeshListing {
     name: String,
     why: String,
     anchors: Vec<AnchorEntry>,
+    pending_adds: Vec<AnchorEntry>,
+    pending_removes: Vec<AnchorEntry>,
     state: MeshState,
     staged_adds: usize,
     staged_removes: usize,
@@ -337,32 +339,42 @@ fn collect_listings_with_options(
                 });
             }
             // Determine if this committed mesh also has staged ops.
-            let (state, staged_adds, staged_removes, staged_configs, staged_why) =
+            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
                 if include_state && staged_name_set.contains(name.as_str()) {
                     let staging = read_staging(repo, name)?;
                     let has_ops = !staging.adds.is_empty()
                         || !staging.removes.is_empty()
                         || !staging.configs.is_empty()
                         || staging.why.is_some();
+                    let staged_adds_n = staging.adds.len();
+                    let staged_removes_n = staging.removes.len();
+                    let staged_configs_n = staging.configs.len();
+                    let staged_why_b = staging.why.is_some();
+                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                        .collect();
+                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                        .collect();
                     (
-                        if has_ops {
-                            MeshState::Staged
-                        } else {
-                            MeshState::Committed
-                        },
-                        staging.adds.len(),
-                        staging.removes.len(),
-                        staging.configs.len(),
-                        staging.why.is_some(),
+                        if has_ops { MeshState::Staged } else { MeshState::Committed },
+                        staged_adds_n,
+                        staged_removes_n,
+                        staged_configs_n,
+                        staged_why_b,
+                        pending_adds,
+                        pending_removes,
                     )
                 } else {
-                    (MeshState::Committed, 0, 0, 0, false)
+                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
                 };
             let why = message.trim_end_matches('\n').to_string();
             listings.push(MeshListing {
                 name: name.clone(),
                 why,
                 anchors,
+                pending_adds,
+                pending_removes,
                 state,
                 staged_adds,
                 staged_removes,
@@ -385,18 +397,23 @@ fn collect_listings_with_options(
             let staged_configs = staging.configs.len();
             let staged_why = staging.why.is_some();
             let why = staging.why.unwrap_or_default();
-            let anchors = staging
+            let pending_adds: Vec<AnchorEntry> = staging
                 .adds
                 .into_iter()
-                .map(|a| AnchorEntry {
-                    path: a.path,
-                    extent: a.extent,
-                })
+                .map(|a| AnchorEntry { path: a.path, extent: a.extent })
                 .collect();
+            let pending_removes: Vec<AnchorEntry> = staging
+                .removes
+                .into_iter()
+                .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                .collect();
+            let anchors = pending_adds.clone();
             listings.push(MeshListing {
                 name: name.clone(),
                 why,
                 anchors,
+                pending_adds,
+                pending_removes,
                 state: MeshState::Pending,
                 staged_adds,
                 staged_removes,
@@ -447,32 +464,42 @@ fn collect_listings_for_names(
             });
         }
         // Determine if this committed mesh also has staged ops.
-        let (state, staged_adds, staged_removes, staged_configs, staged_why) =
+        let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
             if include_state && staged_name_set.contains(name.as_str()) {
                 let staging = read_staging(repo, name)?;
                 let has_ops = !staging.adds.is_empty()
                     || !staging.removes.is_empty()
                     || !staging.configs.is_empty()
                     || staging.why.is_some();
+                let staged_adds_n = staging.adds.len();
+                let staged_removes_n = staging.removes.len();
+                let staged_configs_n = staging.configs.len();
+                let staged_why_b = staging.why.is_some();
+                let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                    .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                    .collect();
+                let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                    .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                    .collect();
                 (
-                    if has_ops {
-                        MeshState::Staged
-                    } else {
-                        MeshState::Committed
-                    },
-                    staging.adds.len(),
-                    staging.removes.len(),
-                    staging.configs.len(),
-                    staging.why.is_some(),
+                    if has_ops { MeshState::Staged } else { MeshState::Committed },
+                    staged_adds_n,
+                    staged_removes_n,
+                    staged_configs_n,
+                    staged_why_b,
+                    pending_adds,
+                    pending_removes,
                 )
             } else {
-                (MeshState::Committed, 0, 0, 0, false)
+                (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
             };
         let why = message.trim_end_matches('\n').to_string();
         listings.push(MeshListing {
             name: name.clone(),
             why,
             anchors,
+            pending_adds,
+            pending_removes,
             state,
             staged_adds,
             staged_removes,
@@ -495,18 +522,23 @@ fn collect_listings_for_names(
         let staged_configs = staging.configs.len();
         let staged_why = staging.why.is_some();
         let why = staging.why.unwrap_or_default();
-        let anchors = staging
+        let pending_adds: Vec<AnchorEntry> = staging
             .adds
             .into_iter()
-            .map(|a| AnchorEntry {
-                path: a.path,
-                extent: a.extent,
-            })
+            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
             .collect();
+        let pending_removes: Vec<AnchorEntry> = staging
+            .removes
+            .into_iter()
+            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+            .collect();
+        let anchors = pending_adds.clone();
         listings.push(MeshListing {
             name: name.clone(),
             why,
             anchors,
+            pending_adds,
+            pending_removes,
             state: MeshState::Pending,
             staged_adds,
             staged_removes,
@@ -555,6 +587,8 @@ fn collect_filtered_porcelain_listings_with_staging(
                 name,
                 why: String::new(),
                 anchors,
+                pending_adds: Vec::new(),
+                pending_removes: Vec::new(),
                 state: MeshState::Committed,
                 staged_adds: 0,
                 staged_removes: 0,
@@ -609,6 +643,8 @@ fn collect_staged_porcelain_listings(repo: &gix::Repository) -> Result<Vec<MeshL
             name,
             why: String::new(),
             anchors,
+            pending_adds: Vec::new(),
+            pending_removes: Vec::new(),
             state: MeshState::Pending,
             staged_adds,
             staged_removes,
@@ -655,30 +691,45 @@ fn apply_search(listings: &mut Vec<MeshListing>, re: &regex::Regex) {
     });
 }
 
-#[allow(dead_code)]
+fn anchor_addr_plain(a: &AnchorEntry) -> String {
+    match a.extent {
+        AnchorExtent::LineRange { start, end } => format!("{}#L{start}-L{end}", a.path),
+        AnchorExtent::WholeFile => a.path.clone(),
+    }
+}
+
+fn render_list_block(listing: &MeshListing) {
+    println!("## {}", listing.name);
+    let mut bullets: Vec<String> = Vec::new();
+    if listing.state != MeshState::Pending {
+        for a in &listing.anchors {
+            bullets.push(format!("- {}", anchor_addr_plain(a)));
+        }
+    }
+    for a in &listing.pending_adds {
+        bullets.push(format!("- {} — pending add", anchor_addr_plain(a)));
+    }
+    for a in &listing.pending_removes {
+        bullets.push(format!("- {} — pending remove", anchor_addr_plain(a)));
+    }
+    if bullets.is_empty() {
+        println!("*Mesh has no anchors*");
+    } else {
+        for b in &bullets {
+            println!("{b}");
+        }
+    }
+    let trimmed_why = listing.why.trim_end_matches('\n');
+    if !trimmed_why.is_empty() {
+        println!();
+        println!("{trimmed_why}");
+    }
+}
+
 fn render_blocks(page: &[MeshListing]) {
     let total = page.len();
     for (i, listing) in page.iter().enumerate() {
-        let marker = match listing.state {
-            MeshState::Committed => String::new(),
-            MeshState::Staged => " (staged)".to_string(),
-            MeshState::Pending => " (pending)".to_string(),
-        };
-        println!("{}{}:", listing.name, marker);
-        for a in &listing.anchors {
-            let addr = match a.extent {
-                AnchorExtent::LineRange { start, end } => {
-                    format!("{}#L{start}-L{end}", a.path)
-                }
-                AnchorExtent::WholeFile => a.path.clone(),
-            };
-            println!("- {addr}");
-        }
-        let trimmed_why = listing.why.trim();
-        if !trimmed_why.is_empty() {
-            println!();
-            println!("{trimmed_why}");
-        }
+        render_list_block(listing);
         if i + 1 < total {
             println!();
             println!("---");
@@ -967,80 +1018,9 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         let noun = if page.len() == 1 { "mesh has" } else { "meshes have" };
         println!("{} {noun} pending staging.", page.len());
         println!();
-        for listing in &page {
-            let marker = match listing.state {
-                MeshState::Staged => " (staged)",
-                MeshState::Pending => " (pending)",
-                MeshState::Committed => "",
-            };
-            let add_word = if listing.staged_adds == 1 { "add" } else { "adds" };
-            let remove_word = if listing.staged_removes == 1 { "remove" } else { "removes" };
-            let config_word = if listing.staged_configs == 1 { "config change" } else { "config changes" };
-            let why_part = if listing.staged_why {
-                "1 why change".to_string()
-            } else {
-                "0 why changes".to_string()
-            };
-            println!(
-                "- `{name}`{marker} — {adds} {aword}, {removes} {rword}, {configs} {cword}, {why}.",
-                name = listing.name,
-                marker = marker,
-                adds = listing.staged_adds,
-                aword = add_word,
-                removes = listing.staged_removes,
-                rword = remove_word,
-                configs = listing.staged_configs,
-                cword = config_word,
-                why = why_part,
-            );
-        }
+        render_blocks(&page);
     } else {
-        let noun = if page.len() == 1 { "mesh" } else { "meshes" };
-        let verb = if page.len() == 1 { "matches" } else { "match" };
-        println!("{} {noun} {verb} the filters.", page.len());
-        println!();
-        for listing in &page {
-            let marker = match listing.state {
-                MeshState::Staged => " (staged)",
-                MeshState::Pending => " (pending)",
-                MeshState::Committed => "",
-            };
-            let anchor_word = if listing.anchors.len() == 1 { "anchor" } else { "anchors" };
-            let detail = match listing.state {
-                MeshState::Committed => {
-                    format!("{} {aword}", listing.anchors.len(), aword = anchor_word)
-                }
-                MeshState::Staged => {
-                    let total_staging = listing.staged_adds
-                        + listing.staged_removes
-                        + listing.staged_configs
-                        + (listing.staged_why as usize);
-                    let staging_word = if total_staging == 1 { "change" } else { "changes" };
-                    format!(
-                        "{} {aword} with {total} staged {sword}",
-                        listing.anchors.len(),
-                        aword = anchor_word,
-                        total = total_staging,
-                        sword = staging_word,
-                    )
-                }
-                MeshState::Pending => {
-                    let add_word = if listing.staged_adds == 1 { "add" } else { "adds" };
-                    format!(
-                        "0 anchors, {} staged {aword}",
-                        listing.staged_adds,
-                        aword = add_word,
-                    )
-                }
-            };
-            let why_first_line = listing.why.lines().next().unwrap_or("");
-            println!("- `{name}`{marker} — {detail}. Why: {why}",
-                name = listing.name,
-                marker = marker,
-                detail = detail,
-                why = why_first_line,
-            );
-        }
+        render_blocks(&page);
     }
 
     Ok(0)
