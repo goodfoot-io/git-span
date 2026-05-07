@@ -35,6 +35,8 @@ fn seed_line_range_drift(repo: &TestRepo) -> Result<()> {
 
 #[test]
 fn whole_pin_human_renders_whole() -> Result<()> {
+    // New: whole-file pins render as bare path — no `(whole file)` decoration.
+    // The absence of `#L` is the whole-file signal per the unified block spec.
     let repo = TestRepo::seeded()?;
     seed_whole_file_drift(&repo)?;
     let out = repo.run_mesh(["stale", "m"])?;
@@ -43,9 +45,10 @@ fn whole_pin_human_renders_whole() -> Result<()> {
         text.contains("hero.png"),
         "expected `hero.png` bullet, got:\n{text}"
     );
+    // No `(whole file)` decoration in the unified block shape.
     assert!(
-        text.contains("whole file"),
-        "human should include `(whole file)` suffix, got:\n{text}"
+        !text.contains("(whole file)"),
+        "whole file decoration must be absent in unified block, got:\n{text}"
     );
     assert!(
         !text.contains("#L0-L0"),

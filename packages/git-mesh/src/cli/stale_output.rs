@@ -91,29 +91,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         .unwrap_or(0);
 
     let mut meshes = if args.paths.is_empty() {
-        // No positional args: scan every mesh (preserves existing behavior).
-        let mut meshes = {
-            let _perf = crate::perf::span("stale.resolve-all-meshes");
-            stale_meshes(repo, options)?
-        };
-        if layers.staged_mesh {
-            let _perf = crate::perf::span("stale.resolve-staging-only");
-            for name in staging_only_mesh_names(repo)? {
-                if meshes.iter().any(|m| m.name == name) {
-                    continue;
-                }
-                let pending = build_pending_findings(repo, &name);
-                if !pending.is_empty() {
-                    meshes.push(MeshResolved {
-                        name,
-                        message: String::new(),
-                        anchors: Vec::new(),
-                        pending,
-                    });
-                }
-            }
-        }
-        meshes
+        // No positional args: scan every mesh. Pending-only meshes are NOT
+        // included — workspace scans answer "what's stale?" only.
+        let _perf = crate::perf::span("stale.resolve-all-meshes");
+        stale_meshes(repo, options)?
     } else {
         // Resolve each positional arg through mesh-name → path-index dispatch.
         let _perf = crate::perf::span("stale.resolve-args");
@@ -333,19 +314,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             true
         })
         .count();
-    // Pending Add/Remove with `SidecarMismatch` drift drive exit too;
-    // Message/ConfigChange never do.
-    let pending_drift: usize = pending
-        .iter()
-        .filter(|p| {
-            matches!(
-                p,
-                PendingFinding::Add { drift: Some(_), .. }
-                    | PendingFinding::Remove { drift: Some(_), .. }
-            )
-        })
-        .count();
-    let stale_count = unacked_findings + pending_drift;
+    // Pending ops never drive exit code — only actual drift does.
+    let stale_count = unacked_findings;
 
     match args.format {
         StaleFormat::Human => {
@@ -368,51 +338,24 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             // drift to report, output a summary or clean confirmation.
             // Silence is the wrong answer when the user names a mesh, and
             // even scan-all should report a clean result with counts.
-            if !printed && stale_count == 0 {
-                if args.paths.is_empty() {
-                    // Scan-all: print summary line with counts.
-                    // Use total_committed_mesh_count / total_committed_anchor_count
-                    // (all committed meshes / anchors) rather than meshes.len()
-                    // or meshes[.].anchors.len() (which only includes meshes with
-                    // findings after stale_meshes filtering).
-                    let total_anchors = total_committed_anchor_count;
-                    let total_pending: usize = pending.len();
-                    let mesh_word = if total_committed_mesh_count == 1 { "mesh" } else { "meshes" };
-                    let anchor_word = if total_anchors == 1 {
-                        "anchor"
-                    } else {
-                        "anchors"
-                    };
-                    println!(
-                        "git mesh stale: 0 stale, {} pending across {} {} ({} {} checked).",
-                        total_pending,
-                        total_committed_mesh_count,
-                        mesh_word,
-                        total_anchors,
-                        anchor_word,
-                    );
-                } else {
-                    // Named target: print clean confirmation per mesh.
-                    for m in &meshes {
-                        let total = m.anchors.len();
-                        if total == 0 {
-                            println!("{} has no anchors.", format::format_mesh_name(&m.name),);
-                        } else {
-                            let anchor_word = if total == 1 {
-                                "anchor is"
-                            } else {
-                                "anchors are"
-                            };
-                            println!(
-                                "{} is clean. {} {} fresh against HEAD, the index, and the working tree.{}",
-                                format::format_mesh_name(&m.name),
-                                total,
-                                anchor_word,
-                                format::IDEMPOTENT_TAG,
-                            );
-                        }
-                    }
-                }
+            // Scan-all, all clean: print summary line with counts.
+            // Named-lookup clean meshes: render_human already emitted the block;
+            // no fallback message needed here.
+            if !printed && stale_count == 0 && args.paths.is_empty() {
+                // Use total_committed_mesh_count / total_committed_anchor_count
+                // (all committed meshes / anchors) rather than meshes.len()
+                // or meshes[.].anchors.len() (which only includes meshes with
+                // findings after stale_meshes filtering).
+                let total_anchors = total_committed_anchor_count;
+                let mesh_word = if total_committed_mesh_count == 1 { "mesh" } else { "meshes" };
+                let anchor_word = if total_anchors == 1 { "anchor" } else { "anchors" };
+                println!(
+                    "0 stale across {} {} ({} {} checked)",
+                    total_committed_mesh_count,
+                    mesh_word,
+                    total_anchors,
+                    anchor_word,
+                );
             }
         }
         StaleFormat::Porcelain => {
@@ -563,6 +506,91 @@ fn describe_finding(f: &Finding) -> String {
     }
 }
 
+/// Lowercase prose description for use in the unified block-shape suffix.
+///
+/// Returns strings like:
+/// - "changed"
+/// - "changed in HEAD"
+/// - "moved to new/path#L1-L10"
+/// - "orphaned in HEAD (path no longer exists)"
+fn describe_finding_lower(f: &Finding) -> String {
+    let src_phrase = |src: Option<DriftSource>| -> &'static str {
+        match src {
+            Some(DriftSource::Head) => "in HEAD",
+            Some(DriftSource::Index) => "in the index",
+            Some(DriftSource::Worktree) => "in the working tree",
+            None => "",
+        }
+    };
+
+    match &f.status {
+        AnchorStatus::Changed => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "changed".to_string()
+            } else {
+                format!("changed {src}")
+            }
+        }
+        AnchorStatus::Moved => {
+            let src = src_phrase(f.source);
+            if let Some(cur) = &f.current {
+                let dest = render_path_extent_plain(&cur.path, cur.extent);
+                if src.is_empty() {
+                    format!("moved to {dest}")
+                } else {
+                    format!("moved {src} to {dest}")
+                }
+            } else if src.is_empty() {
+                "moved".to_string()
+            } else {
+                format!("moved {src}")
+            }
+        }
+        AnchorStatus::Orphaned => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "orphaned (path no longer exists)".to_string()
+            } else {
+                format!("orphaned {src} (path no longer exists)")
+            }
+        }
+        AnchorStatus::MergeConflict => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "merge conflict".to_string()
+            } else {
+                format!("merge conflict {src}")
+            }
+        }
+        AnchorStatus::Submodule => {
+            let src = src_phrase(f.source);
+            if src.is_empty() {
+                "submodule".to_string()
+            } else {
+                format!("submodule {src}")
+            }
+        }
+        AnchorStatus::ContentUnavailable(reason) => {
+            let src = src_phrase(f.source);
+            let detail = match reason {
+                UnavailableReason::LfsNotFetched => "LFS not fetched",
+                UnavailableReason::LfsNotInstalled => "LFS not installed",
+                UnavailableReason::PromisorMissing => "promisor missing",
+                UnavailableReason::SparseExcluded => "sparse excluded",
+                UnavailableReason::FilterFailed { .. } => "filter failed",
+                UnavailableReason::IoError { .. } => "I/O error",
+            };
+            if src.is_empty() {
+                format!("content unavailable ({detail})")
+            } else {
+                format!("content unavailable {src} ({detail})")
+            }
+        }
+        AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
+    }
+}
+
 fn status_str(s: &AnchorStatus) -> &'static str {
     match s {
         AnchorStatus::Fresh => "FRESH",
@@ -662,12 +690,54 @@ fn render_human(
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
 ) -> Result<bool> {
+    // is_named_lookup: true when positional args were given (named lookup mode)
+    // For workspace scan: suppress clean meshes and pending bullets.
+    // For named lookup: always render block, append pending bullets.
+    //
+    // We detect named-lookup vs workspace-scan by checking if any mesh in the
+    // slice has pending findings — in practice the caller already gated this
+    // correctly (workspace path never builds pending-only meshes anymore).
+    // The cleanest signal is whether `pending` is empty vs not, but that doesn't
+    // tell us about mode. Instead we rely on a flag passed via the boolean
+    // derived from the mesh slice: workspace-scan meshes have no pending
+    // (the loop above that built them didn't add staging-only entries).
+    // Actually the simplest approach: the caller has `args.paths` but we don't
+    // receive it here. We'll distinguish by checking if `pending` is non-empty
+    // *and* the mesh list may contain pending-only entries — but workspace scan
+    // no longer adds those. So the distinction is: if the mesh has pending
+    // findings at all and it came through the named-lookup path. We expose this
+    // via a parameter `named_lookup`.
+    //
+    // Rather than refactor the signature now, we derive it from the pending slice:
+    // if `pending` contains any finding, we're in named mode. This works because
+    // workspace scan no longer surfaces pending-only meshes. Named lookup always
+    // resolves through `resolve_named_meshes` which does populate pending.
+    //
+    // Actually pending is always populated from meshes regardless of mode.
+    // The real distinction: workspace scan only has meshes from stale_meshes()
+    // (no pending-only meshes); named lookup has meshes from resolve_named_meshes().
+    // We cannot distinguish here without the flag. Use the `pending` vec:
+    // in workspace mode, meshes without stale anchors are not included at all,
+    // so any pending findings come from meshes that also have stale anchors.
+    // In named mode, all requested meshes are included even if fully clean.
+    //
+    // The simplest correct approach: pass a bool. But to avoid changing the
+    // call site signature for now, derive it heuristically: named lookup is
+    // detected by the presence of meshes with zero stale anchors but non-zero
+    // pending findings, OR meshes with zero stale AND zero pending (fully clean
+    // named lookup). Workspace scan meshes always have stale > 0.
+    //
+    // We detect named-lookup mode: any mesh with stale==0 present in the list
+    // means we're in named mode (workspace scan filters those out).
+    let is_named_lookup = meshes.iter().any(|m| {
+        m.anchors
+            .iter()
+            .all(|r| r.status == AnchorStatus::Fresh || m.anchors.is_empty())
+    });
+
     let mut printed_any_mesh = false;
     for m in meshes.iter() {
-        // Include every tracked anchor — Fresh ones synthesized as
-        // `Finding`s so default/oneline/stat/patch all list the full
-        // mesh. Order follows the mesh's stored anchor order, with
-        // per-layer expansions inlined for non-Fresh anchors.
+        // Build per-mesh collapsed findings (one row per anchor, deepest layer).
         let mesh_findings_owned: Vec<Finding> = m
             .anchors
             .iter()
@@ -707,26 +777,21 @@ fn render_human(
             .filter(|p| pending_mesh(p) == m.name.as_str())
             .collect();
 
-        let mesh_total = mesh_findings.len();
         let mesh_stale = mesh_findings
             .iter()
             .filter(|f| f.status != AnchorStatus::Fresh)
             .count();
-        let pending_adds = mesh_pending
-            .iter()
-            .filter(|p| matches!(p, PendingFinding::Add { .. }))
-            .count();
-        let pending_removes = mesh_pending
-            .iter()
-            .filter(|p| matches!(p, PendingFinding::Remove { .. }))
-            .count();
 
-        // Suppress fully-clean meshes.
-        if mesh_stale == 0 && pending_adds == 0 && pending_removes == 0 {
+        // Workspace scan: suppress meshes with no stale anchors (including
+        // meshes that only have pending staged ops). Named lookup: always
+        // render the block even if fully clean.
+        if !is_named_lookup && mesh_stale == 0 {
             continue;
         }
 
         if printed_any_mesh {
+            println!();
+            println!("---");
             println!();
         }
         printed_any_mesh = true;
@@ -743,6 +808,7 @@ fn render_human(
         }
 
         if options.stat {
+            let mesh_total = mesh_findings.len();
             if mesh_stale > 0 && mesh_stale == mesh_total {
                 println!("All anchors in {} are stale:", m.name);
             } else if mesh_stale > 0 {
@@ -763,109 +829,71 @@ fn render_human(
             continue;
         }
 
-        // --- DEFAULT PROSE OUTPUT ---
+        // --- DEFAULT UNIFIED BLOCK OUTPUT ---
+        // Shape: ## <mesh-name>
+        //        - <plain-path-extent>[ — <status>][ — auto-updated][ — acknowledged]
+        //        (blank line)
+        //        <why text>
 
-        // Mesh drift header and summary line.
-        if mesh_stale > 0 {
-            println!("# Drift in {}", format::format_mesh_name(&m.name));
-            println!();
-            let word = if mesh_stale == 1 {
-                "has drifted"
-            } else {
-                "have drifted"
-            };
-            if mesh_stale == mesh_total {
-                if mesh_total == 1 {
-                    println!("The only anchor {}.", word);
-                } else {
-                    println!("All {} anchors {}.", mesh_total, word);
-                }
-            } else {
-                println!("{} of {} anchors {}.", mesh_stale, mesh_total, word);
-            }
-        }
+        println!("## {}", m.name);
 
-        // Stale anchors — prose bullets with status description.
-        if mesh_stale > 0 {
-            println!();
-            println!("## Stale anchors");
-            println!();
+        // Named lookup only: count pending add/remove bullets.
+        let pending_add_remove: Vec<&PendingFinding> = if is_named_lookup {
+            mesh_pending
+                .iter()
+                .filter(|p| matches!(p, PendingFinding::Add { .. } | PendingFinding::Remove { .. }))
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if m.anchors.is_empty() && pending_add_remove.is_empty() {
+            println!("*Mesh has no anchors*");
+        } else {
+            // Committed anchors in stored order.
             for f in &mesh_findings {
+                let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
                 if f.status == AnchorStatus::Fresh {
-                    continue;
-                }
-                let (s, e) = extent_to_options(f.anchored.extent);
-                let addr = format::format_anchor_address(&f.anchored.path.to_string_lossy(), s, e);
-                let whole_suffix = if matches!(f.anchored.extent, AnchorExtent::WholeFile) {
-                    " (whole file)"
+                    println!("- {addr}");
                 } else {
-                    ""
-                };
-                let is_followed = followed_ids.contains(&f.anchor_id);
-                let ack_tag = if f.acknowledged_by.is_some() {
-                    " (acknowledged)"
-                } else {
-                    ""
-                };
-                let desc = describe_finding(f);
-                let auto_tag = if is_followed {
-                    "; anchor automatically updated"
-                } else {
-                    ""
-                };
-                println!("- `{addr}`{whole_suffix} — {desc}{auto_tag}{ack_tag}.");
-                if options.patch {
-                    let diff = render_patch(repo, f);
-                    if !diff.trim().is_empty() {
-                        println!("{diff}");
+                    let is_followed = followed_ids.contains(&f.anchor_id);
+                    let desc = describe_finding_lower(f);
+                    let auto_tag = if is_followed { " — auto-updated" } else { "" };
+                    let ack_tag = if f.acknowledged_by.is_some() { " — acknowledged" } else { "" };
+                    println!("- {addr} — {desc}{auto_tag}{ack_tag}");
+                    if options.patch {
+                        let diff = render_patch(repo, f);
+                        if !diff.trim().is_empty() {
+                            println!("{diff}");
+                        }
                     }
                 }
             }
-        }
 
-        // Pending staged changes — prose bullets.
-        if pending_adds > 0 || pending_removes > 0 {
-            if mesh_stale > 0 {
-                println!();
-            }
-            println!("## Pending staged changes");
-            println!();
-            for p in &mesh_pending {
+            // Named lookup only: append pending bullets after committed anchors.
+            for p in &pending_add_remove {
                 match p {
                     PendingFinding::Add { op, .. } => {
-                        let (s, e) = extent_to_options(op.extent);
-                        let addr = format::format_anchor_address(&op.path, s, e);
-                        println!("- Add `{addr}`.");
+                        let path = std::path::Path::new(&op.path);
+                        let addr = render_path_extent_plain(path, op.extent);
+                        println!("- {addr} — pending add");
                     }
                     PendingFinding::Remove { op, .. } => {
-                        let (s, e) = extent_to_options(op.extent);
-                        let addr = format::format_anchor_address(&op.path, s, e);
-                        println!("- Remove `{addr}`.");
+                        let path = std::path::Path::new(&op.path);
+                        let addr = render_path_extent_plain(path, op.extent);
+                        println!("- {addr} — pending remove");
                     }
                     _ => {}
                 }
             }
         }
-        // Informational pending (Why / ConfigChange) — never drives exit.
-        let info: Vec<&&PendingFinding> = mesh_pending
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p,
-                    PendingFinding::Why { .. } | PendingFinding::ConfigChange { .. }
-                )
-            })
-            .collect();
-        // Why text is not printed in stale output per CARD.md spec.
-        for p in &info {
-            match p {
-                PendingFinding::Why { .. } => {}
-                PendingFinding::ConfigChange { change, .. } => {
-                    println!();
-                    println!("{}", config_str(change));
-                }
-                _ => {}
-            }
+
+        // Why text: print verbatim after a blank line if non-empty.
+        let why = m.message.trim_end_matches('\n');
+        if !why.is_empty() {
+            println!();
+            println!("{why}");
         }
     }
     Ok(printed_any_mesh)

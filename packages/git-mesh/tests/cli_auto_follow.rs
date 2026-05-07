@@ -51,11 +51,11 @@ fn auto_follow_flag_rewrites_mesh_next_run_fresh() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("anchor automatically updated"),
+        stdout.contains("auto-updated"),
         "annotation missing; stdout={stdout}"
     );
     assert!(
-        stdout.contains("Moved to"),
+        stdout.contains("moved to"),
         "move annotation missing; stdout={stdout}"
     );
 
@@ -100,7 +100,7 @@ fn follow_moves_config_rewrites_without_flag() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("anchor automatically updated"),
+        stdout.contains("auto-updated"),
         "annotation missing; stdout={stdout}"
     );
 
@@ -141,7 +141,7 @@ fn changed_sibling_suppresses_auto_follow() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "must not annotate when suppressed; stdout={stdout}"
     );
 
@@ -176,7 +176,7 @@ fn path_rename_does_not_auto_follow() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "must not annotate path-rename Moved; stdout={stdout}"
     );
     Ok(())
@@ -210,7 +210,7 @@ fn blob_mismatch_does_not_auto_follow() -> Result<()> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "must not annotate blob-mismatch; stdout={stdout}"
     );
     Ok(())
@@ -385,7 +385,7 @@ fn whole_file_anchor_not_auto_followed() -> Result<()> {
     let out = repo.run_mesh(["stale", "m", "--auto-follow"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "whole-file anchor must not be auto-followed; stdout={stdout}"
     );
     Ok(())
@@ -417,7 +417,7 @@ fn worktree_only_move_does_not_auto_follow() -> Result<()> {
     // The anchor may report Moved (worktree source) but must not be rewritten
     // because current.blob is None — the blob is not committed to git.
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "worktree-only move (current.blob=None) must not be auto-followed; stdout={stdout}"
     );
     Ok(())
@@ -475,9 +475,9 @@ fn no_flag_no_config_renders_arrow_only() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1), "still stale without flag");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Moved to"), "move must still render; stdout={stdout}");
+    assert!(stdout.contains("moved to"), "move must still render; stdout={stdout}");
     assert!(
-        !stdout.contains("anchor automatically updated"),
+        !stdout.contains("auto-updated"),
         "must not annotate without flag; stdout={stdout}"
     );
 

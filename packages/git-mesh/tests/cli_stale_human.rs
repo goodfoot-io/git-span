@@ -40,9 +40,8 @@ fn clean_exit_zero() -> Result<()> {
 
 #[test]
 fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
-    // The stale drift report does not include why text — why text belongs
-    // in `git mesh show`, not `git mesh stale`. Verify the stale output
-    // omits the committed why even when a pending why is staged.
+    // The stale block includes the committed why text inline.
+    // Verify the stale output includes the mesh heading.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "shared why text"])?;
@@ -50,11 +49,10 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
     drift(&repo, "mutate")?;
     repo.mesh_stdout(["why", "m", "-m", "shared why text"])?;
     let stdout = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
-    // The drift report focuses on anchor status and pending changes,
-    // not on mesh purpose statements. Why text belongs elsewhere.
+    // The block heading is the mesh name.
     assert!(
-        stdout.contains("# Drift"),
-        "expected drift header; stdout=\n{stdout}"
+        stdout.contains("## m"),
+        "expected block heading; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -89,9 +87,14 @@ fn human_output_has_summary_line() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // New shape: ## <mesh-name> heading with per-anchor status suffix.
     assert!(
-        stdout.contains("have drifted") || stdout.contains("has drifted"),
-        "summary must mention drift count, got: {stdout}"
+        stdout.contains("## m"),
+        "block heading must appear, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("changed"),
+        "stale anchor must carry status suffix, got: {stdout}"
     );
     Ok(())
 }
@@ -172,9 +175,14 @@ fn human_output_has_drift_summary_line() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // New shape: per-anchor status suffix replaces the summary line.
     assert!(
-        stdout.contains("have drifted") || stdout.contains("has drifted"),
-        "summary must mention drift count, got: {stdout}"
+        stdout.contains("## m"),
+        "block heading must appear, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("changed"),
+        "stale anchor must carry status suffix, got: {stdout}"
     );
     Ok(())
 }
@@ -220,16 +228,26 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     Ok(())
 }
 
-/// A clean named mesh prints a confirmation line.
+/// A clean named mesh always renders the full block (no "is clean" line).
 #[test]
 fn named_lookup_clean_mesh_is_confirmed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_mesh(["stale", "quiet"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // New: fully-clean named mesh renders the unified block with bare anchor lines.
     assert!(
-        stdout.contains("is clean"),
-        "clean named mesh must print a confirmation, got: {stdout}"
+        stdout.contains("## quiet"),
+        "block heading must appear for clean named mesh, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("file1.txt#L1-L5"),
+        "fresh anchor must appear bare, got: {stdout}"
+    );
+    // No old "is clean" prose.
+    assert!(
+        !stdout.contains("is clean"),
+        "legacy confirmation line must be absent, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())

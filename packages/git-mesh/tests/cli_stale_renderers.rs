@@ -191,30 +191,27 @@ fn human_layered_emits_src_marker() -> Result<()> {
     drift_in_head(&repo)?;
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
+    // New: lowercase prose suffix on the anchor bullet line.
     assert!(
-        text.contains("Changed in the working tree"),
-        "expected prose description of changed anchor, got: {text}"
+        text.contains("changed"),
+        "expected lowercase prose description of changed anchor, got: {text}"
     );
     Ok(())
 }
 
 #[test]
-fn discovery_human_includes_staging_only_mesh() -> Result<()> {
+fn discovery_human_excludes_staging_only_mesh() -> Result<()> {
+    // Workspace scan: pending-only meshes must NOT appear. Only stale meshes render.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
 
     let out = repo.run_mesh(["stale"])?;
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Pending staged changes"), "stdout={text}");
-    assert!(
-        text.contains("Add"),
-        "stdout={text}"
-    );
-    assert!(
-        text.contains("file1.txt#L1-L5"),
-        "stdout={text}"
-    );
+    // The pending-only mesh must NOT appear in workspace scan output.
+    assert!(!text.contains("new-mesh"), "pending-only mesh must not appear in workspace scan; stdout={text}");
+    // Summary line should appear.
+    assert!(text.contains("0 stale"), "summary line must appear; stdout={text}");
     Ok(())
 }
 
@@ -265,6 +262,7 @@ fn github_actions_emits_annotation_with_path() -> Result<()> {
 
 #[test]
 fn human_pending_ops_render_range_addresses() -> Result<()> {
+    // Named lookup: pending bullets appear inline using the new format.
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
@@ -272,16 +270,12 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        out.contains("Add `file2.txt#L1-L5`"),
+        out.contains("file2.txt#L1-L5 — pending add"),
         "stdout={out}"
     );
     assert!(
-        out.contains("Remove `file1.txt#L1-L5`"),
+        out.contains("file1.txt#L1-L5 — pending remove"),
         "stdout={out}"
-    );
-    assert!(
-        !out.contains("(Pending add)") && !out.contains("(Pending remove)"),
-        "pending ops should use prose format: {out}"
     );
     Ok(())
 }
@@ -317,14 +311,12 @@ fn human_patch_mode_prints_unified_diff() -> Result<()> {
 
 #[test]
 fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
+    // Named lookup on a staging-only mesh: block with pending bullets, no committed anchors.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
-    assert!(out.contains("Pending staged changes"), "stdout={out}");
-    assert!(
-        out.contains("Add `file1.txt#L1-L5`"),
-        "stdout={out}"
-    );
+    // New format: pending add bullet inline.
+    assert!(out.contains("file1.txt#L1-L5 — pending add"), "stdout={out}");
     Ok(())
 }
 
@@ -358,18 +350,17 @@ fn human_moved_row_shows_arrow_with_destination() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stdout);
-    // The bullet should include "Moved" followed by the destination.
+    // New: lowercase "moved" followed by the destination path.
     assert!(
-        text.contains("Moved") && text.contains("file1.txt#L1-L5"),
-        "expected prose description of Moved anchor; stdout={text}"
+        text.contains("moved") && text.contains("file1.txt"),
+        "expected lowercase prose description of Moved anchor; stdout={text}"
     );
     Ok(())
 }
 
 #[test]
 fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
-    // In the prose format, Fresh siblings are not rendered at all.
-    // Only the stale anchor appears in the ## Stale anchors section.
+    // New: unified block shows all anchors. Stale get suffix, fresh appear bare.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
@@ -381,17 +372,19 @@ fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
     )?;
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
+    // Stale anchor carries a suffix; fresh appears bare.
     assert!(
-        text.contains("1 of 2 anchors has drifted"),
-        "expected partial-drift summary, got: {text}"
+        text.contains("file1.txt#L1-L5 — changed"),
+        "stale anchor should carry status suffix, got: {text}"
     );
     assert!(
-        text.contains("file1.txt#L1-L5"),
-        "stale anchor should appear, got: {text}"
+        text.contains("file2.txt#L1-L5"),
+        "fresh sibling should appear bare in unified block, got: {text}"
     );
+    // No old summary line.
     assert!(
-        !text.contains("file2.txt"),
-        "fresh sibling should not appear in stale output, got: {text}"
+        !text.contains("has drifted") && !text.contains("have drifted"),
+        "old summary line must be absent, got: {text}"
     );
     Ok(())
 }
