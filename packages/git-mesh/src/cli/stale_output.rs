@@ -130,10 +130,15 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                 }
             }
 
-            // Step 2: fall back to path index.
+            // Step 2: fall back to path index (glob-aware).
             if !found {
-                let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)
-                    .unwrap_or_default();
+                let names = if crate::mesh::path_index::is_glob_pattern(arg) {
+                    crate::mesh::path_index::matching_mesh_names_glob(repo, arg, None)
+                        .unwrap_or_default()
+                } else {
+                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)
+                        .unwrap_or_default()
+                };
                 for name in names {
                     if seen.insert(name.clone()) {
                         mesh_names.push(name);

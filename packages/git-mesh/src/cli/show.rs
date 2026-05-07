@@ -1325,8 +1325,15 @@ pub(crate) fn resolve_targets(
                     missing_args.push(arg);
                 }
             }
+        } else if crate::mesh::path_index::is_glob_pattern(arg) {
+            let names = crate::mesh::path_index::matching_mesh_names_glob(repo, arg, None)?;
+            if !names.is_empty() {
+                result.extend(names);
+            } else {
+                missing_args.push(arg);
+            }
         } else {
-            // Not mesh-name shape (path with extension, glob): go straight
+            // Not mesh-name shape (path with extension): go straight
             // to path index.
             let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
             if !names.is_empty() {

@@ -294,3 +294,60 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     );
     Ok(())
 }
+
+fn commit_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
+    repo.mesh_stdout(["add", name, anchor])?;
+    repo.mesh_stdout(["why", name, "-m", why])?;
+    repo.mesh_stdout(["commit", name])?;
+    Ok(())
+}
+
+#[test]
+fn stale_recursive_glob_matches_nested_anchored_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/meta/notes.md", "a\nb\nc\n")?;
+    repo.commit_all("add wiki notes")?;
+    commit_mesh(&repo, "wiki/notes", "wiki/meta/notes.md", "wiki notes anchor")?;
+    repo.write_file("wiki/meta/notes.md", "X\nY\nZ\n")?;
+    repo.commit_all("drift wiki notes")?;
+
+    let stdout = repo.mesh_stdout(["stale", "wiki/**/*", "--no-exit-code"])?;
+    assert!(
+        stdout.contains("## wiki/notes"),
+        "wiki/** should match wiki/meta/notes.md anchor; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn stale_single_star_glob_matches_single_segment_anchored_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/top.md", "a\nb\nc\n")?;
+    repo.commit_all("add wiki top")?;
+    commit_mesh(&repo, "wiki/top", "wiki/top.md", "wiki top anchor")?;
+    repo.write_file("wiki/top.md", "X\nY\nZ\n")?;
+    repo.commit_all("drift wiki top")?;
+
+    let stdout = repo.mesh_stdout(["stale", "wiki/*", "--no-exit-code"])?;
+    assert!(
+        stdout.contains("## wiki/top"),
+        "wiki/* should match wiki/top.md anchor; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn stale_single_star_glob_does_not_match_nested_segments() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/meta/deep.md", "a\nb\nc\n")?;
+    repo.commit_all("add deep wiki")?;
+    commit_mesh(&repo, "wiki/deep", "wiki/meta/deep.md", "deep anchor")?;
+
+    let out = repo.run_mesh(["stale", "wiki/*"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "wiki/* should not match wiki/meta/deep.md"
+    );
+    Ok(())
+}

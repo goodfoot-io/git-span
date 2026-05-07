@@ -54,6 +54,67 @@ pub(crate) fn matching_mesh_names(
     Ok(names)
 }
 
+pub(crate) fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[') || s.contains('{')
+}
+
+pub(crate) fn matching_mesh_names_glob(
+    repo: &gix::Repository,
+    pattern: &str,
+    range: Option<(u32, u32)>,
+) -> Result<Vec<String>> {
+    let glob = globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
+        .compile_matcher();
+
+    let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Committed meshes.
+    for (name, _oid) in super::read::list_mesh_refs(repo)? {
+        let mesh = super::read::read_mesh_at(repo, &name, None)?;
+        for (_id, anchor) in &mesh.anchors_v2 {
+            if !glob.is_match(&anchor.path) {
+                continue;
+            }
+            let (start, end) = extent_index_range(anchor.extent);
+            let in_range = match range {
+                Some((rs, re)) => (start == 0 && end == 0) || (start <= re && end >= rs),
+                None => true,
+            };
+            if in_range {
+                matched.insert(name.clone());
+                break;
+            }
+        }
+    }
+
+    // Staged-only meshes (or staged adds on existing meshes).
+    for name in crate::staging::list_staged_mesh_names(repo)? {
+        if matched.contains(&name) {
+            continue;
+        }
+        let staging = crate::staging::read_staging(repo, &name)?;
+        for add in &staging.adds {
+            if !glob.is_match(&add.path) {
+                continue;
+            }
+            let (start, end) = extent_index_range(add.extent);
+            let in_range = match range {
+                Some((rs, re)) => (start == 0 && end == 0) || (start <= re && end >= rs),
+                None => true,
+            };
+            if in_range {
+                matched.insert(name.clone());
+                break;
+            }
+        }
+    }
+
+    Ok(matched.into_iter().collect())
+}
+
 pub(crate) fn ref_updates_for_mesh(
     repo: &gix::Repository,
     mesh_name: &str,

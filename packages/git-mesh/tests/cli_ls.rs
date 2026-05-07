@@ -725,6 +725,65 @@ fn ls_porcelain_pagination_emits_selected_mesh_rows() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Glob path filter
+//
+// The CLI help and the `did not match` error both promise that positional
+// arguments resolve as "mesh names, file paths, or globs". These tests pin
+// that contract: an anchor at `wiki/meta/foo.md` must be reachable via
+// `wiki/*` (single-segment) and `wiki/**/*` (recursive) globs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ls_recursive_glob_matches_nested_anchored_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/meta/notes.md", "a\nb\nc\n")?;
+    repo.commit_all("add wiki notes")?;
+    commit_mesh(&repo, "wiki/notes", "wiki/meta/notes.md", "wiki notes anchor")?;
+
+    let out = repo.mesh_stdout(["list", "wiki/**/*"])?;
+    assert!(
+        out.contains("## wiki/notes"),
+        "wiki/** should match wiki/meta/notes.md anchor: {out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn ls_single_star_glob_matches_single_segment_anchored_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/top.md", "a\nb\nc\n")?;
+    repo.commit_all("add wiki top")?;
+    commit_mesh(&repo, "wiki/top", "wiki/top.md", "wiki top anchor")?;
+
+    let out = repo.mesh_stdout(["list", "wiki/*"])?;
+    assert!(
+        out.contains("## wiki/top"),
+        "wiki/* should match wiki/top.md anchor: {out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn ls_single_star_glob_does_not_match_nested_segments() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("wiki/meta/deep.md", "a\nb\nc\n")?;
+    repo.commit_all("add deep wiki")?;
+    commit_mesh(&repo, "wiki/deep", "wiki/meta/deep.md", "deep anchor")?;
+
+    // `wiki/*` is single-segment; the anchor is two segments deep, so the
+    // glob should not match. Glob support being absent currently produces
+    // a `did not match` error — once globs work, this still must fail
+    // because the segment depth doesn't match.
+    let out = repo.run_mesh(["list", "wiki/*"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "wiki/* should not match wiki/meta/deep.md"
+    );
+    Ok(())
+}
+
 #[test]
 fn ls_pagination_after_path_filter() -> Result<()> {
     let repo = TestRepo::seeded()?;
