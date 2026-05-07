@@ -21,7 +21,7 @@ pub mod commit;
 pub mod compact;
 pub mod error;
 pub mod format;
-pub mod pre_commit;
+pub mod hooks;
 pub mod rewrite;
 pub mod show;
 pub mod stale_output;
@@ -115,9 +115,8 @@ pub enum Commands {
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
 
-    /// Fail the current commit if any drift is visible in the staged tree.
-    #[command(name = "pre-commit")]
-    PreCommit(PreCommitArgs),
+    /// Git hook shortcuts (post-commit, post-rewrite).
+    Hooks(hooks::HooksArgs),
 
     /// Append events and flush session-scoped advice.
     Advice(advice::AdviceArgs),
@@ -290,13 +289,6 @@ pub struct StaleArgs {
     /// One batched mesh commit per mesh: `mesh: follow N moved anchors`.
     #[arg(long, conflicts_with_all = ["patch", "stat", "oneline"])]
     pub auto_follow: bool,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct PreCommitArgs {
-    /// Exit 0 even when drift is found (report-only mode).
-    #[arg(long)]
-    pub no_exit_code: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -549,9 +541,17 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
             let _perf = crate::perf::span("command.push");
             sync::run_push(repo, args)
         }
-        Commands::PreCommit(args) => {
-            let _perf = crate::perf::span("command.pre-commit");
-            pre_commit::run_pre_commit(repo, args)
+        Commands::Hooks(args) => {
+            match args.subcommand {
+                hooks::HooksSubcommand::Git(git_args) => {
+                    let span_name = match &git_args.event {
+                        hooks::HookEvent::PostCommit => "command.hooks.git.post-commit",
+                        hooks::HookEvent::PostRewrite => "command.hooks.git.post-rewrite",
+                    };
+                    let _perf = crate::perf::span(span_name);
+                    hooks::run_hooks_git(repo, git_args.event)
+                }
+            }
         }
         Commands::Advice(args) => {
             let _perf = crate::perf::span("command.advice");

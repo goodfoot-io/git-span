@@ -149,12 +149,11 @@ fn run_stale(repo: &Path, cache_val: &str) -> StaleResult {
 
 fn parse_perf_counter(stderr: &str, label: &str) -> u64 {
     for line in stderr.lines() {
-        if let Some(rest) = line.strip_prefix("git-mesh perf: ") {
-            if let Some(val) = rest.strip_prefix(&format!("{label} ")) {
-                if let Ok(v) = val.trim().parse::<u64>() {
-                    return v;
-                }
-            }
+        if let Some(rest) = line.strip_prefix("git-mesh perf: ")
+            && let Some(val) = rest.strip_prefix(&format!("{label} "))
+            && let Ok(v) = val.trim().parse::<u64>()
+        {
+            return v;
         }
     }
     0

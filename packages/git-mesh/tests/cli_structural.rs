@@ -105,7 +105,6 @@ fn install_hooks(repo: &TestRepo) -> Result<()> {
     let hooks = repo.path().join(".git").join("hooks");
     std::fs::create_dir_all(&hooks)?;
     std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ngit mesh commit\n")?;
-    std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ngit mesh pre-commit\n")?;
     Ok(())
 }
 
@@ -115,7 +114,7 @@ fn doctor_flags_missing_hooks() -> Result<()> {
     let out = repo.run_mesh(["doctor"])?;
     let s = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(s.contains("MissingPostCommitHook"), "stdout={s}");
-    assert!(s.contains("MissingPreCommitHook"), "stdout={s}");
+    assert!(!s.contains("MissingPreCommitHook"), "pre-commit hook finding should no longer exist; stdout={s}");
     // §6.7: INFO-only findings exit 0.
     assert_eq!(out.status.code(), Some(0), "stdout={s}");
     Ok(())

@@ -163,7 +163,6 @@ pub struct DoctorFinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DoctorCode {
     MissingPostCommitHook,
-    MissingPreCommitHook,
     StagingCorrupt,
     RefspecMissing,
     OrphanRangeRef,
@@ -185,11 +184,9 @@ pub enum DoctorCode {
 }
 
 const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
-const PRE_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh pre-commit\n";
 const POST_REWRITE_HOOK_BODY: &str =
     "#!/bin/sh\ngit mesh rewrite\ngit mesh stale --compact --no-exit-code\n";
 const POST_COMMIT_MARKER: &str = "git mesh commit";
-const PRE_COMMIT_MARKER: &str = "git mesh pre-commit";
 const POST_REWRITE_MARKER: &str = "git mesh rewrite";
 
 pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
@@ -203,14 +200,6 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
         POST_COMMIT_MARKER,
         POST_COMMIT_HOOK_BODY,
         DoctorCode::MissingPostCommitHook,
-        &mut out,
-    );
-    check_hook(
-        &git_dir,
-        "pre-commit",
-        PRE_COMMIT_MARKER,
-        PRE_COMMIT_HOOK_BODY,
-        DoctorCode::MissingPreCommitHook,
         &mut out,
     );
     check_hook(

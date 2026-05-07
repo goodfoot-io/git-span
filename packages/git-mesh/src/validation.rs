@@ -24,6 +24,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "pre-commit",
     "advice",
     "rewrite",
+    "hooks",
 ];
 
 /// Mesh-name shape, per `docs/advice-notes.md` §12.12 T7 and the handbook:
