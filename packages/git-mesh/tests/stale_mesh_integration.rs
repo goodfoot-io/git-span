@@ -272,7 +272,7 @@ fn commit_reanchor_replaces_moved_range_instead_of_adding_duplicate() -> Result<
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Moved to `file1.txt#L3-L7`"),
+        stdout.contains("moved to file1.txt#L3-L7"),
         "stdout={stdout}"
     );
 

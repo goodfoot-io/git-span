@@ -314,8 +314,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             true
         })
         .count();
-    // Pending ops never drive exit code — only actual drift does.
-    let stale_count = unacked_findings;
+    // Pending ops with sidecar drift (mismatch or tampered) drive exit code:
+    // a tampered or mismatched sidecar is a real integrity problem callers
+    // must surface (`<fail-closed>`). Clean pending ops do not.
+    let drifting_pending: usize = pending
+        .iter()
+        .filter(|p| matches!(
+            p,
+            PendingFinding::Add { drift: Some(_), .. }
+                | PendingFinding::Remove { drift: Some(_), .. }
+        ))
+        .count();
+    let stale_count = unacked_findings + drifting_pending;
 
     match args.format {
         StaleFormat::Human => {
@@ -836,15 +846,17 @@ fn render_human(
             // Named lookup only: append pending bullets after committed anchors.
             for p in &pending_add_remove {
                 match p {
-                    PendingFinding::Add { op, .. } => {
+                    PendingFinding::Add { op, drift, .. } => {
                         let path = std::path::Path::new(&op.path);
                         let addr = render_path_extent_plain(path, op.extent);
-                        println!("- {addr} — pending add");
+                        let suffix = pending_drift_suffix(drift.as_ref());
+                        println!("- {addr} — pending add{suffix}");
                     }
-                    PendingFinding::Remove { op, .. } => {
+                    PendingFinding::Remove { op, drift, .. } => {
                         let path = std::path::Path::new(&op.path);
                         let addr = render_path_extent_plain(path, op.extent);
-                        println!("- {addr} — pending remove");
+                        let suffix = pending_drift_suffix(drift.as_ref());
+                        println!("- {addr} — pending remove{suffix}");
                     }
                     _ => {}
                 }
@@ -938,6 +950,14 @@ fn slice_lines(text: &str, start: u32, end: u32) -> String {
         out.push('\n');
     }
     out
+}
+
+fn pending_drift_suffix(drift: Option<&PendingDrift>) -> &'static str {
+    match drift {
+        Some(PendingDrift::SidecarMismatch) => " (sidecar mismatch)",
+        Some(PendingDrift::SidecarTampered) => " (sidecar tampered)",
+        None => "",
+    }
 }
 
 fn drift_note(drift: Option<&PendingDrift>) -> String {

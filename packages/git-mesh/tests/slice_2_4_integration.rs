@@ -161,8 +161,12 @@ fn stale_surfaces_tampered_drift() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
-        stdout.contains("Add `file1.txt#L1-L3`"),
+        stdout.contains("file1.txt#L1-L3 — pending add"),
         "expected pending add in stale output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("sidecar tampered"),
+        "expected sidecar tampered surface in stale output, got: {stdout}"
     );
     assert_ne!(
         out.status.code(),
