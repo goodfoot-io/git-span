@@ -153,6 +153,24 @@ impl TestRepo {
         Ok(cmd.output()?)
     }
 
+    /// Run the `git-mesh` binary from an explicit working directory.
+    #[allow(dead_code)]
+    pub fn run_mesh_from<I, S>(&self, args: I, cwd: &Path) -> Result<Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-mesh"));
+        cmd.current_dir(cwd);
+        // Point git-mesh at this repo by setting GIT_DIR / GIT_WORK_TREE.
+        cmd.env("GIT_DIR", self.dir.path().join(".git"));
+        cmd.env("GIT_WORK_TREE", self.dir.path());
+        for a in args {
+            cmd.arg(a.as_ref());
+        }
+        Ok(cmd.output()?)
+    }
+
     pub fn mesh_stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,

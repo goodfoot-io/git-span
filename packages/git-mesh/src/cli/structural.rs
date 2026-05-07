@@ -518,9 +518,11 @@ fn classify_token(
     }
 
     // Resolvable literal: absolute path or relative (./  ../).
-    if effective.starts_with('/') || effective.starts_with("./") || effective.starts_with("../") {
-        let p = std::path::Path::new(effective);
-        return TokenClass::Resolvable(p.to_path_buf());
+    if effective.starts_with('/') {
+        return TokenClass::Resolvable(std::path::PathBuf::from(effective));
+    }
+    if effective.starts_with("./") || effective.starts_with("../") {
+        return TokenClass::Resolvable(hook_dir.join(effective));
     }
 
     // Check if it looks like a plain command name (no path separator) — skip.

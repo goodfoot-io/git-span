@@ -325,6 +325,53 @@ fn malformed_hook_unbalanced_quotes_emits_could_not_verify() -> Result<()> {
 // Scenario 10: pre-commit hook absent → no finding mentioning pre-commit
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Scenario 11: ./relative chain resolved against hook_dir, not CWD
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dot_slash_relative_chain_resolved_against_hook_dir() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let hooks = repo.path().join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks)?;
+
+    // Hook body chains to ./helpers/chain.sh using a bare ./ path.
+    // No ${0} or $(dirname "$0") — exercises the ./... branch of classify_token.
+    let hook_body = "#!/bin/sh\n./helpers/chain.sh\n";
+    write_hook(&hooks, "post-commit", hook_body)?;
+
+    // Place the chained file under the hook directory.
+    let helpers_dir = hooks.join("helpers");
+    std::fs::create_dir_all(&helpers_dir)?;
+    write_hook(
+        &helpers_dir,
+        "chain.sh",
+        "#!/bin/sh\ngit mesh hooks git post-commit\n",
+    )?;
+
+    write_hook(
+        &hooks,
+        "post-rewrite",
+        "#!/bin/sh\ngit mesh hooks git post-rewrite\n",
+    )?;
+
+    // Run doctor from a *different* working directory so CWD-anchored
+    // canonicalize would fail to find ./helpers/chain.sh.
+    let other_dir = tempfile::tempdir()?;
+    let out = repo.run_mesh_from(["doctor"], other_dir.path())?;
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        !s.contains("MissingPostCommitHook"),
+        "./helpers/chain.sh should be resolved against hook_dir, not CWD; stdout={s}"
+    );
+    assert!(
+        !s.contains("CouldNotVerifyHook"),
+        "stdout={s}"
+    );
+    Ok(())
+}
+
 #[test]
 fn no_pre_commit_finding_ever() -> Result<()> {
     let repo = TestRepo::seeded()?;
