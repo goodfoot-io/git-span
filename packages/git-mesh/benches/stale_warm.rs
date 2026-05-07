@@ -144,5 +144,38 @@ fn bench_warm(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_cold, bench_warm);
+/// Warm run with the SQLite cache disabled (`GIT_MESH_CACHE=0`).
+///
+/// Documents the relative gap between cached and uncached warm paths.
+/// The warm-no-cache mean minus the warm mean is the cache's contribution.
+fn bench_warm_no_cache(c: &mut Criterion) {
+    let f = build_fixture();
+    // Prime filesystem and gix object store with a cold run (cache disabled).
+    {
+        clear_cache(&f.repo_path);
+        // SAFETY: bench process is single-threaded; no other threads read
+        // GIT_MESH_CACHE concurrently.
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::set_var("GIT_MESH_CACHE", "0");
+        }
+        let repo = gix::open(&f.repo_path).expect("open repo");
+        stale_meshes(&repo, EngineOptions::committed_only()).expect("prime");
+    }
+    let mut g = c.benchmark_group("stale");
+    g.bench_function("warm-no-cache", |b| {
+        b.iter(|| {
+            let repo = gix::open(&f.repo_path).expect("open repo");
+            let out = stale_meshes(&repo, EngineOptions::committed_only()).expect("stale");
+            std::hint::black_box(out);
+        });
+    });
+    g.finish();
+    #[allow(unused_unsafe)]
+    unsafe {
+        std::env::remove_var("GIT_MESH_CACHE");
+    }
+}
+
+criterion_group!(benches, bench_cold, bench_warm, bench_warm_no_cache);
 criterion_main!(benches);

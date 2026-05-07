@@ -541,35 +541,3 @@ fn concurrent_writers_serialize_within_busy_timeout() {
     assert_eq!(count, 2, "both rows must be visible after concurrent inserts");
 }
 
-// ── Performance SLA stub ──────────────────────────────────────────────────────
-
-/// Documents the ≤40 ms warm-run SLA.  Phase 3 promotes this to a real
-/// criterion benchmark in `benches/stale_warm.rs`; this stub just asserts
-/// the scaffolding compiles.
-///
-/// A real timing assertion requires a fixture repo with ≥9 meshes / ≥22
-/// anchors and two sequential `git mesh stale` invocations.  That setup
-/// belongs in the bench harness, not here.
-#[test]
-#[ignore]
-fn stale_warm_run_returns_under_40ms_on_fixture() {
-    // SLA: a second `git mesh stale` run at the same HEAD must complete in
-    // ≤ 40 ms (mean over multiple iterations in the criterion bench).
-    //
-    // This test is a compile-time placeholder.  When Phase 3 step 8 ships
-    // `benches/stale_warm.rs`, this test should be deleted and the bench
-    // becomes the authoritative SLA check.
-    //
-    // Minimal assertion so the body isn't empty:
-    let (_td, repo) = init_repo();
-    let cache = Cache::open(&repo).expect("open");
-    let start = std::time::Instant::now();
-    // Cold open with no data — serves as a lower-bound sanity check only.
-    let _ = cache.name_status_get("0".repeat(40).as_str(), "1".repeat(40).as_str(), CopyDetection::Off);
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed.as_millis() < 40,
-        "even an empty probe should be well under 40 ms; got {:?}",
-        elapsed
-    );
-}
