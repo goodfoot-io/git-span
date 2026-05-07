@@ -369,7 +369,7 @@ fn test_doctor_post_rewrite_hook_present() -> Result<()> {
     let hooks_dir = repo.path().join(".git").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("post-rewrite");
-    fs::write(&hook_path, "#!/bin/sh\ngit mesh rewrite\n")?;
+    fs::write(&hook_path, "#!/bin/sh\ngit mesh hooks git post-rewrite\n")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

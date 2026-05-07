@@ -104,7 +104,14 @@ fn doctor_runs_clean_on_fresh_repo_with_hooks() -> Result<()> {
 fn install_hooks(repo: &TestRepo) -> Result<()> {
     let hooks = repo.path().join(".git").join("hooks");
     std::fs::create_dir_all(&hooks)?;
-    std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ngit mesh commit\n")?;
+    std::fs::write(
+        hooks.join("post-commit"),
+        "#!/bin/sh\ngit mesh hooks git post-commit\n",
+    )?;
+    std::fs::write(
+        hooks.join("post-rewrite"),
+        "#!/bin/sh\ngit mesh hooks git post-rewrite\n",
+    )?;
     Ok(())
 }
 

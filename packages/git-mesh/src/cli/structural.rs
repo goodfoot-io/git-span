@@ -160,7 +160,7 @@ pub struct DoctorFinding {
     pub remediation: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DoctorCode {
     MissingPostCommitHook,
     StagingCorrupt,
@@ -179,23 +179,28 @@ pub enum DoctorCode {
     /// reflog entries. Doctor sets it lazily and reports INFO.
     LogAllRefUpdatesSet,
     /// The `post-rewrite` hook is not installed or does not contain the
-    /// `git mesh rewrite` marker.
+    /// `git mesh hooks git post-rewrite` marker.
     MissingPostRewriteHook,
+    /// Doctor could not verify whether the hook installs the git-mesh
+    /// marker because the hook script references shell variables or other
+    /// constructs that cannot be resolved statically.
+    CouldNotVerifyHook {
+        hook: String,
+        unresolvable_refs: Vec<String>,
+    },
 }
 
-const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
-const POST_REWRITE_HOOK_BODY: &str =
-    "#!/bin/sh\ngit mesh rewrite\ngit mesh stale --compact --no-exit-code\n";
-const POST_COMMIT_MARKER: &str = "git mesh commit";
-const POST_REWRITE_MARKER: &str = "git mesh rewrite";
+const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh hooks git post-commit\n";
+const POST_REWRITE_HOOK_BODY: &str = "#!/bin/sh\ngit mesh hooks git post-rewrite\n";
+const POST_COMMIT_MARKER: &str = "git mesh hooks git post-commit";
+const POST_REWRITE_MARKER: &str = "git mesh hooks git post-rewrite";
 
 pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     let mut out = Vec::new();
-    let git_dir = crate::git::git_dir(repo).to_path_buf();
 
     // ---- Hook checks --------------------------------------------------
     check_hook(
-        &git_dir,
+        repo,
         "post-commit",
         POST_COMMIT_MARKER,
         POST_COMMIT_HOOK_BODY,
@@ -203,7 +208,7 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
         &mut out,
     );
     check_hook(
-        &git_dir,
+        repo,
         "post-rewrite",
         POST_REWRITE_MARKER,
         POST_REWRITE_HOOK_BODY,
@@ -253,6 +258,7 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     }
 
     // ---- Staging area corruption -------------------------------------
+    let git_dir = crate::git::git_dir(repo).to_path_buf();
     check_staging(&git_dir, &mut out);
 
     // ---- Sidecar integrity (Slice 4) --------------------------------
@@ -298,27 +304,287 @@ fn check_legacy_anchor_refs(repo: &gix::Repository, out: &mut Vec<DoctorFinding>
     }
 }
 
+/// Resolve the hooks directory for `repo`, honoring `core.hooksPath`.
+///
+/// Strategy: use `crate::git::config_string` to read `core.hooksPath` from
+/// the repository's merged config (gix handles all include/worktree layering).
+/// If set and relative, resolve it relative to the worktree root (git's own
+/// behaviour for relative `core.hooksPath` values). If unset, fall back to
+/// `<common_git_dir>/hooks` which is where git itself looks by default.
+///
+/// We prefer gix-native config reading over shelling out to avoid the process
+/// cost and to stay read-only.
+fn resolve_hooks_dir(repo: &gix::Repository) -> std::path::PathBuf {
+    if let Some(path_str) = crate::git::config_string(repo, "core.hooksPath") {
+        let p = std::path::Path::new(&path_str);
+        if p.is_absolute() {
+            return p.to_path_buf();
+        }
+        // Relative: resolve against the worktree root, per git's convention.
+        if let Ok(wd) = crate::git::work_dir(repo) {
+            return wd.join(p);
+        }
+    }
+    // Fallback: the canonical hooks dir inside the common git dir.
+    crate::git::common_dir(repo).join("hooks")
+}
+
+/// The ignore directive. Must appear as an entire trimmed line to silence doctor.
+const IGNORE_DIRECTIVE: &str = "# git-mesh-doctor-ignore";
+
+/// Outcome of scanning a single hook file.
+enum HookOutcome {
+    /// Marker found or ignore directive found — no finding needed.
+    Pass,
+    /// Hook file does not exist.
+    Missing,
+    /// Could not verify: accumulated unresolvable references or parse errors.
+    Unverifiable { refs: Vec<String> },
+}
+
+fn scan_hook_file(
+    hook_path: &std::path::Path,
+    marker: &str,
+    hook_dir: &std::path::Path,
+    worktree_root: &std::path::Path,
+) -> HookOutcome {
+    let content = match fs::read_to_string(hook_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HookOutcome::Missing,
+        Err(_) => return HookOutcome::Missing,
+    };
+    scan_content(&content, hook_path, marker, hook_dir, worktree_root, true)
+}
+
+/// Scan the textual content of a hook file.
+/// `follow_chain`: when true, follow one level of resolvable literal paths.
+fn scan_content(
+    content: &str,
+    hook_path: &std::path::Path,
+    marker: &str,
+    hook_dir: &std::path::Path,
+    worktree_root: &std::path::Path,
+    follow_chain: bool,
+) -> HookOutcome {
+    // Step 1: ignore directive — any line whose trimmed form equals the directive.
+    for line in content.lines() {
+        if line.trim() == IGNORE_DIRECTIVE {
+            return HookOutcome::Pass;
+        }
+    }
+
+    // Step 2: marker present anywhere in the content.
+    if content.contains(marker) {
+        return HookOutcome::Pass;
+    }
+
+    // Step 3: tokenize each line and classify tokens.
+    // Canonicalize hook_dir and worktree_root so starts_with comparisons work
+    // even when the paths contain symlinks or relative components.
+    let hook_dir_canon = hook_dir.canonicalize().unwrap_or_else(|_| hook_dir.to_path_buf());
+    let worktree_root_canon = worktree_root.canonicalize().unwrap_or_else(|_| worktree_root.to_path_buf());
+    let hook_dir_str = hook_path.parent().unwrap_or(hook_dir);
+    let mut unresolvable_refs: Vec<String> = Vec::new();
+    let mut chained_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    for line in content.lines() {
+        // Pre-process: replace ${0} and $(dirname "$0")/<rest> before tokenizing.
+        let preprocessed = preprocess_line(line, hook_path);
+
+        match shell_words::split(&preprocessed) {
+            Err(e) => {
+                unresolvable_refs.push(format!("parse error: {e}"));
+            }
+            Ok(tokens) => {
+                for token in tokens {
+                    match classify_token(&token, hook_dir_str) {
+                        TokenClass::Resolvable(p) => {
+                            chained_paths.push(p);
+                        }
+                        TokenClass::Unresolvable(s) => {
+                            unresolvable_refs.push(s);
+                        }
+                        TokenClass::Skip => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 4: for each resolvable literal, read and re-check (one level).
+    if follow_chain {
+        for path in &chained_paths {
+            // Containment check: must be under hook_dir or worktree_root.
+            let canonical = match path.canonicalize() {
+                Ok(c) => c,
+                Err(_) => {
+                    // File doesn't exist or unreadable — not a pass.
+                    continue;
+                }
+            };
+            let in_tree = canonical.starts_with(&hook_dir_canon)
+                || canonical.starts_with(&worktree_root_canon);
+            if !in_tree {
+                unresolvable_refs.push(format!("out-of-tree: {}", canonical.display()));
+                continue;
+            }
+            // Read chained file.
+            if let Ok(chained) = fs::read_to_string(&canonical) {
+                // One level: pass ignore + marker; no further tokenization.
+                let passes = chained.lines().any(|l| l.trim() == IGNORE_DIRECTIVE)
+                    || chained.contains(marker);
+                if passes {
+                    return HookOutcome::Pass;
+                }
+            }
+        }
+    }
+
+    // Step 5: decide outcome.
+    if !unresolvable_refs.is_empty() {
+        HookOutcome::Unverifiable { refs: unresolvable_refs }
+    } else {
+        // No resolvable chains passed and no unresolvable refs — marker is missing.
+        HookOutcome::Missing
+    }
+}
+
+/// Replace `${0}` with the hook path and `$(dirname "$0")/` with the hook's
+/// parent directory, before shell tokenization. This handles the common wrapper
+/// idiom without needing full shell evaluation.
+fn preprocess_line(line: &str, hook_path: &std::path::Path) -> String {
+    let mut result = line.to_string();
+
+    // Replace $(dirname "$0")/ with the hook's parent directory.
+    if let Some(parent) = hook_path.parent() {
+        let parent_s = parent.to_string_lossy();
+        // Handle both $(dirname "$0")/ and $(dirname "$0") patterns.
+        result = result.replace(
+            "$(dirname \"$0\")/",
+            &format!("{}/", parent_s),
+        );
+        result = result.replace("$(dirname \"$0\")", parent_s.as_ref());
+    }
+
+    // Replace ${0} with the hook path itself.
+    let hook_s = hook_path.to_string_lossy();
+    result = result.replace("${0}", &hook_s);
+
+    result
+}
+
+enum TokenClass {
+    /// A resolvable literal path.
+    Resolvable(std::path::PathBuf),
+    /// An unresolvable reference (variable, command substitution, backtick).
+    Unresolvable(String),
+    /// Not a path token — skip.
+    Skip,
+}
+
+fn classify_token(
+    token: &str,
+    hook_dir: &std::path::Path,
+) -> TokenClass {
+    // Skip empty tokens and obvious shell keywords / flags.
+    if token.is_empty() || token.starts_with('-') {
+        return TokenClass::Skip;
+    }
+
+    // Shell assignment: VAR=<rhs>. Classify the RHS.
+    // An assignment looks like: identifier chars followed by '=' with no '/'
+    // before the '='.
+    let effective = if let Some(eq_idx) = token.find('=') {
+        let lhs = &token[..eq_idx];
+        // lhs must be a valid shell identifier (letters, digits, underscore;
+        // no path separators).
+        if !lhs.is_empty() && !lhs.contains('/') && lhs.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            &token[eq_idx + 1..]
+        } else {
+            token
+        }
+    } else {
+        token
+    };
+
+    // Unresolvable: contains unsubstituted variables or command substitutions.
+    if effective.contains('$') || effective.contains('`') {
+        return TokenClass::Unresolvable(effective.to_string());
+    }
+
+    // Empty RHS — skip (e.g. VAR=).
+    if effective.is_empty() {
+        return TokenClass::Skip;
+    }
+
+    // Resolvable literal: absolute path or relative (./  ../).
+    if effective.starts_with('/') || effective.starts_with("./") || effective.starts_with("../") {
+        let p = std::path::Path::new(effective);
+        return TokenClass::Resolvable(p.to_path_buf());
+    }
+
+    // Check if it looks like a plain command name (no path separator) — skip.
+    if !effective.contains('/') {
+        return TokenClass::Skip;
+    }
+
+    // Relative path with directory components — resolve against hook_dir.
+    let resolved = hook_dir.join(effective);
+    // Sanity: if it contains $ or backticks after join, still unresolvable.
+    let s = resolved.to_string_lossy();
+    if s.contains('$') || s.contains('`') {
+        return TokenClass::Unresolvable(effective.to_string());
+    }
+    TokenClass::Resolvable(resolved)
+}
+
 fn check_hook(
-    git_dir: &std::path::Path,
+    repo: &gix::Repository,
     name: &str,
     marker: &str,
-    _suggested_body: &str,
-    code: DoctorCode,
+    suggested_body: &str,
+    code_missing: DoctorCode,
     out: &mut Vec<DoctorFinding>,
 ) {
-    let hook_path = git_dir.join("hooks").join(name);
-    let ok = fs::read_to_string(&hook_path)
-        .map(|s| s.contains(marker))
-        .unwrap_or(false);
-    if !ok {
-        out.push(DoctorFinding {
-            code,
-            severity: Severity::Info,
-            message: format!("`{name}` hook not installed"),
-            remediation: Some(format!(
-                "Install it with `npx git-mesh install-hooks` or copy `packages/git-mesh/scripts/{name}` into `.git/hooks/`."
-            )),
-        });
+    let hook_dir = resolve_hooks_dir(repo);
+    let hook_path = hook_dir.join(name);
+    let worktree_root = crate::git::work_dir(repo)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| hook_dir.clone());
+    let outcome = scan_hook_file(&hook_path, marker, &hook_dir, &worktree_root);
+    match outcome {
+        HookOutcome::Pass => {}
+        HookOutcome::Missing => {
+            out.push(DoctorFinding {
+                code: code_missing,
+                severity: Severity::Info,
+                message: format!(
+                    "`{name}` hook not installed — install at {} with body: {suggested_body}",
+                    hook_path.display()
+                ),
+                remediation: Some(format!(
+                    "Add `{marker}` to {} or run `git mesh hooks git {name}` directly.",
+                    hook_path.display()
+                )),
+            });
+        }
+        HookOutcome::Unverifiable { refs } => {
+            out.push(DoctorFinding {
+                code: DoctorCode::CouldNotVerifyHook {
+                    hook: name.to_string(),
+                    unresolvable_refs: refs.clone(),
+                },
+                severity: Severity::Info,
+                message: format!(
+                    "`{name}` hook could not be verified — unresolvable references: {}",
+                    refs.join(", ")
+                ),
+                remediation: Some(format!(
+                    "Ensure the hook or a chained script contains `{marker}`, \
+                     or add `{IGNORE_DIRECTIVE}` as a whole line to opt out of this check."
+                )),
+            });
+        }
     }
 }
 
