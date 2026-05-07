@@ -31,14 +31,18 @@ pub enum AdviceCommand {
         id: String,
     },
     /// Diff against the snapshot pair captured by `mark <id>`, append the
-    /// resulting per-path entries to `touches.jsonl`, emit mesh suggestions
-    /// for newly-touched paths (deduped against `meshes-seen.jsonl`) on
-    /// stdout, and discard the snapshot. A no-op when no snapshot exists
-    /// for `<id>`.
-    Flush {
+    /// resulting per-path entries to `touches.jsonl`, and discard the
+    /// snapshot. Silent on stdout (exit code only). A no-op when no
+    /// snapshot exists for `<id>`.
+    Diff {
         /// Caller-chosen opaque id matching the `mark`.
         id: String,
     },
+    /// Emit mesh suggestions for session touches that have not yet been
+    /// advised, updating `meshes-seen.jsonl` so repeated calls only surface
+    /// deltas. Reads `touches.jsonl` and `reads.jsonl` from the session
+    /// store; takes no `<id>`.
+    Flush,
     /// Record a single read event (anchor or whole-file path).
     Read {
         /// Anchor to record. Either `<path>` or `<path>#L<start>-L<end>`.
@@ -88,7 +92,8 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     validate_session_id(&session_id)?;
     match args.command {
         Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, session_id, id),
-        Some(AdviceCommand::Flush { id }) => run_advice_flush(repo, session_id, id),
+        Some(AdviceCommand::Diff { id }) => run_advice_diff(repo, session_id, id),
+        Some(AdviceCommand::Flush) => run_advice_flush(repo, session_id),
         Some(AdviceCommand::Read { anchor, id }) => run_advice_read(repo, session_id, anchor, id),
         Some(AdviceCommand::Touch { id, anchor, kind }) => {
             run_advice_touch(repo, session_id, id, anchor, kind)
@@ -99,7 +104,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
             Err(CliError {
                 subcommand: "advice",
                 summary: "a subcommand is required.".into(),
-                what_happened: "The advice command needs a subcommand like `mark`, `flush`, `read`, `touch`, `end`, or `touched`.".into(),
+                what_happened: "The advice command needs a subcommand like `mark`, `diff`, `flush`, `read`, `touch`, `end`, or `touched`.".into(),
                 next_steps: vec![NextStep::Bash("git mesh advice --help".into())],
             }.into())
         }
@@ -421,14 +426,18 @@ fn ls_files_untracked(wd: &std::path::Path) -> Result<Vec<String>> {
         .collect())
 }
 
-// ── flush ───────────────────────────────────────────────────────────────────
+// ── diff ────────────────────────────────────────────────────────────────────
 
-fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
+/// Record-only counterpart to the old `flush <id>`. Computes the working-tree
+/// diff against the `mark <id>` snapshot pair, appends per-path rows to
+/// `touches.jsonl`, and discards the snapshot. Silent on stdout. A no-op when
+/// no snapshot exists for `<id>`.
+fn run_advice_diff(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
     use crate::advice::session::state::{TouchInterval, UntrackedSnapshotEntry};
     use crate::advice::session::SessionStore;
 
     if id.is_empty() {
-        bail!("git mesh advice <sid> flush <id>: id must not be empty");
+        bail!("git mesh advice <sid> diff <id>: id must not be empty");
     }
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
@@ -449,16 +458,11 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
     let touch_ts = chrono::Utc::now().to_rfc3339();
 
-    let mut provenance_map: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
-        std::collections::HashMap::new();
-    let all_touches: Vec<TouchInterval> = entries
+    let touches: Vec<TouchInterval> = entries
         .iter()
         .filter(|(p, _, _)| !advice_path_is_internal(p, &internal_path_prefixes))
-        .filter_map(|(path, kind, prov)| {
-            // Canonicalize so flush paths agree with read paths on all
-            // case/symlink/leading-./ variants. Skip entries that escape wd.
+        .filter_map(|(path, kind, _prov)| {
             let canonical_path = canonicalize_repo_relative_path(wd, path).ok()?;
-            provenance_map.insert(canonical_path.clone(), prov.clone());
             Some(TouchInterval {
                 path: canonical_path,
                 kind: *kind,
@@ -470,25 +474,51 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         })
         .collect();
 
-    process_touches(repo, &store, &session_id, &id, all_touches, &provenance_map)
+    record_touches(repo, &store, &id, &touches)
 }
 
-/// Shared mesh-resolution and emission pipeline. Called by both `flush`
-/// (snapshot-derived touches) and `touch` (payload-driven touches).
-/// Always calls `store.discard_snapshot(id)` at the end — this is a no-op
-/// when no snapshot was taken (the snapshot files do not exist).
-fn process_touches(
+/// Append `touches` to `touches.jsonl`, observe newly-committed meshes, and
+/// discard the snapshot for `id` (no-op if no snapshot exists). Used by both
+/// `diff` (snapshot-derived) and `touch` (payload-driven) verbs.
+fn record_touches(
     repo: &gix::Repository,
     store: &crate::advice::session::SessionStore,
-    session_id: &str,
     id: &str,
-    touches: Vec<crate::advice::session::state::TouchInterval>,
-    provenance: &std::collections::HashMap<String, crate::advice::session::state::TouchProvenance>,
+    touches: &[crate::advice::session::state::TouchInterval],
 ) -> Result<i32> {
+    for t in touches {
+        store.append_touch(t)?;
+    }
+    // Eager observation: capture meshes committed via this tool call's
+    // `git commit` so subsequent reads hit the fast `meshes_committed_set()`
+    // path. Best-effort.
+    let _ = discover_meshes_committed_this_session(repo, store);
+    store.discard_snapshot(id);
+    Ok(0)
+}
+
+// ── flush ───────────────────────────────────────────────────────────────────
+
+/// Emit-only verb (no `<id>`). Loads all session reads and touches from disk,
+/// runs the mesh-block + suggest-pipeline emit pass deduped via
+/// `meshes-seen.jsonl` and `advice-seen.jsonl`, and writes suggestions to
+/// stdout. Repeated calls only surface deltas.
+fn run_advice_flush(repo: &gix::Repository, session_id: String) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{edit_overlaps, format_anchor_resolved, Action, BasicOutput};
 
     let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = crate::advice::session::SessionStore::open(wd, &gd, &session_id)?;
+    store.ensure_initialized()?;
+    store.ensure_mesh_baseline(repo)?;
+
+    let touches = store.load_touches().unwrap_or_default();
+    let session_reads = store.load_reads().unwrap_or_default();
+
+    if touches.is_empty() && session_reads.is_empty() {
+        return Ok(0);
+    }
 
     let meshes = {
         let _perf = crate::perf::span("advice.flush.resolve-candidates");
@@ -520,9 +550,6 @@ fn process_touches(
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
     let mut emitted_meshes_this_call: Vec<String> = Vec::new();
-    #[allow(unused_mut)]
-    let mut debug_annotations: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
 
     // Precompute, per candidate mesh, a path → anchors index so the per-touch
     // emission loop runs an O(1) lookup keyed on `t.path` and only re-checks
@@ -571,19 +598,6 @@ fn process_touches(
                 continue;
             };
 
-            // Accumulate debug annotation for every overlapping touch, even if
-            // the mesh was already emitted this call (we want ALL touches that
-            // overlap, not just the first one that triggered the block).
-            if crate::advice::debug::enabled()
-                && let Some(prov) = provenance.get(&t.path)
-            {
-                let annotation = format_touch_annotation(&t.path, &t.kind, prov);
-                debug_annotations
-                    .entry(mesh.name.clone())
-                    .or_default()
-                    .push(annotation);
-            }
-
             if emitted_meshes_this_call.contains(&mesh.name) {
                 continue;
             }
@@ -622,36 +636,10 @@ fn process_touches(
         }
     }
 
-    // If debug is enabled, attach accumulated touch annotations to each block.
-    if crate::advice::debug::enabled() {
-        for block in &mut mesh_blocks {
-            if let Some(annotations) = debug_annotations.remove(&block.mesh_name) {
-                block.debug_touches = annotations;
-            }
-        }
-    }
-
-    // Persist the current flush's touches BEFORE building the SessionRecord
-    // for the suggester. The pipeline reads `store.load_touches()` to seed the
-    // single active session; if we appended after the suggester ran, a flush
-    // triggered by a touch (no prior `advice_mark`) would arrive at the
-    // pipeline with an empty seed and produce no output. Persisting first
-    // closes that gap; the gate downstream still reads `&touches` directly so
-    // we do not depend on a re-read for "current-flush" semantics.
-    for t in &touches {
-        store.append_touch(t)?;
-    }
-
     let deleted_paths: std::collections::HashSet<String> = touches
         .iter()
         .filter(|t| matches!(t.kind, TouchKind::Deleted))
         .map(|t| t.path.clone())
-        .collect();
-    let turn_reads: Vec<String> = store
-        .load_reads()?
-        .into_iter()
-        .filter(|r| r.id.as_deref() == Some(id))
-        .map(|r| r.path)
         .collect();
     let gate_seed: Vec<String> = {
         let mut s: Vec<String> = touches
@@ -659,9 +647,9 @@ fn process_touches(
             .filter(|t| !matches!(t.kind, TouchKind::Deleted))
             .map(|t| t.path.clone())
             .collect();
-        for p in &turn_reads {
-            if !s.contains(p) {
-                s.push(p.clone());
+        for r in &session_reads {
+            if !s.contains(&r.path) {
+                s.push(r.path.clone());
             }
         }
         s
@@ -671,41 +659,15 @@ fn process_touches(
     let mut creation_stanzas: Vec<String> = Vec::new();
 
     if !gate_seed.is_empty() {
-        use crate::advice::suggest::{run_suggest_pipeline, SuggestConfig};
-        let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
-            Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
-            _ => store
-                .dir()
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default(),
+        use crate::advice::suggest::{run_suggest_pipeline, SessionRecord, SuggestConfig};
+        let session_record = SessionRecord {
+            sid: session_id.clone(),
+            reads: session_reads.clone(),
+            touches: touches.clone(),
         };
-        let session_record = if advice_dir.as_os_str().is_empty() {
-            None
-        } else {
-            use crate::advice::suggest::SessionRecord;
-            match (store.load_reads(), store.load_touches()) {
-                (Ok(reads), Ok(touches)) => Some(SessionRecord {
-                    sid: session_id.to_string(),
-                    reads,
-                    touches,
-                }),
-                _ => None,
-            }
-        };
-        let sessions_buf;
-        // Structural enforcement of the single-session constraint: only the
-        // current session's `.git/mesh/advice/<sid>/` store is loaded. The
-        // slice holds exactly one element in the happy path, matching the
-        // `debug_assert_eq!(sessions.len(), 1)` in `run_suggest_pipeline`.
-        let sessions: &[_] = if let Some(ref rec) = session_record {
-            sessions_buf = std::slice::from_ref(rec);
-            sessions_buf
-        } else {
-            &[]
-        };
+        let sessions = std::slice::from_ref(&session_record);
         used_suggest_pipeline = true;
-        if !sessions.is_empty() {
+        {
             let cfg = SuggestConfig::from_env();
             let suggestions =
                 run_suggest_pipeline(sessions, Some(repo), wd, &cfg, Some(store.dir()));
@@ -774,7 +736,7 @@ fn process_touches(
 
     if has_any_output {
         if has_mesh_blocks {
-            output.push_str(&format!("# Mesh advice for slot `{id}`\n"));
+            output.push_str(&format!("# Mesh advice for session `{session_id}`\n"));
             for block in &mesh_block_strings {
                 output.push_str("\n\n");
                 output.push_str(block);
@@ -795,7 +757,7 @@ fn process_touches(
     } else if used_suggest_pipeline {
         // Suggest pipeline ran but produced no output.
         output.push_str(&format!(
-            "No mesh advice for the paths touched in slot `{id}`."
+            "No mesh advice for session `{session_id}`."
         ));
     }
 
@@ -826,10 +788,6 @@ fn process_touches(
     if !emitted_fps.is_empty() {
         store.append_advice_seen(&emitted_fps)?;
     }
-    // Eager observation: capture meshes committed via this tool call's
-    // `git commit` so subsequent reads hit the fast `meshes_committed_set()` path.
-    let _ = discover_meshes_committed_this_session(repo, store);
-    store.discard_snapshot(id);
     Ok(0)
 }
 
@@ -917,15 +875,6 @@ fn run_advice_touch(
         TouchKindArg::Modified => TouchKind::Modified,
     };
 
-    let mut provenance: std::collections::HashMap<String, crate::advice::session::state::TouchProvenance> =
-        std::collections::HashMap::new();
-    provenance.insert(
-        path_str.clone(),
-        crate::advice::session::state::TouchProvenance::Payload {
-            anchor: anchor.clone(),
-        },
-    );
-
     let touches = vec![TouchInterval {
         path: path_str,
         kind: touch_kind,
@@ -935,7 +884,7 @@ fn run_advice_touch(
         end: line_anchor.map(|(_, e)| e),
     }];
 
-    process_touches(repo, &store, &session_id, "", touches, &provenance)
+    record_touches(repo, &store, "", &touches)
 }
 
 /// Validate an anchor for the `touch added` case. Same as `validate_read_spec`
@@ -1204,6 +1153,7 @@ fn parse_diff_files_z(
 /// Format a single touch annotation line for debug output.
 ///
 /// Format: `{path}: {kind} ({source}, {details})`
+#[cfg(test)]
 fn format_touch_annotation(
     path: &str,
     kind: &crate::advice::session::state::TouchKind,

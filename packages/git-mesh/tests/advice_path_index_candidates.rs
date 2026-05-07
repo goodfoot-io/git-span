@@ -66,7 +66,7 @@ fn flush_uses_path_index_candidates_not_all_meshes() -> Result<()> {
     let read_out = repo.run_mesh(["advice", &s, "read", "file1.txt#L1-L5"])?;
     assert_eq!(read_out.status.code(), Some(0));
 
-    // Mark a tool-use, edit only file1.txt, then flush with perf on.
+    // Mark a tool-use, edit only file1.txt, record the diff, then flush with perf on.
     let mark = repo.run_mesh(["advice", &s, "mark", "tool-1"])?;
     assert_eq!(mark.status.code(), Some(0));
 
@@ -75,10 +75,13 @@ fn flush_uses_path_index_candidates_not_all_meshes() -> Result<()> {
         "edited-line-1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
 
+    let diff = repo.run_mesh(["advice", &s, "diff", "tool-1"])?;
+    assert_eq!(diff.status.code(), Some(0));
+
     let out = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .env("GIT_MESH_PERF", "1")
-        .args(["advice", &s, "flush", "tool-1"])
+        .args(["advice", &s, "flush"])
         .output()?;
     assert_eq!(out.status.code(), Some(0));
     let stderr = String::from_utf8(out.stderr)?;

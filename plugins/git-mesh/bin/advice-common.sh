@@ -4,28 +4,15 @@
 
 set -uo pipefail
 
-# When GIT_MESH_ADVICE_DEBUG=1, collect all CLI stderr into a temp file so it
-# can be mirrored into systemMessage. The file is created here (at source time)
-# so it outlives the $() subshells used in render_advice_in / emit_advice.
-# The caller is responsible for removing the file; we do not set an EXIT trap
-# here because subshells created by $() inherit traps and would delete the file
-# before the parent process can read it.
-if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ]; then
-  _ADVICE_DEBUG_FILE="$(mktemp)"
-  export _ADVICE_DEBUG_FILE
-else
-  _ADVICE_DEBUG_FILE=""
-  export _ADVICE_DEBUG_FILE
-fi
-
-# Hooks are informational; an internal failure must never block Claude's
-# turn or surface as a non-blocking exit-code error in the transcript.
-# Trap any uncaught error, write a breadcrumb to stderr, and exit 0.
+# Hooks are recording-only: success is exit 0 with no stdout. On uncaught
+# error, write a breadcrumb to stderr and exit 1 — the Claude Code
+# *non-blocking* error convention. Exit code 2 is reserved for blocking
+# errors and is intentionally not used here.
 _advice_hook_err() {
   local rc=$? line=$1
   printf 'git-mesh advice hook: error rc=%s at line %s in %s\n' \
     "$rc" "$line" "${BASH_SOURCE[1]:-?}" >&2
-  exit 0
+  exit 1
 }
 trap '_advice_hook_err $LINENO' ERR
 
@@ -65,49 +52,20 @@ abspath_against() {
   esac
 }
 
-# Run a single advice verb for one repo and print the raw text (no JSON wrapper).
+# Run a single advice verb for one repo. Recording verbs are silent on
+# success; their stdout is discarded so the hook leaks nothing back to
+# Claude. The verb's stderr is inherited so any error message lands in the
+# transcript. On non-zero exit, propagate by exiting the hook with code 1
+# (non-blocking error per Claude Code's hook protocol).
 # Usage: run_advice_verb <repo_root> <sid> <verb> [<arg1> [<arg2>]]
-# Silent if there's nothing to say or the verb returns non-zero.
-# When GIT_MESH_ADVICE_DEBUG=1, appends stderr to _ADVICE_DEBUG_FILE if set.
 run_advice_verb() {
   local repo_root="$1" sid="$2" verb="$3"
   shift 3
-  local args=("$@")
-  if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ] && [ -n "${_ADVICE_DEBUG_FILE:-}" ]; then
-    (cd "$repo_root" && git mesh advice "$sid" "$verb" "${args[@]}" \
-      2>>"$_ADVICE_DEBUG_FILE") || true
-  else
-    (cd "$repo_root" && git mesh advice "$sid" "$verb" "${args[@]}" \
-      2>/dev/null) || true
+  local args=("$@") rc=0
+  (cd "$repo_root" && git mesh advice "$sid" "$verb" "${args[@]}" >/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'git-mesh advice hook: `git mesh advice %s %s` failed (rc=%s)\n' \
+      "$sid" "$verb" "$rc" >&2
+    exit 1
   fi
 }
-
-# Wrap rendered advice text in the hook output JSON, mirroring it into
-# both additionalContext (for Claude's next turn) and systemMessage (for
-# the transcript). Silent if the text is empty.
-# When GIT_MESH_ADVICE_DEBUG=1 and _ADVICE_DEBUG_FILE is non-empty, appends
-# the captured trace to systemMessage only.
-emit_advice_text() {
-  local event="$1" text="$2"
-  [ -n "$text" ] || return 0
-  text=$'<git-mesh>\n'"${text}"$'\n</git-mesh>'
-  local sys="$text"
-  if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ] && [ -n "${_ADVICE_DEBUG_FILE:-}" ] && [ -s "${_ADVICE_DEBUG_FILE}" ]; then
-    local debug_content
-    debug_content="$(cat "$_ADVICE_DEBUG_FILE")"
-    sys="${text}"$'\n\n--- git-mesh-advice-debug ---\n'"${debug_content}"
-  fi
-  # Only PreToolUse, UserPromptSubmit, PostToolUse, and PostToolBatch
-  # accept hookSpecificOutput.additionalContext. Stop (and any other
-  # event) must use only top-level fields like systemMessage.
-  case "$event" in
-    PreToolUse|UserPromptSubmit|PostToolUse|PostToolBatch|SessionStart)
-      jq -nc --arg e "$event" --arg c "$text" --arg s "$sys" \
-        '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}, systemMessage: $s}'
-      ;;
-    *)
-      jq -nc --arg s "$sys" '{systemMessage: $s}'
-      ;;
-  esac
-}
-

@@ -40,17 +40,17 @@ fn ok(out: &Output) {
     );
 }
 
-/// Establish a fresh baseline: mark+flush with no meshes yet.
+/// Establish a fresh baseline: mark+diff with no meshes yet.
 fn establish_baseline(repo: &TestRepo, session: &str) -> Result<()> {
     ok(&run_advice(repo, session, &["mark", "baseline"])?);
-    ok(&run_advice(repo, session, &["flush", "baseline"])?);
+    ok(&run_advice(repo, session, &["diff", "baseline"])?);
     Ok(())
 }
 
-/// Observe new mesh refs: mark+flush to diff against baseline.
+/// Observe new mesh refs: mark+diff to capture against baseline.
 fn observe_new_mesh(repo: &TestRepo, session: &str) -> Result<()> {
     ok(&run_advice(repo, session, &["mark", "obs"])?);
-    ok(&run_advice(repo, session, &["flush", "obs"])?);
+    ok(&run_advice(repo, session, &["diff", "obs"])?);
     Ok(())
 }
 
@@ -128,7 +128,7 @@ fn prior_session_read_is_silent() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Touch on prior-session mesh still emits (write-path non-regression)
+// Test 3: Touch + on-demand flush on prior-session mesh emits
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -142,14 +142,23 @@ fn touch_on_prior_session_mesh_emits() -> Result<()> {
     set_why(&gix, "m1", "write-path pair")?;
     commit_mesh(&gix, "m1")?;
 
-    // Touch (write path) -> must emit despite prior session
+    // Touch is recording-only and silent; the on-demand `flush` surfaces the
+    // accumulated session advice.
     let s = sid("test3");
-    let out = run_advice(&repo, &s, &["touch", "t1", "file1.txt#L1-L5", "modified"])?;
-    ok(&out);
-    let stdout = String::from_utf8(out.stdout)?;
+    let touch_out = run_advice(&repo, &s, &["touch", "t1", "file1.txt#L1-L5", "modified"])?;
+    ok(&touch_out);
+    assert!(
+        touch_out.stdout.is_empty(),
+        "touch must be silent, got:\n{}",
+        String::from_utf8_lossy(&touch_out.stdout)
+    );
+
+    let flush_out = run_advice(&repo, &s, &["flush"])?;
+    ok(&flush_out);
+    let stdout = String::from_utf8(flush_out.stdout)?;
     assert!(
         !stdout.is_empty(),
-        "touch on prior-session mesh must still emit"
+        "flush after touch on prior-session mesh must emit"
     );
     assert!(stdout.contains("file2.txt"), "must mention partner path");
 

@@ -38,18 +38,18 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     let s = sid("partner");
-    // Baseline: mark+flush establishes pre-mesh state
+    // Baseline: mark+diff establishes pre-mesh state
     repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "flush", "init"])?;
+    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
     append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
     append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
     set_why(&gix, "m1", "two-file partnership")?;
     commit_mesh(&gix, "m1")?;
 
-    // Observe: another mark+flush detects new ref
+    // Observe: another mark+diff detects new ref
     repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "flush", "obs"])?;
+    repo.run_mesh(["advice", &s, "diff", "obs"])?;
 
     let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
     ok(&out);
@@ -76,7 +76,7 @@ fn second_read_of_same_path_dedupes_via_meshes_seen() -> Result<()> {
     let s = sid("dedup-same");
     // Baseline
     repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "flush", "init"])?;
+    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
     append_add(&gix, "dd", "file1.txt", 1, 5, None)?;
     append_add(&gix, "dd", "file2.txt", 1, 5, None)?;
@@ -85,7 +85,7 @@ fn second_read_of_same_path_dedupes_via_meshes_seen() -> Result<()> {
 
     // Observe
     repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "flush", "obs"])?;
+    repo.run_mesh(["advice", &s, "diff", "obs"])?;
     let first = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
     ok(&first);
     let first_out = String::from_utf8(first.stdout)?;
@@ -109,7 +109,7 @@ fn read_of_partner_path_does_not_resurface_already_seen_mesh() -> Result<()> {
     let s = sid("new-trigger");
     // Baseline
     repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "flush", "init"])?;
+    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
     append_add(&gix, "dd2", "file1.txt", 1, 5, None)?;
     append_add(&gix, "dd2", "file2.txt", 1, 5, None)?;
@@ -118,7 +118,7 @@ fn read_of_partner_path_does_not_resurface_already_seen_mesh() -> Result<()> {
 
     // Observe
     repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "flush", "obs"])?;
+    repo.run_mesh(["advice", &s, "diff", "obs"])?;
     let _ = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
 
     let out = run_advice(&repo, &s, &["read", "file2.txt#L1-L5"])?;
@@ -152,9 +152,9 @@ fn isolated_sessions_do_not_share_seen_set() -> Result<()> {
 
     // Both sessions establish baseline BEFORE committing the mesh
     repo.run_mesh(["advice", &s1, "mark", "init"])?;
-    repo.run_mesh(["advice", &s1, "flush", "init"])?;
+    repo.run_mesh(["advice", &s1, "diff", "init"])?;
     repo.run_mesh(["advice", &s2, "mark", "init"])?;
-    repo.run_mesh(["advice", &s2, "flush", "init"])?;
+    repo.run_mesh(["advice", &s2, "diff", "init"])?;
 
     append_add(&gix, "iso", "file1.txt", 1, 5, None)?;
     append_add(&gix, "iso", "file2.txt", 1, 5, None)?;
@@ -163,9 +163,9 @@ fn isolated_sessions_do_not_share_seen_set() -> Result<()> {
 
     // Both sessions observe the new mesh ref
     repo.run_mesh(["advice", &s1, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s1, "flush", "obs"])?;
+    repo.run_mesh(["advice", &s1, "diff", "obs"])?;
     repo.run_mesh(["advice", &s2, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s2, "flush", "obs"])?;
+    repo.run_mesh(["advice", &s2, "diff", "obs"])?;
 
     let a1 = run_advice(&repo, &s1, &["read", "file1.txt#L1-L5"])?;
     ok(&a1);

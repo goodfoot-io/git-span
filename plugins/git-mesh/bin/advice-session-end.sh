@@ -3,7 +3,6 @@
 
 set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
-trap 'rm -f -- "${_ADVICE_DEBUG_FILE:-}" 2>/dev/null' EXIT
 
 read_hook_input
 
@@ -14,5 +13,5 @@ cwd="$(hook_field '.cwd')"
 root="$(resolve_repo_root "$cwd")"
 [ -n "$root" ] || exit 0
 
-run_advice_verb "$root" "$sid" end >/dev/null 2>&1 || true
+run_advice_verb "$root" "$sid" end
 exit 0

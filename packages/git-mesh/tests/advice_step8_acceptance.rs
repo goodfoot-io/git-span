@@ -48,9 +48,17 @@ fn advice_mark(repo_dir: &Path, advice_dir: &Path, sid: &str, id: &str) -> std::
     advice(repo_dir, advice_dir, sid, "mark", &[id])
 }
 
-/// `advice flush` wrapper.
+/// `advice diff <id>` then `advice flush` wrapper. Records the post-mark diff
+/// for `id`, then emits accumulated session advice — replicating the
+/// pre-split combined `flush <id>` semantics for tests.
 fn advice_flush(repo_dir: &Path, advice_dir: &Path, sid: &str, id: &str) -> std::process::Output {
-    advice(repo_dir, advice_dir, sid, "flush", &[id])
+    let diff_out = advice(repo_dir, advice_dir, sid, "diff", &[id]);
+    assert!(
+        diff_out.status.success(),
+        "advice diff {id} failed: {}",
+        String::from_utf8_lossy(&diff_out.stderr)
+    );
+    advice(repo_dir, advice_dir, sid, "flush", &[])
 }
 
 /// A git repo with two files that share co-change history and a shared
