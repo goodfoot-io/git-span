@@ -70,7 +70,7 @@ strategy:
 Each build copies from:
 
 ```text
-packages/git-mesh/target/<target>/release/<binary>
+packages/git-mesh/target-cache/<target>/release/<binary>
 ```
 
 to:

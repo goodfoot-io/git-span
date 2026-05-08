@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p npm/${{ matrix.npm-pkg }}/bin
-          cp packages/git-mesh/target/${{ matrix.target }}/release/${{ matrix.binary }} npm/${{ matrix.npm-pkg }}/bin/
+          cp packages/git-mesh/target-cache/${{ matrix.target }}/release/${{ matrix.binary }} npm/${{ matrix.npm-pkg }}/bin/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
