@@ -658,15 +658,26 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                         crate::staging::encode_name_for_fs(name)
                     ));
                     if !sidecar_p.exists() {
+                        // Pair-write atomicity: with the sidecar-first
+                        // writer in `append_prepared_add`, this state can
+                        // only arise from a writer interrupted mid-pair
+                        // (signal, OOM, devcontainer reload). It is
+                        // self-healing on the next staging read for `name`,
+                        // so downgrade to Warn with a non-destructive
+                        // remediation rather than forcing `git mesh restore`.
                         out.push(DoctorFinding {
                             code: DoctorCode::StagingCorrupt,
-                            severity: Severity::Error,
+                            severity: Severity::Warn,
                             message: format!(
-                                "missing sidecar for {}:{lineno} (expected {})",
+                                "missing sidecar for {}:{lineno} (expected {}) — \
+                                 likely an interrupted `git mesh add`/`why`; \
+                                 auto-recovers on next read",
                                 path.display(),
                                 sidecar_p.display()
                             ),
-                            remediation: Some(format!("`git mesh restore {name}` and re-stage")),
+                            remediation: Some(format!(
+                                "run any `git mesh` read for `{name}` (e.g. `git mesh ls {name}`) to auto-recover, or re-stage the affected anchor"
+                            )),
                         });
                     }
                 }

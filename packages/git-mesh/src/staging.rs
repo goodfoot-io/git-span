@@ -441,6 +441,20 @@ pub fn read_staged_ops(repo: &gix::Repository, name: &str) -> Result<Vec<StagedO
     Ok(out)
 }
 
+/// 1-based index the next staged `add` line will receive. Counts add lines
+/// in the existing ops file so the sidecar can be written under its final
+/// `<N>` before the ops line is appended.
+fn prospective_add_n(repo: &gix::Repository, name: &str) -> Result<u32> {
+    let ops_p = ops_path(repo, name)?;
+    let existing = if ops_p.exists() {
+        fs::read_to_string(&ops_p)?
+    } else {
+        String::new()
+    };
+    let count = existing.lines().filter(|l| l.starts_with("add ")).count() as u32;
+    Ok(count + 1)
+}
+
 fn append_line(repo: &gix::Repository, name: &str, line: &str) -> Result<u32> {
     let ops_p = ops_path(repo, name)?;
     ensure_dir(ops_p.parent().unwrap())?;
@@ -564,9 +578,12 @@ pub(crate) fn append_prepared_add(
         Some(sha) => format!("add {addr}{ADD_ANCHOR_SEPARATOR}{sha}"),
         None => format!("add {addr}"),
     };
-    let add_n = append_line(repo, name, &line)?;
-    fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
-    // Write sidecar metadata: stamp + anchor_id + line_count + content_sha256.
+
+    // Pair-write atomicity: the ops-line append is the commit point. Land
+    // the sidecar and its meta first, then append the ops line — an
+    // interrupted writer leaves at most an orphan sidecar (Warn) rather
+    // than an ops line with no paired sidecar (Error, destructive remediation).
+    let add_n = prospective_add_n(repo, name)?;
     let stamp = crate::types::current_normalization_stamp(repo).unwrap_or_default();
     let meta = SidecarMeta {
         stamp,
@@ -576,7 +593,12 @@ pub(crate) fn append_prepared_add(
     };
     let meta_json = serde_json::to_vec_pretty(&meta)
         .map_err(|e| Error::Parse(format!("serialize sidecar meta: {e}")))?;
+    let ops_p = ops_path(repo, name)?;
+    ensure_dir(ops_p.parent().unwrap())?;
+    fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
     fs::write(sidecar_meta_path(repo, name, add_n)?, meta_json)?;
+    let written_n = append_line(repo, name, &line)?;
+    debug_assert_eq!(written_n, add_n);
     Ok(())
 }
 
