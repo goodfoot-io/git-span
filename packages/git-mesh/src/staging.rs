@@ -24,6 +24,7 @@ use crate::types::{
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -827,8 +828,14 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
     }
     let _lock = staging_lock(repo, name)?;
     let encoded = encode_name_for_fs(name);
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+    // Snapshot the directory eagerly. `fs::read_dir` is otherwise lazy
+    // (entries materialize as the iterator advances), which would hide
+    // the snapshot-vs-unlink race this loop must tolerate.
+    let entries: Vec<_> = fs::read_dir(&dir)?.collect::<io::Result<_>>()?;
+    if std::env::var_os("GIT_MESH_TEST_CLEAR_STAGING_PAUSE").is_some() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for entry in entries {
         let fname = entry.file_name();
         let Some(fname) = fname.to_str() else {
             continue;
