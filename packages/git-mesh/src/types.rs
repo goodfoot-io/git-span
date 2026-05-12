@@ -280,6 +280,21 @@ pub enum Error {
     #[error("filter not implemented: {filter}")]
     FilterFailed { filter: String },
 
+    /// A staged mesh name cannot coexist with an existing mesh ref because
+    /// they would occupy the same loose-ref path as both a file and a
+    /// directory. Either the staged name has an existing mesh as a strict
+    /// path prefix (`<existing>/...`) or the inverse (an existing mesh has
+    /// the staged name as a strict prefix). The committed mesh blocks the
+    /// staged one until one of them is renamed (typically the leaf to
+    /// `<name>/index`).
+    #[error(
+        "mesh name `{staged}` collides with existing mesh `{blocking}`: \
+         loose refs cannot occupy the same path as both a file and a \
+         directory. Rename one of them — e.g. `git mesh move {blocking} \
+         {blocking}/index` — and retry."
+    )]
+    MeshNameCollidesWithExistingMesh { staged: String, blocking: String },
+
     /// A staging sidecar's content hash does not match the
     /// `content_sha256` recorded in its `.meta` file (or the meta is
     /// missing/empty when one was expected). Slice 4 of the review plan

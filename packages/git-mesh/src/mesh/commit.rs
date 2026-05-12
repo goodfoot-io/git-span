@@ -22,6 +22,13 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let wd = work_dir(repo)?;
     let staging = staging::read_staging(repo, name)?;
 
+    // Detect loose-ref file vs. directory collisions BEFORE any ref I/O.
+    // `try_find_reference` on `refs/meshes/v1/<name>` short-reads when an
+    // ancestor path is already a regular file (committed leaf), so the
+    // structured collision error must beat `resolve_ref_oid_optional` to
+    // surface a useful message.
+    check_prefix_collision(repo, name)?;
+
     let mesh_ref = mesh_ref(name);
     let base_tip = resolve_ref_oid_optional(wd, &mesh_ref)?;
 
@@ -403,6 +410,40 @@ fn extent_sort_key(extent: &AnchorExtent) -> (u32, u32) {
         AnchorExtent::WholeFile => (0, 0),
         AnchorExtent::LineRange { start, end } => (start, end),
     }
+}
+
+/// Refuse a commit whose name would force the loose-ref tree to hold the
+/// same path as both a regular file and a directory. The collision is
+/// symmetric: `name = "a/b"` cannot coexist with `"a"`, and `name = "a"`
+/// cannot coexist with `"a/b"`. Reports the first existing mesh that
+/// blocks the write so the user can rename one side.
+fn check_prefix_collision(repo: &gix::Repository, name: &str) -> Result<()> {
+    let existing = git::list_refs_stripped(repo, "refs/meshes/v1")?;
+    for other in existing {
+        if other == name {
+            continue;
+        }
+        // `other` is a strict ancestor of `name`: file blocks future directory.
+        if let Some(rest) = name.strip_prefix(&other)
+            && rest.starts_with('/')
+        {
+            return Err(Error::MeshNameCollidesWithExistingMesh {
+                staged: name.to_string(),
+                blocking: other,
+            });
+        }
+        // `other` is a strict descendant of `name`: existing directory
+        // blocks future file.
+        if let Some(rest) = other.strip_prefix(name)
+            && rest.starts_with('/')
+        {
+            return Err(Error::MeshNameCollidesWithExistingMesh {
+                staged: name.to_string(),
+                blocking: other,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn path_exists_in_tree(repo: &gix::Repository, commit_sha: &str, path: &str) -> bool {
