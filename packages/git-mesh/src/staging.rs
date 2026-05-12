@@ -850,7 +850,16 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
                     !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
                 });
         if matches {
-            fs::remove_file(entry.path())?;
+            // Tolerate a concurrent unlink racing in between the
+            // snapshot and this removal. The caller's intent — "this
+            // file is gone" — is already satisfied; aborting here
+            // would leave every later snapshot entry behind as a
+            // permanent orphan.
+            if let Err(e) = fs::remove_file(entry.path())
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                return Err(e.into());
+            }
         }
     }
     Ok(())
