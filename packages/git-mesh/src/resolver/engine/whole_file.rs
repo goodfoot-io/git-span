@@ -38,7 +38,7 @@ pub(crate) fn resolve_whole_file(
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
-            culprit: None,
+            locus: None,
         });
     }
 
@@ -62,7 +62,7 @@ pub(crate) fn resolve_whole_file(
                 source: None,
                 layer_sources: vec![],
                 acknowledged_by: None,
-                culprit: None,
+                locus: None,
             });
         }
     }
@@ -118,7 +118,7 @@ pub(crate) fn resolve_whole_file(
             source,
             layer_sources,
             acknowledged_by: None,
-            culprit: None,
+            locus: None,
         });
     }
 
@@ -229,7 +229,7 @@ pub(crate) fn resolve_whole_file(
         source,
         layer_sources,
         acknowledged_by: None,
-        culprit: None,
+        locus: None,
     })
 }
 

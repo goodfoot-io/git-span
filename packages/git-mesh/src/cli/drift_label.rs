@@ -16,7 +16,7 @@
 //! Precedence is enforced by the engine before reaching this formatter:
 //! worktree → index → HEAD history walk.
 
-use crate::types::{AnchorStatus, Culprit, DriftSource};
+use crate::types::{AnchorStatus, DriftLocus, DriftSource};
 
 /// Format a human-readable drift label for a single anchor.
 ///
@@ -25,8 +25,9 @@ use crate::types::{AnchorStatus, Culprit, DriftSource};
 /// * `status` — The resolved anchor status.
 /// * `source` — The layer at which drift was detected (`None` for `Fresh`
 ///   and terminal statuses).
-/// * `culprit` — The commit blamed for HEAD-layer drift (`None` when
-///   `source != Head` or when the anchor sha is unreachable).
+/// * `locus` — The HEAD-history locus describing the first commit on the
+///   path that mutated the anchored range or removed/renamed the path
+///   (`None` when `source != Head` or the anchor sha is unreachable).
 /// * `current_blob_present` — `true` when the content still exists at the
 ///   drift locus (path present); `false` when the path has been removed
 ///   (deletion / orphan via rename).
@@ -34,7 +35,7 @@ use crate::types::{AnchorStatus, Culprit, DriftSource};
 pub fn format_drift_label(
     status: &AnchorStatus,
     source: Option<DriftSource>,
-    culprit: Option<&Culprit>,
+    locus: Option<&DriftLocus>,
     current_blob_present: bool,
 ) -> String {
     todo!("Phase 3: implement drift label formatter")

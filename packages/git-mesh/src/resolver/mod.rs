@@ -13,7 +13,7 @@
 //! - `engine` — top-level `resolve_anchor` / `resolve_mesh` /
 //!   `stale_meshes`, acknowledgment matching, the concurrency
 //!   SHA-trailer guard.
-//! - [`attribution`] — `culprit_commit` HEAD-source blame.
+//! - [`attribution`] — `drift_locus` HEAD-source forward walk.
 
 #![allow(dead_code)]
 
@@ -25,7 +25,7 @@ pub(crate) mod session;
 pub(crate) mod trail_cache;
 pub(crate) mod walker;
 
-pub use attribution::culprit_commit;
+pub use attribution::drift_locus;
 pub use engine::pending::build_pending_findings;
 pub(crate) use engine::{
     EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state,

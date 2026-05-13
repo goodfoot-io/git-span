@@ -875,20 +875,6 @@ pub fn log_l_resolve(
     ))
 }
 
-/// Placeholder for a standalone culprit helper; the resolver drives its
-/// own blame walk in [`crate::resolver::culprit_commit`].
-pub fn culprit_commit(
-    _repo: &gix::Repository,
-    _anchor_sha: &str,
-    _path: &str,
-    _start: u32,
-    _end: u32,
-) -> Result<Option<String>> {
-    Err(Error::Git(
-        "git::culprit_commit is not used; call resolver::culprit_commit".into(),
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // Slice 1: shared gix helpers (replacements for `Command::new("git")`).
 // ---------------------------------------------------------------------------

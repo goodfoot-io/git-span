@@ -150,9 +150,27 @@ pub struct AnchorResolved {
     /// Populated in slice 5: the engine compares re-normalized sidecar
     /// bytes against the live content for the referenced anchor.
     pub acknowledged_by: Option<StagedOpRef>,
-    /// Commit blamed for the current divergence. Only populated when
-    /// `source == Some(Head)` and `current.blob.is_some()` (plan §B2/§D3).
-    pub culprit: Option<Culprit>,
+    /// HEAD-history drift locus, populated only when
+    /// `source == Some(Head)`. Carries the first commit on the path since
+    /// the anchor that mutated the anchored byte range (`ChangedAt`), the
+    /// commit that removed or renamed the path (`OrphanedAt`), or marks
+    /// the anchor commit as unreachable from HEAD.
+    pub locus: Option<DriftLocus>,
+}
+
+/// Locus emitted by the HEAD-history walk in `resolver::attribution`.
+/// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`;
+/// the other layers carry their own per-layer label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriftLocus {
+    /// First commit reachable from HEAD that mutated the anchored byte
+    /// range on the path.
+    ChangedAt(gix::ObjectId),
+    /// Commit that removed (or renamed) the path; anchored content is
+    /// gone from HEAD.
+    OrphanedAt(gix::ObjectId),
+    /// Anchor commit is not reachable from HEAD; no commit can be named.
+    Unreachable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,14 +524,6 @@ pub struct Hunk {
     pub new: (u32, u32),
 }
 
-/// The commit blamed for the current divergence (HEAD layer only).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Culprit {
-    pub commit: gix::ObjectId,
-    pub author: String,
-    pub summary: String,
-}
-
 /// Back-pointer from a `Finding` to the staged mesh op that acknowledges
 /// its drift.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -581,7 +591,7 @@ pub struct Finding {
     /// Staged re-anchor matched by `anchor_id`.
     pub acknowledged_by: Option<StagedOpRef>,
     /// Only when `source == Some(Head)`.
-    pub culprit: Option<Culprit>,
+    pub locus: Option<DriftLocus>,
 }
 
 /// Index-layer entry for a single stage-0 path. Conflicted paths are

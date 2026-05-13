@@ -17,8 +17,8 @@ use crate::resolver::{
 };
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
-    AnchorExtent, AnchorLocation, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet,
-    MeshResolved, PendingDrift, PendingFinding, StagedOpRef, UnavailableReason,
+    AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
+    LayerSet, MeshResolved, PendingDrift, PendingFinding, StagedOpRef, UnavailableReason,
 };
 use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
@@ -258,7 +258,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
                                 acknowledged_by: ack,
-                                culprit: r.culprit.clone(),
+                                locus: r.locus,
                             }]
                         } else {
                             // Emit one Finding per drifting layer.
@@ -272,8 +272,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                                     anchored: r.anchored.clone(),
                                     current: r.current.clone(),
                                     acknowledged_by: ack.clone(),
-                                    culprit: if src == DriftSource::Head {
-                                        r.culprit.clone()
+                                    locus: if src == DriftSource::Head {
+                                        r.locus
                                     } else {
                                         None
                                     },
@@ -728,7 +728,7 @@ fn render_human(
                         anchored: r.anchored.clone(),
                         current: r.current.clone(),
                         acknowledged_by: r.acknowledged_by.clone(),
-                        culprit: None,
+                        locus: None,
                     }]
                 } else {
                     // Collapse per-layer expansions to a single row per
@@ -1115,11 +1115,11 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "moved_to": moved_to,
         "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
         "acknowledged_by": f.acknowledged_by.as_ref().map(staged_op_ref_json),
-        "culprit": f.culprit.as_ref().map(|c| json!({
-            "commit": c.commit.to_string(),
-            "author": c.author,
-            "summary": c.summary,
-        })),
+        "locus": match f.locus {
+            Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
+            Some(DriftLocus::OrphanedAt(oid)) => json!({ "orphaned_in": oid.to_string() }),
+            Some(DriftLocus::Unreachable) | None => Value::Null,
+        },
     })
 }
 

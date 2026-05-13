@@ -692,7 +692,7 @@ fn orphaned_placeholder(anchor_id: &str) -> AnchorResolved {
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,
-        culprit: None,
+        locus: None,
     }
 }
 
@@ -720,7 +720,7 @@ mod tests {
                     source: None,
                     layer_sources: vec![],
                     acknowledged_by: None,
-                    culprit: None,
+                    locus: None,
                 })
                 .collect(),
             pending: vec![],

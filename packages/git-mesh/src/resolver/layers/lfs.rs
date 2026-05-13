@@ -194,7 +194,7 @@ pub(crate) fn resolve_lfs_anchor(
             source,
             layer_sources,
             acknowledged_by: None,
-            culprit: None,
+            locus: None,
         };
     }
 
@@ -255,7 +255,7 @@ pub(crate) fn resolve_lfs_anchor(
             source,
             layer_sources,
             acknowledged_by: None,
-            culprit: None,
+            locus: None,
         };
     }
 
@@ -317,7 +317,7 @@ pub(crate) fn resolve_lfs_anchor(
         source,
         layer_sources,
         acknowledged_by: None,
-        culprit: None,
+        locus: None,
     }
 }
 
@@ -336,6 +336,6 @@ fn lfs_terminal(
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,
-        culprit: None,
+        locus: None,
     }
 }
