@@ -18,7 +18,7 @@ git config --get core.hooksPath
 If set, use that path. Otherwise, default to `.git/hooks`.
 
 Check whether `post-commit` or `post-rewrite` already exist at that path. If
-they do, append the `git mesh` lines rather than overwriting. If not, create
+they do, append the `git mesh` line rather than overwriting. If not, create
 them.
 
 A minimal `post-commit` hook:
@@ -26,8 +26,7 @@ A minimal `post-commit` hook:
 ```sh
 #!/bin/sh
 if command -v git-mesh >/dev/null 2>&1; then
-  git mesh commit
-  git mesh stale --compact --auto-follow --no-exit-code
+  git mesh hooks git post-commit
 fi
 ```
 
@@ -36,8 +35,7 @@ A minimal `post-rewrite` hook:
 ```sh
 #!/bin/sh
 if command -v git-mesh >/dev/null 2>&1; then
-  git mesh rewrite
-  git mesh stale --compact --auto-follow --no-exit-code
+  git mesh hooks git post-rewrite
 fi
 ```
 
@@ -45,33 +43,32 @@ Make both files executable after writing them.
 
 What each line does:
 
-- **`git mesh commit`**: promotes staged mesh edits into `refs/meshes/v1/*`
-  as part of the same commit moment.
-- **`git mesh stale --compact --auto-follow --no-exit-code`** (post-commit):
-  advances Fresh anchors to HEAD when the anchored bytes are unchanged, and
-  follows renames so anchors track moved files. `--no-exit-code` keeps drift
-  findings from failing the commit.
-- **`git mesh rewrite`**: reads the old→new SHA pairs git provides on stdin
-  and advances anchor SHAs whose anchored bytes are unchanged across the
-  rewrite.
-- **`git mesh stale --compact --auto-follow --no-exit-code`**
-  (post-rewrite): backstop for multi-step rewrites (e.g.
-  `rebase --exec git commit --amend`) that can leave an anchor on an
-  unreachable intermediate. `--compact` advances such anchors to HEAD when
-  the path's HEAD blob still byte-equals the anchored blob, and
-  `--auto-follow` picks up renames that happened across the rewrite.
+- **`git mesh hooks git post-commit`**: chains `git mesh commit` (which
+  promotes staged mesh edits into `refs/meshes/v1/*` as part of the same
+  commit moment) followed by
+  `git mesh stale --compact --auto-follow --no-exit-code` (which advances
+  Fresh anchors to HEAD when the anchored bytes are unchanged and follows
+  renames so anchors track moved files). Short-circuits on commit failure;
+  the stale step never fails the hook.
+- **`git mesh hooks git post-rewrite`**: reads the old→new SHA pairs git
+  provides on stdin and chains `git mesh rewrite` (advances anchor SHAs
+  whose anchored bytes are unchanged across the rewrite) followed by
+  `git mesh stale --compact --auto-follow --no-exit-code` as a backstop for
+  multi-step rewrites (e.g. `rebase --exec git commit --amend`) that can
+  leave an anchor on an unreachable intermediate.
 
 The `command -v git-mesh` guard makes both hooks safe in repos or
 environments where the CLI isn't installed.
 
 `git mesh doctor` reports `MissingPostCommitHook` /
 `MissingPostRewriteHook` until each hook file contains the marker line
-(`git mesh commit` and `git mesh rewrite` respectively); both findings
-should drop off after the snippets above are in place.
+(`git mesh hooks git post-commit` and `git mesh hooks git post-rewrite`
+respectively); both findings should drop off after the snippets above are
+in place.
 
 ## Wrapping an existing hook
 
 If a hook file already exists (e.g. another tool installed one), append the
-`git mesh` lines rather than overwriting. Doctor only checks that the
+`git mesh` line rather than overwriting. Doctor only checks that the
 marker text appears anywhere in the hook file, so any wrapper that
 ultimately runs the command will satisfy it.
