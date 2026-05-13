@@ -951,6 +951,12 @@ fn open_and_bootstrap(
         let _ = fs::remove_file(db_path);
         let _ = fs::remove_file(db_dir.join("mesh_cache.sqlite-wal"));
         let _ = fs::remove_file(db_dir.join("mesh_cache.sqlite-shm"));
+        // Remove the legacy JSON rename-trail directory from Phase 2 (pre-sqlite).
+        // Ignore NotFound; fail silently on other errors (non-blocking).
+        let legacy_trail = db_dir.join("rename-trail");
+        if legacy_trail.exists() {
+            let _ = fs::remove_dir_all(&legacy_trail);
+        }
 
         let conn = Connection::open_with_flags(db_path, flags)
             .map_err(|e| crate::Error::Git(format!("sqlite reopen: {e}")))?;

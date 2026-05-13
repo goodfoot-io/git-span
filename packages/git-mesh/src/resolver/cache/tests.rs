@@ -344,6 +344,39 @@ fn version_mismatch_drops_and_rebuilds() {
     assert_eq!(ver, SCHEMA_VERSION);
 }
 
+/// When the schema version mismatches, the rebuild also removes the legacy
+/// `rename-trail/` JSON directory left by pre-sqlite Phase 2 code.
+#[test]
+fn version_mismatch_removes_legacy_rename_trail_dir() {
+    let (_td, repo) = init_repo();
+
+    // Derive paths the same way Cache::open does.
+    let db_dir = repo.git_dir().join("mesh").join("cache");
+    let db_path = db_dir.join("mesh_cache.sqlite");
+
+    // Bootstrap a DB with a real schema version.
+    let _ = Cache::open(&repo).expect("bootstrap");
+
+    // Plant a fake legacy rename-trail/v1/ directory.
+    let legacy_dir = db_dir.join("rename-trail").join("v1");
+    std::fs::create_dir_all(&legacy_dir).expect("create legacy dir");
+    std::fs::write(legacy_dir.join("some-file.json"), "{}").expect("write legacy file");
+
+    // Corrupt user_version to trigger a schema mismatch rebuild.
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("raw open");
+        conn.execute_batch("PRAGMA user_version = 999;").expect("corrupt version");
+    }
+
+    // Reopen — must rebuild schema and delete the legacy directory.
+    let _ = Cache::open(&repo).expect("reopen after mismatch");
+
+    assert!(
+        !db_dir.join("rename-trail").exists(),
+        "legacy rename-trail/ directory must be removed after schema rebuild"
+    );
+}
+
 // ── GC test ───────────────────────────────────────────────────────────────────
 
 /// GC removes rows whose SHAs are unreachable, and leaves reachable rows alone.
@@ -497,6 +530,39 @@ fn drift_locus_round_trip_persists_across_connections() {
     let got = cache2.drift_locus_get(&key).expect("should hit");
     assert_eq!(got.variant, 1);
     assert_eq!(got.answer_commit, _head);
+}
+
+/// `None` round-trips through `encode_drift_locus`/`decode_drift_locus` as
+/// `None`, not `Some(Unreachable)`.
+///
+/// This is a regression guard for the variant-3 decode bug: before the fix,
+/// storing a `None` result (variant 3) and re-reading it produced
+/// `Some(Unreachable)` because the decoder's catch-all mapped unknown variants
+/// to `Unreachable` instead of checking for the sentinel.
+#[test]
+fn drift_locus_none_round_trips_as_none() {
+    use crate::resolver::attribution;
+    use crate::types::DriftLocus;
+
+    // None encodes as variant 3 with the null sentinel commit.
+    let encoded = attribution::encode_drift_locus_for_test(None);
+    assert_eq!(encoded.variant, 3, "None must encode as variant 3");
+
+    // Decoding variant 3 must return None, not Some(Unreachable).
+    let decoded = attribution::decode_drift_locus_for_test(&encoded);
+    assert!(
+        decoded.is_none(),
+        "variant 3 must decode back to None, got {decoded:?}"
+    );
+
+    // Some(Unreachable) still encodes as variant 0.
+    let enc_unreachable = attribution::encode_drift_locus_for_test(Some(&DriftLocus::Unreachable));
+    assert_eq!(enc_unreachable.variant, 0);
+    let dec_unreachable = attribution::decode_drift_locus_for_test(&enc_unreachable);
+    assert!(
+        matches!(dec_unreachable, Some(DriftLocus::Unreachable)),
+        "variant 0 must decode to Some(Unreachable)"
+    );
 }
 
 /// Cached row whose `answer_commit` is not an ancestor of HEAD is treated as

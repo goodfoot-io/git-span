@@ -518,6 +518,10 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.grouped-walk-misses-persistent", state.session.grouped_walk_misses_persistent);
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
+    // Legend: tiers are checked top-down (grouped-walk → rename-trail → name-status →
+    // blob-diff → drift-locus). Zero hits+misses on a lower tier means a higher tier
+    // absorbed all traffic (warm-run short-circuit).
+    crate::perf::note("session.tier-legend: tiers checked top-down; zero counters on a lower tier indicate higher-tier short-circuiting");
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);

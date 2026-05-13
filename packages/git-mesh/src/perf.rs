@@ -61,3 +61,14 @@ pub fn counter(label: &str, value: u64) {
     }
     eprintln!("git-mesh perf: {label} {value}");
 }
+
+/// Emit a free-form annotation line in the `--perf` output.
+///
+/// Used to add context (e.g., tier-ordering legends) that does not map to a
+/// numeric counter.  No-ops when perf output is disabled.
+pub fn note(text: &str) {
+    if !enabled() {
+        return;
+    }
+    eprintln!("git-mesh perf: {text}");
+}

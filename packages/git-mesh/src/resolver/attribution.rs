@@ -84,7 +84,7 @@ pub(crate) fn drift_locus(
         );
         if valid {
             session.drift_locus_hits += 1;
-            return Ok(Some(decode_drift_locus(&cached)));
+            return Ok(decode_drift_locus(&cached));
         }
         // Ancestor check failed → treat as miss, recompute below.
         // Do NOT delete the row (no-in-band revocation).
@@ -283,17 +283,22 @@ fn encode_drift_locus(locus: Option<&DriftLocus>) -> DriftLocusCachedValue {
     }
 }
 
-fn decode_drift_locus(cached: &DriftLocusCachedValue) -> DriftLocus {
+/// Decode a cached value back to `Option<DriftLocus>`.
+///
+/// Returns `None` for variant 3 (the stored "no locus" sentinel), so that a
+/// `None` result round-trips as `None` and not as `Some(Unreachable)`.
+fn decode_drift_locus(cached: &DriftLocusCachedValue) -> Option<DriftLocus> {
     match cached.variant {
         1 => {
             let id = parse_oid(&cached.answer_commit);
-            DriftLocus::ChangedAt(id)
+            Some(DriftLocus::ChangedAt(id))
         }
         2 => {
             let id = parse_oid(&cached.answer_commit);
-            DriftLocus::OrphanedAt(id)
+            Some(DriftLocus::OrphanedAt(id))
         }
-        _ => DriftLocus::Unreachable,
+        3 => None, // "no locus found" sentinel
+        _ => Some(DriftLocus::Unreachable),
     }
 }
 
@@ -398,4 +403,20 @@ fn range_overlaps_memo(
     let new_eq_anchored = new_slice == anchored;
     let prev_eq_new = prev_slice == new_slice;
     !(new_eq_anchored || prev_eq_new)
+}
+
+// ── Test helpers ─────────────────────────────────────────────────────────────
+
+/// Thin test-only wrapper exposing `encode_drift_locus` for unit tests in
+/// sibling modules that need to assert round-trip correctness.
+#[cfg(test)]
+pub(crate) fn encode_drift_locus_for_test(locus: Option<&crate::types::DriftLocus>) -> DriftLocusCachedValue {
+    encode_drift_locus(locus)
+}
+
+/// Thin test-only wrapper exposing `decode_drift_locus` for unit tests in
+/// sibling modules that need to assert round-trip correctness.
+#[cfg(test)]
+pub(crate) fn decode_drift_locus_for_test(cached: &DriftLocusCachedValue) -> Option<crate::types::DriftLocus> {
+    decode_drift_locus(cached)
 }
