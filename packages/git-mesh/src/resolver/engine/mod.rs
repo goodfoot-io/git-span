@@ -590,10 +590,14 @@ fn stale_meshes_inner(
         list_mesh_refs(repo)?
     };
     let mut out = Vec::new();
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let mut state = {
+        let _perf = crate::perf::span("resolver.engine-state-new");
+        EngineState::new(repo, options.layers, options.needs_all_layers)?
+    };
     if enable_trace {
         state.session.enable_trace();
     }
+    let mut can_skip_clean_head_ns: u128 = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-stale-meshes");
         for (name, commit_oid) in mesh_refs {
@@ -604,10 +608,14 @@ fn stale_meshes_inner(
             // When tracing is active we must resolve every mesh so every anchor
             // gets a TraceRow. Skipping here would silently drop clean meshes from
             // the CSV and break the documented invariant `wc -l == anchors-total + 1`.
-            if !enable_trace
-                && can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?
-            {
-                continue;
+            if !enable_trace {
+                let t = std::time::Instant::now();
+                let skip =
+                    can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?;
+                can_skip_clean_head_ns += t.elapsed().as_nanos();
+                if skip {
+                    continue;
+                }
             }
             let resolved = resolve_loaded_mesh_with_state(repo, &mut state, mesh, options)?;
             if mesh_is_reportable_in_stale_discovery(&resolved) {
@@ -615,6 +623,10 @@ fn stale_meshes_inner(
             }
         }
     }
+    crate::perf::counter(
+        "resolver.can-skip-clean-head-us",
+        (can_skip_clean_head_ns / 1_000) as u64,
+    );
     crate::perf::counter("session.ensure-calls", state.session.ensure_calls);
     crate::perf::counter("session.ensure-hits", state.session.ensure_hits);
     crate::perf::counter("session.walks-len", state.session.walks_len() as u64);

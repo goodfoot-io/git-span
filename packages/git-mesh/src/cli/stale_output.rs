@@ -136,19 +136,23 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // Count total committed meshes and anchors before stale_meshes filtering,
     // so the summary can report "0 stale across N meshes (A anchors checked)"
     // even when all are clean.
-    let total_committed_mesh_count: usize = crate::mesh::read::list_mesh_refs(repo)
-        .map(|refs| refs.len())
-        .unwrap_or(0);
-    let total_committed_anchor_count: usize = crate::mesh::read::list_mesh_refs(repo)
-        .map(|refs| {
-            refs.iter()
-                .filter_map(|(name, oid)| {
-                    crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
-                })
-                .map(|m| m.anchors.len())
-                .sum()
-        })
-        .unwrap_or(0);
+    let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
+        let _perf = crate::perf::span("stale.count-totals");
+        let mesh_count = crate::mesh::read::list_mesh_refs(repo)
+            .map(|refs| refs.len())
+            .unwrap_or(0);
+        let anchor_count = crate::mesh::read::list_mesh_refs(repo)
+            .map(|refs| {
+                refs.iter()
+                    .filter_map(|(name, oid)| {
+                        crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
+                    })
+                    .map(|m| m.anchors.len())
+                    .sum()
+            })
+            .unwrap_or(0);
+        (mesh_count, anchor_count)
+    };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
     if args.perf_trace.is_some() && !args.paths.is_empty() {
@@ -479,6 +483,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     } else {
         1
     };
+    {
+        let _perf = crate::perf::span("stale.write-stdout");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    }
     Ok(exit)
 }
 
