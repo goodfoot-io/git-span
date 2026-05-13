@@ -15,11 +15,11 @@ use super::super::walker::Tracked;
 pub(crate) type LfsState = Option<std::result::Result<FilterProcess, FilterSpawnError>>;
 
 pub(crate) fn is_lfs_path(repo: &gix::Repository, path: &str) -> bool {
-    let Ok(workdir) = git::work_dir(repo) else {
+    if git::work_dir(repo).is_err() {
         return false;
-    };
+    }
     matches!(
-        types::path_filter_attribute(workdir, std::path::Path::new(path)),
+        types::path_filter_attribute_with_repo(repo, std::path::Path::new(path)),
         Ok(Some(ref n)) if n == "lfs"
     )
 }

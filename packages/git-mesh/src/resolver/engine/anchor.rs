@@ -2,7 +2,7 @@
 //! application + LFS short-circuit + slice comparison.
 
 use super::super::layers::{
-    filter_short_circuit, is_lfs_path, read_worktree_normalized, resolve_lfs_anchor,
+    is_lfs_path, read_worktree_normalized, resolve_lfs_anchor,
 };
 use super::super::session::resolve_at_head_shared;
 use super::super::walker::{Tracked, apply_hunks_to_range};
@@ -273,7 +273,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Index => {
-                    if let Some(filter) = filter_short_circuit(repo, &t.path)? {
+                    if let Some(filter) = state.filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -293,7 +293,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Head => {
-                    if let Some(filter) = filter_short_circuit(repo, &t.path)? {
+                    if let Some(filter) = state.filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -502,7 +502,7 @@ fn clean_head_fast_path(
     let Some(t) = head_loc.as_ref() else {
         return Ok(None);
     };
-    if filter_short_circuit(repo, &t.path)?.is_some() {
+    if state.filter_short_circuit(repo, &t.path)?.is_some() {
         return Ok(None);
     }
     let Some(head_blob) = state.head_blob_at(repo, &t.path)? else {
@@ -602,7 +602,7 @@ fn compute_layer_sources(
     let head_text: Option<(String, Tracked)> = match head_tracked.as_ref() {
         None => None,
         Some(t) => {
-            if filter_short_circuit(repo, &t.path)?.is_some() {
+            if state.filter_short_circuit(repo, &t.path)?.is_some() {
                 // Fail-closed: can't read — treat as "absent" so adjacent
                 // comparisons surface drift.
                 None

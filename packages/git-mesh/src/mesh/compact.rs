@@ -8,8 +8,8 @@ use crate::git::{
 };
 use crate::mesh::read::{read_mesh_at, read_mesh_from_commit, serialize_config_blob};
 use crate::resolver::{
-    EngineStateHandle, layers_filter_short_circuit, new_engine_state,
-    resolve_loaded_mesh_with_engine_state, resolve_mesh_at, resolve_mesh_at_with_engine_state,
+    EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state, resolve_mesh_at,
+    resolve_mesh_at_with_engine_state,
 };
 use crate::staging;
 use crate::types::{AnchorExtent, AnchorStatus, EngineOptions, MeshResolved};
@@ -167,7 +167,7 @@ fn already_at_head_outcome(
         if anchor.anchor_sha != head_sha {
             return Ok(None);
         }
-        if layers_filter_short_circuit(repo, &anchor.path)?.is_some() {
+        if state.filter_short_circuit(repo, &anchor.path)?.is_some() {
             return Ok(None);
         }
         let Some(head_blob) = state.head_blob_at(repo, &anchor.path)? else {

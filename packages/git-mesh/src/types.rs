@@ -482,9 +482,20 @@ pub(crate) fn path_filter_attribute(
     rel_path: &std::path::Path,
 ) -> Result<Option<String>> {
     let repo = gix::open(workdir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
+    path_filter_attribute_with_repo(&repo, rel_path)
+}
+
+/// Variant of `path_filter_attribute` that reuses the caller's repository
+/// handle instead of re-opening from the workdir. The engine memo path
+/// uses this so a single `stale` run pays at most one `gix::open` for
+/// attribute lookups.
+pub(crate) fn path_filter_attribute_with_repo(
+    repo: &gix::Repository,
+    rel_path: &std::path::Path,
+) -> Result<Option<String>> {
     // Fail closed on any plumbing error: treat as "no driver" rather than
     // guessing — the gix pipeline runs downstream.
-    let value = match crate::git::attr_for(&repo, rel_path, "filter") {
+    let value = match crate::git::attr_for(repo, rel_path, "filter") {
         Ok(v) => v,
         Err(_) => return Ok(None),
     };

@@ -6,7 +6,7 @@ pub mod pending;
 pub(crate) mod whole_file;
 
 use super::layers::{
-    CustomFilters, LayerDiffs, LfsState, filter_short_circuit, read_conflicted_paths,
+    CustomFilters, LayerDiffs, LfsState, is_custom_filter_configured, read_conflicted_paths,
     read_index_layer, read_index_trailer, read_layer_status, read_worktree_layer,
     read_worktree_layer_for_paths,
 };
@@ -51,6 +51,11 @@ pub(crate) struct EngineState {
     /// pin the same paths, so resolving each path once avoids repeated tree
     /// walks without storing anything across invocations.
     head_blobs: HashMap<String, Option<String>>,
+    /// Per-command memo for `.gitattributes` filter-driver lookups, keyed
+    /// by `rel_path`. The workdir is constant per `EngineState`, so the
+    /// repo handle is implicit. A cached `None` means "no driver / fail
+    /// closed" (matches the pre-memo behavior on plumbing error).
+    filter_attrs: HashMap<String, Option<String>>,
 }
 
 impl EngineState {
@@ -82,6 +87,7 @@ impl EngineState {
             needs_all_layers,
             commit_reachability: HashMap::new(),
             head_blobs: HashMap::new(),
+            filter_attrs: HashMap::new(),
         };
         if clean_layers {
             if layers.index {
@@ -153,6 +159,52 @@ impl EngineState {
         self.commit_reachability
             .insert(commit.to_string(), reachable);
         Ok(reachable)
+    }
+
+    /// Probe `.gitattributes` for a custom `filter=<name>` driver on
+    /// `path`, returning `Some(name)` when the driver is unknown
+    /// (fail-loud short-circuit). Memoized per-`EngineState`: the first
+    /// query for a path performs the full `attr_for` lookup; later
+    /// queries are O(1) `HashMap` reads. Reuses the caller's repo handle
+    /// instead of re-opening per call.
+    pub(crate) fn filter_short_circuit(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        let name = match self.filter_attribute_value(repo, path)? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        if crate::types::is_core_filter(&name) {
+            return Ok(None);
+        }
+        if is_custom_filter_configured(repo, &name) {
+            return Ok(None);
+        }
+        Ok(Some(name))
+    }
+
+    fn filter_attribute_value(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        if let Some(cached) = self.filter_attrs.get(path) {
+            self.session.filter_attr_hits += 1;
+            return Ok(cached.clone());
+        }
+        self.session.filter_attr_misses += 1;
+        // Fail-closed: any plumbing error caches `None` so subsequent
+        // reads of the same path return the same answer (matches the
+        // un-memoed behavior in `path_filter_attribute_with_repo`).
+        let value = crate::types::path_filter_attribute_with_repo(
+            repo,
+            std::path::Path::new(path),
+        )
+        .unwrap_or(None);
+        self.filter_attrs.insert(path.to_string(), value.clone());
+        Ok(value)
     }
 
     pub(crate) fn head_blob_at(
@@ -295,6 +347,14 @@ impl EngineStateHandle {
         path: &str,
     ) -> Result<Option<String>> {
         self.0.head_blob_at(repo, path)
+    }
+
+    pub(crate) fn filter_short_circuit(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        self.0.filter_short_circuit(repo, path)
     }
 }
 
@@ -517,6 +577,8 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.blob-diff-misses", state.session.blob_diff_misses);
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
+    crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
+    crate::perf::counter("session.filter-attr-misses", state.session.filter_attr_misses);
     crate::perf::counter("session.cache-destructive-rebuilds", state.session.cache.destructive_rebuilds());
     // Legend: tiers are checked top-down (grouped-walk → rename-trail → name-status →
     // blob-diff → drift-locus). Zero hits+misses on a lower tier means a higher tier
@@ -684,7 +746,7 @@ fn can_skip_clean_head_pinned_mesh(
         if anchor.anchor_sha != state.head_sha {
             return Ok(false);
         }
-        if filter_short_circuit(repo, &anchor.path)?.is_some() {
+        if state.filter_short_circuit(repo, &anchor.path)?.is_some() {
             return Ok(false);
         }
         let Some(head_blob) = state.head_blob_at(repo, &anchor.path)? else {
@@ -855,6 +917,71 @@ mod tests {
         assert_eq!(meshes[0].name, "m1");
         assert_eq!(meshes[1].name, "m2");
         assert_eq!(meshes[2].name, "m3");
+    }
+
+    /// Regression: `EngineState::filter_short_circuit` memoizes per-path
+    /// across an entire `stale` run. Two probes for the same path produce
+    /// exactly one miss (the cold lookup); two probes for distinct paths
+    /// produce two misses. This is the binding contract for the
+    /// performance fix in main-65 — without the memo, every call to
+    /// `filter_short_circuit` redid `gix::open` + `index_or_load_from_head`
+    /// + `repo.attributes(…)`.
+    #[test]
+    fn filter_short_circuit_memoizes_per_path() {
+        use std::process::Command;
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        for args in [
+            &["init", "--initial-branch=main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let repo = gix::open(dir).unwrap();
+        let mut state = EngineState::new(
+            &repo,
+            LayerSet { index: false, worktree: false, staged_mesh: false },
+            true,
+        )
+        .unwrap();
+
+        // First lookup for `a.txt` → miss.
+        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
+        assert_eq!(state.session.filter_attr_misses, 1);
+        assert_eq!(state.session.filter_attr_hits, 0);
+
+        // Repeated lookup for the same path → hit, no new miss.
+        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
+        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
+        assert_eq!(state.session.filter_attr_misses, 1);
+        assert_eq!(state.session.filter_attr_hits, 2);
+
+        // Distinct path → one additional miss.
+        let _ = state.filter_short_circuit(&repo, "b.txt").unwrap();
+        let _ = state.filter_short_circuit(&repo, "b.txt").unwrap();
+        assert_eq!(state.session.filter_attr_misses, 2);
+        assert_eq!(state.session.filter_attr_hits, 3);
     }
 
     #[test]

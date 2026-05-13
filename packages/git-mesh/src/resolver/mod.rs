@@ -31,8 +31,3 @@ pub(crate) use engine::{
     sort_meshes_by_anchor_path,
 };
 pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes};
-
-/// Re-export of `layers::filter_short_circuit` for `mesh::compact`'s
-/// already-at-HEAD fast path, which must reject paths whose unknown
-/// custom filters preclude blob comparison.
-pub(crate) use layers::filter_short_circuit as layers_filter_short_circuit;

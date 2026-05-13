@@ -2,26 +2,10 @@
 //! filters, the custom-driver subprocess for `filter.<name>.process`,
 //! and direct `readlink` for symlinks. LFS is intercepted upstream.
 
-use super::filter_process::{
-    CustomFilterOutcome, CustomFilters, custom_filter_smudge, is_custom_filter_configured,
-};
+use super::filter_process::{CustomFilterOutcome, CustomFilters, custom_filter_smudge};
 use crate::git;
 use crate::types;
 use crate::{Error, Result};
-
-/// Probe `.gitattributes` for a custom `filter=<name>` driver on
-/// `path`. Returns `Some(name)` when the driver is unknown — neither on
-/// the core-filter allowlist nor backed by a `filter.<name>.process` —
-/// i.e. fail-loud short-circuit.
-pub(crate) fn filter_short_circuit(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
-    let workdir = git::work_dir(repo)?;
-    match types::path_filter_attribute(workdir, std::path::Path::new(path))? {
-        Some(name) if types::is_core_filter(&name) => Ok(None),
-        Some(name) if is_custom_filter_configured(repo, &name) => Ok(None),
-        Some(name) => Ok(Some(name)),
-        _ => Ok(None),
-    }
-}
 
 /// Read a worktree file, applying git's clean filter where possible.
 /// LFS is *not* handled here; callers branch on `is_lfs_path` first.
@@ -31,7 +15,7 @@ pub(crate) fn read_worktree_normalized(
     rel_path: &str,
 ) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
-    if let Some(name) = types::path_filter_attribute(workdir, std::path::Path::new(rel_path))?
+    if let Some(name) = types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel_path))?
         && !types::is_core_filter(&name)
     {
         let abs = workdir.join(rel_path);

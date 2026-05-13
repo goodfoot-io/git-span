@@ -133,6 +133,13 @@ pub(crate) struct ResolveSession {
     pub(crate) drift_locus_hits: u64,
     /// Counter: Tier 5 drift_locus persistent cache misses (includes ancestor-check failures).
     pub(crate) drift_locus_misses: u64,
+    /// Counter: per-path filter-attribute memo hits. Populated by
+    /// `EngineState::filter_short_circuit` on cached `(rel_path)` reads.
+    pub(crate) filter_attr_hits: u64,
+    /// Counter: per-path filter-attribute memo misses (first lookup per
+    /// distinct path). On a warm `stale` run, this equals the number of
+    /// distinct paths probed across all anchors in the session.
+    pub(crate) filter_attr_misses: u64,
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
@@ -185,6 +192,8 @@ impl ResolveSession {
             grouped_walk_misses: 0,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
+            filter_attr_hits: 0,
+            filter_attr_misses: 0,
             cache,
             session_hashes,
             blob_oid_memo: HashMap::new(),
