@@ -31,7 +31,8 @@ RUN apt update && export DEBIAN_FRONTEND=noninteractive && apt install -y less \
   chrony \
   wget \
   openssh-server \
-  openssh-client
+  openssh-client \
+  linux-perf
 
 # Configure locale
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
@@ -67,6 +68,9 @@ USER node
 # Install Rust toolchain for the node user
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH=$PATH:/home/node/.cargo/bin
+
+# Install inferno for flame graph generation
+RUN cargo install inferno --locked
 
 # Configure Yarn to use workspace-local directories
 ENV YARN_CACHE_FOLDER=/workspace/.yarn/cache
