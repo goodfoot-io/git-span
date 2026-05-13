@@ -127,9 +127,18 @@ pub(crate) struct ResolveSession {
     pub(crate) grouped_walk_hits_persistent: u64,
     /// Counter: Tier 3 grouped_walk persistent cache misses.
     pub(crate) grouped_walk_misses_persistent: u64,
+    /// Counter: Tier 5 drift_locus persistent cache hits.
+    pub(crate) drift_locus_hits: u64,
+    /// Counter: Tier 5 drift_locus persistent cache misses (includes ancestor-check failures).
+    pub(crate) drift_locus_misses: u64,
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
+    /// Per-session set of commit ObjectIds known to be ancestors of HEAD.
+    /// Populated by (a) successful `is_ancestor` checks in `drift_locus` wiring
+    /// and (b) every commit observed during a miss-path `rev_walk` (those are
+    /// ancestors of HEAD by construction since the walk runs `HEAD..anchor`).
+    pub(crate) known_head_ancestors: std::collections::HashSet<gix::ObjectId>,
     /// Session-wide memoized hashes: `(replace_refs_hash, git_config_hash)`.
     /// Both are constant for the duration of one `git mesh stale` run — they
     /// depend on git refs and config, not on any anchor or HEAD. Computed once
@@ -172,9 +181,12 @@ impl ResolveSession {
             blob_diff_misses: 0,
             grouped_walk_hits_persistent: 0,
             grouped_walk_misses_persistent: 0,
+            drift_locus_hits: 0,
+            drift_locus_misses: 0,
             cache,
             session_hashes,
             blob_oid_memo: HashMap::new(),
+            known_head_ancestors: std::collections::HashSet::new(),
         }
     }
 

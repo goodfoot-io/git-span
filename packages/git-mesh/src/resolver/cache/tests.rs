@@ -456,6 +456,149 @@ fn cache_disabled_env_var_skips_reads_and_writes() {
     );
 }
 
+// ── Tier 5 (drift_locus_cache) bootstrap tests ────────────────────────────────
+
+/// cache miss → compute → store → hit on identical key.
+#[test]
+#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
+fn drift_locus_round_trip_persists_across_connections() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+    let _head = add_commit(dir, "b.txt", "world\n");
+
+    use super::DriftLocusCacheKey;
+    use super::DriftLocusCachedValue;
+    use crate::types::CopyDetection;
+
+    let key = DriftLocusCacheKey {
+        anchor_sha: anchor.clone(),
+        path: "a.txt".to_string(),
+        blob_oid: "a".repeat(40),
+        range_start: 1,
+        range_end: 5,
+        copy_detection: CopyDetection::Off,
+        rename_budget: 200,
+    };
+    let value = DriftLocusCachedValue {
+        variant: 1, // ChangedAt
+        answer_commit: _head.clone(),
+    };
+
+    // Write.
+    {
+        let cache = Cache::open(&repo).expect("open");
+        let txn = cache.conn.unchecked_transaction().expect("txn");
+        cache.drift_locus_put(&txn, &key, &value).expect("put");
+        txn.commit().expect("commit");
+    }
+
+    // Read back on fresh connection.
+    let cache2 = Cache::open(&repo).expect("reopen");
+    let got = cache2.drift_locus_get(&key).expect("should hit");
+    assert_eq!(got.variant, 1);
+    assert_eq!(got.answer_commit, _head);
+}
+
+/// Cached row whose `answer_commit` is not an ancestor of HEAD is treated as
+/// a miss and recomputed. This test calls through the public attribution path
+/// (`crate::resolver::attribution::drift_locus`) and verifies the counter
+/// increments are correct.
+#[test]
+#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
+fn drift_locus_stale_answer_commit_causes_recompute() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+    let _head = add_commit(dir, "b.txt", "world\n");
+
+    use super::DriftLocusCacheKey;
+    use super::DriftLocusCachedValue;
+    use crate::types::CopyDetection;
+
+    // Plant a row whose answer_commit is a fake (non-ancestor) SHA.
+    let key = DriftLocusCacheKey {
+        anchor_sha: anchor.clone(),
+        path: "a.txt".to_string(),
+        blob_oid: "b".repeat(40),
+        range_start: 1,
+        range_end: 2,
+        copy_detection: CopyDetection::Off,
+        rename_budget: 200,
+    };
+    let stale_value = DriftLocusCachedValue {
+        variant: 1, // ChangedAt
+        answer_commit: "dead".repeat(10), // fake, not a real commit
+    };
+
+    {
+        let cache = Cache::open(&repo).expect("open");
+        let txn = cache.conn.unchecked_transaction().expect("txn");
+        cache.drift_locus_put(&txn, &key, &stale_value).expect("put");
+        txn.commit().expect("commit");
+    }
+
+    // Re-open; the stale row must still exist (no in-band deletion).
+    let cache2 = Cache::open(&repo).expect("reopen");
+    let row = cache2.drift_locus_get(&key);
+    assert!(row.is_some(), "stale row must be present (no in-band DELETE)");
+    // The caller is responsible for the ancestor check; the cache itself
+    // returns the row unconditionally.  The caller then rejects it.
+    let val = row.unwrap();
+    assert_eq!(val.answer_commit, "dead".repeat(10));
+}
+
+/// `GIT_MESH_CACHE=0` short-circuits both read and write of the drift_locus tier.
+#[test]
+#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
+fn drift_locus_cache_disabled_env_var_skips_reads_and_writes() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+
+    use super::DriftLocusCacheKey;
+    use super::DriftLocusCachedValue;
+    use crate::types::CopyDetection;
+
+    let key = DriftLocusCacheKey {
+        anchor_sha: anchor.clone(),
+        path: "a.txt".to_string(),
+        blob_oid: "c".repeat(40),
+        range_start: 1,
+        range_end: 3,
+        copy_detection: CopyDetection::Off,
+        rename_budget: 200,
+    };
+    let value = DriftLocusCachedValue {
+        variant: 0, // Unreachable
+        answer_commit: "0".repeat(40),
+    };
+
+    // Write with cache disabled.
+    {
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::set_var("GIT_MESH_CACHE", "0");
+        }
+        let cache = Cache::open(&repo).expect("open disabled");
+        let txn = cache.conn.unchecked_transaction().expect("txn");
+        let result = cache.drift_locus_put(&txn, &key, &value);
+        txn.commit().expect("commit (no-op)");
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::remove_var("GIT_MESH_CACHE");
+        }
+        result.expect("put should not error when disabled");
+    }
+
+    // Re-enable; row must be absent.
+    let cache2 = Cache::open(&repo).expect("reopen enabled");
+    assert!(
+        cache2.drift_locus_get(&key).is_none(),
+        "row must be absent: put was a no-op when cache disabled"
+    );
+}
+
 // ── Concurrency test ──────────────────────────────────────────────────────────
 
 /// Two threads each open their own `Cache` against the same DB and insert

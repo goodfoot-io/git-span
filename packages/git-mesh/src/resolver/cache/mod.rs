@@ -1,6 +1,6 @@
 //! SQLite-backed content-addressed cache for `git mesh stale`.
 //!
-//! Four tiers of caches share a single database at
+//! Five tiers of caches share a single database at
 //! `<git_dir>/mesh/cache/mesh_cache.sqlite`:
 //!
 //! - **Tier 1** — `name_status_cache`: per-commit-pair `Vec<NS>` blobs.
@@ -8,6 +8,9 @@
 //! - **Tier 3** — `grouped_walk_cache`: full `GroupedWalk` materializations.
 //! - **Tier 4** — `rename_trail_cache`: Pass 1 rename-trail closure keyed by
 //!   anchor + head + copy-detection + seed hash + config hashes.
+//! - **Tier 5** — `drift_locus_cache`: `DriftLocus` result keyed by anchor
+//!   metadata. The stored `answer_commit` enables a HEAD-ancestor check on
+//!   read so stale rows are detected and recomputed rather than trusted.
 
 use crate::Result;
 use crate::git;
@@ -18,7 +21,7 @@ use rusqlite::{Connection, OpenFlags, Transaction};
 use std::collections::HashSet;
 use std::fs;
 
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 // ── Schema DDL ──────────────────────────────────────────────────────────────
 
@@ -65,6 +68,20 @@ CREATE TABLE IF NOT EXISTS rename_trail_cache (
     trail_blob          BLOB NOT NULL,
     PRIMARY KEY (anchor_sha, head_sha, copy_detection,
                  rename_budget, seed_hash, replace_refs_hash, git_config_hash)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS drift_locus_cache (
+    anchor_sha          TEXT NOT NULL,
+    path                TEXT NOT NULL,
+    blob_oid            TEXT NOT NULL,
+    range_start         INTEGER NOT NULL,
+    range_end           INTEGER NOT NULL,
+    copy_detection      INTEGER NOT NULL,
+    rename_budget       INTEGER NOT NULL,
+    locus_blob          BLOB NOT NULL,
+    answer_commit       TEXT NOT NULL,
+    PRIMARY KEY (anchor_sha, path, blob_oid, range_start, range_end,
+                 copy_detection, rename_budget)
 ) WITHOUT ROWID;
 ";
 
@@ -117,6 +134,33 @@ impl GroupedWalkKey {
     }
 }
 
+// ── DriftLocusCacheKey / DriftLocusCachedValue ───────────────────────────────
+
+/// Cache key for a `DriftLocus` result. Every component that must match for
+/// a hit: the anchor identity, the anchored blob+range, copy-detection level,
+/// and rename budget.
+pub(crate) struct DriftLocusCacheKey {
+    pub anchor_sha: String,
+    pub path: String,
+    pub blob_oid: String,
+    pub range_start: u32,
+    pub range_end: u32,
+    pub copy_detection: CopyDetection,
+    pub rename_budget: usize,
+}
+
+/// Discriminant stored in the `locus_blob` BLOB column.  The
+/// `answer_commit` field carries the ObjectId of the commit named by
+/// `ChangedAt`/`OrphanedAt`, or the all-zeros sentinel for `Unreachable`.
+/// The caller validates `answer_commit` against HEAD ancestry before trusting
+/// a cached result.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct DriftLocusCachedValue {
+    /// 0 = Unreachable, 1 = ChangedAt, 2 = OrphanedAt
+    pub variant: u8,
+    pub answer_commit: String,
+}
+
 // ── GcStats ─────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -125,6 +169,7 @@ pub(crate) struct GcStats {
     pub blob_diff_removed: usize,
     pub grouped_walk_removed: usize,
     pub rename_trail_removed: usize,
+    pub drift_locus_removed: usize,
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
@@ -529,6 +574,83 @@ impl Cache {
         Ok(())
     }
 
+    // ── Tier 5: drift_locus ─────────────────────────────────────────────────
+
+    /// Look up a cached `DriftLocus` result.
+    ///
+    /// Returns `Some((value, answer_commit_hex))` on a cache hit.
+    /// The caller is responsible for validating that `answer_commit` is still
+    /// an ancestor of HEAD before trusting the returned value.
+    pub(crate) fn drift_locus_get(
+        &self,
+        key: &DriftLocusCacheKey,
+    ) -> Option<DriftLocusCachedValue> {
+        if !self.enabled {
+            return None;
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT locus_blob FROM drift_locus_cache \
+             WHERE anchor_sha = ?1 AND path = ?2 AND blob_oid = ?3 \
+               AND range_start = ?4 AND range_end = ?5 \
+               AND copy_detection = ?6 AND rename_budget = ?7",
+            rusqlite::params![
+                key.anchor_sha,
+                key.path,
+                key.blob_oid,
+                key.range_start,
+                key.range_end,
+                cd_int,
+                rename_budget,
+            ],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(blob) => bincode::deserialize::<DriftLocusCachedValue>(&blob).ok(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(_) => None,
+        }
+    }
+
+    /// Store a `DriftLocus` result.
+    ///
+    /// `value.answer_commit` must carry the hex SHA of the commit named by the
+    /// variant, or the all-zeros sentinel for `Unreachable`.
+    pub(crate) fn drift_locus_put(
+        &self,
+        txn: &Transaction,
+        key: &DriftLocusCacheKey,
+        value: &DriftLocusCachedValue,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let blob = bincode::serialize(value)
+            .map_err(|e| crate::Error::Git(format!("bincode serialize drift_locus: {e}")))?;
+        txn.execute(
+            "INSERT OR REPLACE INTO drift_locus_cache \
+             (anchor_sha, path, blob_oid, range_start, range_end, \
+              copy_detection, rename_budget, locus_blob, answer_commit) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                key.anchor_sha,
+                key.path,
+                key.blob_oid,
+                key.range_start,
+                key.range_end,
+                cd_int,
+                rename_budget,
+                blob,
+                value.answer_commit,
+            ],
+        )
+        .map_err(|e| crate::Error::Git(format!("drift_locus insert: {e}")))?;
+        Ok(())
+    }
+
     // ── GC ──────────────────────────────────────────────────────────────────
 
     /// Remove cache rows whose referenced SHAs are no longer reachable in the
@@ -742,11 +864,58 @@ impl Cache {
                 .map_err(|e| crate::Error::Git(format!("gc: commit rename_trail: {e}")))?;
         }
 
+        // ── 6. Sweep drift_locus_cache ───────────────────────────────────────
+        // Dead rows are those whose anchor_sha is no longer reachable.
+        let dead_dl: Vec<(String, String, String, i32, i32, i32, i64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT anchor_sha, path, blob_oid, range_start, range_end, \
+                        copy_detection, rename_budget \
+                 FROM drift_locus_cache",
+            )
+            .map_err(|e| crate::Error::Git(format!("gc: prepare drift_locus scan: {e}")))?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, i32>(4)?,
+                    row.get::<_, i32>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|e| crate::Error::Git(format!("gc: drift_locus scan: {e}")))?
+            .filter_map(|r| r.ok())
+            .filter(|(anchor, _, blob, _, _, _, _)| {
+                !live.contains(anchor) || !live.contains(blob)
+            })
+            .collect()
+        };
+
+        let drift_locus_removed = dead_dl.len();
+        for chunk in dead_dl.chunks(5000) {
+            let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| crate::Error::Git(format!("gc: begin txn drift_locus: {e}")))?;
+            for (anchor, path, blob, rs, re, cd, budget) in chunk {
+                txn.execute(
+                    "DELETE FROM drift_locus_cache \
+                     WHERE anchor_sha = ?1 AND path = ?2 AND blob_oid = ?3 \
+                       AND range_start = ?4 AND range_end = ?5 \
+                       AND copy_detection = ?6 AND rename_budget = ?7",
+                    rusqlite::params![anchor, path, blob, rs, re, cd, budget],
+                )
+                .map_err(|e| crate::Error::Git(format!("gc: delete drift_locus: {e}")))?;
+            }
+            txn.commit()
+                .map_err(|e| crate::Error::Git(format!("gc: commit drift_locus: {e}")))?;
+        }
+
         Ok(GcStats {
             name_status_removed,
             blob_diff_removed,
             grouped_walk_removed,
             rename_trail_removed,
+            drift_locus_removed,
         })
     }
 }
