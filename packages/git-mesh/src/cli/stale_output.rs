@@ -14,6 +14,7 @@ use crate::git;
 use crate::mesh::follow::{follow_moves, FollowDecision};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
+    stale_meshes_with_trace,
 };
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
@@ -24,6 +25,47 @@ use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn write_perf_trace_csv(
+    path: &std::path::Path,
+    rows: &[crate::perf::TraceRow],
+) -> Result<()> {
+    use crate::cli::{CliError, NextStep};
+    let mut out = String::from("mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status\n");
+    for r in rows {
+        out.push_str(&csv_escape(&r.mesh));
+        out.push(',');
+        out.push_str(&csv_escape(&r.anchor_id));
+        out.push(',');
+        out.push_str(&csv_escape(&r.anchor_sha));
+        out.push(',');
+        out.push_str(&csv_escape(&r.path));
+        out.push(',');
+        out.push_str(&r.wall_us.to_string());
+        out.push(',');
+        out.push_str(if r.fast_path { "true" } else { "false" });
+        out.push(',');
+        out.push_str(r.status);
+        out.push('\n');
+    }
+    std::fs::write(path, &out).map_err(|e| {
+        CliError {
+            subcommand: "stale",
+            summary: format!("failed to write --perf-trace CSV to {}", path.display()),
+            what_happened: e.to_string(),
+            next_steps: vec![NextStep::Prose("Check that the path is writable.".into())],
+        }
+        .into()
+    })
+}
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     if args.compact {
@@ -90,11 +132,30 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         })
         .unwrap_or(0);
 
+    // --perf-trace conflicts with positional paths (requires a full scan).
+    if args.perf_trace.is_some() && !args.paths.is_empty() {
+        return Err(CliError {
+            subcommand: "stale",
+            summary: "--perf-trace requires a full scan; remove positional paths".into(),
+            what_happened: "--perf-trace captures per-anchor timing across all meshes and cannot \
+                            be combined with a subset selection via positional paths."
+                .into(),
+            next_steps: vec![NextStep::Bash("git mesh stale --perf-trace <path>".into())],
+        }
+        .into());
+    }
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
         let _perf = crate::perf::span("stale.resolve-all-meshes");
-        stale_meshes(repo, options)?
+        if let Some(trace_path) = &args.perf_trace {
+            let (resolved, trace_rows) = stale_meshes_with_trace(repo, options)?;
+            write_perf_trace_csv(trace_path, &trace_rows)?;
+            resolved
+        } else {
+            stale_meshes(repo, options)?
+        }
     } else {
         // Resolve each positional arg through mesh-name → path-index dispatch.
         let _perf = crate::perf::span("stale.resolve-args");
@@ -1516,6 +1577,7 @@ mod tests {
             compact: false,
             verbose: false,
             auto_follow: false,
+            perf_trace: None,
         };
         let exit_code = run_stale(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
@@ -1546,6 +1608,7 @@ mod tests {
             compact: false,
             verbose: false,
             auto_follow: false,
+            perf_trace: None,
         };
         let exit_code = run_stale(&repo, args).unwrap();
         assert_eq!(exit_code, 0);

@@ -183,6 +183,9 @@ pub(crate) struct ResolveSession {
     /// invocation. Sorted at end-of-run to compute `p50` / `p95` percentiles.
     /// Dropped immediately after emit; ~8 bytes per anchor.
     pub(crate) per_anchor_us: Vec<u128>,
+    /// When `Some`, accumulates one `TraceRow` per anchor for `--perf-trace` CSV
+    /// output. Remains `None` unless `enable_trace()` is called before resolution.
+    pub(crate) per_anchor_trace: Option<Vec<crate::perf::TraceRow>>,
 }
 
 impl ResolveSession {
@@ -227,7 +230,12 @@ impl ResolveSession {
             anchors_fast_path_hits: 0,
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
+            per_anchor_trace: None,
         }
+    }
+
+    pub(crate) fn enable_trace(&mut self) {
+        self.per_anchor_trace = Some(Vec::new());
     }
 
     pub(crate) fn anchors_total(&self) -> u64 {

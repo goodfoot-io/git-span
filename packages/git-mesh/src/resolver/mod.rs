@@ -30,4 +30,4 @@ pub(crate) use engine::{
     resolve_mesh_at_with_engine_state, resolve_named_meshes,
     sort_meshes_by_anchor_path,
 };
-pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes};
+pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace};

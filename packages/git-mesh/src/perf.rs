@@ -171,6 +171,17 @@ pub fn sqlite_write_ms() -> u64 {
 pub fn write_txn_count() -> u64 {
     WRITE_TXN_COUNT.load(Ordering::Relaxed)
 }
+/// One row of per-anchor trace data emitted when `--perf-trace <path>` is set.
+pub struct TraceRow {
+    pub mesh: String,
+    pub anchor_id: String,
+    pub anchor_sha: String,
+    pub path: String,
+    pub wall_us: u128,
+    pub fast_path: bool,
+    pub status: &'static str,
+}
+
 /// Reset all subroutine-level counters. Called at the top of `stale_meshes`
 /// so the emit block reports values from a single resolver run.
 pub fn reset_subroutine_counters() {

@@ -432,6 +432,9 @@ fn resolve_loaded_mesh_with_state(
                 continue;
             }
             let anchor_t0 = std::time::Instant::now();
+            let trace_anchor_sha = r.anchor_sha.clone();
+            let trace_path = r.path.clone();
+            let fast_path_before = state.session.anchors_fast_path_hits;
             let mut resolved = resolve_anchor_inner(
                 repo,
                 &mut *state,
@@ -439,8 +442,20 @@ fn resolve_loaded_mesh_with_state(
                 &id,
                 r,
             )?;
-            state.session.per_anchor_us.push(anchor_t0.elapsed().as_micros());
+            let wall_us = anchor_t0.elapsed().as_micros();
+            state.session.per_anchor_us.push(wall_us);
             tally_anchor_status(&mut state.session, &resolved.status);
+            if let Some(trace) = state.session.per_anchor_trace.as_mut() {
+                trace.push(crate::perf::TraceRow {
+                    mesh: mesh.name.clone(),
+                    anchor_id: id.clone(),
+                    anchor_sha: trace_anchor_sha,
+                    path: trace_path,
+                    wall_us,
+                    fast_path: state.session.anchors_fast_path_hits > fast_path_before,
+                    status: status_label(&resolved.status),
+                });
+            }
             populate_drift_locus(repo, &mut resolved, &mut state.session, mesh.config.copy_detection);
             anchors.push(resolved);
         }
@@ -526,6 +541,18 @@ fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &An
     }
 }
 
+fn status_label(s: &AnchorStatus) -> &'static str {
+    match s {
+        AnchorStatus::Fresh => "Fresh",
+        AnchorStatus::Moved => "Moved",
+        AnchorStatus::Changed => "Changed",
+        AnchorStatus::Orphaned => "Orphaned",
+        AnchorStatus::MergeConflict => "MergeConflict",
+        AnchorStatus::Submodule => "Submodule",
+        AnchorStatus::ContentUnavailable(_) => "ContentUnavailable",
+    }
+}
+
 fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
 }
@@ -552,7 +579,11 @@ pub(crate) fn resolve_named_meshes(
     Ok(out)
 }
 
-pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+fn stale_meshes_inner(
+    repo: &gix::Repository,
+    options: EngineOptions,
+    enable_trace: bool,
+) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
     crate::perf::reset_subroutine_counters();
     let mesh_refs = {
         let _perf = crate::perf::span("resolver.list-meshes");
@@ -560,6 +591,9 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     };
     let mut out = Vec::new();
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    if enable_trace {
+        state.session.enable_trace();
+    }
     {
         let _perf = crate::perf::span("resolver.resolve-stale-meshes");
         for (name, commit_oid) in mesh_refs {
@@ -680,11 +714,24 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
          cache.* names sqlite-layer wall-clock and row counts; \
          resolve-anchor.* names per-anchor distribution",
     );
+    let trace_rows = state.session.per_anchor_trace.take().unwrap_or_default();
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);
     }
-    Ok(out)
+    Ok((out, trace_rows))
+}
+
+pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+    let (meshes, _) = stale_meshes_inner(repo, options, false)?;
+    Ok(meshes)
+}
+
+pub fn stale_meshes_with_trace(
+    repo: &gix::Repository,
+    options: EngineOptions,
+) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
+    stale_meshes_inner(repo, options, true)
 }
 
 pub(crate) fn resolve_meshes_in_order(

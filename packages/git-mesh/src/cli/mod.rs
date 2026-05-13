@@ -292,6 +292,12 @@ pub struct StaleArgs {
     /// One batched mesh commit per mesh: `mesh: follow N moved anchors`.
     #[arg(long, conflicts_with_all = ["patch", "stat", "oneline"])]
     pub auto_follow: bool,
+
+    /// Write a CSV of per-anchor wall-clock traces to PATH.
+    /// Requires a full scan (no positional paths). Columns:
+    /// mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["compact"])]
+    pub perf_trace: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]

@@ -76,6 +76,7 @@ fn stale_compact_args() -> StaleArgs {
         compact: true,
         verbose: false,
         auto_follow: true,
+        perf_trace: None,
     }
 }
 
