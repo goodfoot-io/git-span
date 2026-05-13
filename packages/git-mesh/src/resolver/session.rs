@@ -115,6 +115,18 @@ pub(crate) struct ResolveSession {
     pub(crate) grouped_walk_cache_hits: u64,
     /// Counter: Tier 3 grouped_walk cache hits (ancestor key).
     pub(crate) grouped_walk_ancestor_hits: u64,
+    /// Counter: Tier 1 name_status persistent cache hits.
+    pub(crate) name_status_hits: u64,
+    /// Counter: Tier 1 name_status persistent cache misses.
+    pub(crate) name_status_misses: u64,
+    /// Counter: Tier 2 blob_diff persistent cache hits.
+    pub(crate) blob_diff_hits: u64,
+    /// Counter: Tier 2 blob_diff persistent cache misses.
+    pub(crate) blob_diff_misses: u64,
+    /// Counter: Tier 3 grouped_walk persistent cache hits (exact key, distinct from in-memory).
+    pub(crate) grouped_walk_hits_persistent: u64,
+    /// Counter: Tier 3 grouped_walk persistent cache misses.
+    pub(crate) grouped_walk_misses_persistent: u64,
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
@@ -154,6 +166,12 @@ impl ResolveSession {
             trail_cache_misses: 0,
             grouped_walk_cache_hits: 0,
             grouped_walk_ancestor_hits: 0,
+            name_status_hits: 0,
+            name_status_misses: 0,
+            blob_diff_hits: 0,
+            blob_diff_misses: 0,
+            grouped_walk_hits_persistent: 0,
+            grouped_walk_misses_persistent: 0,
             cache,
             session_hashes,
             blob_oid_memo: HashMap::new(),
@@ -193,6 +211,10 @@ impl ResolveSession {
             &mut self.trail_cache_misses,
             &mut self.grouped_walk_cache_hits,
             &mut self.grouped_walk_ancestor_hits,
+            &mut self.name_status_hits,
+            &mut self.name_status_misses,
+            &mut self.grouped_walk_hits_persistent,
+            &mut self.grouped_walk_misses_persistent,
             &self.cache,
             self.session_hashes,
         )?;
@@ -238,6 +260,10 @@ impl ResolveSession {
                 &mut self.trail_cache_misses,
                 &mut self.grouped_walk_cache_hits,
                 &mut self.grouped_walk_ancestor_hits,
+                &mut self.name_status_hits,
+                &mut self.name_status_misses,
+                &mut self.grouped_walk_hits_persistent,
+                &mut self.grouped_walk_misses_persistent,
                 &self.cache,
                 self.session_hashes,
             )?;
@@ -270,6 +296,10 @@ fn build_grouped_walk(
     trail_cache_misses_counter: &mut u64,
     grouped_walk_cache_hits_counter: &mut u64,
     grouped_walk_ancestor_hits_counter: &mut u64,
+    name_status_hits_counter: &mut u64,
+    name_status_misses_counter: &mut u64,
+    grouped_walk_hits_persistent_counter: &mut u64,
+    grouped_walk_misses_persistent_counter: &mut u64,
     cache: &Cache,
     // Pre-computed session-wide hashes: `(replace_refs_hash, git_config_hash)`.
     // When `Some`, these are reused for every `compute_key` call in this
@@ -302,6 +332,7 @@ fn build_grouped_walk(
         let gw_key = GroupedWalkKey::from_trail_key(trail_key, head_sha.clone());
         if let Some(cached_walk) = cache.grouped_walk_get_exact(&gw_key) {
             *grouped_walk_cache_hits_counter += 1;
+            *grouped_walk_hits_persistent_counter += 1;
             return Ok(cached_walk);
         }
 
@@ -339,8 +370,10 @@ fn build_grouped_walk(
                 let entries = if let Some(cached) =
                     cache.name_status_get(&parent, commit, copy_detection)
                 {
+                    *name_status_hits_counter += 1;
                     cached
                 } else {
+                    *name_status_misses_counter += 1;
                     let result =
                         walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
                     ns_cache_buffer.push((
@@ -392,6 +425,7 @@ fn build_grouped_walk(
             *grouped_walk_ancestor_hits_counter += 1;
             return Ok(updated_walk);
         }
+        *grouped_walk_misses_persistent_counter += 1;
     }
 
     let mut commits =
@@ -533,8 +567,10 @@ fn build_grouped_walk(
             *interesting_counter += 1;
             // Tier 1 probe: check the name_status cache before calling walker.
             if let Some(cached) = cache.name_status_get(&parent, commit, copy_detection) {
+                *name_status_hits_counter += 1;
                 cached
             } else {
+                *name_status_misses_counter += 1;
                 let result = walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
                 ns_cache_buffer.push((parent.clone(), commit.clone(), copy_detection, result.clone()));
                 result
@@ -823,6 +859,8 @@ pub(crate) fn resolve_at_head_shared(
             &delta.entries,
             Some(&session.cache),
             Some(&mut session.blob_oid_memo),
+            &mut session.blob_diff_hits,
+            &mut session.blob_diff_misses,
         )? {
             walker::Change::Unchanged => {}
             walker::Change::Deleted => return Ok(None),

@@ -198,9 +198,7 @@ impl Cache {
     where
         F: FnOnce(&Transaction) -> Result<R>,
     {
-        let txn = self
-            .conn
-            .unchecked_transaction()
+        let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| crate::Error::Git(format!("cache begin txn: {e}")))?;
         let result = f(&txn)?;
         txn.commit()
@@ -507,9 +505,7 @@ impl Cache {
 
         let name_status_removed = dead_ns.len();
         for chunk in dead_ns.chunks(5000) {
-            let txn = self
-                .conn
-                .unchecked_transaction()
+            let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
                 .map_err(|e| crate::Error::Git(format!("gc: begin txn name_status: {e}")))?;
             for (parent, commit, cd) in chunk {
                 txn.execute(
@@ -540,9 +536,7 @@ impl Cache {
 
         let blob_diff_removed = dead_bd.len();
         for chunk in dead_bd.chunks(5000) {
-            let txn = self
-                .conn
-                .unchecked_transaction()
+            let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
                 .map_err(|e| crate::Error::Git(format!("gc: begin txn blob_diff: {e}")))?;
             for (old, new) in chunk {
                 txn.execute(
@@ -588,9 +582,7 @@ impl Cache {
 
         let grouped_walk_removed = dead_gw.len();
         for chunk in dead_gw.chunks(5000) {
-            let txn = self
-                .conn
-                .unchecked_transaction()
+            let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
                 .map_err(|e| crate::Error::Git(format!("gc: begin txn grouped_walk: {e}")))?;
             for (anchor, head, cd, seed, replace_refs, git_config, budget) in chunk {
                 txn.execute(
