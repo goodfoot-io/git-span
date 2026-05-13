@@ -38,7 +38,7 @@ pub use mesh::{
     mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at, rename_mesh, resolve_commit_ish,
     restore_mesh, revert_mesh, show_mesh, show_mesh_at,
 };
-pub use resolver::{drift_locus, resolve_anchor, resolve_mesh, stale_meshes};
+pub use resolver::{resolve_anchor, resolve_mesh, stale_meshes};
 pub use staging::{
     StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
     clear_staging, list_staged_mesh_names, read_staging, set_why,

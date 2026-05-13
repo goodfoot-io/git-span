@@ -460,7 +460,6 @@ fn cache_disabled_env_var_skips_reads_and_writes() {
 
 /// cache miss → compute → store → hit on identical key.
 #[test]
-#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
 fn drift_locus_round_trip_persists_across_connections() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
@@ -505,7 +504,6 @@ fn drift_locus_round_trip_persists_across_connections() {
 /// (`crate::resolver::attribution::drift_locus`) and verifies the counter
 /// increments are correct.
 #[test]
-#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
 fn drift_locus_stale_answer_commit_causes_recompute() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
@@ -550,7 +548,6 @@ fn drift_locus_stale_answer_commit_causes_recompute() {
 
 /// `GIT_MESH_CACHE=0` short-circuits both read and write of the drift_locus tier.
 #[test]
-#[ignore = "Phase 4 bootstrap: unskip when implementation lands"]
 fn drift_locus_cache_disabled_env_var_skips_reads_and_writes() {
     let (_td, repo) = init_repo();
     let dir = _td.path();

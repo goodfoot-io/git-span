@@ -24,7 +24,6 @@ pub(crate) mod layers;
 pub(crate) mod session;
 pub(crate) mod walker;
 
-pub use attribution::drift_locus;
 pub use engine::pending::build_pending_findings;
 pub(crate) use engine::{
     EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state,

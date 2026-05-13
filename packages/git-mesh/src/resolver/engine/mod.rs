@@ -378,7 +378,7 @@ fn resolve_loaded_mesh_with_state(
                 &id,
                 r,
             )?;
-            populate_drift_locus(repo, &mut resolved);
+            populate_drift_locus(repo, &mut resolved, &mut state.session, mesh.config.copy_detection);
             anchors.push(resolved);
         }
     }
@@ -425,11 +425,16 @@ fn resolve_loaded_mesh_with_state(
 /// Populate `AnchorResolved.locus` for anchors whose drift is attributed to
 /// the HEAD layer or whose status is `Orphaned`. For all other states the
 /// per-layer label (worktree / index) suffices and no walk is needed.
-fn populate_drift_locus(repo: &gix::Repository, resolved: &mut AnchorResolved) {
+fn populate_drift_locus(
+    repo: &gix::Repository,
+    resolved: &mut AnchorResolved,
+    session: &mut super::session::ResolveSession,
+    copy_detection: crate::types::CopyDetection,
+) {
     use crate::types::{DriftLocus, DriftSource};
     match resolved.status {
         AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
-            if let Ok(locus) = super::attribution::drift_locus(repo, resolved) {
+            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, session, copy_detection) {
                 resolved.locus = locus;
             }
         }
@@ -437,7 +442,7 @@ fn populate_drift_locus(repo: &gix::Repository, resolved: &mut AnchorResolved) {
             // Ask the walk to describe an orphaning commit when the anchor
             // is reachable but the path is absent from HEAD; otherwise fall
             // back to `Unreachable`.
-            match super::attribution::drift_locus(repo, resolved) {
+            match super::attribution::drift_locus(repo, resolved, session, copy_detection) {
                 Ok(Some(locus)) => resolved.locus = Some(locus),
                 _ => resolved.locus = Some(DriftLocus::Unreachable),
             }
@@ -511,6 +516,8 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.blob-diff-misses", state.session.blob_diff_misses);
     crate::perf::counter("session.grouped-walk-hits-persistent", state.session.grouped_walk_hits_persistent);
     crate::perf::counter("session.grouped-walk-misses-persistent", state.session.grouped_walk_misses_persistent);
+    crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
+    crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);
