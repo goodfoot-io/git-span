@@ -660,24 +660,23 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: `git mv` across a pinned file (one-layer rename): Moved with new
-/// path; mesh record's anchored path unchanged (re-anchor is a separate action).
+/// Card main-61 §5 "Rename handling": a committed `git mv` of a pinned path
+/// detaches the anchor (the mesh stores paths, not blob identity). The
+/// resolver reports Orphaned; the orphaning commit is surfaced separately as
+/// the drift locus (`orphaned in <sha>`).
 #[test]
-fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
+fn git_mv_across_pinned_file_reports_orphaned() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
     repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
     repo.commit_all("rename")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
-    assert_eq!(r.status, AnchorStatus::Moved);
+    assert_eq!(r.status, AnchorStatus::Orphaned);
     // Anchored path unchanged.
     assert_eq!(r.anchored.path, PathBuf::from("file1.txt"));
-    // Current path reflects the rename.
-    assert_eq!(
-        r.current.as_ref().map(|c| c.path.clone()),
-        Some(PathBuf::from("renamed.txt"))
-    );
+    // No current location once orphaned.
+    assert!(r.current.is_none());
     Ok(())
 }
 

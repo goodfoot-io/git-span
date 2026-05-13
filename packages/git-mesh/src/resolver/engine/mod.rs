@@ -146,7 +146,10 @@ impl EngineState {
         if let Some(reachable) = self.commit_reachability.get(commit) {
             return Ok(*reachable);
         }
-        let reachable = crate::git::commit_reachable_from_any_ref(repo, commit)?;
+        // HEAD-relative: per drift-label spec, "orphaned (no sha)" applies
+        // when the anchor commit is not in HEAD's history, even if another
+        // ref still keeps it alive (e.g. after `checkout --orphan`).
+        let reachable = crate::git::commit_reachable_from_head(repo, commit)?;
         self.commit_reachability
             .insert(commit.to_string(), reachable);
         Ok(reachable)
@@ -368,13 +371,15 @@ fn resolve_loaded_mesh_with_state(
                 filtered_by_since += 1;
                 continue;
             }
-            anchors.push(resolve_anchor_inner(
+            let mut resolved = resolve_anchor_inner(
                 repo,
                 &mut *state,
                 &mesh.config,
                 &id,
                 r,
-            )?);
+            )?;
+            populate_drift_locus(repo, &mut resolved);
+            anchors.push(resolved);
         }
     }
     if filtered_by_since > 0
@@ -415,6 +420,30 @@ fn resolve_loaded_mesh_with_state(
         anchors,
         pending,
     })
+}
+
+/// Populate `AnchorResolved.locus` for anchors whose drift is attributed to
+/// the HEAD layer or whose status is `Orphaned`. For all other states the
+/// per-layer label (worktree / index) suffices and no walk is needed.
+fn populate_drift_locus(repo: &gix::Repository, resolved: &mut AnchorResolved) {
+    use crate::types::{DriftLocus, DriftSource};
+    match resolved.status {
+        AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
+            if let Ok(locus) = super::attribution::drift_locus(repo, resolved) {
+                resolved.locus = locus;
+            }
+        }
+        AnchorStatus::Orphaned if resolved.locus.is_none() => {
+            // Ask the walk to describe an orphaning commit when the anchor
+            // is reachable but the path is absent from HEAD; otherwise fall
+            // back to `Unreachable`.
+            match super::attribution::drift_locus(repo, resolved) {
+                Ok(Some(locus)) => resolved.locus = Some(locus),
+                _ => resolved.locus = Some(DriftLocus::Unreachable),
+            }
+        }
+        _ => {}
+    }
 }
 
 fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {

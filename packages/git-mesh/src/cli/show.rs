@@ -1027,10 +1027,12 @@ fn anchor_status_suffix(resolved: &[AnchorResolved], anchor_id: &str) -> String 
     };
     let status_phrase = match &a.status {
         AnchorStatus::Fresh => return modifier_suffix(a),
-        AnchorStatus::Changed => match a.source {
-            None => "changed".to_string(),
-            Some(src) => format!("changed {}", source_phrase(src)),
-        },
+        AnchorStatus::Changed => super::drift_label::format_drift_label(
+            &a.status,
+            a.source,
+            a.locus.as_ref(),
+            a.current.is_some(),
+        ),
         AnchorStatus::Moved => {
             let dest = a.current.as_ref().map(|cur| {
                 let s = cur.path.to_string_lossy();
@@ -1044,10 +1046,12 @@ fn anchor_status_suffix(resolved: &[AnchorResolved], anchor_id: &str) -> String 
                 (Some(src), Some(d)) => format!("moved {} to {d}", source_phrase(src)),
             }
         }
-        AnchorStatus::Orphaned => match a.source {
-            None => "orphaned (path no longer exists)".to_string(),
-            Some(src) => format!("orphaned {} (path no longer exists)", source_phrase(src)),
-        },
+        AnchorStatus::Orphaned => super::drift_label::format_drift_label(
+            &a.status,
+            a.source,
+            a.locus.as_ref(),
+            a.current.is_some(),
+        ),
         AnchorStatus::MergeConflict => match a.source {
             None => "merge conflict".to_string(),
             Some(src) => format!("merge conflict {}", source_phrase(src)),

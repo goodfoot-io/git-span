@@ -629,6 +629,30 @@ pub(crate) fn rev_walk_excluding(
     Ok(out)
 }
 
+/// Is `anchor` reachable from `HEAD` only?
+///
+/// Used by the resolver's orphaned-classification gate: per the drift-label
+/// spec, an anchor commit is "orphaned" relative to HEAD when HEAD's history
+/// no longer contains it, regardless of whether other refs still keep it
+/// alive (e.g. `refs/heads/main` after a `checkout --orphan`).
+pub(crate) fn commit_reachable_from_head(repo: &gix::Repository, anchor: &str) -> Result<bool> {
+    let anchor_id = match parse_oid(anchor) {
+        Ok(id) => id,
+        Err(_) => return Ok(false),
+    };
+    let head_id = match repo.head_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return Ok(false),
+    };
+    if head_id == anchor_id {
+        return Ok(true);
+    }
+    match repo.merge_base(head_id, anchor_id) {
+        Ok(base) => Ok(base.detach() == anchor_id),
+        Err(_) => Ok(false),
+    }
+}
+
 /// Is `anchor` reachable from any reference in the repository?
 // Unused while the resolver is stubbed in the Phase 1 types slice; the
 // engine slice re-wires it through the new `resolver::Engine`.

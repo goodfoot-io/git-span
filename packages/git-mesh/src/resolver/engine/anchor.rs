@@ -387,6 +387,28 @@ pub(crate) fn resolve_anchor_inner(
 
             let inferred_source = computed_layer_sources.first().copied();
 
+            // A committed cross-path rename detaches the anchor — the mesh
+            // stores paths, not blob identity. Detect via head_tracked
+            // diverging from the anchored path; reclassify to Orphaned so
+            // `populate_drift_locus` emits `orphaned in <rename-sha>`.
+            let head_path_diverged = head_tracked
+                .as_ref()
+                .is_some_and(|h| h.path != r.path);
+            let anchored_path_absent_at_head =
+                state.head_blob_at(repo, &r.path)?.is_none();
+            if equal && head_path_diverged && anchored_path_absent_at_head {
+                return Ok(AnchorResolved {
+                    anchor_id: anchor_id.into(),
+                    anchor_sha: r.anchor_sha,
+                    anchored,
+                    current: None,
+                    status: AnchorStatus::Orphaned,
+                    source: None,
+                    layer_sources: vec![],
+                    acknowledged_by: None,
+                    locus: None,
+                });
+            }
             if equal {
                 if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
                     status = AnchorStatus::Fresh;
@@ -488,6 +510,25 @@ fn clean_head_fast_path(
     };
     if head_blob != r.blob {
         return Ok(None);
+    }
+    // Committed cross-path rename detaches the anchor (mesh stores paths,
+    // not blob identity). Reclassify as Orphaned so `populate_drift_locus`
+    // emits `orphaned in <rename-sha>` via the forward walk. A *copy*
+    // (anchored path still present at HEAD) is not a rename: leave it as
+    // Moved so the anchor follows the new path.
+    let anchored_path_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
+    if t.path != r.path && anchored_path_absent_at_head {
+        return Ok(Some(AnchorResolved {
+            anchor_id: anchor_id.into(),
+            anchor_sha: r.anchor_sha.clone(),
+            anchored,
+            current: None,
+            status: AnchorStatus::Orphaned,
+            source: None,
+            layer_sources: vec![],
+            acknowledged_by: None,
+            locus: None,
+        }));
     }
     let status = if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
         AnchorStatus::Fresh

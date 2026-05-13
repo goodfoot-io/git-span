@@ -437,10 +437,9 @@ fn extent_to_options(extent: AnchorExtent) -> (Option<u32>, Option<u32>) {
 
 /// Prose description of an anchor finding's status, source, and destination.
 ///
-/// Produces strings like:
-/// - "Changed in the working tree"
-/// - "Moved in the index to `new/path#L1-L10`"
-/// - "Orphaned in HEAD (path no longer exists)"
+/// Delegates to `format_drift_label` for `Changed`/`Orphaned`; renders the
+/// remaining statuses (Moved, MergeConflict, Submodule, ContentUnavailable)
+/// inline in the uppercase voice the human renderer's header column uses.
 fn describe_finding(f: &Finding) -> String {
     let src_phrase = |src: Option<DriftSource>| -> &'static str {
         match src {
@@ -453,12 +452,13 @@ fn describe_finding(f: &Finding) -> String {
 
     match &f.status {
         AnchorStatus::Changed => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "Changed".to_string()
-            } else {
-                format!("Changed {src}")
-            }
+            let label = super::drift_label::format_drift_label(
+                &f.status,
+                f.source,
+                f.locus.as_ref(),
+                f.current.is_some(),
+            );
+            uppercase_first(&label)
         }
         AnchorStatus::Moved => {
             let src = src_phrase(f.source);
@@ -479,12 +479,13 @@ fn describe_finding(f: &Finding) -> String {
             }
         }
         AnchorStatus::Orphaned => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "Orphaned (path no longer exists)".to_string()
-            } else {
-                format!("Orphaned {src} (path no longer exists)")
-            }
+            let label = super::drift_label::format_drift_label(
+                &f.status,
+                f.source,
+                f.locus.as_ref(),
+                f.current.is_some(),
+            );
+            uppercase_first(&label)
         }
         AnchorStatus::MergeConflict => {
             let src = src_phrase(f.source);
@@ -540,14 +541,12 @@ fn describe_finding_lower(f: &Finding) -> String {
     };
 
     match &f.status {
-        AnchorStatus::Changed => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "changed".to_string()
-            } else {
-                format!("changed {src}")
-            }
-        }
+        AnchorStatus::Changed => super::drift_label::format_drift_label(
+            &f.status,
+            f.source,
+            f.locus.as_ref(),
+            f.current.is_some(),
+        ),
         AnchorStatus::Moved => {
             let src = src_phrase(f.source);
             if let Some(cur) = &f.current {
@@ -563,14 +562,12 @@ fn describe_finding_lower(f: &Finding) -> String {
                 format!("moved {src}")
             }
         }
-        AnchorStatus::Orphaned => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "orphaned (path no longer exists)".to_string()
-            } else {
-                format!("orphaned {src} (path no longer exists)")
-            }
-        }
+        AnchorStatus::Orphaned => super::drift_label::format_drift_label(
+            &f.status,
+            f.source,
+            f.locus.as_ref(),
+            f.current.is_some(),
+        ),
         AnchorStatus::MergeConflict => {
             let src = src_phrase(f.source);
             if src.is_empty() {
@@ -604,6 +601,15 @@ fn describe_finding_lower(f: &Finding) -> String {
             }
         }
         AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
+    }
+}
+
+/// Uppercase the first character of a lowercase label.
+fn uppercase_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 

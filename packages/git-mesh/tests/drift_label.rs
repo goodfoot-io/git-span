@@ -3,7 +3,7 @@
 //! These tests exercise every row of the seven-row vocabulary table from the
 //! card spec plus precedence and cross-surface consistency rules.
 //!
-//! All tests are marked `#[ignore = "tdd-bootstrap"]` — they are skipped until
+//! All tests are marked `` — they are skipped until
 //! Phase 3 implements `format_drift_label` and the supporting engine corrections.
 
 mod support;
@@ -65,7 +65,7 @@ fn extract_label(output: &str) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn worktree_range_edit_labels_changed_in_working_tree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -89,7 +89,7 @@ fn worktree_range_edit_labels_changed_in_working_tree() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -110,7 +110,7 @@ fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn staged_range_edit_labels_changed_in_index() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -135,7 +135,7 @@ fn staged_range_edit_labels_changed_in_index() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn staged_path_removal_labels_deleted_in_index() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -156,7 +156,7 @@ fn staged_path_removal_labels_deleted_in_index() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -182,7 +182,7 @@ fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn committed_path_deletion_labels_orphaned_in_sha() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -206,7 +206,7 @@ fn committed_path_deletion_labels_orphaned_in_sha() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn rename_in_history_labels_orphaned_in_rename_sha() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -230,7 +230,7 @@ fn rename_in_history_labels_orphaned_in_rename_sha() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
     // Build a repo where the anchor commit is on a branch that gets reset away,
     // making the anchor sha unreachable from HEAD.
@@ -269,7 +269,7 @@ fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn precedence_worktree_wins_over_index_and_head() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
@@ -312,7 +312,7 @@ fn precedence_worktree_wins_over_index_and_head() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tdd-bootstrap"]
+
 fn stale_patch_and_show_emit_identical_label_text() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;

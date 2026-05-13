@@ -21,7 +21,13 @@ pub fn drift_locus(
     repo: &gix::Repository,
     resolved: &AnchorResolved,
 ) -> Result<Option<DriftLocus>> {
-    if resolved.source != Some(DriftSource::Head) {
+    // The walk applies to (a) HEAD-attributed drift (Changed-in-HEAD) and
+    // (b) Orphaned anchors, where the caller (`populate_drift_locus`) asks
+    // us to describe the orphaning commit (rename or deletion) when the
+    // anchor itself is still reachable from HEAD.
+    if resolved.source != Some(DriftSource::Head)
+        && !matches!(resolved.status, crate::types::AnchorStatus::Orphaned)
+    {
         return Ok(None);
     }
 

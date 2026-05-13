@@ -50,8 +50,12 @@ fn setup_mesh(
 // 1. same-commit fixture
 // ---------------------------------------------------------------------------
 
-/// All three non-Off modes produce MOVED when `a.ts` lines are deleted and
-/// the identical lines appear in `b.ts` in the same commit.
+/// All three non-Off modes observe a committed cross-path rename. Per the
+/// drift-label spec (card main-61 §5 "Rename handling"), the mesh stores
+/// paths, not blob identity, so a committed rename detaches the anchor and
+/// the resolver emits `Orphaned`. Copy detection still drives the HEAD-walk
+/// path tracking that lets the orphaning commit be identified downstream,
+/// but the anchor itself no longer follows the rename.
 #[test]
 fn same_commit_all_modes_detect_move() -> Result<()> {
     for mode in [
@@ -79,8 +83,9 @@ fn same_commit_all_modes_detect_move() -> Result<()> {
         let mr = resolve_mesh(&gix, mesh, EngineOptions::committed_only())?;
         let status = &mr.anchors[0].status;
         assert!(
-            matches!(status, AnchorStatus::Moved | AnchorStatus::Fresh),
-            "mode={mode:?}: expected Moved (or Fresh when lines unchanged), got {status:?}"
+            matches!(status, AnchorStatus::Orphaned),
+            "mode={mode:?}: committed cross-path rename detaches anchor; \
+             expected Orphaned, got {status:?}"
         );
     }
     Ok(())
