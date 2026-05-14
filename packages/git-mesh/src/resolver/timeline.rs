@@ -15,13 +15,14 @@
 
 use crate::git;
 use crate::perf;
+use crate::resolver::linemap::LineMap;
 use crate::resolver::session::CommitDelta;
 use crate::resolver::walker::{Tracked, apply_hunks_to_range, compute_hunks};
 use crate::types::CopyDetection;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// One diff hunk: `(old_start, old_count, new_start, new_count)`.
 pub(crate) type Hunk = (u32, u32, u32, u32);
@@ -53,6 +54,12 @@ pub(crate) struct PathDelta {
     /// by a rename pair in the same commit. Projection returns `None` on
     /// the first `deleted` delta.
     pub(crate) deleted: bool,
+    /// Old-side line count (the parent blob's line count). Used by the
+    /// Phase 2 `LineMap` builder.
+    pub(crate) old_line_count: u32,
+    /// New-side line count (the commit blob's line count). Used by the
+    /// Phase 2 `LineMap` builder.
+    pub(crate) new_line_count: u32,
 }
 
 /// Path history for one `(start_path, head_blob_oid, copy_detection)` triple.
@@ -61,12 +68,73 @@ pub(crate) struct PathTimeline {
     pub(crate) start_path: Arc<[u8]>,
     pub(crate) final_path: Option<Arc<[u8]>>,
     pub(crate) deltas: Vec<PathDelta>,
+    /// Composed `LineMap` across all non-deleted deltas. Built lazily
+    /// the first time `project_by_linemap` is invoked.
+    pub(crate) composed_linemap: OnceLock<LineMap>,
 }
 
 impl PathTimeline {
     /// Project `(start, end)` from `start_path` through the timeline to
     /// the final path. Returns `None` when the path is deleted along the
     /// way (parity with `walker::Change::Deleted`).
+    /// Phase 2: project via the composed `LineMap`. Falls back to the
+    /// Phase 1 `project_by_hunk_replay` when the linemap result
+    /// disagrees with the hunk-replay result; mismatches are recorded
+    /// as `linemap.project-fallbacks`.
+    ///
+    /// Returns `None` only when the path is deleted along the way (or
+    /// the fallback decides so).
+    pub(crate) fn project_by_linemap(&self, start: u32, end: u32) -> Option<Tracked> {
+        // Any deleted delta terminates projection.
+        if self.deltas.iter().any(|d| d.deleted) {
+            // Match Phase 1 `Deleted` semantics.
+            return self.project_by_hunk_replay(start, end);
+        }
+
+        let composed = self.composed_linemap.get_or_init(|| {
+            let mut acc = LineMap::empty();
+            for d in &self.deltas {
+                if d.deleted {
+                    continue;
+                }
+                let m = LineMap::from_hunks(&d.hunks, d.old_line_count, d.new_line_count);
+                acc = LineMap::compose(&acc, &m);
+            }
+            acc
+        });
+
+        let (lm_s, lm_e) = composed.project_range(start, end)?;
+
+        // Path always tracks `final_path` (the linemap doesn't model
+        // path identity — only line coordinates).
+        let final_path_arc = match &self.final_path {
+            Some(p) => Arc::clone(p),
+            None => return self.project_by_hunk_replay(start, end),
+        };
+
+        // Cross-check against hunk replay. On mismatch, fall back and
+        // record a counter — keeps Phase 1 parity airtight.
+        let replay = self.project_by_hunk_replay(start, end);
+        match &replay {
+            Some(t) => {
+                if t.start != lm_s || t.end != lm_e {
+                    crate::resolver::linemap::record_fallback();
+                    return replay;
+                }
+            }
+            None => {
+                crate::resolver::linemap::record_fallback();
+                return None;
+            }
+        }
+
+        Some(Tracked {
+            path: bytes_to_string(&final_path_arc),
+            start: lm_s,
+            end: lm_e,
+        })
+    }
+
     pub(crate) fn project_by_hunk_replay(&self, start: u32, end: u32) -> Option<Tracked> {
         let _span = perf::span("timeline.project-range");
         let t0 = std::time::Instant::now();
@@ -250,6 +318,8 @@ pub(crate) fn build_timeline(
                 new_blob: None,
                 hunks: Arc::from(Vec::<Hunk>::new()),
                 deleted: true,
+                old_line_count: 0,
+                new_line_count: 0,
             });
             DELTAS_BUILT.fetch_add(1, Ordering::Relaxed);
             deleted_terminal = true;
@@ -279,6 +349,8 @@ pub(crate) fn build_timeline(
             .as_deref()
             .and_then(|b| git::read_git_text(repo, b).ok())
             .unwrap_or_default();
+        let old_line_count = old_text.lines().count() as u32;
+        let new_line_count = new_text.lines().count() as u32;
         let hunks_vec = compute_hunks(&old_text, &new_text);
         let hunks: Arc<[Hunk]> = Arc::from(hunks_vec);
 
@@ -296,6 +368,8 @@ pub(crate) fn build_timeline(
             new_blob: new_blob_id,
             hunks,
             deleted: false,
+            old_line_count,
+            new_line_count,
         });
         DELTAS_BUILT.fetch_add(1, Ordering::Relaxed);
 
@@ -319,6 +393,7 @@ pub(crate) fn build_timeline(
         start_path: start_path_arc,
         final_path,
         deltas: out,
+        composed_linemap: OnceLock::new(),
     })
 }
 

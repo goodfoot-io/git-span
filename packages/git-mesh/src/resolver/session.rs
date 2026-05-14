@@ -723,7 +723,7 @@ pub(crate) fn resolve_at_head_shared(
         arc
     };
 
-    let loc = match timeline_arc.project_by_hunk_replay(rstart, rend) {
+    let loc = match timeline_arc.project_by_linemap(rstart, rend) {
         Some(loc) => loc,
         None => return Ok(None),
     };
