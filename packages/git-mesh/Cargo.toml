@@ -29,6 +29,7 @@ uuid = { version = "1.23.1", features = ["v4"] }
 tempfile = "3.27.0"
 rkyv = "0.8"
 rancor = "0.1"
+toml = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

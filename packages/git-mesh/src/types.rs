@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 /// The extent of a pinned anchor: either the whole file, or an inclusive
 /// 1-based line range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum AnchorExtent {
     WholeFile,
     LineRange { start: u32, end: u32 },
@@ -28,7 +28,7 @@ pub enum AnchorExtent {
 /// In-memory representation of the Anchor record stored at
 /// `refs/anchors/v1/<anchorId>`. The id itself is the ref name suffix and
 /// is not repeated in the blob.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Anchor {
     /// Commit this anchor was anchored to at creation.
     pub anchor_sha: String,
@@ -55,7 +55,7 @@ pub enum CopyDetection {
 }
 
 /// Resolver options for all anchors in a mesh.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct MeshConfig {
     pub copy_detection: CopyDetection,
     pub ignore_whitespace: bool,
@@ -68,7 +68,7 @@ pub const DEFAULT_FOLLOW_MOVES: bool = false;
 
 /// A Mesh is a commit whose tree contains `anchors` and `config` files
 /// and whose commit message is the Mesh's message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Mesh {
     /// The Mesh's name (ref suffix; the identity).
     pub name: String,

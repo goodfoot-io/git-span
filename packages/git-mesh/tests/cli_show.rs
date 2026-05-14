@@ -33,16 +33,14 @@ fn show_by_name_has_required_lines() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "alpha")?;
     let out = repo.mesh_stdout(["alpha"])?;
-    // Canonical mesh block — heading, anchor bullet, why, ### Commit subsection.
-    assert!(out.starts_with("## alpha\n"), "out={out}");
-    assert!(out.contains("- file1.txt#L1-L5"), "out={out}");
-    assert!(out.contains("\nseed\n"), "out={out}");
-    assert!(out.contains("\n### Commit "), "out={out}");
-    assert!(
-        out.contains("Author: Test User <test@example.com>"),
-        "out={out}"
-    );
-    assert!(out.contains("\nDate: "), "out={out}");
+    // TOML output: name, anchors_v2 (array of tables), message, config.
+    assert!(out.starts_with("name = \"alpha\"\n"), "out={out}");
+    assert!(out.contains("path = \"file1.txt\""), "out={out}");
+    assert!(out.contains("message = \"seed\""), "out={out}");
+    assert!(out.contains("[config]"), "out={out}");
+    assert!(out.contains("copy_detection = \"same-commit\""), "out={out}");
+    // TOML output does not include commit metadata.
+    assert!(!out.contains("### Commit"), "out={out}");
     Ok(())
 }
 

@@ -3,13 +3,13 @@
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
 use crate::mesh::catalog::Catalog;
-use crate::resolver::{build_pending_findings, resolve_named_meshes};
+use crate::resolver::build_pending_findings;
 use crate::staging::{list_staged_mesh_names, read_staging, resolve_staged_config, Staging};
 use crate::types::{
-    Anchor, AnchorExtent, AnchorResolved, AnchorStatus, CopyDetection, DriftSource, EngineOptions,
-    LayerSet, MeshResolved, PendingFinding, UnavailableReason, DEFAULT_COPY_DETECTION,
+    Anchor, AnchorExtent, CopyDetection, MeshConfig, PendingFinding, DEFAULT_COPY_DETECTION,
     DEFAULT_FOLLOW_MOVES, DEFAULT_IGNORE_WHITESPACE,
 };
+use serde::Serialize;
 use crate::validation::validate_mesh_name_shape;
 use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
@@ -767,6 +767,32 @@ fn run_list_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
 }
 
 // ---------------------------------------------------------------------------
+// TOML output helpers for `git mesh show`
+// ---------------------------------------------------------------------------
+
+/// Serialization wrapper so `Vec<(String, Anchor)>` renders as a TOML
+/// array of tables with `id` as a regular field rather than a tuple.
+#[derive(Serialize)]
+struct AnchorEntryToml {
+    id: String,
+    anchor_sha: String,
+    created_at: String,
+    path: String,
+    extent: AnchorExtent,
+    blob: String,
+}
+
+/// Top-level TOML shape for `git mesh show`. Omits the compatibility
+/// `anchors` field (`Vec<String>`) and any live-resolution state.
+#[derive(Serialize)]
+struct MeshToml {
+    name: String,
+    message: String,
+    anchors_v2: Vec<AnchorEntryToml>,
+    config: MeshConfig,
+}
+
+// ---------------------------------------------------------------------------
 // Public run functions
 // ---------------------------------------------------------------------------
 
@@ -912,86 +938,28 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     let _perf = crate::perf::span("show.render-default");
 
-    // Live view: run the same resolver as `git mesh stale <name>` so each
-    // anchor renders with its current status. `--at` requests a historical
-    // snapshot whose anchor statuses are not meaningful against the current
-    // tree, so the resolver pass is skipped in that mode.
-    let resolved: Option<MeshResolved> = if args.at.is_none() {
-        let options = EngineOptions {
-            layers: LayerSet { worktree: true, index: true, staged_mesh: true },
-            ignore_unavailable: false,
-            since: None,
-            needs_all_layers: true,
-        };
-        resolve_named_meshes(repo, std::slice::from_ref(&args.name), options)?
-            .into_iter()
-            .next()
-            .and_then(|(_, r)| r.ok())
-    } else {
-        None
+    // Build TOML helper structures so anchors_v2 renders as an array of
+    // tables with `id` as a regular field (not a tuple pair).
+    let toml_output = MeshToml {
+        name: mesh.name.clone(),
+        message: mesh.message.trim_end_matches('\n').to_string(),
+        anchors_v2: mesh
+            .anchors_v2
+            .iter()
+            .map(|(id, a)| AnchorEntryToml {
+                id: id.clone(),
+                anchor_sha: a.anchor_sha.clone(),
+                created_at: a.created_at.clone(),
+                path: a.path.clone(),
+                extent: a.extent,
+                blob: a.blob.clone(),
+            })
+            .collect(),
+        config: mesh.config,
     };
 
-    let resolved_anchors: &[AnchorResolved] =
-        resolved.as_ref().map(|m| m.anchors.as_slice()).unwrap_or(&[]);
-    let pending: &[PendingFinding] =
-        resolved.as_ref().map(|m| m.pending.as_slice()).unwrap_or(&[]);
-
-    println!("## {}", mesh.name);
-
-    let pending_adds: Vec<&PendingFinding> = pending
-        .iter()
-        .filter(|p| matches!(p, PendingFinding::Add { .. }))
-        .collect();
-    let pending_removes: Vec<&PendingFinding> = pending
-        .iter()
-        .filter(|p| matches!(p, PendingFinding::Remove { .. }))
-        .collect();
-
-    if mesh.anchors_v2.is_empty() && pending_adds.is_empty() && pending_removes.is_empty() {
-        println!("*Mesh has no anchors*");
-    } else {
-        for (id, r) in &mesh.anchors_v2 {
-            let addr = anchor_addr(&r.path, r.extent);
-            let suffix = anchor_status_suffix(resolved_anchors, id);
-            println!("- {addr}{suffix}");
-        }
-        for p in &pending_adds {
-            if let PendingFinding::Add { op, .. } = p {
-                let addr = anchor_addr(&op.path, op.extent);
-                println!("- {addr} — pending add");
-            }
-        }
-        for p in &pending_removes {
-            if let PendingFinding::Remove { op, .. } = p {
-                let addr = anchor_addr(&op.path, op.extent);
-                println!("- {addr} — pending remove");
-            }
-        }
-    }
-
-    let why = mesh.message.trim_end_matches('\n');
-    if !why.is_empty() {
-        println!();
-        println!("{why}");
-    }
-
-    let short_sha = &info.commit_oid[..7.min(info.commit_oid.len())];
-    println!();
-    println!("### Commit {short_sha}");
-    println!("Author: {} <{}>", info.author_name, info.author_email);
-    println!("Date: {}", info.author_date);
-
-    let cfg = mesh.config;
-    if cfg.copy_detection != DEFAULT_COPY_DETECTION
-        || cfg.ignore_whitespace != DEFAULT_IGNORE_WHITESPACE
-        || cfg.follow_moves != DEFAULT_FOLLOW_MOVES
-    {
-        println!();
-        println!("### Resolvers");
-        println!("copy-detection: {}", copy_detection_label(cfg.copy_detection));
-        println!("ignore-whitespace: {}", on_off(cfg.ignore_whitespace));
-        println!("follow-moves: {}", on_off(cfg.follow_moves));
-    }
+    let toml_str = toml::to_string_pretty(&toml_output)?;
+    print!("{toml_str}");
     Ok(0)
 }
 
@@ -1015,88 +983,6 @@ fn copy_detection_label(cd: CopyDetection) -> &'static str {
         CopyDetection::SameCommit => "on",
         CopyDetection::AnyFileInCommit => "any-file-in-commit",
         CopyDetection::AnyFileInRepo => "any-file-in-repo",
-    }
-}
-
-/// Lowercase prose suffix describing an anchor's drift state, prefixed with
-/// ` — ` when non-empty. Mirrors `cli::stale_output::describe_finding` but
-/// in the lowercase voice the `show` block uses, with optional trailing
-/// modifiers for follow auto-update and acknowledgement.
-fn anchor_status_suffix(resolved: &[AnchorResolved], anchor_id: &str) -> String {
-    let Some(a) = resolved.iter().find(|a| a.anchor_id == anchor_id) else {
-        return String::new();
-    };
-    let status_phrase = match &a.status {
-        AnchorStatus::Fresh => return modifier_suffix(a),
-        AnchorStatus::Changed => super::drift_label::format_drift_label(
-            &a.status,
-            a.source,
-            a.locus.as_ref(),
-            a.current.is_some(),
-        ),
-        AnchorStatus::Moved => {
-            let dest = a.current.as_ref().map(|cur| {
-                let s = cur.path.to_string_lossy();
-                let extent = cur.extent;
-                anchor_addr(&s, extent)
-            });
-            match (a.source, dest) {
-                (None, None) => "moved".to_string(),
-                (None, Some(d)) => format!("moved to {d}"),
-                (Some(src), None) => format!("moved {}", source_phrase(src)),
-                (Some(src), Some(d)) => format!("moved {} to {d}", source_phrase(src)),
-            }
-        }
-        AnchorStatus::Orphaned => super::drift_label::format_drift_label(
-            &a.status,
-            a.source,
-            a.locus.as_ref(),
-            a.current.is_some(),
-        ),
-        AnchorStatus::MergeConflict => match a.source {
-            None => "merge conflict".to_string(),
-            Some(src) => format!("merge conflict {}", source_phrase(src)),
-        },
-        AnchorStatus::Submodule => match a.source {
-            None => "submodule".to_string(),
-            Some(src) => format!("submodule {}", source_phrase(src)),
-        },
-        AnchorStatus::ContentUnavailable(reason) => {
-            let detail = unavailable_detail(reason);
-            match a.source {
-                None => format!("content unavailable ({detail})"),
-                Some(src) => format!("content unavailable {} ({detail})", source_phrase(src)),
-            }
-        }
-    };
-    let mods = modifier_suffix(a);
-    format!(" — {status_phrase}{mods}")
-}
-
-fn modifier_suffix(a: &AnchorResolved) -> String {
-    let mut out = String::new();
-    if a.acknowledged_by.is_some() {
-        out.push_str(" — acknowledged");
-    }
-    out
-}
-
-fn source_phrase(src: DriftSource) -> &'static str {
-    match src {
-        DriftSource::Head => "in HEAD",
-        DriftSource::Index => "in the index",
-        DriftSource::Worktree => "in the working tree",
-    }
-}
-
-fn unavailable_detail(reason: &UnavailableReason) -> &'static str {
-    match reason {
-        UnavailableReason::LfsNotFetched => "LFS not fetched",
-        UnavailableReason::LfsNotInstalled => "LFS not installed",
-        UnavailableReason::PromisorMissing => "promisor missing",
-        UnavailableReason::SparseExcluded => "sparse excluded",
-        UnavailableReason::FilterFailed { .. } => "filter failed",
-        UnavailableReason::IoError { .. } => "I/O error",
     }
 }
 

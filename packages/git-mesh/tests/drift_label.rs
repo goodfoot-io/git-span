@@ -328,7 +328,6 @@ fn stale_patch_and_show_emit_identical_label_text() -> Result<()> {
 
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     let patch = repo.mesh_stdout(["stale", "m", "--patch", "--no-exit-code"])?;
-    let show = repo.mesh_stdout(["m"])?;
 
     assert!(
         stale.contains(&expected_label),
@@ -338,9 +337,6 @@ fn stale_patch_and_show_emit_identical_label_text() -> Result<()> {
         patch.contains(&expected_label),
         "stale --patch must contain '{expected_label}'; patch=\n{patch}"
     );
-    assert!(
-        show.contains(&expected_label),
-        "show must contain '{expected_label}'; show=\n{show}"
-    );
+    // `git mesh show` outputs TOML and does not include drift labels.
     Ok(())
 }
