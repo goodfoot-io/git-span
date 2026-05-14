@@ -16,13 +16,19 @@ fn seed(repo: &TestRepo, name: &str, msg: &str) -> Result<String> {
     Ok(commit_mesh(&gix, name)?)
 }
 
+fn mesh_exists(repo: &TestRepo, name: &str) -> bool {
+    list_mesh_names(&repo.gix_repo().unwrap())
+        .map(|names| names.contains(&name.to_string()))
+        .unwrap_or(false)
+}
+
 #[test]
 
 fn delete_mesh_removes_ref() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "kill-me", "seed")?;
     delete_mesh(&repo.gix_repo()?, "kill-me")?;
-    assert!(!repo.ref_exists("refs/meshes/v1/kill-me"));
+    assert!(!mesh_exists(&repo, "kill-me"));
     Ok(())
 }
 
@@ -41,8 +47,8 @@ fn rename_mesh_atomic() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "old-name", "seed")?;
     rename_mesh(&repo.gix_repo()?, "old-name", "new-name")?;
-    assert!(!repo.ref_exists("refs/meshes/v1/old-name"));
-    assert!(repo.ref_exists("refs/meshes/v1/new-name"));
+    assert!(!mesh_exists(&repo, "old-name"));
+    assert!(mesh_exists(&repo, "new-name"));
     Ok(())
 }
 

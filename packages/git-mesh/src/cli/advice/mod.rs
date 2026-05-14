@@ -280,27 +280,14 @@ fn discover_meshes_committed_this_session(
     let mut committed = store.meshes_committed_set()?;
     let catalog = crate::mesh::catalog::Catalog::load(repo)?;
     let mut new_names: Vec<String> = Vec::new();
-    if catalog.is_empty() {
-        let current = crate::mesh::read::list_mesh_refs(repo)?;
-        for (name, oid) in &current {
-            let is_new = match baseline.get(name) {
-                Some(prior_oid) => prior_oid != oid,
-                None => true,
-            };
-            if is_new && !committed.contains(name) {
-                new_names.push(name.clone());
-            }
-        }
-    } else {
-        for name in catalog.names() {
-            let oid = catalog.entry_oid(&name).unwrap_or_default();
-            let is_new = match baseline.get(&name) {
-                Some(prior_oid) => prior_oid != &oid,
-                None => true,
-            };
-            if is_new && !committed.contains(&name) {
-                new_names.push(name);
-            }
+    for name in catalog.names() {
+        let oid = catalog.entry_oid(&name).unwrap_or_default();
+        let is_new = match baseline.get(&name) {
+            Some(prior_oid) => prior_oid != &oid,
+            None => true,
+        };
+        if is_new && !committed.contains(&name) {
+            new_names.push(name);
         }
     }
     if !new_names.is_empty() {

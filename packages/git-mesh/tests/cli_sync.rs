@@ -105,7 +105,7 @@ fn push_delivers_mesh_to_upstream() -> Result<()> {
         .args(["for-each-ref", "--format=%(refname)"])
         .output()?;
     let refs = String::from_utf8_lossy(&out.stdout);
-    assert!(refs.contains("refs/meshes/v1/m"));
+    assert!(refs.contains("refs/meshes/v1/catalog"));
     assert!(refs.contains("refs/meshes-index/v1/path/"));
     Ok(())
 }
@@ -122,7 +122,12 @@ fn fetch_delivers_mesh_from_upstream() -> Result<()> {
     let reader = TestRepo::seeded()?;
     reader.add_remote("origin", bare.path())?;
     reader.mesh_stdout(["fetch", "origin"])?;
-    assert!(reader.ref_exists("refs/meshes/v1/shared"));
+    assert!(reader.ref_exists("refs/meshes/v1/catalog"));
+    let names = git_mesh::list_mesh_names(&reader.gix_repo()?)?;
+    assert!(
+        names.contains(&"shared".to_string()),
+        "expected 'shared' in fetched meshes: {names:?}"
+    );
     Ok(())
 }
 
@@ -138,7 +143,12 @@ fn fetch_uses_default_remote() -> Result<()> {
     let reader = TestRepo::seeded()?;
     reader.add_remote("origin", bare.path())?;
     reader.mesh_stdout(["fetch"])?;
-    assert!(reader.ref_exists("refs/meshes/v1/shared"));
+    assert!(reader.ref_exists("refs/meshes/v1/catalog"));
+    let names = git_mesh::list_mesh_names(&reader.gix_repo()?)?;
+    assert!(
+        names.contains(&"shared".to_string()),
+        "expected 'shared' in fetched meshes: {names:?}"
+    );
     Ok(())
 }
 
@@ -155,6 +165,6 @@ fn fetch_honors_default_remote_config() -> Result<()> {
         .current_dir(bare.path())
         .args(["for-each-ref", "--format=%(refname)", "refs/meshes/"])
         .output()?;
-    assert!(String::from_utf8_lossy(&out.stdout).contains("refs/meshes/v1/shared"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("refs/meshes/v1/catalog"));
     Ok(())
 }

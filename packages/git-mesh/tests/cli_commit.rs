@@ -178,7 +178,7 @@ fn cli_commit_writes_ref() -> Result<()> {
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "Initial"])?;
     repo.mesh_stdout(["commit", "m"])?;
-    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    assert!(git_mesh::list_mesh_names(&repo.gix_repo()?)?.contains(&"m".to_string()));
     Ok(())
 }
 
@@ -558,8 +558,9 @@ fn cli_commit_no_name_commits_all_staged() -> Result<()> {
     );
     assert!(stdout.contains("`a`"), "stdout={stdout}");
     assert!(stdout.contains("`b`"), "stdout={stdout}");
-    assert!(repo.ref_exists("refs/meshes/v1/a"));
-    assert!(repo.ref_exists("refs/meshes/v1/b"));
+    let names = git_mesh::list_mesh_names(&repo.gix_repo()?)?;
+    assert!(names.contains(&"a".to_string()));
+    assert!(names.contains(&"b".to_string()));
     Ok(())
 }
 
@@ -620,7 +621,12 @@ fn cli_why_reader_prints_current_and_historical_text() -> Result<()> {
     let current = repo.mesh_stdout(["why", "h"])?;
     assert!(current.contains("v2 why"), "current={current}");
 
-    let historical = repo.mesh_stdout(["why", "h", "--at", "HEAD~1"])?;
+    // Use the catalog ref's parent commit to read historical why.
+    // (Meshes are stored in the catalog ref, not in HEAD history.)
+    let hist_oid = repo.git_stdout([
+        "rev-parse", "refs/meshes/v1/catalog~1",
+    ])?;
+    let historical = repo.mesh_stdout(["why", "h", "--at", &hist_oid])?;
     assert!(historical.contains("v1 why"), "historical={historical}");
     assert!(!historical.contains("v2 why"), "historical={historical}");
     Ok(())

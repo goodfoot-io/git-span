@@ -81,7 +81,7 @@ fn push_bootstraps_refspec_on_first_call() -> Result<()> {
         .args(["for-each-ref", "--format=%(refname)"])
         .output()?;
     let refs = String::from_utf8_lossy(&out.stdout);
-    assert!(refs.contains("refs/meshes/v1/m"));
+    assert!(refs.contains("refs/meshes/v1/catalog"));
     assert!(refs.contains("refs/meshes-index/v1/path/"));
     Ok(())
 }
@@ -103,7 +103,12 @@ fn fetch_round_trips_from_upstream() -> Result<()> {
     let reader = TestRepo::seeded()?;
     reader.add_remote("origin", upstream_bare.path())?;
     fetch_mesh_refs(&reader.gix_repo()?, "origin")?;
-    assert!(reader.ref_exists("refs/meshes/v1/shared"));
+    assert!(reader.ref_exists("refs/meshes/v1/catalog"));
+    let names = git_mesh::list_mesh_names(&reader.gix_repo()?)?;
+    assert!(
+        names.contains(&"shared".to_string()),
+        "expected 'shared' in fetched meshes: {names:?}"
+    );
     assert!(!reader.list_refs("refs/meshes-index/v1/path/")?.is_empty());
     Ok(())
 }

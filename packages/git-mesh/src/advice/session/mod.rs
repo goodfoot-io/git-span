@@ -255,19 +255,14 @@ impl SessionStore {
             return Ok(());
         }
         let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-        let map: std::collections::HashMap<String, String> = if catalog.is_empty() {
-            let refs = crate::mesh::read::list_mesh_refs(repo)?;
-            refs.into_iter().collect()
-        } else {
-            catalog
-                .iter()?
-                .into_iter()
-                .map(|(name, _mesh)| {
-                    let oid = catalog.entry_oid(&name).unwrap_or_default();
-                    (name, oid)
-                })
-                .collect()
-        };
+        let map: std::collections::HashMap<String, String> = catalog
+            .iter()?
+            .into_iter()
+            .map(|(name, _mesh)| {
+                let oid = catalog.entry_oid(&name).unwrap_or_default();
+                (name, oid)
+            })
+            .collect();
         let json = serde_json::to_vec(&map)?;
         store::atomic_write(&path, &json)
     }

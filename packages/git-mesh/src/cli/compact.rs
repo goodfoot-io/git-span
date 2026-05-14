@@ -83,10 +83,10 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
     let mesh_names: Vec<String> = match args.paths.as_slice() {
         [] => crate::mesh::read::list_mesh_names(repo)?,
         [n] => {
-            let wd = crate::git::work_dir(repo)?;
-            let mesh_ref = format!("refs/meshes/v1/{n}");
-            crate::git::resolve_ref_oid_optional(wd, &mesh_ref)?
-                .ok_or_else(|| crate::Error::MeshNotFound((*n).clone()))?;
+            let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+            if catalog.lookup(n)?.is_none() {
+                return Err(crate::Error::MeshNotFound((*n).clone()).into());
+            }
             vec![(*n).clone()]
         }
         _ => {

@@ -139,29 +139,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // even when all are clean.
     let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
         let _perf = crate::perf::span("stale.count-totals");
-        // TEMPORARY: try catalog first, fall back to per-mesh refs.
         let catalog = Catalog::load(repo)?;
-        if !catalog.is_empty() {
-            let pairs = catalog.iter()?;
-            let mesh_count = pairs.len();
-            let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
-            (mesh_count, anchor_count)
-        } else {
-            let mesh_count = crate::mesh::read::list_mesh_refs(repo)
-                .map(|refs| refs.len())
-                .unwrap_or(0);
-            let anchor_count = crate::mesh::read::list_mesh_refs(repo)
-                .map(|refs| {
-                    refs.iter()
-                        .filter_map(|(name, oid)| {
-                            crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
-                        })
-                        .map(|m| m.anchors.len())
-                        .sum()
-                })
-                .unwrap_or(0);
-            (mesh_count, anchor_count)
-        }
+        let pairs = catalog.iter()?;
+        let mesh_count = pairs.len();
+        let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
+        (mesh_count, anchor_count)
     };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
@@ -198,21 +180,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
-        // TEMPORARY: try catalog first, fall back to per-mesh refs.
         let catalog = Catalog::load(repo)?;
-        let catalog_active = !catalog.is_empty();
 
         for arg in &args.paths {
             let mut found = false;
 
             // Step 1: try mesh name first when arg matches mesh-name shape.
             if validate_mesh_name_shape(arg).is_ok() {
-                let is_committed = if catalog_active {
-                    catalog.lookup(arg)?.is_some()
-                } else {
-                    let mesh_ref = format!("refs/meshes/v1/{arg}");
-                    crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_some()
-                };
+                let is_committed = catalog.lookup(arg)?.is_some();
                 if is_committed {
                     if seen.insert(arg.clone()) {
                         mesh_names.push(arg.clone());
@@ -1535,9 +1510,10 @@ pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) ->
 mod tests {
     use super::*;
     use crate::cli::StaleFormat;
-    use crate::git::{apply_ref_transaction_repo, RefUpdate};
+    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo, RefUpdate};
+    use crate::mesh::catalog::{self, CATALOG_REF};
     use crate::mesh::path_index::ref_updates_for_mesh;
-    use crate::types::{Anchor, AnchorExtent};
+    use crate::types::{Anchor, AnchorExtent, MeshConfig};
     use std::path::Path;
     use std::process::Command;
 
@@ -1580,12 +1556,27 @@ mod tests {
     }
 
     fn create_mesh_ref(repo: &gix::Repository, name: &str) {
-        let head_oid = repo.head_id().unwrap().detach().to_string();
-        let updates = vec![RefUpdate::Create {
-            name: format!("refs/meshes/v1/{name}"),
-            new_oid: head_oid,
-        }];
-        apply_ref_transaction_repo(repo, &updates).unwrap();
+        let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF).unwrap();
+        let mut cat = catalog::Catalog::load(repo).unwrap();
+        let mesh = crate::types::Mesh {
+            name: name.to_string(),
+            anchors: vec![],
+            anchors_v2: vec![],
+            message: String::new(),
+            config: MeshConfig {
+                copy_detection: crate::types::CopyDetection::SameCommit,
+                ignore_whitespace: false,
+                follow_moves: false,
+            },
+        };
+        cat.insert(name, &mesh).unwrap();
+        catalog::commit_catalog(
+            repo,
+            &cat,
+            &format!("test: create mesh {name}"),
+            catalog_ref_oid.as_deref(),
+        )
+        .unwrap();
     }
 
     fn create_path_index_entry(

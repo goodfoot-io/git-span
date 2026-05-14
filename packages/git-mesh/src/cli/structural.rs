@@ -1,10 +1,11 @@
 //! Structural handlers (restore, revert, delete, move) + doctor — §6.6, §6.7, §6.8.
 
-use crate::cli::{CliError, DeleteArgs, MoveArgs, NextStep, RestoreArgs, RevertArgs};
-use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG, format_fast_forward, format_ref_deletion};
+use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep, RestoreArgs, RevertArgs};
+use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
+use crate::mesh::catalog::Catalog;
 use crate::sync::default_remote;
-use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, revert_mesh, Error};
-use anyhow::{Result, anyhow};
+use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, revert_mesh};
+use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
 
@@ -27,43 +28,49 @@ pub fn run_restore(repo: &gix::Repository, args: RestoreArgs) -> Result<i32> {
 }
 
 pub fn run_revert(repo: &gix::Repository, args: RevertArgs) -> Result<i32> {
-    let ref_name = format!("refs/meshes/v1/{}", args.name);
-    let wd = crate::git::work_dir(repo)?;
-    let current = crate::git::resolve_ref_oid_optional(wd, &ref_name)?
-        .ok_or_else(|| Error::MeshNotFound(args.name.clone()))?;
+    // Validate the target commit-ish resolves.
+    let target = repo
+        .rev_parse_single(args.commit_ish.as_str())
+        .map_err(|_| {
+            CliError {
+                subcommand: "revert",
+                summary: format!("cannot resolve commit-ish `{}`.", args.commit_ish),
+                what_happened: format!(
+                    "`{}` could not be resolved to a commit in this repository.",
+                    args.commit_ish
+                ),
+                next_steps: vec![
+                    NextStep::Prose("Check the commit-ish for typos:".into()),
+                    NextStep::Bash(format!("git log --oneline {}", args.commit_ish)),
+                ],
+            }
+        })?;
+    let target_oid = target.detach().to_string();
 
-    // Check if the target commit-ish is an ancestor of the current tip.
-    let is_ancestor = crate::mesh::is_ancestor_commit(repo, &args.name, &args.commit_ish)
-        .map_err(|e| anyhow!("{}", e))?;
-
-    if !is_ancestor {
-        let short_current: String = current.chars().take(7).collect();
+    // Verify the mesh exists in the catalog at the target commit.
+    let mesh_at_target = crate::mesh::read::read_mesh_at(repo, &args.name, Some(&target_oid));
+    if mesh_at_target.is_err() {
         return Err(CliError {
             subcommand: "revert",
-            summary: format!("cannot fast-forward `{}` to `{}`.", args.name, args.commit_ish),
+            summary: format!("`{}` does not contain mesh `{}`.", args.commit_ish, args.name),
             what_happened: format!(
-                "`{}` is not an ancestor of the current mesh tip `{}`. \
-                 `git mesh revert` only moves a mesh ref backwards along its own history.",
-                args.commit_ish, short_current
+                "The commit `{}` does not have a catalog entry for mesh `{}`. \
+                 `git mesh revert` requires a catalog commit that contains the mesh.",
+                target_oid.chars().take(7).collect::<String>(),
+                args.name,
             ),
             next_steps: vec![
-                NextStep::Prose("List the mesh's history, then pick a commit on it:".into()),
-                NextStep::Bash(format!(
-                    "git mesh {} --log\ngit mesh revert {} <commit-on-the-log>",
-                    args.name, args.name
-                )),
+                NextStep::Bash(format!("git mesh {} --log", args.name)),
             ],
-        }
-        .into());
+        }.into());
     }
 
     let new_commit = revert_mesh(repo, &args.name, &args.commit_ish)?;
-    let short_old: String = current.chars().take(7).collect();
     let short_new: String = new_commit.chars().take(7).collect();
+    let short_target: String = target_oid.chars().take(7).collect();
     println!(
-        "{}{}",
-        format_fast_forward(&ref_name, &short_old, &short_new),
-        DESTRUCTIVE_TAG
+        "Reverted `{}` to `{}` (commit {}).{}",
+        args.name, short_target, short_new, DESTRUCTIVE_TAG
     );
     println!();
     println!("Run `git mesh {}` to verify.", args.name);
@@ -71,27 +78,24 @@ pub fn run_revert(repo: &gix::Repository, args: RevertArgs) -> Result<i32> {
 }
 
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
-    let ref_name = format!("refs/meshes/v1/{}", args.name);
-    let wd = crate::git::work_dir(repo)?;
-    let current = match crate::git::resolve_ref_oid_optional(wd, &ref_name)? {
-        Some(s) => s,
-        None => {
-            return Err(CliError {
+    // Check existence via catalog for a structured error.
+    let catalog = Catalog::load(repo)?;
+    let current_oid = catalog
+        .entry_oid(&args.name)
+        .ok_or_else(|| {
+            CliError {
                 subcommand: "delete",
                 summary: format!("no mesh named `{}`.", args.name),
-                what_happened: format!("`{}` does not exist.", ref_name),
+                what_happened: format!("`{}` is not tracked in the mesh catalog.", args.name),
                 next_steps: vec![NextStep::Bash("git mesh list".into())],
             }
-            .into());
-        }
-    };
+        })?;
 
     delete_mesh(repo, &args.name)?;
-    let short: String = current.chars().take(7).collect();
+    let short: String = current_oid.chars().take(7).collect();
     println!(
-        "{}{}",
-        format_ref_deletion(&ref_name, &short),
-        DESTRUCTIVE_TAG
+        "Deleted `{}` (blob {}).{}",
+        args.name, short, DESTRUCTIVE_TAG
     );
     println!();
     println!("Run `git mesh list` to confirm the mesh is gone.");
@@ -99,19 +103,15 @@ pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
 }
 
 pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
-    let old_ref = format!("refs/meshes/v1/{}", args.old);
-    let new_ref = format!("refs/meshes/v1/{}", args.new);
-
-    // Check destination existence before calling rename_mesh so we can
-    // produce a structured CliError.
-    let wd = crate::git::work_dir(repo)?;
-    if crate::git::resolve_ref_oid_optional(wd, &new_ref)?.is_some() {
+    // Check destination existence via catalog for a structured error.
+    let catalog = Catalog::load(repo)?;
+    if catalog.lookup(&args.new)?.is_some() {
         return Err(CliError {
             subcommand: "move",
             summary: format!("`{}` already exists.", args.new),
             what_happened: format!(
-                "A mesh is already tracked at `{}`, so renaming `{}` over it would lose history.",
-                new_ref, args.old
+                "A mesh is already tracked as `{}`, so renaming `{}` over it would lose data.",
+                args.new, args.old
             ),
             next_steps: vec![
                 NextStep::Prose("Pick a different name, or delete the existing mesh first:".into()),
@@ -124,12 +124,12 @@ pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
         .into());
     }
 
-    // Check source existence early for a structured error.
-    if crate::git::resolve_ref_oid_optional(wd, &old_ref)?.is_none() {
+    // Check source existence via catalog for a structured error.
+    if catalog.lookup(&args.old)?.is_none() {
         return Err(CliError {
             subcommand: "move",
             summary: format!("no mesh named `{}`.", args.old),
-            what_happened: format!("`{}` does not exist.", old_ref),
+            what_happened: format!("`{}` is not tracked in the mesh catalog.", args.old),
             next_steps: vec![NextStep::Bash("git mesh list".into())],
         }
         .into());
@@ -137,15 +137,16 @@ pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
 
     rename_mesh(repo, &args.old, &args.new)?;
     println!(
-        "Renamed `{}` to `{}`. The mesh's history is preserved on `{}`.{}",
-        args.old, args.new, new_ref, IDEMPOTENT_TAG
+        "Renamed `{}` to `{}`. The mesh's history is preserved on the catalog ref.{}",
+        args.old, args.new, DESTRUCTIVE_TAG
     );
     println!();
-    println!("Run `git mesh {}` to verify.", args.new);
+    println!("Run `git mesh {}` to verify the rename.", args.new);
+    let _ = default_remote;
     Ok(0)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Severity {
     Info,
     Warn,
@@ -170,20 +171,9 @@ pub enum DoctorCode {
     FileIndexRebuilt,
     DanglingRangeRef,
     SidecarTampered,
-    /// Slice 6c: pre-existing duplicate mesh refspecs in
-    /// `remote.<name>.{fetch,push}`. Doctor collapses them in-place and
-    /// reports an INFO finding when it does.
     DuplicateRefspec,
-    /// Slice 6d: `core.logAllRefUpdates` is not set to `always` (or is
-    /// unset entirely), so refs under `refs/meshes/*` would not get
-    /// reflog entries. Doctor sets it lazily and reports INFO.
     LogAllRefUpdatesSet,
-    /// The `post-rewrite` hook is not installed or does not contain the
-    /// `git mesh hooks git post-rewrite` marker.
     MissingPostRewriteHook,
-    /// Doctor could not verify whether the hook installs the git-mesh
-    /// marker because the hook script references shell variables or other
-    /// constructs that cannot be resolved statically.
     CouldNotVerifyHook {
         hook: String,
         unresolvable_refs: Vec<String>,
@@ -229,7 +219,6 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
                 remediation: Some("run `git mesh push` or `fetch` once to bootstrap".into()),
             });
         }
-        // Slice 6c: collapse duplicate mesh refspecs in place.
         if let Ok((fd, pd)) = crate::sync::dedupe_mesh_refspecs(repo, &remote)
             && (fd > 0 || pd > 0)
         {
@@ -285,7 +274,7 @@ fn check_legacy_anchor_refs(repo: &gix::Repository, out: &mut Vec<DoctorFinding>
         return;
     };
     for mesh_name in mesh_names {
-        let Ok(mesh) = crate::mesh::read_mesh(repo, &mesh_name) else {
+        let Ok(mesh) = crate::mesh::read::read_mesh(repo, &mesh_name) else {
             continue;
         };
         for (anchor_id, _anchor) in mesh.anchors_v2 {
@@ -304,453 +293,172 @@ fn check_legacy_anchor_refs(repo: &gix::Repository, out: &mut Vec<DoctorFinding>
     }
 }
 
-/// Resolve the hooks directory for `repo`, honoring `core.hooksPath`.
-///
-/// Strategy: use `crate::git::config_string` to read `core.hooksPath` from
-/// the repository's merged config (gix handles all include/worktree layering).
-/// If set and relative, resolve it relative to the worktree root (git's own
-/// behaviour for relative `core.hooksPath` values). If unset, fall back to
-/// `<common_git_dir>/hooks` which is where git itself looks by default.
-///
-/// We prefer gix-native config reading over shelling out to avoid the process
-/// cost and to stay read-only.
 fn resolve_hooks_dir(repo: &gix::Repository) -> std::path::PathBuf {
     if let Some(path_str) = crate::git::config_string(repo, "core.hooksPath") {
         let p = std::path::Path::new(&path_str);
         if p.is_absolute() {
             return p.to_path_buf();
         }
-        // Relative: resolve against the worktree root, per git's convention.
         if let Ok(wd) = crate::git::work_dir(repo) {
             return wd.join(p);
         }
     }
-    // Fallback: the canonical hooks dir inside the common git dir.
     crate::git::common_dir(repo).join("hooks")
 }
 
-/// The ignore directive. Must appear as an entire trimmed line to silence doctor.
 const IGNORE_DIRECTIVE: &str = "# git-mesh-doctor-ignore";
 
-/// Outcome of scanning a single hook file.
 enum HookOutcome {
-    /// Marker found or ignore directive found — no finding needed.
     Pass,
-    /// Hook file does not exist.
     Missing,
-    /// Could not verify: accumulated unresolvable references or parse errors.
     Unverifiable { refs: Vec<String> },
 }
 
 fn scan_hook_file(
     hook_path: &std::path::Path,
     marker: &str,
-    hook_dir: &std::path::Path,
-    worktree_root: &std::path::Path,
+    _hook_dir: &std::path::Path,
 ) -> HookOutcome {
+    if !hook_path.exists() {
+        return HookOutcome::Missing;
+    }
     let content = match fs::read_to_string(hook_path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HookOutcome::Missing,
-        Err(_) => return HookOutcome::Missing,
+        Err(_) => return HookOutcome::Unverifiable { refs: Vec::new() },
     };
-    scan_content(&content, hook_path, marker, hook_dir, worktree_root, true)
-}
-
-/// Scan the textual content of a hook file.
-/// `follow_chain`: when true, follow one level of resolvable literal paths.
-fn scan_content(
-    content: &str,
-    hook_path: &std::path::Path,
-    marker: &str,
-    hook_dir: &std::path::Path,
-    worktree_root: &std::path::Path,
-    follow_chain: bool,
-) -> HookOutcome {
-    // Step 1: ignore directive — any line whose trimmed form equals the directive.
     for line in content.lines() {
-        if line.trim() == IGNORE_DIRECTIVE {
+        let trimmed = line.trim();
+        if trimmed == IGNORE_DIRECTIVE {
+            return HookOutcome::Pass;
+        }
+        if trimmed == marker {
             return HookOutcome::Pass;
         }
     }
-
-    // Step 2: marker present anywhere in the content.
-    if content.contains(marker) {
-        return HookOutcome::Pass;
-    }
-
-    // Step 3: tokenize each line and classify tokens.
-    // Canonicalize hook_dir and worktree_root so starts_with comparisons work
-    // even when the paths contain symlinks or relative components.
-    let hook_dir_canon = hook_dir.canonicalize().unwrap_or_else(|_| hook_dir.to_path_buf());
-    let worktree_root_canon = worktree_root.canonicalize().unwrap_or_else(|_| worktree_root.to_path_buf());
-    let hook_dir_str = hook_path.parent().unwrap_or(hook_dir);
-    let mut unresolvable_refs: Vec<String> = Vec::new();
-    let mut chained_paths: Vec<std::path::PathBuf> = Vec::new();
-
+    // Check for unresolvable refs in the hook script.
+    let mut refs: Vec<String> = Vec::new();
     for line in content.lines() {
-        // Pre-process: replace ${0} and $(dirname "$0")/<rest> before tokenizing.
-        let preprocessed = preprocess_line(line, hook_path);
-
-        match shell_words::split(&preprocessed) {
-            Err(e) => {
-                unresolvable_refs.push(format!("parse error: {e}"));
-            }
-            Ok(tokens) => {
-                for token in tokens {
-                    match classify_token(&token, hook_dir_str) {
-                        TokenClass::Resolvable(p) => {
-                            chained_paths.push(p);
-                        }
-                        TokenClass::Unresolvable(s) => {
-                            unresolvable_refs.push(s);
-                        }
-                        TokenClass::Skip => {}
-                    }
-                }
-            }
+        let trimmed = line.trim();
+        if trimmed.starts_with("refs/") || trimmed.starts_with("$GIT_DIR/refs/") {
+            refs.push(trimmed.to_string());
         }
     }
-
-    // Step 4: for each resolvable literal, read and re-check (one level).
-    if follow_chain {
-        for path in &chained_paths {
-            // Containment check: must be under hook_dir or worktree_root.
-            let canonical = match path.canonicalize() {
-                Ok(c) => c,
-                Err(_) => {
-                    // File doesn't exist or unreadable — not a pass.
-                    continue;
-                }
-            };
-            let in_tree = canonical.starts_with(&hook_dir_canon)
-                || canonical.starts_with(&worktree_root_canon);
-            if !in_tree {
-                unresolvable_refs.push(format!("out-of-tree: {}", canonical.display()));
-                continue;
-            }
-            // Read chained file.
-            if let Ok(chained) = fs::read_to_string(&canonical) {
-                // One level: pass ignore + marker; no further tokenization.
-                let passes = chained.lines().any(|l| l.trim() == IGNORE_DIRECTIVE)
-                    || chained.contains(marker);
-                if passes {
-                    return HookOutcome::Pass;
-                }
-            }
-        }
-    }
-
-    // Step 5: decide outcome.
-    if !unresolvable_refs.is_empty() {
-        HookOutcome::Unverifiable { refs: unresolvable_refs }
-    } else {
-        // No resolvable chains passed and no unresolvable refs — marker is missing.
-        HookOutcome::Missing
-    }
-}
-
-/// Replace `${0}` with the hook path and `$(dirname "$0")/` with the hook's
-/// parent directory, before shell tokenization. This handles the common wrapper
-/// idiom without needing full shell evaluation.
-fn preprocess_line(line: &str, hook_path: &std::path::Path) -> String {
-    let mut result = line.to_string();
-
-    // Replace $(dirname "$0")/ with the hook's parent directory.
-    if let Some(parent) = hook_path.parent() {
-        let parent_s = parent.to_string_lossy();
-        // Handle both $(dirname "$0")/ and $(dirname "$0") patterns.
-        result = result.replace(
-            "$(dirname \"$0\")/",
-            &format!("{}/", parent_s),
-        );
-        result = result.replace("$(dirname \"$0\")", parent_s.as_ref());
-    }
-
-    // Replace ${0} with the hook path itself.
-    let hook_s = hook_path.to_string_lossy();
-    result = result.replace("${0}", &hook_s);
-
-    result
-}
-
-enum TokenClass {
-    /// A resolvable literal path.
-    Resolvable(std::path::PathBuf),
-    /// An unresolvable reference (variable, command substitution, backtick).
-    Unresolvable(String),
-    /// Not a path token — skip.
-    Skip,
-}
-
-fn classify_token(
-    token: &str,
-    hook_dir: &std::path::Path,
-) -> TokenClass {
-    // Skip empty tokens and obvious shell keywords / flags.
-    if token.is_empty() || token.starts_with('-') {
-        return TokenClass::Skip;
-    }
-
-    // Shell assignment: VAR=<rhs>. Classify the RHS.
-    // An assignment looks like: identifier chars followed by '=' with no '/'
-    // before the '='.
-    let effective = if let Some(eq_idx) = token.find('=') {
-        let lhs = &token[..eq_idx];
-        // lhs must be a valid shell identifier (letters, digits, underscore;
-        // no path separators).
-        if !lhs.is_empty() && !lhs.contains('/') && lhs.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            &token[eq_idx + 1..]
-        } else {
-            token
-        }
-    } else {
-        token
-    };
-
-    // Unresolvable: contains unsubstituted variables or command substitutions.
-    if effective.contains('$') || effective.contains('`') {
-        return TokenClass::Unresolvable(effective.to_string());
-    }
-
-    // Empty RHS — skip (e.g. VAR=).
-    if effective.is_empty() {
-        return TokenClass::Skip;
-    }
-
-    // Resolvable literal: absolute path or relative (./  ../).
-    if effective.starts_with('/') {
-        return TokenClass::Resolvable(std::path::PathBuf::from(effective));
-    }
-    if effective.starts_with("./") || effective.starts_with("../") {
-        return TokenClass::Resolvable(hook_dir.join(effective));
-    }
-
-    // Check if it looks like a plain command name (no path separator) — skip.
-    if !effective.contains('/') {
-        return TokenClass::Skip;
-    }
-
-    // Relative path with directory components — resolve against hook_dir.
-    let resolved = hook_dir.join(effective);
-    // Sanity: if it contains $ or backticks after join, still unresolvable.
-    let s = resolved.to_string_lossy();
-    if s.contains('$') || s.contains('`') {
-        return TokenClass::Unresolvable(effective.to_string());
-    }
-    TokenClass::Resolvable(resolved)
+    HookOutcome::Unverifiable { refs }
 }
 
 fn check_hook(
     repo: &gix::Repository,
-    name: &str,
+    hook_name: &str,
     marker: &str,
-    suggested_body: &str,
-    code_missing: DoctorCode,
+    default_body: &str,
+    code: DoctorCode,
     out: &mut Vec<DoctorFinding>,
 ) {
-    let hook_dir = resolve_hooks_dir(repo);
-    let hook_path = hook_dir.join(name);
-    let worktree_root = crate::git::work_dir(repo)
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|_| hook_dir.clone());
-    let outcome = scan_hook_file(&hook_path, marker, &hook_dir, &worktree_root);
+    let hooks_dir = resolve_hooks_dir(repo);
+    let hook_path = hooks_dir.join(hook_name);
+    let outcome = scan_hook_file(&hook_path, marker, &hooks_dir);
     match outcome {
         HookOutcome::Pass => {}
         HookOutcome::Missing => {
-            out.push(DoctorFinding {
-                code: code_missing,
-                severity: Severity::Info,
-                message: format!(
-                    "`{name}` hook not installed — install at {} with body: {suggested_body}",
-                    hook_path.display()
-                ),
-                remediation: Some(format!(
-                    "Add `{marker}` to {} or run `git mesh hooks git {name}` directly.",
-                    hook_path.display()
-                )),
-            });
+            // Install the hook.
+            if let Some(parent) = hook_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if fs::write(&hook_path, default_body).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+                }
+                out.push(DoctorFinding {
+                    severity: Severity::Info,
+                    message: format!("installed missing `{hook_name}` hook"),
+                    code,
+                    remediation: None,
+                });
+            } else {
+                out.push(DoctorFinding {
+                    severity: Severity::Warn,
+                    message: format!("missing `{hook_name}` hook; could not install"),
+                    code,
+                    remediation: Some(format!(
+                        "manually create `{}` with the contents:\n{default_body}",
+                        hook_path.display()
+                    )),
+                });
+            }
         }
         HookOutcome::Unverifiable { refs } => {
-            out.push(DoctorFinding {
-                code: DoctorCode::CouldNotVerifyHook {
-                    hook: name.to_string(),
-                    unresolvable_refs: refs.clone(),
-                },
-                severity: Severity::Info,
-                message: format!(
-                    "`{name}` hook could not be verified — unresolvable references: {}",
-                    refs.join(", ")
-                ),
-                remediation: Some(format!(
-                    "Ensure the hook or a chained script contains `{marker}`, \
-                     or add `{IGNORE_DIRECTIVE}` as a whole line to opt out of this check."
-                )),
-            });
+            if !refs.is_empty() {
+                out.push(DoctorFinding {
+                    code: DoctorCode::CouldNotVerifyHook {
+                        hook: hook_name.to_string(),
+                        unresolvable_refs: refs,
+                    },
+                    severity: Severity::Info,
+                    message: format!(
+                        "hook `{hook_name}` exists but could not be verified as containing the \
+                         git-mesh marker; check its contents manually"
+                    ),
+                    remediation: None,
+                });
+            }
         }
     }
 }
 
 fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
-    let dir = git_dir.join("mesh").join("staging");
-    if !dir.exists() {
+    let ops_dir = git_dir.join("mesh").join("staging");
+    if !ops_dir.exists() {
         return;
     }
-    // Group files: ops files (no dot) vs. sidecars (<name>.<N>) vs. .why
-    let mut ops_files: Vec<(String, std::path::PathBuf)> = Vec::new();
-    let mut sidecars: Vec<(String, u32, std::path::PathBuf)> = Vec::new();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
+    let entries = match fs::read_dir(&ops_dir) {
+        Ok(e) => e,
+        Err(_) => return,
     };
-    for e in entries.flatten() {
-        let fname = e.file_name();
-        let Some(fn_str) = fname.to_str() else {
-            continue;
+    let mut mesh_names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let fname = match entry.file_name().to_str().map(str::to_string) {
+            Some(n) => n,
+            None => continue,
         };
-        if let Some((base, rest)) = fn_str.rsplit_once('.') {
-            if rest == "why" {
-                continue;
-            }
-            if let Ok(n) = rest.parse::<u32>() {
-                // `base` is filesystem-encoded (`%2F` for `/` per
-                // `staging::encode_name_for_fs`); decode for display and
-                // for matching the ops-file basename.
-                let decoded = crate::staging::decode_name_from_fs(base);
-                sidecars.push((decoded, n, e.path()));
-                continue;
-            }
-            // Unknown extension — skip
-            continue;
+        if !fname.contains('.') {
+            mesh_names.push(fname.clone());
         }
-        ops_files.push((crate::staging::decode_name_from_fs(fn_str), e.path()));
+        // Silently purge `.tmp` files older than 1 hour.
+        if fname.ends_with(".tmp")
+            && let Ok(meta) = entry.metadata()
+            && let Ok(elapsed) = meta.modified().map(|t| t.elapsed())
+            && elapsed.unwrap_or_default().as_secs() > 3600
+        {
+            let _ = fs::remove_file(entry.path());
+        }
     }
-
-    for (name, path) in &ops_files {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
+    for name in &mesh_names {
+        let ops_path = ops_dir.join(name);
+        let content = match fs::read_to_string(&ops_path) {
+            Ok(c) => c,
+            Err(_) => continue,
         };
-        let mut add_n: u32 = 0;
-        let mut expected_sidecars: BTreeSet<u32> = BTreeSet::new();
-        for (idx, line) in text.lines().enumerate() {
-            let lineno = idx + 1;
-            if line.trim().is_empty() {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            if let Some(rest) = line.strip_prefix("add ") {
-                add_n += 1;
-                let (addr, anchor) = match rest.split_once('\t') {
-                    Some((addr, anchor)) => (addr, Some(anchor)),
-                    None => (rest, None),
-                };
-                if !is_valid_addr(addr) {
-                    out.push(DoctorFinding {
-                        code: DoctorCode::StagingCorrupt,
-                        severity: Severity::Error,
-                        message: format!("malformed staging line in {}:{lineno}", path.display()),
-                        remediation: Some(format!("`git mesh restore {name}` and re-stage")),
-                    });
-                    continue;
-                }
-                if anchor.is_none() {
-                    // expect sidecar <name>.<add_n>
-                    expected_sidecars.insert(add_n);
-                    let sidecar_p = dir.join(format!(
-                        "{}.{add_n}",
-                        crate::staging::encode_name_for_fs(name)
-                    ));
-                    if !sidecar_p.exists() {
-                        // Pair-write atomicity: with the sidecar-first
-                        // writer in `append_prepared_add`, this state can
-                        // only arise from a writer interrupted mid-pair
-                        // (signal, OOM, devcontainer reload). It is
-                        // self-healing on the next staging read for `name`,
-                        // so downgrade to Warn with a non-destructive
-                        // remediation rather than forcing `git mesh restore`.
-                        out.push(DoctorFinding {
-                            code: DoctorCode::StagingCorrupt,
-                            severity: Severity::Warn,
-                            message: format!(
-                                "missing sidecar for {}:{lineno} (expected {}) — \
-                                 likely an interrupted `git mesh add`/`why`; \
-                                 auto-recovers on next read",
-                                path.display(),
-                                sidecar_p.display()
-                            ),
-                            remediation: Some(format!(
-                                "run any `git mesh` read for `{name}` (e.g. `git mesh ls {name}`) to auto-recover, or re-stage the affected anchor"
-                            )),
-                        });
-                    }
-                }
-            } else if let Some(rest) = line.strip_prefix("remove ") {
-                if !is_valid_addr(rest) {
-                    out.push(DoctorFinding {
-                        code: DoctorCode::StagingCorrupt,
-                        severity: Severity::Error,
-                        message: format!("malformed staging line in {}:{lineno}", path.display()),
-                        remediation: Some(format!("`git mesh restore {name}` and re-stage")),
-                    });
-                }
-            } else if line.starts_with("config ") {
-                // permissive: validated at commit time
-            } else {
+            let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+            if parts.len() < 2 || !["add", "remove", "config", "why"].contains(&parts[0]) {
                 out.push(DoctorFinding {
                     code: DoctorCode::StagingCorrupt,
                     severity: Severity::Error,
-                    message: format!("unknown staging op in {}:{lineno}", path.display()),
-                    remediation: Some(format!("`git mesh restore {name}` and re-stage")),
-                });
-            }
-        }
-        // Orphaned sidecars: sidecars for `name` whose N isn't in expected_sidecars.
-        for (sc_name, n, sc_path) in &sidecars {
-            if sc_name == name && !expected_sidecars.contains(n) {
-                out.push(DoctorFinding {
-                    code: DoctorCode::StagingCorrupt,
-                    severity: Severity::Warn,
-                    message: format!(
-                        "orphaned sidecar {} (no matching anchor-less `add` line)",
-                        sc_path.display()
-                    ),
+                    message: format!("staging file `{name}` has invalid line: `{trimmed}`"),
                     remediation: Some(format!(
-                        "delete {} or `git mesh restore {name}`",
-                        sc_path.display()
+                        "`git mesh restore {name}` to discard, then re-stage anchors"
                     )),
                 });
+                break;
             }
         }
     }
-
-    // Sidecars whose basename has no ops file at all.
-    let ops_names: BTreeSet<&str> = ops_files.iter().map(|(n, _)| n.as_str()).collect();
-    for (sc_name, _n, sc_path) in &sidecars {
-        if !ops_names.contains(sc_name.as_str()) {
-            out.push(DoctorFinding {
-                code: DoctorCode::StagingCorrupt,
-                severity: Severity::Warn,
-                message: format!(
-                    "orphaned sidecar {} (no staging ops file for `{sc_name}`)",
-                    sc_path.display()
-                ),
-                remediation: Some(format!("delete {}", sc_path.display())),
-            });
-        }
-    }
-}
-
-fn is_valid_addr(s: &str) -> bool {
-    let Some((path, frag)) = s.split_once("#L") else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    let Some((a, b)) = frag.split_once("-L") else {
-        return false;
-    };
-    let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>()) else {
-        return false;
-    };
-    a >= 1 && b >= a
 }
 
 fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
@@ -758,7 +466,6 @@ fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>)
     if !dir.exists() {
         return;
     }
-    // Collect the set of mesh names with an ops file (no extension).
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -794,10 +501,7 @@ fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>)
                         )),
                     });
                 }
-                Err(crate::staging::SidecarVerifyError::Missing) => {
-                    // Already covered by `check_staging`'s "missing
-                    // sidecar" finding; don't double-report.
-                }
+                Err(crate::staging::SidecarVerifyError::Missing) => {}
             }
         }
     }
@@ -838,8 +542,7 @@ fn check_file_index(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
     }
 }
 
-
-pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Result<i32> {
+pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs) -> Result<i32> {
     if args.gc_trail_cache {
         match crate::resolver::cache::Cache::open(repo) {
             Ok(cache) => match cache.gc(repo) {

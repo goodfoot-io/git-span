@@ -125,9 +125,10 @@ fn cli_commit_batch_does_not_block_unrelated_meshes_on_prefix_collision() -> Res
     // Bare `git mesh commit` (post-commit-hook path). Exits non-zero because
     // one mesh fails, but the unrelated mesh must still get its ref.
     let _ = repo.run_mesh(["commit"])?;
+    let names = git_mesh::list_mesh_names(&repo.gix_repo()?)?;
     assert!(
-        repo.ref_exists("refs/meshes/v1/unrelated"),
-        "unrelated mesh ref should have been created despite the collision"
+        names.contains(&"unrelated".to_string()),
+        "unrelated mesh should have been created despite the collision"
     );
     Ok(())
 }

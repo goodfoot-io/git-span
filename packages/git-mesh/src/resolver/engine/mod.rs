@@ -13,7 +13,7 @@ use super::layers::{
 use super::session::ResolveSession;
 
 use crate::mesh::catalog::Catalog;
-use crate::mesh::read::{list_mesh_refs, read_mesh, read_mesh_from_commit};
+// use crate::mesh::read::read_mesh;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
     MeshResolved, PendingFinding,
@@ -251,15 +251,12 @@ pub fn resolve_anchor(
     let _perf = crate::perf::span("resolver.resolve-anchor");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
 
-    // TEMPORARY: try catalog first, fall back to old read_mesh.
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        match Catalog::load(repo) {
-            Ok(catalog) if !catalog.is_empty() => catalog
-                .lookup(mesh_name)?
-                .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?,
-            _ => read_mesh(repo, mesh_name)?,
-        }
+        let catalog = Catalog::load(repo)?;
+        catalog
+            .lookup(mesh_name)?
+            .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?
     };
     let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
@@ -309,18 +306,12 @@ fn resolve_mesh_with_state(
     name: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
-    // TEMPORARY: try catalog first, fall back to old read_mesh.
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        match Catalog::load(repo) {
-            Ok(catalog) if !catalog.is_empty() => catalog
-                .lookup(name)?
-                .ok_or_else(|| Error::MeshNotFound(name.to_string()))?,
-            _ => {
-                let _perf = crate::perf::span("resolver.read-mesh");
-                read_mesh(repo, name)?
-            }
-        }
+        let catalog = Catalog::load(repo)?;
+        catalog
+            .lookup(name)?
+            .ok_or_else(|| Error::MeshNotFound(name.to_string()))?
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
@@ -329,20 +320,15 @@ fn resolve_mesh_with_state_at(
     repo: &gix::Repository,
     state: &mut EngineState,
     name: &str,
-    commit_oid: &str,
+    _commit_oid: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        match Catalog::load(repo) {
-            Ok(catalog) if !catalog.is_empty() => catalog
-                .lookup(name)?
-                .ok_or_else(|| Error::MeshNotFound(name.to_string()))?,
-            _ => {
-                let _perf = crate::perf::span("resolver.read-mesh");
-                read_mesh_from_commit(repo, name, commit_oid)?
-            }
-        }
+        let catalog = Catalog::load(repo)?;
+        catalog
+            .lookup(name)?
+            .ok_or_else(|| Error::MeshNotFound(name.to_string()))?
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
@@ -613,31 +599,12 @@ fn stale_meshes_inner(
     enable_trace: bool,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
     crate::perf::reset_subroutine_counters();
-    // Load catalog — replaces list_mesh_refs + per-mesh read_mesh_from_commit.
-    // TEMPORARY: falls back to per-mesh refs when the catalog ref doesn't exist.
     let mesh_pairs: Vec<(String, Mesh)> = {
         let catalog = {
             let _perf = crate::perf::span("resolver.read-catalog");
             Catalog::load(repo)?
         };
-        if catalog.is_empty() {
-            // Legacy fallback: catalog ref doesn't exist, use per-mesh refs.
-            let mesh_refs = {
-                let _perf = crate::perf::span("resolver.list-meshes");
-                list_mesh_refs(repo)?
-            };
-            mesh_refs
-                .into_iter()
-                .filter_map(|(name, commit_oid)| {
-                    let _perf = crate::perf::span("resolver.read-mesh");
-                    read_mesh_from_commit(repo, &name, &commit_oid)
-                        .ok()
-                        .map(|m| (name, m))
-                })
-                .collect()
-        } else {
-            catalog.iter()?
-        }
+        catalog.iter()?
     };
     let mut out = Vec::new();
     let mut state = {

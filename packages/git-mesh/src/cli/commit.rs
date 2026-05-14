@@ -5,7 +5,7 @@
 //! remediation context.
 
 use crate::cli::error::from_lib_error;
-use crate::cli::format::{format_anchor_address, format_ref_transition, IDEMPOTENT_TAG};
+use crate::cli::format::{format_anchor_address, IDEMPOTENT_TAG};
 use crate::cli::{AddArgs, CliError, CommitArgs, ConfigArgs, NextStep, RemoveArgs, WhyArgs};
 use crate::git::resolve_ref_oid_optional_repo;
 use crate::staging::{append_prepared_add, parse_address, prepare_add, StagedConfig};
@@ -37,10 +37,11 @@ fn short_head_sha(repo: &gix::Repository) -> Option<String> {
     Some(id[..7].to_string())
 }
 
-/// Resolve the current tip of `refs/meshes/v1/<name>` (if it exists).
-fn current_mesh_tip_sha(repo: &gix::Repository, name: &str) -> Option<String> {
-    let r = format!("refs/meshes/v1/{name}");
-    resolve_ref_oid_optional_repo(repo, &r).ok().flatten()
+/// Resolve the current catalog ref tip SHA.
+fn current_mesh_tip_sha(repo: &gix::Repository, _name: &str) -> Option<String> {
+    resolve_ref_oid_optional_repo(repo, crate::mesh::catalog::CATALOG_REF)
+        .ok()
+        .flatten()
 }
 
 /// Build a [`CliError`] for invalid anchor syntax.
@@ -676,11 +677,11 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
         writeln!(stdout_lines).unwrap();
 
         for r in &commit_results {
-            let old = r.old_sha.as_deref().unwrap_or("(none)");
+            let short = &r.new_sha[..7.min(r.new_sha.len())];
             writeln!(
                 stdout_lines,
-                "- `{}` -- recorded: `{old}` -> `{}`.",
-                r.name, r.new_sha
+                "- `{}` -- recorded: `{short}`.",
+                r.name,
             )
             .unwrap();
         }
@@ -750,6 +751,7 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
 
 struct CommitMeshResult {
     name: String,
+    #[allow(dead_code)]
     old_sha: Option<String>,
     new_sha: String,
 }
@@ -763,18 +765,14 @@ fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
         || staging.why.is_some();
 
     if !has_anything {
-        // Check if the mesh ref even exists.
-        let ref_name = format!("refs/meshes/v1/{name}");
-        let ref_exists = resolve_ref_oid_optional_repo(repo, &ref_name)
-            .ok()
-            .flatten()
-            .is_some();
-        if !ref_exists {
+        // Check if the mesh even exists in the catalog.
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+        if catalog.lookup(name)?.is_none() {
             return Err(CliError {
                 subcommand: "commit",
                 summary: format!("no mesh named `{name}`."),
                 what_happened: format!(
-                    "There is no `{ref_name}` ref and no staging area under \
+                    "No catalog entry for `{name}` and no staging area under \
                      `.git/mesh/staging/{name}`."
                 ),
                 next_steps: vec![
@@ -787,23 +785,16 @@ fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
         }
     }
 
-    let old_sha = current_mesh_tip_sha(repo, name);
+    let _old_sha = current_mesh_tip_sha(repo, name);
     match commit_mesh(repo, name) {
         Ok(new_sha) => {
-            let ref_name = format!("refs/meshes/v1/{name}");
-            let old = old_sha.as_deref().unwrap_or("(none)");
-            println!(
-                "{}{}",
-                format_ref_transition(&ref_name, old, &new_sha),
-                IDEMPOTENT_TAG
-            );
+            let short = &new_sha[..7.min(new_sha.len())];
+            println!("Committed `{name}` ({short}).{}", IDEMPOTENT_TAG);
             println!();
             println!("Run `git mesh {name}` to verify.");
             Ok(0)
         }
         Err(e) => {
-            // Wrap library errors in CliError.
-            let _ref_name = format!("refs/meshes/v1/{name}");
             Err(from_lib_error(
                 "commit",
                 format!("mesh `{name}` failed to commit."),

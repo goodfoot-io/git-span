@@ -103,10 +103,10 @@ fn post_commit_chain_fidelity() -> Result<()> {
         "post-commit hook shortcut failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The commit step should have created the mesh ref.
+    // The commit step should have created the mesh.
     assert!(
-        repo.ref_exists("refs/meshes/v1/m"),
-        "refs/meshes/v1/m not found after post-commit shortcut"
+        git_mesh::list_mesh_names(&repo.gix_repo()?)?.contains(&"m".to_string()),
+        "mesh `m` not found after post-commit shortcut"
     );
     Ok(())
 }

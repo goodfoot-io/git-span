@@ -34,9 +34,8 @@ pub use file_index::{
 pub use git::read_git_text;
 pub use mesh::{
     AnchorCompactOutcome, AnchorCompactRecord, MeshCommitInfo, MeshCompactOutcome, commit_mesh,
-    compact_mesh, delete_mesh, is_ancestor_commit, list_mesh_names, mesh_commit_info,
-    mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at, rename_mesh, resolve_commit_ish,
-    restore_mesh, revert_mesh, show_mesh, show_mesh_at,
+    compact_mesh, delete_mesh, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log,
+    read_mesh, read_mesh_at, rename_mesh, restore_mesh, revert_mesh, show_mesh, show_mesh_at,
 };
 pub use resolver::{resolve_anchor, resolve_mesh, stale_meshes};
 pub use staging::{

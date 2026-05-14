@@ -11,6 +11,12 @@ use anyhow::Result;
 use std::process::Output;
 use support::TestRepo;
 
+fn mesh_exists(repo: &TestRepo, name: &str) -> bool {
+    git_mesh::list_mesh_names(&repo.gix_repo().unwrap())
+        .map(|names| names.contains(&name.to_string()))
+        .unwrap_or(false)
+}
+
 fn assert_rejected(out: &Output, needle: &str) {
     let code = out.status.code();
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -180,8 +186,8 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
     );
 
     assert!(
-        repo.ref_exists("refs/meshes/v1/billing/checkout-request-flow"),
-        "expected mesh ref under refs/meshes/v1/billing/"
+        mesh_exists(&repo, "billing/checkout-request-flow"),
+        "expected mesh billing/checkout-request-flow"
     );
 
     let listed = repo.mesh_stdout(["list", "a.ts"])?;
@@ -234,8 +240,8 @@ fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
     );
 
     assert!(
-        repo.ref_exists(&format!("refs/meshes/v1/{name}")),
-        "expected mesh ref under refs/meshes/v1/billing/payments/"
+        mesh_exists(&repo, name),
+        "expected mesh `{name}`"
     );
 
     let listed = repo.mesh_stdout(["list", "a.ts"])?;

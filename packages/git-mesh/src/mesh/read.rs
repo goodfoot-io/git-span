@@ -1,8 +1,8 @@
 //! Read-only mesh operations — §6.5, §6.6, §10.4.
 
-use crate::git::{self, resolve_ref_oid_optional, work_dir};
-use crate::mesh::catalog::Catalog;
-use crate::types::{CopyDetection, Mesh, MeshConfig};
+use crate::git::{self, resolve_ref_oid_optional_repo};
+use crate::mesh::catalog::{Catalog, CATALOG_REF};
+use crate::types::Mesh;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,308 +11,63 @@ pub struct MeshCommitInfo {
     pub author_name: String,
     pub author_email: String,
     pub author_date: String,
+    /// The first line of the catalog commit message (the operation's audit
+    /// trail — e.g. "mesh: follow N moved anchor").
     pub summary: String,
+    /// The full catalog commit message.
     pub message: String,
+    /// The mesh's own "why" message stored in the catalog entry at this
+    /// revision (the user-supplied description, not the commit message).
+    pub why: String,
 }
-
-fn mesh_ref(name: &str) -> String {
-    format!("refs/meshes/v1/{name}")
-}
-
-pub(crate) fn resolve_mesh_revision(
-    repo: &gix::Repository,
-    name: &str,
-    commit_ish: Option<&str>,
-) -> Result<String> {
-    let wd = work_dir(repo)?;
-    let mesh_ref = mesh_ref(name);
-    let revision = match commit_ish {
-        None => mesh_ref.clone(),
-        Some("HEAD") => mesh_ref.clone(),
-        Some(value) => {
-            if let Some(suffix) = value.strip_prefix("HEAD") {
-                format!("{mesh_ref}{suffix}")
-            } else {
-                value.to_string()
-            }
-        }
-    };
-    repo.rev_parse_single(revision.as_str())
-        .map(|id| id.detach().to_string())
-        .map_err(|_| {
-            if let Some(value) = commit_ish
-                && resolve_ref_oid_optional(wd, &mesh_ref)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            {
-                return Error::Git(format!("invalid mesh revision `{value}` for `{name}`"));
-            }
-            Error::MeshNotFound(name.to_string())
-        })
-}
-
-const CATALOG_STRIPPED: &str = "catalog";
 
 pub fn list_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
-    let mut names: Vec<String> = git::list_refs_stripped(repo, "refs/meshes/v1")?
-        .into_iter()
-        .filter(|n| n != CATALOG_STRIPPED)
-        .collect();
-    // Also include catalog entries.
-    if let Ok(cat) = Catalog::load(repo) {
-        for name in cat.names() {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
+    let catalog = Catalog::load(repo)?;
+    let mut names = catalog.names();
     names.sort();
     Ok(names)
 }
 
-pub(crate) fn list_mesh_refs(repo: &gix::Repository) -> Result<Vec<(String, String)>> {
-    let mut refs: Vec<(String, String)> = git::list_refs_stripped_with_oids(repo, "refs/meshes/v1")?
-        .into_iter()
-        .filter(|(n, _)| n != CATALOG_STRIPPED)
-        .collect();
-    // Also include catalog entries for meshes not in per-mesh refs.
-    if let Ok(cat) = Catalog::load(repo) {
-        let existing: std::collections::HashSet<String> =
-            refs.iter().map(|(n, _)| n.clone()).collect();
-        for name in cat.names() {
-            if !existing.contains(&name) {
-                refs.push((name, String::new()));
-            }
-        }
-    }
-    refs.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(refs)
-}
-
 pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
-    // Try catalog first (fast path when catalog is established).
-    if let Ok(cat) = Catalog::load(repo)
-        && let Some(mesh) = cat.lookup(name)?
-    {
-        return Ok(mesh);
-    }
-    // Fall back to per-mesh ref (pre-catalog meshes).
-    read_mesh_at(repo, name, None)
+    let catalog = Catalog::load(repo)?;
+    catalog
+        .lookup(name)?
+        .ok_or_else(|| Error::MeshNotFound(name.to_string()))
 }
 
-pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
-    let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
-
-    // Try pre-catalog format: anchors/config blobs in the commit tree.
-    let result = read_mesh_from_commit(repo, name, &commit_oid)?;
-    if !result.anchors_v2.is_empty() {
-        return Ok(result);
-    }
-
-    // Empty anchors might mean the commit is a catalog commit (tree has .mesh
-    // files instead of anchors/config blobs). Load the catalog at this commit
-    // and look up the mesh.
-    if let Ok(catalog) = load_catalog_at_commit(repo, &commit_oid)
-        && let Some(mesh) = catalog.lookup(name)?
-    {
-        return Ok(mesh);
-    }
-
-    // Neither format matched — return the pre-catalog result as-is.
-    Ok(result)
-}
-
-/// Load the mesh catalog as it appeared at a specific commit.
-fn load_catalog_at_commit<'repo>(
+/// Load the catalog as it appeared at a specific commit.
+fn catalog_at_commit<'repo>(
     repo: &'repo gix::Repository,
     commit_oid: &str,
 ) -> Result<Catalog<'repo>> {
     let oid = commit_oid
         .parse::<gix::ObjectId>()
-        .map_err(|e| Error::Git(format!("parse catalog commit oid {commit_oid}: {e}")))?;
+        .map_err(|e| Error::Git(format!("parse oid: {e}")))?;
     let commit = repo
         .find_commit(oid)
-        .map_err(|e| Error::Git(format!("find catalog commit {commit_oid}: {e}")))?;
+        .map_err(|e| Error::Git(format!("find commit {commit_oid}: {e}")))?;
     let tree = commit
         .tree()
-        .map_err(|e| Error::Git(format!("catalog commit tree {commit_oid}: {e}")))?;
+        .map_err(|e| Error::Git(format!("get commit tree {commit_oid}: {e}")))?;
     let tree_oid = tree.id().detach().to_string();
     Catalog::load_at(repo, &tree_oid)
 }
 
-const FOLLOW_SUBJECT_PREFIX: &str = "mesh: follow ";
-
-/// Walk the parent chain of `tip_oid` backwards, skipping commits whose
-/// subject starts with `"mesh: follow "`, and return the message of the first
-/// commit that doesn't match.  Falls back to the tip message when the chain is
-/// exhausted (degenerate root that is itself a follow commit).
-fn why_walking_past_follows(repo: &gix::Repository, tip_oid: &str) -> Result<String> {
-    let tip_meta = git::commit_meta(repo, tip_oid)?;
-    if !tip_meta.summary.starts_with(FOLLOW_SUBJECT_PREFIX) {
-        return Ok(tip_meta.message);
-    }
-    // Walk first parents until we find a non-follow commit.
-    let tip_oid_parsed = tip_oid
-        .parse::<gix::ObjectId>()
-        .map_err(|e| Error::Git(format!("parse oid {tip_oid}: {e}")))?;
-    let commit = repo
-        .find_commit(tip_oid_parsed)
-        .map_err(|e| Error::Git(format!("find commit {tip_oid}: {e}")))?;
-    let mut parent_ids: Vec<String> = commit
-        .parent_ids()
-        .map(|id| id.detach().to_string())
-        .collect();
-    while let Some(parent_oid) = parent_ids.into_iter().next() {
-        let meta = git::commit_meta(repo, &parent_oid)?;
-        if !meta.summary.starts_with(FOLLOW_SUBJECT_PREFIX) {
-            return Ok(meta.message);
-        }
-        let oid_parsed = parent_oid
-            .parse::<gix::ObjectId>()
-            .map_err(|e| Error::Git(format!("parse oid {parent_oid}: {e}")))?;
-        let parent_commit = repo
-            .find_commit(oid_parsed)
-            .map_err(|e| Error::Git(format!("find commit {parent_oid}: {e}")))?;
-        parent_ids = parent_commit
-            .parent_ids()
-            .map(|id| id.detach().to_string())
-            .collect();
-    }
-    // Exhausted the chain — every commit in the mesh history carries the
-    // follow-subject prefix, which is only possible if the writer guard in
-    // `commit_mesh` was bypassed. Fail closed rather than leaking the marker
-    // as the displayed why.
-    Err(Error::Git(
-        "mesh history contains only follow commits — no why to display".into(),
-    ))
-}
-
-pub(crate) fn read_mesh_from_commit(
-    repo: &gix::Repository,
-    name: &str,
-    commit_oid: &str,
-) -> Result<Mesh> {
-    let message = why_walking_past_follows(repo, commit_oid)?;
-    let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
-    let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
-    let anchors = anchors_v2.iter().map(|(id, _anchor)| id.clone()).collect();
-    Ok(Mesh {
-        name: name.to_string(),
-        anchors,
-        anchors_v2,
-        message,
-        config,
-    })
-}
-
-pub(crate) fn read_anchors_v2_blob(
-    repo: &gix::Repository,
-    commit_oid: &str,
-) -> Result<Vec<(String, crate::types::Anchor)>> {
-    let blob_oid = match git::path_blob_at(repo, commit_oid, "anchors") {
-        Ok(oid) => oid,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let text = git::read_git_text(repo, &blob_oid)?;
-    let mut out = Vec::new();
-    for anchor_text in text.split("\n\n") {
-        let anchor_text = anchor_text.trim();
-        if !anchor_text.is_empty()
-            && let Some(rest) = anchor_text.strip_prefix("id ")
-            && let Some((id_str, anchor_body)) = rest.split_once('\n')
-        {
-            let mut formatted = anchor_body.to_string();
-            if !formatted.ends_with('\n') {
-                formatted.push('\n');
-            }
-            if let Ok(a) = crate::anchor::parse_anchor(&formatted) {
-                out.push((id_str.to_string(), a));
-            }
+pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
+    match commit_ish {
+        None => read_mesh(repo, name),
+        Some(commit_ish) => {
+            let commit_oid = repo
+                .rev_parse_single(commit_ish)
+                .map_err(|_| Error::Git(format!("cannot resolve commit-ish `{commit_ish}`")))?
+                .detach()
+                .to_string();
+            let catalog = catalog_at_commit(repo, &commit_oid)?;
+            catalog
+                .lookup(name)?
+                .ok_or_else(|| Error::MeshNotFound(name.to_string()))
         }
     }
-    Ok(out)
-}
-
-pub(crate) struct MeshListingRecord {
-    pub message: String,
-    pub anchors_v2: Vec<(String, crate::types::Anchor)>,
-}
-
-pub(crate) fn read_mesh_listing_at(
-    repo: &gix::Repository,
-    commit_oid: &str,
-) -> Result<MeshListingRecord> {
-    let message = git::commit_meta(repo, commit_oid)?.message;
-    let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
-    Ok(MeshListingRecord {
-        message,
-        anchors_v2,
-    })
-}
-
-fn default_config() -> MeshConfig {
-    MeshConfig {
-        copy_detection: crate::types::DEFAULT_COPY_DETECTION,
-        ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
-        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
-    }
-}
-
-pub(crate) fn read_config_blob(repo: &gix::Repository, commit_oid: &str) -> Result<MeshConfig> {
-    let blob_oid = git::path_blob_at(repo, commit_oid, "config")?;
-    let text = git::read_git_text(repo, &blob_oid)?;
-    parse_config_blob(&text)
-}
-
-pub(crate) fn parse_config_blob(text: &str) -> Result<MeshConfig> {
-    let mut cfg = default_config();
-    for line in text.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let (k, v) = line
-            .split_once(' ')
-            .ok_or_else(|| Error::Parse(format!("malformed config line `{line}`")))?;
-        match k {
-            "copy-detection" => {
-                cfg.copy_detection = match v {
-                    "off" => CopyDetection::Off,
-                    "same-commit" => CopyDetection::SameCommit,
-                    "any-file-in-commit" => CopyDetection::AnyFileInCommit,
-                    "any-file-in-repo" => CopyDetection::AnyFileInRepo,
-                    _ => return Err(Error::Parse(format!("invalid copy-detection `{v}`"))),
-                };
-            }
-            "ignore-whitespace" => {
-                cfg.ignore_whitespace = match v {
-                    "true" => true,
-                    "false" => false,
-                    _ => return Err(Error::Parse(format!("invalid ignore-whitespace `{v}`"))),
-                };
-            }
-            "follow-moves" => {
-                cfg.follow_moves = match v {
-                    "true" => true,
-                    "false" => false,
-                    _ => return Err(Error::Parse(format!("invalid follow-moves `{v}`"))),
-                };
-            }
-            _ => {
-                // Unknown keys tolerated.
-            }
-        }
-    }
-    Ok(cfg)
-}
-
-pub(crate) fn serialize_config_blob(cfg: &MeshConfig) -> String {
-    format!(
-        "copy-detection {}\nignore-whitespace {}\nfollow-moves {}\n",
-        crate::staging::serialize_copy_detection(cfg.copy_detection),
-        cfg.ignore_whitespace,
-        cfg.follow_moves
-    )
 }
 
 pub fn show_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
@@ -324,7 +79,8 @@ pub fn show_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
 }
 
 pub fn mesh_commit_info(repo: &gix::Repository, name: &str) -> Result<MeshCommitInfo> {
-    mesh_commit_info_at(repo, name, None)
+    let mut log = mesh_log(repo, name, Some(1))?;
+    log.pop().ok_or_else(|| Error::MeshNotFound(name.to_string()))
 }
 
 pub fn mesh_commit_info_at(
@@ -332,97 +88,69 @@ pub fn mesh_commit_info_at(
     name: &str,
     commit_ish: Option<&str>,
 ) -> Result<MeshCommitInfo> {
-    let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
-    let meta = git::commit_meta(repo, &commit_oid)?;
-    Ok(MeshCommitInfo {
-        commit_oid,
-        author_name: meta.author_name,
-        author_email: meta.author_email,
-        author_date: meta.author_date_rfc2822,
-        summary: meta.summary,
-        message: meta.message,
-    })
-}
-
-pub fn mesh_log(
-    repo: &gix::Repository,
-    name: &str,
-    limit: Option<usize>,
-) -> Result<Vec<MeshCommitInfo>> {
-    let wd = work_dir(repo)?;
-    // Validate the ref exists first.
-    let tip = resolve_ref_oid_optional(wd, &mesh_ref(name))?
-        .ok_or_else(|| Error::MeshNotFound(name.into()))?;
-    let oids = git::rev_walk_excluding(repo, &[&tip], &[], limit)?;
-    oids.into_iter()
-        .map(|oid| mesh_commit_info_at(repo, name, Some(&oid)))
-        .collect()
-}
-
-pub fn is_ancestor_commit(repo: &gix::Repository, name: &str, ancestor: &str) -> Result<bool> {
-    crate::git::is_ancestor(repo, ancestor, &mesh_ref(name))
-}
-
-pub fn resolve_commit_ish(repo: &gix::Repository, name: &str, commit_ish: &str) -> Result<String> {
-    resolve_mesh_revision(repo, name, Some(commit_ish))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_config_blob, serialize_config_blob};
-    use crate::types::{CopyDetection, MeshConfig, DEFAULT_FOLLOW_MOVES};
-
-    fn default_cfg() -> MeshConfig {
-        MeshConfig {
-            copy_detection: CopyDetection::SameCommit,
-            ignore_whitespace: false,
-            follow_moves: false,
+    match commit_ish {
+        None => mesh_commit_info(repo, name),
+        Some(commit_ish) => {
+            let commit_oid = repo
+                .rev_parse_single(commit_ish)
+                .map_err(|_| Error::Git(format!("cannot resolve commit-ish `{commit_ish}`")))?
+                .detach()
+                .to_string();
+            // Verify the mesh exists in the catalog at this commit.
+            let catalog = catalog_at_commit(repo, &commit_oid)?;
+            let mesh = catalog
+                .lookup(name)?
+                .ok_or_else(|| Error::MeshNotFound(name.to_string()))?;
+            let meta = git::commit_meta(repo, &commit_oid)?;
+            Ok(MeshCommitInfo {
+                commit_oid,
+                author_name: meta.author_name,
+                author_email: meta.author_email,
+                author_date: meta.author_date_rfc2822,
+                summary: meta.summary,
+                message: meta.message,
+                why: mesh.message,
+            })
         }
     }
+}
 
-    #[test]
-    fn follow_moves_default_preserved_in_round_trip() {
-        let cfg = default_cfg();
-        let serialized = serialize_config_blob(&cfg);
-        let parsed = parse_config_blob(&serialized).unwrap();
-        assert_eq!(parsed.follow_moves, DEFAULT_FOLLOW_MOVES);
+pub fn mesh_log(repo: &gix::Repository, name: &str, limit: Option<usize>) -> Result<Vec<MeshCommitInfo>> {
+    let cat_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF)?
+        .ok_or_else(|| Error::Git("catalog ref not found".into()))?;
+    let cat_oid: gix::ObjectId = cat_ref_oid
+        .parse()
+        .map_err(|e| Error::Git(format!("parse oid: {e}")))?;
+
+    let mut entries = Vec::new();
+    let max = limit.unwrap_or(usize::MAX);
+
+    let walk = repo
+        .rev_walk([cat_oid])
+        .all()
+        .map_err(|e| Error::Git(format!("rev walk catalog ref: {e}")))?;
+
+    for result in walk {
+        if entries.len() >= max {
+            break;
+        }
+        let info = result.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        let oid_str = info.id.to_string();
+        if let Ok(catalog) = catalog_at_commit(repo, &oid_str)
+            && let Some(mesh) = catalog.lookup(name)?
+        {
+                let meta = git::commit_meta(repo, &oid_str)?;
+                entries.push(MeshCommitInfo {
+                    commit_oid: oid_str,
+                    author_name: meta.author_name,
+                    author_email: meta.author_email,
+                    author_date: meta.author_date_rfc2822,
+                    summary: meta.summary,
+                    message: meta.message,
+                    why: mesh.message,
+                });
+            }
     }
 
-    #[test]
-    fn follow_moves_true_round_trips() {
-        let mut cfg = default_cfg();
-        cfg.follow_moves = true;
-        let serialized = serialize_config_blob(&cfg);
-        assert!(serialized.contains("follow-moves true"), "serialized={serialized}");
-        let parsed = parse_config_blob(&serialized).unwrap();
-        assert!(parsed.follow_moves);
-    }
-
-    #[test]
-    fn follow_moves_false_round_trips() {
-        let mut cfg = default_cfg();
-        cfg.follow_moves = false;
-        let serialized = serialize_config_blob(&cfg);
-        assert!(serialized.contains("follow-moves false"), "serialized={serialized}");
-        let parsed = parse_config_blob(&serialized).unwrap();
-        assert!(!parsed.follow_moves);
-    }
-
-    #[test]
-    fn follow_moves_invalid_value_returns_parse_error() {
-        let result = parse_config_blob("follow-moves maybe\n");
-        assert!(result.is_err(), "invalid follow-moves value must error");
-        let msg = format!("{}", result.unwrap_err());
-        assert!(msg.contains("follow-moves"), "error must mention the key; msg={msg}");
-    }
-
-    #[test]
-    fn serialize_config_always_includes_follow_moves_line() {
-        let cfg = default_cfg();
-        let serialized = serialize_config_blob(&cfg);
-        assert!(
-            serialized.contains("follow-moves"),
-            "serialized config must include follow-moves line; got={serialized}"
-        );
-    }
+    Ok(entries)
 }

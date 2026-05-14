@@ -1,64 +1,34 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
 use crate::anchor::create_anchor_with_extent_skipping_blob_bounds;
-use crate::git::{self, resolve_ref_oid_optional, work_dir};
+use crate::git::{self};
 use crate::mesh::catalog::{Catalog, CATALOG_REF};
 use crate::staging::{self, StagedConfig, Staging};
 use crate::types::{AnchorExtent, MeshConfig};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 
-fn mesh_ref(name: &str) -> String {
-    format!("refs/meshes/v1/{name}")
-}
-
 pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     validate_mesh_name(name)?;
-    let wd = work_dir(repo)?;
     let staging = staging::read_staging(repo, name)?;
 
-    // Detect loose-ref file vs. directory collisions BEFORE any ref I/O.
-    // `try_find_reference` on `refs/meshes/v1/<name>` short-reads when an
-    // ancestor path is already a regular file (committed leaf), so the
-    // structured collision error must beat `resolve_ref_oid_optional` to
-    // surface a useful message.
+    // Detect mesh name collisions before any I/O.
     check_prefix_collision(repo, name)?;
 
-    // Load current state — try catalog first, fall back to per-mesh ref.
+    // Load current state from catalog.
     let (anchor_v2_records, base_config, base_message) = {
         let cat = Catalog::load(repo)?;
-        if !cat.is_empty() {
-            match cat.lookup(name)? {
-                Some(m) => (m.anchors_v2, m.config, Some(m.message)),
-                None => (
-                    Vec::new(),
-                    MeshConfig {
-                        copy_detection: crate::types::DEFAULT_COPY_DETECTION,
-                        ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
-                        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
-                    },
-                    None,
-                ),
-            }
-        } else {
-            // Pre-catalog path: read from per-mesh ref.
-            let mesh_ref_name = mesh_ref(name);
-            let base_tip = resolve_ref_oid_optional(wd, &mesh_ref_name)?;
-            match base_tip.as_deref() {
-                Some(tip) => {
-                    let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-                    (m.anchors_v2, m.config, Some(m.message))
-                }
-                None => (
-                    Vec::new(),
-                    MeshConfig {
-                        copy_detection: crate::types::DEFAULT_COPY_DETECTION,
-                        ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
-                        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
-                    },
-                    None,
-                ),
-            }
+        match cat.lookup(name)? {
+            Some(m) => (m.anchors_v2, m.config, Some(m.message)),
+            None => (
+                Vec::new(),
+                MeshConfig {
+                    copy_detection: crate::types::DEFAULT_COPY_DETECTION,
+                    ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+                    follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
+                },
+                None,
+            ),
         }
     };
 
@@ -300,37 +270,6 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);
     }
 
-    // Update per-mesh convenience ref so `git log refs/meshes/v1/<name>` works.
-    // Use `apply_ref_transaction` (subprocess) rather than
-    // `apply_ref_transaction_repo` (gix) because gix caches the git config
-    // from repo-open time and won't see the `core.logAllRefUpdates = always`
-    // value written by `ensure_log_all_ref_updates_always`.
-    let mesh_ref_name = mesh_ref(name);
-    crate::git::ensure_log_all_ref_updates_always(repo)?;
-    {
-        match resolve_ref_oid_optional(wd, &mesh_ref_name)? {
-            Some(old_oid) => {
-                let _ = crate::git::apply_ref_transaction(
-                    wd,
-                    &[crate::git::RefUpdate::Update {
-                        name: mesh_ref_name,
-                        new_oid: new_commit.clone(),
-                        expected_old_oid: old_oid,
-                    }],
-                );
-            }
-            None => {
-                let _ = crate::git::apply_ref_transaction(
-                    wd,
-                    &[crate::git::RefUpdate::Create {
-                        name: mesh_ref_name,
-                        new_oid: new_commit.clone(),
-                    }],
-                );
-            }
-        }
-    }
-
     // Clear staging on success.
     let _ = staging::clear_staging(repo, name);
 
@@ -366,18 +305,17 @@ fn extent_sort_key(extent: &AnchorExtent) -> (u32, u32) {
     }
 }
 
-/// Refuse a commit whose name would force the loose-ref tree to hold the
-/// same path as both a regular file and a directory. The collision is
-/// symmetric: `name = "a/b"` cannot coexist with `"a"`, and `name = "a"`
-/// cannot coexist with `"a/b"`. Reports the first existing mesh that
-/// blocks the write so the user can rename one side.
+/// Refuse a commit whose name would collide with an existing mesh name.
+/// The collision is symmetric: `name = "a/b"` cannot coexist with `"a"`,
+/// and `name = "a"` cannot coexist with `"a/b"`.
 fn check_prefix_collision(repo: &gix::Repository, name: &str) -> Result<()> {
-    let existing = git::list_refs_stripped(repo, "refs/meshes/v1")?;
+    let catalog = Catalog::load(repo)?;
+    let existing = catalog.names();
     for other in existing {
         if other == name {
             continue;
         }
-        // `other` is a strict ancestor of `name`: file blocks future directory.
+        // `other` is a strict ancestor of `name`.
         if let Some(rest) = name.strip_prefix(&other)
             && rest.starts_with('/')
         {
@@ -386,8 +324,7 @@ fn check_prefix_collision(repo: &gix::Repository, name: &str) -> Result<()> {
                 blocking: other,
             });
         }
-        // `other` is a strict descendant of `name`: existing directory
-        // blocks future file.
+        // `other` is a strict descendant of `name`.
         if let Some(rest) = other.strip_prefix(name)
             && rest.starts_with('/')
         {

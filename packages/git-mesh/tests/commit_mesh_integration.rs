@@ -17,7 +17,7 @@ fn commit_happy_path_writes_ref_and_tree() -> Result<()> {
     set_why(&gix, "my-mesh", "Initial message")?;
     let tip = commit_mesh(&gix, "my-mesh")?;
     assert!(!tip.is_empty());
-    assert!(repo.ref_exists("refs/meshes/v1/my-mesh"));
+    assert!(git_mesh::list_mesh_names(&gix)?.contains(&"my-mesh".to_string()));
     let m = read_mesh(&gix, "my-mesh")?;
     assert_eq!(m.message.trim(), "Initial message");
     assert_eq!(m.anchors.len(), 1);
@@ -370,7 +370,7 @@ fn commit_lfs_line_range_uses_sidecar_line_count() -> Result<()> {
     set_why(&gix, "m", "lfs slice")?;
     let tip = commit_mesh(&gix, "m")?;
     assert!(!tip.is_empty(), "mesh commit should succeed");
-    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    assert!(git_mesh::list_mesh_names(&repo.gix_repo()?)?.contains(&"m".to_string()));
     Ok(())
 }
 

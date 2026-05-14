@@ -264,26 +264,13 @@ pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
         return parse_anchor(&git::read_git_text(repo, &blob_oid)?);
     }
     let catalog = Catalog::load(repo)?;
-    if catalog.is_empty() {
-        for name in crate::mesh::read::list_mesh_names(repo)? {
-            let mesh = crate::mesh::read::read_mesh(repo, &name)?;
-            if let Some((_id, anchor)) = mesh
-                .anchors_v2
-                .into_iter()
-                .find(|(id, _anchor)| id == anchor_id)
-            {
-                return Ok(anchor);
-            }
-        }
-    } else {
-        for (_, mesh) in catalog.iter()? {
-            if let Some((_id, anchor)) = mesh
-                .anchors_v2
-                .into_iter()
-                .find(|(id, _anchor)| id == anchor_id)
-            {
-                return Ok(anchor);
-            }
+    for (_, mesh) in catalog.iter()? {
+        if let Some((_id, anchor)) = mesh
+            .anchors_v2
+            .into_iter()
+            .find(|(id, _anchor)| id == anchor_id)
+        {
+            return Ok(anchor);
         }
     }
     Err(Error::AnchorNotFound(anchor_id.to_string()))

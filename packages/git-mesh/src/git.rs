@@ -58,7 +58,7 @@ pub(crate) fn apply_ref_transaction_repo(
                 change: Change::Update {
                     log: LogChange {
                         mode: RefLog::AndReference,
-                        force_create_reflog: false,
+                        force_create_reflog: true,
                         message: log_message("create", name),
                     },
                     expected: PreviousValue::MustNotExist,
@@ -78,7 +78,7 @@ pub(crate) fn apply_ref_transaction_repo(
                 change: Change::Update {
                     log: LogChange {
                         mode: RefLog::AndReference,
-                        force_create_reflog: false,
+                        force_create_reflog: true,
                         message: log_message("update", name),
                     },
                     expected: PreviousValue::MustExistAndMatch(Target::Object(parse_oid(
@@ -201,6 +201,7 @@ pub(crate) fn list_refs_stripped(repo: &gix::Repository, prefix: &str) -> Result
 
 /// List ref names and peeled target OIDs with a given prefix, returning the
 /// basename component after the prefix plus the object id.
+#[allow(dead_code)]
 pub(crate) fn list_refs_stripped_with_oids(
     repo: &gix::Repository,
     prefix: &str,
@@ -241,6 +242,7 @@ pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
 }
 
 /// Return the tree OID of a commit.
+#[allow(dead_code)]
 pub(crate) fn commit_tree_oid(repo: &gix::Repository, commit_oid: &str) -> Result<String> {
     let oid = parse_oid(commit_oid)?;
     let commit = repo

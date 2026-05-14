@@ -10,6 +10,20 @@ use support::TestRepo;
 // Helpers.
 // ---------------------------------------------------------------------------
 
+/// Get the tip commit OID for a specific mesh via the catalog.
+fn mesh_tip_oid(repo: &TestRepo, name: &str) -> Result<String> {
+    let gix = repo.gix_repo()?;
+    let log = git_mesh::mesh_log(&gix, name, Some(1))?;
+    Ok(log[0].commit_oid.clone())
+}
+
+/// Get the tip commit message for a specific mesh via the catalog.
+fn mesh_tip_message(repo: &TestRepo, name: &str) -> Result<String> {
+    let gix = repo.gix_repo()?;
+    let log = git_mesh::mesh_log(&gix, name, Some(1))?;
+    Ok(log[0].message.clone())
+}
+
 /// Seed a mesh with a line-anchor on file1.txt L1-L5.
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
@@ -45,14 +59,14 @@ fn test_compact_read_only_invariant() -> Result<()> {
     advance_head(&repo)?;
 
     // Capture state before stale.
-    let mesh_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_before = mesh_tip_oid(&repo, "m")?;
 
     // Run plain stale (read-only, no --compact).
     let out = repo.run_mesh(["stale", "m"])?;
     // Should be exit 0 — the anchor is Fresh (L1-L5 unchanged).
     assert_eq!(out.status.code(), Some(0), "stale should exit 0 when Fresh");
 
-    let mesh_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_after = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         mesh_ref_before, mesh_ref_after,
         "stale without --compact must not advance the mesh ref"
@@ -69,7 +83,7 @@ fn test_compact_fresh_advances() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
     let old_gx = repo.gix_repo()?;
     let old_mesh = git_mesh::read_mesh(&old_gx, "m")?;
     let old_anchor = old_mesh.anchors_v2.first().expect("one anchor");
@@ -82,7 +96,7 @@ fn test_compact_fresh_advances() -> Result<()> {
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0), "compact should exit 0");
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_ne!(old_tip, new_tip, "mesh ref should have advanced");
 
     let gx = repo.gix_repo()?;
@@ -133,7 +147,7 @@ fn test_compact_idempotent() -> Result<()> {
     );
 
     // Compaction must not mutate the why message — no trailer should be added.
-    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = mesh_tip_message(&repo, "m")?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
@@ -159,7 +173,7 @@ fn test_compact_moved_skipped() -> Result<()> {
     // Mutate anchor so it is Changed.
     mutate_anchor(&repo)?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
 
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
@@ -169,7 +183,7 @@ fn test_compact_moved_skipped() -> Result<()> {
         "changed anchor should not be compacted: {stdout}"
     );
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         old_tip, new_tip,
         "mesh ref must not advance when all anchors non-Fresh"
@@ -187,10 +201,10 @@ fn test_compact_changed_skipped() -> Result<()> {
     seed(&repo, "m")?;
     mutate_anchor(&repo)?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(old_tip, new_tip, "changed anchor must not be advanced");
     Ok(())
 }
@@ -208,7 +222,7 @@ fn test_compact_staging_skip() -> Result<()> {
     // Stage an add (don't commit it).
     repo.mesh_stdout(["add", "m", "file1.txt#L6-L10"])?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -217,7 +231,7 @@ fn test_compact_staging_skip() -> Result<()> {
         "should report staging skip: {stdout}"
     );
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(old_tip, new_tip, "staged mesh must not be advanced");
     Ok(())
 }
@@ -362,7 +376,7 @@ fn test_compact_trailer_idempotent() -> Result<()> {
     repo.commit_all("advance third")?;
     repo.run_mesh(["stale", "m", "--compact"])?;
 
-    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = mesh_tip_message(&repo, "m")?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
@@ -493,7 +507,7 @@ fn test_compact_preserves_why_verbatim() -> Result<()> {
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
 
-    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = mesh_tip_message(&repo, "m")?;
     assert_eq!(
         commit_msg.trim(),
         why,
@@ -514,7 +528,7 @@ fn test_compact_repeated_runs_do_not_add_trailers() -> Result<()> {
     repo.commit_all("advance again")?;
     repo.run_mesh(["stale", "m", "--compact"])?;
 
-    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = mesh_tip_message(&repo, "m")?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
@@ -616,7 +630,7 @@ fn test_compact_rejects_incompatible_format() -> Result<()> {
     seed(&repo, "m")?;
     advance_head(&repo)?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
 
     // junit format should be rejected.
     let out = repo.run_mesh(["stale", "m", "--compact", "--format=junit"])?;
@@ -627,7 +641,7 @@ fn test_compact_rejects_incompatible_format() -> Result<()> {
     );
 
     // Mesh ref must not have changed — no mutation occurred.
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         old_tip, new_tip,
         "mesh ref must not change after format rejection"
@@ -639,12 +653,12 @@ fn test_compact_rejects_incompatible_format() -> Result<()> {
 fn test_compact_rejects_incompatible_format_porcelain() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
 
     let out = repo.run_mesh(["stale", "m", "--compact", "--format=porcelain"])?;
     assert_ne!(out.status.code(), Some(0), "porcelain should be rejected");
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(old_tip, new_tip, "no mutation on rejection");
     Ok(())
 }
@@ -686,7 +700,7 @@ fn test_compact_staged_why_skips_mesh() -> Result<()> {
     // Stage a why update without committing it.
     repo.mesh_stdout(["why", "m", "-m", "new staged why"])?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
     let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
 
@@ -699,7 +713,7 @@ fn test_compact_staged_why_skips_mesh() -> Result<()> {
     );
     assert_eq!(v["skipped_staged"].as_u64().unwrap_or(0), 1);
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(old_tip, new_tip, "staged why must not advance the mesh ref");
     Ok(())
 }
@@ -713,7 +727,7 @@ fn test_compact_staged_config_skips_mesh() -> Result<()> {
     // Stage a config change without committing it.
     repo.mesh_stdout(["config", "m", "ignore-whitespace", "true"])?;
 
-    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let old_tip = mesh_tip_oid(&repo, "m")?;
     let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
 
@@ -726,7 +740,7 @@ fn test_compact_staged_config_skips_mesh() -> Result<()> {
     );
     assert_eq!(v["skipped_staged"].as_u64().unwrap_or(0), 1);
 
-    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let new_tip = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         old_tip, new_tip,
         "staged config must not advance the mesh ref"
@@ -779,8 +793,8 @@ fn test_compact_batch_two_meshes_advance() -> Result<()> {
     seed(&repo, "m-one")?;
     seed(&repo, "m-two")?;
 
-    let old_one = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-one"])?;
-    let old_two = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-two"])?;
+    let old_one = mesh_tip_oid(&repo, "m-one")?;
+    let old_two = mesh_tip_oid(&repo, "m-two")?;
 
     let new_head = advance_head(&repo)?;
 
@@ -802,8 +816,8 @@ fn test_compact_batch_two_meshes_advance() -> Result<()> {
         assert_eq!(new_commit, new_head, "anchor advanced to HEAD: {v}");
     }
 
-    let new_one = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-one"])?;
-    let new_two = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-two"])?;
+    let new_one = mesh_tip_oid(&repo, "m-one")?;
+    let new_two = mesh_tip_oid(&repo, "m-two")?;
     assert_ne!(old_one, new_one, "m-one ref advanced");
     assert_ne!(old_two, new_two, "m-two ref advanced");
     Ok(())

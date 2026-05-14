@@ -3,18 +3,16 @@
 //! This is the only write path added by `--compact`. Ordinary `git mesh stale`
 //! never calls this module.
 
-use crate::git::{
-    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
-};
-use crate::mesh::catalog::{Catalog, CATALOG_REF};
-use crate::mesh::read::{read_mesh, serialize_config_blob};
+use crate::git::{self, resolve_ref_oid_optional_repo};
+use crate::mesh::catalog::{self as catalog_mod, Catalog, CATALOG_REF};
+use crate::mesh::read::read_mesh;
 use crate::resolver::{
     EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state, resolve_mesh_at,
     resolve_mesh_at_with_engine_state,
 };
 use crate::staging;
 use crate::types::{AnchorExtent, AnchorStatus, EngineOptions, MeshResolved};
-use crate::{Error, Result};
+use crate::Result;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -226,10 +224,6 @@ pub fn compact_mesh(
     }
 
     // 2. Already-at-HEAD fast path (Item 6).
-    let mesh_ref = format!("refs/meshes/v1/{name}");
-    let wd = work_dir(repo)?;
-    let initial_tip =
-        resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     {
         let mesh = read_mesh(repo, name)?;
         let mut state = new_engine_state(repo, options)?;
@@ -238,7 +232,7 @@ pub fn compact_mesh(
         }
     }
 
-    let outcome = compact_mesh_with_retry(repo, name, options, initial_tip, None)?;
+    let outcome = compact_mesh_with_retry(repo, name, options, None)?;
 
     // Run GC after anchor-advance work completes.  GC is an explicit
     // user-triggered action (compact), so errors are surfaced rather than
@@ -261,13 +255,9 @@ fn compact_mesh_with_retry(
     repo: &gix::Repository,
     name: &str,
     options: EngineOptions,
-    initial_tip: String,
     mut shared_state: Option<&mut EngineStateHandle>,
 ) -> Result<MeshCompactOutcome> {
     const MAX_RETRIES: usize = 5;
-    let mesh_ref = format!("refs/meshes/v1/{name}");
-    let wd = work_dir(repo)?;
-    let mut current_tip = initial_tip;
     let mut attempt = 0;
 
     loop {
@@ -279,14 +269,16 @@ fn compact_mesh_with_retry(
         // a HEAD movement would return stale blobs. On HEAD movement
         // we fall back to a fresh `resolve_mesh_at` for safety.
         let live_head = git::head_oid(repo)?;
+        let cat_ref = resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+        let tip = cat_ref.as_deref().unwrap_or_default();
         let resolved = match shared_state.as_deref_mut() {
             Some(handle) if handle.head_sha() == live_head.as_str() => {
-                resolve_mesh_at_with_engine_state(repo, handle, name, options, &current_tip)?
+                resolve_mesh_at_with_engine_state(repo, handle, name, options, tip)?
             }
-            _ => resolve_mesh_at(repo, name, options, &current_tip)?,
+            _ => resolve_mesh_at(repo, name, options, tip)?,
         };
 
-        match apply_compact_attempt(repo, name, &mesh, &resolved, &current_tip)? {
+        match apply_compact_attempt(repo, name, &mesh, &resolved)? {
             AttemptResult::Done(out) => return Ok(out),
             AttemptResult::CasConflict {
                 skipped_stale,
@@ -304,8 +296,7 @@ fn compact_mesh_with_retry(
                         anchor_records,
                     ));
                 }
-                current_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
-                    .ok_or_else(|| Error::MeshNotFound(name.into()))?;
+                // CAS conflict — next iteration reloads mesh from catalog.
             }
         }
     }
@@ -331,11 +322,8 @@ fn apply_compact_attempt(
     name: &str,
     mesh: &crate::types::Mesh,
     resolved: &MeshResolved,
-    current_tip: &str,
 ) -> Result<AttemptResult> {
     let head_sha = git::head_oid(repo)?;
-    let mesh_ref = format!("refs/meshes/v1/{name}");
-    let wd = work_dir(repo)?;
 
     // Item 8: anchor_id -> &Anchor map for prior mesh state.
     let old_by_id: HashMap<&str, &crate::types::Anchor> = mesh
@@ -500,13 +488,13 @@ fn apply_compact_attempt(
             &mesh.anchors_v2,
             &mesh.anchors_v2,
         )?;
-        let repair_updates: Vec<RefUpdate> = drift_updates
+        let repair_updates: Vec<crate::git::RefUpdate> = drift_updates
             .into_iter()
-            .filter(|u| matches!(u, RefUpdate::Update { new_oid, expected_old_oid, .. } if new_oid != expected_old_oid))
+            .filter(|u| matches!(u, crate::git::RefUpdate::Update { new_oid, expected_old_oid, .. } if new_oid != expected_old_oid))
             .collect();
         if !repair_updates.is_empty() {
             crate::git::ensure_log_all_ref_updates_always(repo)?;
-            let _ = apply_ref_transaction(wd, &repair_updates);
+            let _ = crate::git::apply_ref_transaction_repo(repo, &repair_updates);
         }
         return Ok(AttemptResult::Done(MeshCompactOutcome {
             name: name.to_string(),
@@ -538,30 +526,21 @@ fn apply_compact_attempt(
             .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
     });
 
-    let config_text = serialize_config_blob(&mesh.config);
-    let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
-    let anchors_v2_text = serialize_anchors_v2(&all_anchors);
-    let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
-    let tree_oid = build_mesh_tree(repo, &anchors_v2_blob, &config_blob)?;
-
+    // Build updated mesh and write via catalog CAS.
     let message = mesh.message.trim().to_string();
-    let new_commit = create_commit(repo, &tree_oid, &message, &[current_tip.to_string()])?;
-
-    let mut updates =
-        super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &all_anchors)?;
-    updates.push(RefUpdate::Update {
-        name: mesh_ref.clone(),
-        new_oid: new_commit.clone(),
-        expected_old_oid: current_tip.to_string(),
-    });
-    crate::git::ensure_log_all_ref_updates_always(repo)?;
-
-    match apply_ref_transaction(wd, &updates) {
-        Ok(()) => {
-            // Secondary best-effort catalog update: if the catalog ref
-            // exists, insert the updated mesh.  Failure is logged but does
-            // not undo the per-mesh ref update.
-            maybe_update_catalog_compact(repo, name, mesh, &all_anchors, message.as_str());
+    let updated_mesh = catalog_mod::build_mesh(name, &message, &all_anchors, &mesh.config);
+    let cat_ref = resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+    let mut cat = Catalog::load(repo)?;
+    cat.insert(name, &updated_mesh)?;
+    match catalog_mod::commit_catalog(repo, &cat, &message, cat_ref.as_deref()) {
+        Ok(_new_commit) => {
+            // Update path index refs (independent of catalog).
+            let path_updates =
+                super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &all_anchors)?;
+            if !path_updates.is_empty() {
+                crate::git::ensure_log_all_ref_updates_always(repo)?;
+                let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);
+            }
             Ok(AttemptResult::Done(MeshCompactOutcome {
                 name: name.to_string(),
                 advanced,
@@ -585,42 +564,6 @@ fn apply_compact_attempt(
     }
 }
 
-/// Best-effort catalog update for compact: build a Mesh from the old
-/// mesh metadata + new anchors and insert into the catalog.
-fn maybe_update_catalog_compact(
-    repo: &gix::Repository,
-    name: &str,
-    mesh: &crate::types::Mesh,
-    all_anchors: &[(String, crate::types::Anchor)],
-    message: &str,
-) {
-    let cat_ref = match crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF) {
-        Ok(Some(r)) => r,
-        _ => return,
-    };
-    let mut cat = match Catalog::load(repo) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("git-mesh: catalog load for `{name}`: {e}");
-            return;
-        }
-    };
-    let updated = crate::mesh::catalog::build_mesh(
-        name,
-        message,
-        all_anchors,
-        &mesh.config,
-    );
-    if let Err(e) = cat
-        .insert(name, &updated)
-        .and_then(|_| crate::mesh::catalog::commit_catalog(
-            repo, &cat, message, Some(&cat_ref),
-        ))
-    {
-        eprintln!("git-mesh: catalog update for `{name}`: {e}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Batch entry point (Item 5).
 // ---------------------------------------------------------------------------
@@ -640,12 +583,11 @@ where
     F: FnMut(&MeshCompactOutcome) -> Result<()>,
 {
     let _perf = crate::perf::span("compact.batch");
-    let wd = work_dir(repo)?;
     let mut state = new_engine_state(repo, options)?;
     let mut outcomes = Vec::with_capacity(names.len());
 
     for name in names {
-        let outcome = compact_one_in_batch(repo, wd, &mut state, name, options)
+        let outcome = compact_one_in_batch(repo, &mut state, name, options)
             .unwrap_or_else(|e| MeshCompactOutcome::error(name, e));
         on_outcome(&outcome)?;
         outcomes.push(outcome);
@@ -655,7 +597,6 @@ where
 
 fn compact_one_in_batch(
     repo: &gix::Repository,
-    wd: &std::path::Path,
     state: &mut EngineStateHandle,
     name: &str,
     options: EngineOptions,
@@ -666,9 +607,6 @@ fn compact_one_in_batch(
         return Ok(MeshCompactOutcome::all_skipped_staged(name));
     }
 
-    let mesh_ref = format!("refs/meshes/v1/{name}");
-    let initial_tip =
-        resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     let mesh = read_mesh(repo, name)?;
 
     // Already-at-HEAD fast path using the shared state.
@@ -678,15 +616,11 @@ fn compact_one_in_batch(
 
     // Resolve through the shared state, then run a single attempt.
     let resolved = resolve_loaded_mesh_with_engine_state(repo, state, mesh.clone(), options)?;
-    match apply_compact_attempt(repo, name, &mesh, &resolved, &initial_tip)? {
+    match apply_compact_attempt(repo, name, &mesh, &resolved)? {
         AttemptResult::Done(out) => Ok(out),
         AttemptResult::CasConflict { .. } => {
-            // CAS conflict: fall back to the single-mesh retry loop with
-            // a fresh state localized to this mesh. Re-read the tip so
-            // the retry classifies against the latest blob.
-            let fresh_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
-                .ok_or_else(|| Error::MeshNotFound(name.into()))?;
-            compact_mesh_with_retry(repo, name, options, fresh_tip, Some(state))
+            // CAS conflict: fall back to the single-mesh retry loop.
+            compact_mesh_with_retry(repo, name, options, Some(state))
         }
     }
 }
@@ -725,47 +659,3 @@ fn extent_sort_key(extent: &AnchorExtent) -> (u32, u32) {
     }
 }
 
-fn serialize_anchors_v2(anchors: &[(String, crate::types::Anchor)]) -> String {
-    let mut s = String::new();
-    for (id, r) in anchors {
-        s.push_str("id ");
-        s.push_str(id);
-        s.push('\n');
-        s.push_str(&crate::anchor::serialize_anchor(r));
-        s.push('\n');
-    }
-    s
-}
-
-fn build_mesh_tree(
-    repo: &gix::Repository,
-    anchors_v2_blob: &str,
-    config_blob: &str,
-) -> Result<String> {
-    use gix::objs::Tree;
-    use gix::objs::tree::{Entry, EntryKind};
-    let tree = Tree {
-        entries: vec![
-            Entry {
-                mode: EntryKind::Blob.into(),
-                filename: "anchors".into(),
-                oid: anchors_v2_blob
-                    .parse()
-                    .map_err(|e| Error::Git(format!("parse anchors_v2 blob oid: {e}")))?,
-            },
-            Entry {
-                mode: EntryKind::Blob.into(),
-                filename: "config".into(),
-                oid: config_blob
-                    .parse()
-                    .map_err(|e| Error::Git(format!("parse config blob oid: {e}")))?,
-            },
-        ],
-    };
-    let tree_oid = repo
-        .write_object(&tree)
-        .map_err(|e| Error::Git(format!("write tree: {e}")))?
-        .detach()
-        .to_string();
-    Ok(tree_oid)
-}

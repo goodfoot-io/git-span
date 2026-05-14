@@ -151,8 +151,8 @@ fn first_mesh_commit_sets_log_all_ref_updates_always() -> Result<()> {
     commit_mesh(&gix, "m")?;
     let val = repo.git_stdout(["config", "--local", "core.logAllRefUpdates"])?;
     assert_eq!(val, "always");
-    // Reflog file exists for the mesh ref.
-    let reflog = repo.path().join(".git/logs/refs/meshes/v1/m");
+    // Reflog file exists for the catalog ref.
+    let reflog = repo.path().join(".git/logs/refs/meshes/v1/catalog");
     assert!(reflog.exists(), "reflog should exist at {reflog:?}");
     Ok(())
 }

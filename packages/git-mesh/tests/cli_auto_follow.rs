@@ -229,29 +229,24 @@ fn audit_trail_commit_message_format() -> Result<()> {
 
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
+    // Use mesh_log to get the tip commit (replaces old refs/meshes/v1/m).
+    let gix = repo.gix_repo()?;
+    let log = git_mesh::mesh_log(&gix, "m", Some(1))?;
+    assert_eq!(log.len(), 1, "mesh_log should find the follow commit");
+
     // The raw tip commit subject must be the structured audit marker.
-    let raw_subject = repo.git_stdout([
-        "log",
-        "-1",
-        "--format=%s",
-        "refs/meshes/v1/m",
-    ])?;
     assert_eq!(
-        raw_subject.trim(),
+        log[0].summary,
         "mesh: follow 1 moved anchor",
-        "follow commit subject must be structured audit marker; got={raw_subject}"
+        "follow commit subject must be structured audit marker; got={}",
+        log[0].summary
     );
 
-    // The raw body must NOT contain the original why on the subject line.
-    let raw_msg = repo.git_stdout([
-        "log",
-        "-1",
-        "--format=%B",
-        "refs/meshes/v1/m",
-    ])?;
+    // The message must NOT contain "Mesh-Follow:" trailer.
     assert!(
-        !raw_msg.trim().contains("Mesh-Follow:"),
-        "no Mesh-Follow trailer expected; raw_msg={raw_msg}"
+        !log[0].message.contains("Mesh-Follow:"),
+        "no Mesh-Follow trailer expected; msg={}",
+        log[0].message
     );
 
     // git mesh show must return the original why ("seed"), not the follow marker.
@@ -265,16 +260,15 @@ fn audit_trail_commit_message_format() -> Result<()> {
         "git mesh show must not expose the follow subject; show_out={show_out}"
     );
 
-    // git log --grep (case-sensitive, no -i) must find the follow commit.
-    let grep_out = repo.git_stdout([
-        "log",
-        "refs/meshes/v1/m",
-        "--grep=^mesh: follow",
-        "--format=%H",
-    ])?;
+    // mesh_log must find at least one follow commit via catalog walk.
+    let all_log = git_mesh::mesh_log(&gix, "m", None)?;
+    let follow_commits: Vec<_> = all_log
+        .iter()
+        .filter(|c| c.summary.starts_with("mesh: follow"))
+        .collect();
     assert!(
-        !grep_out.trim().is_empty(),
-        "git log --grep=^mesh: follow must find the follow commit"
+        !follow_commits.is_empty(),
+        "must find at least one follow commit via mesh_log catalog walk"
     );
     Ok(())
 }
@@ -297,19 +291,15 @@ fn subsequent_commit_does_not_inherit_trailer() -> Result<()> {
     repo.mesh_stdout(["commit", "m"])?;
 
     // The new mesh commit must carry the original why ("seed"), not the follow marker.
-    let new_msg = repo.git_stdout([
-        "log",
-        "-1",
-        "--format=%B",
-        "refs/meshes/v1/m",
-    ])?;
+    let gix = repo.gix_repo()?;
+    let log = git_mesh::mesh_log(&gix, "m", Some(1))?;
     assert!(
-        new_msg.contains("seed"),
-        "normal mesh commit must inherit original why; msg={new_msg}"
+        log[0].message.contains("seed"),
+        "normal mesh commit must inherit original why; msg={}", log[0].message
     );
     assert!(
-        !new_msg.contains("mesh: follow"),
-        "normal mesh commit must not carry follow subject; msg={new_msg}"
+        !log[0].message.contains("mesh: follow"),
+        "normal mesh commit must not carry follow subject; msg={}", log[0].message
     );
     Ok(())
 }
@@ -337,16 +327,17 @@ fn two_consecutive_auto_follows_preserve_original_why() -> Result<()> {
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
     // Both follow commits must have the structured subject.
-    let log_subjects = repo.git_stdout([
-        "log",
-        "refs/meshes/v1/m",
-        "--grep=^mesh: follow",
-        "--format=%s",
-    ])?;
+    let gix = repo.gix_repo()?;
+    let all_log = git_mesh::mesh_log(&gix, "m", None)?;
+    let follow_subjects: Vec<&str> = all_log
+        .iter()
+        .filter(|c| c.summary.starts_with("mesh: follow"))
+        .map(|c| c.summary.as_str())
+        .collect();
     assert_eq!(
-        log_subjects.trim().lines().count(),
+        follow_subjects.len(),
         2,
-        "must have two follow commits; log_subjects={log_subjects}"
+        "must have two follow commits; subjects={follow_subjects:?}"
     );
 
     // git mesh show must still surface the original why.

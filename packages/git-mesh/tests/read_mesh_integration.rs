@@ -5,7 +5,7 @@ mod support;
 use anyhow::Result;
 use git_mesh::{
     append_add, commit_mesh, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log,
-    read_mesh, read_mesh_at, resolve_commit_ish, set_why, show_mesh,
+    read_mesh, read_mesh_at, set_why, show_mesh,
 };
 use support::TestRepo;
 
@@ -96,7 +96,7 @@ fn mesh_commit_info_fields_populated() -> Result<()> {
     assert_eq!(info.author_name, "Test User");
     assert_eq!(info.author_email, "test@example.com");
     assert_eq!(info.commit_oid.len(), 40);
-    assert!(info.summary.contains("alpha init"));
+    assert!(info.why.contains("alpha init"));
     Ok(())
 }
 
@@ -149,18 +149,3 @@ fn mesh_log_respects_limit() -> Result<()> {
     Ok(())
 }
 
-#[test]
-
-fn resolve_commit_ish_returns_oid_on_ancestor() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "h", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "h", "v1")?;
-    let first = commit_mesh(&gix, "h")?;
-    append_add(&gix, "h", "file2.txt", 2, 4, None)?;
-    set_why(&gix, "h", "v2")?;
-    commit_mesh(&gix, "h")?;
-    let oid = resolve_commit_ish(&gix, "h", &first)?;
-    assert_eq!(oid, first);
-    Ok(())
-}

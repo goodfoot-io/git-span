@@ -12,6 +12,13 @@ use support::TestRepo;
 // Helpers.
 // ---------------------------------------------------------------------------
 
+/// Get the tip commit OID for a specific mesh via the catalog.
+fn mesh_tip_oid(repo: &TestRepo, name: &str) -> Result<String> {
+    let gix = repo.gix_repo()?;
+    let log = git_mesh::mesh_log(&gix, name, Some(1))?;
+    Ok(log[0].commit_oid.clone())
+}
+
 /// Seed a mesh with a line-anchor on file1.txt L1-L5.
 fn seed_mesh(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
@@ -82,7 +89,7 @@ fn test_rewrite_happy_path() -> Result<()> {
     seed_mesh(&repo, "m")?;
 
     let old_anchor_sha = first_anchor_sha(&repo, "m")?;
-    let mesh_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_before = mesh_tip_oid(&repo, "m")?;
 
     let (old_sha, new_sha) = amend_no_change(&repo)?;
     assert_eq!(
@@ -104,7 +111,7 @@ fn test_rewrite_happy_path() -> Result<()> {
         "human output: {stdout}"
     );
 
-    let mesh_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_after = mesh_tip_oid(&repo, "m")?;
     assert_ne!(mesh_ref_before, mesh_ref_after, "mesh ref advanced");
 
     let new_anchor_sha = first_anchor_sha(&repo, "m")?;
@@ -172,13 +179,13 @@ fn test_rewrite_empty_stdin() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m")?;
 
-    let mesh_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_before = mesh_tip_oid(&repo, "m")?;
 
     let out = run_rewrite(&repo, "")?;
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8(out.stdout)?.trim().is_empty());
 
-    let mesh_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_after = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         mesh_ref_before, mesh_ref_after,
         "no ref change on empty stdin"
@@ -197,14 +204,14 @@ fn test_rewrite_old_eq_new_dropped() -> Result<()> {
     seed_mesh(&repo, "m")?;
 
     let head = repo.head_sha()?;
-    let mesh_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_before = mesh_tip_oid(&repo, "m")?;
 
     let input = format!("{head} {head}\n");
     let out = run_rewrite(&repo, &input)?;
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8(out.stdout)?.trim().is_empty());
 
-    let mesh_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_after = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         mesh_ref_before, mesh_ref_after,
         "no ref change for old==new pair"
@@ -222,12 +229,12 @@ fn test_rewrite_malformed_line() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m")?;
 
-    let mesh_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_before = mesh_tip_oid(&repo, "m")?;
 
     let out = run_rewrite(&repo, "not-a-sha also-not-a-sha\n")?;
     assert_eq!(out.status.code(), Some(1), "exit 1 on malformed input");
 
-    let mesh_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let mesh_ref_after = mesh_tip_oid(&repo, "m")?;
     assert_eq!(
         mesh_ref_before, mesh_ref_after,
         "no ref change on malformed input"
@@ -254,8 +261,8 @@ fn test_rewrite_multiple_meshes() -> Result<()> {
     repo.mesh_stdout(["commit", "m2"])?;
 
     let old_sha = repo.head_sha()?;
-    let m1_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m1"])?;
-    let m2_ref_before = repo.git_stdout(["rev-parse", "refs/meshes/v1/m2"])?;
+    let m1_ref_before = mesh_tip_oid(&repo, "m1")?;
+    let m2_ref_before = mesh_tip_oid(&repo, "m2")?;
 
     let (old, new) = amend_no_change(&repo)?;
     assert_eq!(old, old_sha);
@@ -269,8 +276,8 @@ fn test_rewrite_multiple_meshes() -> Result<()> {
     assert!(stdout.contains("`m2`"), "m2 not found: {stdout}");
     assert!(stdout.contains("advanced 1/1"), "advance not found: {stdout}");
 
-    let m1_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m1"])?;
-    let m2_ref_after = repo.git_stdout(["rev-parse", "refs/meshes/v1/m2"])?;
+    let m1_ref_after = mesh_tip_oid(&repo, "m1")?;
+    let m2_ref_after = mesh_tip_oid(&repo, "m2")?;
     assert_ne!(m1_ref_before, m1_ref_after, "m1 ref advanced");
     assert_ne!(m2_ref_before, m2_ref_after, "m2 ref advanced");
 

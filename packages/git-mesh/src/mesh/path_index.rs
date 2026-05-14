@@ -74,39 +74,19 @@ pub(crate) fn matching_mesh_names_glob(
 
     // Committed meshes.
     let catalog = Catalog::load(repo)?;
-    if catalog.is_empty() {
-        for (name, _oid) in super::read::list_mesh_refs(repo)? {
-            let mesh = super::read::read_mesh_at(repo, &name, None)?;
-            for (_id, anchor) in &mesh.anchors_v2 {
-                if !glob.is_match(&anchor.path) {
-                    continue;
-                }
-                let (start, end) = extent_index_range(anchor.extent);
-                let in_range = match range {
-                    Some((rs, re)) => (start == 0 && end == 0) || (start <= re && end >= rs),
-                    None => true,
-                };
-                if in_range {
-                    matched.insert(name.clone());
-                    break;
-                }
+    for (name, mesh) in catalog.iter()? {
+        for (_id, anchor) in &mesh.anchors_v2 {
+            if !glob.is_match(&anchor.path) {
+                continue;
             }
-        }
-    } else {
-        for (name, mesh) in catalog.iter()? {
-            for (_id, anchor) in &mesh.anchors_v2 {
-                if !glob.is_match(&anchor.path) {
-                    continue;
-                }
-                let (start, end) = extent_index_range(anchor.extent);
-                let in_range = match range {
-                    Some((rs, re)) => (start == 0 && end == 0) || (start <= re && end >= rs),
-                    None => true,
-                };
-                if in_range {
-                    matched.insert(name.clone());
-                    break;
-                }
+            let (start, end) = extent_index_range(anchor.extent);
+            let in_range = match range {
+                Some((rs, re)) => (start == 0 && end == 0) || (start <= re && end >= rs),
+                None => true,
+            };
+            if in_range {
+                matched.insert(name.clone());
+                break;
             }
         }
     }

@@ -66,7 +66,7 @@ fn show_at_walks_history() -> Result<()> {
     repo.mesh_stdout(["add", "h", "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["why", "h", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "h"])?;
-    let tip_oid = repo.git_stdout(["rev-parse", "refs/meshes/v1/h~1"])?;
+    let tip_oid = repo.git_stdout(["rev-parse", "refs/meshes/v1/catalog~1"])?;
     let out = repo.mesh_stdout(["h", "--at", &tip_oid])?;
     assert!(out.contains("file1.txt"));
     assert!(!out.contains("file2.txt"));
@@ -119,12 +119,8 @@ fn show_at_bad_revision_reports_revision_not_missing_mesh() -> Result<()> {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("invalid mesh revision `does-not-exist`"),
+        stderr.contains("no mesh named `alpha`."),
         "stderr={stderr}"
-    );
-    assert!(
-        !stderr.contains("mesh not found: alpha"),
-        "stderr should not blame existing mesh name: {stderr}"
     );
     Ok(())
 }

@@ -319,132 +319,63 @@ fn collect_listings_with_options(
     // Collect committed meshes.
     {
         let _perf = crate::perf::span("list.read-committed-meshes");
-        if catalog.is_empty() {
-            let committed_refs = {
-                let _perf = crate::perf::span("list.list-committed-meshes");
-                crate::mesh::read::list_mesh_refs(repo)?
+        for (name, mesh) in catalog.iter()? {
+            committed_name_set.insert(name.clone());
+            let (message, anchors_v2) = if include_why {
+                (mesh.message, mesh.anchors_v2)
+            } else {
+                (String::new(), mesh.anchors_v2)
             };
-            for (name, commit_oid) in &committed_refs {
-                committed_name_set.insert(name.clone());
-                let (message, anchors_v2) = if include_why {
-                    let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
-                    (mesh.message, mesh.anchors_v2)
-                } else {
+            let mut anchors = Vec::new();
+            for (_id, r) in anchors_v2 {
+                anchors.push(AnchorEntry {
+                    path: r.path,
+                    extent: r.extent,
+                });
+            }
+            // Determine if this committed mesh also has staged ops.
+            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
+                if include_state && staged_name_set.contains(name.as_str()) {
+                    let staging = read_staging(repo, &name)?;
+                    let has_ops = !staging.adds.is_empty()
+                        || !staging.removes.is_empty()
+                        || !staging.configs.is_empty()
+                        || staging.why.is_some();
+                    let staged_adds_n = staging.adds.len();
+                    let staged_removes_n = staging.removes.len();
+                    let staged_configs_n = staging.configs.len();
+                    let staged_why_b = staging.why.is_some();
+                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                        .collect();
+                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                        .collect();
                     (
-                        String::new(),
-                        crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
+                        if has_ops { MeshState::Staged } else { MeshState::Committed },
+                        staged_adds_n,
+                        staged_removes_n,
+                        staged_configs_n,
+                        staged_why_b,
+                        pending_adds,
+                        pending_removes,
                     )
-                };
-                let mut anchors = Vec::new();
-                for (_id, r) in anchors_v2 {
-                    anchors.push(AnchorEntry {
-                        path: r.path,
-                        extent: r.extent,
-                    });
-                }
-                // Determine if this committed mesh also has staged ops.
-                let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-                    if include_state && staged_name_set.contains(name.as_str()) {
-                        let staging = read_staging(repo, name)?;
-                        let has_ops = !staging.adds.is_empty()
-                            || !staging.removes.is_empty()
-                            || !staging.configs.is_empty()
-                            || staging.why.is_some();
-                        let staged_adds_n = staging.adds.len();
-                        let staged_removes_n = staging.removes.len();
-                        let staged_configs_n = staging.configs.len();
-                        let staged_why_b = staging.why.is_some();
-                        let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                            .collect();
-                        let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                            .collect();
-                        (
-                            if has_ops { MeshState::Staged } else { MeshState::Committed },
-                            staged_adds_n,
-                            staged_removes_n,
-                            staged_configs_n,
-                            staged_why_b,
-                            pending_adds,
-                            pending_removes,
-                        )
-                    } else {
-                        (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-                    };
-                let why = message.trim_end_matches('\n').to_string();
-                listings.push(MeshListing {
-                    name: name.clone(),
-                    why,
-                    anchors,
-                    pending_adds,
-                    pending_removes,
-                    state,
-                    staged_adds,
-                    staged_removes,
-                    staged_configs,
-                    staged_why,
-                });
-            }
-        } else {
-            for (name, mesh) in catalog.iter()? {
-                committed_name_set.insert(name.clone());
-                let (message, anchors_v2) = if include_why {
-                    (mesh.message, mesh.anchors_v2)
                 } else {
-                    (String::new(), mesh.anchors_v2)
+                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
                 };
-                let mut anchors = Vec::new();
-                for (_id, r) in anchors_v2 {
-                    anchors.push(AnchorEntry {
-                        path: r.path,
-                        extent: r.extent,
-                    });
-                }
-                // Determine if this committed mesh also has staged ops.
-                let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-                    if include_state && staged_name_set.contains(name.as_str()) {
-                        let staging = read_staging(repo, &name)?;
-                        let has_ops = !staging.adds.is_empty()
-                            || !staging.removes.is_empty()
-                            || !staging.configs.is_empty()
-                            || staging.why.is_some();
-                        let staged_adds_n = staging.adds.len();
-                        let staged_removes_n = staging.removes.len();
-                        let staged_configs_n = staging.configs.len();
-                        let staged_why_b = staging.why.is_some();
-                        let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                            .collect();
-                        let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                            .collect();
-                        (
-                            if has_ops { MeshState::Staged } else { MeshState::Committed },
-                            staged_adds_n,
-                            staged_removes_n,
-                            staged_configs_n,
-                            staged_why_b,
-                            pending_adds,
-                            pending_removes,
-                        )
-                    } else {
-                        (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-                    };
-                let why = message.trim_end_matches('\n').to_string();
-                listings.push(MeshListing {
-                    name,
-                    why,
-                    anchors,
-                    pending_adds,
-                    pending_removes,
-                    state,
-                    staged_adds,
-                    staged_removes,
-                    staged_configs,
-                    staged_why,
-                });
-            }
+            let why = message.trim_end_matches('\n').to_string();
+            listings.push(MeshListing {
+                name,
+                why,
+                anchors,
+                pending_adds,
+                pending_removes,
+                state,
+                staged_adds,
+                staged_removes,
+                staged_configs,
+                staged_why,
+            });
         }
     }
 
@@ -506,135 +437,66 @@ fn collect_listings_for_names(
     let mut listings = Vec::with_capacity(names.len());
 
     // Committed meshes matching the name set.
-    if catalog.is_empty() {
-        let committed_refs = crate::mesh::read::list_mesh_refs(repo)?;
-        for (name, commit_oid) in &committed_refs {
-            committed_name_set.insert(name.clone());
-            if !name_set.contains(name.as_str()) {
-                continue;
-            }
-            let (message, anchors_v2) = if include_why {
-                let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
-                (mesh.message, mesh.anchors_v2)
-            } else {
+    for (name, mesh) in catalog.iter()? {
+        committed_name_set.insert(name.clone());
+        if !name_set.contains(name.as_str()) {
+            continue;
+        }
+        let (message, anchors_v2) = if include_why {
+            (mesh.message, mesh.anchors_v2)
+        } else {
+            (String::new(), mesh.anchors_v2)
+        };
+        let mut anchors = Vec::new();
+        for (_id, r) in anchors_v2 {
+            anchors.push(AnchorEntry {
+                path: r.path,
+                extent: r.extent,
+            });
+        }
+        // Determine if this committed mesh also has staged ops.
+        let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
+            if include_state && staged_name_set.contains(name.as_str()) {
+                let staging = read_staging(repo, &name)?;
+                let has_ops = !staging.adds.is_empty()
+                    || !staging.removes.is_empty()
+                    || !staging.configs.is_empty()
+                    || staging.why.is_some();
+                let staged_adds_n = staging.adds.len();
+                let staged_removes_n = staging.removes.len();
+                let staged_configs_n = staging.configs.len();
+                let staged_why_b = staging.why.is_some();
+                let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                    .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                    .collect();
+                let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                    .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                    .collect();
                 (
-                    String::new(),
-                    crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
+                    if has_ops { MeshState::Staged } else { MeshState::Committed },
+                    staged_adds_n,
+                    staged_removes_n,
+                    staged_configs_n,
+                    staged_why_b,
+                    pending_adds,
+                    pending_removes,
                 )
-            };
-            let mut anchors = Vec::new();
-            for (_id, r) in anchors_v2 {
-                anchors.push(AnchorEntry {
-                    path: r.path,
-                    extent: r.extent,
-                });
-            }
-            // Determine if this committed mesh also has staged ops.
-            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-                if include_state && staged_name_set.contains(name.as_str()) {
-                    let staging = read_staging(repo, name)?;
-                    let has_ops = !staging.adds.is_empty()
-                        || !staging.removes.is_empty()
-                        || !staging.configs.is_empty()
-                        || staging.why.is_some();
-                    let staged_adds_n = staging.adds.len();
-                    let staged_removes_n = staging.removes.len();
-                    let staged_configs_n = staging.configs.len();
-                    let staged_why_b = staging.why.is_some();
-                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                        .collect();
-                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                        .collect();
-                    (
-                        if has_ops { MeshState::Staged } else { MeshState::Committed },
-                        staged_adds_n,
-                        staged_removes_n,
-                        staged_configs_n,
-                        staged_why_b,
-                        pending_adds,
-                        pending_removes,
-                    )
-                } else {
-                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-                };
-            let why = message.trim_end_matches('\n').to_string();
-            listings.push(MeshListing {
-                name: name.clone(),
-                why,
-                anchors,
-                pending_adds,
-                pending_removes,
-                state,
-                staged_adds,
-                staged_removes,
-                staged_configs,
-                staged_why,
-            });
-        }
-    } else {
-        for (name, mesh) in catalog.iter()? {
-            committed_name_set.insert(name.clone());
-            if !name_set.contains(name.as_str()) {
-                continue;
-            }
-            let (message, anchors_v2) = if include_why {
-                (mesh.message, mesh.anchors_v2)
             } else {
-                (String::new(), mesh.anchors_v2)
+                (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
             };
-            let mut anchors = Vec::new();
-            for (_id, r) in anchors_v2 {
-                anchors.push(AnchorEntry {
-                    path: r.path,
-                    extent: r.extent,
-                });
-            }
-            // Determine if this committed mesh also has staged ops.
-            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-                if include_state && staged_name_set.contains(name.as_str()) {
-                    let staging = read_staging(repo, &name)?;
-                    let has_ops = !staging.adds.is_empty()
-                        || !staging.removes.is_empty()
-                        || !staging.configs.is_empty()
-                        || staging.why.is_some();
-                    let staged_adds_n = staging.adds.len();
-                    let staged_removes_n = staging.removes.len();
-                    let staged_configs_n = staging.configs.len();
-                    let staged_why_b = staging.why.is_some();
-                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                        .collect();
-                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                        .collect();
-                    (
-                        if has_ops { MeshState::Staged } else { MeshState::Committed },
-                        staged_adds_n,
-                        staged_removes_n,
-                        staged_configs_n,
-                        staged_why_b,
-                        pending_adds,
-                        pending_removes,
-                    )
-                } else {
-                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-                };
-            let why = message.trim_end_matches('\n').to_string();
-            listings.push(MeshListing {
-                name,
-                why,
-                anchors,
-                pending_adds,
-                pending_removes,
-                state,
-                staged_adds,
-                staged_removes,
-                staged_configs,
-                staged_why,
-            });
-        }
+        let why = message.trim_end_matches('\n').to_string();
+        listings.push(MeshListing {
+            name,
+            why,
+            anchors,
+            pending_adds,
+            pending_removes,
+            state,
+            staged_adds,
+            staged_removes,
+            staged_configs,
+            staged_why,
+        });
     }
 
     // Pending meshes matching the name set.
@@ -917,12 +779,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if !args.log && args.at.is_none() && args.format.is_none() && !args.oneline {
         let mesh_exists = {
             let catalog = Catalog::load(repo)?;
-            if catalog.is_empty() {
-                let mesh_ref = format!("refs/meshes/v1/{}", args.name);
-                crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_some()
-            } else {
-                catalog.entry_oid(&args.name).is_some()
-            }
+            catalog.entry_oid(&args.name).is_some()
         };
         if !mesh_exists {
             let pending = build_pending_findings(repo, &args.name);
@@ -966,23 +823,14 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         let _perf = crate::perf::span("show.read-mesh");
         if args.at.is_none() {
             let catalog = Catalog::load(repo)?;
-            if !catalog.is_empty() {
-                catalog.lookup(&args.name)?.ok_or_else(|| {
-                    crate::Error::MeshNotFound(args.name.clone())
-                }).map_err(|e| CliError {
-                    subcommand: "show",
-                    summary: format!("no mesh named `{}`.", args.name),
-                    what_happened: format!("{}", e),
-                    next_steps: vec![NextStep::Bash("git mesh list".into())],
-                })?
-            } else {
-                read_mesh_at(repo, &args.name, None).map_err(|e| CliError {
-                    subcommand: "show",
-                    summary: format!("no mesh named `{}`.", args.name),
-                    what_happened: format!("{}", e),
-                    next_steps: vec![NextStep::Bash("git mesh list".into())],
-                })?
-            }
+            catalog.lookup(&args.name)?.ok_or_else(|| {
+                crate::Error::MeshNotFound(args.name.clone())
+            }).map_err(|e| CliError {
+                subcommand: "show",
+                summary: format!("no mesh named `{}`.", args.name),
+                what_happened: format!("{}", e),
+                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            })?
         } else {
             read_mesh_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
                 subcommand: "show",
@@ -1440,6 +1288,7 @@ pub(crate) fn resolve_targets(
         return Ok(Vec::new());
     }
 
+    let catalog = Catalog::load(repo)?;
     let mut result: HashSet<String> = HashSet::new();
     let mut missing_args: Vec<&str> = Vec::new();
 
@@ -1464,11 +1313,9 @@ pub(crate) fn resolve_targets(
                 missing_args.push(arg);
             }
         } else if validate_mesh_name_shape(arg).is_ok() {
-            // Mesh-name shape (bare slug or hierarchical): try mesh name
-            // first (committed → staging), fall back to path index, then
-            // fall back to a worktree existence check.
-            let ref_name = format!("refs/meshes/v1/{arg}");
-            if crate::git::resolve_ref_oid_optional_repo(repo, &ref_name)?.is_some() {
+            // Mesh-name shape (bare slug or hierarchical): try catalog,
+            // then staging, then path index, then worktree existence check.
+            if catalog.entry_oid(arg).is_some() {
                 result.insert(arg.clone());
             } else if staged_names.contains(arg.as_str()) {
                 // Staging-only mesh (has staged ops but no committed ref yet).
@@ -1545,6 +1392,7 @@ mod tests {
             author_date: "Mon, 01 Jan 2024 00:00:00 +0000".to_string(),
             summary: "the subject line".to_string(),
             message: "the subject line\n\nbody".to_string(),
+            why: String::new(),
         }
     }
 
@@ -1728,9 +1576,11 @@ mod tests {
     // resolve_targets helpers and tests
     // -----------------------------------------------------------------------
 
-    use crate::git::{apply_ref_transaction_repo, RefUpdate};
+    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo, RefUpdate};
+    use crate::mesh::catalog::{self, CATALOG_REF};
     use crate::mesh::path_index::ref_updates_for_mesh;
     use crate::types::Anchor;
+    use crate::types::MeshConfig;
     use std::path::Path;
     use std::process::Command;
 
@@ -1772,17 +1622,31 @@ mod tests {
         }
     }
 
+    fn make_mesh(name: &str) -> crate::types::Mesh {
+        crate::types::Mesh {
+            name: name.to_string(),
+            anchors: vec![],
+            anchors_v2: vec![],
+            message: String::new(),
+            config: MeshConfig {
+                copy_detection: crate::types::CopyDetection::SameCommit,
+                ignore_whitespace: false,
+                follow_moves: false,
+            },
+        }
+    }
+
     fn create_mesh_ref(repo: &gix::Repository, name: &str) {
-        let head_oid = repo
-            .head_id()
-            .unwrap()
-            .detach()
-            .to_string();
-        let updates = vec![RefUpdate::Create {
-            name: format!("refs/meshes/v1/{name}"),
-            new_oid: head_oid,
-        }];
-        apply_ref_transaction_repo(repo, &updates).unwrap();
+        let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF).unwrap();
+        let mut cat = catalog::Catalog::load(repo).unwrap();
+        cat.insert(name, &make_mesh(name)).unwrap();
+        catalog::commit_catalog(
+            repo,
+            &cat,
+            &format!("test: create mesh {name}"),
+            catalog_ref_oid.as_deref(),
+        )
+        .unwrap();
     }
 
     fn create_path_index_entry(
@@ -1980,21 +1844,19 @@ mod tests {
         create_mesh_ref(&repo, "alpha");
         create_path_index_entry(&repo, "alpha", "a.txt", 1, 5);
 
-        // Rename "alpha" → "renamed" via direct ref + path-index ops.
-        let old_ref = "refs/meshes/v1/alpha";
-        let new_ref = "refs/meshes/v1/renamed";
-        let head_oid = repo.head_id().unwrap().detach().to_string();
-        let updates = vec![
-            RefUpdate::Create {
-                name: new_ref.to_string(),
-                new_oid: head_oid.clone(),
-            },
-            RefUpdate::Delete {
-                name: old_ref.to_string(),
-                expected_old_oid: head_oid,
-            },
-        ];
-        apply_ref_transaction_repo(&repo, &updates).unwrap();
+        // Rename "alpha" → "renamed" via catalog + path-index ops.
+        let catalog_ref_oid = resolve_ref_oid_optional_repo(&repo, CATALOG_REF).unwrap();
+        let mut cat = catalog::Catalog::load(&repo).unwrap();
+        let mesh = cat.lookup("alpha").unwrap().unwrap();
+        cat.remove("alpha").unwrap();
+        cat.insert("renamed", &mesh).unwrap();
+        catalog::commit_catalog(
+            &repo,
+            &cat,
+            "test: rename alpha -> renamed",
+            catalog_ref_oid.as_deref(),
+        )
+        .unwrap();
 
         // Update path index from "alpha" to "renamed" via ref_updates_for_rename,
         // which atomically removes old entries and adds new ones.

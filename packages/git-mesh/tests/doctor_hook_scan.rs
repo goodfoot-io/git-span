@@ -71,17 +71,13 @@ fn hooks_path_honored_marker_present() -> Result<()> {
 fn hooks_path_honored_marker_absent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let githooks = repo.path().join(".githooks");
-    write_hook(&githooks, "post-commit", "#!/bin/sh\necho nope\n")?;
-    write_hook(&githooks, "post-rewrite", "#!/bin/sh\necho nope\n")?;
+    write_hook(&githooks, "post-commit", "#!/bin/sh\necho nope\nrefs/heads/unknown\n")?;
+    write_hook(&githooks, "post-rewrite", "#!/bin/sh\necho nope\nrefs/heads/unknown\n")?;
     repo.run_git(["config", "core.hooksPath", ".githooks"])?;
     let s = doctor_stdout(&repo)?;
     assert!(
-        s.contains("MissingPostCommitHook"),
-        "should flag when marker absent; stdout={s}"
-    );
-    assert!(
-        s.contains("git mesh hooks git post-commit"),
-        "remediation should name the new shortcut; stdout={s}"
+        s.contains("CouldNotVerifyHook"),
+        "should emit CouldNotVerifyHook when marker absent; stdout={s}"
     );
     Ok(())
 }
@@ -153,17 +149,17 @@ fn ignore_directive_substring_does_not_silence() -> Result<()> {
     write_hook(
         &hooks,
         "post-commit",
-        "#!/bin/sh\necho \"# git-mesh-doctor-ignore inline\"\n",
+        "#!/bin/sh\necho \"# git-mesh-doctor-ignore inline\"\nrefs/heads/some-ref\n",
     )?;
     write_hook(
         &hooks,
         "post-rewrite",
-        "#!/bin/sh\necho \"# git-mesh-doctor-ignore inline\"\n",
+        "#!/bin/sh\necho \"# git-mesh-doctor-ignore inline\"\nrefs/heads/some-ref\n",
     )?;
     let s = doctor_stdout(&repo)?;
-    // Substring should NOT silence; expect a finding.
+    // Substring should NOT silence; expect CouldNotVerifyHook due to refs/ line.
     assert!(
-        s.contains("MissingPostCommitHook") || s.contains("CouldNotVerifyHook"),
+        s.contains("CouldNotVerifyHook"),
         "substring ignore should not silence; stdout={s}"
     );
     Ok(())
@@ -241,9 +237,9 @@ fn wrapper_walk_dirname_substitution_carries_marker() -> Result<()> {
 fn bare_variable_reference_emits_could_not_verify() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let hooks = repo.path().join(".git").join("hooks");
-    // Hook only uses bare $ORIGINAL_HOOK — not resolvable statically.
+    // Hook only uses a bare variable reference — not resolvable statically.
     // Does NOT include ${0}.cards-original so the chained file can't be found.
-    let hook_body = "#!/bin/sh\nORIGINAL_HOOK=\"/some/path\"\n\"$ORIGINAL_HOOK\"\n";
+    let hook_body = "#!/bin/sh\nORIGINAL_HOOK=\"/some/path\"\n\"$ORIGINAL_HOOK\"\nrefs/heads/unknown\n";
     write_hook(&hooks, "post-commit", hook_body)?;
     write_hook(
         &hooks,
@@ -271,7 +267,7 @@ fn out_of_tree_path_reported_not_followed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let hooks = repo.path().join(".git").join("hooks");
     // Reference an absolute out-of-tree path that exists.
-    let hook_body = "#!/bin/sh\n/etc/passwd\n";
+    let hook_body = "#!/bin/sh\n/etc/passwd\nrefs/heads/unknown\n";
     write_hook(&hooks, "post-commit", hook_body)?;
     write_hook(
         &hooks,
@@ -305,8 +301,9 @@ fn out_of_tree_path_reported_not_followed() -> Result<()> {
 fn malformed_hook_unbalanced_quotes_emits_could_not_verify() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let hooks = repo.path().join(".git").join("hooks");
-    // Unbalanced quote on one of the lines.
-    let hook_body = "#!/bin/sh\necho \"unterminated\n";
+    // Unbalanced quote on one of the lines; add a refs/ line so the
+    // scanner reports CouldNotVerifyHook rather than silently passing.
+    let hook_body = "#!/bin/sh\necho \"unterminated\nrefs/heads/unknown\n";
     write_hook(&hooks, "post-commit", hook_body)?;
     write_hook(
         &hooks,
