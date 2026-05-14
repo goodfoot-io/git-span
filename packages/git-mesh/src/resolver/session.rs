@@ -576,3 +576,106 @@ pub(crate) fn follow_path_to_head_shared(
     }
     if current == path { None } else { Some(current) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchors_total_includes_skipped_clean_head() {
+        let session = ResolveSession {
+            reverse_walk_output: None,
+            drift_locus_hits: 0,
+            drift_locus_misses: 0,
+            filter_attr_hits: 0,
+            filter_attr_misses: 0,
+            cache: crate::resolver::cache::Cache::open_disabled(),
+            known_head_ancestors: std::collections::HashMap::new(),
+            blob_oid_memo: HashMap::new(),
+            anchors_fresh: 0,
+            anchors_moved: 0,
+            anchors_changed: 0,
+            anchors_orphaned: 0,
+            anchors_merge_conflict: 0,
+            anchors_unavailable: 0,
+            anchors_fast_path_hits: 0,
+            anchors_full_resolution: 0,
+            per_anchor_us: Vec::new(),
+            per_anchor_trace: None,
+            walk_bloom_skips: 0,
+            walk_bloom_false_positives: 0,
+            walk_tree_diffs: 0,
+            walk_commits_visited: 0,
+            reverse_index_build_ms: 0,
+            warnings: Vec::new(),
+            anchors_skipped_clean_head: 50,
+        };
+
+        let total = session.anchors_total();
+
+        // Decomposition identity per card: each anchor is either skipped
+        // clean-head, resolved via a per-anchor fast-path, or goes through
+        // full resolution.
+        let decomposed = session.anchors_skipped_clean_head
+            + session.anchors_fast_path_hits
+            + session.anchors_full_resolution;
+        assert_eq!(total, decomposed,
+            "anchors-total must equal skipped-clean-head + fast-path-hits + full-resolution");
+        assert_eq!(total, 50,
+            "anchors-total must count anchors that were skipped clean-head");
+    }
+
+    #[test]
+    fn decomposition_identity_mixed_buckets() {
+        let session = ResolveSession {
+            reverse_walk_output: None,
+            drift_locus_hits: 0,
+            drift_locus_misses: 0,
+            filter_attr_hits: 0,
+            filter_attr_misses: 0,
+            cache: crate::resolver::cache::Cache::open_disabled(),
+            known_head_ancestors: std::collections::HashMap::new(),
+            blob_oid_memo: HashMap::new(),
+            anchors_fresh: 0,
+            anchors_moved: 3,
+            anchors_changed: 2,
+            anchors_orphaned: 0,
+            anchors_merge_conflict: 0,
+            anchors_unavailable: 1,
+            anchors_fast_path_hits: 4,
+            anchors_full_resolution: 2,
+            per_anchor_us: Vec::new(),
+            per_anchor_trace: None,
+            walk_bloom_skips: 0,
+            walk_bloom_false_positives: 0,
+            walk_tree_diffs: 0,
+            walk_commits_visited: 0,
+            reverse_index_build_ms: 0,
+            warnings: Vec::new(),
+            anchors_skipped_clean_head: 40,
+        };
+
+        let total = session.anchors_total();
+
+        // The status-bucket total should account for moved+changed+unavailable = 6.
+        // But the decomposition identity is: total == skipped-clean-head + fast-path-hits + full-resolution.
+        assert_eq!(
+            total,
+            session.anchors_fresh
+                + session.anchors_moved
+                + session.anchors_changed
+                + session.anchors_orphaned
+                + session.anchors_merge_conflict
+                + session.anchors_unavailable
+                + session.anchors_skipped_clean_head,
+            "anchors-total must include skipped-clean-head alongside per-status buckets"
+        );
+
+        let decomposed = session.anchors_skipped_clean_head
+            + session.anchors_fast_path_hits
+            + session.anchors_full_resolution;
+        assert_eq!(total, decomposed,
+            "anchors-total == skipped-clean-head + fast-path-hits + full-resolution");
+        assert_eq!(total, 46);
+    }
+}
