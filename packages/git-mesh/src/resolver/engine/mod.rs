@@ -320,12 +320,23 @@ fn resolve_mesh_with_state_at(
     repo: &gix::Repository,
     state: &mut EngineState,
     name: &str,
-    _commit_oid: &str,
+    commit_oid: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        let catalog = Catalog::load(repo)?;
+        let commit_obj = repo
+            .find_commit(
+                commit_oid.parse::<gix::ObjectId>().map_err(|e| {
+                    Error::Git(format!("parse commit oid {commit_oid}: {e}"))
+                })?,
+            )
+            .map_err(|e| Error::Git(format!("find commit {commit_oid}: {e}")))?;
+        let tree = commit_obj
+            .tree()
+            .map_err(|e| Error::Git(format!("get commit tree {commit_oid}: {e}")))?;
+        let tree_oid = tree.id().detach().to_string();
+        let catalog = Catalog::load_at(repo, &tree_oid)?;
         catalog
             .lookup(name)?
             .ok_or_else(|| Error::MeshNotFound(name.to_string()))?

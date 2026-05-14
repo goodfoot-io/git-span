@@ -2,9 +2,9 @@
 //!
 //! The catalog is stored at `refs/meshes/v1/catalog` as a git tree whose
 //! entries are rkyv-format mesh blobs.  Each entry name is the flattened
-//! form of the mesh name: `/` is replaced with `--` and `.mesh` is
+//! form of the mesh name: `/` is replaced with `++` and `.mesh` is
 //! appended (e.g. `billing/checkout-request-flow` →
-//! `billing--checkout-request-flow.mesh`).
+//! `billing++checkout-request-flow.mesh`).
 //!
 //! # Thread safety
 //!
@@ -22,7 +22,7 @@ use crate::{Error, Result};
 pub const CATALOG_REF: &str = "refs/meshes/v1/catalog";
 
 /// Loads the catalog tree from `refs/meshes/v1/catalog`, maps each `.mesh`
-/// entry to its mesh name (unflattening `--` → `/`), and eagerly reads blob
+/// entry to its mesh name (unflattening `++` → `/`), and eagerly reads blob
 /// bytes into memory for fast lookups.
 pub struct Catalog<'repo> {
     /// Borrowed repository handle.

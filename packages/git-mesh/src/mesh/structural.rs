@@ -59,7 +59,8 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
         return Err(Error::MeshAlreadyExists(new.into()));
     }
 
-    let mesh = super::read::read_mesh(repo, old)?;
+    let mut mesh = super::read::read_mesh(repo, old)?;
+    mesh.name = new.to_string();
 
     // Update catalog: remove old, insert new, CAS commit.
     let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;

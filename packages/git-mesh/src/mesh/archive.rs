@@ -252,7 +252,7 @@ pub fn deserialize_mesh(bytes: &[u8]) -> Result<Mesh> {
 /// Convert a mesh name (e.g. `billing/checkout-request-flow`) to its
 /// flattened tree entry name (e.g. `billing--checkout-request-flow.mesh`).
 pub fn name_to_entry(name: &str) -> String {
-    format!("{}.mesh", name.replace('/', "--"))
+    format!("{}.mesh", name.replace('/', "++"))
 }
 
 /// Recover a mesh name from a flattened tree entry name.
@@ -260,7 +260,7 @@ pub fn name_to_entry(name: &str) -> String {
 /// Returns `None` if the entry does not end with `.mesh`.
 pub fn entry_to_name(entry: &str) -> Option<String> {
     let stem = entry.strip_suffix(".mesh")?;
-    Some(stem.replace("--", "/"))
+    Some(stem.replace("++", "/"))
 }
 
 #[cfg(test)]
@@ -347,7 +347,7 @@ mod tests {
     fn name_to_entry_flattens_slashes() {
         assert_eq!(
             name_to_entry("billing/checkout-request-flow"),
-            "billing--checkout-request-flow.mesh"
+            "billing++checkout-request-flow.mesh"
         );
     }
 
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn entry_to_name_reverses_flattening() {
         assert_eq!(
-            entry_to_name("billing--checkout-request-flow.mesh"),
+            entry_to_name("billing++checkout-request-flow.mesh"),
             Some("billing/checkout-request-flow".into())
         );
     }
