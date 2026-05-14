@@ -8,6 +8,7 @@ use crate::anchor::create_anchor_with_extent_skipping_blob_bounds;
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
+use crate::mesh::catalog::Catalog;
 use crate::mesh::read::{read_mesh_at, serialize_config_blob};
 use crate::mesh::path_index;
 use std::collections::HashSet;
@@ -51,11 +52,17 @@ pub fn follow_moves(
     const MAX_RETRIES: usize = 5;
     let mut attempt: usize = 0;
 
+    // Load catalog for mesh data reads.
+    let cat = Catalog::load(repo)?;
     let new_commit: String;
     'retry: loop {
         // Re-read mesh tip on every attempt so the CAS parent is fresh.
         let current_parent = resolve_ref_oid_optional(wd, &mesh_ref_name)?;
-        let m = read_mesh_at(repo, name, current_parent.as_deref())?;
+        let m = if cat.is_empty() {
+            read_mesh_at(repo, name, current_parent.as_deref())?
+        } else {
+            cat.lookup(name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?
+        };
 
         // Build new anchor list: replace each matched id, keep all others.
         let mut combined: Vec<(String, crate::types::Anchor)> = Vec::new();

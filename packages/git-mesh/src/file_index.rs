@@ -2,6 +2,7 @@
 
 use crate::Result;
 use crate::git::mesh_dir;
+use crate::mesh::catalog::Catalog;
 use crate::mesh::path_index;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::types::AnchorExtent;
@@ -43,23 +44,38 @@ fn write_index(repo: &gix::Repository, entries: &[IndexEntry]) -> Result<()> {
 }
 
 fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
+    let catalog = Catalog::load(repo)?;
     let mut out = Vec::new();
-    for name in list_mesh_names(repo)? {
-        let mesh = read_mesh(repo, &name)?;
-        for (_id, r) in mesh.anchors_v2 {
-            let (start, end) = match r.extent {
-                AnchorExtent::LineRange { start, end } => (start, end),
-                // Whole-file pins are recorded as `0..0` in the index for
-                // sort/lookup; the renderer prints `*` in place of a
-                // line range. See plan §D2.
-                AnchorExtent::WholeFile => (0, 0),
-            };
-            out.push(IndexEntry {
-                path: r.path,
-                mesh_name: name.clone(),
-                start,
-                end,
-            });
+    if catalog.is_empty() {
+        for name in list_mesh_names(repo)? {
+            let mesh = read_mesh(repo, &name)?;
+            for (_id, r) in mesh.anchors_v2 {
+                let (start, end) = match r.extent {
+                    AnchorExtent::LineRange { start, end } => (start, end),
+                    AnchorExtent::WholeFile => (0, 0),
+                };
+                out.push(IndexEntry {
+                    path: r.path,
+                    mesh_name: name.clone(),
+                    start,
+                    end,
+                });
+            }
+        }
+    } else {
+        for (name, mesh) in catalog.iter()? {
+            for (_id, r) in mesh.anchors_v2 {
+                let (start, end) = match r.extent {
+                    AnchorExtent::LineRange { start, end } => (start, end),
+                    AnchorExtent::WholeFile => (0, 0),
+                };
+                out.push(IndexEntry {
+                    path: r.path,
+                    mesh_name: name.clone(),
+                    start,
+                    end,
+                });
+            }
         }
     }
     out.sort_by(|a, b| {

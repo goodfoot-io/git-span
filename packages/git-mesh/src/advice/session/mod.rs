@@ -254,8 +254,17 @@ impl SessionStore {
         {
             return Ok(());
         }
-        let refs = crate::mesh::read::list_mesh_refs(repo)?;
-        let map: std::collections::HashMap<String, String> = refs.into_iter().collect();
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+        let map: std::collections::HashMap<String, String> = if catalog.is_empty() {
+            let refs = crate::mesh::read::list_mesh_refs(repo)?;
+            refs.into_iter().collect()
+        } else {
+            catalog
+                .iter()?
+                .into_iter()
+                .map(|(name, _mesh)| (name, String::new()))
+                .collect()
+        };
         let json = serde_json::to_vec(&map)?;
         store::atomic_write(&path, &json)
     }

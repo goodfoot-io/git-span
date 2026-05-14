@@ -8,6 +8,7 @@
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
+use crate::mesh::catalog::Catalog;
 use crate::mesh::read::{list_mesh_refs, read_mesh_from_commit, serialize_config_blob};
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -74,11 +75,18 @@ pub fn rewrite_meshes(
     if map.is_empty() {
         return Ok(Vec::new());
     }
-    let refs = list_mesh_refs(repo)?;
-    let mut outcomes = Vec::with_capacity(refs.len());
-    for (name, _tip) in refs {
-        let outcome =
-            rewrite_one_mesh(repo, &name, map).unwrap_or_else(|e| RewriteOutcome::error(&name, e));
+    let names: Vec<String> = {
+        let catalog = Catalog::load(repo)?;
+        if catalog.is_empty() {
+            list_mesh_refs(repo)?.into_iter().map(|(n, _)| n).collect()
+        } else {
+            catalog.names()
+        }
+    };
+    let mut outcomes = Vec::with_capacity(names.len());
+    for name in &names {
+        let outcome = rewrite_one_mesh(repo, name, map)
+            .unwrap_or_else(|e| RewriteOutcome::error(name, e));
         outcomes.push(outcome);
     }
     Ok(outcomes)
@@ -96,9 +104,16 @@ fn rewrite_one_mesh(
     const MAX_RETRIES: usize = 5;
     let mesh_ref = format!("refs/meshes/v1/{name}");
     let wd = work_dir(repo)?;
+    let cat = Catalog::load(repo)?;
 
-    let initial_tip =
-        resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
+    let initial_tip = if cat.is_empty() {
+        resolve_ref_oid_optional(wd, &mesh_ref)?
+            .ok_or_else(|| Error::MeshNotFound(name.into()))?
+    } else {
+        // In the catalog path per-mesh refs don't exist; CAS is handled
+        // by the catalog write path (future group).
+        cat.entry_oid(name).ok_or_else(|| Error::MeshNotFound(name.into()))?
+    };
 
     let mut current_tip = initial_tip;
     let mut attempt = 0;
@@ -119,8 +134,13 @@ fn rewrite_one_mesh(
                         hard_error: Some("CAS conflict exhausted retries".into()),
                     });
                 }
-                current_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
-                    .ok_or_else(|| Error::MeshNotFound(name.into()))?;
+                current_tip = if cat.is_empty() {
+                    resolve_ref_oid_optional(wd, &mesh_ref)?
+                        .ok_or_else(|| Error::MeshNotFound(name.into()))?
+                } else {
+                    cat.entry_oid(name)
+                        .ok_or_else(|| Error::MeshNotFound(name.into()))?
+                };
             }
         }
     }

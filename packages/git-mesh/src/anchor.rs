@@ -11,6 +11,7 @@
 //! ```
 
 use crate::git::{self, RefUpdate, apply_ref_transaction, resolve_ref_oid_optional, work_dir};
+use crate::mesh::catalog::Catalog;
 use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
@@ -262,14 +263,27 @@ pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
     {
         return parse_anchor(&git::read_git_text(repo, &blob_oid)?);
     }
-    for name in crate::mesh::read::list_mesh_names(repo)? {
-        let mesh = crate::mesh::read::read_mesh(repo, &name)?;
-        if let Some((_id, anchor)) = mesh
-            .anchors_v2
-            .into_iter()
-            .find(|(id, _anchor)| id == anchor_id)
-        {
-            return Ok(anchor);
+    let catalog = Catalog::load(repo)?;
+    if catalog.is_empty() {
+        for name in crate::mesh::read::list_mesh_names(repo)? {
+            let mesh = crate::mesh::read::read_mesh(repo, &name)?;
+            if let Some((_id, anchor)) = mesh
+                .anchors_v2
+                .into_iter()
+                .find(|(id, _anchor)| id == anchor_id)
+            {
+                return Ok(anchor);
+            }
+        }
+    } else {
+        for (_, mesh) in catalog.iter()? {
+            if let Some((_id, anchor)) = mesh
+                .anchors_v2
+                .into_iter()
+                .find(|(id, _anchor)| id == anchor_id)
+            {
+                return Ok(anchor);
+            }
         }
     }
     Err(Error::AnchorNotFound(anchor_id.to_string()))

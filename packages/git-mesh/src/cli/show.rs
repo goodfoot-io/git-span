@@ -2,6 +2,7 @@
 
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
+use crate::mesh::catalog::Catalog;
 use crate::resolver::{build_pending_findings, resolve_named_meshes};
 use crate::staging::{list_staged_mesh_names, read_staging, resolve_staged_config, Staging};
 use crate::types::{
@@ -306,27 +307,212 @@ fn collect_listings_with_options(
     include_why: bool,
     include_state: bool,
 ) -> Result<Vec<MeshListing>> {
-    let committed_refs = {
-        let _perf = crate::perf::span("list.list-committed-meshes");
-        crate::mesh::read::list_mesh_refs(repo)?
-    };
-    let committed_names: Vec<&str> = committed_refs
-        .iter()
-        .map(|(name, _oid)| name.as_str())
-        .collect();
+    let catalog = Catalog::load(repo)?;
     let staged_names = {
         let _perf = crate::perf::span("list.list-staged-meshes");
         list_staged_mesh_names(repo)?
     };
 
     let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
-    let committed_name_set: HashSet<&str> = committed_names.iter().copied().collect();
-    let mut listings: Vec<MeshListing> =
-        Vec::with_capacity(committed_refs.len() + staged_names.len());
+    let mut committed_name_set: HashSet<String> = HashSet::new();
+    let mut listings: Vec<MeshListing> = Vec::new();
     // Collect committed meshes.
     {
         let _perf = crate::perf::span("list.read-committed-meshes");
+        if catalog.is_empty() {
+            let committed_refs = {
+                let _perf = crate::perf::span("list.list-committed-meshes");
+                crate::mesh::read::list_mesh_refs(repo)?
+            };
+            for (name, commit_oid) in &committed_refs {
+                committed_name_set.insert(name.clone());
+                let (message, anchors_v2) = if include_why {
+                    let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
+                    (mesh.message, mesh.anchors_v2)
+                } else {
+                    (
+                        String::new(),
+                        crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
+                    )
+                };
+                let mut anchors = Vec::new();
+                for (_id, r) in anchors_v2 {
+                    anchors.push(AnchorEntry {
+                        path: r.path,
+                        extent: r.extent,
+                    });
+                }
+                // Determine if this committed mesh also has staged ops.
+                let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
+                    if include_state && staged_name_set.contains(name.as_str()) {
+                        let staging = read_staging(repo, name)?;
+                        let has_ops = !staging.adds.is_empty()
+                            || !staging.removes.is_empty()
+                            || !staging.configs.is_empty()
+                            || staging.why.is_some();
+                        let staged_adds_n = staging.adds.len();
+                        let staged_removes_n = staging.removes.len();
+                        let staged_configs_n = staging.configs.len();
+                        let staged_why_b = staging.why.is_some();
+                        let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                            .collect();
+                        let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                            .collect();
+                        (
+                            if has_ops { MeshState::Staged } else { MeshState::Committed },
+                            staged_adds_n,
+                            staged_removes_n,
+                            staged_configs_n,
+                            staged_why_b,
+                            pending_adds,
+                            pending_removes,
+                        )
+                    } else {
+                        (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
+                    };
+                let why = message.trim_end_matches('\n').to_string();
+                listings.push(MeshListing {
+                    name: name.clone(),
+                    why,
+                    anchors,
+                    pending_adds,
+                    pending_removes,
+                    state,
+                    staged_adds,
+                    staged_removes,
+                    staged_configs,
+                    staged_why,
+                });
+            }
+        } else {
+            for (name, mesh) in catalog.iter()? {
+                committed_name_set.insert(name.clone());
+                let (message, anchors_v2) = if include_why {
+                    (mesh.message, mesh.anchors_v2)
+                } else {
+                    (String::new(), mesh.anchors_v2)
+                };
+                let mut anchors = Vec::new();
+                for (_id, r) in anchors_v2 {
+                    anchors.push(AnchorEntry {
+                        path: r.path,
+                        extent: r.extent,
+                    });
+                }
+                // Determine if this committed mesh also has staged ops.
+                let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
+                    if include_state && staged_name_set.contains(name.as_str()) {
+                        let staging = read_staging(repo, &name)?;
+                        let has_ops = !staging.adds.is_empty()
+                            || !staging.removes.is_empty()
+                            || !staging.configs.is_empty()
+                            || staging.why.is_some();
+                        let staged_adds_n = staging.adds.len();
+                        let staged_removes_n = staging.removes.len();
+                        let staged_configs_n = staging.configs.len();
+                        let staged_why_b = staging.why.is_some();
+                        let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                            .collect();
+                        let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                            .collect();
+                        (
+                            if has_ops { MeshState::Staged } else { MeshState::Committed },
+                            staged_adds_n,
+                            staged_removes_n,
+                            staged_configs_n,
+                            staged_why_b,
+                            pending_adds,
+                            pending_removes,
+                        )
+                    } else {
+                        (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
+                    };
+                let why = message.trim_end_matches('\n').to_string();
+                listings.push(MeshListing {
+                    name,
+                    why,
+                    anchors,
+                    pending_adds,
+                    pending_removes,
+                    state,
+                    staged_adds,
+                    staged_removes,
+                    staged_configs,
+                    staged_why,
+                });
+            }
+        }
+    }
+
+    // Collect staging-only (pending) meshes.
+    {
+        let _perf = crate::perf::span("list.read-pending-meshes");
+        for name in &staged_names {
+            if committed_name_set.contains(name) {
+                continue; // already handled above
+            }
+            let staging = read_staging(repo, name)?;
+            let staged_adds = staging.adds.len();
+            let staged_removes = staging.removes.len();
+            let staged_configs = staging.configs.len();
+            let staged_why = staging.why.is_some();
+            let why = staging.why.unwrap_or_default();
+            let pending_adds: Vec<AnchorEntry> = staging
+                .adds
+                .into_iter()
+                .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                .collect();
+            let pending_removes: Vec<AnchorEntry> = staging
+                .removes
+                .into_iter()
+                .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                .collect();
+            let anchors = pending_adds.clone();
+            listings.push(MeshListing {
+                name: name.clone(),
+                why,
+                anchors,
+                pending_adds,
+                pending_removes,
+                state: MeshState::Pending,
+                staged_adds,
+                staged_removes,
+                staged_configs,
+                staged_why,
+            });
+        }
+    }
+
+    Ok(listings)
+}
+
+fn collect_listings_for_names(
+    repo: &gix::Repository,
+    names: &[String],
+    include_why: bool,
+    include_state: bool,
+) -> Result<Vec<MeshListing>> {
+    let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
+    let catalog = Catalog::load(repo)?;
+    let staged_names = list_staged_mesh_names(repo)?;
+
+    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
+
+    let mut committed_name_set: HashSet<String> = HashSet::new();
+    let mut listings = Vec::with_capacity(names.len());
+
+    // Committed meshes matching the name set.
+    if catalog.is_empty() {
+        let committed_refs = crate::mesh::read::list_mesh_refs(repo)?;
         for (name, commit_oid) in &committed_refs {
+            committed_name_set.insert(name.clone());
+            if !name_set.contains(name.as_str()) {
+                continue;
+            }
             let (message, anchors_v2) = if include_why {
                 let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
                 (mesh.message, mesh.anchors_v2)
@@ -387,39 +573,62 @@ fn collect_listings_with_options(
                 staged_why,
             });
         }
-    }
-
-    // Collect staging-only (pending) meshes.
-    {
-        let _perf = crate::perf::span("list.read-pending-meshes");
-        for name in &staged_names {
-            if committed_name_set.contains(name.as_str()) {
-                continue; // already handled above
+    } else {
+        for (name, mesh) in catalog.iter()? {
+            committed_name_set.insert(name.clone());
+            if !name_set.contains(name.as_str()) {
+                continue;
             }
-            let staging = read_staging(repo, name)?;
-            let staged_adds = staging.adds.len();
-            let staged_removes = staging.removes.len();
-            let staged_configs = staging.configs.len();
-            let staged_why = staging.why.is_some();
-            let why = staging.why.unwrap_or_default();
-            let pending_adds: Vec<AnchorEntry> = staging
-                .adds
-                .into_iter()
-                .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                .collect();
-            let pending_removes: Vec<AnchorEntry> = staging
-                .removes
-                .into_iter()
-                .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                .collect();
-            let anchors = pending_adds.clone();
+            let (message, anchors_v2) = if include_why {
+                (mesh.message, mesh.anchors_v2)
+            } else {
+                (String::new(), mesh.anchors_v2)
+            };
+            let mut anchors = Vec::new();
+            for (_id, r) in anchors_v2 {
+                anchors.push(AnchorEntry {
+                    path: r.path,
+                    extent: r.extent,
+                });
+            }
+            // Determine if this committed mesh also has staged ops.
+            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
+                if include_state && staged_name_set.contains(name.as_str()) {
+                    let staging = read_staging(repo, &name)?;
+                    let has_ops = !staging.adds.is_empty()
+                        || !staging.removes.is_empty()
+                        || !staging.configs.is_empty()
+                        || staging.why.is_some();
+                    let staged_adds_n = staging.adds.len();
+                    let staged_removes_n = staging.removes.len();
+                    let staged_configs_n = staging.configs.len();
+                    let staged_why_b = staging.why.is_some();
+                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
+                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
+                        .collect();
+                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
+                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
+                        .collect();
+                    (
+                        if has_ops { MeshState::Staged } else { MeshState::Committed },
+                        staged_adds_n,
+                        staged_removes_n,
+                        staged_configs_n,
+                        staged_why_b,
+                        pending_adds,
+                        pending_removes,
+                    )
+                } else {
+                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
+                };
+            let why = message.trim_end_matches('\n').to_string();
             listings.push(MeshListing {
-                name: name.clone(),
+                name,
                 why,
                 anchors,
                 pending_adds,
                 pending_removes,
-                state: MeshState::Pending,
+                state,
                 staged_adds,
                 staged_removes,
                 staged_configs,
@@ -428,97 +637,12 @@ fn collect_listings_with_options(
         }
     }
 
-    Ok(listings)
-}
-
-fn collect_listings_for_names(
-    repo: &gix::Repository,
-    names: &[String],
-    include_why: bool,
-    include_state: bool,
-) -> Result<Vec<MeshListing>> {
-    let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
-
-    let committed_refs = crate::mesh::read::list_mesh_refs(repo)?;
-    let staged_names = list_staged_mesh_names(repo)?;
-
-    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
-    let committed_name_set: HashSet<&str> = committed_refs.iter().map(|(n, _)| n.as_str()).collect();
-
-    let mut listings = Vec::with_capacity(names.len());
-
-    // Committed meshes matching the name set.
-    for (name, commit_oid) in &committed_refs {
-        if !name_set.contains(name.as_str()) {
-            continue;
-        }
-        let (message, anchors_v2) = if include_why {
-            let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
-            (mesh.message, mesh.anchors_v2)
-        } else {
-            (
-                String::new(),
-                crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
-            )
-        };
-        let mut anchors = Vec::new();
-        for (_id, r) in anchors_v2 {
-            anchors.push(AnchorEntry {
-                path: r.path,
-                extent: r.extent,
-            });
-        }
-        // Determine if this committed mesh also has staged ops.
-        let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-            if include_state && staged_name_set.contains(name.as_str()) {
-                let staging = read_staging(repo, name)?;
-                let has_ops = !staging.adds.is_empty()
-                    || !staging.removes.is_empty()
-                    || !staging.configs.is_empty()
-                    || staging.why.is_some();
-                let staged_adds_n = staging.adds.len();
-                let staged_removes_n = staging.removes.len();
-                let staged_configs_n = staging.configs.len();
-                let staged_why_b = staging.why.is_some();
-                let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                    .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                    .collect();
-                let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                    .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                    .collect();
-                (
-                    if has_ops { MeshState::Staged } else { MeshState::Committed },
-                    staged_adds_n,
-                    staged_removes_n,
-                    staged_configs_n,
-                    staged_why_b,
-                    pending_adds,
-                    pending_removes,
-                )
-            } else {
-                (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-            };
-        let why = message.trim_end_matches('\n').to_string();
-        listings.push(MeshListing {
-            name: name.clone(),
-            why,
-            anchors,
-            pending_adds,
-            pending_removes,
-            state,
-            staged_adds,
-            staged_removes,
-            staged_configs,
-            staged_why,
-        });
-    }
-
     // Pending meshes matching the name set.
     for name in &staged_names {
         if !name_set.contains(name.as_str()) {
             continue;
         }
-        if committed_name_set.contains(name.as_str()) {
+        if committed_name_set.contains(name) {
             continue; // already handled as committed+staged
         }
         let staging = read_staging(repo, name)?;
@@ -791,8 +915,16 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     // `--format`, `--oneline`, `--log`, and `--at` continue to require a
     // committed mesh and surface the existing MeshNotFound error.
     if !args.log && args.at.is_none() && args.format.is_none() && !args.oneline {
-        let mesh_ref = format!("refs/meshes/v1/{}", args.name);
-        if crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_none() {
+        let mesh_exists = {
+            let catalog = Catalog::load(repo)?;
+            if catalog.is_empty() {
+                let mesh_ref = format!("refs/meshes/v1/{}", args.name);
+                crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_some()
+            } else {
+                catalog.entry_oid(&args.name).is_some()
+            }
+        };
+        if !mesh_exists {
             let pending = build_pending_findings(repo, &args.name);
             if !pending.is_empty() {
                 let staging = read_staging(repo, &args.name)?;
@@ -832,12 +964,33 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     let mesh = {
         let _perf = crate::perf::span("show.read-mesh");
-        read_mesh_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
-            subcommand: "show",
-            summary: format!("no mesh named `{}`.", args.name),
-            what_happened: format!("{}", e),
-            next_steps: vec![NextStep::Bash("git mesh list".into())],
-        })?
+        if args.at.is_none() {
+            let catalog = Catalog::load(repo)?;
+            if !catalog.is_empty() {
+                catalog.lookup(&args.name)?.ok_or_else(|| {
+                    crate::Error::MeshNotFound(args.name.clone())
+                }).map_err(|e| CliError {
+                    subcommand: "show",
+                    summary: format!("no mesh named `{}`.", args.name),
+                    what_happened: format!("{}", e),
+                    next_steps: vec![NextStep::Bash("git mesh list".into())],
+                })?
+            } else {
+                read_mesh_at(repo, &args.name, None).map_err(|e| CliError {
+                    subcommand: "show",
+                    summary: format!("no mesh named `{}`.", args.name),
+                    what_happened: format!("{}", e),
+                    next_steps: vec![NextStep::Bash("git mesh list".into())],
+                })?
+            }
+        } else {
+            read_mesh_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
+                subcommand: "show",
+                summary: format!("no mesh named `{}`.", args.name),
+                what_happened: format!("{}", e),
+                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            })?
+        }
     };
     let info = {
         let _perf = crate::perf::span("show.read-commit-info");
