@@ -610,37 +610,6 @@ fn format_rfc2822(t: gix::date::Time) -> String {
     dt.format("%a, %-d %b %Y %H:%M:%S %z").to_string()
 }
 
-/// Walk commits reachable from `head` but not from any of `excludes`,
-/// returning hex OIDs in topological order (newest first), optionally capped.
-pub(crate) fn rev_walk_excluding(
-    repo: &gix::Repository,
-    heads: &[&str],
-    excludes: &[&str],
-    limit: Option<usize>,
-) -> Result<Vec<String>> {
-    let head_ids: Vec<ObjectId> = heads.iter().map(|h| parse_oid(h)).collect::<Result<_>>()?;
-    let exclude_ids: Vec<ObjectId> = excludes
-        .iter()
-        .map(|h| parse_oid(h))
-        .collect::<Result<_>>()?;
-    let mut walk = repo
-        .rev_walk(head_ids)
-        .with_hidden(exclude_ids)
-        .all()
-        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
-    let mut out = Vec::new();
-    for info in walk.by_ref() {
-        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
-        out.push(info.id.to_string());
-        if let Some(n) = limit
-            && out.len() >= n
-        {
-            break;
-        }
-    }
-    Ok(out)
-}
-
 /// Is `anchor` reachable from `HEAD` only?
 ///
 /// Used by the resolver's orphaned-classification gate: per the drift-label

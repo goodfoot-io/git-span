@@ -3,7 +3,7 @@
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
-use crate::types::{Anchor, AnchorExtent, CopyDetection};
+use crate::types::CopyDetection;
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
@@ -29,48 +29,6 @@ pub(crate) fn rename_budget() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(RENAME_BUDGET_DEFAULT)
-}
-
-/// Single-anchor convenience used by tests that don't go through the
-/// shared `ResolveSession`. The production engine path uses
-/// `session::resolve_at_head_shared`, which consumes pre-computed deltas
-/// from a grouped walk (one rev-walk + one `name_status` per commit, fanned
-/// out across every anchor that shares the same anchor commit).
-pub(crate) fn resolve_at_head(
-    repo: &gix::Repository,
-    r: &Anchor,
-    copy_detection: CopyDetection,
-    warnings: &mut Vec<String>,
-) -> Result<Option<Tracked>> {
-    let (rstart, rend) = match r.extent {
-        AnchorExtent::LineRange { start, end } => (start, end),
-        // Whole-file pins do not flow through this layer-shifting walker;
-        // `resolve_whole_file` handles them.
-        AnchorExtent::WholeFile => (1, 1),
-    };
-    let head_sha = git::head_oid(repo)?;
-    let mut commits =
-        git::rev_walk_excluding(repo, &[&head_sha], &[&r.anchor_sha], None).unwrap_or_default();
-    commits.reverse();
-    let mut loc = Tracked {
-        path: r.path.clone(),
-        start: rstart,
-        end: rend,
-    };
-    let mut parent = r.anchor_sha.clone();
-    for commit in &commits {
-        let entries = name_status(repo, &parent, commit, copy_detection, warnings)?;
-        match advance_with_entries(repo, &parent, commit, &loc, &entries, None)? {
-            Change::Unchanged => {}
-            Change::Deleted => return Ok(None),
-            Change::Updated(next) => loc = next,
-        }
-        parent = commit.clone();
-    }
-    if git::path_blob_at(repo, &head_sha, &loc.path).is_err() {
-        return Ok(None);
-    }
-    Ok(Some(loc))
 }
 
 /// Advance the tracked location across one commit, given the

@@ -262,6 +262,11 @@ pub fn resolve_anchor(
             .lookup(mesh_name)?
             .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?
     };
+    // Build the reverse-indexed walk so resolve_anchor_inner can consume
+    // per-anchor deltas from the shared session.  resolve_anchor_inner
+    // delegates to resolve_at_head_shared / follow_path_to_head_shared,
+    // both of which read from session.reverse_walk_output.
+    state.session.build_reverse_walk(repo, &[(mesh_name.to_string(), mesh.clone())])?;
     let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?,
         None => orphaned_placeholder(anchor_id),
@@ -609,6 +614,19 @@ pub(crate) fn resolve_named_meshes(
         let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
         out.push((name.clone(), resolved));
     }
+    // Emit walk perf counters matching stale_meshes_inner so named-mesh
+    // resolution is observable through the same perf counter interface.
+    crate::perf::counter("session.walk-bloom-skips", state.session.walk_bloom_skips);
+    crate::perf::counter(
+        "session.walk-bloom-false-positives",
+        state.session.walk_bloom_false_positives,
+    );
+    crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
+    crate::perf::counter("session.walk-commits-visited", state.session.walk_commits_visited);
+    crate::perf::counter(
+        "session.reverse-index-build-ms",
+        state.session.reverse_index_build_ms,
+    );
     state.finish(repo);
     Ok(out)
 }

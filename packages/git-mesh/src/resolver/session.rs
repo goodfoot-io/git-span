@@ -244,7 +244,17 @@ impl ResolveSession {
         let reverse_index = AnchorReverseIndex::from_meshes(meshes);
         self.reverse_index_build_ms = t0.elapsed().as_millis() as u64;
 
-        // 2. Open the Bloom filter (fail-closed — no silent fallback).
+        // 2. Compute the most permissive copy_detection across all meshes.
+        //    The walk produces a single name_status per commit; using the max
+        //    ensures copies are detected when any mesh requires them, even
+        //    though walker::advance_with_entries later filters per-anchor path.
+        let max_copy = meshes
+            .iter()
+            .map(|(_, m)| m.config.copy_detection)
+            .max()
+            .unwrap_or(CopyDetection::Off);
+
+        // 3. Open the Bloom filter (fail-closed — no silent fallback).
         let bloom = CommitGraphBloom::open(repo)
             .map_err(crate::Error::Git)?;
 
@@ -362,15 +372,18 @@ impl ResolveSession {
             };
             let parent_sha_str = parent_oid.to_string();
 
-            // Run name_status with CopyDetection::Off (rename detection
-            // enabled, copy detection off). Warnings (rename budget notes,
-            // budget downgrade notes) are accumulated on the session for
-            // stderr output via EngineState::finish.
+            // Run name_status with max copy detection across all meshes.
+            // Different meshes may have different copy_detection settings; using
+            // the most permissive ensures that copies are available for every
+            // mesh even though walker::advance_with_entries later filters per
+            // anchor. Warnings (rename budget notes, budget downgrade notes)
+            // are accumulated on the session for stderr output via
+            // EngineState::finish.
             let entries = walker::name_status(
                 repo,
                 &parent_sha_str,
                 &commit_sha_str,
-                CopyDetection::Off,
+                max_copy,
                 &mut self.warnings,
             )?;
 
