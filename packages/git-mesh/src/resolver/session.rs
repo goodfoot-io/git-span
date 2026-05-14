@@ -149,10 +149,6 @@ pub(crate) struct ResolveSession {
     /// When `Some`, accumulates one `TraceRow` per anchor for `--perf-trace` CSV
     /// output. Remains `None` unless `enable_trace()` is called before resolution.
     pub(crate) per_anchor_trace: Option<Vec<crate::perf::TraceRow>>,
-    /// Reverse index mapping tracked paths to the anchors that depend on them.
-    /// Constructed once per `stale_meshes` run by [`AnchorReverseIndex::from_meshes`];
-    /// `None` when no reverse-indexed walk is active.
-    pub(crate) reverse_index: Option<AnchorReverseIndex>,
     /// Reverse-indexed walk: commits where Bloom said "definitely no tracked path changed".
     pub(crate) walk_bloom_skips: u64,
     /// Reverse-indexed walk: paths Bloom said "maybe" but tree-diff showed unchanged.
@@ -193,7 +189,6 @@ impl ResolveSession {
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
-            reverse_index: None,
             walk_bloom_skips: 0,
             walk_bloom_false_positives: 0,
             walk_tree_diffs: 0,
@@ -287,17 +282,12 @@ impl ResolveSession {
 
         let walk = repo
             .rev_walk([head_oid])
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            ))
+            .sorting(gix::revision::walk::Sorting::BreadthFirst)
             .all()
             .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
 
         for info in walk {
-            let info = match info {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
+            let info = info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
             let commit_oid = info.id;
 
             // Check stop condition: remove this commit from the set of
@@ -389,17 +379,19 @@ impl ResolveSession {
 
             // Count false positives: paths Bloom said "maybe" but that
             // don't appear in the actual tree-diff result.
-            let actual_paths: HashSet<String> = entries
+            let actual_paths: HashSet<Vec<u8>> = entries
                 .iter()
                 .flat_map(|e| {
-                    let mut paths = Vec::new();
+                    let mut paths: Vec<Vec<u8>> = Vec::new();
                     match e {
                         NS::Added { path }
                         | NS::Modified { path }
-                        | NS::Deleted { path } => paths.push(path.clone()),
+                        | NS::Deleted { path } => {
+                            paths.push(path.as_bytes().to_vec())
+                        }
                         NS::Renamed { from, to } | NS::Copied { from, to } => {
-                            paths.push(from.clone());
-                            paths.push(to.clone());
+                            paths.push(from.as_bytes().to_vec());
+                            paths.push(to.as_bytes().to_vec());
                         }
                     }
                     paths
@@ -407,8 +399,7 @@ impl ResolveSession {
                 .collect();
 
             for bp in &bloom_positives {
-                let bp_str = String::from_utf8_lossy(bp).to_string();
-                if !actual_paths.contains(&bp_str) {
+                if !actual_paths.contains(bp) {
                     self.walk_bloom_false_positives += 1;
                 }
             }
@@ -575,7 +566,7 @@ pub(crate) fn follow_path_to_head_shared(
     let mut current = path.to_string();
     for delta in deltas {
         for e in &delta.entries {
-            if let NS::Renamed { from, to } = e
+            if let NS::Renamed { from, to } | NS::Copied { from, to } = e
                 && from == &current
             {
                 current = to.clone();
