@@ -462,4 +462,51 @@ mod tests {
         let _ = bloom.maybe_contains(0, b"xyznonexistent12345");
         // (no assertion beyond "didn't panic")
     }
+
+    #[test]
+    fn missing_commit_graph_fails_closed() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = dir.path();
+
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repo_path)
+            .status()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(repo_path)
+            .status()
+            .expect("config user.name");
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .status()
+            .expect("config user.email");
+        std::fs::write(repo_path.join("f.txt"), "content").expect("write file");
+        Command::new("git")
+            .args(["add", "f.txt"])
+            .current_dir(repo_path)
+            .status()
+            .expect("git add");
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(repo_path)
+            .status()
+            .expect("git commit");
+
+        // Intentionally do NOT write a commit-graph.
+
+        let repo = gix::open(repo_path).expect("gix open");
+        let result = CommitGraphBloom::open(&repo);
+        match result {
+            Err(err_msg) => {
+                assert!(
+                    err_msg.contains("commit graph") || err_msg.contains("commit-graph"),
+                    "error should mention commit-graph: {err_msg}"
+                );
+            }
+            Ok(_) => panic!("should fail when commit-graph is missing"),
+        }
+    }
 }
