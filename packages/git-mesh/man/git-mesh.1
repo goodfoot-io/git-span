@@ -45,8 +45,9 @@ If the relationship has changed, update the why with
 .B git mesh why
 before re-anchoring.
 .PP
-Meshes are stored as Git refs under
-.IR refs/meshes/v1/<name> ,
+Meshes are stored in a catalog tree at
+.IR refs/meshes/v1/catalog
+as individual entries using a zero-copy archive format,
 so they travel with
 .B git fetch
 and

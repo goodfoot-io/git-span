@@ -219,7 +219,8 @@ pub fn serialize_mesh(mesh: &Mesh) -> Vec<u8> {
 
 /// Deserialise a `Mesh` from an on-disk blob created by [`serialize_mesh`].
 ///
-/// Returns `Err(Error::Parse)` on format-version mismatch or corrupt data.
+/// Returns `Err(Error::FormatVersionMismatch)` on format-version mismatch, or
+/// `Err(Error::Parse)` on corrupt data.
 pub fn deserialize_mesh(bytes: &[u8]) -> Result<Mesh> {
     if bytes.len() < HEADER_LEN {
         return Err(Error::Parse(
@@ -230,12 +231,10 @@ pub fn deserialize_mesh(bytes: &[u8]) -> Result<Mesh> {
         ));
     }
     if bytes[0] != FORMAT_VERSION {
-        return Err(Error::Parse(
-            format!(
-                "format version mismatch: expected {FORMAT_VERSION}, got {}",
-                bytes[0],
-            ),
-        ));
+        return Err(Error::FormatVersionMismatch {
+            expected: FORMAT_VERSION,
+            got: bytes[0],
+        });
     }
     let archived = rkyv::access::<ArchivedMeshArchive, rancor::Error>(&bytes[HEADER_LEN..])
         .map_err(|e| Error::Parse(format!("rkyv access error: {e}")))?;

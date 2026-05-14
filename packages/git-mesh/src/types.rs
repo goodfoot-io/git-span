@@ -298,6 +298,16 @@ pub enum Error {
     #[error("filter not implemented: {filter}")]
     FilterFailed { filter: String },
 
+    /// On-disk catalog blob has a format version that doesn't match what
+    /// this version of git-mesh expects (§4.1).
+    #[error(
+        "format version mismatch: expected {expected}, got {got}. \
+         Run `git mesh delete --all && git mesh commit` to regenerate all \
+         meshes from current anchors. Or downgrade git-mesh to a version \
+         that supports format version {got}."
+    )]
+    FormatVersionMismatch { expected: u8, got: u8 },
+
     /// A staged mesh name cannot coexist with an existing mesh ref because
     /// they would occupy the same loose-ref path as both a file and a
     /// directory. Either the staged name has an existing mesh as a strict

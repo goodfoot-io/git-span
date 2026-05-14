@@ -267,7 +267,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     // old and new blob content), so any remaining updates are real.
     if !path_updates.is_empty() {
         crate::git::ensure_log_all_ref_updates_always(repo)?;
-        let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);
+        crate::git::apply_ref_transaction_repo(repo, &path_updates)?;
     }
 
     // Clear staging on success.
