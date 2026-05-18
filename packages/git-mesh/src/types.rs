@@ -334,6 +334,10 @@ pub enum Error {
     #[error("sidecar tampered for mesh `{mesh}` slot {index}")]
     SidecarTampered { mesh: String, index: u32 },
 
+    /// Mesh file parse error (§Phase 1 tracked files).
+    #[error("invalid mesh file: {0}")]
+    InvalidMeshFile(String),
+
     /// Generic git-process / gix error.
     #[error("git: {0}")]
     Git(String),
