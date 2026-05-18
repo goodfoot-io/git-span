@@ -70,7 +70,7 @@ pub struct MeshConfigArchive {
 #[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
 pub struct MeshArchive {
     pub name: String,
-    pub anchors_v2: Vec<(String, AnchorEntryArchive)>,
+    pub anchors: Vec<(String, AnchorEntryArchive)>,
     pub message: String,
     pub config: MeshConfigArchive,
 }
@@ -121,6 +121,7 @@ impl From<AnchorEntryArchive> for Anchor {
             path: a.path,
             extent: AnchorExtent::from(a.extent),
             blob: a.blob,
+            stored_hash: String::new(),
         }
     }
 }
@@ -171,8 +172,8 @@ impl From<&Mesh> for MeshArchive {
     fn from(m: &Mesh) -> Self {
         MeshArchive {
             name: m.name.clone(),
-            anchors_v2: m
-                .anchors_v2
+            anchors: m
+                .anchors
                 .iter()
                 .map(|(id, a)| (id.clone(), AnchorEntryArchive::from(a)))
                 .collect(),
@@ -184,12 +185,10 @@ impl From<&Mesh> for MeshArchive {
 
 impl From<MeshArchive> for Mesh {
     fn from(ma: MeshArchive) -> Self {
-        let anchors = ma.anchors_v2.iter().map(|(id, _)| id.clone()).collect();
         Mesh {
             name: ma.name,
-            anchors,
-            anchors_v2: ma
-                .anchors_v2
+            anchors: ma
+                .anchors
                 .into_iter()
                 .map(|(id, a)| (id, Anchor::from(a)))
                 .collect(),
@@ -269,8 +268,7 @@ mod tests {
     fn sample_mesh() -> Mesh {
         Mesh {
             name: "billing/checkout-request-flow".into(),
-            anchors: vec!["a1".into()],
-            anchors_v2: vec![(
+            anchors: vec![(
                 "a1".into(),
                 Anchor {
                     anchor_sha: "abc123".into(),
@@ -278,6 +276,7 @@ mod tests {
                     path: "src/checkout.rs".into(),
                     extent: AnchorExtent::LineRange { start: 10, end: 20 },
                     blob: "def456".into(),
+                    stored_hash: String::new(),
                 },
             )],
             message: "Checkout request flow".into(),
@@ -302,7 +301,6 @@ mod tests {
         let mesh = Mesh {
             name: "simple".into(),
             anchors: vec![],
-            anchors_v2: vec![],
             message: "A simple mesh".into(),
             config: MeshConfig {
                 copy_detection: CopyDetection::SameCommit,

@@ -159,10 +159,10 @@ fn already_at_head_outcome(
     mesh: &crate::types::Mesh,
 ) -> Result<Option<MeshCompactOutcome>> {
     let head_sha = state.head_sha().to_string();
-    if mesh.anchors_v2.is_empty() {
+    if mesh.anchors.is_empty() {
         return Ok(None);
     }
-    for (_, anchor) in &mesh.anchors_v2 {
+    for (_, anchor) in &mesh.anchors {
         if anchor.anchor_sha != head_sha {
             return Ok(None);
         }
@@ -176,9 +176,9 @@ fn already_at_head_outcome(
             return Ok(None);
         }
     }
-    let mut anchor_records = Vec::with_capacity(mesh.anchors_v2.len());
+    let mut anchor_records = Vec::with_capacity(mesh.anchors.len());
     let mut skipped_clean_not_head = 0u32;
-    for (id, a) in &mesh.anchors_v2 {
+    for (id, a) in &mesh.anchors {
         anchor_records.push(AnchorCompactRecord {
             anchor_id: id.clone(),
             outcome: AnchorCompactOutcome::SkippedAlreadyHead,
@@ -315,7 +315,7 @@ enum AttemptResult {
 /// Run one classification + CAS attempt for a mesh. Caller owns retry.
 ///
 /// Item 8: rebuild `all_anchors` via HashMap lookups keyed by anchor_id
-/// rather than scanning `mesh.anchors_v2`, `compacted`, and `unchanged`
+/// rather than scanning `mesh.anchors`, `compacted`, and `unchanged`
 /// linearly per anchor.
 fn apply_compact_attempt(
     repo: &gix::Repository,
@@ -327,7 +327,7 @@ fn apply_compact_attempt(
 
     // Item 8: anchor_id -> &Anchor map for prior mesh state.
     let old_by_id: HashMap<&str, &crate::types::Anchor> = mesh
-        .anchors_v2
+        .anchors
         .iter()
         .map(|(id, a)| (id.as_str(), a))
         .collect();
@@ -367,6 +367,7 @@ fn apply_compact_attempt(
                     path: path_str.clone(),
                     extent: current.extent,
                     blob: blob.clone(),
+                    stored_hash: String::new(),
                 };
                 anchor_records.push(AnchorCompactRecord {
                     anchor_id: ar.anchor_id.clone(),
@@ -402,7 +403,7 @@ fn apply_compact_attempt(
                 ));
                 skipped_stale += 1;
             }
-            AnchorStatus::Orphaned => {
+            AnchorStatus::Deleted => {
                 // HEAD-blob fallback: when the anchored commit is unreachable
                 // (e.g. landed on an intermediate rebase commit that was
                 // garbage-collected), but HEAD's blob at the anchored path
@@ -425,6 +426,7 @@ fn apply_compact_attempt(
                         path: old_anchor.path.clone(),
                         extent: old_anchor.extent,
                         blob: blob.clone(),
+                        stored_hash: String::new(),
                     };
                     anchor_records.push(AnchorCompactRecord {
                         anchor_id: ar.anchor_id.clone(),
@@ -485,8 +487,8 @@ fn apply_compact_attempt(
         let drift_updates = super::path_index::ref_updates_for_mesh(
             repo,
             name,
-            &mesh.anchors_v2,
-            &mesh.anchors_v2,
+            &mesh.anchors,
+            &mesh.anchors,
         )?;
         let repair_updates: Vec<crate::git::RefUpdate> = drift_updates
             .into_iter()
@@ -536,7 +538,7 @@ fn apply_compact_attempt(
         Ok(_new_commit) => {
             // Update path index refs (independent of catalog).
             let path_updates =
-                super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &all_anchors)?;
+                super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors, &all_anchors)?;
             if !path_updates.is_empty() {
                 crate::git::ensure_log_all_ref_updates_always(repo)?;
                 let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);

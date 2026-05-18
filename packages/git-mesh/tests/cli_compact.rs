@@ -86,7 +86,7 @@ fn test_compact_fresh_advances() -> Result<()> {
     let old_tip = mesh_tip_oid(&repo, "m")?;
     let old_gx = repo.gix_repo()?;
     let old_mesh = git_mesh::read_mesh(&old_gx, "m")?;
-    let old_anchor = old_mesh.anchors_v2.first().expect("one anchor");
+    let old_anchor = old_mesh.anchors.first().expect("one anchor");
     let old_anchor_sha = old_anchor.1.anchor_sha.clone();
     let old_anchor_id = old_anchor.0.clone();
     let old_created_at = old_anchor.1.created_at.clone();
@@ -101,7 +101,7 @@ fn test_compact_fresh_advances() -> Result<()> {
 
     let gx = repo.gix_repo()?;
     let new_mesh = git_mesh::read_mesh(&gx, "m")?;
-    let new_anchor = new_mesh.anchors_v2.first().expect("one anchor");
+    let new_anchor = new_mesh.anchors.first().expect("one anchor");
     assert_eq!(new_anchor.0, old_anchor_id, "anchor_id preserved");
     assert_eq!(
         new_anchor.1.anchor_sha, new_head,
@@ -249,7 +249,7 @@ fn test_compact_anchor_id_preserved() -> Result<()> {
     let gx_before = repo.gix_repo()?;
     let mesh_before = git_mesh::read_mesh(&gx_before, "m")?;
     let id_before = mesh_before
-        .anchors_v2
+        .anchors
         .first()
         .expect("one anchor")
         .0
@@ -259,7 +259,7 @@ fn test_compact_anchor_id_preserved() -> Result<()> {
 
     let gx_after = repo.gix_repo()?;
     let mesh_after = git_mesh::read_mesh(&gx_after, "m")?;
-    let id_after = mesh_after.anchors_v2.first().expect("one anchor").0.clone();
+    let id_after = mesh_after.anchors.first().expect("one anchor").0.clone();
 
     assert_eq!(
         id_before, id_after,

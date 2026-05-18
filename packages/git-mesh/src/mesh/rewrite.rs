@@ -119,7 +119,7 @@ fn rewrite_one_mesh(
         let mut skipped_blob_changed = 0u32;
         let mut skipped_path_missing = 0u32;
 
-        for (id, anchor) in &mesh.anchors_v2 {
+        for (id, anchor) in &mesh.anchors {
             let Some(new_sha) = map.get(&anchor.anchor_sha) else {
                 // Not in map — carry over unchanged.
                 new_anchors.push((id.clone(), anchor.clone()));
@@ -151,6 +151,7 @@ fn rewrite_one_mesh(
                             path: anchor.path.clone(),
                             extent: anchor.extent,
                             blob: anchor.blob.clone(),
+                            stored_hash: String::new(),
                         };
                         anchor_records.push(AnchorRewriteRecord {
                             anchor_id: id.clone(),

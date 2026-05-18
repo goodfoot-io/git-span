@@ -63,7 +63,7 @@ impl AnchorReverseIndex {
         let mut anchor_shas: HashSet<gix::ObjectId> = HashSet::new();
 
         for (mesh_name, mesh) in meshes {
-            for (anchor_id, anchor) in &mesh.anchors_v2 {
+            for (anchor_id, anchor) in &mesh.anchors {
                 let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
                     Ok(oid) => oid,
                     Err(_) => continue, // skip malformed SHAs
@@ -400,7 +400,7 @@ impl ResolveSession {
             // Initialize per-anchor state.
             per_anchor = Vec::new();
             for (mesh_name, mesh) in meshes {
-                for (anchor_id, anchor) in &mesh.anchors_v2 {
+                for (anchor_id, anchor) in &mesh.anchors {
                     let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
                         Ok(s) => s,
                         Err(_) => continue,

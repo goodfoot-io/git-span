@@ -5,6 +5,7 @@
 use super::super::session::follow_path_to_head_shared;
 use super::EngineState;
 use crate::git;
+use crate::staging::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
 };
@@ -29,13 +30,13 @@ pub(crate) fn resolve_whole_file(
         extent: AnchorExtent::WholeFile,
         blob: oid_from_hex(&r.blob).ok(),
     };
-    if !state.commit_reachable(repo, &r.anchor_sha)? {
+    if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
             anchored,
             current: None,
-            status: AnchorStatus::Orphaned,
+            status: AnchorStatus::Deleted,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -166,14 +167,56 @@ pub(crate) fn resolve_whole_file(
     let source: Option<DriftSource>;
     let layer_sources: Vec<DriftSource>;
 
-    // Determine which layers independently show drift (blob OID != anchor blob).
-    let head_drifts = head_blob.as_deref() != Some(r.blob.as_str());
-    let index_drifts = state.layers.index && index_blob.as_deref() != Some(r.blob.as_str());
-    let worktree_drifts = state.layers.worktree
-        && worktree_blob
-            .as_ref()
-            .map(|b| b.as_deref() != Some(r.blob.as_str()))
-            .unwrap_or(false);
+    // Determine which layers independently show drift (blob OID != anchor blob,
+    // or SHA-256 of current content != stored_hash).
+    let head_drifts = if !r.stored_hash.is_empty() {
+        match &head_blob {
+            Some(oid) => {
+                let text = git::read_git_text(repo, oid).unwrap_or_default();
+                let computed = format!("sha256:{}", sha256_hex(text.as_bytes()));
+                computed != r.stored_hash
+            }
+            None => true,
+        }
+    } else {
+        head_blob.as_deref() != Some(r.blob.as_str())
+    };
+    let index_drifts = if !r.stored_hash.is_empty() {
+        state.layers.index && match &index_blob {
+            Some(oid) => {
+                let text = git::read_git_text(repo, oid).unwrap_or_default();
+                let computed = format!("sha256:{}", sha256_hex(text.as_bytes()));
+                computed != r.stored_hash
+            }
+            None => true,
+        }
+    } else {
+        state.layers.index && index_blob.as_deref() != Some(r.blob.as_str())
+    };
+    let worktree_drifts = if !r.stored_hash.is_empty() {
+        state.layers.worktree && match &worktree_blob {
+            Some(Some(oid)) => {
+                // Worktree blob OID may not exist in repo (computed via hash_blob).
+                // Re-read file from disk for hash comparison.
+                let abs = workdir.join(&current_path);
+                match std::fs::read(&abs) {
+                    Ok(bytes) => {
+                        let computed = format!("sha256:{}", sha256_hex(&bytes));
+                        computed != r.stored_hash
+                    }
+                    Err(_) => true,
+                }
+            }
+            Some(None) => true,
+            None => false,
+        }
+    } else {
+        state.layers.worktree
+            && worktree_blob
+                .as_ref()
+                .map(|b| b.as_deref() != Some(r.blob.as_str()))
+                .unwrap_or(false)
+    };
 
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
     let current_loc = Some(AnchorLocation {
@@ -187,32 +230,60 @@ pub(crate) fn resolve_whole_file(
             source = Some(deepest);
             layer_sources = vec![deepest];
         }
-        Some(cur) if cur == r.blob && moved => {
-            status = AnchorStatus::Moved;
-            source = Some(deepest);
-            // MOVED: single row per design requirement 4.
-            layer_sources = vec![deepest];
-        }
-        Some(cur) if cur == r.blob => {
-            status = AnchorStatus::Fresh;
-            source = None;
-            layer_sources = vec![];
-        }
-        Some(_) => {
-            status = AnchorStatus::Changed;
-            source = Some(deepest);
-            // Collect all drifting layers in I → W → H order.
-            let mut ls: Vec<DriftSource> = Vec::new();
-            if index_drifts {
-                ls.push(DriftSource::Index);
+        Some(cur) => {
+            // Determine if current content matches the anchored state.
+            let cur_matches = if !r.stored_hash.is_empty() {
+                // File-backed model: compute SHA-256 of deepest-layer content
+                // and compare against stored_hash.
+                let text = match deepest {
+                    DriftSource::Worktree => {
+                        std::fs::read(workdir.join(&current_path)).unwrap_or_default()
+                    }
+                    DriftSource::Index => {
+                        if cur.is_empty() {
+                            Vec::new()
+                        } else {
+                            git::read_git_text(repo, cur).unwrap_or_default().into_bytes()
+                        }
+                    }
+                    DriftSource::Head => {
+                        if cur.is_empty() {
+                            Vec::new()
+                        } else {
+                            git::read_git_text(repo, cur).unwrap_or_default().into_bytes()
+                        }
+                    }
+                };
+                let computed = format!("sha256:{}", sha256_hex(&text));
+                computed == r.stored_hash
+            } else {
+                cur == r.blob
+            };
+            if cur_matches && moved {
+                status = AnchorStatus::Moved;
+                source = Some(deepest);
+                // MOVED: single row per design requirement 4.
+                layer_sources = vec![deepest];
+            } else if cur_matches {
+                status = AnchorStatus::Fresh;
+                source = None;
+                layer_sources = vec![];
+            } else {
+                status = AnchorStatus::Changed;
+                source = Some(deepest);
+                // Collect all drifting layers in I → W → H order.
+                let mut ls: Vec<DriftSource> = Vec::new();
+                if index_drifts {
+                    ls.push(DriftSource::Index);
+                }
+                if worktree_drifts {
+                    ls.push(DriftSource::Worktree);
+                }
+                if head_drifts {
+                    ls.push(DriftSource::Head);
+                }
+                layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
             }
-            if worktree_drifts {
-                ls.push(DriftSource::Worktree);
-            }
-            if head_drifts {
-                ls.push(DriftSource::Head);
-            }
-            layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
         }
     }
 

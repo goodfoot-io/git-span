@@ -16,7 +16,7 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::{append_add, commit_mesh, set_why};
+use git_mesh::{commit_mesh};
 use std::process::Command;
 use support::TestRepo;
 use uuid::Uuid;
@@ -27,12 +27,38 @@ fn sid(prefix: &str) -> String {
 
 fn seed_two_meshes(repo: &TestRepo) -> Result<()> {
     let gix = repo.gix_repo()?;
-    append_add(&gix, "m-file1", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "m-file1", "scoped to file1")?;
+    let workdir = gix.workdir().expect("workdir");
+    let mesh_dir = workdir.join(".mesh");
+    std::fs::create_dir_all(&mesh_dir)?;
+
+    // Compute content hash for file1.txt L1-L5 and file2.txt L1-L5 (same text).
+    let slice_text = "line1\nline2\nline3\nline4\nline5\n";
+    let hash = format!("sha256:{}", git_mesh::staging::sha256_hex(slice_text.as_bytes()));
+
+    let mf1 = git_mesh::mesh_file::MeshFile {
+        anchors: vec![git_mesh::mesh_file::AnchorRecord {
+            path: "file1.txt".into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "sha256".into(),
+            content_hash: hash.clone(),
+        }],
+        why: "scoped to file1".into(),
+    };
+    std::fs::write(mesh_dir.join("m-file1"), mf1.serialize())?;
     commit_mesh(&gix, "m-file1")?;
 
-    append_add(&gix, "m-file2", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m-file2", "scoped to file2")?;
+    let mf2 = git_mesh::mesh_file::MeshFile {
+        anchors: vec![git_mesh::mesh_file::AnchorRecord {
+            path: "file2.txt".into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "sha256".into(),
+            content_hash: hash,
+        }],
+        why: "scoped to file2".into(),
+    };
+    std::fs::write(mesh_dir.join("m-file2"), mf2.serialize())?;
     commit_mesh(&gix, "m-file2")?;
     Ok(())
 }

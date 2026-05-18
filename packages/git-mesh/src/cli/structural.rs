@@ -277,7 +277,7 @@ fn check_legacy_anchor_refs(repo: &gix::Repository, out: &mut Vec<DoctorFinding>
         let Ok(mesh) = crate::mesh::read::read_mesh(repo, &mesh_name) else {
             continue;
         };
-        for (anchor_id, _anchor) in mesh.anchors_v2 {
+        for (anchor_id, _anchor) in mesh.anchors {
             active.insert(anchor_id);
         }
     }

@@ -46,7 +46,7 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
     let catalog = Catalog::load(repo)?;
     let mut out = Vec::new();
     for (name, mesh) in catalog.iter()? {
-        for (_id, r) in mesh.anchors_v2 {
+        for (_id, r) in mesh.anchors {
             let (start, end) = match r.extent {
                 AnchorExtent::LineRange { start, end } => (start, end),
                 AnchorExtent::WholeFile => (0, 0),

@@ -12,15 +12,15 @@ use super::layers::{
 };
 use super::session::ResolveSession;
 
-use crate::mesh::catalog::{CATALOG_REF, Catalog};
-// use crate::mesh::read::read_mesh;
+use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{
-    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
-    MeshResolved, PendingFinding,
+    mesh_from_file, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions,
+    LayerSet, Mesh, MeshResolved, PendingFinding,
 };
 use crate::{Error, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anchor::resolve_anchor_inner;
 use pending::{apply_acknowledgment, build_pending_findings};
@@ -258,10 +258,11 @@ pub fn resolve_anchor(
 
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        let catalog = Catalog::load(repo)?;
-        catalog
-            .lookup(mesh_name)?
-            .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?
+        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let file = reader
+            .read_effective(mesh_name)?
+            .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?;
+        mesh_from_file(mesh_name, &file)
     };
     // Build the reverse-indexed walk so resolve_anchor_inner can consume
     // per-anchor deltas from the shared session.  resolve_anchor_inner
@@ -270,11 +271,11 @@ pub fn resolve_anchor(
     state
         .session
         .build_reverse_walk(repo, &[(mesh_name.to_string(), mesh.clone())])?;
-    let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
+    let mut out = match mesh.anchors.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => {
             resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?
         }
-        None => orphaned_placeholder(anchor_id),
+        None => deleted_placeholder(anchor_id),
     };
     if state.layers.staged_mesh {
         apply_acknowledgment(repo, mesh_name, &mut out);
@@ -322,8 +323,7 @@ fn resolve_mesh_with_state(
 ) -> Result<MeshResolved> {
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        let catalog = Catalog::load(repo)?;
-        catalog
+        crate::mesh::catalog::Catalog::load(repo)?
             .lookup(name)?
             .ok_or_else(|| Error::MeshNotFound(name.to_string()))?
     };
@@ -339,21 +339,17 @@ fn resolve_mesh_with_state_at(
 ) -> Result<MeshResolved> {
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        let commit_obj = repo
-            .find_commit(
-                commit_oid
-                    .parse::<gix::ObjectId>()
-                    .map_err(|e| Error::Git(format!("parse commit oid {commit_oid}: {e}")))?,
-            )
-            .map_err(|e| Error::Git(format!("find commit {commit_oid}: {e}")))?;
-        let tree = commit_obj
-            .tree()
-            .map_err(|e| Error::Git(format!("get commit tree {commit_oid}: {e}")))?;
-        let tree_oid = tree.id().detach().to_string();
-        let catalog = Catalog::load_at(repo, &tree_oid)?;
-        catalog
-            .lookup(name)?
-            .ok_or_else(|| Error::MeshNotFound(name.to_string()))?
+        // Read the mesh file from the tree at the given commit.
+        let mesh_path = format!(".mesh/{name}");
+        let oid = gix::ObjectId::from_str(commit_oid)
+            .map_err(|e| Error::Git(format!("parse oid {commit_oid}: {e}")))?;
+        let text = match crate::git::tree_entry_at(repo, &oid.to_string(), &std::path::Path::new(&mesh_path))? {
+            Some((_mode, blob_oid)) => crate::git::read_git_text(repo, &blob_oid.to_string())?,
+            None => return Err(Error::MeshNotFound(name.to_string())),
+        };
+        let file = crate::mesh_file::MeshFile::parse(&text)
+            .map_err(|_| Error::MeshNotFound(name.to_string()))?;
+        mesh_from_file(name, &file)
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
@@ -430,7 +426,7 @@ fn resolve_loaded_mesh_with_state(
     mesh: crate::types::Mesh,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
-    let mut anchors = Vec::with_capacity(mesh.anchors_v2.len());
+    let mut anchors = Vec::with_capacity(mesh.anchors.len());
     let mut filtered_by_since: usize = 0;
     // Build the reverse-indexed walk if not already built by a batch caller.
     // The walk spans all anchors in this mesh and produces per-anchor commit
@@ -444,8 +440,11 @@ fn resolve_loaded_mesh_with_state(
     }
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
-        for (id, r) in mesh.anchors_v2 {
+        for (id, r) in mesh.anchors {
+            // Since-filter: in the file-backed model anchor_sha is empty, so the
+            // filter is a no-op unless a non-empty anchor_sha is present.
             if let Some(since_oid) = options.since
+                && !r.anchor_sha.is_empty()
                 && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
             {
                 filtered_by_since += 1;
@@ -522,7 +521,7 @@ fn resolve_loaded_mesh_with_state(
 }
 
 /// Populate `AnchorResolved.locus` for anchors whose drift is attributed to
-/// the HEAD layer or whose status is `Orphaned`. For all other states the
+/// the HEAD layer or whose status is `Deleted`. For all other states the
 /// per-layer label (worktree / index) suffices and no walk is needed.
 fn populate_drift_locus(
     repo: &gix::Repository,
@@ -530,7 +529,7 @@ fn populate_drift_locus(
     session: &mut super::session::ResolveSession,
     copy_detection: crate::types::CopyDetection,
 ) {
-    use crate::types::{DriftLocus, DriftSource};
+    use crate::types::DriftSource;
     match resolved.status {
         AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
             if let Ok(locus) =
@@ -539,13 +538,13 @@ fn populate_drift_locus(
                 resolved.locus = locus;
             }
         }
-        AnchorStatus::Orphaned if resolved.locus.is_none() => {
+        AnchorStatus::Deleted if resolved.locus.is_none() => {
             // Ask the walk to describe an orphaning commit when the anchor
-            // is reachable but the path is absent from HEAD; otherwise fall
-            // back to `Unreachable`.
-            match super::attribution::drift_locus(repo, resolved, session, copy_detection) {
-                Ok(Some(locus)) => resolved.locus = Some(locus),
-                _ => resolved.locus = Some(DriftLocus::Unreachable),
+            // is reachable but the path is absent from HEAD.
+            if let Ok(Some(locus)) =
+                super::attribution::drift_locus(repo, resolved, session, copy_detection)
+            {
+                resolved.locus = Some(locus);
             }
         }
         _ => {}
@@ -557,7 +556,7 @@ fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &An
         AnchorStatus::Fresh => session.anchors_fresh += 1,
         AnchorStatus::Moved => session.anchors_moved += 1,
         AnchorStatus::Changed => session.anchors_changed += 1,
-        AnchorStatus::Orphaned => session.anchors_orphaned += 1,
+        AnchorStatus::Deleted => session.anchors_orphaned += 1,
         AnchorStatus::MergeConflict => session.anchors_merge_conflict += 1,
         AnchorStatus::Submodule => session.anchors_unavailable += 1,
         AnchorStatus::ContentUnavailable(_) => session.anchors_unavailable += 1,
@@ -569,7 +568,7 @@ fn status_label(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Fresh => "Fresh",
         AnchorStatus::Moved => "Moved",
         AnchorStatus::Changed => "Changed",
-        AnchorStatus::Orphaned => "Orphaned",
+        AnchorStatus::Deleted => "Deleted",
         AnchorStatus::MergeConflict => "MergeConflict",
         AnchorStatus::Submodule => "Submodule",
         AnchorStatus::ContentUnavailable(_) => "ContentUnavailable",
@@ -603,17 +602,12 @@ pub(crate) fn resolve_named_meshes(
     // Build the reverse-indexed walk once across all named meshes so that
     // per-anchor commit deltas are available to every per-mesh resolver call.
     {
-        let catalog = {
-            let _perf = crate::perf::span("resolver.read-catalog");
-            Catalog::load(repo)?
-        };
+        let _perf = crate::perf::span("resolver.read-mesh-pairs");
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
-                catalog
-                    .lookup(name)
-                    .ok()
-                    .flatten()
+                catalog.lookup(name).ok().flatten()
                     .map(|mesh| (name.clone(), mesh))
             })
             .collect();
@@ -659,10 +653,8 @@ fn stale_meshes_inner(
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
     let mesh_pairs: Vec<(String, Mesh)> = {
-        let catalog = {
-            let _perf = crate::perf::span("resolver.read-catalog");
-            Catalog::load(repo)?
-        };
+        let _perf = crate::perf::span("resolver.read-catalog");
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
         catalog.iter()?
     };
     let mut out = Vec::new();
@@ -689,7 +681,7 @@ fn stale_meshes_inner(
                     can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?;
                 can_skip_clean_head_ns += t.elapsed().as_nanos();
                 if skip {
-                    state.session.anchors_skipped_clean_head += mesh.anchors_v2.len() as u64;
+                    state.session.anchors_skipped_clean_head += mesh.anchors.len() as u64;
                     continue;
                 }
             }
@@ -844,9 +836,6 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
 
-    let Some(catalog_tree_oid) = current_catalog_tree_oid(repo)? else {
-        return Ok(Phase3Attempt::Resolved(Vec::new()));
-    };
     let head_oid = crate::git::head_oid(repo)?;
     let filter_hash = crate::resolver::persist::filter_config_hash(repo);
 
@@ -855,16 +844,34 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
         Err(e) => return Ok(Phase3Attempt::Fallback(format!("open-store: {e}"))),
     };
 
-    let catalog = Catalog::load(repo)?;
-    let mesh_pairs = catalog.iter()?;
-    let catalog_names: Vec<String> = mesh_pairs.iter().map(|(name, _)| name.clone()).collect();
+    let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+    let mesh_pairs: Vec<(String, Mesh)> = catalog.iter()?;
+    let catalog_names: Vec<String> = mesh_pairs.iter().map(|(n, _)| n.clone()).collect();
     let catalog_name_set: HashSet<String> = catalog_names.iter().cloned().collect();
+
+    // Compute a deterministic mesh fingerprint for baseline caching.
+    // In the file-backed model there is no catalog tree OID, so we use
+    // a hash of the sorted mesh names as the cache key.
+    let mesh_fingerprint = {
+        use std::fmt::Write;
+        let mut sorted = catalog_names.clone();
+        sorted.sort();
+        let mut fp = String::new();
+        for n in &sorted {
+            let _ = write!(fp, "{n}\n");
+        }
+        if fp.is_empty() {
+            "empty".to_string()
+        } else {
+            crate::types::sha1_hex(fp.as_bytes())
+        }
+    };
 
     let baseline = {
         let _perf = crate::perf::span("resolver.phase3.baseline");
         match crate::resolver::persist::load_baseline(
             &store,
-            &catalog_tree_oid,
+            &mesh_fingerprint,
             &head_oid,
             &filter_hash,
         ) {
@@ -876,9 +883,9 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
             Ok(None) => {
                 crate::perf::counter("phase3.baseline-hit", 0);
                 crate::perf::counter("phase3.baseline-miss", 1);
-                let meshes = build_phase3_baseline(repo, &catalog_tree_oid, &catalog_names)?;
+                let meshes = build_phase3_baseline(repo, &mesh_fingerprint, &catalog_names)?;
                 let baseline = crate::resolver::persist::CommittedBaseline {
-                    catalog_tree_oid: catalog_tree_oid.clone(),
+                    catalog_tree_oid: mesh_fingerprint.clone(),
                     head_oid: head_oid.clone(),
                     counts: crate::resolver::persist::CommittedBaseline::counts_from_meshes(
                         &meshes,
@@ -916,7 +923,7 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
     };
     let staging_dir = crate::git::mesh_dir(repo).join("staging");
     let (mut dirty_paths, mut overlay_inputs) = crate::resolver::persist::collect_dirty_paths(
-        &catalog_tree_oid,
+        &mesh_fingerprint,
         &head_oid,
         filter_hash,
         index_trailer_start,
@@ -964,11 +971,11 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
     if !dirty_paths.paths.is_empty() {
         let path_index = {
             let _perf = crate::perf::span("resolver.phase3.path-anchor-index");
-            match crate::resolver::persist::load_path_anchor_index(&store, &catalog_tree_oid) {
+            match crate::resolver::persist::load_path_anchor_index(&store, &mesh_fingerprint) {
                 Ok(Some(index)) => index,
                 Ok(None) => {
                     let index = crate::resolver::persist::build_path_anchor_index(
-                        &catalog_tree_oid,
+                        &mesh_fingerprint,
                         mesh_pairs.clone(),
                     );
                     if let Err(e) =
@@ -1076,7 +1083,7 @@ fn phase3_ineligible_reason(options: EngineOptions) -> Option<&'static str> {
 
 fn build_phase3_baseline(
     repo: &gix::Repository,
-    catalog_tree_oid: &str,
+    _fingerprint: &str,
     catalog_names: &[String],
 ) -> Result<Vec<MeshResolved>> {
     let resolved = {
@@ -1098,32 +1105,13 @@ fn build_phase3_baseline(
             Ok(mesh) => meshes.push(mesh),
             Err(Error::MeshNotFound(_)) => {
                 return Err(Error::Git(format!(
-                    "phase3 baseline catalog `{catalog_tree_oid}` listed missing mesh `{name}`"
+                    "phase3 baseline missing mesh `{name}`"
                 )));
             }
             Err(e) => return Err(e),
         }
     }
     Ok(meshes)
-}
-
-fn current_catalog_tree_oid(repo: &gix::Repository) -> Result<Option<String>> {
-    let Some(mut reference) = repo
-        .try_find_reference(CATALOG_REF)
-        .map_err(|e| Error::Git(format!("find catalog ref `{CATALOG_REF}`: {e}")))?
-    else {
-        return Ok(None);
-    };
-    let commit_id = reference
-        .peel_to_id()
-        .map_err(|e| Error::Git(format!("peel catalog ref: {e}")))?;
-    let commit = repo
-        .find_commit(commit_id)
-        .map_err(|e| Error::Git(format!("find catalog commit: {e}")))?;
-    let tree = commit
-        .tree()
-        .map_err(|e| Error::Git(format!("catalog commit tree: {e}")))?;
-    Ok(Some(tree.id().detach().to_string()))
 }
 
 fn is_gitattributes_path(path: &str) -> bool {
@@ -1210,17 +1198,12 @@ pub(crate) fn resolve_meshes_in_order(
 
     // Build the reverse-indexed walk once across all named meshes.
     {
-        let catalog = {
-            let _perf = crate::perf::span("resolver.read-catalog");
-            Catalog::load(repo)?
-        };
+        let _perf = crate::perf::span("resolver.read-mesh-pairs");
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
-                catalog
-                    .lookup(name)
-                    .ok()
-                    .flatten()
+                catalog.lookup(name).ok().flatten()
                     .map(|mesh| (name.clone(), mesh))
             })
             .collect();
@@ -1352,30 +1335,12 @@ fn can_skip_clean_head_pinned_mesh(
     mesh: &crate::types::Mesh,
     options: EngineOptions,
 ) -> Result<bool> {
-    if options.since.is_some() {
-        return Ok(false);
-    }
-    if mesh_has_staged_state(repo, name) {
-        return Ok(false);
-    }
-    for (_, anchor) in &mesh.anchors_v2 {
-        if anchor.anchor_sha != state.head_sha {
-            return Ok(false);
-        }
-        if !anchor_path_is_layer_clean(state, &anchor.path) {
-            return Ok(false);
-        }
-        if state.filter_short_circuit(repo, &anchor.path)?.is_some() {
-            return Ok(false);
-        }
-        let Some(head_blob) = state.head_blob_at(repo, &anchor.path)? else {
-            return Ok(false);
-        };
-        if head_blob != anchor.blob {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    // In the file-backed model, anchor_sha and blob are empty, so we
+    // cannot use the old commit-based fast-path. Always return false
+    // (full resolution) for correctness. A hash-based fast-path can be
+    // added as a future optimization.
+    let _ = (repo, state, name, mesh, options);
+    Ok(false)
 }
 
 /// Returns `true` when the workspace's enabled content layers agree
@@ -1433,7 +1398,7 @@ fn anchor_at_or_after(repo: &gix::Repository, anchor_sha: &str, since: gix::Obje
     }
 }
 
-fn orphaned_placeholder(anchor_id: &str) -> AnchorResolved {
+fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
     AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: String::new(),
@@ -1443,7 +1408,7 @@ fn orphaned_placeholder(anchor_id: &str) -> AnchorResolved {
             blob: None,
         },
         current: None,
-        status: AnchorStatus::Orphaned,
+        status: AnchorStatus::Deleted,
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,

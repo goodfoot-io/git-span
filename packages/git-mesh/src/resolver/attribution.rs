@@ -40,7 +40,7 @@ pub(crate) fn drift_locus(
     // us to describe the orphaning commit (rename or deletion) when the
     // anchor itself is still reachable from HEAD.
     if resolved.source != Some(DriftSource::Head)
-        && !matches!(resolved.status, crate::types::AnchorStatus::Orphaned)
+        && !matches!(resolved.status, crate::types::AnchorStatus::Deleted)
     {
         return Ok(None);
     }
@@ -155,7 +155,7 @@ fn drift_locus_walk(
     };
     let anchor_id = match repo.rev_parse_single(resolved.anchor_sha.as_str()) {
         Ok(id) => id.detach(),
-        Err(_) => return Ok(Some(DriftLocus::Unreachable)),
+        Err(_) => return Ok(None),
     };
 
     // Determine reachability and the anchor..HEAD walk in forward
@@ -163,13 +163,13 @@ fn drift_locus_walk(
     // and reverse.
     let walk = match repo.rev_walk([head_id]).with_hidden([anchor_id]).all() {
         Ok(w) => w,
-        Err(_) => return Ok(Some(DriftLocus::Unreachable)),
+        Err(_) => return Ok(None),
     };
     let mut commits: Vec<gix::ObjectId> = Vec::new();
     for info in walk {
         match info {
             Ok(i) => commits.push(i.id),
-            Err(_) => return Ok(Some(DriftLocus::Unreachable)),
+            Err(_) => return Ok(None),
         }
     }
     if commits.is_empty() {
@@ -303,10 +303,6 @@ fn encode_drift_locus(locus: Option<&DriftLocus>) -> EncodedDriftLocus {
             variant: 3, // None / no locus found
             answer_commit: NULL_COMMIT.to_string(),
         },
-        Some(DriftLocus::Unreachable) => EncodedDriftLocus {
-            variant: 0,
-            answer_commit: NULL_COMMIT.to_string(),
-        },
         Some(DriftLocus::ChangedAt(id)) => EncodedDriftLocus {
             variant: 1,
             answer_commit: id.to_string(),
@@ -333,7 +329,7 @@ fn decode_drift_locus(cached: &EncodedDriftLocus) -> Option<DriftLocus> {
             Some(DriftLocus::OrphanedAt(id))
         }
         3 => None, // "no locus found" sentinel
-        _ => Some(DriftLocus::Unreachable),
+        _ => None,
     }
 }
 

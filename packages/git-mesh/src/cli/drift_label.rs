@@ -64,14 +64,14 @@ pub fn format_drift_label(
                 Some(DriftLocus::OrphanedAt(oid)) => {
                     format!("orphaned in {}", short_sha(oid))
                 }
-                Some(DriftLocus::Unreachable) | None => "changed".to_string(),
+                None => "changed".to_string(),
             },
             None => "changed".to_string(),
         },
-        AnchorStatus::Orphaned => match locus {
+        AnchorStatus::Deleted => match locus {
             Some(DriftLocus::OrphanedAt(oid)) => format!("orphaned in {}", short_sha(oid)),
             Some(DriftLocus::ChangedAt(oid)) => format!("orphaned in {}", short_sha(oid)),
-            Some(DriftLocus::Unreachable) | None => "orphaned".to_string(),
+            None => "orphaned".to_string(),
         },
         // The non-Changed/Orphaned arms keep their existing vocabulary; the
         // callers handle them directly (this formatter is the source of

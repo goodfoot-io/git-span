@@ -14,9 +14,8 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::{append_add, commit_mesh, set_why};
 use std::process::Output;
-use support::TestRepo;
+use support::{create_and_commit_mesh, TestRepo};
 use uuid::Uuid;
 
 fn sid(prefix: &str) -> String {
@@ -68,10 +67,11 @@ fn same_session_read_emits_advice() -> Result<()> {
     establish_baseline(&repo, &s)?;
 
     // Commit mesh
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "same-session pair")?;
-    commit_mesh(&gix, "m1")?;
+    create_and_commit_mesh(
+        &gix, "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "same-session pair",
+    )?;
 
     // Observe the new mesh
     observe_new_mesh(&repo, &s)?;
@@ -104,10 +104,11 @@ fn prior_session_read_is_silent() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // Pre-commit mesh (exists before any session)
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "prior-session pair")?;
-    commit_mesh(&gix, "m1")?;
+    create_and_commit_mesh(
+        &gix, "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "prior-session pair",
+    )?;
 
     // Session: read a meshed file (first read snapshots baseline)
     let s = sid("test2");
@@ -137,10 +138,11 @@ fn touch_on_prior_session_mesh_emits() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // Pre-commit mesh
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "write-path pair")?;
-    commit_mesh(&gix, "m1")?;
+    create_and_commit_mesh(
+        &gix, "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "write-path pair",
+    )?;
 
     // Touch is recording-only and silent; the on-demand `flush` surfaces the
     // accumulated session advice.
@@ -178,10 +180,11 @@ fn cross_session_isolation() -> Result<()> {
     let s_a = sid("test4a");
     establish_baseline(&repo, &s_a)?;
 
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "session-a mesh")?;
-    commit_mesh(&gix, "m1")?;
+    create_and_commit_mesh(
+        &gix, "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "session-a mesh",
+    )?;
 
     observe_new_mesh(&repo, &s_a)?;
 
@@ -219,10 +222,11 @@ fn direct_commit_detected() -> Result<()> {
     establish_baseline(&repo, &s)?;
 
     // Create and commit mesh directly via library
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "direct commit")?;
-    commit_mesh(&gix, "m1")?;
+    create_and_commit_mesh(
+        &gix, "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "direct commit",
+    )?;
 
     // Observe detects the new ref
     observe_new_mesh(&repo, &s)?;
@@ -247,10 +251,11 @@ fn recommit_mesh_detected_by_oid_change() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // Pre-commit mesh "demo" with initial anchors
-    append_add(&gix, "demo", "file1.txt", 1, 3, None)?;
-    append_add(&gix, "demo", "file2.txt", 1, 3, None)?;
-    set_why(&gix, "demo", "initial commit")?;
-    commit_mesh(&gix, "demo")?;
+    create_and_commit_mesh(
+        &gix, "demo",
+        &[("file1.txt", 1, 3), ("file2.txt", 1, 3)],
+        "initial commit",
+    )?;
 
     let s = sid("test6");
 
@@ -258,11 +263,11 @@ fn recommit_mesh_detected_by_oid_change() -> Result<()> {
     establish_baseline(&repo, &s)?;
 
     // Re-commit mesh "demo" with updated anchors -> OID changes
-    git_mesh::clear_staging(&gix, "demo")?;
-    append_add(&gix, "demo", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "demo", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "demo", "re-committed with wider range")?;
-    commit_mesh(&gix, "demo")?;
+    create_and_commit_mesh(
+        &gix, "demo",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "re-committed with wider range",
+    )?;
 
     // Observe -> OID changed -> name appended to meshes_committed
     observe_new_mesh(&repo, &s)?;

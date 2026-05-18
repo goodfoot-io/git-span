@@ -313,6 +313,63 @@ pub fn commit_mesh(repo: &gix::Repository, mesh: &str) -> git_mesh::Result<Strin
     git_mesh::mesh::commit_mesh(repo, mesh)
 }
 
+/// Create a .mesh/<name> file with the given anchors and why, then commit.
+/// This is the file-backed equivalent of `append_add` + `set_why` + `commit_mesh`.
+/// Each anchor is `(path, start, end)`; `(file, 0, 0)` means whole-file.
+///
+/// The content hash is computed by reading the file from the worktree.
+#[allow(dead_code)]
+pub fn create_and_commit_mesh(
+    repo: &gix::Repository,
+    name: &str,
+    anchors: &[(&str, u32, u32)],
+    why: &str,
+) -> Result<()> {
+    let workdir = repo.workdir().expect("workdir");
+    let mesh_dir = workdir.join(".mesh");
+    std::fs::create_dir_all(&mesh_dir)?;
+
+    let mut records: Vec<git_mesh::mesh_file::AnchorRecord> = Vec::with_capacity(anchors.len());
+    for (path, start, end) in anchors {
+        // Read file and extract the anchored lines.
+        let content = std::fs::read_to_string(workdir.join(path))
+            .unwrap_or_else(|_| panic!("read {path}"));
+        let slice_text = if *start == 0 && *end == 0 {
+            content.clone()
+        } else {
+            let lines: Vec<&str> = content.lines().collect();
+            let lo = (*start as usize).saturating_sub(1);
+            let hi = (*end as usize).min(lines.len());
+            if lo < hi {
+                let mut s = lines[lo..hi].join("\n");
+                if content.ends_with('\n') {
+                    s.push('\n');
+                }
+                s
+            } else {
+                String::new()
+            }
+        };
+        let hash = format!("sha256:{}", git_mesh::staging::sha256_hex(slice_text.as_bytes()));
+
+        records.push(git_mesh::mesh_file::AnchorRecord {
+            path: path.to_string(),
+            start_line: *start,
+            end_line: *end,
+            algorithm: "sha256".into(),
+            content_hash: hash,
+        });
+    }
+
+    let mf = git_mesh::mesh_file::MeshFile {
+        anchors: records,
+        why: why.to_string(),
+    };
+    std::fs::write(mesh_dir.join(name), mf.serialize())?;
+    git_mesh::mesh::commit_mesh(repo, name)?;
+    Ok(())
+}
+
 /// Bare upstream repo, for `fetch`/`push` round-trips.
 #[allow(dead_code)]
 pub struct BareRepo {

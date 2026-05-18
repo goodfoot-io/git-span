@@ -316,7 +316,7 @@ fn commit_reanchor_replaces_moved_range_instead_of_adding_duplicate() -> Result<
     repo.mesh_stdout(["commit", "m"])?;
     let mesh = git_mesh::read_mesh(&repo.gix_repo()?, "m")?;
     assert_eq!(mesh.anchors.len(), 1, "re-anchor must replace old anchor");
-    let anchor = git_mesh::read_anchor(&repo.gix_repo()?, &mesh.anchors[0])?;
+    let anchor = git_mesh::read_anchor(&repo.gix_repo()?, &mesh.anchors[0].0)?;
     assert_eq!(anchor.path, "file1.txt");
     assert_eq!(
         anchor.extent,
@@ -725,7 +725,7 @@ fn git_mv_across_pinned_file_reports_orphaned() -> Result<()> {
     repo.commit_all("rename")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
-    assert_eq!(r.status, AnchorStatus::Orphaned);
+    assert_eq!(r.status, AnchorStatus::Deleted);
     // Anchored path unchanged.
     assert_eq!(r.anchored.path, PathBuf::from("file1.txt"));
     // No current location once orphaned.

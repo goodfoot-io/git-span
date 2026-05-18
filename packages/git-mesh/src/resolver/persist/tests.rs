@@ -97,14 +97,55 @@ fn fixture_two_meshes() -> Fixture {
     git(p, &["add", "."]);
     git(p, &["commit", "-m", "seed"]);
 
+    // Write .mesh/ files directly (file-backed model) and commit.
     let repo = f.repo();
-    crate::staging::append_add(&repo, "alpha", "a.txt", 1, 3, None).unwrap();
-    crate::staging::append_add(&repo, "alpha", "b.txt", 2, 4, None).unwrap();
-    crate::staging::set_why(&repo, "alpha", "alpha description").unwrap();
+    let workdir = repo.workdir().expect("workdir");
+    let mesh_dir = workdir.join(".mesh");
+    std::fs::create_dir_all(&mesh_dir).expect("create .mesh dir");
+
+    // Compute content hashes for the line-range anchors.
+    let a13 = "a-line-1\na-line-2\na-line-3\n";
+    let b24 = "b-line-2\nb-line-3\nb-line-4\n";
+    let c15 = "c-line-1\nc-line-2\nc-line-3\nc-line-4\nc-line-5\n";
+    let hash_a13 = format!("sha256:{}", crate::staging::sha256_hex(a13.as_bytes()));
+    let hash_b24 = format!("sha256:{}", crate::staging::sha256_hex(b24.as_bytes()));
+    let hash_c15 = format!("sha256:{}", crate::staging::sha256_hex(c15.as_bytes()));
+
+    let alpha_mf = crate::mesh_file::MeshFile {
+        anchors: vec![
+            crate::mesh_file::AnchorRecord {
+                path: "a.txt".into(),
+                start_line: 1,
+                end_line: 3,
+                algorithm: "sha256".into(),
+                content_hash: hash_a13,
+            },
+            crate::mesh_file::AnchorRecord {
+                path: "b.txt".into(),
+                start_line: 2,
+                end_line: 4,
+                algorithm: "sha256".into(),
+                content_hash: hash_b24,
+            },
+        ],
+        why: "alpha description".into(),
+    };
+    std::fs::write(mesh_dir.join("alpha"), alpha_mf.serialize()).expect("write .mesh/alpha");
     crate::mesh::commit_mesh(&repo, "alpha").unwrap();
 
-    crate::staging::append_add(&repo, "beta", "c.txt", 1, 5, None).unwrap();
-    crate::staging::set_why(&repo, "beta", "beta description").unwrap();
+    let beta_mf = crate::mesh_file::MeshFile {
+        anchors: vec![
+            crate::mesh_file::AnchorRecord {
+                path: "c.txt".into(),
+                start_line: 0,
+                end_line: 0,
+                algorithm: "sha256".into(),
+                content_hash: hash_c15,
+            },
+        ],
+        why: "beta description".into(),
+    };
+    std::fs::write(mesh_dir.join("beta"), beta_mf.serialize()).expect("write .mesh/beta");
     crate::mesh::commit_mesh(&repo, "beta").unwrap();
 
     // Resolver requires a commit-graph with changed-path Bloom filters.

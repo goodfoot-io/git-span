@@ -50,7 +50,7 @@ pub fn delete_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
     }
 
     // Update path index refs (independent of catalog).
-    let updates = super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &[])?;
+    let updates = super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors, &[])?;
     if !updates.is_empty() {
         crate::git::ensure_log_all_ref_updates_always(repo)?;
         crate::git::apply_ref_transaction_repo(repo, &updates)
@@ -97,7 +97,7 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
     }
 
     // Update path index refs (independent of catalog).
-    let updates = super::path_index::ref_updates_for_rename(repo, old, new, &mesh.anchors_v2)?;
+    let updates = super::path_index::ref_updates_for_rename(repo, old, new, &mesh.anchors)?;
     if !updates.is_empty() {
         crate::git::ensure_log_all_ref_updates_always(repo)?;
         crate::git::apply_ref_transaction_repo(repo, &updates)

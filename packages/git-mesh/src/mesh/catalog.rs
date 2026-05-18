@@ -299,14 +299,12 @@ pub(crate) fn commit_catalog(
 pub(crate) fn build_mesh(
     name: &str,
     message: &str,
-    anchors_v2: &[(String, crate::types::Anchor)],
+    anchors: &[(String, crate::types::Anchor)],
     config: &crate::types::MeshConfig,
 ) -> crate::types::Mesh {
-    let anchors = anchors_v2.iter().map(|(id, _)| id.clone()).collect();
     crate::types::Mesh {
         name: name.to_string(),
-        anchors,
-        anchors_v2: anchors_v2.to_vec(),
+        anchors: anchors.to_vec(),
         message: message.to_string(),
         config: *config,
     }
@@ -360,8 +358,7 @@ mod tests {
     fn sample_mesh(name: &str) -> Mesh {
         Mesh {
             name: name.into(),
-            anchors: vec!["a1".into()],
-            anchors_v2: vec![(
+            anchors: vec![(
                 "a1".into(),
                 Anchor {
                     anchor_sha: "abc123".into(),
@@ -369,6 +366,7 @@ mod tests {
                     path: "src/main.rs".into(),
                     extent: AnchorExtent::WholeFile,
                     blob: "def456".into(),
+                    stored_hash: String::new(),
                 },
             )],
             message: "Test mesh".into(),

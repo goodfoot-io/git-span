@@ -150,7 +150,7 @@ impl CommittedBaseline {
                     Fresh => c.anchors_fresh += 1,
                     Moved => c.anchors_moved += 1,
                     Changed => c.anchors_changed += 1,
-                    Orphaned => c.anchors_orphaned += 1,
+                    Deleted => c.anchors_orphaned += 1,
                     MergeConflict => c.anchors_merge_conflict += 1,
                     Submodule | ContentUnavailable(_) => c.anchors_unavailable += 1,
                 }

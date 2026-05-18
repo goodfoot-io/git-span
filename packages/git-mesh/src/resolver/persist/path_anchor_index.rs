@@ -147,7 +147,7 @@ where
     let mut by_path: HashMap<Arc<[u8]>, Vec<AnchorIndexEntry>> = HashMap::new();
     for (_, mesh) in meshes {
         let cfg_hash = config_hash(&mesh.config);
-        for (anchor_id, anchor) in &mesh.anchors_v2 {
+        for (anchor_id, anchor) in &mesh.anchors {
             let key: Arc<[u8]> = Arc::from(anchor.path.as_bytes().to_vec().into_boxed_slice());
             by_path
                 .entry(key)

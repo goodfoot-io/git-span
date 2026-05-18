@@ -13,6 +13,7 @@
 //! and future library consumers) to match on variants without string
 //! matching, which is the idiomatic Rust public-API choice.
 
+use crate::mesh_file::MeshFile;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,21 +26,27 @@ pub enum AnchorExtent {
     LineRange { start: u32, end: u32 },
 }
 
-/// In-memory representation of the Anchor record stored at
-/// `refs/anchors/v1/<anchorId>`. The id itself is the ref name suffix and
-/// is not repeated in the blob.
+/// In-memory representation of an Anchor derived from a mesh file anchor record.
+///
+/// The anchor carries the content's SHA-256 hash (stored_hash) for freshness
+/// comparison instead of the old blob-OID / commit-based anchoring. Fields
+/// that were previously populated from commit metadata (anchor_sha, created_at,
+/// blob) are now empty strings.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Anchor {
-    /// Commit this anchor was anchored to at creation.
+    /// Commit this anchor was anchored to at creation (empty in new model).
     pub anchor_sha: String,
-    /// ISO-8601 creation timestamp.
+    /// ISO-8601 creation timestamp (empty in new model).
     pub created_at: String,
     /// File path at the anchor commit.
     pub path: String,
     /// Extent (whole-file or line-anchor) pinned by this anchor.
     pub extent: AnchorExtent,
-    /// Blob OID of `path` at `anchor_sha`.
+    /// Blob OID of `path` at `anchor_sha` (empty in new model).
     pub blob: String,
+    /// Content hash from the mesh file anchor record (e.g. "sha256:<hex>").
+    /// Used for freshness comparison instead of blob OID.
+    pub stored_hash: String,
 }
 
 /// `-C` levels for `git log -L` copy detection. Stored in mesh config,
@@ -66,18 +73,54 @@ pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
 pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
 pub const DEFAULT_FOLLOW_MOVES: bool = false;
 
-/// A Mesh is a commit whose tree contains `anchors` and `config` files
-/// and whose commit message is the Mesh's message.
+/// Convert a [`MeshFile`] into a [`Mesh`] by translating each anchor record
+/// into an `Anchor` struct with `stored_hash` set to `"<algorithm>:<content_hash>"`.
+pub fn mesh_from_file(name: &str, file: &MeshFile) -> Mesh {
+    let anchors: Vec<(String, Anchor)> = file
+        .anchors
+        .iter()
+        .map(|a| {
+            let id = format!("{}:{}:L{}-L{}", name, a.path, a.start_line, a.end_line);
+            (
+                id,
+                Anchor {
+                    anchor_sha: String::new(),
+                    created_at: String::new(),
+                    path: a.path.clone(),
+                    extent: if a.start_line == 0 && a.end_line == 0 {
+                        AnchorExtent::WholeFile
+                    } else {
+                        AnchorExtent::LineRange {
+                            start: a.start_line,
+                            end: a.end_line,
+                        }
+                    },
+                    blob: String::new(),
+                    stored_hash: format!("{}:{}", a.algorithm, a.content_hash),
+                },
+            )
+        })
+        .collect();
+    Mesh {
+        name: name.to_string(),
+        anchors,
+        message: file.why.clone(),
+        config: MeshConfig {
+            copy_detection: DEFAULT_COPY_DETECTION,
+            ignore_whitespace: DEFAULT_IGNORE_WHITESPACE,
+            follow_moves: DEFAULT_FOLLOW_MOVES,
+        },
+    }
+}
+
+/// A Mesh derived from a mesh file (text-based tracked storage).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Mesh {
-    /// The Mesh's name (ref suffix; the identity).
+    /// The Mesh's name.
     pub name: String,
-    /// Active Anchor ids, retained as a compatibility view over
-    /// `anchors_v2` for callers that only need stable identities.
-    pub anchors: Vec<String>,
-    /// Active Embedded Anchors (v2 layout).
-    pub anchors_v2: Vec<(String, Anchor)>,
-    /// The commit's message.
+    /// Active anchors: (anchor_id, Anchor) pairs in stored order.
+    pub anchors: Vec<(String, Anchor)>,
+    /// The mesh's "why" message (from the mesh file, after the first blank line).
     pub message: String,
     /// Resolver options for all anchors in this mesh.
     pub config: MeshConfig,
@@ -113,8 +156,8 @@ pub enum AnchorStatus {
     Moved,
     /// Anchored bytes differ from current bytes, including complete deletion.
     Changed,
-    /// `anchor_sha` is not reachable from any ref.
-    Orphaned,
+    /// Anchored path is absent from the current content layer (renamed, moved, or deleted).
+    Deleted,
     /// No stage-0 index entry for the path.
     MergeConflict,
     /// Path is a gitlink; rejected at `add`, surfaces if legacy.
@@ -169,8 +212,6 @@ pub enum DriftLocus {
     /// Commit that removed (or renamed) the path; anchored content is
     /// gone from HEAD.
     OrphanedAt(gix::ObjectId),
-    /// Anchor commit is not reachable from HEAD; no commit can be named.
-    Unreachable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -998,11 +1039,11 @@ fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
 /// Lowercase hex SHA-1 of `bytes`. We avoid pulling in another crate by
 /// shelling out to `git hash-object --stdin` in --no-filters mode? Too
 /// heavy. Inline a tiny implementation.
-fn sha1_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha1_hex(bytes: &[u8]) -> String {
     use_sha1::sha1_hex(bytes)
 }
 
-mod use_sha1 {
+pub(crate) mod use_sha1 {
     /// Minimal SHA-1. Returns lowercase hex.
     pub fn sha1_hex(input: &[u8]) -> String {
         let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];

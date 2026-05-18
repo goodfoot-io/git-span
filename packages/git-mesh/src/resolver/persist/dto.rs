@@ -142,7 +142,7 @@ impl From<&AnchorStatus> for AnchorStatusDto {
             AnchorStatus::Fresh => AnchorStatusDto::Fresh,
             AnchorStatus::Moved => AnchorStatusDto::Moved,
             AnchorStatus::Changed => AnchorStatusDto::Changed,
-            AnchorStatus::Orphaned => AnchorStatusDto::Orphaned,
+            AnchorStatus::Deleted => AnchorStatusDto::Orphaned,
             AnchorStatus::MergeConflict => AnchorStatusDto::MergeConflict,
             AnchorStatus::Submodule => AnchorStatusDto::Submodule,
             AnchorStatus::ContentUnavailable(r) => AnchorStatusDto::ContentUnavailable(r.into()),
@@ -156,7 +156,7 @@ impl From<AnchorStatusDto> for AnchorStatus {
             AnchorStatusDto::Fresh => AnchorStatus::Fresh,
             AnchorStatusDto::Moved => AnchorStatus::Moved,
             AnchorStatusDto::Changed => AnchorStatus::Changed,
-            AnchorStatusDto::Orphaned => AnchorStatus::Orphaned,
+            AnchorStatusDto::Orphaned => AnchorStatus::Deleted,
             AnchorStatusDto::MergeConflict => AnchorStatus::MergeConflict,
             AnchorStatusDto::Submodule => AnchorStatus::Submodule,
             AnchorStatusDto::ContentUnavailable(r) => AnchorStatus::ContentUnavailable(r.into()),
@@ -195,7 +195,6 @@ impl From<DriftSourceDto> for DriftSource {
 pub(crate) enum DriftLocusDto {
     ChangedAt(String),
     OrphanedAt(String),
-    Unreachable,
 }
 
 impl From<DriftLocus> for DriftLocusDto {
@@ -203,7 +202,6 @@ impl From<DriftLocus> for DriftLocusDto {
         match l {
             DriftLocus::ChangedAt(oid) => DriftLocusDto::ChangedAt(oid.to_string()),
             DriftLocus::OrphanedAt(oid) => DriftLocusDto::OrphanedAt(oid.to_string()),
-            DriftLocus::Unreachable => DriftLocusDto::Unreachable,
         }
     }
 }
@@ -220,7 +218,6 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
                 gix::ObjectId::from_str(&s)
                     .map_err(|e| crate::Error::Git(format!("phase3 dto: parse locus oid: {e}")))?,
             ),
-            DriftLocusDto::Unreachable => DriftLocus::Unreachable,
         })
     }
 }

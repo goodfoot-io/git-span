@@ -84,7 +84,7 @@ fn same_commit_all_modes_detect_move() -> Result<()> {
         let mr = resolve_mesh(&gix, mesh, EngineOptions::committed_only())?;
         let status = &mr.anchors[0].status;
         assert!(
-            matches!(status, AnchorStatus::Orphaned),
+            matches!(status, AnchorStatus::Deleted),
             "mode={mode:?}: committed cross-path rename detaches anchor; \
              expected Orphaned, got {status:?}"
         );

@@ -122,6 +122,7 @@ fn create_anchor_with_extent_inner(
         path: path.to_string(),
         extent,
         blob,
+        stored_hash: String::new(),
     };
     let id = Uuid::new_v4().to_string();
     Ok((id, anchor))
@@ -238,6 +239,7 @@ pub fn parse_anchor(text: &str) -> Result<Anchor> {
         path,
         extent,
         blob,
+        stored_hash: String::new(),
     })
 }
 
@@ -266,7 +268,7 @@ pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
     let catalog = Catalog::load(repo)?;
     for (_, mesh) in catalog.iter()? {
         if let Some((_id, anchor)) = mesh
-            .anchors_v2
+            .anchors
             .into_iter()
             .find(|(id, _anchor)| id == anchor_id)
         {

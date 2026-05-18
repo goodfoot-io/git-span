@@ -26,6 +26,7 @@ fn parse_serialize_round_trip() -> Result<()> {
         path: "src/auth.ts".into(),
         extent: AnchorExtent::LineRange { start: 13, end: 34 },
         blob: "cafebabecafebabecafebabecafebabecafebabe".into(),
+        stored_hash: String::new(),
     };
     let text = serialize_anchor(&original);
     assert!(text.ends_with('\n'), "spec §4.1 mandates trailing newline");

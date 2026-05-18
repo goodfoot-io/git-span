@@ -560,7 +560,7 @@ fn describe_finding(f: &Finding) -> String {
                 }
             }
         }
-        AnchorStatus::Orphaned => {
+        AnchorStatus::Deleted => {
             let label = super::drift_label::format_drift_label(
                 &f.status,
                 f.source,
@@ -644,7 +644,7 @@ fn describe_finding_lower(f: &Finding) -> String {
                 format!("moved {src}")
             }
         }
-        AnchorStatus::Orphaned => super::drift_label::format_drift_label(
+        AnchorStatus::Deleted => super::drift_label::format_drift_label(
             &f.status,
             f.source,
             f.locus.as_ref(),
@@ -700,7 +700,7 @@ fn status_str(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Fresh => "FRESH",
         AnchorStatus::Moved => "MOVED",
         AnchorStatus::Changed => "CHANGED",
-        AnchorStatus::Orphaned => "ORPHANED",
+        AnchorStatus::Deleted => "ORPHANED",
         AnchorStatus::MergeConflict => "MERGE_CONFLICT",
         AnchorStatus::Submodule => "SUBMODULE",
         AnchorStatus::ContentUnavailable(reason) => match reason {
@@ -719,7 +719,7 @@ fn status_word(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Fresh => "Fresh",
         AnchorStatus::Moved => "Moved",
         AnchorStatus::Changed => "Changed",
-        AnchorStatus::Orphaned => "Orphaned",
+        AnchorStatus::Deleted => "Orphaned",
         AnchorStatus::MergeConflict => "Merge conflict",
         AnchorStatus::Submodule => "Submodule",
         AnchorStatus::ContentUnavailable(_) => "Content unavailable",
@@ -1206,7 +1206,7 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "locus": match f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
             Some(DriftLocus::OrphanedAt(oid)) => json!({ "orphaned_in": oid.to_string() }),
-            Some(DriftLocus::Unreachable) | None => Value::Null,
+            None => Value::Null,
         },
     })
 }
@@ -1552,6 +1552,7 @@ mod tests {
             path: path.to_string(),
             extent: AnchorExtent::LineRange { start, end },
             blob: "0000000000000000000000000000000000000000".to_string(),
+            stored_hash: String::new(),
         }
     }
 
@@ -1561,7 +1562,6 @@ mod tests {
         let mesh = crate::types::Mesh {
             name: name.to_string(),
             anchors: vec![],
-            anchors_v2: vec![],
             message: String::new(),
             config: MeshConfig {
                 copy_detection: crate::types::CopyDetection::SameCommit,

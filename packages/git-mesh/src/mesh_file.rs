@@ -139,8 +139,11 @@ impl MeshFile {
 /// - `<path> <algorithm>:<content-hash>`
 /// - `<path>#L<start>-L<end> <algorithm>:<content-hash>`
 fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
-    // Split at the first space.
-    let space_pos = line.find(' ').ok_or_else(|| {
+    // Split at the last space. Using rfind ensures paths containing
+    // spaces (e.g. "dir with spaces/file.txt#L1-L5") are handled
+    // correctly, because the hash token `algorithm:content_hash` never
+    // contains spaces.
+    let space_pos = line.rfind(' ').ok_or_else(|| {
         Error::InvalidMeshFile(format!(
             "malformed anchor line: no space found in `{line}`"
         ))

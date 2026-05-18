@@ -75,7 +75,7 @@ pub(crate) fn matching_mesh_names_glob(
     // Committed meshes.
     let catalog = Catalog::load(repo)?;
     for (name, mesh) in catalog.iter()? {
-        for (_id, anchor) in &mesh.anchors_v2 {
+        for (_id, anchor) in &mesh.anchors {
             if !glob.is_match(&anchor.path) {
                 continue;
             }
@@ -326,6 +326,7 @@ mod tests {
             path: path.to_string(),
             extent: AnchorExtent::LineRange { start, end },
             blob: "0000000000000000000000000000000000000000".to_string(),
+            stored_hash: String::new(),
         }
     }
 

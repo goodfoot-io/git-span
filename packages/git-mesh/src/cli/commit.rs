@@ -177,6 +177,45 @@ fn write_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str, mesh
     Ok(())
 }
 
+/// Check for prefix collision between a new mesh name and existing worktree
+/// mesh files.  The filesystem enforces that two paths cannot coexist when
+/// one is a strict prefix of the other (e.g. `a/b` and `a/b/c`).
+///
+/// Returns `Ok(())` when no collision exists, or an error describing the
+/// collision with both mesh names.
+fn check_worktree_prefix_collision(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    name: &str,
+) -> std::result::Result<(), crate::Error> {
+    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
+    let known_names = reader.list_mesh_names()?;
+    for other in &known_names {
+        if other == name {
+            continue;
+        }
+        // `other` is a strict ancestor of `name`.
+        if let Some(rest) = name.strip_prefix(other.as_str())
+            && rest.starts_with('/')
+        {
+            return Err(crate::Error::MeshNameCollidesWithExistingMesh {
+                staged: name.to_string(),
+                blocking: other.clone(),
+            });
+        }
+        // `other` is a strict descendant of `name`.
+        if let Some(rest) = other.strip_prefix(name)
+            && rest.starts_with('/')
+        {
+            return Err(crate::Error::MeshNameCollidesWithExistingMesh {
+                staged: name.to_string(),
+                blocking: other.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // add
 // ---------------------------------------------------------------------------
@@ -309,6 +348,19 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) ->
         let _perf = crate::perf::span("add.resolve-mesh-root");
         resolve_mesh_root_for(repo, mesh_dir)?
     };
+
+    // Check for prefix collision against existing worktree mesh files
+    // before any file I/O.  The filesystem would reject the read/write
+    // with a cryptic OS error, so we surface a structured mesh error.
+    check_worktree_prefix_collision(repo, &mesh_root, &args.name)
+        .map_err(|e| CliError {
+            subcommand: "add",
+            summary: format!("cannot add mesh `{}`", args.name),
+            what_happened: e.to_string(),
+            next_steps: vec![NextStep::Prose(
+                "Rename the mesh to avoid the prefix collision.".into(),
+            )],
+        })?;
 
     // Read the current worktree mesh file.
     let mut mesh_file = {
@@ -709,25 +761,47 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     }
 
     // No mesh name given: commit every mesh that has a non-empty staging
-    // area (post-commit hook path, §10.2).
+    // area or a modified .mesh/ worktree file (§10.2).
     let candidates: std::collections::BTreeSet<String> = {
         let _perf = crate::perf::span("commit.scan-staging");
-        crate::staging::list_staged_mesh_names(repo)?
-            .into_iter()
-            .collect()
+        let staging_names: std::collections::BTreeSet<String> =
+            crate::staging::list_staged_mesh_names(repo)?
+                .into_iter()
+                .collect();
+        let file_names: std::collections::BTreeSet<String> =
+            crate::mesh::read::list_mesh_names(repo)?
+                .into_iter()
+                .collect();
+        staging_names.union(&file_names).cloned().collect()
     };
 
     let mut staged: Vec<String> = Vec::new();
     {
         let _perf = crate::perf::span("commit.read-staging");
+        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
         for name in candidates {
             let s = crate::staging::read_staging(repo, &name).unwrap_or_default();
-            let has_anything = !s.adds.is_empty()
+            let has_staging = !s.adds.is_empty()
                 || !s.removes.is_empty()
                 || !s.configs.is_empty()
                 || s.why.is_some();
-            if has_anything {
+            if has_staging {
                 staged.push(name);
+                continue;
+            }
+            // No staging — check if the .mesh/ file differs from the catalog.
+            let mesh_root = ".mesh";
+            if let Ok(mf) = read_worktree_mesh(repo, mesh_root, &name) {
+                let mesh_file_changed = match catalog.lookup(&name)? {
+                    Some(cat_mesh) => {
+                        let w_mesh = crate::types::mesh_from_file(&name, &mf);
+                        w_mesh != cat_mesh
+                    }
+                    None => !mf.anchors.is_empty() || !mf.why.is_empty(),
+                };
+                if mesh_file_changed {
+                    staged.push(name);
+                }
             }
         }
     }
@@ -859,15 +933,21 @@ fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
         || staging.why.is_some();
 
     if !has_anything {
-        // Check if the mesh even exists in the catalog.
+        // Check if the mesh exists in the catalog OR as a worktree mesh file.
         let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-        if catalog.lookup(name)?.is_none() {
+        let mesh_file_exists = repo
+            .workdir()
+            .map(|wd| {
+                let p = wd.join(".mesh").join(name);
+                p.exists()
+            })
+            .unwrap_or(false);
+        if catalog.lookup(name)?.is_none() && !mesh_file_exists {
             return Err(CliError {
                 subcommand: "commit",
                 summary: format!("no mesh named `{name}`."),
                 what_happened: format!(
-                    "No catalog entry for `{name}` and no staging area under \
-                     `.git/mesh/staging/{name}`."
+                    "No catalog entry for `{name}` and no `.mesh/{name}` file."
                 ),
                 next_steps: vec![
                     NextStep::Bash("git mesh list".into()),
@@ -1169,7 +1249,7 @@ fn mesh_range_id_lookup(
     let Ok(mesh) = read_mesh(repo, mesh_name) else {
         return out;
     };
-    for (id, r) in &mesh.anchors_v2 {
+    for (id, r) in &mesh.anchors {
         out.insert((r.path.clone(), r.extent), id.clone());
     }
     out

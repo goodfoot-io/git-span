@@ -9,6 +9,7 @@ use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
+use crate::staging::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
     UnavailableReason,
@@ -98,13 +99,13 @@ pub(crate) fn resolve_anchor_inner(
         extent: r.extent,
         blob: oid_from_hex(&r.blob).ok(),
     };
-    if !state.commit_reachable(repo, &r.anchor_sha)? {
+    if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
             anchored,
             current: None,
-            status: AnchorStatus::Orphaned,
+            status: AnchorStatus::Deleted,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -322,7 +323,14 @@ pub(crate) fn resolve_anchor_inner(
 
     match current {
         None => {
-            let anchored_text = git::read_git_text(repo, &r.blob)?;
+            let anchored_text = if !r.blob.is_empty() {
+                git::read_git_text(repo, &r.blob)?
+            } else {
+                match state.head_blob_at(repo, &r.path)? {
+                    Some(oid) => git::read_git_text(repo, &oid).unwrap_or_default(),
+                    None => String::new(),
+                }
+            };
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
             let computed_layer_sources = compute_layer_sources(
                 repo,
@@ -349,7 +357,14 @@ pub(crate) fn resolve_anchor_inner(
             };
         }
         Some((t, cur_text, cur_blob)) => {
-            let anchored_text = git::read_git_text(repo, &r.blob)?;
+            let anchored_text = if !r.blob.is_empty() {
+                git::read_git_text(repo, &r.blob)?
+            } else {
+                match state.head_blob_at(repo, &r.path)? {
+                    Some(oid) => git::read_git_text(repo, &oid).unwrap_or_default(),
+                    None => String::new(),
+                }
+            };
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
             let current_lines: Vec<&str> = cur_text.lines().collect();
             let a_lo = (anchored_start as usize).saturating_sub(1);
@@ -366,7 +381,13 @@ pub(crate) fn resolve_anchor_inner(
             } else {
                 &[][..]
             };
-            let equal = lines_equal(a_slice, c_slice, cfg.ignore_whitespace);
+            let equal = if !r.stored_hash.is_empty() && r.blob.is_empty() {
+                let c_slice_text: String = c_slice.join("\n");
+                let computed_hash = format!("sha256:{}", sha256_hex(c_slice_text.as_bytes()));
+                computed_hash == r.stored_hash
+            } else {
+                lines_equal(a_slice, c_slice, cfg.ignore_whitespace)
+            };
 
             // Compute per-layer drift: compare each enabled layer's content
             // independently against the anchor. Emit a Finding per drifting
@@ -404,7 +425,7 @@ pub(crate) fn resolve_anchor_inner(
                     anchor_sha: r.anchor_sha,
                     anchored,
                     current: None,
-                    status: AnchorStatus::Orphaned,
+                    status: AnchorStatus::Deleted,
                     source: None,
                     layer_sources: vec![],
                     acknowledged_by: None,
@@ -524,7 +545,7 @@ fn clean_head_fast_path(
             anchor_sha: r.anchor_sha.clone(),
             anchored,
             current: None,
-            status: AnchorStatus::Orphaned,
+            status: AnchorStatus::Deleted,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -583,7 +604,7 @@ fn clean_head_fast_path(
 #[allow(clippy::too_many_arguments)]
 fn compute_layer_sources(
     repo: &gix::Repository,
-    _r: &Anchor,
+    r: &Anchor,
     head_tracked: &Option<Tracked>,
     index_tracked: &Option<Tracked>,
     worktree_tracked: &Option<Tracked>,
@@ -701,17 +722,36 @@ fn compute_layer_sources(
     }
 
     // HEAD drifts from the anchor when (a) HEAD absent or (b) HEAD slice
-    // differs from anchored slice.
-    let head_drifts = match &head_text {
-        None => true,
-        Some((txt, t)) => slice_differs(
-            txt,
-            t,
-            anchored_lines,
-            anchored_start,
-            anchored_end,
-            ignore_ws,
-        ),
+    // differs from anchored slice (old model) or (c) HEAD content hash
+    // does not match stored_hash (file-backed model).
+    let head_drifts = if !r.stored_hash.is_empty() && r.blob.is_empty() {
+        match &head_text {
+            None => true,
+            Some((txt, t)) => {
+                let head_lines: Vec<&str> = txt.lines().collect();
+                let h_lo = (anchored_start as usize).saturating_sub(1);
+                let h_hi = (anchored_end as usize).min(head_lines.len());
+                let head_slice_text: String = if h_lo < h_hi {
+                    head_lines[h_lo..h_hi].join("\n")
+                } else {
+                    String::new()
+                };
+                let head_hash = format!("sha256:{}", sha256_hex(head_slice_text.as_bytes()));
+                head_hash != r.stored_hash
+            }
+        }
+    } else {
+        match &head_text {
+            None => true,
+            Some((txt, t)) => slice_differs(
+                txt,
+                t,
+                anchored_lines,
+                anchored_start,
+                anchored_end,
+                ignore_ws,
+            ),
+        }
     };
     if head_drifts {
         sources.push(DriftSource::Head);

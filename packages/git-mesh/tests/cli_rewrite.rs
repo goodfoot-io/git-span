@@ -57,7 +57,7 @@ fn run_rewrite_json(repo: &TestRepo, input: &str) -> Result<std::process::Output
 fn first_anchor_sha(repo: &TestRepo, name: &str) -> Result<String> {
     let gx = repo.gix_repo()?;
     let mesh = git_mesh::read_mesh(&gx, name)?;
-    let anchor = mesh.anchors_v2.first().expect("at least one anchor");
+    let anchor = mesh.anchors.first().expect("at least one anchor");
     Ok(anchor.1.anchor_sha.clone())
 }
 

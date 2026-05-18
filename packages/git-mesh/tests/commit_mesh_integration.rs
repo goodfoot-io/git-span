@@ -307,7 +307,7 @@ fn add_supersedes_prior_with_post_edit_bytes_then_commits() -> Result<()> {
     let gix = repo.gix_repo()?;
     let m = read_mesh(&gix, "m")?;
     assert_eq!(m.anchors.len(), 1);
-    let r = read_anchor(&gix, &m.anchors[0])?;
+    let r = read_anchor(&gix, &m.anchors[0].0)?;
     // Anchor blob should pin the newer (post-edit) content for L1-L5.
     let text = repo.git_stdout(["cat-file", "-p", &r.blob])?;
     assert!(

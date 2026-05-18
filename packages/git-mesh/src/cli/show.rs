@@ -322,9 +322,9 @@ fn collect_listings_with_options(
         for (name, mesh) in catalog.iter()? {
             committed_name_set.insert(name.clone());
             let (message, anchors_v2) = if include_why {
-                (mesh.message, mesh.anchors_v2)
+                (mesh.message, mesh.anchors)
             } else {
-                (String::new(), mesh.anchors_v2)
+                (String::new(), mesh.anchors)
             };
             let mut anchors = Vec::new();
             for (_id, r) in anchors_v2 {
@@ -443,9 +443,9 @@ fn collect_listings_for_names(
             continue;
         }
         let (message, anchors_v2) = if include_why {
-            (mesh.message, mesh.anchors_v2)
+            (mesh.message, mesh.anchors)
         } else {
-            (String::new(), mesh.anchors_v2)
+            (String::new(), mesh.anchors)
         };
         let mut anchors = Vec::new();
         for (_id, r) in anchors_v2 {
@@ -567,7 +567,7 @@ fn collect_filtered_porcelain_listings_with_staging(
                 Err(err) => return Err(err.into()),
             };
             let anchors = mesh
-                .anchors_v2
+                .anchors
                 .into_iter()
                 .map(|(_id, anchor)| AnchorEntry {
                     path: anchor.path,
@@ -788,7 +788,7 @@ struct AnchorEntryToml {
 struct MeshToml {
     name: String,
     message: String,
-    anchors_v2: Vec<AnchorEntryToml>,
+    anchors: Vec<AnchorEntryToml>,
     config: MeshConfig,
 }
 
@@ -910,7 +910,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
         let _perf = crate::perf::span("show.render-format");
         if has_range_token(&tokens) {
-            for (_id, r) in &mesh.anchors_v2 {
+            for (_id, r) in &mesh.anchors {
                 let line = render_tokens(&tokens, &info, &meta, Some(r));
                 println!("{line}");
             }
@@ -923,7 +923,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     if args.oneline {
         let _perf = crate::perf::span("show.render-oneline");
-        for (_id, r) in &mesh.anchors_v2 {
+        for (_id, r) in &mesh.anchors {
             match r.extent {
                 AnchorExtent::LineRange { start, end } => {
                     println!("{}", format::format_anchor_address(&r.path, Some(start), Some(end)));
@@ -943,8 +943,8 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     let toml_output = MeshToml {
         name: mesh.name.clone(),
         message: mesh.message.trim_end_matches('\n').to_string(),
-        anchors_v2: mesh
-            .anchors_v2
+        anchors: mesh
+            .anchors
             .iter()
             .map(|(id, a)| AnchorEntryToml {
                 id: id.clone(),
@@ -1300,6 +1300,7 @@ mod tests {
             path: "src/foo.rs".to_string(),
             extent: AnchorExtent::LineRange { start: 10, end: 20 },
             blob: "bloboid1".to_string(),
+            stored_hash: String::new(),
         }
     }
 
@@ -1310,6 +1311,7 @@ mod tests {
             path: "docs/guide.md".to_string(),
             extent: AnchorExtent::WholeFile,
             blob: "bloboid2".to_string(),
+            stored_hash: String::new(),
         }
     }
 
@@ -1505,6 +1507,7 @@ mod tests {
             path: path.to_string(),
             extent: AnchorExtent::LineRange { start, end },
             blob: "0000000000000000000000000000000000000000".to_string(),
+            stored_hash: String::new(),
         }
     }
 
@@ -1512,7 +1515,6 @@ mod tests {
         crate::types::Mesh {
             name: name.to_string(),
             anchors: vec![],
-            anchors_v2: vec![],
             message: String::new(),
             config: MeshConfig {
                 copy_detection: crate::types::CopyDetection::SameCommit,

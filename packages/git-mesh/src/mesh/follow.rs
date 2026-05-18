@@ -47,7 +47,7 @@ pub fn follow_moves(
 
         // Build new anchor list: replace each matched id, keep all others.
         let mut combined: Vec<(String, crate::types::Anchor)> = Vec::new();
-        'outer: for (id, anchor) in &m.anchors_v2 {
+        'outer: for (id, anchor) in &m.anchors {
             for dec in decisions {
                 if *id == dec.anchor_id {
                     // Re-anchor at HEAD with the new (path, extent).
@@ -110,7 +110,7 @@ pub fn follow_moves(
             Ok(commit_oid) => {
                 new_commit = commit_oid.clone();
                 // Update path index refs (independent of catalog).
-                let old_anchors = &m.anchors_v2;
+                let old_anchors = &m.anchors;
                 let path_updates =
                     path_index::ref_updates_for_mesh(repo, name, old_anchors, &combined)?;
                 if !path_updates.is_empty() {
