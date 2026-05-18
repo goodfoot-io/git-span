@@ -71,9 +71,15 @@ impl MeshFile {
         let (anchor_block, why) = match input.split_once("\n\n") {
             Some((anchors, why)) => (anchors, why.to_string()),
             None => {
-                // No blank line at all — all text is anchors, why is empty.
-                // Still valid if the anchors block is well-formed.
-                (input, String::new())
+                // No blank-line separator found. Check if the content
+                // starts with a newline — that signals an empty anchor
+                // block with only a why text.
+                if input.starts_with('\n') {
+                    ("", input.trim_start().to_string())
+                } else {
+                    // All text is anchors, why is empty.
+                    (input, String::new())
+                }
             }
         };
 
@@ -98,6 +104,18 @@ impl MeshFile {
     }
 
     /// Serialize this mesh file to its text format.
+    ///
+    /// Format:
+    /// ```text
+    /// <anchor-1>
+    /// <anchor-2>
+    ///
+    /// <why>
+    /// ```
+    ///
+    /// When there are no anchors, a leading blank line introduces the why
+    /// text so the parser can distinguish an empty anchor block. When
+    /// neither anchors nor why exist, output is empty.
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         for anchor in &self.anchors {
@@ -105,10 +123,11 @@ impl MeshFile {
             out.push('\n');
         }
         if !self.anchors.is_empty() || !self.why.is_empty() {
+            // Blank line separator (or leading blank when no anchors).
             out.push('\n');
         }
-        out.push_str(&self.why);
         if !self.why.is_empty() {
+            out.push_str(&self.why);
             out.push('\n');
         }
         out

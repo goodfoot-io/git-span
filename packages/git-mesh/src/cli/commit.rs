@@ -3,16 +3,30 @@
 //! Every function produces markdown-formatted prose output per the prose
 //! specification in CARD.md. All errors use [`CliError`] with structured
 //! remediation context.
+//!
+//! ## Migration status
+//!
+//! * **`run_add`**, **`run_remove`**, **`run_why`** — rewritten for Phase 3
+//!   (file-backed mesh storage). These edit worktree mesh files directly.
+//! * **`run_commit`**, **`run_config`** — retain the old ref-backed staging
+//!   implementation as dead code. Will be removed in Group 4 (Phase 5).
 
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{format_anchor_address, IDEMPOTENT_TAG};
 use crate::cli::{AddArgs, CliError, CommitArgs, ConfigArgs, NextStep, RemoveArgs, WhyArgs};
 use crate::git::resolve_ref_oid_optional_repo;
-use crate::staging::{append_prepared_add, parse_address, prepare_add, StagedConfig};
+use crate::mesh_file::AnchorRecord;
+use crate::mesh_file::MeshFile;
+use crate::mesh_file_reader::MeshFileReader;
+use crate::mesh_root::resolve_mesh_root;
+use crate::staging::parse_address;
+use crate::staging::StagedConfig;
 use crate::types::{validate_add_target, AnchorExtent, CopyDetection, EngineOptions};
-use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
+use crate::{append_config, commit_mesh, read_mesh};
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::fmt::Write as FmtWrite;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,6 +77,106 @@ fn invalid_anchor_error(subcommand: &'static str, addr: &str) -> CliError {
     }
 }
 
+/// Resolve the mesh root directory, reading from the CLI `--mesh-dir` flag,
+/// the `GIT_MESH_DIR` environment variable, git config, or the default.
+fn resolve_mesh_root_for(repo: &gix::Repository, mesh_dir: Option<&str>) -> Result<String> {
+    let env_dir = std::env::var("GIT_MESH_DIR").ok();
+    resolve_mesh_root(repo, mesh_dir, env_dir.as_deref())
+        .map_err(|e| anyhow::anyhow!("{}", e))
+}
+
+/// Count lines in a byte slice.
+fn count_lines(bytes: &[u8]) -> u32 {
+    std::str::from_utf8(bytes)
+        .map(|s| s.lines().count() as u32)
+        .unwrap_or(0)
+}
+
+/// Compute a SHA-256 content hash for the file at `path` with the given
+/// `extent`.
+///
+/// When `anchor_oid` is `Some(commit_oid)`, the content is read from that
+/// commit's tree. When `None`, the content is read from the worktree.
+///
+/// For line-range extents, validates that the range is within the file's
+/// line count.
+///
+/// Returns `(algorithm, hex_hash)` where algorithm is `"sha256"`.
+fn hash_anchor_content(
+    repo: &gix::Repository,
+    path: &str,
+    extent: &AnchorExtent,
+    anchor_oid: Option<&str>,
+) -> Result<(String, String)> {
+    let bytes = match anchor_oid {
+        Some(commit_oid) => {
+            let blob_oid = crate::git::path_blob_at(repo, commit_oid, path)
+                .map_err(|e| {
+                    anyhow::anyhow!("could not read `{path}` at commit `{commit_oid}`: {e}")
+                })?;
+            crate::git::read_blob_bytes(repo, &blob_oid)?
+        }
+        None => crate::git::read_worktree_bytes(repo, path)?,
+    };
+
+    // Validate line range extent against the actual content.
+    if let AnchorExtent::LineRange { start, end } = extent {
+        let line_count = count_lines(&bytes);
+        if *start < 1 || *end < *start {
+            anyhow::bail!("invalid anchor: start={start} end={end}");
+        }
+        if *end > line_count {
+            anyhow::bail!(
+                "invalid anchor: end={end} exceeds file line count ({line_count})"
+            );
+        }
+        // Also verify that the content is valid UTF-8 (no binary content
+        // for line anchors).
+        if std::str::from_utf8(&bytes).is_err() {
+            anyhow::bail!("line-anchor pin rejected on binary path: {path}");
+        }
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let result = hasher.finalize();
+    let hex: String = result.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(("sha256".to_string(), hex))
+}
+
+/// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.
+fn mesh_file_path(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<std::path::PathBuf> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    Ok(workdir.join(mesh_root).join(name))
+}
+
+/// Read a mesh file from the worktree. Returns an empty `MeshFile` when the
+/// file does not exist.
+fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<MeshFile> {
+    let path = mesh_file_path(repo, mesh_root, name)?;
+    if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        Ok(MeshFile::parse(&content)?)
+    } else {
+        Ok(MeshFile {
+            anchors: Vec::new(),
+            why: String::new(),
+        })
+    }
+}
+
+/// Write a mesh file to the worktree, creating parent directories as needed.
+fn write_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str, mesh: &MeshFile) -> Result<()> {
+    let path = mesh_file_path(repo, mesh_root, name)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, mesh.serialize())?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // add
 // ---------------------------------------------------------------------------
@@ -70,6 +184,9 @@ fn invalid_anchor_error(subcommand: &'static str, addr: &str) -> CliError {
 /// Acquire the staging lock with retries. Returns the lock file path and an
 /// open handle. The lock is released by deleting the file after the handle is
 /// closed.
+///
+/// Dead code in Phase 3 (file-backed storage). Retained until Group 4 removal.
+#[allow(dead_code)]
 fn acquire_staging_lock(repo: &gix::Repository) -> std::result::Result<(std::path::PathBuf, std::fs::File), CliError> {
     let lock_dir = crate::git::mesh_dir(repo).join("staging");
     std::fs::create_dir_all(&lock_dir).map_err(|e| CliError {
@@ -117,24 +234,18 @@ fn acquire_staging_lock(repo: &gix::Repository) -> std::result::Result<(std::pat
 }
 
 /// Release the staging lock by closing the handle and removing the lock file.
+///
+/// Dead code in Phase 3 (file-backed storage). Retained until Group 4 removal.
+#[allow(dead_code)]
 fn release_staging_lock(lock_path: std::path::PathBuf, _lock: std::fs::File) {
     drop(_lock);
     let _ = std::fs::remove_file(&lock_path);
 }
 
-pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
+pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
-    // Acquire contention lock so concurrent `git mesh add` calls do not
-    // interleave staging writes.
-    let (lock_path, lock) = acquire_staging_lock(repo)?;
-    let result = run_add_inner(repo, args);
-    release_staging_lock(lock_path, lock);
-    result
-}
-
-fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
-    // Parse every address first; fail-closed with no partial staging.
+    // Parse every address first; fail-closed with no partial state.
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
     {
         let _perf = crate::perf::span("add.parse-anchors");
@@ -146,8 +257,7 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 
     // Slice 3: last-write-wins. Within a single invocation, coalesce
     // duplicate `(path, extent)` adds silently — keep the last
-    // occurrence, drop earlier ones. Cross-invocation supersede is
-    // handled by `append_prepared_add` (which strips + renumbers).
+    // occurrence, drop earlier ones.
     {
         let mut last_idx: std::collections::HashMap<(String, AnchorExtent), usize> =
             std::collections::HashMap::new();
@@ -194,51 +304,24 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         }
     }
 
-    // Resolve the existing anchor_id for this `(path, extent)` in both
-    // the committed mesh and the resolved (staging-aware) mesh.
-    let committed_ranges = {
-        let _perf = crate::perf::span("add.read-mesh-ranges");
-        mesh_range_id_lookup(repo, &args.name)
+    // Resolve mesh root.
+    let mesh_root = {
+        let _perf = crate::perf::span("add.resolve-mesh-root");
+        resolve_mesh_root_for(repo, mesh_dir)?
     };
-    let mut mesh_ranges_lookup = {
-        let _perf = crate::perf::span("add.resolve-current-ranges");
-        mesh_current_range_id_lookup(repo, &args.name)
-    };
-    mesh_ranges_lookup.extend(committed_ranges.clone());
 
-    let mut prepared = Vec::with_capacity(parsed.len());
-    {
-        let _perf = crate::perf::span("add.prepare-anchors");
-        for (path, extent) in &parsed {
-            prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref()).map_err(|e| {
-                from_lib_error(
-                    "add",
-                    format!("anchor precheck failed for `{}`.", addr_from_extent(path, extent)),
-                    e,
-                    vec![NextStep::Prose(
-                        "Fix the path or choose a different extent.".into(),
-                    )],
-                )
-            })?);
-        }
-    }
-
-    // Build committed content lookup for unchanged detection.
-    let committed_mesh = read_mesh(repo, &args.name).ok();
-    let committed_content: std::collections::HashMap<(String, AnchorExtent), Vec<u8>> = {
-        let mut m = std::collections::HashMap::new();
-        if let Some(ref mesh) = committed_mesh {
-            for (_id, r) in &mesh.anchors_v2 {
-                if let Ok(oid) = gix::ObjectId::from_hex(r.blob.as_bytes())
-                    && let Ok(blob) = repo.find_object(oid)
-                {
-                    let data = blob.into_blob().detach().data;
-                    m.insert((r.path.clone(), r.extent), data);
-                }
-            }
-        }
-        m
+    // Read the current worktree mesh file.
+    let mut mesh_file = {
+        let _perf = crate::perf::span("add.read-current");
+        read_worktree_mesh(repo, &mesh_root, &args.name)?
     };
+
+    // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
+    let existing: std::collections::HashMap<(String, u32, u32), String> = mesh_file
+        .anchors
+        .iter()
+        .map(|a| ((a.path.clone(), a.start_line, a.end_line), a.content_hash.clone()))
+        .collect();
 
     // Track per-anchor outcomes for the summary.
     struct AddOutcome {
@@ -246,61 +329,67 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         kind: AddOutcomeKind,
     }
     enum AddOutcomeKind {
-        Staged,    // new anchor — sidecar created
-        Resolved,  // existing anchor — sidecar updated
-        Unchanged, // anchor already clean
+        Added,    // new anchor — record created
+        Resolved, // existing anchor — hash changed, updated
+        Unchanged, // anchor already matches stored hash
     }
 
     let mut outcomes: Vec<AddOutcome> = Vec::with_capacity(parsed.len());
 
     {
-        let _perf = crate::perf::span("add.write-staging");
-        for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
-            let anchor_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
+        let _perf = crate::perf::span("add.process-anchors");
+        for (path, extent) in &parsed {
+            let (algorithm, content_hash) =
+                hash_anchor_content(repo, path, extent, anchor_oid.as_deref())?;
             let addr = addr_from_extent(path, extent);
-            let key = (path.clone(), *extent);
 
-            // Track outcome before writing staging.
-            let kind = if let Some(committed_bytes) = committed_content.get(&key) {
-                if committed_bytes == &add.bytes {
-                    // Content matches committed anchor — skip the sidecar write.
-                    AddOutcomeKind::Unchanged
-                } else if anchor_id.is_some() {
-                    // Anchor existed (committed or staged) — updating it.
-                    AddOutcomeKind::Resolved
-                } else {
-                    AddOutcomeKind::Staged
-                }
-            } else if anchor_id.is_some() {
-                // Anchor existed in resolved (staging-aware) but not in committed.
-                AddOutcomeKind::Resolved
-            } else {
-                // Brand new anchor.
-                AddOutcomeKind::Staged
+            let (start_line, end_line) = match extent {
+                AnchorExtent::LineRange { start, end } => (*start, *end),
+                AnchorExtent::WholeFile => (0, 0),
             };
 
-            // Skip sidecar write for unchanged anchors.
-            if !matches!(kind, AddOutcomeKind::Unchanged) {
-                append_prepared_add(repo, &args.name, add, anchor_id).map_err(|e| {
-                    from_lib_error(
-                        "add",
-                        format!("failed to write staging for `{addr}`."),
-                        e,
-                        vec![NextStep::Prose(
-                            "Check that `.git/mesh/staging` is writable and not corrupt.".into(),
-                        )],
-                    )
-                })?;
-            }
+            let key = (path.clone(), start_line, end_line);
+
+            let kind = if let Some(existing_hash) = existing.get(&key) {
+                if existing_hash == &content_hash {
+                    // Content matches what is already stored.
+                    AddOutcomeKind::Unchanged
+                } else {
+                    // Update the existing record's hash in place.
+                    if let Some(record) = mesh_file.anchors.iter_mut().find(|a| {
+                        a.path == *path && a.start_line == start_line && a.end_line == end_line
+                    }) {
+                        record.algorithm = algorithm;
+                        record.content_hash = content_hash;
+                    }
+                    AddOutcomeKind::Resolved
+                }
+            } else {
+                // Brand new anchor.
+                mesh_file.anchors.push(AnchorRecord {
+                    path: path.clone(),
+                    start_line,
+                    end_line,
+                    algorithm,
+                    content_hash,
+                });
+                AddOutcomeKind::Added
+            };
 
             outcomes.push(AddOutcome { addr, kind });
         }
     }
 
+    // Write the updated mesh file.
+    {
+        let _perf = crate::perf::span("add.write-mesh-file");
+        write_worktree_mesh(repo, &mesh_root, &args.name, &mesh_file)?;
+    }
+
     // --- Output -----------------------------------------------------------
-    let staged_count = outcomes
+    let added_count = outcomes
         .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Staged))
+        .filter(|o| matches!(o.kind, AddOutcomeKind::Added))
         .count();
     let resolved_count = outcomes
         .iter()
@@ -314,19 +403,19 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 
     // Summary line.
     let mut summary = format!(
-        "Staged {} anchor{}",
-        staged_count,
-        if staged_count == 1 { "" } else { "s" },
+        "Added {} anchor{}",
+        added_count,
+        if added_count == 1 { "" } else { "s" },
     );
     if resolved_count > 0 {
         write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
     }
     if unchanged_count > 0 {
-        write!(&mut summary, "; {} unchanged", unchanged_count).unwrap();
+        write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
     }
     write!(
         &mut summary,
-        " on `{}`, anchored at `HEAD` (`{head}`).",
+        " to mesh `{}`, anchored at `HEAD` (`{head}`).",
         args.name
     )
     .unwrap();
@@ -336,48 +425,23 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // Per-anchor lines.
     for o in &outcomes {
         let line = match o.kind {
-            AddOutcomeKind::Staged => {
-                format!(
-                    "- staged add: `{}` `{}` (sidecar created -- commit required)",
-                    args.name, o.addr
-                )
+            AddOutcomeKind::Added => {
+                format!("- added: `{}` `{}`", args.name, o.addr)
             }
             AddOutcomeKind::Resolved => {
                 format!(
-                    "- resolved in-place: `{}` `{}` (no staging -- no commit needed)",
+                    "- resolved in-place: `{}` `{}` (hash changed)",
                     args.name, o.addr
                 )
             }
             AddOutcomeKind::Unchanged => {
                 format!(
-                    "- unchanged: `{}` `{}` (no staging -- content matches committed anchor)",
+                    "- unchanged: `{}` `{}` (content matches stored hash)",
                     args.name, o.addr
                 )
             }
         };
         println!("{line}");
-    }
-
-    // Follow-up command suggestion.
-    if staged_count > 0 {
-        let plural = if staged_count == 1 { "" } else { "s" };
-        let extra = if resolved_count > 0 || unchanged_count > 0 {
-            let others = if resolved_count > 0 && unchanged_count > 0 {
-                format!("The other {} and {} need no commit", resolved_count, unchanged_count)
-            } else if resolved_count > 0 {
-                format!("The other {} need no commit", resolved_count)
-            } else {
-                format!("The other {} need no commit", unchanged_count)
-            };
-            format!(". {others}")
-        } else {
-            String::new()
-        };
-        println!();
-        println!(
-            "Run `git mesh commit {}` to record the staged anchor{}{}.",
-            args.name, plural, extra
-        );
     }
 
     Ok(0)
@@ -387,9 +451,10 @@ fn run_add_inner(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn run_remove(repo: &gix::Repository, args: RemoveArgs) -> Result<i32> {
+pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_dir: Option<&str>) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
+    // Parse every address first; fail-closed with no partial state.
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
     {
         let _perf = crate::perf::span("remove.parse-anchors");
@@ -399,44 +464,33 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs) -> Result<i32> {
         }
     }
 
-    // Build the set of anchors currently present on the mesh (committed +
-    // staged adds, minus staged removes).
-    let mut present: Vec<(String, AnchorExtent)> = Vec::new();
-    {
-        let _perf = crate::perf::span("remove.read-current-anchors");
-        match read_mesh(repo, &args.name) {
-            Ok(mesh) => {
-                for (_id, r) in &mesh.anchors_v2 {
-                    present.push((r.path.clone(), r.extent));
-                }
-            }
-            Err(crate::Error::MeshNotFound(_)) => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    let staging = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
-    for a in &staging.adds {
-        present.push((a.path.clone(), a.extent));
-    }
-    for r in &staging.removes {
-        if let Some(idx) = present
-            .iter()
-            .position(|(p, e)| p == &r.path && *e == r.extent)
-        {
-            present.remove(idx);
-        }
-    }
+    // Resolve mesh root.
+    let mesh_root = {
+        let _perf = crate::perf::span("remove.resolve-mesh-root");
+        resolve_mesh_root_for(repo, mesh_dir)?
+    };
 
-    let mut effective = present.clone();
-    let mut staged_addrs: Vec<String> = Vec::new();
-    for (path, extent) in &parsed {
-        let idx = effective.iter().position(|(p, e)| p == path && e == extent);
-        match idx {
-            Some(i) => {
-                effective.remove(i);
-                staged_addrs.push(addr_from_extent(path, extent));
-            }
-            None => {
+    // Read the current worktree mesh file.
+    let mut mesh_file = {
+        let _perf = crate::perf::span("remove.read-current");
+        read_worktree_mesh(repo, &mesh_root, &args.name)?
+    };
+
+    let mut removed_addrs: Vec<String> = Vec::new();
+    {
+        let _perf = crate::perf::span("remove.remove-anchors");
+        for (path, extent) in &parsed {
+            let (start_line, end_line) = match extent {
+                AnchorExtent::LineRange { start, end } => (*start, *end),
+                AnchorExtent::WholeFile => (0, 0),
+            };
+
+            let before = mesh_file.anchors.len();
+            mesh_file
+                .anchors
+                .retain(|a| !(a.path == *path && a.start_line == start_line && a.end_line == end_line));
+
+            if mesh_file.anchors.len() == before {
                 let addr = addr_from_extent(path, extent);
                 return Err(CliError {
                     subcommand: "remove",
@@ -449,39 +503,28 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs) -> Result<i32> {
                 }
                 .into());
             }
+
+            removed_addrs.push(addr_from_extent(path, extent));
         }
     }
 
+    // Write the updated mesh file.
     {
-        let _perf = crate::perf::span("remove.write-staging");
-        for (path, extent) in &parsed {
-            match extent {
-                AnchorExtent::LineRange { start, end } => {
-                    append_remove(repo, &args.name, path, *start, *end)?;
-                }
-                AnchorExtent::WholeFile => {
-                    crate::staging::append_remove_whole(repo, &args.name, path)?;
-                }
-            }
-        }
+        let _perf = crate::perf::span("remove.write-mesh-file");
+        write_worktree_mesh(repo, &mesh_root, &args.name, &mesh_file)?;
     }
 
     // --- Output -----------------------------------------------------------
-    let n = staged_addrs.len();
+    let n = removed_addrs.len();
     println!(
-        "Staged removal of {n} anchor{} from `{}`.",
+        "Removed {n} anchor{} from mesh `{}`.",
         if n == 1 { "" } else { "s" },
         args.name
     );
     println!();
-    for addr in &staged_addrs {
-        println!(
-            "- staged remove: `{}` `{}` (sidecar created -- commit required)",
-            args.name, addr
-        );
+    for addr in &removed_addrs {
+        println!("- removed: `{}` `{}`", args.name, addr);
     }
-    println!();
-    println!("Run `git mesh commit {}` to record the removal.", args.name);
 
     Ok(0)
 }
@@ -490,18 +533,18 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs) -> Result<i32> {
 // why
 // ---------------------------------------------------------------------------
 
-pub fn run_why(repo: &gix::Repository, args: WhyArgs) -> Result<i32> {
-    // Reader vs. writer disambiguation per `docs/why-plan.md` §B2:
-    // any of `-m`/`-F`/`--edit` ⇒ writer; otherwise reader (which
+pub fn run_why(repo: &gix::Repository, args: WhyArgs, mesh_dir: Option<&str>) -> Result<i32> {
+    // Reader vs. writer disambiguation:
+    // any of `-m`/`-F`/`--edit` => writer; otherwise reader (which
     // optionally accepts `--at <commit>` for historical reads).
     let writer = args.m.is_some() || args.file.is_some() || args.edit;
     if !writer {
         let _perf = crate::perf::span("why.read");
-        return run_why_reader(repo, &args.name, args.at.as_deref());
+        return run_why_reader(repo, &args.name, args.at.as_deref(), mesh_dir);
     }
     if let Some(m) = args.m {
         let _perf = crate::perf::span("why.write-message");
-        set_why(repo, &args.name, &m)?;
+        run_why_writer(repo, &args.name, &m, mesh_dir)?;
         return print_why_written(&args.name);
     }
     if let Some(f) = args.file {
@@ -510,49 +553,94 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs) -> Result<i32> {
             std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?
         };
         let _perf = crate::perf::span("why.write-message");
-        set_why(repo, &args.name, &body)?;
+        run_why_writer(repo, &args.name, &body, mesh_dir)?;
         return print_why_written(&args.name);
     }
     // Editor flow (--edit).
-    run_why_editor(repo, &args.name)
+    run_why_editor(repo, &args.name, mesh_dir)
 }
 
 fn print_why_written(name: &str) -> Result<i32> {
-    println!("Staged a new why on `{name}`.{IDEMPOTENT_TAG}");
-    println!();
-    println!("Run `git mesh commit {name}` to record it.");
+    println!("Set why on mesh `{name}`.{IDEMPOTENT_TAG}");
     Ok(0)
 }
 
-fn run_why_reader(repo: &gix::Repository, name: &str, at: Option<&str>) -> Result<i32> {
+fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, mesh_dir: Option<&str>) -> Result<()> {
+    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
+    let mut mesh_file = read_worktree_mesh(repo, &mesh_root, name)?;
+    mesh_file.why = body.to_string();
+    write_worktree_mesh(repo, &mesh_root, name, &mesh_file)?;
+    Ok(())
+}
+
+fn run_why_reader(
+    repo: &gix::Repository,
+    name: &str,
+    at: Option<&str>,
+    mesh_dir: Option<&str>,
+) -> Result<i32> {
     crate::validation::validate_mesh_name(name)?;
-    let info = crate::mesh::mesh_commit_info_at(repo, name, at)?;
-    let body = info.message.trim_end_matches('\n');
-    if body.is_empty() {
-        println!("`{name}` has no why recorded.");
+    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
+
+    let mesh = if let Some(at_commit) = at {
+        // Historical read: look up the mesh file in the tree at `at_commit`.
+        let mesh_path = format!("{mesh_root}/{name}");
+        let tree_result = crate::git::tree_entry_at(repo, at_commit, Path::new(&mesh_path))?;
+        match tree_result {
+            Some((_mode, oid)) => {
+                let text = crate::git::read_git_text(repo, &oid.to_string())?;
+                MeshFile::parse(&text).ok()
+            }
+            None => None,
+        }
     } else {
-        println!("{body}");
+        // Current effective view: worktree overlays index overlays HEAD.
+        let reader = MeshFileReader::new(repo, mesh_root);
+        reader.read_effective(name)?
+    };
+
+    match mesh {
+        Some(mf) if !mf.why.is_empty() => {
+            let body = mf.why.trim_end_matches('\n');
+            println!("{body}");
+        }
+        _ => {
+            println!("`{name}` has no why recorded.");
+        }
     }
     Ok(0)
 }
 
-fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
+fn run_why_editor(repo: &gix::Repository, name: &str, mesh_dir: Option<&str>) -> Result<i32> {
     let _perf = crate::perf::span("why.edit");
+    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
     crate::validation::validate_mesh_name(name)?;
-    let staging_dir = crate::git::mesh_dir(repo).join("staging");
-    std::fs::create_dir_all(&staging_dir)?;
 
-    let encoded = crate::staging::encode_name_for_fs(name);
-    let why_path = staging_dir.join(format!("{encoded}.why"));
-    let template: String = if why_path.exists() {
-        std::fs::read_to_string(&why_path)?
-    } else if let Ok(info) = crate::mesh::mesh_commit_info(repo, name) {
-        info.message
-    } else {
-        String::from("\n# Write the relationship description. Empty why aborts.\n")
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+
+    // Read current why as the editor template.
+    let template: String = {
+        let path = workdir.join(&mesh_root).join(name);
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            let mf = MeshFile::parse(&content)?;
+            if mf.why.is_empty() {
+                String::from("\n# Write the relationship description. Empty why aborts.\n")
+            } else {
+                mf.why
+            }
+        } else {
+            String::from("\n# Write the relationship description. Empty why aborts.\n")
+        }
     };
 
-    let edit_path = staging_dir.join(format!("{encoded}.why.EDITMSG"));
+    let mesh_dir_path = workdir.join(&mesh_root);
+    std::fs::create_dir_all(&mesh_dir_path)
+        .with_context(|| format!("failed to create mesh directory `{}`", mesh_dir_path.display()))?;
+
+    let edit_path = mesh_dir_path.join(format!("{name}.EDITMSG"));
     std::fs::write(&edit_path, &template)?;
 
     let editor = std::env::var("GIT_EDITOR")
@@ -574,10 +662,11 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
             summary: format!("editor `{editor}` exited with {status}."),
             what_happened: format!(
                 "The editor `{editor}` exited with a non-zero status ({status}), \
-                 so the why body was not staged."
+                 so the why body was not set."
             ),
             next_steps: vec![NextStep::Bash(format!("git mesh why {name} --edit"))],
-        }.into());
+        }
+        .into());
     }
 
     let raw = std::fs::read_to_string(&edit_path)?;
@@ -596,20 +685,24 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
             summary: "aborting because the why is empty.".into(),
             what_happened:
                 "The editor returned a body containing only whitespace and comment lines, \
-                 so there is nothing to stage."
+                 so there is nothing to set."
                     .into(),
             next_steps: vec![NextStep::Bash(format!("git mesh why {name} --edit"))],
         }
         .into());
     }
-    set_why(repo, name, &body)?;
+
+    run_why_writer(repo, name, &body, mesh_dir)?;
     print_why_written(name)
 }
 
 // ---------------------------------------------------------------------------
 // commit
 // ---------------------------------------------------------------------------
+//
+// Dead code in Phase 3 (file-backed storage). Retained until Group 4 removal.
 
+#[allow(dead_code)]
 pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     if let Some(name) = args.name {
         return run_commit_single(repo, &name);
@@ -756,6 +849,7 @@ struct CommitMeshResult {
     new_sha: String,
 }
 
+#[allow(dead_code)]
 fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
     // Check if there's anything staged for this mesh before committing.
     let staging = crate::staging::read_staging(repo, name).unwrap_or_default();
@@ -794,25 +888,26 @@ fn run_commit_single(repo: &gix::Repository, name: &str) -> Result<i32> {
             println!("Run `git mesh {name}` to verify.");
             Ok(0)
         }
-        Err(e) => {
-            Err(from_lib_error(
-                "commit",
-                format!("mesh `{name}` failed to commit."),
-                e,
-                vec![
-                    NextStep::Bash(format!("git mesh status {name}")),
-                    NextStep::Bash(format!("git mesh why {name} -m \"...\"")),
-                ],
-            )
-            .into())
-        }
+        Err(e) => Err(from_lib_error(
+            "commit",
+            format!("mesh `{name}` failed to commit."),
+            e,
+            vec![
+                NextStep::Bash(format!("git mesh status {name}")),
+                NextStep::Bash(format!("git mesh why {name} -m \"...\"")),
+            ],
+        )
+        .into()),
     }
 }
 
 // ---------------------------------------------------------------------------
 // config
 // ---------------------------------------------------------------------------
+//
+// Dead code in Phase 3 (file-backed storage). Retained until Group 4 removal.
 
+#[allow(dead_code)]
 pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
     // Read mesh config.
     let mesh = {
@@ -1062,9 +1157,10 @@ fn default_value_str(key: &str) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Anchor-ID lookups (unchanged from the original)
+// Anchor-ID lookups (dead code, retained until Group 4).
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn mesh_range_id_lookup(
     repo: &gix::Repository,
     mesh_name: &str,
@@ -1079,6 +1175,7 @@ fn mesh_range_id_lookup(
     out
 }
 
+#[allow(dead_code)]
 fn mesh_current_range_id_lookup(
     repo: &gix::Repository,
     mesh_name: &str,

@@ -50,6 +50,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub perf: bool,
 
+    /// Mesh root directory (default: .mesh). Overrides GIT_MESH_DIR and git config git-mesh.dir.
+    #[arg(long, global = true)]
+    pub mesh_dir: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -489,7 +493,14 @@ pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
 }
 
 /// Dispatch a parsed [`Commands`] to its handler. Called from `main`.
-pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32> {
+///
+/// `mesh_dir` is the optional `--mesh-dir` CLI value, passed through to
+/// handlers that need to resolve the mesh root directory.
+pub fn dispatch(
+    repo: &gix::Repository,
+    command: Commands,
+    mesh_dir: Option<&str>,
+) -> anyhow::Result<i32> {
     match command {
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
@@ -505,15 +516,15 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         }
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");
-            commit::run_add(repo, args)
+            commit::run_add(repo, args, mesh_dir)
         }
         Commands::Remove(args) => {
             let _perf = crate::perf::span("command.remove");
-            commit::run_remove(repo, args)
+            commit::run_remove(repo, args, mesh_dir)
         }
         Commands::Why(args) => {
             let _perf = crate::perf::span("command.why");
-            commit::run_why(repo, args)
+            commit::run_why(repo, args, mesh_dir)
         }
         Commands::Commit(args) => {
             let _perf = crate::perf::span("command.commit");

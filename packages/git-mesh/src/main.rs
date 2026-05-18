@@ -43,6 +43,7 @@ fn main() {
     }
 }
 
+/// `--mesh-dir` is passed through to handlers that resolve the mesh root.
 fn run() -> Result<i32> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -84,7 +85,7 @@ fn run() -> Result<i32> {
             })
         });
         let repo = discover_repo()?;
-        return cli::dispatch(&repo, cmd);
+        return cli::dispatch(&repo, cmd, cli.mesh_dir.as_deref());
     }
 
     // Parse first so `--help` / `--version` short-circuit before we
@@ -94,7 +95,7 @@ fn run() -> Result<i32> {
 
     let repo = discover_repo()?;
     match cli.command {
-        Some(cmd) => cli::dispatch(&repo, cmd),
+        Some(cmd) => cli::dispatch(&repo, cmd, cli.mesh_dir.as_deref()),
         None => {
             Cli::command().print_help()?;
             println!();
