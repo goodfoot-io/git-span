@@ -116,7 +116,27 @@ fn hash_anchor_content(
                 })?;
             crate::git::read_blob_bytes(repo, &blob_oid)?
         }
-        None => crate::git::read_worktree_bytes(repo, path)?,
+        None => match crate::git::read_worktree_bytes(repo, path) {
+            Ok(b) => b,
+            Err(e) => {
+                // A submodule gitlink is a directory on disk — there is
+                // no file content to read. Its content identity is the
+                // recorded commit OID in the index. Whole-file pins on
+                // the gitlink root are allowed (D2); hash the gitlink
+                // OID hex so drift = the submodule pointer changing.
+                let gitlink = crate::git::index_entries(repo)
+                    .ok()
+                    .and_then(|entries| {
+                        entries.into_iter().find(|en| {
+                            en.path == path && en.mode.is_commit()
+                        })
+                    });
+                match gitlink {
+                    Some(en) => en.oid.to_string().into_bytes(),
+                    None => return Err(e.into()),
+                }
+            }
+        },
     };
 
     // Validate line range extent against the actual content.
@@ -137,8 +157,26 @@ fn hash_anchor_content(
         }
     }
 
+    // Canonical hashed bytes:
+    //  - whole-file anchor: the entire file content;
+    //  - line anchor: the `\n`-joined slice of lines `[start, end]`.
+    // The resolver compares against this exact representation (see
+    // `resolver::engine::anchor` file-backed HEAD-drift branch), so the
+    // two must derive the hash the same way.
+    let hashed: Vec<u8> = match extent {
+        AnchorExtent::WholeFile => bytes.clone(),
+        AnchorExtent::LineRange { start, end } => {
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<&str> = text.lines().collect();
+            let lo = (*start as usize).saturating_sub(1);
+            let hi = (*end as usize).min(lines.len());
+            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
+            slice.join("\n").into_bytes()
+        }
+    };
+
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    hasher.update(&hashed);
     let result = hasher.finalize();
     let hex: String = result.iter().map(|b| format!("{b:02x}")).collect();
     Ok(("sha256".to_string(), hex))

@@ -40,16 +40,17 @@ fn format_big_p_produces_one_line_per_range() -> Result<()> {
 fn format_anchor_and_path_matches_oneline_shape() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_multi_range(&repo)?;
-    // `--format "%a %P"` should produce lines like `<full-sha> <path>[#Ls-Le]`
+    // File-backed model: anchors carry no anchor SHA, so `%a` renders
+    // empty while `%P` (path + spec) carries anchor identity. The line
+    // shape is `<empty> <space> <path...>` → one line per anchor.
     let out = repo.mesh_stdout(["show", "m", "--format", "%a %P"])?;
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 2, "expected two lines: {out:?}");
     for line in &lines {
-        // Each line: <40-char sha> <space> <path...>
         let mut parts = line.splitn(2, ' ');
         let sha = parts.next().unwrap_or("");
         let path = parts.next().unwrap_or("");
-        assert_eq!(sha.len(), 40, "anchor sha should be 40 chars: {line:?}");
+        assert_eq!(sha.len(), 0, "file-backed anchors have no SHA: {line:?}");
         assert!(!path.is_empty(), "path should be non-empty: {line:?}");
     }
     Ok(())

@@ -1,17 +1,20 @@
-//! Integration test for the Bloom-filter commit-skipping optimization
-//! in the reverse-indexed walk (`ResolveSession::build_reverse_walk`).
-//! Builds a realistic repo with many commits where only a handful touch
-//! the anchored path, then resolves the mesh and asserts:
+//! Integration test for the file-backed resolver's commit-walk cost on
+//! a repo with many noise commits where only a handful touch the
+//! anchored path. The file-backed model identifies anchored content by
+//! `stored_hash`, so resolution does *not* perform an `anchor..HEAD`
+//! history walk at all — it compares the current content hash directly.
+//! This is strictly cheaper than the old Bloom-filtered per-anchor walk.
 //!
-//! 1. The resolution outcome (status, current path/extent) matches what
-//!    we'd get without any optimization (correctness baseline).
-//! 2. The Bloom-based session counters confirm most commits were skipped.
+//! The test asserts:
+//! 1. Correctness: the untouched anchor (lines 1-5) resolves `Fresh`.
+//! 2. Cost: the resolve performs (near) zero tree-diffs — no history
+//!    walk is needed in the file-backed model.
 
 mod support;
 
 use anyhow::Result;
+use git_mesh::resolve_mesh;
 use git_mesh::types::{AnchorStatus, EngineOptions, LayerSet};
-use git_mesh::{append_add, commit_mesh, resolve_mesh, set_why};
 use support::TestRepo;
 
 #[test]
@@ -24,7 +27,12 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
     }
     repo.write_file("anchored.txt", &content)?;
     repo.commit_all("init anchored")?;
-    let anchor_sha = repo.head_sha()?;
+
+    // Pin lines 1-5 via the file-backed `add` CLI (hashes the current
+    // slice). Commit the mesh file alongside the source.
+    repo.run_mesh(["add", "demo/mesh", "anchored.txt#L1-L5"])?;
+    repo.run_mesh(["why", "demo/mesh", "-m", "demo"])?;
+    repo.commit_all("seed mesh")?;
 
     // 50 unrelated commits that don't touch anchored.txt.
     for i in 0..50 {
@@ -32,21 +40,15 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
         repo.commit_all(&format!("noise {i}"))?;
     }
 
-    // 2 commits that *do* touch anchored.txt: a non-overlapping edit
-    // (lines 15-16) followed by a touch outside the anchored range.
+    // A commit that edits anchored.txt *outside* the anchored range
+    // (line 15). The 1-5 anchor must remain Fresh.
     repo.write_file(
         "anchored.txt",
         &content.replace("anchored_15\n", "anchored_15_edited\n"),
     )?;
     repo.commit_all("edit anchored.txt outside anchor range")?;
-    let head_after_edit = repo.head_sha()?;
-    let _ = head_after_edit;
 
-    // Stage and commit a mesh with one anchor at lines 1-5.
     let gix = repo.gix_repo()?;
-    append_add(&gix, "demo/mesh", "anchored.txt", 1, 5, Some(&anchor_sha))?;
-    set_why(&gix, "demo/mesh", "demo")?;
-    commit_mesh(&gix, "demo/mesh")?;
 
     // Write a commit-graph with changed-path Bloom filters so the
     // reverse-indexed walk can use Bloom gating. Must be done after
@@ -70,13 +72,13 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
 
     assert_eq!(resolved.anchors.len(), 1);
     let anchor = &resolved.anchors[0];
-    // The lines we anchored (1-5) were untouched — still at 1-5.
+    // The lines we anchored (1-5) were untouched — still Fresh.
     assert_eq!(anchor.status, AnchorStatus::Fresh);
 
-    // Now run `stale` via CLI with GIT_MESH_PERF=1 and check that the
-    // Bloom-based counters confirm most commits were skipped (the
-    // reverse-indexed walk uses changed-path Bloom filters instead of the
-    // old per-anchor walk's `interesting-commits` / `skipped-commits`).
+    // File-backed model: resolution compares the current content hash
+    // against `stored_hash` — it does not walk `anchor..HEAD` history,
+    // so the noise commits cost nothing. Confirm via the perf counters
+    // that (near) zero tree-diffs ran across the 50+ commit history.
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .args(["stale"])
@@ -84,20 +86,12 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
         .env("GIT_MESH_CACHE", "0")
         .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let bloom_skips = parse_counter(&stderr, "session.walk-bloom-skips");
     let tree_diffs = parse_counter(&stderr, "session.walk-tree-diffs");
     assert!(
-        bloom_skips >= 45,
-        "expected Bloom to skip most of the 50 noise commits, got bloom_skips={} tree_diffs={} stderr=\n{}",
-        bloom_skips,
-        tree_diffs,
-        stderr
-    );
-    assert!(
         tree_diffs <= 5,
-        "expected only a handful of commits to run tree-diff, got tree_diffs={} bloom_skips={}",
+        "file-backed resolution must not history-walk the noise commits, got tree_diffs={} stderr=\n{}",
         tree_diffs,
-        bloom_skips,
+        stderr,
     );
     Ok(())
 }

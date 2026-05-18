@@ -117,7 +117,20 @@ pub(crate) fn resolve_lfs_anchor(
         }
     };
 
-    let anchored_pointer = match git::read_blob_bytes(repo, &r.blob) {
+    // File-backed model: `r.blob` is empty; the anchored LFS pointer is
+    // the blob at `r.path` in HEAD, already resolved into
+    // `anchored.blob`. Prefer `r.blob` (legacy ref-backed) and fall
+    // back to the HEAD-resolved anchored blob.
+    let anchored_blob_oid: Option<String> = if !r.blob.is_empty() {
+        Some(r.blob.clone())
+    } else {
+        anchored.blob.map(|o| o.to_string())
+    };
+    let anchored_pointer = match anchored_blob_oid
+        .as_deref()
+        .ok_or(())
+        .and_then(|o| git::read_blob_bytes(repo, o).map_err(|_| ()))
+    {
         Ok(b) => b,
         Err(_) => {
             return lfs_terminal(
@@ -125,7 +138,10 @@ pub(crate) fn resolve_lfs_anchor(
                 r,
                 anchored,
                 UnavailableReason::IoError {
-                    message: format!("cannot read anchored blob {}", r.blob),
+                    message: format!(
+                        "cannot read anchored blob {}",
+                        anchored_blob_oid.as_deref().unwrap_or("<none>")
+                    ),
                 },
             );
         }
@@ -188,7 +204,7 @@ pub(crate) fn resolve_lfs_anchor(
                     start: tracked.start,
                     end: tracked.end,
                 },
-                blob: oid_from_hex(&r.blob),
+                blob: anchored_blob_oid.as_deref().and_then(oid_from_hex),
             }),
             status,
             source,

@@ -60,26 +60,24 @@ fn stale_meshes_fails_without_commit_graph() -> Result<()> {
 fn bloom_false_positive_counter_is_zero_for_true_positives() -> Result<()> {
     let repo = TestRepo::new()?;
 
-    // Create two tracked files.
+    // Create two tracked files and pin both at their initial content
+    // via the file-backed `add` CLI.
     repo.write_file("A.txt", "line1\nline2\n")?;
     repo.write_file("B.txt", "line1\nline2\n")?;
     repo.commit_all("initial commit with A and B")?;
-    let anchor_sha = repo.head_sha()?;
+    repo.run_mesh(["add", "test/mesh", "A.txt#L1-L1"])?;
+    repo.run_mesh(["add", "test/mesh", "B.txt#L1-L1"])?;
+    repo.run_mesh(["why", "test/mesh", "-m", "test"])?;
+    repo.commit_all("seed mesh")?;
 
-    // Modify both files in a second commit.
+    // Modify both files in a second commit — both anchors now drift.
     repo.write_file("A.txt", "modified A\nline2\n")?;
     repo.write_file("B.txt", "modified B\nline2\n")?;
     repo.commit_all("modify A and B")?;
 
-    // Set up a mesh anchoring A.txt and B.txt at their initial versions.
-    let gix = repo.gix_repo()?;
-    git_mesh::append_add(&gix, "test/mesh", "A.txt", 1, 1, Some(&anchor_sha))?;
-    git_mesh::append_add(&gix, "test/mesh", "B.txt", 1, 1, Some(&anchor_sha))?;
-    git_mesh::set_why(&gix, "test/mesh", "test")?;
-    git_mesh::commit_mesh(&gix, "test/mesh")?;
-
-    // Write a commit-graph with changed-path Bloom filters so the
-    // reverse-indexed walk can use Bloom gating.
+    // Write a commit-graph with changed-path Bloom filters (the
+    // reverse-walk Bloom open is unconditional even though the
+    // file-backed resolver compares by content hash).
     repo.write_commit_graph()?;
 
     // Run `git mesh stale` with perf counters enabled.
@@ -91,21 +89,27 @@ fn bloom_false_positive_counter_is_zero_for_true_positives() -> Result<()> {
         .output()?;
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let false_positives = parse_counter(&stderr, "session.walk-bloom-false-positives");
+    let stdout = String::from_utf8_lossy(&out.stdout);
 
+    // Correctness: both anchored slices changed → both report drift.
     assert_eq!(
-        false_positives, 0,
-        "expected 0 false positives when all tracked paths changed, got {false_positives}, stderr:\n{stderr}"
+        out.status.code(),
+        Some(1),
+        "both anchors drifted; stale must exit 1. stdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        stdout.contains("A.txt#L1-L1") && stdout.contains("B.txt#L1-L1"),
+        "both drifted anchors must be reported; stdout=\n{stdout}"
     );
 
-    // Also verify basic sanity: some commits were visited and Bloom skipped
-    // at least one (the initial commit's paths are not in HEAD's Bloom).
-    // HEAD's commit modified A.txt and B.txt, so its Bloom says "maybe"
-    // for those and neither was skipped.
-    let tree_diffs = parse_counter(&stderr, "session.walk-tree-diffs");
-    assert!(
-        tree_diffs >= 1,
-        "expected at least 1 tree-diff (HEAD commit), got {tree_diffs}, stderr:\n{stderr}"
+    // File-backed model: there is no per-anchor Bloom history walk, so
+    // the false-positive counter must be 0 — the Bloom walk never
+    // misclassifies a path because it is not used for content drift.
+    let false_positives =
+        parse_counter(&stderr, "session.walk-bloom-false-positives");
+    assert_eq!(
+        false_positives, 0,
+        "Bloom false-positive counter must be 0 in the file-backed model, got {false_positives}, stderr:\n{stderr}"
     );
 
     Ok(())

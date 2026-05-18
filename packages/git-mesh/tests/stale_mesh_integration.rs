@@ -69,26 +69,36 @@ fn seed_lfs_cache(repo: &TestRepo, oid_hex_64: &str, bytes: &[u8]) -> Result<()>
 
 #[test]
 fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Result<()> {
+    // File-backed model: anchors carry no `anchor_sha`; identity is the
+    // content `stored_hash` captured at `add` time. Two anchors on the
+    // same path that pin the same text (`target`) at different line
+    // ranges must each resolve independently against the current
+    // content via the relocation scan, not collapse onto one another.
     let repo = TestRepo::new()?;
+
+    // State A: `target` is on line 2. Pin same.txt#L2-L2 here (the
+    // file-backed `add` CLI hashes the current worktree slice = `target`).
     repo.write_file("same.txt", "a\ntarget\nc\n")?;
-    let anchor_one_sha = repo.commit_all("anchor one")?;
+    repo.commit_all("anchor one")?;
+    repo.run_mesh(["add", "timeline-key", "same.txt#L2-L2"])?;
 
+    // State B: prepend `intro`; `target` is now on line 3. Pin
+    // same.txt#L3-L3 here (also hashes `target`).
     repo.write_file("same.txt", "intro\na\ntarget\nc\n")?;
-    let anchor_two_sha = repo.commit_all("anchor two")?;
+    repo.commit_all("anchor two")?;
+    repo.run_mesh(["add", "timeline-key", "same.txt#L3-L3"])?;
+    repo.run_mesh(["why", "timeline-key", "-m", "timeline cache key regression"])?;
 
-    // Keep `same.txt`'s HEAD blob identical to anchor_two_sha while making
-    // HEAD a distinct commit. Both anchors now share `(path, HEAD blob)` but
-    // have different replay windows.
+    // Commit the mesh file alongside an unrelated change so HEAD's
+    // same.txt stays at State B.
     repo.write_file("other.txt", "unrelated\n")?;
     repo.commit_all("unrelated head")?;
     repo.write_commit_graph()?;
-
     let gix = repo.gix_repo()?;
-    append_add(&gix, "timeline-key", "same.txt", 2, 2, Some(&anchor_one_sha))?;
-    append_add(&gix, "timeline-key", "same.txt", 3, 3, Some(&anchor_two_sha))?;
-    set_why(&gix, "timeline-key", "timeline cache key regression")?;
-    commit_mesh(&gix, "timeline-key")?;
 
+    // HEAD same.txt = `intro\na\ntarget\nc`. Anchor 1 (L2-L2, pinned
+    // `target`) finds `target` relocated to line 3 → Moved. Anchor 2
+    // (L3-L3, pinned `target`) matches in place → Fresh.
     let resolved = resolve_mesh(&gix, "timeline-key", EngineOptions::committed_only())?;
     let statuses: Vec<AnchorStatus> = resolved
         .anchors
@@ -98,7 +108,7 @@ fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Re
     assert_eq!(
         statuses,
         vec![AnchorStatus::Moved, AnchorStatus::Fresh],
-        "same path/head blob anchors with different anchor SHAs must not share timeline replay"
+        "same-path anchors pinning identical text at different ranges must resolve independently"
     );
     Ok(())
 }
@@ -304,22 +314,28 @@ fn commit_reanchor_replaces_moved_range_instead_of_adding_duplicate() -> Result<
     )?;
     repo.commit_all("shift")?;
 
+    // File-backed model: the anchored content (lines 1-5) relocated to
+    // lines 3-7 within HEAD after the committed shift; the resolver's
+    // content-hash relocation scan reports it as Moved with the new
+    // destination range.
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("moved to file1.txt#L3-L7"),
+        stdout.contains("moved") && stdout.contains("file1.txt#L3-L7"),
         "stdout={stdout}"
     );
 
+    // Re-anchor by editing the worktree mesh file directly (no staging
+    // area): remove the stale range, add the relocated one. The mesh
+    // must then hold exactly one anchor and resolve clean.
+    repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["add", "m", "file1.txt#L3-L7"])?;
-    repo.mesh_stdout(["commit", "m"])?;
     let mesh = git_mesh::read_mesh(&repo.gix_repo()?, "m")?;
     assert_eq!(mesh.anchors.len(), 1, "re-anchor must replace old anchor");
-    let anchor = git_mesh::read_anchor(&repo.gix_repo()?, &mesh.anchors[0].0)?;
-    assert_eq!(anchor.path, "file1.txt");
+    assert_eq!(mesh.anchors[0].1.path, "file1.txt");
     assert_eq!(
-        anchor.extent,
+        mesh.anchors[0].1.extent,
         git_mesh::types::AnchorExtent::LineRange { start: 3, end: 7 }
     );
     let stale = repo.run_mesh(["stale", "m"])?;
@@ -543,8 +559,9 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
+    // File-backed model: drift the pointer in the working tree
+    // (uncommitted) so HEAD retains the anchored pointer.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
-    repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     Ok(())
@@ -567,9 +584,9 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
-    // Pointer changes, cache missing for new oid.
+    // Pointer changes in the working tree (uncommitted), cache missing
+    // for the new oid.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_d, 42)?;
-    repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(
         mr.anchors[0].status,
@@ -600,8 +617,8 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
+    // Drift the pointer in the working tree (uncommitted).
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_f, 42)?;
-    repo.commit_all("mutate pointer")?;
     // Build a sandbox PATH that contains `git` (the engine shells out to
     // git for many things) but excludes `git-lfs`, so the filter-process
     // spawn fails with ENOENT.
@@ -787,12 +804,21 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
         repo.run_git(["mv", &format!("bulk/a_{i}.txt"), &format!("bulk/b_{i}.txt")])?;
     }
     repo.commit_all("bulk rename")?;
+    // File-backed model: the mesh stores paths, not content identity,
+    // and the resolver does not run a history-walking rename detector
+    // (there is no `anchor_sha` to walk from). A committed rename of the
+    // anchored path detaches the anchor — it resolves `Deleted` — and
+    // the command must complete promptly even across a 1100-file rename
+    // changeset rather than emitting a rename-budget note.
     let out = repo.run_mesh(["stale", "m"])?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("rename detection disabled") || stderr.contains("--no-renames"),
-        "expected rename-budget note: stderr={stderr}"
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stale must report drift; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Deleted);
     Ok(())
 }
 

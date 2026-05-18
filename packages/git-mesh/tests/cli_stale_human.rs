@@ -20,12 +20,18 @@ fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn drift(repo: &TestRepo, msg: &str) -> Result<String> {
+/// File-backed model: drift is an *uncommitted* working-tree edit. The
+/// committed mesh pins `file1.txt` lines 1-5 to the initial-commit
+/// content; editing the worktree (without committing) is what
+/// `git mesh stale` detects and `--patch`/`--stat` diff against the
+/// anchored HEAD content. `msg` is retained for call-site compatibility
+/// but no commit is created.
+fn drift(repo: &TestRepo, _msg: &str) -> Result<String> {
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    repo.commit_all(msg)
+    repo.head_sha()
 }
 
 #[test]
@@ -257,7 +263,11 @@ fn named_lookup_clean_mesh_is_confirmed() -> Result<()> {
 /// both the drift bullet and the `pending add` bullet under a single block.
 ///
 /// Regression test: the old mesh-shape heuristic returned `false` when every
-/// anchor was drifted (no Fresh anchors), silently suppressing pending bullets.
+/// File-backed model: `git mesh add` writes the anchor directly into
+/// the worktree mesh file — there is no staging area or "pending"
+/// state. A second anchor added to a mesh with a drifted first anchor
+/// must still appear in the named-lookup block as a normal anchor bullet
+/// alongside the drifted one.
 #[test]
 fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -266,14 +276,14 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     repo.mesh_stdout(["why", "m", "-m", "regression test mesh"])?;
     repo.mesh_stdout(["commit", "m"])?;
 
-    // Drift the anchor by mutating line 1.
+    // Drift the first anchor by editing line 1 in the working tree.
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    repo.commit_all("mutate file1")?;
 
-    // Stage a pending add for a second anchor (do not commit).
+    // Add a second anchor; file-backed, this lands directly in the
+    // worktree mesh file (file2.txt is pristine → Fresh).
     repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
 
     // Named lookup: `git mesh stale m`.
@@ -289,8 +299,8 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
         "drift bullet must appear for drifted anchor; stdout=\n{stdout}"
     );
     assert!(
-        stdout.contains("pending add"),
-        "pending add bullet must appear even when all anchors are drifted; stdout=\n{stdout}"
+        stdout.contains("file2.txt#L1-L5"),
+        "newly added second anchor must appear as a bullet; stdout=\n{stdout}"
     );
     Ok(())
 }

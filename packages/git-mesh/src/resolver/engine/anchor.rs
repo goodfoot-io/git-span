@@ -79,6 +79,45 @@ fn slice_differs(
     !lines_equal(a_slice, c_slice, ignore_ws)
 }
 
+/// File-backed `Moved` relocation scan for line anchors.
+///
+/// The anchor's canonical content is identified by `stored_hash`
+/// (`sha256:<hex>` of the `\n`-joined slice at add time). When the
+/// content at the tracked range no longer matches, the same content may
+/// have relocated elsewhere in `text` (lines shifted up/down, block
+/// moved). Scan every window of `span` lines and return the 1-based
+/// `(start, end)` whose canonical hash equals `stored_hash`, preferring
+/// the window closest to `near_start` so a small shift maps to the
+/// nearest occurrence.
+fn find_relocated_range(
+    text: &str,
+    span: usize,
+    stored_hash: &str,
+    near_start: u32,
+) -> Option<(u32, u32)> {
+    if span == 0 {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < span {
+        return None;
+    }
+    let near0 = (near_start as usize).saturating_sub(1);
+    let mut best: Option<(usize, usize)> = None; // (start_idx, distance)
+    for start in 0..=(lines.len() - span) {
+        let slice_text = lines[start..start + span].join("\n");
+        let h = format!("sha256:{}", sha256_hex(slice_text.as_bytes()));
+        if h == stored_hash {
+            let dist = start.abs_diff(near0);
+            match best {
+                Some((_, bd)) if bd <= dist => {}
+                _ => best = Some((start, dist)),
+            }
+        }
+    }
+    best.map(|(start, _)| ((start as u32) + 1, (start as u32) + span as u32))
+}
+
 pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -94,10 +133,22 @@ pub(crate) fn resolve_anchor_inner(
         AnchorExtent::LineRange { start, end } => (start, end),
         AnchorExtent::WholeFile => unreachable!(),
     };
+    // File-backed model: the anchored content is the blob at `r.path`
+    // in HEAD (the mesh file at HEAD pins by content hash; HEAD is the
+    // reference point). Carry that blob OID so renderers (`--patch`,
+    // `--stat`) diff against the anchored HEAD content rather than
+    // falling back to the drifted worktree file.
+    let anchored_blob = if !r.blob.is_empty() {
+        oid_from_hex(&r.blob).ok()
+    } else {
+        state
+            .head_blob_at(repo, &r.path)?
+            .and_then(|o| oid_from_hex(&o).ok())
+    };
     let anchored = AnchorLocation {
         path: PathBuf::from(&r.path),
         extent: r.extent,
-        blob: oid_from_hex(&r.blob).ok(),
+        blob: anchored_blob,
     };
     if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
@@ -347,14 +398,30 @@ pub(crate) fn resolve_anchor_inner(
                 worktree_hunk_applied,
                 &index_blob_oid,
             )?;
-            status = AnchorStatus::Changed;
-            source = computed_layer_sources.first().copied().or(Some(deepest_layer));
-            current_loc = None;
-            layer_sources = if computed_layer_sources.is_empty() {
-                vec![deepest_layer]
+            // File-backed model: when the anchored path is absent from
+            // HEAD (e.g. `git mv` to a different path, or deletion), the
+            // mesh stores paths — not content identity — so the anchor
+            // is orphaned. Classify as `Deleted` with no current
+            // location rather than `Changed`.
+            let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
+            let head_path_absent =
+                file_backed && state.head_blob_at(repo, &r.path)?.is_none();
+            if head_path_absent {
+                status = AnchorStatus::Deleted;
+                source = None;
+                current_loc = None;
+                layer_sources = vec![];
             } else {
-                computed_layer_sources
-            };
+                status = AnchorStatus::Changed;
+                source =
+                    computed_layer_sources.first().copied().or(Some(deepest_layer));
+                current_loc = None;
+                layer_sources = if computed_layer_sources.is_empty() {
+                    vec![deepest_layer]
+                } else {
+                    computed_layer_sources
+                };
+            }
         }
         Some((t, cur_text, cur_blob)) => {
             let anchored_text = if !r.blob.is_empty() {
@@ -432,6 +499,28 @@ pub(crate) fn resolve_anchor_inner(
                     locus: None,
                 });
             }
+            // File-backed `Moved`: when the tracked-range content no
+            // longer matches `stored_hash`, the same content may have
+            // relocated within the file (lines shifted, block moved).
+            // Scan for the relocated window before classifying `Changed`.
+            let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
+            let relocated: Option<(u32, u32)> = if !equal && file_backed {
+                let span = (anchored_end as usize)
+                    .saturating_sub(anchored_start as usize)
+                    + 1;
+                find_relocated_range(&cur_text, span, &r.stored_hash, anchored_start)
+            } else {
+                None
+            };
+
+            let cur_blob_oid = if worktree_hunk_applied {
+                None
+            } else if state.layers.index && index_blob_oid.is_some() {
+                index_blob_oid.as_deref().and_then(|o| oid_from_hex(o).ok())
+            } else {
+                cur_blob
+            };
+
             if equal {
                 if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
                     status = AnchorStatus::Fresh;
@@ -448,6 +537,31 @@ pub(crate) fn resolve_anchor_inner(
                         vec![]
                     };
                 }
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(t.path.clone()),
+                    extent: AnchorExtent::LineRange {
+                        start: t.start,
+                        end: t.end,
+                    },
+                    blob: cur_blob_oid,
+                });
+            } else if let Some((rstart, rend)) = relocated {
+                // Content found intact at a different range → Moved.
+                status = AnchorStatus::Moved;
+                source = inferred_source.or(Some(deepest_layer));
+                layer_sources = if let Some(s) = inferred_source {
+                    vec![s]
+                } else {
+                    vec![deepest_layer]
+                };
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(t.path.clone()),
+                    extent: AnchorExtent::LineRange {
+                        start: rstart,
+                        end: rend,
+                    },
+                    blob: cur_blob_oid,
+                });
             } else {
                 status = AnchorStatus::Changed;
                 source = inferred_source.or(Some(deepest_layer));
@@ -456,21 +570,15 @@ pub(crate) fn resolve_anchor_inner(
                 } else {
                     computed_layer_sources
                 };
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(t.path.clone()),
+                    extent: AnchorExtent::LineRange {
+                        start: t.start,
+                        end: t.end,
+                    },
+                    blob: cur_blob_oid,
+                });
             }
-            current_loc = Some(AnchorLocation {
-                path: PathBuf::from(t.path.clone()),
-                extent: AnchorExtent::LineRange {
-                    start: t.start,
-                    end: t.end,
-                },
-                blob: if worktree_hunk_applied {
-                    None
-                } else if state.layers.index && index_blob_oid.is_some() {
-                    index_blob_oid.as_deref().and_then(|o| oid_from_hex(o).ok())
-                } else {
-                    cur_blob
-                },
-            });
         }
     }
 
@@ -729,8 +837,8 @@ fn compute_layer_sources(
             None => true,
             Some((txt, t)) => {
                 let head_lines: Vec<&str> = txt.lines().collect();
-                let h_lo = (anchored_start as usize).saturating_sub(1);
-                let h_hi = (anchored_end as usize).min(head_lines.len());
+                let h_lo = (t.start as usize).saturating_sub(1);
+                let h_hi = (t.end as usize).min(head_lines.len());
                 let head_slice_text: String = if h_lo < h_hi {
                     head_lines[h_lo..h_hi].join("\n")
                 } else {

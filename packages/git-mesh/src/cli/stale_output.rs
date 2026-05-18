@@ -11,7 +11,6 @@
 use crate::cli::format;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::git;
-use crate::mesh::catalog::Catalog;
 use crate::mesh::follow::{follow_moves, FollowDecision};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
@@ -139,8 +138,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // even when all are clean.
     let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
         let _perf = crate::perf::span("stale.count-totals");
-        let catalog = Catalog::load(repo)?;
-        let pairs = catalog.iter()?;
+        let pairs = crate::mesh::read::load_all_meshes(repo)?;
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         (mesh_count, anchor_count)
@@ -180,14 +178,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
-        let catalog = Catalog::load(repo)?;
+        let reader = crate::mesh_file_reader::MeshFileReader::new(repo, ".mesh".to_string());
 
         for arg in &args.paths {
             let mut found = false;
 
             // Step 1: try mesh name first when arg matches mesh-name shape.
             if validate_mesh_name_shape(arg).is_ok() {
-                let is_committed = catalog.lookup(arg)?.is_some();
+                let is_committed = reader.read_effective(arg)?.is_some();
                 if is_committed {
                     if seen.insert(arg.clone()) {
                         mesh_names.push(arg.clone());
@@ -1509,10 +1507,9 @@ pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh: &MeshResolved
 mod tests {
     use super::*;
     use crate::cli::StaleFormat;
-    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo};
-    use crate::mesh::catalog::{self, CATALOG_REF};
+    use crate::git::apply_ref_transaction_repo;
     use crate::mesh::path_index::ref_updates_for_mesh;
-    use crate::types::{Anchor, AnchorExtent, MeshConfig};
+    use crate::types::{Anchor, AnchorExtent};
     use std::path::Path;
     use std::process::Command;
 
@@ -1556,27 +1553,19 @@ mod tests {
         }
     }
 
+    /// Write and commit a mesh file under `.mesh/<name>` so the
+    /// file-backed `MeshFileReader` HEAD layer resolves it.
     fn create_mesh_ref(repo: &gix::Repository, name: &str) {
-        let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF).unwrap();
-        let mut cat = catalog::Catalog::load(repo).unwrap();
-        let mesh = crate::types::Mesh {
-            name: name.to_string(),
-            anchors: vec![],
-            message: String::new(),
-            config: MeshConfig {
-                copy_detection: crate::types::CopyDetection::SameCommit,
-                ignore_whitespace: false,
-                follow_moves: false,
-            },
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        let mesh_path = workdir.join(".mesh").join(name);
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        let mf = crate::mesh_file::MeshFile {
+            anchors: Vec::new(),
+            why: format!("mesh {name}"),
         };
-        cat.insert(name, &mesh).unwrap();
-        catalog::commit_catalog(
-            repo,
-            &cat,
-            &format!("test: create mesh {name}"),
-            catalog_ref_oid.as_deref(),
-        )
-        .unwrap();
+        std::fs::write(&mesh_path, mf.serialize()).unwrap();
+        run_git(&workdir, &["add", "-A"]);
+        run_git(&workdir, &["commit", "-m", &format!("test: create mesh {name}")]);
     }
 
     fn create_path_index_entry(

@@ -19,13 +19,35 @@ use support::TestRepo;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// True when `s` contains a commit-sha drift locus of the form
+/// `changed in <>=7 hex chars>` (the ref-backed attribution that the
+/// file-backed model no longer emits). The layer phrase
+/// "changed in the working tree" is NOT a sha locus.
+fn regex_lite_changed_in_sha(s: &str) -> bool {
+    let needle = "changed in ";
+    let mut from = 0;
+    while let Some(pos) = s[from..].find(needle) {
+        let after = &s[from + pos + needle.len()..];
+        let hex_run = after
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .count();
+        if hex_run >= 7 {
+            return true;
+        }
+        from += pos + needle.len();
+    }
+    false
+}
+
 /// Seed a mesh anchoring `file.txt#L1-L5` and commit it, returning the anchor
 /// sha recorded in the mesh commit.
 fn seed_mesh(repo: &TestRepo, mesh: &str, file: &str, start: u32, end: u32) -> Result<()> {
-    let gix = repo.gix_repo()?;
-    append_add(&gix, mesh, file, start, end, None)?;
-    set_why(&gix, mesh, "seed")?;
-    commit_mesh(&gix, mesh)?;
+    // File-backed model: `add`/`why` write the worktree mesh file
+    // directly; commit it alongside the (pristine) source.
+    repo.mesh_stdout(["add", mesh, &format!("{file}#L{start}-L{end}")])?;
+    repo.mesh_stdout(["why", mesh, "-m", "seed"])?;
+    repo.commit_all("seed mesh")?;
     Ok(())
 }
 
@@ -169,10 +191,14 @@ fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
     )?;
     let short = &sha[..7];
 
+    // File-backed model: anchors carry no anchor_sha, so the resolver
+    // does not attribute drift to a specific historical commit — the
+    // label is the plain status word, not `changed in <sha>`.
+    let _ = short;
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains(&format!("changed in {short}")),
-        "expected 'changed in {short}'; stale=\n{stale}"
+        stale.contains("changed") && !stale.contains("changed in "),
+        "expected plain 'changed' (no sha locus); stale=\n{stale}"
     );
     Ok(())
 }
@@ -190,13 +216,14 @@ fn committed_path_deletion_labels_orphaned_in_sha() -> Result<()> {
     // Delete the file and commit; worktree and index are clean afterward.
     repo.run_git(["rm", "file1.txt"])?;
     repo.run_git(["commit", "-m", "delete file1.txt"])?;
-    let sha = repo.head_sha()?;
-    let short = &sha[..7];
 
+    // File-backed model: the anchored path is gone from HEAD; the mesh
+    // stores paths, so the anchor is orphaned. No `in <sha>` locus
+    // (there is no anchor_sha history to attribute the deletion to).
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains(&format!("orphaned in {short}")),
-        "expected 'orphaned in {short}'; stale=\n{stale}"
+        stale.contains("orphaned") && !stale.contains("orphaned in "),
+        "expected plain 'orphaned' (no sha locus); stale=\n{stale}"
     );
     Ok(())
 }
@@ -214,57 +241,44 @@ fn rename_in_history_labels_orphaned_in_rename_sha() -> Result<()> {
     // Rename file1.txt → file1_renamed.txt and commit.
     repo.run_git(["mv", "file1.txt", "file1_renamed.txt"])?;
     repo.run_git(["commit", "-m", "rename file1.txt"])?;
-    let sha = repo.head_sha()?;
-    let short = &sha[..7];
 
+    // File-backed model: a committed rename of the anchored path
+    // detaches the anchor (the mesh stores paths). Plain `orphaned`,
+    // no `in <sha>` locus.
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains(&format!("orphaned in {short}")),
-        "expected 'orphaned in {short}' for rename; stale=\n{stale}"
+        stale.contains("orphaned") && !stale.contains("orphaned in "),
+        "expected plain 'orphaned' for rename (no sha locus); stale=\n{stale}"
     );
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Row 7: orphaned (no sha) — anchor sha unreachable from HEAD
+// Row 7: orphaned (no sha) — anchored path absent from HEAD
 // ---------------------------------------------------------------------------
 
 #[test]
 
 fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
-    // Build a repo where the anchor commit is on a branch that gets reset away,
-    // making the anchor sha unreachable from HEAD.
+    // File-backed model: there is no "unreachable anchor_sha" concept —
+    // anchors carry no commit identity. The equivalent orphan condition
+    // is the anchored path being absent from HEAD entirely. The label
+    // is plain `orphaned`, never `orphaned in <sha>`.
     let repo = TestRepo::new()?;
-    repo.write_file(
-        "file1.txt",
-        "line1\nline2\nline3\nline4\nline5\n",
-    )?;
+    repo.write_file("file1.txt", "line1\nline2\nline3\nline4\nline5\n")?;
     repo.commit_all("initial")?;
-
-    // Create the mesh on this commit.
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
 
-    // Reset HEAD to the initial commit (before the mesh commit), making the
-    // anchor sha potentially unreachable — or simulate by orphaning via a
-    // hard reset that removes the mesh commit from history.
-    //
-    // A simpler approach: create a new orphan branch so the original HEAD
-    // (with the mesh commit) is no longer reachable.
-    repo.run_git(["checkout", "--orphan", "orphan-branch"])?;
-    repo.run_git(["commit", "--allow-empty", "-m", "orphan root"])?;
-
-    // The reverse-indexed walk requires a commit-graph; write one before
-    // running stale. The anchor's commit (on the original branch) is not
-    // reachable from the orphan branch, so it won't appear in the graph.
+    // Remove the anchored file from HEAD.
+    repo.run_git(["rm", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "remove anchored file"])?;
     repo.write_commit_graph()?;
 
-    // git-mesh stale run from this orphan branch — the anchor sha from the
-    // mesh commit is not reachable from this branch's HEAD.
     let stale_out = repo.run_mesh(["stale", "m", "--no-exit-code"])?;
     let stale = String::from_utf8(stale_out.stdout)?;
     assert!(
         stale.contains("orphaned") && !stale.contains("orphaned in "),
-        "expected 'orphaned' (no sha); stale=\n{stale}"
+        "expected plain 'orphaned' (no sha); stale=\n{stale}"
     );
     Ok(())
 }
@@ -322,26 +336,30 @@ fn stale_patch_and_show_emit_identical_label_text() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
 
-    // Create a committed drift so a sha-based label is emitted.
-    let sha = repo.commit_file(
+    // File-backed model: an uncommitted working-tree edit drifts the
+    // anchor. The label is the plain status word (`changed`, no sha
+    // locus) and must read identically on `stale` and `stale --patch`.
+    repo.write_file(
         "file1.txt",
         "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-        "drift commit",
     )?;
-    let short = &sha[..7];
-    let expected_label = format!("changed in {short}");
-
+    // The file-backed label is the layer phrase ("changed in the
+    // working tree"), never a commit-sha locus ("changed in <hex>").
+    let sha_locus = regex_lite_changed_in_sha;
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     let patch = repo.mesh_stdout(["stale", "m", "--patch", "--no-exit-code"])?;
 
     assert!(
-        stale.contains(&expected_label),
-        "stale must contain '{expected_label}'; stale=\n{stale}"
+        stale.contains("changed") && !sha_locus(&stale),
+        "stale must contain plain 'changed' (no sha locus); stale=\n{stale}"
     );
     assert!(
-        patch.contains(&expected_label),
-        "stale --patch must contain '{expected_label}'; patch=\n{patch}"
+        patch.contains("changed") && !sha_locus(&patch),
+        "stale --patch must contain plain 'changed' (no sha locus); patch=\n{patch}"
     );
-    // `git mesh show` outputs TOML and does not include drift labels.
+    assert!(
+        patch.contains("@@"),
+        "worktree drift must produce a unified diff; patch=\n{patch}"
+    );
     Ok(())
 }

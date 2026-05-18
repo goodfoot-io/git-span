@@ -128,23 +128,27 @@ fn ls_staged_marker_on_committed_mesh_with_staged_ops() -> Result<()> {
         "file1.txt#L1-L5",
         "the spec governs the parser",
     )?;
-    // Stage an additional add without committing.
+    // File-backed model: `git mesh add` edits the worktree mesh file
+    // directly — there is no staging area or "pending" state. The mesh
+    // now simply has both anchors, each rendered as a plain bullet.
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     let out = repo.mesh_stdout(["list"])?;
-    // Heading bare, no `(staged)` decoration.
     assert!(out.contains("## alpha"), "expected '## alpha' heading: {out}");
     assert!(
         !out.contains("(staged)") && !out.contains("(pending)"),
         "no state markers on heading: {out}"
     );
-    // Committed anchor rendered bare; staged add carries the suffix.
     assert!(
-        out.contains("- file1.txt#L1-L5"),
-        "expected committed anchor bullet: {out}"
+        !out.contains("pending add"),
+        "no staging-area pending markers in the file-backed model: {out}"
     );
     assert!(
-        out.contains("- file2.txt#L1-L3 — pending add"),
-        "expected pending-add bullet: {out}"
+        out.contains("- file1.txt#L1-L5"),
+        "expected first anchor bullet: {out}"
+    );
+    assert!(
+        out.contains("- file2.txt#L1-L3"),
+        "expected second anchor bullet: {out}"
     );
     Ok(())
 }
@@ -152,7 +156,9 @@ fn ls_staged_marker_on_committed_mesh_with_staged_ops() -> Result<()> {
 #[test]
 fn ls_pending_marker_on_staging_only_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // Stage but do NOT commit.
+    // File-backed model: `add`/`why` write the worktree mesh file
+    // directly (no git commit needed). The mesh is immediately visible
+    // in `list` as a normal mesh — no "pending"/"staged" state exists.
     repo.mesh_stdout(["add", "pending-mesh", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "pending-mesh", "-m", "pending relationship"])?;
     let out = repo.mesh_stdout(["list"])?;
@@ -161,10 +167,14 @@ fn ls_pending_marker_on_staging_only_mesh() -> Result<()> {
         !out.contains("(pending)") && !out.contains("(staged)"),
         "no state markers on heading: {out}"
     );
-    // Pending mesh: only the staged add appears, with the suffix.
     assert!(
-        out.contains("- file1.txt#L1-L5 — pending add"),
-        "expected pending-add bullet: {out}"
+        !out.contains("pending add"),
+        "no staging-area pending markers in the file-backed model: {out}"
+    );
+    // Anchor rendered as a plain bullet.
+    assert!(
+        out.contains("- file1.txt#L1-L5"),
+        "expected anchor bullet: {out}"
     );
     // Full why text rendered verbatim (no `Why:` prefix).
     assert!(
@@ -212,34 +222,33 @@ fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
 #[test]
 fn ls_staged_flag_shows_only_meshes_with_pending_staging() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // A committed mesh with no staging.
     commit_mesh(&repo, "clean", "file1.txt#L1-L3", "clean mesh")?;
-    // A pending-only mesh (never committed).
     repo.mesh_stdout(["add", "pending-m", "file2.txt#L1-L3"])?;
-    repo.mesh_stdout(["why", "pending-m", "-m", "pending staging"])?;
-    // A committed mesh with a staged add on a different existing file.
+    repo.mesh_stdout(["why", "pending-m", "-m", "no more staging"])?;
     commit_mesh(&repo, "dirty", "file2.txt#L5-L7", "dirty mesh")?;
     repo.mesh_stdout(["add", "dirty", "file1.txt#L5-L6"])?;
 
+    // File-backed model: there is no staging area. `--staged` has no
+    // pending operations to filter on, so it matches nothing.
     let out = repo.mesh_stdout(["list", "--staged"])?;
-    // Top summary line counts meshes with pending staging.
     assert!(
-        out.starts_with("2 meshes have pending staging."),
-        "expected staged summary line: {out}"
+        out.trim() == "No meshes match the filters.",
+        "no staging area in the file-backed model: {out}"
     );
-    // `clean` has no staging and should not appear.
-    assert!(!out.contains("## clean"), "clean should be filtered out: {out}");
-    // `pending-m` has staging but no commit; rendered as a block heading.
-    assert!(out.contains("## pending-m"), "pending-m should appear: {out}");
-    // `dirty` has committed anchors plus a staged add — both appear.
-    assert!(out.contains("## dirty"), "dirty should appear: {out}");
+
+    // All meshes (committed or worktree-only) are visible in a plain
+    // `list` as ordinary meshes with no pending markers.
+    let plain = repo.mesh_stdout(["list"])?;
+    assert!(plain.contains("## clean"), "clean should appear: {plain}");
+    assert!(plain.contains("## pending-m"), "pending-m should appear: {plain}");
+    assert!(plain.contains("## dirty"), "dirty should appear: {plain}");
     assert!(
-        out.contains("- file2.txt#L5-L7"),
-        "dirty's committed anchor should be listed: {out}"
+        !plain.contains("pending add"),
+        "no staging-area pending markers: {plain}"
     );
     assert!(
-        out.contains("- file1.txt#L5-L6 — pending add"),
-        "dirty's staged add should be listed with suffix: {out}"
+        plain.contains("- file2.txt#L5-L7") && plain.contains("- file1.txt#L5-L6"),
+        "dirty's anchors should both be listed plainly: {plain}"
     );
     Ok(())
 }
@@ -391,17 +400,20 @@ fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
 
-    // Rename alpha -> renamed.
-    repo.mesh_stdout(["move", "alpha", "renamed"])?;
+    // File-backed model: meshes are tracked files under `.mesh/`. A
+    // rename is a file rename; a delete removes the file. The path
+    // filter scans mesh files, so it tracks both operations directly.
+    let mesh_dir = repo.path().join(".mesh");
+    std::fs::rename(mesh_dir.join("alpha"), mesh_dir.join("renamed"))?;
 
-    // Path-index lookup follows the rename.
+    // Path filter follows the renamed mesh file.
     let after_rename = repo.mesh_stdout(["list", "file1.txt#L3-L4", "--porcelain"])?;
     assert_eq!(after_rename.trim(), "renamed\tfile1.txt\t1-5");
 
-    // Delete the mesh.
-    repo.mesh_stdout(["delete", "renamed"])?;
+    // Delete the mesh by removing its file.
+    std::fs::remove_file(mesh_dir.join("renamed"))?;
 
-    // Path-index lookup now returns empty. file1.txt still exists in the
+    // Path filter now returns empty. file1.txt still exists in the
     // worktree, so a zero-match is fine — exit 0 silently rather than
     // erroring. The error contract only fires when the referent (file or
     // mesh) doesn't exist.

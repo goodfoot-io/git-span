@@ -322,10 +322,12 @@ fn resolve_mesh_with_state(
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
-        let _perf = crate::perf::span("resolver.read-catalog");
-        crate::mesh::catalog::Catalog::load(repo)?
-            .lookup(name)?
-            .ok_or_else(|| Error::MeshNotFound(name.to_string()))?
+        let _perf = crate::perf::span("resolver.read-mesh-file");
+        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let file = reader
+            .read_effective(name)?
+            .ok_or_else(|| Error::MeshNotFound(name.to_string()))?;
+        mesh_from_file(name, &file)
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
@@ -603,12 +605,15 @@ pub(crate) fn resolve_named_meshes(
     // per-anchor commit deltas are available to every per-mesh resolver call.
     {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+        let reader = MeshFileReader::new(repo, ".mesh".to_string());
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
-                catalog.lookup(name).ok().flatten()
-                    .map(|mesh| (name.clone(), mesh))
+                reader
+                    .read_effective(name)
+                    .ok()
+                    .flatten()
+                    .map(|file| (name.clone(), mesh_from_file(name, &file)))
             })
             .collect();
         if !mesh_pairs.is_empty() {
@@ -653,9 +658,8 @@ fn stale_meshes_inner(
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
     let mesh_pairs: Vec<(String, Mesh)> = {
-        let _perf = crate::perf::span("resolver.read-catalog");
-        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-        catalog.iter()?
+        let _perf = crate::perf::span("resolver.read-mesh-files");
+        crate::mesh::read::load_all_meshes(repo)?
     };
     let mut out = Vec::new();
     let mut state = {
@@ -844,8 +848,7 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
         Err(e) => return Ok(Phase3Attempt::Fallback(format!("open-store: {e}"))),
     };
 
-    let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-    let mesh_pairs: Vec<(String, Mesh)> = catalog.iter()?;
+    let mesh_pairs: Vec<(String, Mesh)> = crate::mesh::read::load_all_meshes(repo)?;
     let catalog_names: Vec<String> = mesh_pairs.iter().map(|(n, _)| n.clone()).collect();
     let catalog_name_set: HashSet<String> = catalog_names.iter().cloned().collect();
 
@@ -1199,12 +1202,15 @@ pub(crate) fn resolve_meshes_in_order(
     // Build the reverse-indexed walk once across all named meshes.
     {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
+        let reader = MeshFileReader::new(repo, ".mesh".to_string());
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
-                catalog.lookup(name).ok().flatten()
-                    .map(|mesh| (name.clone(), mesh))
+                reader
+                    .read_effective(name)
+                    .ok()
+                    .flatten()
+                    .map(|file| (name.clone(), mesh_from_file(name, &file)))
             })
             .collect();
         if !mesh_pairs.is_empty() {

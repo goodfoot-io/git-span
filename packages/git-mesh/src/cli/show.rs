@@ -2,7 +2,6 @@
 
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
-use crate::mesh::catalog::Catalog;
 use crate::resolver::build_pending_findings;
 use crate::staging::{list_staged_mesh_names, read_staging, resolve_staged_config, Staging};
 use crate::types::{
@@ -307,7 +306,7 @@ fn collect_listings_with_options(
     include_why: bool,
     include_state: bool,
 ) -> Result<Vec<MeshListing>> {
-    let catalog = Catalog::load(repo)?;
+    let mesh_pairs = crate::mesh::read::load_all_meshes(repo)?;
     let staged_names = {
         let _perf = crate::perf::span("list.list-staged-meshes");
         list_staged_mesh_names(repo)?
@@ -319,7 +318,7 @@ fn collect_listings_with_options(
     // Collect committed meshes.
     {
         let _perf = crate::perf::span("list.read-committed-meshes");
-        for (name, mesh) in catalog.iter()? {
+        for (name, mesh) in mesh_pairs {
             committed_name_set.insert(name.clone());
             let (message, anchors_v2) = if include_why {
                 (mesh.message, mesh.anchors)
@@ -428,7 +427,7 @@ fn collect_listings_for_names(
     include_state: bool,
 ) -> Result<Vec<MeshListing>> {
     let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
-    let catalog = Catalog::load(repo)?;
+    let mesh_pairs = crate::mesh::read::load_all_meshes(repo)?;
     let staged_names = list_staged_mesh_names(repo)?;
 
     let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
@@ -437,7 +436,7 @@ fn collect_listings_for_names(
     let mut listings = Vec::with_capacity(names.len());
 
     // Committed meshes matching the name set.
-    for (name, mesh) in catalog.iter()? {
+    for (name, mesh) in mesh_pairs {
         committed_name_set.insert(name.clone());
         if !name_set.contains(name.as_str()) {
             continue;
@@ -553,27 +552,28 @@ fn collect_filtered_porcelain_listings_with_staging(
         (target.to_string(), None)
     };
 
-    let committed_names = {
-        let _perf = crate::perf::span("list.path-index-lookup");
-        crate::mesh::path_index::matching_mesh_names(repo, &path, range)?
+    // File-backed model: scan every visible mesh file for an anchor
+    // matching the requested (path, range) rather than consulting the
+    // ref-backed path index.
+    let _ = staged_listings;
+    let mesh_pairs = {
+        let _perf = crate::perf::span("list.path-filter-scan");
+        crate::mesh::read::load_all_meshes(repo)?
     };
-    let mut listings = Vec::with_capacity(committed_names.len());
-    {
-        let _perf = crate::perf::span("list.path-index-candidate-expansion");
-        for name in committed_names {
-            let mesh = match crate::mesh::read::read_mesh(repo, &name) {
-                Ok(m) => m,
-                Err(crate::Error::MeshNotFound(_)) => continue,
-                Err(err) => return Err(err.into()),
-            };
-            let anchors = mesh
-                .anchors
-                .into_iter()
-                .map(|(_id, anchor)| AnchorEntry {
-                    path: anchor.path,
-                    extent: anchor.extent,
-                })
-                .collect();
+    let mut listings = Vec::with_capacity(mesh_pairs.len());
+    for (name, mesh) in mesh_pairs {
+        let anchors: Vec<AnchorEntry> = mesh
+            .anchors
+            .into_iter()
+            .map(|(_id, anchor)| AnchorEntry {
+                path: anchor.path,
+                extent: anchor.extent,
+            })
+            .collect();
+        if anchors
+            .iter()
+            .any(|anchor| anchor_matches(anchor, &path, range))
+        {
             listings.push(MeshListing {
                 name,
                 why: mesh.message.trim_end_matches('\n').to_string(),
@@ -586,27 +586,6 @@ fn collect_filtered_porcelain_listings_with_staging(
                 staged_configs: 0,
                 staged_why: false,
             });
-        }
-    }
-
-    {
-        let _perf = crate::perf::span("list.path-index-pending-meshes");
-        let staged;
-        let staged_listings = match staged_listings {
-            Some(staged_listings) => staged_listings,
-            None => {
-                staged = collect_staged_porcelain_listings(repo)?;
-                &staged
-            }
-        };
-        for listing in staged_listings {
-            if listing
-                .anchors
-                .iter()
-                .any(|anchor| anchor_matches(anchor, &path, range))
-            {
-                listings.push(listing.clone());
-            }
         }
     }
 
@@ -746,7 +725,13 @@ fn run_list_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
         let _perf = crate::perf::span("list.batch-read-staged-meshes");
         collect_staged_porcelain_listings(repo)?
     };
+    // File-backed model: every query line scans the same mesh files, so
+    // a mesh can match more than one query. Render each matched mesh's
+    // anchors once across the whole batch (dedup by name). A query that
+    // matches no mesh at all still prints the `no meshes` sentinel; a
+    // query whose every match was already rendered prints nothing.
     let stdin = io::stdin();
+    let mut seen: HashSet<String> = HashSet::new();
     for target in stdin.lock().lines() {
         let target = target?;
         let mut listings = collect_filtered_porcelain_listings_with_staging(
@@ -759,7 +744,11 @@ fn run_list_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
         if listings.is_empty() {
             println!("no meshes");
         } else {
-            render_porcelain(&listings);
+            let fresh: Vec<MeshListing> = listings
+                .into_iter()
+                .filter(|l| seen.insert(l.name.clone()))
+                .collect();
+            render_porcelain(&fresh);
         }
     }
 
@@ -804,8 +793,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     // committed mesh and surface the existing MeshNotFound error.
     if !args.log && args.at.is_none() && args.format.is_none() && !args.oneline {
         let mesh_exists = {
-            let catalog = Catalog::load(repo)?;
-            catalog.entry_oid(&args.name).is_some()
+            let reader = crate::mesh_file_reader::MeshFileReader::new(
+                repo,
+                ".mesh".to_string(),
+            );
+            reader.read_effective(&args.name)?.is_some()
         };
         if !mesh_exists {
             let pending = build_pending_findings(repo, &args.name);
@@ -848,10 +840,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     let mesh = {
         let _perf = crate::perf::span("show.read-mesh");
         if args.at.is_none() {
-            let catalog = Catalog::load(repo)?;
-            catalog.lookup(&args.name)?.ok_or_else(|| {
-                crate::Error::MeshNotFound(args.name.clone())
-            }).map_err(|e| CliError {
+            crate::mesh::read::read_mesh(repo, &args.name).map_err(|e| CliError {
                 subcommand: "show",
                 summary: format!("no mesh named `{}`.", args.name),
                 what_happened: format!("{}", e),
@@ -866,18 +855,17 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             })?
         }
     };
-    let info = {
-        let _perf = crate::perf::span("show.read-commit-info");
-        mesh_commit_info_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
-            subcommand: "show",
-            summary: format!("no mesh named `{}`.", args.name),
-            what_happened: format!("{}", e),
-            next_steps: vec![NextStep::Bash("git mesh list".into())],
-        })?
-    };
-
     // --format=<FMT> short-circuits the default rendering (§10.4).
     if let Some(fmt) = &args.format {
+        let info = {
+            let _perf = crate::perf::span("show.read-commit-info");
+            mesh_commit_info_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
+                subcommand: "show",
+                summary: format!("no mesh named `{}`.", args.name),
+                what_happened: format!("{}", e),
+                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            })?
+        };
         let tokens = {
             let _perf = crate::perf::span("show.parse-format");
             match parse_format(fmt) {
@@ -1174,7 +1162,7 @@ pub(crate) fn resolve_targets(
         return Ok(Vec::new());
     }
 
-    let catalog = Catalog::load(repo)?;
+    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, ".mesh".to_string());
     let mut result: HashSet<String> = HashSet::new();
     let mut missing_args: Vec<&str> = Vec::new();
 
@@ -1190,9 +1178,13 @@ pub(crate) fn resolve_targets(
     // shell left literal because it matched nothing.
     for arg in args {
         if arg.contains("#L") {
-            // Range address: parse path and range, look up via path index.
+            // Range address: parse path and range, scan mesh files.
             let (path, start, end) = parse_range_address(arg)?;
-            let names = crate::mesh::path_index::matching_mesh_names(repo, &path, Some((start, end)))?;
+            let names = crate::mesh::read::meshes_matching_path(
+                repo,
+                &path,
+                Some((start, end)),
+            )?;
             if !names.is_empty() {
                 result.extend(names);
             } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
@@ -1201,14 +1193,14 @@ pub(crate) fn resolve_targets(
         } else if validate_mesh_name_shape(arg).is_ok() {
             // Mesh-name shape (bare slug or hierarchical): try catalog,
             // then staging, then path index, then worktree existence check.
-            if catalog.entry_oid(arg).is_some() {
+            if reader.read_effective(arg)?.is_some() {
                 result.insert(arg.clone());
             } else if staged_names.contains(arg.as_str()) {
                 // Staging-only mesh (has staged ops but no committed ref yet).
                 result.insert(arg.clone());
             } else {
                 let names =
-                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
+                    crate::mesh::read::meshes_matching_path(repo, arg, None)?;
                 if !names.is_empty() {
                     result.extend(names);
                 } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
@@ -1223,9 +1215,9 @@ pub(crate) fn resolve_targets(
                 missing_args.push(arg);
             }
         } else {
-            // Not mesh-name shape (path with extension): go straight
-            // to path index.
-            let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
+            // Not mesh-name shape (path with extension): scan mesh files
+            // for an anchor on this path.
+            let names = crate::mesh::read::meshes_matching_path(repo, arg, None)?;
             if !names.is_empty() {
                 result.extend(names);
             } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
@@ -1464,11 +1456,6 @@ mod tests {
     // resolve_targets helpers and tests
     // -----------------------------------------------------------------------
 
-    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo};
-    use crate::mesh::catalog::{self, CATALOG_REF};
-    use crate::mesh::path_index::ref_updates_for_mesh;
-    use crate::types::Anchor;
-    use crate::types::MeshConfig;
     use std::path::Path;
     use std::process::Command;
 
@@ -1500,43 +1487,27 @@ mod tests {
         );
     }
 
-    fn anchor(path: &str, start: u32, end: u32) -> Anchor {
-        Anchor {
-            anchor_sha: "0000000000000000000000000000000000000000".to_string(),
-            created_at: "2025-01-01T00:00:00Z".to_string(),
-            path: path.to_string(),
-            extent: AnchorExtent::LineRange { start, end },
-            blob: "0000000000000000000000000000000000000000".to_string(),
-            stored_hash: String::new(),
-        }
-    }
 
-    fn make_mesh(name: &str) -> crate::types::Mesh {
-        crate::types::Mesh {
-            name: name.to_string(),
-            anchors: vec![],
-            message: String::new(),
-            config: MeshConfig {
-                copy_detection: crate::types::CopyDetection::SameCommit,
-                ignore_whitespace: false,
-                follow_moves: false,
-            },
-        }
-    }
-
+    /// Write and commit a mesh file under `.mesh/<name>` so the
+    /// file-backed `MeshFileReader` HEAD layer resolves it.
     fn create_mesh_ref(repo: &gix::Repository, name: &str) {
-        let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF).unwrap();
-        let mut cat = catalog::Catalog::load(repo).unwrap();
-        cat.insert(name, &make_mesh(name)).unwrap();
-        catalog::commit_catalog(
-            repo,
-            &cat,
-            &format!("test: create mesh {name}"),
-            catalog_ref_oid.as_deref(),
-        )
-        .unwrap();
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        let mesh_path = workdir.join(".mesh").join(name);
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        // A mesh with no anchors and no why serializes to empty; write a
+        // single-line why so the file is non-empty and parses back.
+        let mf = crate::mesh_file::MeshFile {
+            anchors: Vec::new(),
+            why: format!("mesh {name}"),
+        };
+        std::fs::write(&mesh_path, mf.serialize()).unwrap();
+        run_git(&workdir, &["add", "-A"]);
+        run_git(&workdir, &["commit", "-m", &format!("test: create mesh {name}")]);
     }
 
+    /// File-backed model: a mesh that anchors `path#Lstart-Lend` is a
+    /// tracked file under `.mesh/`. Write and commit it so the
+    /// file-scanning path resolver (`meshes_matching_path`) finds it.
     fn create_path_index_entry(
         repo: &gix::Repository,
         mesh_name: &str,
@@ -1544,9 +1515,25 @@ mod tests {
         start: u32,
         end: u32,
     ) {
-        let anchors = vec![("a1".to_string(), anchor(path, start, end))];
-        let updates = ref_updates_for_mesh(repo, mesh_name, &[], &anchors).unwrap();
-        apply_ref_transaction_repo(repo, &updates).unwrap();
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        let mesh_path = workdir.join(".mesh").join(mesh_name);
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        let mf = crate::mesh_file::MeshFile {
+            anchors: vec![crate::mesh_file::AnchorRecord {
+                path: path.to_string(),
+                start_line: start,
+                end_line: end,
+                algorithm: "sha256".to_string(),
+                content_hash: "0".repeat(64),
+            }],
+            why: format!("mesh {mesh_name}"),
+        };
+        std::fs::write(&mesh_path, mf.serialize()).unwrap();
+        run_git(&workdir, &["add", "-A"]);
+        run_git(
+            &workdir,
+            &["commit", "-m", &format!("test: create mesh {mesh_name}")],
+        );
     }
 
     #[test]
@@ -1724,37 +1711,18 @@ mod tests {
 
     #[test]
     fn resolve_targets_works_after_rename() {
-        // Simulate the failing integration test: commit a mesh, rename it,
-        // then look up via path index.
+        // File-backed model: meshes are tracked files. Renaming a mesh
+        // is renaming its file under `.mesh/`; the file-scanning path
+        // resolver must then find the anchor under the new name.
         let (_td, repo) = seed_repo();
-
-        // Commit mesh "alpha" with file1.txt#L1-L5.
-        create_mesh_ref(&repo, "alpha");
         create_path_index_entry(&repo, "alpha", "a.txt", 1, 5);
 
-        // Rename "alpha" → "renamed" via catalog + path-index ops.
-        let catalog_ref_oid = resolve_ref_oid_optional_repo(&repo, CATALOG_REF).unwrap();
-        let mut cat = catalog::Catalog::load(&repo).unwrap();
-        let mesh = cat.lookup("alpha").unwrap().unwrap();
-        cat.remove("alpha").unwrap();
-        cat.insert("renamed", &mesh).unwrap();
-        catalog::commit_catalog(
-            &repo,
-            &cat,
-            "test: rename alpha -> renamed",
-            catalog_ref_oid.as_deref(),
-        )
-        .unwrap();
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        let mesh_dir = workdir.join(".mesh");
+        std::fs::rename(mesh_dir.join("alpha"), mesh_dir.join("renamed")).unwrap();
+        run_git(&workdir, &["add", "-A"]);
+        run_git(&workdir, &["commit", "-m", "test: rename alpha -> renamed"]);
 
-        // Update path index from "alpha" to "renamed" via ref_updates_for_rename,
-        // which atomically removes old entries and adds new ones.
-        let anchors = vec![("a1".to_string(), anchor("a.txt", 1, 5))];
-        let pi_updates =
-            crate::mesh::path_index::ref_updates_for_rename(&repo, "alpha", "renamed", &anchors)
-                .unwrap();
-        apply_ref_transaction_repo(&repo, &pi_updates).unwrap();
-
-        // Now resolve_targets should find only "renamed" via the path index.
         let result = resolve_targets(&repo, &["a.txt#L3-L4".to_string()]).unwrap();
         assert_eq!(result, vec!["renamed"]);
     }

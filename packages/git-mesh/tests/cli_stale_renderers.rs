@@ -36,6 +36,20 @@ fn drift_in_head(repo: &TestRepo) -> Result<String> {
     repo.commit_all("mutate")
 }
 
+/// File-backed model: an *uncommitted* working-tree edit. The committed
+/// mesh pins `file1.txt` lines 1-5 to the HEAD content; `--patch` /
+/// `--stat` diff the anchored HEAD content against this working change.
+/// (A *committed* drift overwrites the anchored content in HEAD itself,
+/// leaving no reconstructable "before" for a unified diff — that is the
+/// correct file-backed limitation, so patch/stat scenarios drift in the
+/// working tree.)
+fn drift_in_worktree(repo: &TestRepo) -> Result<()> {
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )
+}
+
 #[test]
 fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -234,21 +248,25 @@ fn discovery_human_excludes_staging_only_mesh() -> Result<()> {
 
 #[test]
 fn discovery_json_includes_clean_mesh_with_pending_metadata() -> Result<()> {
+    // File-backed model: `git mesh why` rewrites the why section of the
+    // worktree mesh file directly — there is no staged "pending"
+    // metadata op. A why-only edit on an otherwise clean mesh produces
+    // no drift: exit 0, and the JSON workspace scan emits no findings
+    // (the renderer is silent when there is nothing stale).
     let repo = TestRepo::seeded()?;
     seed(&repo, "clean-with-pending")?;
     repo.mesh_stdout(["why", "clean-with-pending", "-m", "updated reason"])?;
 
     let out = repo.run_mesh(["stale", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
-    let v: Value = serde_json::from_slice(&out.stdout)?;
     assert!(
-        v["findings"].as_array().is_some_and(Vec::is_empty),
-        "metadata-only pending must not create findings: {v}"
+        out.stdout.is_empty()
+            || serde_json::from_slice::<Value>(&out.stdout)?["findings"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        "why-only edit must not create findings; stdout={}",
+        String::from_utf8_lossy(&out.stdout)
     );
-    let pending = v["pending"].as_array().expect("pending array");
-    assert_eq!(pending.len(), 1, "pending metadata entry: {v}");
-    assert_eq!(pending[0]["mesh"], "clean-with-pending");
-    assert_eq!(pending[0]["kind"], "why");
     Ok(())
 }
 
@@ -279,20 +297,21 @@ fn github_actions_emits_annotation_with_path() -> Result<()> {
 
 #[test]
 fn human_pending_ops_render_range_addresses() -> Result<()> {
-    // Named lookup: pending bullets appear inline using the new format.
+    // File-backed model: `add` and `remove` edit the worktree mesh file
+    // directly. After adding file2.txt#L1-L5 and removing
+    // file1.txt#L1-L5 the mesh's only anchor is file2.txt#L1-L5, which
+    // renders as a normal bullet (file2.txt unchanged → Fresh) and the
+    // removed file1 anchor no longer appears.
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
+    assert!(out.contains("file2.txt#L1-L5"), "stdout={out}");
     assert!(
-        out.contains("file2.txt#L1-L5 — pending add"),
-        "stdout={out}"
-    );
-    assert!(
-        out.contains("file1.txt#L1-L5 — pending remove"),
-        "stdout={out}"
+        !out.contains("file1.txt#L1-L5"),
+        "removed anchor must not appear; stdout={out}"
     );
     Ok(())
 }
@@ -301,7 +320,7 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
 fn human_stat_mode_prints_change_counts() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    drift_in_head(&repo)?;
+    drift_in_worktree(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--stat"])?;
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stdout);
@@ -313,7 +332,7 @@ fn human_stat_mode_prints_change_counts() -> Result<()> {
 fn human_patch_mode_prints_unified_diff() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    drift_in_head(&repo)?;
+    drift_in_worktree(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--patch"])?;
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stdout);
@@ -328,12 +347,15 @@ fn human_patch_mode_prints_unified_diff() -> Result<()> {
 
 #[test]
 fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
-    // Named lookup on a staging-only mesh: block with pending bullets, no committed anchors.
+    // File-backed model: `git mesh add` writes the anchor directly into
+    // the worktree mesh file (no staging area). A named lookup on the
+    // new mesh shows the anchor as a normal bullet; since file1.txt is
+    // unchanged from HEAD it resolves Fresh.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
-    // New format: pending add bullet inline.
-    assert!(out.contains("file1.txt#L1-L5 — pending add"), "stdout={out}");
+    assert!(out.contains("## new-mesh"), "stdout={out}");
+    assert!(out.contains("file1.txt#L1-L5"), "stdout={out}");
     Ok(())
 }
 

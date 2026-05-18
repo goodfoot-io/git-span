@@ -17,6 +17,40 @@ fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
     gix::ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
 }
 
+/// True when `path` is a submodule gitlink (recorded with mode 160000 in
+/// the index or HEAD-derived index). Gitlinks have no readable blob
+/// content; their identity is the recorded commit OID.
+fn is_gitlink_path(repo: &gix::Repository, path: &str) -> bool {
+    crate::git::index_entries(repo)
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|en| en.path == path && en.mode.is_commit())
+        })
+        .unwrap_or(false)
+}
+
+/// Canonical content bytes for a whole-file anchor at a resolved layer
+/// OID. For a gitlink the canonical content is the recorded commit OID
+/// hex string (matching how `git mesh add` hashes gitlinks); for a
+/// regular path it is the blob text. This keeps the resolver's
+/// file-backed hash comparison consistent with the add-time hash.
+fn canonical_layer_bytes(
+    repo: &gix::Repository,
+    oid_hex: &str,
+    gitlink: bool,
+) -> Vec<u8> {
+    if gitlink {
+        oid_hex.as_bytes().to_vec()
+    } else if oid_hex.is_empty() {
+        Vec::new()
+    } else {
+        git::read_git_text(repo, oid_hex)
+            .unwrap_or_default()
+            .into_bytes()
+    }
+}
+
 pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -25,10 +59,20 @@ pub(crate) fn resolve_whole_file(
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
+    // File-backed model: the anchored content is the blob at `r.path`
+    // in HEAD. Carry that OID so `--patch`/`--stat` diff against the
+    // anchored HEAD content instead of the drifted worktree file.
+    let anchored_blob = if !r.blob.is_empty() {
+        oid_from_hex(&r.blob).ok()
+    } else {
+        state
+            .head_blob_at(repo, &r.path)?
+            .and_then(|o| oid_from_hex(&o).ok())
+    };
     let anchored = AnchorLocation {
         path: PathBuf::from(&r.path),
         extent: AnchorExtent::WholeFile,
-        blob: oid_from_hex(&r.blob).ok(),
+        blob: anchored_blob,
     };
     if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
@@ -163,6 +207,7 @@ pub(crate) fn resolve_whole_file(
     };
 
     let _ = cfg;
+    let is_gitlink = is_gitlink_path(repo, &current_path);
     let status: AnchorStatus;
     let source: Option<DriftSource>;
     let layer_sources: Vec<DriftSource>;
@@ -172,8 +217,9 @@ pub(crate) fn resolve_whole_file(
     let head_drifts = if !r.stored_hash.is_empty() {
         match &head_blob {
             Some(oid) => {
-                let text = git::read_git_text(repo, oid).unwrap_or_default();
-                let computed = format!("sha256:{}", sha256_hex(text.as_bytes()));
+                let bytes =
+                    canonical_layer_bytes(repo, oid, is_gitlink);
+                let computed = format!("sha256:{}", sha256_hex(&bytes));
                 computed != r.stored_hash
             }
             None => true,
@@ -184,8 +230,9 @@ pub(crate) fn resolve_whole_file(
     let index_drifts = if !r.stored_hash.is_empty() {
         state.layers.index && match &index_blob {
             Some(oid) => {
-                let text = git::read_git_text(repo, oid).unwrap_or_default();
-                let computed = format!("sha256:{}", sha256_hex(text.as_bytes()));
+                let bytes =
+                    canonical_layer_bytes(repo, oid, is_gitlink);
+                let computed = format!("sha256:{}", sha256_hex(&bytes));
                 computed != r.stored_hash
             }
             None => true,
@@ -196,15 +243,23 @@ pub(crate) fn resolve_whole_file(
     let worktree_drifts = if !r.stored_hash.is_empty() {
         state.layers.worktree && match &worktree_blob {
             Some(Some(oid)) => {
-                // Worktree blob OID may not exist in repo (computed via hash_blob).
-                // Re-read file from disk for hash comparison.
-                let abs = workdir.join(&current_path);
-                match std::fs::read(&abs) {
-                    Ok(bytes) => {
-                        let computed = format!("sha256:{}", sha256_hex(&bytes));
-                        computed != r.stored_hash
+                if is_gitlink {
+                    // Gitlink: identity is the recorded commit OID hex.
+                    let computed =
+                        format!("sha256:{}", sha256_hex(oid.as_bytes()));
+                    computed != r.stored_hash
+                } else {
+                    // Worktree blob OID may not exist in repo (computed
+                    // via hash_blob). Re-read file from disk for hash.
+                    let abs = workdir.join(&current_path);
+                    match std::fs::read(&abs) {
+                        Ok(bytes) => {
+                            let computed =
+                                format!("sha256:{}", sha256_hex(&bytes));
+                            computed != r.stored_hash
+                        }
+                        Err(_) => true,
                     }
-                    Err(_) => true,
                 }
             }
             Some(None) => true,
@@ -233,24 +288,19 @@ pub(crate) fn resolve_whole_file(
         Some(cur) => {
             // Determine if current content matches the anchored state.
             let cur_matches = if !r.stored_hash.is_empty() {
-                // File-backed model: compute SHA-256 of deepest-layer content
-                // and compare against stored_hash.
-                let text = match deepest {
-                    DriftSource::Worktree => {
-                        std::fs::read(workdir.join(&current_path)).unwrap_or_default()
-                    }
-                    DriftSource::Index => {
-                        if cur.is_empty() {
-                            Vec::new()
-                        } else {
-                            git::read_git_text(repo, cur).unwrap_or_default().into_bytes()
+                // File-backed model: compute SHA-256 of deepest-layer
+                // canonical content and compare against stored_hash.
+                let text = if is_gitlink {
+                    // Gitlink identity is the recorded commit OID hex.
+                    cur.as_bytes().to_vec()
+                } else {
+                    match deepest {
+                        DriftSource::Worktree => {
+                            std::fs::read(workdir.join(&current_path))
+                                .unwrap_or_default()
                         }
-                    }
-                    DriftSource::Head => {
-                        if cur.is_empty() {
-                            Vec::new()
-                        } else {
-                            git::read_git_text(repo, cur).unwrap_or_default().into_bytes()
+                        DriftSource::Index | DriftSource::Head => {
+                            canonical_layer_bytes(repo, cur, false)
                         }
                     }
                 };

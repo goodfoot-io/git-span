@@ -29,24 +29,76 @@ pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
 
 /// Read a mesh from a specific mesh root.
 ///
-/// Reads from the committed catalog first (which provides full anchor
-/// records including `anchor_sha`, `blob`, and `created_at`).  When the
-/// mesh has not been committed yet (no catalog entry), falls back to the
-/// layered worktree mesh file reader for display and development use.
+/// File-backed model: the mesh is read from the layered mesh-file view
+/// (worktree overlays index overlays HEAD). There is no catalog fallback.
 pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result<Mesh> {
-    // Try the committed catalog first — full anchor metadata needed by
-    // compact, stale, and resolver functions.
-    let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-    if let Some(mesh) = catalog.lookup(name)? {
-        return Ok(mesh);
-    }
-
-    // Fall back to the worktree file for uncommitted meshes.
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let file = reader
         .read_effective(name)?
         .ok_or_else(|| Error::MeshNotFound(name.to_string()))?;
     Ok(mesh_from_file(name, &file))
+}
+
+/// Load every visible mesh as `(name, Mesh)` pairs via the layered
+/// mesh-file reader. Names absent from the effective view (tombstoned)
+/// are skipped. This is the file-backed replacement for
+/// `Catalog::load(repo)?.iter()`.
+pub fn load_all_meshes(repo: &gix::Repository) -> Result<Vec<(String, Mesh)>> {
+    load_all_meshes_in(repo, ".mesh")
+}
+
+/// Load every visible mesh under a specific mesh root.
+pub fn load_all_meshes_in(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<Vec<(String, Mesh)>> {
+    let reader = MeshFileReader::new(repo, mesh_root.to_string());
+    let mut names = reader.list_mesh_names()?;
+    names.sort();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        // A name can appear in `list_mesh_names` (e.g. present in HEAD)
+        // yet be tombstoned in the effective view; skip those rather
+        // than erroring so the batch resolves the live set.
+        if let Some(file) = reader.read_effective(&name)? {
+            out.push((name.clone(), mesh_from_file(&name, &file)));
+        }
+    }
+    Ok(out)
+}
+
+/// File-backed replacement for the ref-backed path index: return the
+/// names of all visible meshes that have at least one anchor matching
+/// `path` (exact path equality) and the optional 1-based inclusive line
+/// `range`. A whole-file anchor matches any range query on its path; a
+/// line anchor matches when the ranges overlap. Names are sorted.
+pub fn meshes_matching_path(
+    repo: &gix::Repository,
+    path: &str,
+    range: Option<(u32, u32)>,
+) -> Result<Vec<String>> {
+    use crate::types::AnchorExtent;
+    let mut names: Vec<String> = Vec::new();
+    for (name, mesh) in load_all_meshes(repo)? {
+        let hit = mesh.anchors.iter().any(|(_, a)| {
+            if a.path != path {
+                return false;
+            }
+            match (a.extent, range) {
+                (_, None) => true,
+                (AnchorExtent::WholeFile, Some(_)) => true,
+                (
+                    AnchorExtent::LineRange { start, end },
+                    Some((qs, qe)),
+                ) => start <= qe && end >= qs,
+            }
+        });
+        if hit {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 /// Read a mesh as it existed at a specific catalog commit OID.
@@ -59,6 +111,9 @@ pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
     match commit_ish {
         None => read_mesh(repo, name),
         Some(commit_ish) => {
+            // `commit_ish` is a catalog commit OID produced by the
+            // legacy `commit_mesh` pipeline (kept intact until Phase 5).
+            // Read the mesh from the catalog tree at that commit.
             let oid = gix::ObjectId::from_str(commit_ish)
                 .map_err(|e| Error::Git(format!("parse OID `{commit_ish}`: {e}")))?;
             let commit = repo
@@ -69,7 +124,9 @@ pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
                 .map_err(|e| Error::Git(format!("get commit tree `{commit_ish}`: {e}")))?;
             let tree_oid_str = tree.id().detach().to_string();
             let catalog = crate::mesh::catalog::Catalog::load_at(repo, &tree_oid_str)?;
-            catalog.lookup(name)?.ok_or_else(|| Error::MeshNotFound(name.to_string()))
+            catalog
+                .lookup(name)?
+                .ok_or_else(|| Error::MeshNotFound(name.to_string()))
         }
     }
 }

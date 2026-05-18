@@ -294,11 +294,28 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                     AnchorExtent::LineRange { start, end } => (start, end),
                     AnchorExtent::WholeFile => (0, 0),
                 };
-                // Compute stored_hash from blob if not already set.
+                // Compute stored_hash from blob if not already set. The
+                // canonical hashed bytes must match the resolver's
+                // file-backed comparison: whole-file anchors hash the
+                // entire blob; line anchors hash the `\n`-joined slice of
+                // lines `[start, end]`.
                 let stored_hash = if a.stored_hash.is_empty() && !a.blob.is_empty() {
                     let text =
                         crate::git::read_git_text(repo, &a.blob).unwrap_or_default();
-                    format!("sha256:{}", crate::staging::sha256_hex(text.as_bytes()))
+                    let hashed: String = match a.extent {
+                        AnchorExtent::WholeFile => text,
+                        AnchorExtent::LineRange { start, end } => {
+                            let lines: Vec<&str> = text.lines().collect();
+                            let lo = (start as usize).saturating_sub(1);
+                            let hi = (end as usize).min(lines.len());
+                            if lo < hi {
+                                lines[lo..hi].join("\n")
+                            } else {
+                                String::new()
+                            }
+                        }
+                    };
+                    format!("sha256:{}", crate::staging::sha256_hex(hashed.as_bytes()))
                 } else {
                     a.stored_hash.clone()
                 };
