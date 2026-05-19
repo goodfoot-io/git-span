@@ -77,10 +77,11 @@ git mesh add billing/checkout-request-flow \
   'api/charge.ts#L30-L76'
 git mesh why billing/checkout-request-flow \
   -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
-git commit -m "Wire checkout to charge API"   # post-commit hook runs `git mesh commit`
+git add .mesh
+git commit -m "Wire checkout to charge API"
 ```
 
-`git mesh add` without `--at` snapshots the working tree and resolves the anchor at mesh commit time — which is how the post-commit flow anchors to the source commit that just landed.
+`git mesh add` / `why` write directly into the tracked file `.mesh/billing/checkout-request-flow`; `git add .mesh && git commit` persists the mesh in the same commit (or any commit) as the code change. `git mesh add` without `--at` hashes each anchor against the file content at `HEAD`.
 
 ## Documenting existing code
 
@@ -91,9 +92,9 @@ git mesh add auth/token-contract \
   'packages/auth/token.ts#L88-L104' \
   'packages/auth/crypto.ts#L12-L40'
 git mesh why auth/token-contract -m "Token verification depends on signature verification."
-git mesh commit auth/token-contract
+git add .mesh && git commit -m "Document token/crypto coupling"
 ```
 
-Use `--at <commit-ish>` (any ref, tag, or SHA) only when the anchor should be a specific historical commit other than the current one.
+Use `--at <commit-ish>` (any ref, tag, or SHA) only when the anchor should be hashed against a specific historical commit other than `HEAD`.
 
-The first commit on a new mesh requires a staged why. See `./command-quirks-and-errors.md` § "First commit requires a why".
+A new mesh needs a why written before (or with) the commit that introduces it. See `./command-quirks-and-errors.md` § "First why on a new mesh".

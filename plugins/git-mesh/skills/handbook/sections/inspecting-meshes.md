@@ -1,9 +1,10 @@
 # Inspecting meshes
 
-Reading mesh state is local and fast — no network. Fetch first if the question is about shared state:
+Reading mesh state is local and fast — no network. Meshes are tracked files, so
+if the question is about shared state, pull first with ordinary git:
 
 ```bash
-git mesh fetch
+git pull
 ```
 
 ## Find meshes touching a file or anchor
@@ -40,10 +41,12 @@ Bare `git mesh` (no arguments) prints short help.
 ## Show a single mesh
 
 ```bash
-git mesh <name>                   # full view
-git mesh <name> --oneline         # compact
-git mesh <name> --no-abbrev       # full SHAs
+git mesh <name>                   # full view (= git mesh show <name>)
+git mesh show <name> --oneline    # one line per anchor, no header
 ```
+
+`git mesh show` prints the mesh file's content: `name`, `message` (the why),
+each `[[anchors]]` block, and the trailing `[config]` block.
 
 Print the current why:
 
@@ -53,38 +56,38 @@ git mesh why <name>
 
 ## Historical state
 
-`--at` accepts any commit-ish git understands:
+`--at` accepts any ordinary git commit-ish — the mesh is a tracked file, so this
+is just reading the file out of git history:
 
 ```bash
-git mesh <name> --at HEAD~3
-git mesh <name> --at <mesh-ref-sha>
-git mesh why <name> --at HEAD~5
+git mesh show <name> --at HEAD~3
+git mesh show <name> --at <branch-or-tag-or-sha>
+git mesh why  <name> --at HEAD~5
 ```
-
-Resolution rules:
-- **Source commit-ish** (branch, tag, `HEAD~N`) — resolves to the mesh state current when that source commit was HEAD.
-- **Mesh-ref commit SHA** — used as-is.
 
 ## Walk mesh history
 
-```bash
-git mesh <name> --log
-git mesh <name> --log --limit 5
-```
-
-## Format for scripts
+The mesh is a tracked file; use plain git:
 
 ```bash
-git mesh <name> --format='%h %s%n%(ranges)'
-git mesh <name> --format='%(ranges:count)'
-git mesh <name> --format='%(config:copy-detection)'
+git log --oneline -- .mesh/<name>
+git log -p -5 -- .mesh/<name>
+git show <commit>:.mesh/<name>
 ```
 
-## Before a mesh's first commit
+## Inspecting config
 
-A mesh ref does not exist until `git mesh commit <name>` succeeds once. Before that:
+The resolver config is the `[config]` block at the tail of `git mesh show`
+output (`copy_detection`, `ignore_whitespace`, `follow_moves`). To script
+against it, read the mesh file directly — it is TOML.
 
-- **`git mesh stale`** (no targets) — workspace scan; shows staged ops for the not-yet-committed mesh in the trailing "staged mesh ops" section.
-- **`git mesh stale <new-name>`** — resolves via staging if `<new-name>` has staged ops. If `<new-name>` is neither a mesh, a path-index entry, nor a file in the worktree, errors with `no such file or mesh: '<new-name>'`.
-- **`git mesh <new-name>`** — errors: mesh ref not found.
-- **`git mesh list <path-or-name>`** — pending meshes (staging-only, no committed tip) appear with a `(pending)` marker when the target overlaps them.
+## Before a mesh is committed
+
+`git mesh add`/`why` write `.mesh/<name>` in the working tree immediately, so
+even before the commit:
+
+- **`git mesh <name>` / `git mesh show <name>`** — reflect the working-tree
+  mesh file right away.
+- **`git mesh stale`** — scans against the working-tree mesh files by default.
+- A teammate sees the mesh only after the commit containing `.mesh/<name>`
+  lands on a shared branch.

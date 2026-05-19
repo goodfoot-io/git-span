@@ -2,55 +2,55 @@
 
 ## Sync
 
-```bash
-git mesh fetch [<remote>]
-git mesh push  [<remote>]
-```
-
-`git-mesh` lazily configures fetch and push refspecs for `refs/ranges/*` and `refs/meshes/*` on first use. Default remote is `origin`:
+Meshes are ordinary tracked files under `.mesh/`. They are versioned, fetched,
+and pushed exactly like any other tracked file — there are no mesh refspecs and
+no `git mesh fetch`/`push`:
 
 ```bash
-git config mesh.defaultRemote upstream   # override
+git pull         # picks up teammates' mesh edits along with their code
+git push         # publishes your committed mesh edits
 ```
 
-Inspect remote mesh refs with git plumbing:
+A mesh edit is shared the moment the commit that contains `.mesh/<name>` lands
+on a shared branch. **Pull before reviewing shared mesh state.** All `git mesh`
+reads are local and never contact the network.
+
+Inspect a mesh's history with plain git:
 
 ```bash
-git ls-remote origin 'refs/meshes/*'
-git ls-remote origin 'refs/ranges/*'
+git log --oneline -- .mesh/<name>
+git show <commit>:.mesh/<name>
 ```
-
-**Fetch before reviewing shared mesh state.** Reads are local; they do not contact the network.
 
 ## HEAD-only invariant (the CI mode)
 
-CI runners should not see checkout noise — line-ending churn, auto-generated files, smudge-time artifacts. Collapse the resolver to its HEAD-layer floor with the three subtractive flags:
+CI runners should not see checkout noise — line-ending churn, auto-generated
+files, smudge-time artifacts. Collapse the resolver to its HEAD layer:
 
 ```bash
-git mesh stale --no-worktree --no-index --no-staged-mesh
+git mesh stale --head
 ```
 
-There is no convenience alias — pass all three so intent is visible.
+`--head` resolves against HEAD only (ignoring index and working tree).
+Equivalently, `--no-worktree --no-index` drops both upper layers.
 
 ## PR gate (scope to branch)
 
 ```bash
-git mesh fetch origin
+git fetch origin
 base="$(git merge-base origin/main HEAD)"
-git mesh stale --since "$base" \
-  --no-worktree --no-index --no-staged-mesh \
-  --format=github-actions
+git mesh stale --since "$base" --head --format github-actions
 ```
 
-`--since` limits findings to anchors recorded on the current branch. `--format=github-actions` emits annotations for GitHub Actions; `junit` and `json` are also available.
+`--since` limits findings to anchors recorded on the current branch.
+`--format github-actions` emits annotations for GitHub Actions; `junit` and
+`json` are also available.
 
 ## Full repository audit (scheduled)
 
 ```bash
-git mesh fetch origin
-git mesh stale \
-  --no-worktree --no-index --no-staged-mesh \
-  --format=junit
+git fetch origin
+git mesh stale --head --format junit
 ```
 
 Use for repositories with many relationships that can drift without a nearby PR.
@@ -58,25 +58,22 @@ Use for repositories with many relationships that can drift without a nearby PR.
 ## Advisory report (no gating)
 
 ```bash
-git mesh stale \
-  --no-worktree --no-index --no-staged-mesh \
-  --no-exit-code --format=json > mesh-report.json
+git mesh stale --head --no-exit-code --format json > mesh-report.json
 ```
 
-`--no-exit-code` forces exit 0 regardless of findings. Use for dashboards or migration work where stale meshes are counted, not blocked.
+`--no-exit-code` forces exit 0 regardless of findings. Use for dashboards or
+audit work where stale meshes are counted, not blocked.
 
 ## Fresh-clone tolerance
 
 On CI runners that have not fetched LFS or partial-clone content:
 
 ```bash
-git mesh stale \
-  --no-worktree --no-index --no-staged-mesh \
-  --ignore-unavailable \
-  --format=github-actions
+git mesh stale --head --ignore-unavailable --format github-actions
 ```
 
-`--ignore-unavailable` downgrades only `CONTENT_UNAVAILABLE` findings. Drift findings still fail. See `./content-unavailable.md` for reason codes.
+`--ignore-unavailable` downgrades only `CONTENT_UNAVAILABLE` findings. Drift
+findings still fail. See `./content-unavailable.md` for reason codes.
 
 ## Setup audit
 
@@ -84,4 +81,5 @@ git mesh stale \
 git mesh doctor
 ```
 
-Lightweight repository-health check — suitable for developer setup or a CI pre-check. Not a semantic-drift check.
+Lightweight setup check — confirms every mesh file parses. Suitable for a
+developer setup step or a CI pre-check. Not a semantic-drift check.

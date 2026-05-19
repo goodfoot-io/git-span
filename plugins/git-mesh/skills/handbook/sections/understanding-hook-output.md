@@ -44,7 +44,7 @@ The output of the chosen verb is JSON-wrapped into `{hookSpecificOutput: {hookEv
 
 Matcher: `*`. Source: `packages/agent-hooks/src/session-end.ts`.
 
-Calls `git mesh advice <sid> end`, which removes the per-session advice directory and any leftover snapshot pairs left under `.git/mesh/advice/<sid>/`. SessionEnd does not inject text; it exists so the on-disk session store does not grow without bound across many sessions.
+Calls `git mesh advice <sid> end`, which removes the per-session advice directory and any leftover snapshot pairs. The session store lives outside the repo — under `$TMPDIR/git-mesh/advice/` by default, overridable with `GIT_MESH_ADVICE_DIR` — so it never touches `.mesh/` or git history. SessionEnd does not inject text; it exists so the on-disk session store does not grow without bound across many sessions.
 
 There is no `SessionStart` hook in the current plugin. The session store is created lazily by the first `git mesh advice <sid> <verb>` call from PostToolUse.
 
@@ -65,8 +65,8 @@ src/checkout.tsx#L88-L120 is in the billing/checkout-request-flow mesh with:
 ```
 
 - **Header line**: `<active-anchor> is in the <mesh> mesh with:` when a triggering anchor is known. Otherwise `<mesh> mesh contains:`. The active anchor is whatever the developer or the assistant just touched (the path the read landed on, the hunk that was edited, the partner that drifted under a side effect).
-- **Bullets**: each related anchor in the mesh, in `<path>#L<start>-L<end>` form (or bare path for whole-file anchors). A status clause in parentheses follows the address when the anchor is anything other than `FRESH`. Markers used here are `(CHANGED)`, `(MOVED)`, `(ORPHANED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`. Absence of a clause means `FRESH`. (These are the rendered forms — internally the markers are `[CHANGED]` etc.; `format_status` strips the brackets and wraps in parentheses for the user-facing line.)
-- **Excerpt block** (optional, density ≥ 1): a few lines of the related anchor's bytes, with its address, when the anchor is excerptible. Skipped for whole-file anchors and for the non-excerpt markers `[ORPHANED]`, `[CONFLICT]`, `[SUBMODULE]`, `[DELETED]`.
+- **Bullets**: each related anchor in the mesh, in `<path>#L<start>-L<end>` form (or bare path for whole-file anchors). A status clause in parentheses follows the address when the anchor is anything other than `FRESH`. Markers used here are `(CHANGED)`, `(MOVED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`. Absence of a clause means `FRESH`. (These are the rendered forms — internally the markers are `[CHANGED]` etc.; `format_status` strips the brackets and wraps in parentheses for the user-facing line.)
+- **Excerpt block** (optional, density ≥ 1): a few lines of the related anchor's bytes, with its address, when the anchor is excerptible. Skipped for whole-file anchors and for the non-excerpt markers `[CONFLICT]`, `[SUBMODULE]`, `[DELETED]`.
 - **Command block** (optional, density 2): a one-line lead-in and an indented `git mesh …` command when the next step is unambiguous (re-record after edits, follow a rename, narrow or retire a mesh, record a candidate mesh).
 
 A new-mesh suggestion (cross-cutting candidate the suggest pipeline scored High or High+):

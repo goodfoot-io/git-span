@@ -9,7 +9,7 @@ git mesh add brand-refresh marketing/hero.png
 git mesh add api-contract-v2 vendor/openapi-spec
 git mesh add diagram-refs docs/architecture.drawio
 git mesh add charge-msa legal/msa.md
-git mesh commit brand-refresh
+git add .mesh && git commit -m "Anchor brand and contract assets"
 ```
 
 Use a whole-file anchor when the file is **consumed as a unit by name or identity** — its bytes-as-a-whole are the thing the other anchors in the mesh depend on:
@@ -51,9 +51,9 @@ A line-range anchor inside a submodule is rejected at `git mesh add`. Legacy anc
 
 ## Re-anchoring whole-file anchors
 
-Same as line-range anchors: a second `git mesh add` over the same path is a re-anchor (last-write-wins), and the staged add shows `(ack)` next time stale runs.
+Same as line-range anchors: a second `git mesh add` over the same path is a re-anchor (last-write-wins) — it rewrites the recorded hash for that whole-file anchor in `.mesh/<name>`. Persist it with an ordinary commit.
 
 ```bash
 git mesh add brand-refresh marketing/hero.png
-git mesh commit brand-refresh
+git add .mesh && git commit -m "Re-anchor brand-refresh"
 ```

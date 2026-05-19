@@ -9,6 +9,3 @@ if [ -n "$WIKI_BIN" ]; then
     "$WIKI_BIN" check --no-exit-code --no-mesh
   fi
 fi
-if command -v git-mesh >/dev/null 2>&1; then
-  git mesh hooks git post-commit
-fi
