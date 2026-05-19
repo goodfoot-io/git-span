@@ -235,6 +235,16 @@ fn check_worktree_prefix_collision(
         if other == name {
             continue;
         }
+        // `list_mesh_names` returns the raw HEAD∪index∪worktree union; a
+        // name deleted in the index/worktree but still in HEAD is a
+        // tombstone and no longer occupies its path.  Filter it through
+        // the effective view (mirrors `load_all_meshes_in`).
+        match reader.read_effective(other) {
+            Ok(Some(_)) => {}
+            Err(crate::Error::MeshConflict(_)) => {}
+            Ok(None) => continue,
+            Err(e) => return Err(e),
+        }
         // `other` is a strict ancestor of `name`.
         if let Some(rest) = name.strip_prefix(other.as_str())
             && rest.starts_with('/')

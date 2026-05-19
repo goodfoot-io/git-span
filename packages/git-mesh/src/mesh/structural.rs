@@ -60,6 +60,19 @@ pub fn rename_mesh_in(
 
     let old_path = mesh_file_path(repo, mesh_root, old)?;
     let new_path = mesh_file_path(repo, mesh_root, new)?;
+
+    // File→directory transition: when `new` has `old` as a strict path
+    // prefix (`old` followed by `/`), the old regular file lies on the
+    // new path's ancestor chain and obstructs `create_dir_all`.  Remove
+    // it first; the effective content is already captured in `file`.
+    let new_under_old = new
+        .strip_prefix(old)
+        .is_some_and(|rest| rest.starts_with('/'));
+    if new_under_old && old_path.exists() {
+        std::fs::remove_file(&old_path)
+            .map_err(|e| Error::Git(format!("remove `{}`: {e}", old_path.display())))?;
+    }
+
     if let Some(parent) = new_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::Git(format!("create `{}`: {e}", parent.display())))?;
@@ -68,7 +81,7 @@ pub fn rename_mesh_in(
     // where the old version lived only in HEAD/index, not on disk).
     std::fs::write(&new_path, file.serialize())
         .map_err(|e| Error::Git(format!("write `{}`: {e}", new_path.display())))?;
-    if old_path.exists() {
+    if !new_under_old && old_path.exists() {
         std::fs::remove_file(&old_path)
             .map_err(|e| Error::Git(format!("remove `{}`: {e}", old_path.display())))?;
     }

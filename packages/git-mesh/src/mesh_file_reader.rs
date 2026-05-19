@@ -107,7 +107,11 @@ impl<'repo> MeshFileReader<'repo> {
     /// Used mainly for diagnostics.
     pub fn read_worktree(&self, name: &str) -> Result<Option<MeshFile>> {
         let abs = self.worktree_path(name);
-        if abs.exists() {
+        // A directory at the mesh path (e.g. after `a/b` was renamed to
+        // `a/b/index`, leaving `.mesh/a/b` as a directory) is not a
+        // readable leaf mesh file; treat it as absent in this layer
+        // rather than letting `read_to_string` fail with "Is a directory".
+        if abs.is_file() {
             let content = std::fs::read_to_string(&abs)?;
             MeshFile::parse(&content).map(Some)
         } else {
