@@ -109,7 +109,7 @@ pub fn edit_overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
 pub struct BasicOutput {
     /// The anchor whose action triggered this output.
     pub active_anchor: String,
-    /// Mesh name (the `refs/meshes/v1/<name>` suffix).
+    /// Mesh name (the `.mesh/<name>` file's logical name).
     pub mesh_name: String,
     /// One-sentence description from `git mesh why`.
     pub why: String,

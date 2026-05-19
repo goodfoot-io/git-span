@@ -1,0 +1,4 @@
+packages/agent-hooks/src/pre-tool-use.ts#L34-L34 sha256:13b4eb3e0ae53821d43d37f162713f7ddcf013ca07d6e967eb80b5e51ae5c39f
+packages/git-mesh/src/cli/advice/mod.rs#L27-L32 sha256:28dcc73c1eb601de09064624f32a36f5eb971ecdf2005ee927e5265a713be44e
+
+The hook invokes the CLI's snapshot subcommand by name to capture the session baseline; the CLI enum variant defines the keyword the hook must conform to.

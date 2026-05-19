@@ -244,7 +244,7 @@ impl SessionStore {
         load_string_set(&self.dir.join("mesh-candidates.jsonl"))
     }
 
-    /// Idempotent: snapshot `refs/meshes/v1/*` to `mesh-baseline.json`.
+    /// Idempotent: snapshot every `.mesh/*` mesh file to `mesh-baseline.json`.
     /// No-op if the file already exists and is non-empty.
     pub fn ensure_mesh_baseline(&self, repo: &gix::Repository, mesh_root: &str) -> Result<()> {
         let path = self.dir.join("mesh-baseline.json");

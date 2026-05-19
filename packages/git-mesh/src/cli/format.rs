@@ -28,26 +28,6 @@ pub fn format_follow_up_command(bash: &str) -> String {
     format!("```bash\n{bash}\n```")
 }
 
-/// Format a ref transition message:
-/// `"Recorded mesh commit on \`ref\`: \`old\` → \`new\`."`
-pub fn format_ref_transition(ref_name: &str, old: &str, new: &str) -> String {
-    format!("Recorded mesh commit on `{ref_name}`: `{old}` → `{new}`.")
-}
-
-/// Format a fast-forward message:
-/// `"Fast-forwarded \`ref\` from \`old\` to \`new\`."`
-pub fn format_fast_forward(ref_name: &str, old: &str, new: &str) -> String {
-    format!("Fast-forwarded `{ref_name}` from `{old}` to `{new}`.")
-}
-
-/// Format a ref-deletion message:
-/// `"Deleted \`ref\` (\`sha\`). The mesh's commit history remains in the reflog for 90 days."`
-pub fn format_ref_deletion(ref_name: &str, sha: &str) -> String {
-    format!(
-        "Deleted `{ref_name}` (`{sha}`). The mesh's commit history remains in the reflog for 90 days."
-    )
-}
-
 /// " (idempotent)" tag.
 pub const IDEMPOTENT_TAG: &str = " (idempotent)";
 
@@ -115,33 +95,6 @@ mod tests {
     fn follow_up_command_fenced() {
         let result = format_follow_up_command("git mesh list");
         assert_eq!(result, "```bash\ngit mesh list\n```");
-    }
-
-    #[test]
-    fn ref_transition_format() {
-        let result = format_ref_transition("refs/meshes/v1/checkout", "a1b2c3d", "e4f5g6h");
-        assert_eq!(
-            result,
-            "Recorded mesh commit on `refs/meshes/v1/checkout`: `a1b2c3d` → `e4f5g6h`."
-        );
-    }
-
-    #[test]
-    fn fast_forward_format() {
-        let result = format_fast_forward("refs/meshes/v1/checkout", "a1b2c3d", "e4f5g6h");
-        assert_eq!(
-            result,
-            "Fast-forwarded `refs/meshes/v1/checkout` from `a1b2c3d` to `e4f5g6h`."
-        );
-    }
-
-    #[test]
-    fn ref_deletion_format() {
-        let result = format_ref_deletion("refs/meshes/v1/checkout", "a1b2c3d");
-        assert_eq!(
-            result,
-            "Deleted `refs/meshes/v1/checkout` (`a1b2c3d`). The mesh's commit history remains in the reflog for 90 days."
-        );
     }
 
     #[test]

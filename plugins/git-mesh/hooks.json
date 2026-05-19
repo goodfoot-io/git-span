@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/stop.8abff665.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/stop.e67c9d14.mjs",
             "timeout": 15000
           }
         ],
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/session-end.21f89c1e.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/session-end.95efbb62.mjs",
             "timeout": 15000
           }
         ],
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.fca1901e.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.1946fb59.mjs",
             "timeout": 15000
           }
         ],
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/post-tool-use.2aafc0d4.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/post-tool-use.fa867e52.mjs",
             "timeout": 15000
           }
         ],
@@ -51,11 +51,11 @@
   },
   "__generated": {
     "files": [
-      "stop.8abff665.mjs",
-      "session-end.21f89c1e.mjs",
-      "pre-tool-use.fca1901e.mjs",
-      "post-tool-use.2aafc0d4.mjs"
+      "stop.e67c9d14.mjs",
+      "session-end.95efbb62.mjs",
+      "pre-tool-use.1946fb59.mjs",
+      "post-tool-use.fa867e52.mjs"
     ],
-    "timestamp": "2026-05-18T19:37:06.956Z"
+    "timestamp": "2026-05-19T14:47:28.832Z"
   }
 }

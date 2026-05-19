@@ -226,7 +226,7 @@ pub struct MeshResolved {
     pub pending: Vec<PendingFinding>,
     /// Committed `follow_moves` flag from the mesh config, carried through
     /// so post-resolution code (e.g. `git mesh stale` auto-follow precheck)
-    /// does not have to reload the full catalog to read it.
+    /// does not have to reload the mesh file to read it.
     pub follow_moves: bool,
 }
 
@@ -237,16 +237,17 @@ pub struct MeshResolved {
 /// is documented with the spec section that motivates it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A anchor ref `refs/anchors/v1/<id>` does not exist (§3.1).
+    /// The named anchor does not exist in any tracked `.mesh/<name>`
+    /// file (§3.1).
     #[error("anchor not found: {0}")]
     AnchorNotFound(String),
 
-    /// A mesh ref `refs/meshes/v1/<name>` does not exist (§3.1).
+    /// The `.mesh/<name>` mesh file does not exist (§3.1).
     #[error("mesh not found: {0}")]
     MeshNotFound(String),
 
-    /// CAS conflict: the mesh ref already exists when a create-only
-    /// operation expected it absent (§6.2).
+    /// Conflict: the `.mesh/<name>` mesh file already exists when a
+    /// create-only operation expected it absent (§6.2).
     #[error("mesh already exists: {0}")]
     MeshAlreadyExists(String),
 
