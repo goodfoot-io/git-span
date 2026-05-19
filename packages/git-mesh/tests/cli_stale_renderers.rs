@@ -114,21 +114,23 @@ fn discovery_clean_head_pinned_mesh_uses_fast_path() -> Result<()> {
         !stdout.trim().is_empty(),
         "stdout should have summary line when clean, got: stdout={stdout}"
     );
+    // cache_v2: a clean tree takes the warm-clean path — a committed
+    // baseline hit with no dirty overlay needed.
     assert!(
-        stderr.contains("git-mesh perf: phase3.baseline-hit 1"),
-        "expected phase3 baseline hit: {stderr}"
+        stderr.contains("git-mesh perf: cache_v2.baseline-hit 1"),
+        "expected cache_v2 baseline hit: {stderr}"
     );
     assert!(
-        stderr.contains("git-mesh perf: phase3.overlay-hit 1"),
-        "expected phase3 overlay hit: {stderr}"
+        stderr.contains("git-mesh perf: cache_v2.warm-clean 1"),
+        "expected cache_v2 warm-clean path: {stderr}"
     );
     assert!(
         !stderr.contains("git-mesh perf: resolver.resolve-stale-meshes"),
-        "warm phase3 discovery should skip full resolver: {stderr}"
+        "warm clean discovery should skip full resolver: {stderr}"
     );
     assert!(
         !stderr.contains("git-mesh perf: resolver.resolve-anchors"),
-        "warm phase3 discovery should skip per-anchor resolution: {stderr}"
+        "warm clean discovery should skip per-anchor resolution: {stderr}"
     );
     Ok(())
 }

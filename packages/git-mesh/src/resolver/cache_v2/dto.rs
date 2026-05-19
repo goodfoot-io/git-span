@@ -71,7 +71,7 @@ impl TryFrom<AnchorLocationDto> for AnchorLocation {
     fn try_from(dto: AnchorLocationDto) -> Result<Self, Self::Error> {
         let blob = match dto.blob {
             Some(s) => Some(gix::ObjectId::from_str(&s).map_err(|e| {
-                crate::Error::Git(format!("phase3 dto: parse blob oid `{s}`: {e}"))
+                crate::Error::Git(format!("cache_v2 dto: parse blob oid `{s}`: {e}"))
             })?),
             None => None,
         };
@@ -212,11 +212,11 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
         Ok(match dto {
             DriftLocusDto::ChangedAt(s) => DriftLocus::ChangedAt(
                 gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("phase3 dto: parse locus oid: {e}")))?,
+                    .map_err(|e| crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}")))?,
             ),
             DriftLocusDto::OrphanedAt(s) => DriftLocus::OrphanedAt(
                 gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("phase3 dto: parse locus oid: {e}")))?,
+                    .map_err(|e| crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}")))?,
             ),
         })
     }
@@ -330,7 +330,7 @@ impl TryFrom<MeshResolvedDto> for MeshResolved {
     fn try_from(d: MeshResolvedDto) -> Result<Self, Self::Error> {
         if d.format_version != FORMAT_VERSION {
             return Err(crate::Error::Git(format!(
-                "phase3 dto: format_version {} != expected {}",
+                "cache_v2 dto: format_version {} != expected {}",
                 d.format_version, FORMAT_VERSION
             )));
         }

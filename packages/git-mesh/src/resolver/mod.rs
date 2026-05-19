@@ -20,10 +20,10 @@
 pub mod attribution;
 pub(crate) mod bloom;
 pub(crate) mod cache;
+pub(crate) mod cache_v2;
 pub(crate) mod engine;
 pub(crate) mod layers;
 pub(crate) mod linemap;
-pub(crate) mod persist;
 pub(crate) mod session;
 pub(crate) mod timeline;
 pub(crate) mod walker;
