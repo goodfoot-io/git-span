@@ -313,12 +313,29 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
             crate::mesh::read::read_mesh_in(repo, &args.name, mesh_root).map_err(|e| {
                 if matches!(e, crate::Error::MeshConflict(_)) {
                     conflict_err(&args.name)
-                } else {
+                } else if matches!(e, crate::Error::MeshNotFound(_)) {
                     CliError {
                         subcommand: "show",
                         summary: format!("no mesh named `{}`.", args.name),
                         what_happened: format!("{}", e),
                         next_steps: vec![NextStep::Bash("git mesh list".into())],
+                    }
+                } else {
+                    // The mesh file exists but failed to parse (or another
+                    // read error). Surface only the underlying error —
+                    // a "not found" summary would be misleading for a
+                    // mesh that exists. Matches what `list`/`stale` do.
+                    CliError {
+                        subcommand: "show",
+                        summary: format!("{}", e),
+                        what_happened: format!(
+                            "The mesh file for `{}` could not be read.",
+                            args.name
+                        ),
+                        next_steps: vec![NextStep::Bash(format!(
+                            "git mesh doctor {}",
+                            args.name
+                        ))],
                     }
                 }
             })?
@@ -326,12 +343,29 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
             read_mesh_at_in(repo, &args.name, args.at.as_deref(), mesh_root).map_err(|e| {
                 if matches!(e, crate::Error::MeshConflict(_)) {
                     conflict_err(&args.name)
-                } else {
+                } else if matches!(e, crate::Error::MeshNotFound(_)) {
                     CliError {
                         subcommand: "show",
                         summary: format!("no mesh named `{}`.", args.name),
                         what_happened: format!("{}", e),
                         next_steps: vec![NextStep::Bash("git mesh list".into())],
+                    }
+                } else {
+                    // The mesh file exists but failed to parse (or another
+                    // read error). Surface only the underlying error —
+                    // a "not found" summary would be misleading for a
+                    // mesh that exists. Matches what `list`/`stale` do.
+                    CliError {
+                        subcommand: "show",
+                        summary: format!("{}", e),
+                        what_happened: format!(
+                            "The mesh file for `{}` could not be read.",
+                            args.name
+                        ),
+                        next_steps: vec![NextStep::Bash(format!(
+                            "git mesh doctor {}",
+                            args.name
+                        ))],
                     }
                 }
             })?

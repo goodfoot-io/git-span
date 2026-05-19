@@ -918,13 +918,19 @@ fn render_human(
                 );
             }
             for f in &stale_findings {
-                let (insertions, deletions) = diff_counts(repo, f);
-                println!(
-                    "  {} | +{} -{}",
-                    render_path_extent_human(&f.anchored.path, f.anchored.extent),
-                    insertions,
-                    deletions
-                );
+                let path_extent =
+                    render_path_extent_human(&f.anchored.path, f.anchored.extent);
+                if f.status == AnchorStatus::Moved {
+                    // A pure relocation has no content delta — the stored
+                    // bytes are intact at a new path. A `+x -0` here is
+                    // the verbatim re-insertion at the destination, which
+                    // misrepresents a `Moved` as a rewrite. Show `moved`
+                    // instead, consistent with the `Moved` semantics.
+                    println!("  {path_extent} | moved");
+                } else {
+                    let (insertions, deletions) = diff_counts(repo, f);
+                    println!("  {path_extent} | +{insertions} -{deletions}");
+                }
             }
             continue;
         }

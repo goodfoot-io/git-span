@@ -125,7 +125,7 @@ fn mark_flush_records_modified_file_with_id() -> Result<()> {
 
     // A read of the path must precede the diff so the touch passes the gate.
     run_advice_read(&gix, ".mesh", s.clone(), "file1.txt".into(), None)?;
-    run_advice_mark(&gix, s.clone(), "tool-1".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "tool-1".into())?;
     std::fs::write(repo.path().join("file1.txt"), "edited\n")?;
     run_advice_diff(&gix, ".mesh", s.clone(), "tool-1".into())?;
 
@@ -154,7 +154,7 @@ fn mark_flush_records_added_untracked_with_id() -> Result<()> {
     // Re-mark after the read so the snapshot captures the pre-change state.
     // For this test we just need to verify the touch is recorded; we can
     // mark → diff without a working-tree change (the file was written before mark).
-    run_advice_mark(&gix, s.clone(), "tool-A".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "tool-A".into())?;
     // Touch the file to produce a diff from the snapshot perspective (it's untracked).
     std::fs::write(repo.path().join("new.txt"), "hello world\n")?;
     run_advice_diff(&gix, ".mesh", s.clone(), "tool-A".into())?;
@@ -190,7 +190,7 @@ fn read_only_idle_session_produces_no_touches() -> Result<()> {
 
     // Idle: simulate a read-only tool by marking and diffing without
     // touching the working tree.
-    run_advice_mark(&gix, s.clone(), "read-only-tool".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "read-only-tool".into())?;
     run_advice_diff(&gix, ".mesh", s.clone(), "read-only-tool".into())?;
 
     let touches = touches_for(&repo.session_dir(&s));
@@ -206,7 +206,7 @@ fn touched_lists_added_modified_deleted_dedup_first_seen_skipping_modechange() -
     let gix = repo.gix_repo()?;
 
     // Force the session directory into existence.
-    run_advice_mark(&gix, s.clone(), "seed".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "seed".into())?;
     run_advice_diff(&gix, ".mesh", s.clone(), "seed".into())?;
 
     let session_dir = repo.session_dir(&s);
@@ -457,7 +457,7 @@ fn flush_after_read_writes_to_touches_not_pending() -> Result<()> {
     run_advice_read(&gix, ".mesh", s.clone(), "file1.txt".into(), None)?;
 
     // Now mark + modify + diff.
-    run_advice_mark(&gix, s.clone(), "tool-after-read".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "tool-after-read".into())?;
     std::fs::write(repo.path().join("file1.txt"), "changed\n")?;
     run_advice_diff(&gix, ".mesh", s.clone(), "tool-after-read".into())?;
 
@@ -695,7 +695,7 @@ fn end_sweeps_leftover_snapshots() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // Create a mark (which creates a snapshot) but don't flush.
-    run_advice_mark(&gix, s.clone(), "orphan-snap".into())?;
+    run_advice_mark(&gix, ".mesh", s.clone(), "orphan-snap".into())?;
     let session_dir = repo.session_dir(&s);
     let snapshots_dir = session_dir.join("snapshots");
     assert!(

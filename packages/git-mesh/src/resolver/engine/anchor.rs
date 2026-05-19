@@ -702,6 +702,21 @@ pub(crate) fn resolve_anchor_inner(
                     },
                     blob: None,
                 });
+            } else if file_backed
+                && current_lines.len() < anchored_start as usize
+            {
+                // The tracked range no longer exists: the current file is
+                // shorter than the anchored range's start line, so the
+                // anchored content was not changed-in-place — it was
+                // deleted (the file was truncated past where the anchor
+                // pointed). No in-file or cross-path relocation matched
+                // the stored content, so this is a genuine deletion of
+                // the tracked region, not a `Changed`. Per the card's
+                // distinct state vocabulary this is `Deleted`.
+                status = AnchorStatus::Deleted;
+                source = None;
+                layer_sources = vec![];
+                current_loc = None;
             } else {
                 status = AnchorStatus::Changed;
                 source = inferred_source.or(Some(deepest_layer));

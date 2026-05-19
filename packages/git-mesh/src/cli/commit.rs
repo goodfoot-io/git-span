@@ -39,14 +39,6 @@ fn addr_from_extent(path: &str, extent: &AnchorExtent) -> String {
     }
 }
 
-/// Resolve HEAD SHA and return the first 7 hex characters.
-fn short_head_sha(repo: &gix::Repository) -> Option<String> {
-    let id = crate::git::resolve_ref_oid_optional_repo(repo, "HEAD")
-        .ok()
-        .flatten()?;
-    Some(id[..7].to_string())
-}
-
 /// Build a [`CliError`] for invalid anchor syntax.
 fn invalid_anchor_error(subcommand: &'static str, addr: &str) -> CliError {
     CliError {
@@ -285,6 +277,65 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         }
     }
 
+    // Anchor source-path safety (fail-closed, per `<fail-closed>` and the
+    // File Format / Storage Layout path rules). Every anchor address path
+    // must be a safe repo-relative path — the same rule enforced for the
+    // mesh root, via the shared validator (no parallel implementation) —
+    // and must point at content that exists (tracked, in the worktree, or
+    // a submodule gitlink). Reject absolute / `..` / inside-`.git` /
+    // nonexistent paths before any mesh-file I/O.
+    {
+        let _perf = crate::perf::span("add.validate-anchor-paths");
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?
+            .to_path_buf();
+        for (path, _extent) in &parsed {
+            crate::mesh_root::validate_repo_relative_path("anchor path", path)
+                .map_err(|e| CliError {
+                    subcommand: "add",
+                    summary: format!("`{path}` is not a valid anchor path."),
+                    what_happened: e.to_string(),
+                    next_steps: vec![NextStep::Prose(
+                        "Anchor paths must be repo-relative, must not contain \
+                         `..`, and must not be inside `.git`."
+                            .into(),
+                    )],
+                })?;
+
+            // Existence: tracked in the index (includes submodule
+            // gitlinks, mode 160000 — a valid whole-file anchor per the
+            // plan's D2), present in the worktree, or readable at the
+            // resolved `--at` commit. A path with no content to hash
+            // cannot be anchored.
+            let exists = if let Some(at) = args.at.as_deref() {
+                crate::git::path_blob_at(repo, at, path).is_ok()
+            } else {
+                let tracked = crate::git::index_entries(repo)
+                    .map(|entries| entries.iter().any(|en| en.path == *path))
+                    .unwrap_or(false);
+                tracked || workdir.join(path).exists()
+            };
+            if !exists {
+                return Err(CliError {
+                    subcommand: "add",
+                    summary: format!("`{path}` does not exist."),
+                    what_happened: format!(
+                        "`{path}` is neither tracked nor present in the \
+                         worktree, so there is no content to anchor."
+                    ),
+                    next_steps: vec![
+                        NextStep::Bash(format!("ls {path}")),
+                        NextStep::Prose(
+                            "Create the file or correct the anchor path.".into(),
+                        ),
+                    ],
+                }
+                .into());
+            }
+        }
+    }
+
     // Slice 3: last-write-wins. Within a single invocation, coalesce
     // duplicate `(path, extent)` adds silently — keep the last
     // occurrence, drop earlier ones.
@@ -436,8 +487,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         .iter()
         .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
         .count();
-    let head = short_head_sha(repo).unwrap_or_else(|| "unknown".into());
-
     // Summary line.
     let mut summary = format!(
         "Added {} anchor{}",
@@ -450,12 +499,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     if unchanged_count > 0 {
         write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
     }
-    write!(
-        &mut summary,
-        " to mesh `{}`, anchored at `HEAD` (`{head}`).",
-        args.name
-    )
-    .unwrap();
+    write!(&mut summary, " to mesh `{}`.", args.name).unwrap();
     println!("{summary}");
     println!();
 

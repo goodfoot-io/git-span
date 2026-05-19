@@ -48,39 +48,56 @@ pub fn resolve_mesh_root(
 /// - Paths inside `.git` (starting with `.git`, containing `/.git/`,
 ///   or ending with `/.git`)
 fn validate_mesh_root(dir: &str) -> Result<()> {
-    if dir.is_empty() {
-        return Err(Error::InvalidMeshFile(
-            "mesh root must not be empty".into(),
-        ));
+    validate_repo_relative_path("mesh root", dir)
+}
+
+/// Validate that `path` is a safe repo-relative path.
+///
+/// `kind` names the subject for error messages (e.g. `"mesh root"`,
+/// `"anchor path"`). This is the single path-safety validator shared by
+/// mesh-root resolution and `git mesh add` anchor-address validation —
+/// there is no parallel implementation.
+///
+/// Rejects:
+/// - Empty paths
+/// - Absolute paths (starting with `/`)
+/// - Paths containing a `..` component
+/// - Paths inside `.git` (equal to `.git`, starting with `.git/`,
+///   containing `/.git/`, or ending with `/.git`)
+pub fn validate_repo_relative_path(kind: &str, path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::InvalidMeshFile(format!(
+            "{kind} must not be empty"
+        )));
     }
 
     // Reject absolute paths (Unix-style).
-    if dir.starts_with('/') {
+    if path.starts_with('/') {
         return Err(Error::InvalidMeshFile(format!(
-            "mesh root must be repo-relative, got absolute path: `{dir}`"
+            "{kind} must be repo-relative, got absolute path: `{path}`"
         )));
     }
 
     // Reject paths containing `..`.
     // We split on '/' and check each component to avoid false positives
     // like `foo..bar`.
-    for component in dir.split('/') {
+    for component in path.split('/') {
         if component == ".." {
             return Err(Error::InvalidMeshFile(format!(
-                "mesh root must not contain `..`: `{dir}`"
+                "{kind} must not contain `..`: `{path}`"
             )));
         }
     }
 
     // Reject paths inside `.git`.
-    let normalized = dir.trim_end_matches('/');
+    let normalized = path.trim_end_matches('/');
     if normalized == ".git"
         || normalized.starts_with(".git/")
         || normalized.contains("/.git/")
         || normalized.ends_with("/.git")
     {
         return Err(Error::InvalidMeshFile(format!(
-            "mesh root must not be inside `.git`: `{dir}`"
+            "{kind} must not be inside `.git`: `{path}`"
         )));
     }
 

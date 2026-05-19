@@ -91,7 +91,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs, mesh_root: &str) -> 
     })?;
     validate_session_id(&session_id)?;
     match args.command {
-        Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, session_id, id),
+        Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, mesh_root, session_id, id),
         Some(AdviceCommand::Diff { id }) => run_advice_diff(repo, mesh_root, session_id, id),
         Some(AdviceCommand::Flush) => run_advice_flush(repo, mesh_root, session_id),
         Some(AdviceCommand::Read { anchor, id }) => {
@@ -330,7 +330,7 @@ fn default_engine_options() -> crate::types::EngineOptions {
 
 // ── mark ────────────────────────────────────────────────────────────────────
 
-fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
+fn run_advice_mark(repo: &gix::Repository, mesh_root: &str, session_id: String, id: String) -> Result<i32> {
     use crate::advice::session::state::UntrackedSnapshotEntry;
     use crate::advice::session::SessionStore;
 
@@ -341,7 +341,7 @@ fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Re
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
-    store.ensure_mesh_baseline(repo)?;
+    store.ensure_mesh_baseline(repo, mesh_root)?;
     let _ = store.snapshots_dir()?;
     // Opportunistic orphan sweep (30 minute threshold) so a `mark` without
     // its `flush` doesn't accumulate forever.
@@ -465,7 +465,7 @@ fn run_advice_diff(
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
-    store.ensure_mesh_baseline(repo)?;
+    store.ensure_mesh_baseline(repo, mesh_root)?;
 
     if !store.snapshot_exists(&id) {
         return Ok(0);
@@ -538,7 +538,7 @@ fn run_advice_flush(
     let gd = repo.git_dir().to_path_buf();
     let store = crate::advice::session::SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
-    store.ensure_mesh_baseline(repo)?;
+    store.ensure_mesh_baseline(repo, mesh_root)?;
 
     let touches = store.load_touches().unwrap_or_default();
     let session_reads = store.load_reads().unwrap_or_default();
@@ -885,7 +885,7 @@ fn run_advice_touch(
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
-    store.ensure_mesh_baseline(repo)?;
+    store.ensure_mesh_baseline(repo, mesh_root)?;
 
     // Parse anchor into (path, Option<(start, end)>).
     let (path_str, line_anchor) = match anchor.split_once("#L") {
@@ -1267,7 +1267,7 @@ fn run_advice_read(
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
-    store.ensure_mesh_baseline(repo)?;
+    store.ensure_mesh_baseline(repo, mesh_root)?;
 
     if anchor.is_empty() {
         return Err(CliError {

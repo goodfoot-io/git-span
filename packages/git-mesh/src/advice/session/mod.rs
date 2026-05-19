@@ -246,7 +246,7 @@ impl SessionStore {
 
     /// Idempotent: snapshot `refs/meshes/v1/*` to `mesh-baseline.json`.
     /// No-op if the file already exists and is non-empty.
-    pub fn ensure_mesh_baseline(&self, repo: &gix::Repository) -> Result<()> {
+    pub fn ensure_mesh_baseline(&self, repo: &gix::Repository, mesh_root: &str) -> Result<()> {
         let path = self.dir.join("mesh-baseline.json");
         if std::fs::metadata(&path)
             .map(|m| m.len() > 0)
@@ -257,7 +257,7 @@ impl SessionStore {
         // File-backed model: identity is a content fingerprint of the
         // mesh file (anchors + why), not a catalog blob OID.
         let map: std::collections::HashMap<String, String> =
-            crate::mesh::read::load_all_meshes(repo)?
+            crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
                 .into_iter()
                 .map(|(name, mesh)| {
                     let mut buf = String::new();
