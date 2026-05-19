@@ -277,6 +277,23 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         }
     }
 
+    // Resolve `--at <commit-ish>` to a full OID up front, before the
+    // path-existence probe that depends on it.  An unparseable or
+    // ancestor-overflow `--at` surfaces a curated revision error here
+    // rather than a misleading "does not exist" error from the probe below.
+    let anchor_oid: Option<String> = match args.at.as_deref() {
+        Some(s) => {
+            let _perf = crate::perf::span("add.resolve-at");
+            Some(crate::git::resolve_commit(repo, s).map_err(|e| CliError {
+                subcommand: "add",
+                summary: format!("`--at {s}` could not be resolved."),
+                what_happened: e.to_string(),
+                next_steps: vec![NextStep::Bash("git rev-parse HEAD".into())],
+            })?)
+        }
+        None => None,
+    };
+
     // Anchor source-path safety (fail-closed, per `<fail-closed>` and the
     // File Format / Storage Layout path rules). Every anchor address path
     // must be a safe repo-relative path — the same rule enforced for the
@@ -308,8 +325,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
             // plan's D2), present in the worktree, or readable at the
             // resolved `--at` commit. A path with no content to hash
             // cannot be anchored.
-            let exists = if let Some(at) = args.at.as_deref() {
-                crate::git::path_blob_at(repo, at, path).is_ok()
+            let exists = if let Some(oid) = anchor_oid.as_deref() {
+                crate::git::path_blob_at(repo, oid, path).is_ok()
             } else {
                 let tracked = crate::git::index_entries(repo)
                     .map(|entries| entries.iter().any(|en| en.path == *path))
@@ -353,20 +370,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
             .collect();
         parsed = coalesced;
     }
-
-    // Resolve `--at <commit-ish>` to a full OID up front.
-    let anchor_oid: Option<String> = match args.at.as_deref() {
-        Some(s) => {
-            let _perf = crate::perf::span("add.resolve-at");
-            Some(crate::git::resolve_commit(repo, s).map_err(|e| CliError {
-                subcommand: "add",
-                summary: format!("`--at {s}` could not be resolved."),
-                what_happened: e.to_string(),
-                next_steps: vec![NextStep::Bash("git rev-parse HEAD".into())],
-            })?)
-        }
-        None => None,
-    };
 
     // Stage-time precheck.
     {
