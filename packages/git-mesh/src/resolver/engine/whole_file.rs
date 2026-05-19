@@ -5,7 +5,7 @@
 use super::super::session::follow_path_to_head_shared;
 use super::EngineState;
 use crate::git;
-use crate::staging::sha256_hex;
+use crate::types::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
 };

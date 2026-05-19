@@ -345,7 +345,7 @@ fn resolve_mesh_with_state_at(
         let mesh_path = format!(".mesh/{name}");
         let oid = gix::ObjectId::from_str(commit_oid)
             .map_err(|e| Error::Git(format!("parse oid {commit_oid}: {e}")))?;
-        let text = match crate::git::tree_entry_at(repo, &oid.to_string(), &std::path::Path::new(&mesh_path))? {
+        let text = match crate::git::tree_entry_at(repo, &oid.to_string(), std::path::Path::new(&mesh_path))? {
             Some((_mode, blob_oid)) => crate::git::read_git_text(repo, &blob_oid.to_string())?,
             None => return Err(Error::MeshNotFound(name.to_string())),
         };
@@ -861,7 +861,7 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
         sorted.sort();
         let mut fp = String::new();
         for n in &sorted {
-            let _ = write!(fp, "{n}\n");
+            let _ = writeln!(fp, "{n}");
         }
         if fp.is_empty() {
             "empty".to_string()
@@ -924,7 +924,6 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
     } else {
         HashSet::new()
     };
-    let staging_dir = crate::git::mesh_dir(repo).join("staging");
     let (mut dirty_paths, mut overlay_inputs) = crate::resolver::persist::collect_dirty_paths(
         &mesh_fingerprint,
         &head_oid,
@@ -933,7 +932,7 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
         layer_status.index_dirty,
         &layer_status.worktree_paths,
         &conflicted_paths,
-        Some(&staging_dir),
+        None,
         layer_status.requires_full_scan,
     );
     overlay_inputs.worktree_dirty_fingerprint =
@@ -959,17 +958,11 @@ fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result
         ));
     }
 
-    let staged_meshes = match crate::staging::list_staged_mesh_names(repo) {
-        Ok(names) => names,
-        Err(e) => return Ok(Phase3Attempt::Fallback(format!("list-staged-meshes: {e}"))),
-    };
-
     crate::perf::counter("phase3.dirty-paths", dirty_paths.paths.len() as u64);
 
-    let mut affected_meshes: BTreeSet<String> = staged_meshes
-        .into_iter()
-        .filter(|name| catalog_name_set.contains(name))
-        .collect();
+    // File-backed model: no staging area, so no staged-mesh names.
+    let mut affected_meshes: BTreeSet<String> = BTreeSet::new();
+    let _ = &catalog_name_set;
     let mut affected_anchor_count = 0usize;
     if !dirty_paths.paths.is_empty() {
         let path_index = {
@@ -1379,10 +1372,6 @@ pub(crate) fn anchor_path_is_layer_clean(state: &EngineState, path: &str) -> boo
         return false;
     }
     true
-}
-
-fn mesh_has_staged_state(repo: &gix::Repository, name: &str) -> bool {
-    crate::staging::read_staged_ops(repo, name).is_ok_and(|ops| !ops.is_empty())
 }
 
 /// Slice 5: returns true when the anchor should pass the `--since`

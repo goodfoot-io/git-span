@@ -17,14 +17,14 @@ use support::TestRepo;
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
 fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L6-L10"])?;
     repo.mesh_stdout(["why", name, "-m", "stable seed"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
@@ -367,7 +367,7 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
 fn seed_line_range(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
@@ -403,7 +403,7 @@ fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     // Drift only file1.txt so file2.txt#L1-L5 stays Fresh.
     repo.write_file(
         "file1.txt",

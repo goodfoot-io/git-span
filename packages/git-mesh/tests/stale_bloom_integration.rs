@@ -24,12 +24,14 @@ fn stale_meshes_fails_without_commit_graph() -> Result<()> {
     // but a single-mesh path exercises more of the pipeline).
     repo.write_file("f.txt", "content\n")?;
     repo.commit_all("init")?;
-    let anchor_sha = repo.head_sha()?;
+
+    // File-backed model: `add`/`why` write the worktree mesh file;
+    // commit it so the resolver has a HEAD-layer mesh to walk.
+    repo.run_mesh(["add", "test/mesh", "f.txt#L1-L1"])?;
+    repo.run_mesh(["why", "test/mesh", "-m", "test"])?;
+    repo.commit_all("seed mesh")?;
 
     let gix = repo.gix_repo()?;
-    git_mesh::append_add(&gix, "test/mesh", "f.txt", 1, 1, Some(&anchor_sha))?;
-    git_mesh::set_why(&gix, "test/mesh", "test")?;
-    git_mesh::commit_mesh(&gix, "test/mesh")?;
 
     // Intentionally do NOT write a commit-graph.
 

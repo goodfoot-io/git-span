@@ -913,8 +913,8 @@ mod tests {
         let anchors = vec![aws(b"a.rs"), aws(b"b.rs"), aws(b"a.rs")];
         let idx = PathIndex::new(&anchors);
 
-        assert_eq!(sorted(&idx.anchors_for_path(b"a.rs").unwrap()), vec![0, 2]);
-        assert_eq!(sorted(&idx.anchors_for_path(b"b.rs").unwrap()), vec![1]);
+        assert_eq!(sorted(idx.anchors_for_path(b"a.rs").unwrap()), vec![0, 2]);
+        assert_eq!(sorted(idx.anchors_for_path(b"b.rs").unwrap()), vec![1]);
         let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
         assert_eq!(active.len(), 2);
         assert!(active.iter().any(|p| p == b"a.rs"));
@@ -977,7 +977,7 @@ mod tests {
 
         assert!(idx.anchors_for_path(b"a.rs").is_none());
         assert_eq!(
-            sorted(&idx.anchors_for_path(b"b.rs").unwrap()),
+            sorted(idx.anchors_for_path(b"b.rs").unwrap()),
             vec![0, 1]
         );
         let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();

@@ -14,7 +14,7 @@ fn seed_whole_file_drift(repo: &TestRepo) -> Result<()> {
     repo.commit_all("seed")?;
     let _ = repo.run_mesh(["add", "m", "hero.png"])?;
     repo.mesh_stdout(["why", "m", "-m", "describes hero"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     // Drift the worktree.
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
     Ok(())
@@ -25,7 +25,7 @@ fn seed_whole_file_drift(repo: &TestRepo) -> Result<()> {
 fn seed_line_range_drift(repo: &TestRepo) -> Result<()> {
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
@@ -120,7 +120,7 @@ fn whole_pin_show_renders_whole() -> Result<()> {
     repo.commit_all("seed")?;
     let _ = repo.run_mesh(["add", "m", "hero.png"])?;
     repo.mesh_stdout(["why", "m", "-m", "describes hero"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     let text = repo.mesh_stdout(["m"])?;
     assert!(
         text.contains("hero.png"),

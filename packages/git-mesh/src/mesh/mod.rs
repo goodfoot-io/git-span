@@ -5,23 +5,8 @@
 //! - [`read`]   — read-only views (§6.5, §6.6, §10.4).
 //! - [`structural`] — delete, mv, restore, revert (§6.8).
 
-pub mod archive;
-pub mod catalog;
-pub mod commit;
-pub mod compact;
-pub mod follow;
-pub(crate) mod path_index;
 pub mod read;
-pub mod rewrite;
 pub mod structural;
 
-pub use commit::commit_mesh;
-pub use compact::{
-    AnchorCompactOutcome, AnchorCompactRecord, MeshCompactOutcome, compact_mesh,
-    compact_meshes_batch,
-};
-pub use read::{
-    MeshCommitInfo, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh,
-    read_mesh_at, show_mesh, show_mesh_at,
-};
-pub use structural::{delete_mesh, rename_mesh, restore_mesh, revert_mesh};
+pub use read::{list_mesh_names, read_mesh, read_mesh_at, show_mesh, show_mesh_at};
+pub use structural::{delete_mesh, rename_mesh};

@@ -9,7 +9,7 @@ use support::TestRepo;
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
@@ -154,7 +154,7 @@ fn since_filters_by_anchor_age() -> Result<()> {
     // Stage anchor anchored at mid, not early.
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "--at", &mid])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     drift(&repo)?;
     // --since mid => our anchor is in scope; exit 1.
     let inc = repo.run_mesh(["stale", "m", "--since", &mid, "--format=porcelain"])?;

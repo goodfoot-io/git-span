@@ -254,7 +254,7 @@ where
     let mut out: Vec<String> = Vec::new();
     for (path, range) in paths {
         let names =
-            crate::mesh::path_index::matching_mesh_names(repo, path, range).unwrap_or_default();
+            crate::mesh::read::matching_mesh_names(repo, path, range).unwrap_or_default();
         for name in names {
             if seen.insert(name.clone()) {
                 out.push(name);
@@ -278,12 +278,20 @@ fn discover_meshes_committed_this_session(
 ) -> Result<std::collections::HashSet<String>> {
     let baseline = store.mesh_baseline_map()?;
     let mut committed = store.meshes_committed_set()?;
-    let catalog = crate::mesh::catalog::Catalog::load(repo)?;
     let mut new_names: Vec<String> = Vec::new();
-    for name in catalog.names() {
-        let oid = catalog.entry_oid(&name).unwrap_or_default();
+    for (name, mesh) in crate::mesh::read::load_all_meshes(repo)? {
+        let mut buf = String::new();
+        for (id, a) in &mesh.anchors {
+            buf.push_str(id);
+            buf.push(' ');
+            buf.push_str(&a.stored_hash);
+            buf.push('\n');
+        }
+        buf.push('\n');
+        buf.push_str(&mesh.message);
+        let fp = crate::types::sha256_hex(buf.as_bytes());
         let is_new = match baseline.get(&name) {
-            Some(prior_oid) => prior_oid != &oid,
+            Some(prior) => prior != &fp,
             None => true,
         };
         if is_new && !committed.contains(&name) {

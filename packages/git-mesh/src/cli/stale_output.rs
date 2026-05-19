@@ -10,16 +10,14 @@
 
 use crate::cli::format;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
-use crate::git;
-use crate::mesh::follow::{follow_moves, FollowDecision};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
     stale_meshes_with_trace,
 };
-use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
-    LayerSet, MeshResolved, PendingDrift, PendingFinding, StagedOpRef, UnavailableReason,
+    LayerSet, MeshResolved, PendingDrift, PendingFinding, StagedAdd, StagedConfig, StagedOpRef,
+    StagedRemove, UnavailableReason,
 };
 use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
@@ -86,9 +84,6 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
 }
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
-    if args.compact {
-        return super::compact::run_compact(repo, &args);
-    }
     let layers = LayerSet {
         worktree: !args.no_worktree,
         index: !args.no_index,
@@ -206,11 +201,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
             // Step 2: fall back to path index (glob-aware).
             if !found {
-                let names = if crate::mesh::path_index::is_glob_pattern(arg) {
-                    crate::mesh::path_index::matching_mesh_names_glob(repo, arg, None)
+                let names = if crate::mesh::read::is_glob_pattern(arg) {
+                    crate::mesh::read::matching_mesh_names_glob(repo, arg, None)
                         .unwrap_or_default()
                 } else {
-                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)
+                    crate::mesh::read::matching_mesh_names(repo, arg, None)
                         .unwrap_or_default()
                 };
                 for name in names {
@@ -365,15 +360,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         (findings, pending)
     };
 
-    // Auto-follow: for each mesh, compute FollowDecisions and rewrite the
-    // mesh if opt-in is active (--auto-follow flag or follow-moves=true in
-    // mesh config) and all guardrails hold.
-    //
-    // Exit-code accounting: we subtract followed anchor_ids from the stale
-    // count here (same run). Per spec the "next run reports Fresh" guarantee
-    // is what matters; within this run we subtract rather than re-resolve to
-    // keep the implementation simple and avoid a second round-trip.
-    let followed_ids: HashSet<String> = run_auto_follow_pass(repo, &args, &meshes);
+    // File-backed model: no mesh-commit rewrite, so no auto-follow.
+    let followed_ids: HashSet<String> = HashSet::new();
 
     // Plan §B3: an acknowledged finding does not drive exit code; nor
     // does a `ContentUnavailable` finding under `--ignore-unavailable`.
@@ -478,23 +466,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let _ = std::io::stdout().flush();
     }
     Ok(exit)
-}
-
-fn staging_only_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
-    let dir = crate::git::mesh_dir(repo).join("staging");
-    let mut out = Vec::new();
-    if !dir.is_dir() {
-        return Ok(out);
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.contains('.') {
-            out.push(crate::staging::decode_name_from_fs(&name));
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,108 +1368,6 @@ fn plural(n: i64) -> &'static str {
     }
 }
 
-/// Auto-follow pass shared by `git mesh stale` and `git mesh stale --compact`.
-///
-/// Computes `FollowDecision`s for each mesh and rewrites it via
-/// `follow_moves` when opt-in is active (`--auto-follow` flag or
-/// `follow-moves=true` in mesh config) and all guardrails hold. Returns
-/// the set of anchor_ids that were successfully followed in this run.
-///
-/// Failures are non-fatal: they are logged to stderr; the mesh is left
-/// unchanged. The exit-code accounting in the stale renderer subtracts
-/// followed anchor_ids from the stale count for the same run.
-pub(super) fn run_auto_follow_pass(
-    repo: &gix::Repository,
-    args: &StaleArgs,
-    meshes: &[MeshResolved],
-) -> HashSet<String> {
-    let mut followed_ids: HashSet<String> = HashSet::new();
-    let _perf = crate::perf::span("stale.auto-follow");
-    if !(args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, m))) {
-        return followed_ids;
-    }
-    for m in meshes {
-        if !args.auto_follow && !effective_follow_moves(repo, m) {
-            continue;
-        }
-        // Guardrail: any Changed anchor in this mesh suppresses the entire mesh.
-        if m.anchors.iter().any(|r| r.status == AnchorStatus::Changed) {
-            continue;
-        }
-        let mut decisions: Vec<FollowDecision> = Vec::new();
-        for r in &m.anchors {
-            if r.status != AnchorStatus::Moved {
-                continue;
-            }
-            let Some(cur) = &r.current else { continue };
-            // Guardrail: LineRange extents only — whole-file anchors are excluded.
-            if !matches!(r.anchored.extent, AnchorExtent::LineRange { .. })
-                || !matches!(cur.extent, AnchorExtent::LineRange { .. })
-            {
-                continue;
-            }
-            // Guardrail: path must not have been renamed.
-            if cur.path != r.anchored.path {
-                continue;
-            }
-            // Guardrail: the move must be committed to HEAD (fail-closed).
-            let Some(anchored_file_blob) = r.anchored.blob else {
-                continue;
-            };
-            let head_sha = match git::head_oid(repo) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let head_file_blob =
-                match git::path_blob_at(repo, &head_sha, cur.path.to_str().unwrap_or("")) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-            if head_file_blob == anchored_file_blob.to_string() {
-                continue;
-            }
-            decisions.push(FollowDecision {
-                anchor_id: r.anchor_id.clone(),
-                new_path: cur.path.clone(),
-                new_extent: cur.extent,
-            });
-        }
-        if decisions.is_empty() {
-            continue;
-        }
-        match follow_moves(repo, &m.name, &decisions) {
-            Ok(_commit) => {
-                for d in &decisions {
-                    followed_ids.insert(d.anchor_id.clone());
-                }
-            }
-            Err(e) => {
-                println!("git mesh stale: auto-follow failed for {}: {e}", m.name);
-            }
-        }
-    }
-    followed_ids
-}
-
-/// Resolve whether auto-follow is active for a mesh via its config.
-///
-/// Reads the committed mesh config and overlays any staged config so that
-/// `git mesh config <name> follow-moves true` (which only stages the change)
-/// is honoured without a separate `git mesh commit` step.
-pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh: &MeshResolved) -> bool {
-    let committed_fm = mesh.follow_moves;
-    let staging = crate::staging::read_staging(repo, &mesh.name).unwrap_or_default();
-    let (_, _, fm) = crate::staging::resolve_staged_config(
-        &staging,
-        (
-            crate::types::DEFAULT_COPY_DETECTION,
-            crate::types::DEFAULT_IGNORE_WHITESPACE,
-            committed_fm,
-        ),
-    );
-    fm
-}
-
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -1506,81 +1375,6 @@ pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh: &MeshResolved
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::StaleFormat;
-    use crate::git::apply_ref_transaction_repo;
-    use crate::mesh::path_index::ref_updates_for_mesh;
-    use crate::types::{Anchor, AnchorExtent};
-    use std::path::Path;
-    use std::process::Command;
-
-    fn seed_repo() -> (tempfile::TempDir, gix::Repository) {
-        let td = tempfile::tempdir().unwrap();
-        let dir = td.path();
-        run_git(dir, &["init", "--initial-branch=main"]);
-        run_git(dir, &["config", "user.email", "t@t"]);
-        run_git(dir, &["config", "user.name", "t"]);
-        run_git(dir, &["config", "commit.gpgsign", "false"]);
-        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
-        run_git(dir, &["add", "."]);
-        run_git(dir, &["commit", "-m", "init"]);
-        run_git(dir, &["commit-graph", "write", "--reachable", "--changed-paths"]);
-        let repo = gix::open(dir).unwrap();
-        (td, repo)
-    }
-
-    fn run_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn anchor(path: &str, start: u32, end: u32) -> Anchor {
-        Anchor {
-            anchor_sha: "0000000000000000000000000000000000000000".to_string(),
-            created_at: "2025-01-01T00:00:00Z".to_string(),
-            path: path.to_string(),
-            extent: AnchorExtent::LineRange { start, end },
-            blob: "0000000000000000000000000000000000000000".to_string(),
-            stored_hash: String::new(),
-        }
-    }
-
-    /// Write and commit a mesh file under `.mesh/<name>` so the
-    /// file-backed `MeshFileReader` HEAD layer resolves it.
-    fn create_mesh_ref(repo: &gix::Repository, name: &str) {
-        let workdir = repo.workdir().unwrap().to_path_buf();
-        let mesh_path = workdir.join(".mesh").join(name);
-        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
-        let mf = crate::mesh_file::MeshFile {
-            anchors: Vec::new(),
-            why: format!("mesh {name}"),
-        };
-        std::fs::write(&mesh_path, mf.serialize()).unwrap();
-        run_git(&workdir, &["add", "-A"]);
-        run_git(&workdir, &["commit", "-m", &format!("test: create mesh {name}")]);
-    }
-
-    fn create_path_index_entry(
-        repo: &gix::Repository,
-        mesh_name: &str,
-        path: &str,
-        start: u32,
-        end: u32,
-    ) {
-        let anchors = vec![("a1".to_string(), anchor(path, start, end))];
-        let updates = ref_updates_for_mesh(repo, mesh_name, &[], &anchors).unwrap();
-        apply_ref_transaction_repo(repo, &updates).unwrap();
-    }
-
-    // --- csv_escape unit tests ---
 
     #[test]
     fn csv_escape_plain_ascii_unchanged() {
@@ -1607,64 +1401,5 @@ mod tests {
     #[test]
     fn csv_escape_cr_quoted() {
         assert_eq!(csv_escape("a\rb"), "\"a\rb\"");
-    }
-
-    // --- hierarchical mesh name reproduction tests ---
-
-    #[test]
-    fn run_stale_hierarchical_mesh_name_resolves() {
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "billing/payments/checkout");
-        create_path_index_entry(&repo, "billing/payments/checkout", "a.txt", 1, 5);
-        let args = StaleArgs {
-            paths: vec!["billing/payments/checkout".to_string()],
-            format: StaleFormat::Human,
-            no_exit_code: false,
-            no_worktree: false,
-            no_index: false,
-            no_staged_mesh: false,
-            ignore_unavailable: false,
-            oneline: false,
-            stat: false,
-            patch: false,
-            since: None,
-            compact: false,
-            verbose: false,
-            auto_follow: false,
-            perf_trace: None,
-        };
-        let exit_code = run_stale(&repo, args).unwrap();
-        assert_eq!(exit_code, 0);
-    }
-
-    #[test]
-    fn run_stale_hierarchical_name_staging_only() {
-        let (_td, repo) = seed_repo();
-        let staging_dir = repo.git_dir().join("mesh").join("staging");
-        std::fs::create_dir_all(&staging_dir).unwrap();
-        std::fs::write(
-            staging_dir.join("billing%2Fpayments%2Fcheckout"),
-            "add a.txt#L1-L5\n",
-        )
-        .unwrap();
-        let args = StaleArgs {
-            paths: vec!["billing/payments/checkout".to_string()],
-            format: StaleFormat::Human,
-            no_exit_code: false,
-            no_worktree: false,
-            no_index: false,
-            no_staged_mesh: false,
-            ignore_unavailable: false,
-            oneline: false,
-            stat: false,
-            patch: false,
-            since: None,
-            compact: false,
-            verbose: false,
-            auto_follow: false,
-            perf_trace: None,
-        };
-        let exit_code = run_stale(&repo, args).unwrap();
-        assert_eq!(exit_code, 0);
     }
 }

@@ -5,10 +5,13 @@ mod support;
 use anyhow::Result;
 use support::TestRepo;
 
+/// Set up a mesh with one line-range anchor and commit it, then mutate
+/// the file so the anchor drifts.  No longer uses `git mesh commit`
+/// (removed); instead commits the mesh file directly via git.
 fn seed_and_drift(repo: &TestRepo, mesh: &str) -> Result<()> {
     repo.mesh_stdout(["add", mesh, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", mesh, "-m", "seed"])?;
-    repo.mesh_stdout(["commit", mesh])?;
+    repo.commit_all(&format!("mesh: {mesh}"))?;
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
@@ -53,7 +56,9 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     assert_eq!(cols.len(), 7, "expected 7 columns in row: {row}");
     assert!(!cols[0].is_empty(), "mesh must be non-empty");
     assert!(!cols[1].is_empty(), "anchor_id must be non-empty");
-    assert!(!cols[2].is_empty(), "anchor_sha must be non-empty");
+    // anchor_sha may be empty in the file-backed model (anchor_sha is derived
+    // from the mesh tree, not a commit-backed sidecar); only validate the
+    // column is present (index 2 exists, which splitn(7) guarantees).
     assert!(!cols[3].is_empty(), "path must be non-empty");
     // wall_us is a u128, so it can be 0 on fast hardware; just parse it.
     cols[4].parse::<u128>().expect("wall_us must be a number");
@@ -62,46 +67,13 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     Ok(())
 }
 
-/// The `fast_path` column is `true` when the anchor was served by the
-/// per-anchor `clean_head_fast_path`. The fast-path fires when the anchor
-/// blob matches HEAD's current blob but anchor_sha != HEAD (i.e. HEAD moved
-/// forward with an unrelated commit so the mesh-level skip does not apply).
-#[test]
-fn perf_trace_fast_path_flag_reflects_counter() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    // Stage and commit the mesh; anchor_sha == HEAD at this point.
-    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
-    repo.mesh_stdout(["commit", "m"])?;
-    // Advance HEAD with an unrelated commit so anchor_sha != HEAD but
-    // file1.txt is unchanged. Now the mesh-level skip does NOT fire
-    // (anchor_sha != head_sha) and the per-anchor fast-path does.
-    repo.commit_file("unrelated.txt", "x\n", "unrelated")?;
-
-    let trace_path = repo.path().join("trace.csv");
-    repo.run_mesh(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;
-
-    let csv = std::fs::read_to_string(&trace_path)?;
-    let rows: Vec<&str> = csv.lines().skip(1).collect();
-    assert!(!rows.is_empty(), "expected at least one data row; csv:\n{csv}");
-    let any_fast = rows.iter().any(|r| {
-        let cols: Vec<&str> = r.splitn(7, ',').collect();
-        cols.get(5).copied() == Some("true")
-    });
-    assert!(any_fast, "expected at least one fast_path=true row; csv:\n{csv}");
-    Ok(())
-}
-
-/// A clean pin-tracked mesh (anchor_sha == HEAD) that is skipped by the
-/// mesh-level fast path still appears in the CSV when `--perf-trace` is set.
+/// A clean mesh emits at least one CSV row when `--perf-trace` is set.
 #[test]
 fn perf_trace_includes_clean_pinned_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // Create a mesh and commit it; anchor_sha == HEAD so the mesh-level skip
-    // would normally elide it from `stale_meshes_inner`.
     repo.mesh_stdout(["add", "clean-mesh", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "clean-mesh", "-m", "clean mesh"])?;
-    repo.mesh_stdout(["commit", "clean-mesh"])?;
+    repo.commit_all("mesh: clean-mesh")?;
 
     let trace_path = repo.path().join("trace.csv");
     let out = repo.run_mesh(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;

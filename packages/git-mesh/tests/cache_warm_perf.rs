@@ -55,6 +55,11 @@ fn run_mesh(dir: &Path, args: &[&str]) {
 /// Build a fixture with 12 source files, 9 meshes (3 anchors each = 27 total),
 /// and 10 mutation commits.  Mirrors the bench fixture to produce a realistic
 /// cache workload.
+///
+/// In the file-backed model there is no `git mesh commit` subcommand.  Meshes
+/// are written by `git mesh add` + `git mesh why` (which edit the worktree
+/// `.mesh/<name>` file directly) and then committed with ordinary `git add`/
+/// `git commit`.
 fn build_fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let p = dir.path();
@@ -73,6 +78,8 @@ fn build_fixture() -> tempfile::TempDir {
     run_git(p, &["commit", "-m", "seed"]);
 
     // 9 meshes, 3 anchors each (27 total).
+    // File-backed: `add`+`why` write the .mesh/<name> file in the worktree;
+    // commit it with ordinary git.
     for m in 0..9u32 {
         let slug = format!("mesh-{m}");
         let f0 = format!("src-{}.txt#L1-L10", m % 12);
@@ -80,7 +87,9 @@ fn build_fixture() -> tempfile::TempDir {
         let f2 = format!("src-{}.txt#L21-L30", (m + 2) % 12);
         run_mesh(p, &["add", &slug, &f0, &f1, &f2]);
         run_mesh(p, &["why", &slug, "-m", &format!("mesh {m}")]);
-        run_mesh(p, &["commit", &slug]);
+        let mesh_rel = format!(".mesh/{slug}");
+        run_git(p, &["add", &mesh_rel]);
+        run_git(p, &["commit", "-m", &format!("mesh: {slug}")]);
     }
 
     // 10 mutation commits so the resolver has real history.

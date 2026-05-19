@@ -10,7 +10,7 @@ mod support;
 
 use anyhow::Result;
 #[allow(unused_imports)]
-use git_mesh::{append_add, commit_mesh, resolve_mesh, set_why};
+use git_mesh::resolve_mesh;
 #[allow(unused_imports)]
 use git_mesh::types::{AnchorStatus, DriftSource, EngineOptions, LayerSet, Scope};
 use support::TestRepo;

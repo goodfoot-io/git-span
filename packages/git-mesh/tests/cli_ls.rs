@@ -8,11 +8,14 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use support::TestRepo;
 
-/// Commit a mesh with a single anchor and why text.
+/// Create a mesh with a single anchor and why text, then commit the
+/// `.mesh/<name>` file. File-backed model: `add`/`why` write the
+/// worktree mesh file directly; a git commit makes it part of HEAD.
 fn commit_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, anchor])?;
     repo.mesh_stdout(["why", name, "-m", why])?;
-    repo.mesh_stdout(["commit", name])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", &format!("mesh {name}")])?;
     Ok(())
 }
 
@@ -191,7 +194,6 @@ fn ls_multiline_why_renders_all_lines() -> Result<()> {
     repo.mesh_stdout(["add", "multi", "file1.txt#L1-L5"])?;
     // Use -m with newline embedded.
     repo.mesh_stdout(["why", "multi", "-m", "line one\nline two\nline three"])?;
-    repo.mesh_stdout(["commit", "multi"])?;
     let out = repo.mesh_stdout(["list"])?;
     // Every line of why is rendered verbatim.
     assert!(out.contains("line one"), "expected line one: {out}");
@@ -220,7 +222,7 @@ fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
 }
 
 #[test]
-fn ls_staged_flag_shows_only_meshes_with_pending_staging() -> Result<()> {
+fn ls_staged_flag_removed_and_meshes_listed_plainly() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "clean", "file1.txt#L1-L3", "clean mesh")?;
     repo.mesh_stdout(["add", "pending-m", "file2.txt#L1-L3"])?;
@@ -228,12 +230,14 @@ fn ls_staged_flag_shows_only_meshes_with_pending_staging() -> Result<()> {
     commit_mesh(&repo, "dirty", "file2.txt#L5-L7", "dirty mesh")?;
     repo.mesh_stdout(["add", "dirty", "file1.txt#L5-L6"])?;
 
-    // File-backed model: there is no staging area. `--staged` has no
-    // pending operations to filter on, so it matches nothing.
-    let out = repo.mesh_stdout(["list", "--staged"])?;
-    assert!(
-        out.trim() == "No meshes match the filters.",
-        "no staging area in the file-backed model: {out}"
+    // File-backed model: there is no staging area, so the `--staged`
+    // filter flag was removed from `list`. clap rejects it (exit 2).
+    let out = repo.run_mesh(["list", "--staged"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "`--staged` must be an unknown argument: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 
     // All meshes (committed or worktree-only) are visible in a plain
@@ -275,7 +279,6 @@ fn ls_path_filter_renders_full_anchor_list() -> Result<()> {
     repo.mesh_stdout(["add", "alpha", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["why", "alpha", "-m", "dual anchor"])?;
-    repo.mesh_stdout(["commit", "alpha"])?;
     let out = repo.mesh_stdout(["list", "file1.txt"])?;
     // Both anchors should appear in the bullet list, not just the matching one.
     assert!(
@@ -357,17 +360,13 @@ fn ls_porcelain_pending_mesh_appears() -> Result<()> {
 }
 
 #[test]
-fn ls_filtered_porcelain_uses_authoritative_path_index() -> Result<()> {
+fn ls_filtered_porcelain_scans_mesh_files() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
 
-    let index_refs = repo.list_refs("refs/meshes-index/v1/path/")?;
-    assert!(
-        !index_refs.is_empty(),
-        "commit should write path-index refs"
-    );
-
+    // File-backed model: the path filter scans tracked `.mesh/` files
+    // directly — there is no `refs/meshes-index` path index.
     let out = repo.mesh_stdout(["list", "file1.txt#L3-L4", "--porcelain"])?;
     assert!(
         out.contains("alpha\tfile1.txt\t1-5"),
@@ -383,7 +382,6 @@ fn ls_filtered_porcelain_renders_full_anchor_list() -> Result<()> {
     repo.mesh_stdout(["add", "alpha", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["why", "alpha", "-m", "dual anchor"])?;
-    repo.mesh_stdout(["commit", "alpha"])?;
 
     let out = repo.mesh_stdout(["list", "file1.txt", "--porcelain"])?;
 
@@ -728,7 +726,6 @@ fn ls_porcelain_pagination_emits_selected_mesh_rows() -> Result<()> {
     repo.mesh_stdout(["add", "alpha", "file1.txt#L1-L3"])?;
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["why", "alpha", "-m", "alpha why"])?;
-    repo.mesh_stdout(["commit", "alpha"])?;
     commit_mesh(&repo, "beta", "file2.txt#L4-L5", "beta why")?;
     // --offset 1 selects beta in porcelain.
     let out = repo.mesh_stdout(["list", "--porcelain", "--offset", "1"])?;

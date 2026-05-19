@@ -244,6 +244,33 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
     }
 }
 
+/// Parse a `<path>#L<start>-L<end>` line-anchor address, or a bare
+/// `<path>` whole-file address. Returns `None` on malformed line-anchor
+/// fragments — callers should reject those at the CLI boundary.
+pub fn parse_address(text: &str) -> Option<(String, crate::types::AnchorExtent)> {
+    use crate::types::AnchorExtent;
+    if let Some((path, fragment)) = text.split_once("#L") {
+        let (start, end) = fragment.split_once("-L")?;
+        if path.is_empty() {
+            return None;
+        }
+        let start: u32 = start.parse().ok()?;
+        let end: u32 = end.parse().ok()?;
+        if start < 1 || end < start {
+            return None;
+        }
+        return Some((path.to_string(), AnchorExtent::LineRange { start, end }));
+    }
+    // A `#` without a following `L` is invalid anchor syntax (e.g., `file.ts#88`).
+    if text.contains('#') {
+        return None;
+    }
+    if text.is_empty() {
+        return None;
+    }
+    Some((text.to_string(), AnchorExtent::WholeFile))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

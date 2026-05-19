@@ -254,15 +254,24 @@ impl SessionStore {
         {
             return Ok(());
         }
-        let catalog = crate::mesh::catalog::Catalog::load(repo)?;
-        let map: std::collections::HashMap<String, String> = catalog
-            .iter()?
-            .into_iter()
-            .map(|(name, _mesh)| {
-                let oid = catalog.entry_oid(&name).unwrap_or_default();
-                (name, oid)
-            })
-            .collect();
+        // File-backed model: identity is a content fingerprint of the
+        // mesh file (anchors + why), not a catalog blob OID.
+        let map: std::collections::HashMap<String, String> =
+            crate::mesh::read::load_all_meshes(repo)?
+                .into_iter()
+                .map(|(name, mesh)| {
+                    let mut buf = String::new();
+                    for (id, a) in &mesh.anchors {
+                        buf.push_str(id);
+                        buf.push(' ');
+                        buf.push_str(&a.stored_hash);
+                        buf.push('\n');
+                    }
+                    buf.push('\n');
+                    buf.push_str(&mesh.message);
+                    (name, crate::types::sha256_hex(buf.as_bytes()))
+                })
+                .collect();
         let json = serde_json::to_vec(&map)?;
         store::atomic_write(&path, &json)
     }

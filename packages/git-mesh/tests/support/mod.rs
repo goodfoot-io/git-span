@@ -294,30 +294,13 @@ pub fn mode(_path: &Path) -> Option<u32> {
     None
 }
 
-/// Stage an `add` line via the library directly (skips CLI parsing).
-#[allow(dead_code)]
-pub fn add_range(
-    repo: &gix::Repository,
-    mesh: &str,
-    path: &str,
-    start: u32,
-    end: u32,
-    anchor: Option<&str>,
-) -> git_mesh::Result<()> {
-    git_mesh::staging::append_add(repo, mesh, path, start, end, anchor)
-}
-
-/// Commit a mesh via the library directly. Returns the new tip OID.
-#[allow(dead_code)]
-pub fn commit_mesh(repo: &gix::Repository, mesh: &str) -> git_mesh::Result<String> {
-    git_mesh::mesh::commit_mesh(repo, mesh)
-}
-
-/// Create a .mesh/<name> file with the given anchors and why, then commit.
-/// This is the file-backed equivalent of `append_add` + `set_why` + `commit_mesh`.
-/// Each anchor is `(path, start, end)`; `(file, 0, 0)` means whole-file.
+/// Create a `.mesh/<name>` file with the given anchors and why, then
+/// commit it with ordinary git (file-backed model).
 ///
-/// The content hash is computed by reading the file from the worktree.
+/// Each anchor is `(path, start, end)`; `(file, 0, 0)` means whole-file.
+/// The content hash matches `git mesh add` exactly: whole-file hashes
+/// the entire file bytes; a line range hashes the `\n`-joined slice of
+/// lines `[start, end]` with no trailing newline.
 #[allow(dead_code)]
 pub fn create_and_commit_mesh(
     repo: &gix::Repository,
@@ -325,32 +308,25 @@ pub fn create_and_commit_mesh(
     anchors: &[(&str, u32, u32)],
     why: &str,
 ) -> Result<()> {
-    let workdir = repo.workdir().expect("workdir");
+    let workdir = repo.workdir().expect("workdir").to_path_buf();
     let mesh_dir = workdir.join(".mesh");
     std::fs::create_dir_all(&mesh_dir)?;
 
     let mut records: Vec<git_mesh::mesh_file::AnchorRecord> = Vec::with_capacity(anchors.len());
     for (path, start, end) in anchors {
-        // Read file and extract the anchored lines.
-        let content = std::fs::read_to_string(workdir.join(path))
+        let bytes = std::fs::read(workdir.join(path))
             .unwrap_or_else(|_| panic!("read {path}"));
-        let slice_text = if *start == 0 && *end == 0 {
-            content.clone()
+        let hashed: Vec<u8> = if *start == 0 && *end == 0 {
+            bytes.clone()
         } else {
-            let lines: Vec<&str> = content.lines().collect();
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<&str> = text.lines().collect();
             let lo = (*start as usize).saturating_sub(1);
             let hi = (*end as usize).min(lines.len());
-            if lo < hi {
-                let mut s = lines[lo..hi].join("\n");
-                if content.ends_with('\n') {
-                    s.push('\n');
-                }
-                s
-            } else {
-                String::new()
-            }
+            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
+            slice.join("\n").into_bytes()
         };
-        let hash = format!("sha256:{}", git_mesh::staging::sha256_hex(slice_text.as_bytes()));
+        let hash = format!("sha256:{}", git_mesh::types::sha256_hex(&hashed));
 
         records.push(git_mesh::mesh_file::AnchorRecord {
             path: path.to_string(),
@@ -365,8 +341,25 @@ pub fn create_and_commit_mesh(
         anchors: records,
         why: why.to_string(),
     };
+    let rel = format!(".mesh/{name}");
+    if let Some(parent) = mesh_dir.join(name).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(mesh_dir.join(name), mf.serialize())?;
-    git_mesh::mesh::commit_mesh(repo, name)?;
+    let out = Command::new("git")
+        .current_dir(&workdir)
+        .args(["add", &rel])
+        .output()?;
+    assert!(out.status.success(), "git add {rel} failed");
+    let out = Command::new("git")
+        .current_dir(&workdir)
+        .args(["commit", "-m", &format!("mesh: {name}")])
+        .output()?;
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 

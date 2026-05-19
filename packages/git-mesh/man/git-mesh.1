@@ -8,7 +8,7 @@ git\-mesh \- Track implicit semantic dependencies in a git repo.
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH SYNOPSIS
-\fBgit\-mesh\fR [\fB\-\-perf\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+\fBgit\-mesh\fR [\fB\-\-perf\fR] [\fB\-\-mesh\-dir\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 .B git mesh
 tracks implicit semantic dependencies in a Git repository: couplings between
@@ -76,6 +76,9 @@ Emit performance timings for major git\-mesh operation groups to stderr.
 
 Can also be enabled with `GIT_MESH_PERF=1`.
 .TP
+\fB\-\-mesh\-dir\fR \fI<MESH_DIR>\fR
+Mesh root directory (default: .mesh). Overrides GIT_MESH_DIR and git config git\-mesh.dir
+.TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
@@ -100,41 +103,17 @@ Stage anchors to remove on the next mesh commit
 git\-mesh\-why(1)
 Read or stage the mesh\*(Aqs why — a one\-sentence definition of the subsystem, flow, or concern the anchors collectively form
 .TP
-git\-mesh\-commit(1)
-Resolve staged operations and write a mesh commit
-.TP
-git\-mesh\-restore(1)
-Clear the staging area
-.TP
-git\-mesh\-revert(1)
-Fast\-forward a mesh to a past state
-.TP
 git\-mesh\-delete(1)
 Delete a mesh
 .TP
 git\-mesh\-move(1)
 Rename a mesh
 .TP
-git\-mesh\-config(1)
-Read or stage mesh\-level resolver options
-.TP
-git\-mesh\-fetch(1)
-Fetch mesh and anchor refs from a remote
-.TP
-git\-mesh\-push(1)
-Push mesh and anchor refs to a remote
-.TP
 git\-mesh\-doctor(1)
 Audit the local mesh setup
 .TP
-git\-mesh\-hooks(1)
-Git hook shortcuts (post\-commit, post\-rewrite)
-.TP
 git\-mesh\-advice(1)
 Append events and flush session\-scoped advice
-.TP
-git\-mesh\-rewrite(1)
-Advance anchor SHAs after a history rewrite (post\-rewrite hook)
 .TP
 git\-mesh\-help(1)
 Print this message or the help of the given subcommand(s)

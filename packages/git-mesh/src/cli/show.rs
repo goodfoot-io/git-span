@@ -2,280 +2,18 @@
 
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
-use crate::resolver::build_pending_findings;
-use crate::staging::{list_staged_mesh_names, read_staging, resolve_staged_config, Staging};
-use crate::types::{
-    Anchor, AnchorExtent, CopyDetection, MeshConfig, PendingFinding, DEFAULT_COPY_DETECTION,
-    DEFAULT_FOLLOW_MOVES, DEFAULT_IGNORE_WHITESPACE,
-};
+use crate::types::{AnchorExtent, MeshConfig};
 use serde::Serialize;
 use crate::validation::validate_mesh_name_shape;
-use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
+use crate::read_mesh_at;
 use anyhow::Result;
 use regex::RegexBuilder;
 use std::collections::HashSet;
 use std::io::{self, BufRead};
 
 // ---------------------------------------------------------------------------
-// Format-string types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum FormatToken {
-    Literal(String),
-    Newline,
-    Commit(CommitField),
-    Anchor(AnchorField),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CommitField {
-    /// `%H` — full mesh commit SHA
-    CommitHash,
-    /// `%h` — 7-char abbreviated mesh commit SHA
-    CommitHashShort,
-    /// `%an` — author name
-    AuthorName,
-    /// `%ae` — author email
-    AuthorEmail,
-    /// `%ad` — author date (RFC 2822)
-    AuthorDate,
-    /// `%ar` — author date, relative
-    AuthorDateRelative,
-    /// `%s` — subject (first line of message)
-    Subject,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum AnchorField {
-    /// `%p` — anchor path
-    Path,
-    /// `%r` — anchor extent specifier (`#L<s>-L<e>` or empty for whole-file)
-    RangeSpec,
-    /// `%P` — path + anchor spec
-    PathWithSpec,
-    /// `%a` — anchor SHA (full)
-    AnchorFull,
-}
-
-const SUPPORTED: &str = "%H, %h, %an, %ae, %ad, %ar, %s, %p, %r, %P, %a";
-
-/// Parse a format string into a vector of tokens, returning an error for
-/// any unknown placeholder.
-pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
-    let mut tokens: Vec<FormatToken> = Vec::new();
-    let mut literal = String::new();
-    let mut chars = fmt.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            literal.push(c);
-            continue;
-        }
-        let Some(&nc) = chars.peek() else {
-            // Trailing lone `%` — treat as literal.
-            literal.push('%');
-            break;
-        };
-        match nc {
-            '%' => {
-                chars.next();
-                literal.push('%');
-            }
-            'n' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Newline);
-            }
-            'H' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Commit(CommitField::CommitHash));
-            }
-            'h' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Commit(CommitField::CommitHashShort));
-            }
-            's' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Commit(CommitField::Subject));
-            }
-            'p' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Anchor(AnchorField::Path));
-            }
-            'r' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Anchor(AnchorField::RangeSpec));
-            }
-            'P' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Anchor(AnchorField::PathWithSpec));
-            }
-            'a' => {
-                // Could be `%an`, `%ae`, `%ad`, `%ar`, or `%a` (anchor full).
-                chars.next(); // consume 'a'
-                let sub = chars.peek().copied();
-                match sub {
-                    Some('n') => {
-                        chars.next();
-                        if !literal.is_empty() {
-                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                        }
-                        tokens.push(FormatToken::Commit(CommitField::AuthorName));
-                    }
-                    Some('e') => {
-                        chars.next();
-                        if !literal.is_empty() {
-                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                        }
-                        tokens.push(FormatToken::Commit(CommitField::AuthorEmail));
-                    }
-                    Some('d') => {
-                        chars.next();
-                        if !literal.is_empty() {
-                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                        }
-                        tokens.push(FormatToken::Commit(CommitField::AuthorDate));
-                    }
-                    Some('r') => {
-                        chars.next();
-                        if !literal.is_empty() {
-                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                        }
-                        tokens.push(FormatToken::Commit(CommitField::AuthorDateRelative));
-                    }
-                    // `%a` alone (no recognized sub-char) → anchor SHA full
-                    None | Some(_) => {
-                        // peek was already consumed for 'a'; we need to check if
-                        // the next char could form a known two-char token.
-                        // Only emit Anchor::AnchorFull if next char is NOT 'n','e','d','r'
-                        // (those were handled above). Since we've already peeked and those
-                        // cases didn't match, this is `%a` with something unrecognized after it
-                        // OR end of string. Treat standalone `%a` as anchor full.
-                        if !literal.is_empty() {
-                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                        }
-                        // But we must check if the next char makes an unknown 2-char seq.
-                        // At this point `sub` = chars.peek() — if it's a letter, that's an unknown.
-                        if let Some(s) = sub
-                            && s.is_ascii_alphabetic()
-                        {
-                            // Unknown `%a<X>` sequence.
-                            chars.next(); // consume the unknown sub-char
-                            let tok = format!("a{s}");
-                            return Err(anyhow::anyhow!(
-                                "unknown format placeholder \"%{tok}\"; supported: {SUPPORTED}"
-                            ));
-                        }
-                        tokens.push(FormatToken::Anchor(AnchorField::AnchorFull));
-                    }
-                }
-            }
-            other => {
-                chars.next();
-                // Check if this is a multi-char unknown like `%xx` — we already consumed
-                // the first char after `%`, so emit error for this single-char unknown.
-                // But we should also accumulate subsequent chars for better error messages.
-                // For now: report the single unknown char.
-                return Err(anyhow::anyhow!(
-                    "unknown format placeholder \"%{other}\"; supported: {SUPPORTED}"
-                ));
-            }
-        }
-    }
-
-    if !literal.is_empty() {
-        tokens.push(FormatToken::Literal(literal));
-    }
-
-    Ok(tokens)
-}
-
-fn has_range_token(tokens: &[FormatToken]) -> bool {
-    tokens.iter().any(|t| matches!(t, FormatToken::Anchor(_)))
-}
-
-/// Render a single line from the token vector against the mesh commit info and
-/// an optional anchor context. Anchor tokens require `anchor` to be `Some`.
-pub(crate) fn render_tokens(
-    tokens: &[FormatToken],
-    info: &MeshCommitInfo,
-    meta: &crate::git::CommitMeta,
-    anchor: Option<&Anchor>,
-) -> String {
-    let mut out = String::new();
-    for tok in tokens {
-        match tok {
-            FormatToken::Literal(s) => out.push_str(s),
-            FormatToken::Newline => out.push('\n'),
-            FormatToken::Commit(f) => match f {
-                CommitField::CommitHash => out.push_str(&info.commit_oid),
-                CommitField::CommitHashShort => {
-                    out.push_str(&info.commit_oid[..7.min(info.commit_oid.len())]);
-                }
-                CommitField::AuthorName => out.push_str(&meta.author_name),
-                CommitField::AuthorEmail => out.push_str(&meta.author_email),
-                CommitField::AuthorDate => out.push_str(&meta.author_date_rfc2822),
-                CommitField::AuthorDateRelative => out.push_str(
-                    &crate::cli::stale_output::format_relative(meta.committer_time),
-                ),
-                CommitField::Subject => out.push_str(&meta.summary),
-            },
-            FormatToken::Anchor(f) => {
-                let r = anchor
-                    .expect("anchor token present but no anchor context — invariant violated");
-                match f {
-                    AnchorField::Path => out.push_str(&r.path),
-                    AnchorField::RangeSpec => {
-                        if let AnchorExtent::LineRange { start, end } = r.extent {
-                            out.push_str(&format!("#L{start}-L{end}"));
-                        }
-                        // Whole-file → empty string (no push)
-                    }
-                    AnchorField::PathWithSpec => {
-                        out.push_str(&r.path);
-                        if let AnchorExtent::LineRange { start, end } = r.extent {
-                            out.push_str(&format!("#L{start}-L{end}"));
-                        }
-                    }
-                    AnchorField::AnchorFull => out.push_str(&r.anchor_sha),
-                }
-            }
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
 // Listing pipeline types and helpers
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum MeshState {
-    Committed,
-    Staged,
-    Pending,
-}
 
 #[derive(Clone)]
 struct AnchorEntry {
@@ -288,13 +26,6 @@ struct MeshListing {
     name: String,
     why: String,
     anchors: Vec<AnchorEntry>,
-    pending_adds: Vec<AnchorEntry>,
-    pending_removes: Vec<AnchorEntry>,
-    state: MeshState,
-    staged_adds: usize,
-    staged_removes: usize,
-    staged_configs: usize,
-    staged_why: bool,
 }
 
 fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
@@ -304,119 +35,23 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
 fn collect_listings_with_options(
     repo: &gix::Repository,
     include_why: bool,
-    include_state: bool,
+    _include_state: bool,
 ) -> Result<Vec<MeshListing>> {
     let mesh_pairs = crate::mesh::read::load_all_meshes(repo)?;
-    let staged_names = {
-        let _perf = crate::perf::span("list.list-staged-meshes");
-        list_staged_mesh_names(repo)?
-    };
-
-    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
-    let mut committed_name_set: HashSet<String> = HashSet::new();
     let mut listings: Vec<MeshListing> = Vec::new();
-    // Collect committed meshes.
-    {
-        let _perf = crate::perf::span("list.read-committed-meshes");
-        for (name, mesh) in mesh_pairs {
-            committed_name_set.insert(name.clone());
-            let (message, anchors_v2) = if include_why {
-                (mesh.message, mesh.anchors)
-            } else {
-                (String::new(), mesh.anchors)
-            };
-            let mut anchors = Vec::new();
-            for (_id, r) in anchors_v2 {
-                anchors.push(AnchorEntry {
-                    path: r.path,
-                    extent: r.extent,
-                });
-            }
-            // Determine if this committed mesh also has staged ops.
-            let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-                if include_state && staged_name_set.contains(name.as_str()) {
-                    let staging = read_staging(repo, &name)?;
-                    let has_ops = !staging.adds.is_empty()
-                        || !staging.removes.is_empty()
-                        || !staging.configs.is_empty()
-                        || staging.why.is_some();
-                    let staged_adds_n = staging.adds.len();
-                    let staged_removes_n = staging.removes.len();
-                    let staged_configs_n = staging.configs.len();
-                    let staged_why_b = staging.why.is_some();
-                    let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                        .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                        .collect();
-                    let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                        .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                        .collect();
-                    (
-                        if has_ops { MeshState::Staged } else { MeshState::Committed },
-                        staged_adds_n,
-                        staged_removes_n,
-                        staged_configs_n,
-                        staged_why_b,
-                        pending_adds,
-                        pending_removes,
-                    )
-                } else {
-                    (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-                };
-            let why = message.trim_end_matches('\n').to_string();
-            listings.push(MeshListing {
-                name,
-                why,
-                anchors,
-                pending_adds,
-                pending_removes,
-                state,
-                staged_adds,
-                staged_removes,
-                staged_configs,
-                staged_why,
-            });
-        }
+    for (name, mesh) in mesh_pairs {
+        let message = if include_why { mesh.message } else { String::new() };
+        let anchors: Vec<AnchorEntry> = mesh
+            .anchors
+            .into_iter()
+            .map(|(_id, r)| AnchorEntry { path: r.path, extent: r.extent })
+            .collect();
+        listings.push(MeshListing {
+            name,
+            why: message.trim_end_matches('\n').to_string(),
+            anchors,
+        });
     }
-
-    // Collect staging-only (pending) meshes.
-    {
-        let _perf = crate::perf::span("list.read-pending-meshes");
-        for name in &staged_names {
-            if committed_name_set.contains(name) {
-                continue; // already handled above
-            }
-            let staging = read_staging(repo, name)?;
-            let staged_adds = staging.adds.len();
-            let staged_removes = staging.removes.len();
-            let staged_configs = staging.configs.len();
-            let staged_why = staging.why.is_some();
-            let why = staging.why.unwrap_or_default();
-            let pending_adds: Vec<AnchorEntry> = staging
-                .adds
-                .into_iter()
-                .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                .collect();
-            let pending_removes: Vec<AnchorEntry> = staging
-                .removes
-                .into_iter()
-                .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                .collect();
-            let anchors = pending_adds.clone();
-            listings.push(MeshListing {
-                name: name.clone(),
-                why,
-                anchors,
-                pending_adds,
-                pending_removes,
-                state: MeshState::Pending,
-                staged_adds,
-                staged_removes,
-                staged_configs,
-                staged_why,
-            });
-        }
-    }
-
     Ok(listings)
 }
 
@@ -424,121 +59,29 @@ fn collect_listings_for_names(
     repo: &gix::Repository,
     names: &[String],
     include_why: bool,
-    include_state: bool,
+    _include_state: bool,
 ) -> Result<Vec<MeshListing>> {
     let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
-    let mesh_pairs = crate::mesh::read::load_all_meshes(repo)?;
-    let staged_names = list_staged_mesh_names(repo)?;
-
-    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
-
-    let mut committed_name_set: HashSet<String> = HashSet::new();
     let mut listings = Vec::with_capacity(names.len());
-
-    // Committed meshes matching the name set.
-    for (name, mesh) in mesh_pairs {
-        committed_name_set.insert(name.clone());
+    for (name, mesh) in crate::mesh::read::load_all_meshes(repo)? {
         if !name_set.contains(name.as_str()) {
             continue;
         }
-        let (message, anchors_v2) = if include_why {
-            (mesh.message, mesh.anchors)
-        } else {
-            (String::new(), mesh.anchors)
-        };
-        let mut anchors = Vec::new();
-        for (_id, r) in anchors_v2 {
-            anchors.push(AnchorEntry {
-                path: r.path,
-                extent: r.extent,
-            });
-        }
-        // Determine if this committed mesh also has staged ops.
-        let (state, staged_adds, staged_removes, staged_configs, staged_why, pending_adds, pending_removes) =
-            if include_state && staged_name_set.contains(name.as_str()) {
-                let staging = read_staging(repo, &name)?;
-                let has_ops = !staging.adds.is_empty()
-                    || !staging.removes.is_empty()
-                    || !staging.configs.is_empty()
-                    || staging.why.is_some();
-                let staged_adds_n = staging.adds.len();
-                let staged_removes_n = staging.removes.len();
-                let staged_configs_n = staging.configs.len();
-                let staged_why_b = staging.why.is_some();
-                let pending_adds: Vec<AnchorEntry> = staging.adds.into_iter()
-                    .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-                    .collect();
-                let pending_removes: Vec<AnchorEntry> = staging.removes.into_iter()
-                    .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-                    .collect();
-                (
-                    if has_ops { MeshState::Staged } else { MeshState::Committed },
-                    staged_adds_n,
-                    staged_removes_n,
-                    staged_configs_n,
-                    staged_why_b,
-                    pending_adds,
-                    pending_removes,
-                )
-            } else {
-                (MeshState::Committed, 0, 0, 0, false, Vec::new(), Vec::new())
-            };
-        let why = message.trim_end_matches('\n').to_string();
+        let message = if include_why { mesh.message } else { String::new() };
+        let anchors: Vec<AnchorEntry> = mesh
+            .anchors
+            .into_iter()
+            .map(|(_id, r)| AnchorEntry { path: r.path, extent: r.extent })
+            .collect();
         listings.push(MeshListing {
             name,
-            why,
+            why: message.trim_end_matches('\n').to_string(),
             anchors,
-            pending_adds,
-            pending_removes,
-            state,
-            staged_adds,
-            staged_removes,
-            staged_configs,
-            staged_why,
         });
     }
-
-    // Pending meshes matching the name set.
-    for name in &staged_names {
-        if !name_set.contains(name.as_str()) {
-            continue;
-        }
-        if committed_name_set.contains(name) {
-            continue; // already handled as committed+staged
-        }
-        let staging = read_staging(repo, name)?;
-        let staged_adds = staging.adds.len();
-        let staged_removes = staging.removes.len();
-        let staged_configs = staging.configs.len();
-        let staged_why = staging.why.is_some();
-        let why = staging.why.unwrap_or_default();
-        let pending_adds: Vec<AnchorEntry> = staging
-            .adds
-            .into_iter()
-            .map(|a| AnchorEntry { path: a.path, extent: a.extent })
-            .collect();
-        let pending_removes: Vec<AnchorEntry> = staging
-            .removes
-            .into_iter()
-            .map(|r| AnchorEntry { path: r.path, extent: r.extent })
-            .collect();
-        let anchors = pending_adds.clone();
-        listings.push(MeshListing {
-            name: name.clone(),
-            why,
-            anchors,
-            pending_adds,
-            pending_removes,
-            state: MeshState::Pending,
-            staged_adds,
-            staged_removes,
-            staged_configs,
-            staged_why,
-        });
-    }
-
     Ok(listings)
 }
+
 
 fn collect_filtered_porcelain_listings_with_staging(
     repo: &gix::Repository,
@@ -578,13 +121,6 @@ fn collect_filtered_porcelain_listings_with_staging(
                 name,
                 why: mesh.message.trim_end_matches('\n').to_string(),
                 anchors,
-                pending_adds: Vec::new(),
-                pending_removes: Vec::new(),
-                state: MeshState::Committed,
-                staged_adds: 0,
-                staged_removes: 0,
-                staged_configs: 0,
-                staged_why: false,
             });
         }
     }
@@ -592,37 +128,9 @@ fn collect_filtered_porcelain_listings_with_staging(
     Ok(listings)
 }
 
-fn collect_staged_porcelain_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
-    let staged_names = list_staged_mesh_names(repo)?;
-    let mut listings = Vec::with_capacity(staged_names.len());
-    for name in staged_names {
-        let staging = read_staging(repo, &name)?;
-        let staged_adds = staging.adds.len();
-        let staged_removes = staging.removes.len();
-        let staged_configs = staging.configs.len();
-        let _staged_why = staging.why.is_some();
-        let anchors: Vec<AnchorEntry> = staging
-            .adds
-            .into_iter()
-            .map(|add| AnchorEntry {
-                path: add.path,
-                extent: add.extent,
-            })
-            .collect();
-        listings.push(MeshListing {
-            name,
-            why: String::new(),
-            anchors,
-            pending_adds: Vec::new(),
-            pending_removes: Vec::new(),
-            state: MeshState::Pending,
-            staged_adds,
-            staged_removes,
-            staged_configs,
-            staged_why: false,
-        });
-    }
-    Ok(listings)
+fn collect_staged_porcelain_listings(_repo: &gix::Repository) -> Result<Vec<MeshListing>> {
+    // File-backed model: no staging area, so no staged-only listings.
+    Ok(Vec::new())
 }
 
 fn anchor_matches(anchor: &AnchorEntry, path: &str, range: Option<(u32, u32)>) -> bool {
@@ -671,16 +179,8 @@ fn anchor_addr_plain(a: &AnchorEntry) -> String {
 fn render_list_block(listing: &MeshListing) {
     println!("## {}", listing.name);
     let mut bullets: Vec<String> = Vec::new();
-    if listing.state != MeshState::Pending {
-        for a in &listing.anchors {
-            bullets.push(format!("- {}", anchor_addr_plain(a)));
-        }
-    }
-    for a in &listing.pending_adds {
-        bullets.push(format!("- {} — pending add", anchor_addr_plain(a)));
-    }
-    for a in &listing.pending_removes {
-        bullets.push(format!("- {} — pending remove", anchor_addr_plain(a)));
+    for a in &listing.anchors {
+        bullets.push(format!("- {}", anchor_addr_plain(a)));
     }
     if bullets.is_empty() {
         println!("*Mesh has no anchors*");
@@ -786,57 +286,6 @@ struct MeshToml {
 // ---------------------------------------------------------------------------
 
 pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
-    // Pending-only path: when the mesh has no committed ref but staging
-    // exists, render the canonical block from staging alone (no commit
-    // subsection). Only the default render shape supports pending-only —
-    // `--format`, `--oneline`, `--log`, and `--at` continue to require a
-    // committed mesh and surface the existing MeshNotFound error.
-    if !args.log && args.at.is_none() && args.format.is_none() && !args.oneline {
-        let mesh_exists = {
-            let reader = crate::mesh_file_reader::MeshFileReader::new(
-                repo,
-                ".mesh".to_string(),
-            );
-            reader.read_effective(&args.name)?.is_some()
-        };
-        if !mesh_exists {
-            let pending = build_pending_findings(repo, &args.name);
-            if !pending.is_empty() {
-                let staging = read_staging(repo, &args.name)?;
-                render_pending_only(&args.name, &staging, &pending);
-                return Ok(0);
-            }
-        }
-    }
-
-    if args.log {
-        let entries = {
-            let _perf = crate::perf::span("show.read-log");
-            mesh_log(repo, &args.name, args.limit).map_err(|e| CliError {
-                subcommand: "show",
-                summary: format!("no mesh named `{}`.", args.name),
-                what_happened: format!("{}", e),
-                next_steps: vec![NextStep::Bash("git mesh list".into())],
-            })?
-        };
-        let _perf = crate::perf::span("show.render-log");
-        for info in entries {
-            if args.oneline {
-                println!("{} {}", short(&info.commit_oid), info.summary);
-            } else {
-                println!("commit {}", info.commit_oid);
-                println!("Author: {} <{}>", info.author_name, info.author_email);
-                println!("Date:   {}", info.author_date);
-                println!();
-                for line in info.message.trim_end_matches('\n').lines() {
-                    println!("    {line}");
-                }
-                println!();
-            }
-        }
-        return Ok(0);
-    }
-
     let mesh = {
         let _perf = crate::perf::span("show.read-mesh");
         if args.at.is_none() {
@@ -855,59 +304,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             })?
         }
     };
-    // --format=<FMT> short-circuits the default rendering (§10.4).
-    if let Some(fmt) = &args.format {
-        let info = {
-            let _perf = crate::perf::span("show.read-commit-info");
-            mesh_commit_info_at(repo, &args.name, args.at.as_deref()).map_err(|e| CliError {
-                subcommand: "show",
-                summary: format!("no mesh named `{}`.", args.name),
-                what_happened: format!("{}", e),
-                next_steps: vec![NextStep::Bash("git mesh list".into())],
-            })?
-        };
-        let tokens = {
-            let _perf = crate::perf::span("show.parse-format");
-            match parse_format(fmt) {
-                Ok(t) => t,
-                Err(e) => {
-                    return Err(CliError {
-                        subcommand: "show",
-                        summary: format!("unrecognized format placeholder in `{fmt}`."),
-                        what_happened: e.to_string(),
-                        next_steps: vec![
-                            NextStep::Prose(format!("Supported placeholders: {SUPPORTED}")),
-                            NextStep::Bash("git mesh show <name> --format \"%H %s\"".into()),
-                        ],
-                    }.into());
-                }
-            }
-        };
-
-        let meta = {
-            let _perf = crate::perf::span("show.read-commit-meta");
-            let short = &info.commit_oid[..7.min(info.commit_oid.len())];
-            crate::git::commit_meta(repo, &info.commit_oid)
-                .map_err(|e| CliError {
-                    subcommand: "show",
-                    summary: format!("could not read commit `{short}` metadata."),
-                    what_happened: format!("{e}"),
-                    next_steps: vec![NextStep::Bash("git mesh show <name>".into())],
-                })?
-        };
-
-        let _perf = crate::perf::span("show.render-format");
-        if has_range_token(&tokens) {
-            for (_id, r) in &mesh.anchors {
-                let line = render_tokens(&tokens, &info, &meta, Some(r));
-                println!("{line}");
-            }
-        } else {
-            let line = render_tokens(&tokens, &info, &meta, None);
-            println!("{line}");
-        }
-        return Ok(0);
-    }
 
     if args.oneline {
         let _perf = crate::perf::span("show.render-oneline");
@@ -926,8 +322,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     let _perf = crate::perf::span("show.render-default");
 
-    // Build TOML helper structures so anchors_v2 renders as an array of
-    // tables with `id` as a regular field (not a tuple pair).
     let toml_output = MeshToml {
         name: mesh.name.clone(),
         message: mesh.message.trim_end_matches('\n').to_string(),
@@ -951,80 +345,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn anchor_addr(path: &str, extent: AnchorExtent) -> String {
-    match extent {
-        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
-        AnchorExtent::WholeFile => path.to_string(),
-    }
-}
 
-fn on_off(b: bool) -> &'static str {
-    if b { "on" } else { "off" }
-}
-
-/// Render the copy-detection enum for the `### Resolvers` subsection.
-/// `Off` and `SameCommit` use `off`/`on` for symmetry with the boolean rows;
-/// the more specific variants render their kebab-case identifier.
-fn copy_detection_label(cd: CopyDetection) -> &'static str {
-    match cd {
-        CopyDetection::Off => "off",
-        CopyDetection::SameCommit => "on",
-        CopyDetection::AnyFileInCommit => "any-file-in-commit",
-        CopyDetection::AnyFileInRepo => "any-file-in-repo",
-    }
-}
-
-fn render_pending_only(name: &str, staging: &Staging, pending: &[PendingFinding]) {
-    println!("## {name}");
-    let mut emitted_any = false;
-    for p in pending {
-        if let PendingFinding::Add { op, .. } = p {
-            let addr = anchor_addr(&op.path, op.extent);
-            println!("- {addr} — pending add");
-            emitted_any = true;
-        }
-    }
-    for p in pending {
-        if let PendingFinding::Remove { op, .. } = p {
-            let addr = anchor_addr(&op.path, op.extent);
-            println!("- {addr} — pending remove");
-            emitted_any = true;
-        }
-    }
-    if !emitted_any {
-        println!("*Mesh has no anchors*");
-    }
-
-    let why = staging.why.as_deref().unwrap_or("").trim_end_matches('\n');
-    if !why.is_empty() {
-        println!();
-        println!("{why}");
-    }
-
-    println!();
-    println!("*Not yet committed.*");
-
-    // Only render `### Resolvers` when staged config moves an option off its
-    // default — pending-only meshes have no committed config to merge against.
-    let (cd, iw, fm) = resolve_staged_config(
-        staging,
-        (
-            DEFAULT_COPY_DETECTION,
-            DEFAULT_IGNORE_WHITESPACE,
-            DEFAULT_FOLLOW_MOVES,
-        ),
-    );
-    if cd != DEFAULT_COPY_DETECTION
-        || iw != DEFAULT_IGNORE_WHITESPACE
-        || fm != DEFAULT_FOLLOW_MOVES
-    {
-        println!();
-        println!("### Resolvers");
-        println!("copy-detection: {}", copy_detection_label(cd));
-        println!("ignore-whitespace: {}", on_off(iw));
-        println!("follow-moves: {}", on_off(fm));
-    }
-}
 
 pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
     if args.batch {
@@ -1078,14 +399,6 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         }
     }
 
-    // Filter to staged-only meshes when --staged is passed.
-    if args.staged {
-        let _perf = crate::perf::span("list.filter-staged");
-        listings.retain(|l| {
-            l.staged_adds > 0 || l.staged_removes > 0 || l.staged_configs > 0 || l.staged_why
-        });
-    }
-
     let _perf = crate::perf::span("list.sort-page-render");
     listings.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -1117,11 +430,6 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
         }
     } else if args.porcelain {
         render_porcelain(&page);
-    } else if args.staged {
-        let noun = if page.len() == 1 { "mesh has" } else { "meshes have" };
-        println!("{} {noun} pending staging.", page.len());
-        println!();
-        render_blocks(&page);
     } else {
         render_blocks(&page);
     }
@@ -1134,10 +442,6 @@ fn render_range_address(path: &str, extent: AnchorExtent) -> String {
         AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
         AnchorExtent::WholeFile => format!("{path}  (whole)"),
     }
-}
-
-fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(8)]
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,12 +470,6 @@ pub(crate) fn resolve_targets(
     let mut result: HashSet<String> = HashSet::new();
     let mut missing_args: Vec<&str> = Vec::new();
 
-    // Hoist the staging-name set so we can check for staging-only meshes in
-    // the bare-arg dispatch without re-reading per arg.
-    let staged_names: HashSet<String> = list_staged_mesh_names(repo)?
-        .into_iter()
-        .collect();
-
     // Resolve each arg. Rule: a zero-match against the mesh set is fine on
     // its own — exit 0 silently. We only error when the arg names something
     // that doesn't exist: a missing file, a missing mesh name, or a glob the
@@ -1191,12 +489,10 @@ pub(crate) fn resolve_targets(
                 missing_args.push(arg);
             }
         } else if validate_mesh_name_shape(arg).is_ok() {
-            // Mesh-name shape (bare slug or hierarchical): try catalog,
-            // then staging, then path index, then worktree existence check.
+            // Mesh-name shape (bare slug or hierarchical): try the
+            // file-backed effective view, then a path-index scan, then a
+            // worktree existence check.
             if reader.read_effective(arg)?.is_some() {
-                result.insert(arg.clone());
-            } else if staged_names.contains(arg.as_str()) {
-                // Staging-only mesh (has staged ops but no committed ref yet).
                 result.insert(arg.clone());
             } else {
                 let names =
@@ -1207,8 +503,8 @@ pub(crate) fn resolve_targets(
                     missing_args.push(arg);
                 }
             }
-        } else if crate::mesh::path_index::is_glob_pattern(arg) {
-            let names = crate::mesh::path_index::matching_mesh_names_glob(repo, arg, None)?;
+        } else if crate::mesh::read::is_glob_pattern(arg) {
+            let names = crate::mesh::read::matching_mesh_names_glob(repo, arg, None)?;
             if !names.is_empty() {
                 result.extend(names);
             } else {
@@ -1259,199 +555,6 @@ fn file_exists_in_workdir(repo: &gix::Repository, rel: &std::path::Path) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::CommitMeta;
-    use crate::types::AnchorExtent;
-
-    fn fake_info() -> MeshCommitInfo {
-        MeshCommitInfo {
-            commit_oid: "abcdef1234567890abcdef1234567890abcdef12".to_string(),
-            author_name: "Alice Author".to_string(),
-            author_email: "alice@example.com".to_string(),
-            author_date: "Mon, 01 Jan 2024 00:00:00 +0000".to_string(),
-            summary: "the subject line".to_string(),
-            message: "the subject line\n\nbody".to_string(),
-            why: String::new(),
-        }
-    }
-
-    fn fake_meta() -> CommitMeta {
-        CommitMeta {
-            author_name: "Alice Author".to_string(),
-            author_email: "alice@example.com".to_string(),
-            author_date_rfc2822: "Mon, 01 Jan 2024 00:00:00 +0000".to_string(),
-            committer_time: 1704067200,
-            summary: "the subject line".to_string(),
-            message: "the subject line\n\nbody".to_string(),
-        }
-    }
-
-    fn fake_range_lines() -> Anchor {
-        Anchor {
-            anchor_sha: "deadbeef1234567890abcdef1234567890abcdef".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            path: "src/foo.rs".to_string(),
-            extent: AnchorExtent::LineRange { start: 10, end: 20 },
-            blob: "bloboid1".to_string(),
-            stored_hash: String::new(),
-        }
-    }
-
-    fn fake_range_whole() -> Anchor {
-        Anchor {
-            anchor_sha: "cafebabe1234567890abcdef1234567890abcdef".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            path: "docs/guide.md".to_string(),
-            extent: AnchorExtent::WholeFile,
-            blob: "bloboid2".to_string(),
-            stored_hash: String::new(),
-        }
-    }
-
-    #[test]
-    fn commit_placeholder_big_h() {
-        let tokens = parse_format("%H").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "abcdef1234567890abcdef1234567890abcdef12");
-    }
-
-    #[test]
-    fn commit_placeholder_h_abbrev() {
-        let tokens = parse_format("%h").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "abcdef1");
-    }
-
-    #[test]
-    fn commit_placeholder_s() {
-        let tokens = parse_format("%s").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "the subject line");
-    }
-
-    #[test]
-    fn commit_placeholder_an() {
-        let tokens = parse_format("%an").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "Alice Author");
-    }
-
-    #[test]
-    fn commit_placeholder_ae() {
-        let tokens = parse_format("%ae").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "alice@example.com");
-    }
-
-    #[test]
-    fn commit_placeholder_ad() {
-        let tokens = parse_format("%ad").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "Mon, 01 Jan 2024 00:00:00 +0000");
-    }
-
-    #[test]
-    fn commit_placeholder_ar_produces_relative_time() {
-        let tokens = parse_format("%ar").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        // We just check it's non-empty; the exact relative string depends on wall time.
-        assert!(!out.is_empty());
-    }
-
-    #[test]
-    fn anchor_placeholder_p_lines() {
-        let tokens = parse_format("%p").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "src/foo.rs");
-    }
-
-    #[test]
-    fn anchor_placeholder_r_lines() {
-        let tokens = parse_format("%r").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "#L10-L20");
-    }
-
-    #[test]
-    fn anchor_placeholder_r_whole_is_empty() {
-        let tokens = parse_format("%r").unwrap();
-        let r = fake_range_whole();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "");
-    }
-
-    #[test]
-    fn anchor_placeholder_big_p_lines() {
-        let tokens = parse_format("%P").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "src/foo.rs#L10-L20");
-    }
-
-    #[test]
-    fn anchor_placeholder_big_p_whole_is_just_path() {
-        let tokens = parse_format("%P").unwrap();
-        let r = fake_range_whole();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "docs/guide.md");
-    }
-
-    #[test]
-    fn anchor_placeholder_a_full() {
-        let tokens = parse_format("%a").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
-        assert_eq!(out, "deadbeef1234567890abcdef1234567890abcdef");
-    }
-
-    #[test]
-    fn percent_percent_escapes_literal() {
-        let tokens = parse_format("100%%").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "100%");
-    }
-
-    #[test]
-    fn percent_n_is_newline() {
-        let tokens = parse_format("a%nb").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
-        assert_eq!(out, "a\nb");
-    }
-
-    #[test]
-    fn has_anchor_token_true_for_anchor_placeholders() {
-        assert!(has_range_token(&parse_format("%p").unwrap()));
-        assert!(has_range_token(&parse_format("%r").unwrap()));
-        assert!(has_range_token(&parse_format("%P").unwrap()));
-        assert!(has_range_token(&parse_format("%a").unwrap()));
-    }
-
-    #[test]
-    fn has_range_token_false_for_commit_only() {
-        assert!(!has_range_token(&parse_format("%H %s %an").unwrap()));
-    }
-
-    #[test]
-    fn unknown_placeholder_big_s_rejected() {
-        let err = parse_format("%S").unwrap_err();
-        assert!(err.to_string().contains("%S"), "{err}");
-        assert!(err.to_string().contains("supported:"), "{err}");
-    }
-
-    #[test]
-    fn unknown_placeholder_xx_rejected() {
-        // %x → unknown single char
-        let err = parse_format("%x").unwrap_err();
-        assert!(err.to_string().contains("supported:"), "{err}");
-    }
-
-    #[test]
-    fn unknown_placeholder_az_rejected() {
-        let err = parse_format("%aZ").unwrap_err();
-        assert!(err.to_string().contains("supported:"), "{err}");
-    }
-
     // -----------------------------------------------------------------------
     // resolve_targets helpers and tests
     // -----------------------------------------------------------------------
@@ -1627,26 +730,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_staging_only_mesh() {
-        let (_td, repo) = seed_repo();
-        // Create a staging-only mesh (no committed ref) by writing an ops file
-        // into .git/mesh/staging/ — same layout write_staging produces.
-        let staging_dir = repo.git_dir().join("mesh").join("staging");
-        std::fs::create_dir_all(&staging_dir).unwrap();
-        std::fs::write(staging_dir.join("pending-mesh"), "add a.txt#L1-L5\n").unwrap();
-        let result = resolve_targets(&repo, &["pending-mesh".to_string()]).unwrap();
-        assert_eq!(result, vec!["pending-mesh"]);
-    }
-
-    #[test]
-    fn resolve_targets_committed_wins_over_staging() {
-        // When a mesh has both a committed ref and staging entries, the
-        // committed ref takes priority (same name, no duplication).
+    fn resolve_targets_committed_mesh_resolves_once() {
+        // A committed mesh resolves to its name exactly once.
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "dual-mesh");
-        let staging_dir = repo.git_dir().join("mesh").join("staging");
-        std::fs::create_dir_all(&staging_dir).unwrap();
-        std::fs::write(staging_dir.join("dual-mesh"), "add a.txt#L1-L5\n").unwrap();
         let result = resolve_targets(&repo, &["dual-mesh".to_string()]).unwrap();
         assert_eq!(result, vec!["dual-mesh"]);
     }
@@ -1665,7 +752,6 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
-            staged: false,
             oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
@@ -1683,7 +769,6 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
-            staged: false,
             oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
@@ -1700,7 +785,6 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
-            staged: false,
             oneline: false,
         };
         let err = run_list(&repo, args).unwrap_err();
@@ -1739,7 +823,6 @@ mod tests {
             search: None,
             offset: 0,
             limit: None,
-            staged: false,
             oneline: false,
         };
         let exit_code = run_list(&repo, args).unwrap();
@@ -1757,18 +840,4 @@ mod tests {
         assert_eq!(result, vec!["billing/payments/checkout"]);
     }
 
-    #[test]
-    fn resolve_targets_hierarchical_name_staging_only() {
-        let (_td, repo) = seed_repo();
-        let staging_dir = repo.git_dir().join("mesh").join("staging");
-        std::fs::create_dir_all(&staging_dir).unwrap();
-        std::fs::write(
-            staging_dir.join("billing%2Fpayments%2Fcheckout"),
-            "add a.txt#L1-L5\n",
-        )
-        .unwrap();
-        let result =
-            resolve_targets(&repo, &["billing/payments/checkout".to_string()]).unwrap();
-        assert_eq!(result, vec!["billing/payments/checkout"]);
-    }
 }

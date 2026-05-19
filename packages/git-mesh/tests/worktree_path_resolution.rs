@@ -1,15 +1,17 @@
-//! Regression: `git mesh` operations fail when run from a linked
-//! worktree because `.git` there is a pointer file, not a directory.
+//! Regression: `git mesh` operations must work when run from a linked
+//! worktree.
 //!
-//! The bug is `wd.join(".git").join("mesh")...` — in a worktree, that
-//! traverses *into* the `.git` file and returns `ENOTDIR`. Mesh state
-//! must be anchored to `repo.git_dir()` instead.
+//! File-backed model: mesh state is the tracked `.mesh/` tree at the
+//! worktree's workdir root (not under `.git`). A linked worktree has its
+//! own workdir, so `.mesh/` resolves there. The original bug —
+//! traversing into the `.git` *pointer file* — cannot recur, but the
+//! regression that mesh writes/reads must succeed from a linked worktree
+//! still holds.
 
 mod support;
 
 use anyhow::Result;
-use git_mesh::staging::read_staging;
-use git_mesh::{append_add, append_remove};
+use git_mesh::{list_mesh_names, read_mesh};
 use std::process::Command;
 use support::TestRepo;
 
@@ -21,27 +23,6 @@ fn add_worktree(repo: &TestRepo, name: &str) -> Result<(tempfile::TempDir, std::
     let wt = owner.path().join("wt");
     repo.run_git(["worktree", "add", "-b", name, wt.to_str().unwrap(), "HEAD"])?;
     Ok((owner, wt))
-}
-
-#[test]
-fn append_add_works_from_worktree() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let (_owner, wt) = add_worktree(&repo, "wt1")?;
-    let gix = gix::open(&wt)?;
-    append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    let s = read_staging(&gix, "m")?;
-    assert_eq!(s.adds.len(), 1);
-    assert_eq!(s.adds[0].path, "file1.txt");
-    Ok(())
-}
-
-#[test]
-fn append_remove_works_from_worktree() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let (_owner, wt) = add_worktree(&repo, "wt2")?;
-    let gix = gix::open(&wt)?;
-    append_remove(&gix, "m", "file1.txt", 1, 5)?;
-    Ok(())
 }
 
 #[test]
@@ -59,5 +40,53 @@ fn cli_mesh_add_works_from_worktree() -> Result<()> {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+    // The `.mesh/<name>` file is written under the worktree's workdir.
+    assert!(
+        wt.join(".mesh").join("doc").join("feature").exists(),
+        "mesh file should be written under the linked worktree"
+    );
+    Ok(())
+}
+
+#[test]
+fn mesh_read_works_from_worktree() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let (_owner, wt) = add_worktree(&repo, "wt-read")?;
+    let out = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
+        .current_dir(&wt)
+        .args(["add", "m", "file1.txt#L1-L5"])
+        .output()?;
+    assert!(out.status.success(), "add failed");
+
+    let gix = gix::open(&wt)?;
+    let names = list_mesh_names(&gix)?;
+    assert!(names.contains(&"m".to_string()), "names={names:?}");
+    let mesh = read_mesh(&gix, "m")?;
+    assert_eq!(mesh.anchors.len(), 1);
+    assert_eq!(mesh.anchors[0].1.path, "file1.txt");
+    Ok(())
+}
+
+#[test]
+fn cli_mesh_remove_works_from_worktree() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let (_owner, wt) = add_worktree(&repo, "wt-rm")?;
+    let bin = env!("CARGO_BIN_EXE_git-mesh");
+    let add = Command::new(bin)
+        .current_dir(&wt)
+        .args(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L3"])
+        .output()?;
+    assert!(add.status.success(), "add failed");
+    let rm = Command::new(bin)
+        .current_dir(&wt)
+        .args(["remove", "m", "file2.txt#L1-L3"])
+        .output()?;
+    assert!(
+        rm.status.success(),
+        "remove from worktree failed: {}",
+        String::from_utf8_lossy(&rm.stderr)
+    );
+    let mesh = read_mesh(&gix::open(&wt)?, "m")?;
+    assert_eq!(mesh.anchors.len(), 1, "remove should leave one anchor");
     Ok(())
 }

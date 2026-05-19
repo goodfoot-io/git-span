@@ -9,7 +9,7 @@ use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
-use crate::staging::sha256_hex;
+use crate::types::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
     UnavailableReason,

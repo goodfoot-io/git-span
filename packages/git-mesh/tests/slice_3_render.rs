@@ -1,14 +1,18 @@
-//! Render-output behaviors for the four-verb advice CLI: `read` surfaces
-//! mesh partners on first hit, dedupes via `meshes-seen.jsonl` on the
-//! second hit (within the same session), and isolates the seen set across
-//! distinct sessions.
+//! Render-output behaviors for the advice CLI `read` verb: it surfaces
+//! mesh partners on first hit (only for meshes whose creating commit was
+//! published during the active session), dedupes via `meshes-seen.jsonl`
+//! on the second hit, and isolates the seen set across distinct sessions.
+//!
+//! File-backed model: meshes are tracked `.mesh/<name>` files seeded via
+//! `create_and_commit_mesh`. Same-session scoping still uses the
+//! OID-baseline diff (`mark`/`diff` before and after the commit), so the
+//! baseline/observe dance is preserved.
 
 mod support;
 
 use anyhow::Result;
-use git_mesh::{append_add, commit_mesh, set_why};
 use std::process::Output;
-use support::TestRepo;
+use support::{create_and_commit_mesh, TestRepo};
 use uuid::Uuid;
 
 fn sid(prefix: &str) -> String {
@@ -32,24 +36,34 @@ fn ok(out: &Output) {
     );
 }
 
+/// Establish a fresh baseline: mark+diff with no meshes yet.
+fn establish_baseline(repo: &TestRepo, session: &str) -> Result<()> {
+    ok(&run_advice(repo, session, &["mark", "baseline"])?);
+    ok(&run_advice(repo, session, &["diff", "baseline"])?);
+    Ok(())
+}
+
+/// Observe new mesh refs: mark+diff to capture against baseline.
+fn observe_new_mesh(repo: &TestRepo, session: &str) -> Result<()> {
+    ok(&run_advice(repo, session, &["mark", "obs"])?);
+    ok(&run_advice(repo, session, &["diff", "obs"])?);
+    Ok(())
+}
+
 #[test]
 fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
-
     let s = sid("partner");
-    // Baseline: mark+diff establishes pre-mesh state
-    repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
-    append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "m1", "two-file partnership")?;
-    commit_mesh(&gix, "m1")?;
-
-    // Observe: another mark+diff detects new ref
-    repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "diff", "obs"])?;
+    establish_baseline(&repo, &s)?;
+    create_and_commit_mesh(
+        &gix,
+        "m1",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "two-file partnership",
+    )?;
+    observe_new_mesh(&repo, &s)?;
 
     let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
     ok(&out);
@@ -72,20 +86,17 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
 fn second_read_of_same_path_dedupes_via_meshes_seen() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
-
     let s = sid("dedup-same");
-    // Baseline
-    repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
-    append_add(&gix, "dd", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "dd", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "dd", "dedup")?;
-    commit_mesh(&gix, "dd")?;
+    establish_baseline(&repo, &s)?;
+    create_and_commit_mesh(
+        &gix,
+        "dd",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "dedup",
+    )?;
+    observe_new_mesh(&repo, &s)?;
 
-    // Observe
-    repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "diff", "obs"])?;
     let first = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
     ok(&first);
     let first_out = String::from_utf8(first.stdout)?;
@@ -105,20 +116,17 @@ fn second_read_of_same_path_dedupes_via_meshes_seen() -> Result<()> {
 fn read_of_partner_path_does_not_resurface_already_seen_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
-
     let s = sid("new-trigger");
-    // Baseline
-    repo.run_mesh(["advice", &s, "mark", "init"])?;
-    repo.run_mesh(["advice", &s, "diff", "init"])?;
 
-    append_add(&gix, "dd2", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "dd2", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "dd2", "new-trigger")?;
-    commit_mesh(&gix, "dd2")?;
+    establish_baseline(&repo, &s)?;
+    create_and_commit_mesh(
+        &gix,
+        "dd2",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "new-trigger",
+    )?;
+    observe_new_mesh(&repo, &s)?;
 
-    // Observe
-    repo.run_mesh(["advice", &s, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s, "diff", "obs"])?;
     let _ = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
 
     let out = run_advice(&repo, &s, &["read", "file2.txt#L1-L5"])?;
@@ -135,6 +143,7 @@ fn read_of_partner_path_does_not_resurface_already_seen_mesh() -> Result<()> {
 fn read_with_no_meshes_renders_silent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let s = sid("empty");
+    establish_baseline(&repo, &s)?;
     repo.write_file("empty-target.txt", "x\n")?;
     let out = run_advice(&repo, &s, &["read", "empty-target.txt"])?;
     ok(&out);
@@ -150,22 +159,18 @@ fn isolated_sessions_do_not_share_seen_set() -> Result<()> {
     let s1 = sid("iso-a");
     let s2 = sid("iso-b");
 
-    // Both sessions establish baseline BEFORE committing the mesh
-    repo.run_mesh(["advice", &s1, "mark", "init"])?;
-    repo.run_mesh(["advice", &s1, "diff", "init"])?;
-    repo.run_mesh(["advice", &s2, "mark", "init"])?;
-    repo.run_mesh(["advice", &s2, "diff", "init"])?;
+    establish_baseline(&repo, &s1)?;
+    establish_baseline(&repo, &s2)?;
 
-    append_add(&gix, "iso", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "iso", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "iso", "isolation")?;
-    commit_mesh(&gix, "iso")?;
+    create_and_commit_mesh(
+        &gix,
+        "iso",
+        &[("file1.txt", 1, 5), ("file2.txt", 1, 5)],
+        "isolation",
+    )?;
 
-    // Both sessions observe the new mesh ref
-    repo.run_mesh(["advice", &s1, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s1, "diff", "obs"])?;
-    repo.run_mesh(["advice", &s2, "mark", "obs"])?;
-    repo.run_mesh(["advice", &s2, "diff", "obs"])?;
+    observe_new_mesh(&repo, &s1)?;
+    observe_new_mesh(&repo, &s2)?;
 
     let a1 = run_advice(&repo, &s1, &["read", "file1.txt#L1-L5"])?;
     ok(&a1);

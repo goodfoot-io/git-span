@@ -78,10 +78,7 @@ fn run() -> Result<i32> {
             Commands::Show(ShowArgs {
                 name: first.clone(),
                 oneline: false,
-                format: None,
                 at: None,
-                log: false,
-                limit: None,
             })
         });
         let repo = discover_repo()?;

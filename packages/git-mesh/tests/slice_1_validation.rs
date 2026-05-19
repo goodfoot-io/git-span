@@ -178,12 +178,6 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
         "Checkout request flow.",
     ])?;
     assert!(out.status.success(), "why failed");
-    let out = repo.run_mesh(["commit", "billing/checkout-request-flow"])?;
-    assert!(
-        out.status.success(),
-        "commit failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 
     assert!(
         mesh_exists(&repo, "billing/checkout-request-flow"),
@@ -232,12 +226,6 @@ fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
     );
     let out = repo.run_mesh(["why", name, "-m", "Checkout request flow."])?;
     assert!(out.status.success(), "why failed");
-    let out = repo.run_mesh(["commit", name])?;
-    assert!(
-        out.status.success(),
-        "commit failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 
     assert!(
         mesh_exists(&repo, name),

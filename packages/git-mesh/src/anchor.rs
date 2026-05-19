@@ -11,7 +11,6 @@
 //! ```
 
 use crate::git::{self, RefUpdate, apply_ref_transaction, resolve_ref_oid_optional, work_dir};
-use crate::mesh::catalog::Catalog;
 use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
@@ -69,6 +68,7 @@ pub fn create_anchor_with_extent(
 /// already validated line bounds against the captured sidecar
 /// `line_count`, which is the post-filter source of truth for
 /// `filter=lfs` paths.
+#[allow(dead_code)]
 pub(crate) fn create_anchor_with_extent_skipping_blob_bounds(
     repo: &gix::Repository,
     anchor_sha: &str,
@@ -265,8 +265,7 @@ pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
     {
         return parse_anchor(&git::read_git_text(repo, &blob_oid)?);
     }
-    let catalog = Catalog::load(repo)?;
-    for (_, mesh) in catalog.iter()? {
+    for (_, mesh) in crate::mesh::read::load_all_meshes(repo)? {
         if let Some((_id, anchor)) = mesh
             .anchors
             .into_iter()

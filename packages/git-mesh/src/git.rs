@@ -143,13 +143,6 @@ pub(crate) fn git_dir(repo: &gix::Repository) -> &Path {
     repo.git_dir()
 }
 
-/// Per-repository `mesh/` root inside the git dir. Use this — never
-/// `work_dir().join(".git").join("mesh")` — so worktrees and bare-ish
-/// configurations resolve correctly.
-pub(crate) fn mesh_dir(repo: &gix::Repository) -> std::path::PathBuf {
-    git_dir(repo).join("mesh")
-}
-
 /// Common (shared) git directory. For a linked worktree this points at
 /// the main repository's `.git/`, where shared state like `config` and
 /// `lfs/objects/` lives.
@@ -176,6 +169,7 @@ pub(crate) fn write_blob_bytes(repo: &gix::Repository, bytes: &[u8]) -> Result<S
 
 /// List ref names with a given prefix (e.g. `refs/meshes/v1/`), returning
 /// the basename component after the prefix.
+#[allow(dead_code)]
 pub(crate) fn list_refs_stripped(repo: &gix::Repository, prefix: &str) -> Result<Vec<String>> {
     let iter = repo
         .references()
@@ -564,6 +558,7 @@ pub fn git_log_name_only_for_paths(
 }
 
 /// Extracted commit metadata.
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {
     pub author_name: String,
@@ -574,6 +569,7 @@ pub(crate) struct CommitMeta {
     pub message: String,
 }
 
+#[allow(dead_code)]
 pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<CommitMeta> {
     let oid = parse_oid(commit_oid)?;
     let commit = repo
@@ -606,6 +602,7 @@ pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<Co
     })
 }
 
+#[allow(dead_code)]
 fn format_rfc2822(t: gix::date::Time) -> String {
     // Produce `Thu, 1 Jan 1970 00:00:00 +0000` style matching `git show --format=%aD`.
     use chrono::{DateTime, FixedOffset};

@@ -18,16 +18,12 @@
 
 pub mod advice;
 pub mod commit;
-pub mod compact;
+pub mod doctor;
 pub mod drift_label;
 pub mod error;
 pub mod format;
-pub mod hooks;
-pub mod rewrite;
 pub mod show;
 pub mod stale_output;
-pub mod structural;
-pub mod sync;
 
 pub use drift_label::format_drift_label;
 
@@ -95,44 +91,17 @@ pub enum Commands {
     /// flags `-m`/`-F`/`--edit` stage a new one.
     Why(WhyArgs),
 
-    /// Resolve staged operations and write a mesh commit.
-    Commit(CommitArgs),
-
-    /// Clear the staging area.
-    Restore(RestoreArgs),
-
-    /// Fast-forward a mesh to a past state.
-    Revert(RevertArgs),
-
     /// Delete a mesh.
     Delete(DeleteArgs),
 
     /// Rename a mesh.
     Move(MoveArgs),
 
-    /// Read or stage mesh-level resolver options.
-    Config(ConfigArgs),
-
-    /// Fetch mesh and anchor refs from a remote.
-    Fetch(FetchArgs),
-
-    /// Push mesh and anchor refs to a remote.
-    Push(PushArgs),
-
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
 
-    /// Git hook shortcuts (post-commit, post-rewrite).
-    Hooks(hooks::HooksArgs),
-
     /// Append events and flush session-scoped advice.
     Advice(advice::AdviceArgs),
-
-    /// Advance anchor SHAs after a history rewrite (post-rewrite hook).
-    ///
-    /// Reads `<old_sha> <new_sha>` pairs from stdin (git's post-rewrite
-    /// protocol) and advances matching anchor_sha values via CAS.
-    Rewrite(RewriteArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -147,43 +116,9 @@ pub struct ShowArgs {
     #[arg(long)]
     pub oneline: bool,
 
-    /// Format-string override. Supported placeholders:
-    ///
-    /// Commit-level (one line per mesh commit):
-    ///   %H   full mesh commit SHA
-    ///   %h   abbreviated mesh commit SHA (7 chars)
-    ///   %an  author name
-    ///   %ae  author email
-    ///   %ad  author date (RFC 2822)
-    ///   %ar  author date, relative
-    ///   %s   subject (first line of message)
-    ///
-    /// Per-anchor (one line per anchor when any of these is present):
-    ///   %p   anchor path
-    ///   %r   anchor extent (#L<start>-L<end>, or empty for whole-file)
-    ///   %P   path + extent (path#L<start>-L<end>, or just path for whole-file)
-    ///   %a   anchor SHA (full 40 chars)
-    ///
-    /// Special: %% → literal %; %n → newline.
-    ///
-    /// Unknown placeholders are rejected with exit code 2.
-    #[arg(long, value_name = "FMT")]
-    pub format: Option<String>,
-
-    /// Show state at a past commit. Accepts either a source commit-ish
-    /// (e.g. HEAD~3, a branch, a source SHA) — which selects the mesh
-    /// state that was current at that source commit — or a mesh-ref
-    /// commit SHA directly.
+    /// Show the mesh as it existed in the git tree at a past commit-ish.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
-
-    /// Walk the mesh's commit history instead of showing the tip.
-    #[arg(long)]
-    pub log: bool,
-
-    /// Cap the `--log` walk.
-    #[arg(long, value_name = "N", requires = "log")]
-    pub limit: Option<usize>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -216,10 +151,6 @@ pub struct ListArgs {
     /// Cap output at N meshes (after filtering and --offset).
     #[arg(long, value_name = "N")]
     pub limit: Option<usize>,
-
-    /// Show only meshes with non-empty staging.
-    #[arg(long)]
-    pub staged: bool,
 
     /// One line per anchor: `<mesh-name>` `<canonical-address>`.
     #[arg(long)]
@@ -281,27 +212,11 @@ pub struct StaleArgs {
     #[arg(long, value_name = "COMMIT-ISH")]
     pub since: Option<String>,
 
-    /// Compact Fresh anchors to HEAD (mutation mode). Ordinary stale is
-    /// read-only; --compact is its only mutation gate.
-    #[arg(long, conflicts_with_all = ["patch", "stat", "oneline", "since", "no_worktree", "no_index"])]
-    pub compact: bool,
-
-    /// With `--compact`, show full per-mesh compaction details after the
-    /// stale output (otherwise a single-line summary is shown).
-    #[arg(long, requires = "compact")]
-    pub verbose: bool,
-
-    /// Automatically rewrite Moved anchors that pass all four guardrails
-    /// (verbatim blob, same path, no Changed sibling, opt-in active).
-    /// One batched mesh commit per mesh: `mesh: follow N moved anchors`.
-    #[arg(long, conflicts_with_all = ["patch", "stat", "oneline"])]
-    pub auto_follow: bool,
-
     /// Write a CSV of per-anchor wall-clock traces to PATH.
     /// Requires a full scan (no positional paths). Columns:
     /// mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status.
     /// See packages/git-mesh/docs/profiling.md for schema and examples.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["compact", "auto_follow"])]
+    #[arg(long, value_name = "PATH")]
     pub perf_trace: Option<std::path::PathBuf>,
 }
 
@@ -376,31 +291,8 @@ pub struct WhyArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct CommitArgs {
-    /// Mesh name to commit. Omit to commit every mesh that has a
-    /// non-empty staging area.
-    pub name: Option<String>,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct RestoreArgs {
-    /// Mesh whose pending staging area should be cleared.
-    pub name: String,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct RevertArgs {
-    /// Mesh ref to move.
-    pub name: String,
-
-    /// Prior mesh commit (or source commit-ish) to fast-forward the mesh to.
-    #[arg(value_name = "COMMIT-ISH")]
-    pub commit_ish: String,
-}
-
-#[derive(Debug, clap::Args)]
 pub struct DeleteArgs {
-    /// Mesh ref to delete (removes `refs/meshes/v1/<name>`).
+    /// Mesh to delete (removes its file under the mesh root).
     pub name: String,
 }
 
@@ -414,62 +306,10 @@ pub struct MoveArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct ConfigArgs {
-    /// Mesh whose resolver options to read or stage.
-    pub name: String,
-
-    #[arg(
-        help = "Config key. Omit to print all keys. Known: copy-detection, ignore-whitespace, follow-moves",
-        long_help = "Config key. Omit to print all keys. Known keys:\n  copy-detection     off | same-file | same-commit | any\n  ignore-whitespace  true | false\n  follow-moves       true | false"
-    )]
-    pub key: Option<String>,
-
-    /// Value to stage for `<KEY>`. Omit to read the current value.
-    pub value: Option<String>,
-
-    /// Stage a reset to the built-in default for `<key>`.
-    #[arg(long, value_name = "KEY", conflicts_with_all = ["key", "value"])]
-    pub unset: Option<String>,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct FetchArgs {
-    /// Remote to fetch from.
-    /// Defaults to `mesh.defaultRemote`, or `origin` if unset.
-    pub remote: Option<String>,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct PushArgs {
-    /// Remote to push to.
-    /// Defaults to `mesh.defaultRemote`, or `origin` if unset.
-    pub remote: Option<String>,
-}
-
-#[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
     /// Promote INFO and WARN findings to a non-zero exit.
     #[arg(long)]
     pub strict: bool,
-    /// Sweep orphan trail-cache files left by anchors that no longer exist
-    /// and stale tempfiles older than one hour. Runs additively to the
-    /// normal doctor checks.
-    #[arg(long)]
-    pub gc_trail_cache: bool,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum RewriteFormat {
-    Human,
-    Json,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct RewriteArgs {
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = RewriteFormat::Human)]
-    pub format: RewriteFormat,
 }
 
 /// Parse a `<path>#L<start>-L<end>` anchor address.
@@ -526,61 +366,21 @@ pub fn dispatch(
             let _perf = crate::perf::span("command.why");
             commit::run_why(repo, args, mesh_dir)
         }
-        Commands::Commit(args) => {
-            let _perf = crate::perf::span("command.commit");
-            commit::run_commit(repo, args)
-        }
-        Commands::Config(args) => {
-            let _perf = crate::perf::span("command.config");
-            commit::run_config(repo, args)
-        }
-        Commands::Restore(args) => {
-            let _perf = crate::perf::span("command.restore");
-            structural::run_restore(repo, args)
-        }
-        Commands::Revert(args) => {
-            let _perf = crate::perf::span("command.revert");
-            structural::run_revert(repo, args)
-        }
         Commands::Delete(args) => {
             let _perf = crate::perf::span("command.delete");
-            structural::run_delete(repo, args)
+            doctor::run_delete(repo, args)
         }
         Commands::Move(args) => {
             let _perf = crate::perf::span("command.move");
-            structural::run_move(repo, args)
+            doctor::run_move(repo, args)
         }
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");
-            structural::run_doctor(repo, args)
-        }
-        Commands::Fetch(args) => {
-            let _perf = crate::perf::span("command.fetch");
-            sync::run_fetch(repo, args)
-        }
-        Commands::Push(args) => {
-            let _perf = crate::perf::span("command.push");
-            sync::run_push(repo, args)
-        }
-        Commands::Hooks(args) => {
-            match args.subcommand {
-                hooks::HooksSubcommand::Git(git_args) => {
-                    let span_name = match &git_args.event {
-                        hooks::HookEvent::PostCommit => "command.hooks.git.post-commit",
-                        hooks::HookEvent::PostRewrite => "command.hooks.git.post-rewrite",
-                    };
-                    let _perf = crate::perf::span(span_name);
-                    hooks::run_hooks_git(repo, git_args.event)
-                }
-            }
+            doctor::run_doctor(repo, args)
         }
         Commands::Advice(args) => {
             let _perf = crate::perf::span("command.advice");
             advice::run_advice(repo, args)
-        }
-        Commands::Rewrite(args) => {
-            let _perf = crate::perf::span("command.rewrite");
-            rewrite::run_rewrite(repo, args)
         }
     }
 }

@@ -8,7 +8,7 @@ use support::TestRepo;
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
@@ -16,7 +16,7 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
 fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L6-L10"])?;
     repo.mesh_stdout(["why", name, "-m", "seed stable"])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 
@@ -51,7 +51,7 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "shared why text"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     drift(&repo, "mutate")?;
     repo.mesh_stdout(["why", "m", "-m", "shared why text"])?;
     let stdout = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
@@ -274,7 +274,7 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     // Seed mesh with one anchor on lines 1-5.
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "regression test mesh"])?;
-    repo.mesh_stdout(["commit", "m"])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
 
     // Drift the first anchor by editing line 1 in the working tree.
     repo.write_file(
@@ -308,7 +308,7 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
 fn commit_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, anchor])?;
     repo.mesh_stdout(["why", name, "-m", why])?;
-    repo.mesh_stdout(["commit", name])?;
+    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     Ok(())
 }
 

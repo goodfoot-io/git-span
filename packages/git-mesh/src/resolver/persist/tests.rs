@@ -12,7 +12,6 @@
 //! * Concurrent SQLite WAL smoke test (multiple writers).
 
 use super::*;
-use crate::mesh::catalog::Catalog;
 use crate::types::{
     Anchor, AnchorExtent, AnchorStatus, EngineOptions, LayerSet, Mesh, MeshConfig, MeshResolved,
 };
@@ -103,13 +102,15 @@ fn fixture_two_meshes() -> Fixture {
     let mesh_dir = workdir.join(".mesh");
     std::fs::create_dir_all(&mesh_dir).expect("create .mesh dir");
 
-    // Compute content hashes for the line-range anchors.
-    let a13 = "a-line-1\na-line-2\na-line-3\n";
-    let b24 = "b-line-2\nb-line-3\nb-line-4\n";
+    // Content hashes match `git mesh add`: a line range hashes the
+    // `\n`-joined slice with no trailing newline; a whole-file anchor
+    // hashes the entire file bytes.
+    let a13 = "a-line-1\na-line-2\na-line-3";
+    let b24 = "b-line-2\nb-line-3\nb-line-4";
     let c15 = "c-line-1\nc-line-2\nc-line-3\nc-line-4\nc-line-5\n";
-    let hash_a13 = format!("sha256:{}", crate::staging::sha256_hex(a13.as_bytes()));
-    let hash_b24 = format!("sha256:{}", crate::staging::sha256_hex(b24.as_bytes()));
-    let hash_c15 = format!("sha256:{}", crate::staging::sha256_hex(c15.as_bytes()));
+    let hash_a13 = format!("sha256:{}", crate::types::sha256_hex(a13.as_bytes()));
+    let hash_b24 = format!("sha256:{}", crate::types::sha256_hex(b24.as_bytes()));
+    let hash_c15 = format!("sha256:{}", crate::types::sha256_hex(c15.as_bytes()));
 
     let alpha_mf = crate::mesh_file::MeshFile {
         anchors: vec![
@@ -131,7 +132,6 @@ fn fixture_two_meshes() -> Fixture {
         why: "alpha description".into(),
     };
     std::fs::write(mesh_dir.join("alpha"), alpha_mf.serialize()).expect("write .mesh/alpha");
-    crate::mesh::commit_mesh(&repo, "alpha").unwrap();
 
     let beta_mf = crate::mesh_file::MeshFile {
         anchors: vec![
@@ -146,7 +146,10 @@ fn fixture_two_meshes() -> Fixture {
         why: "beta description".into(),
     };
     std::fs::write(mesh_dir.join("beta"), beta_mf.serialize()).expect("write .mesh/beta");
-    crate::mesh::commit_mesh(&repo, "beta").unwrap();
+
+    // File-backed model: mesh files are ordinary tracked files.
+    git(p, &["add", ".mesh"]);
+    git(p, &["commit", "-m", "mesh: alpha, beta"]);
 
     // Resolver requires a commit-graph with changed-path Bloom filters.
     git(
@@ -157,16 +160,26 @@ fn fixture_two_meshes() -> Fixture {
     f
 }
 
+/// File-backed cache key. Mirrors the engine's `mesh_fingerprint`
+/// (sha1 of the newline-joined sorted mesh names) so these persist
+/// tests exercise the same key the resolver derives.
 fn current_catalog_tree_oid(repo: &gix::Repository) -> String {
-    let r = repo
-        .try_find_reference("refs/meshes/v1/catalog")
-        .expect("ref lookup")
-        .expect("catalog ref present");
-    let mut r = r;
-    let commit_id = r.peel_to_id().expect("peel");
-    let commit = repo.find_commit(commit_id).expect("find commit");
-    let tree = commit.tree().expect("tree");
-    tree.id().detach().to_string()
+    use std::fmt::Write as _;
+    let mut names: Vec<String> = crate::mesh::read::load_all_meshes(repo)
+        .expect("load meshes")
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    names.sort();
+    let mut fp = String::new();
+    for n in &names {
+        let _ = writeln!(fp, "{n}");
+    }
+    if fp.is_empty() {
+        "empty".to_string()
+    } else {
+        crate::types::sha1_hex(fp.as_bytes())
+    }
 }
 
 fn head_oid(repo: &gix::Repository) -> String {
@@ -182,8 +195,7 @@ fn path_anchor_index_round_trip() {
     let f = fixture_two_meshes();
     let repo = f.repo();
     let tree_oid = current_catalog_tree_oid(&repo);
-    let catalog = Catalog::load(&repo).unwrap();
-    let meshes = catalog.iter().unwrap();
+    let meshes = crate::mesh::read::load_all_meshes(&repo).unwrap();
     let index = build_path_anchor_index(&tree_oid, meshes);
 
     let store_path = f.path().join(".git/mesh/test-stale.db");
@@ -287,7 +299,7 @@ fn catalog_change_misses_path_anchor_index() {
     let original = current_catalog_tree_oid(&repo);
     let index = build_path_anchor_index(
         &original,
-        Catalog::load(&repo).unwrap().iter().unwrap(),
+        crate::mesh::read::load_all_meshes(&repo).unwrap(),
     );
     let store = open_store(&repo).unwrap();
     store_path_anchor_index(&store, &index).unwrap();
@@ -517,8 +529,7 @@ fn resolve_baseline_meshes(repo: &gix::Repository) -> Vec<MeshResolved> {
     // Phase 3 baseline: every mesh in the catalog resolved with HEAD-only
     // layers, including meshes whose anchors are Fresh. We use
     // `resolve_named_meshes` to avoid the `stale_meshes` "drop fresh" filter.
-    let catalog = Catalog::load(repo).unwrap();
-    let names: Vec<String> = catalog.names();
+    let names: Vec<String> = crate::mesh::read::list_mesh_names(repo).unwrap();
     let out = crate::resolver::resolve_named_meshes(
         repo,
         &names,
@@ -603,7 +614,7 @@ fn full_vs_overlay_worktree_only_dirty() {
     };
     let index = build_path_anchor_index(
         &tree_oid,
-        Catalog::load(&repo).unwrap().iter().unwrap(),
+        crate::mesh::read::load_all_meshes(&repo).unwrap(),
     );
 
     // Dirty `a.txt` in the worktree only; do not stage.
@@ -615,7 +626,7 @@ fn full_vs_overlay_worktree_only_dirty() {
 
     let oracle = resolve_full(&repo);
 
-    let dirty_paths = vec!["a.txt".as_bytes()];
+    let dirty_paths = ["a.txt".as_bytes()];
     let affected = index.lookup_many(dirty_paths.iter().copied());
     let affected_meshes: Vec<String> = affected
         .iter()
@@ -691,7 +702,7 @@ fn full_vs_overlay_deleted_dirty_path() {
     };
     let index = build_path_anchor_index(
         &tree_oid,
-        Catalog::load(&repo).unwrap().iter().unwrap(),
+        crate::mesh::read::load_all_meshes(&repo).unwrap(),
     );
 
     // Delete `a.txt` from the worktree.
@@ -738,7 +749,7 @@ fn full_vs_overlay_staged_only_dirty_path() {
     };
     let index = build_path_anchor_index(
         &tree_oid,
-        Catalog::load(&repo).unwrap().iter().unwrap(),
+        crate::mesh::read::load_all_meshes(&repo).unwrap(),
     );
 
     // Dirty `b.txt` only in the index (staged), not in the worktree.
@@ -793,7 +804,7 @@ fn full_vs_overlay_renamed_dirty_path() {
     };
     let index = build_path_anchor_index(
         &tree_oid,
-        Catalog::load(&repo).unwrap().iter().unwrap(),
+        crate::mesh::read::load_all_meshes(&repo).unwrap(),
     );
 
     // Rename `c.txt` → `c-renamed.txt` (staged + worktree).

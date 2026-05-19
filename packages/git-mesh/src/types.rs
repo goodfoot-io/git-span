@@ -595,6 +595,72 @@ pub struct Hunk {
     pub new: (u32, u32),
 }
 
+/// Staged-op data carriers.
+///
+/// The file-backed model has no staging area: `add`/`remove`/`why` edit
+/// worktree mesh files directly and the worktree layer of the reader is
+/// the source of truth. These types are retained only as inert data
+/// shapes so the stale renderers and their JSON schema stay stable; the
+/// engine never produces them (`build_pending_findings` is empty).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedAdd {
+    pub line_number: u32,
+    pub path: String,
+    pub extent: AnchorExtent,
+    pub anchor: Option<String>,
+}
+
+impl StagedAdd {
+    pub fn start(&self) -> u32 {
+        match self.extent {
+            AnchorExtent::LineRange { start, .. } => start,
+            AnchorExtent::WholeFile => 0,
+        }
+    }
+    pub fn end(&self) -> u32 {
+        match self.extent {
+            AnchorExtent::LineRange { end, .. } => end,
+            AnchorExtent::WholeFile => 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedRemove {
+    pub path: String,
+    pub extent: AnchorExtent,
+}
+
+impl StagedRemove {
+    pub fn start(&self) -> u32 {
+        match self.extent {
+            AnchorExtent::LineRange { start, .. } => start,
+            AnchorExtent::WholeFile => 0,
+        }
+    }
+    pub fn end(&self) -> u32 {
+        match self.extent {
+            AnchorExtent::LineRange { end, .. } => end,
+            AnchorExtent::WholeFile => 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StagedConfig {
+    CopyDetection(CopyDetection),
+    IgnoreWhitespace(bool),
+    FollowMoves(bool),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StagedOp {
+    Add(StagedAdd),
+    Remove(StagedRemove),
+    Config(StagedConfig),
+    Why(String),
+}
+
 /// Back-pointer from a `Finding` to the staged mesh op that acknowledges
 /// its drift.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -627,13 +693,13 @@ pub enum PendingFinding {
     Add {
         mesh: String,
         anchor_id: String,
-        op: crate::staging::StagedAdd,
+        op: StagedAdd,
         drift: Option<PendingDrift>,
     },
     Remove {
         mesh: String,
         anchor_id: String,
-        op: crate::staging::StagedRemove,
+        op: StagedRemove,
         drift: Option<PendingDrift>,
     },
     Why {
@@ -642,7 +708,7 @@ pub enum PendingFinding {
     },
     ConfigChange {
         mesh: String,
-        change: crate::staging::StagedConfig,
+        change: StagedConfig,
     },
 }
 
@@ -679,7 +745,7 @@ pub struct StagedIndexEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PendingState {
     pub index: HashMap<PathBuf, StagedIndexEntry>,
-    pub mesh_ops: Vec<crate::staging::StagedOp>,
+    pub mesh_ops: Vec<StagedOp>,
 }
 
 /// Engine invocation options. See plan §B3/§B4.
@@ -1041,6 +1107,14 @@ fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
 /// heavy. Inline a tiny implementation.
 pub(crate) fn sha1_hex(bytes: &[u8]) -> String {
     use_sha1::sha1_hex(bytes)
+}
+
+/// Lowercase hex SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
 }
 
 pub(crate) mod use_sha1 {
