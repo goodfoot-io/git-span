@@ -1,0 +1,5 @@
+wiki/meta/git-mesh-documentation-touchpoints.md#L44-L48 sha256:564ea0629711a4f21444a3e9f7978db34512ce744b218a8e7b1cf13799419196
+packages/git-mesh/src/cli/mod.rs#L1-L32 sha256:484d63c7d41b30bd5ebf04c8ab44ad8c1cad21f0ec00cdb647ef2d65cd3ba263
+packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069cbca06f3087198e71d585d2a4b7eff
+packages/git-mesh/src/validation.rs#L7-L28 sha256:87fe021db3cccc4cd7e3a6259f21a6105af30e7492bcc2b63da96c58b67622a7
+
