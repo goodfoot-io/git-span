@@ -304,11 +304,6 @@ pub enum Error {
     #[error("anchor commit unreachable: {anchor_sha}")]
     Unreachable { anchor_sha: String },
 
-    /// Remote does not have any `refs/{anchors,meshes}/*` refspec
-    /// configured, and lazy-config refused to add it (§7.1, §6.7 doctor).
-    #[error("refspec missing for remote: {remote}")]
-    RefspecMissing { remote: String },
-
     /// The selected remote name is not configured.
     #[error("remote not found: {remote}")]
     RemoteNotFound { remote: String },
@@ -348,18 +343,17 @@ pub enum Error {
     )]
     FormatVersionMismatch { expected: u8, got: u8 },
 
-    /// A staged mesh name cannot coexist with an existing mesh ref because
-    /// they would occupy the same loose-ref path as both a file and a
-    /// directory. Either the staged name has an existing mesh as a strict
-    /// path prefix (`<existing>/...`) or the inverse (an existing mesh has
-    /// the staged name as a strict prefix). The committed mesh blocks the
-    /// staged one until one of them is renamed (typically the leaf to
-    /// `<name>/index`).
+    /// A staged mesh name cannot coexist with an existing mesh file because
+    /// a filesystem path cannot be both a file and a directory. Either the
+    /// staged name has an existing mesh as a strict path prefix
+    /// (`<existing>/...`) or the inverse (an existing mesh has the staged
+    /// name as a strict prefix). The committed mesh blocks the staged one
+    /// until one of them is renamed (typically the leaf to `<name>/index`).
     #[error(
         "mesh name `{staged}` collides with existing mesh `{blocking}`: \
-         loose refs cannot occupy the same path as both a file and a \
-         directory. Rename one of them — e.g. `git mesh move {blocking} \
-         {blocking}/index` — and retry."
+         a mesh file path cannot be both a file and a directory. Rename one \
+         of them — e.g. `git mesh move {blocking} {blocking}/index` — and \
+         retry."
     )]
     MeshNameCollidesWithExistingMesh { staged: String, blocking: String },
 

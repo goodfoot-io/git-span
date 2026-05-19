@@ -1,7 +1,7 @@
 //! Read-only mesh operations via MeshFileReader — §6.5, §6.6, §10.4.
 //!
 //! These functions read mesh definitions from layered mesh files (HEAD /
-//! index / worktree) rather than from the ref-backed catalog.
+//! index / worktree).
 
 use crate::mesh_file::MeshFile;
 use crate::mesh_file_reader::MeshFileReader;
@@ -85,7 +85,7 @@ pub fn conflicted_mesh_names_in(
     Ok(conflicted)
 }
 
-/// File-backed replacement for the ref-backed path index: return the
+/// Path index over the mesh files: return the
 /// names of all visible meshes that have at least one anchor matching
 /// `path` (exact path equality) and the optional 1-based inclusive line
 /// `range`. A whole-file anchor matches any range query on its path; a
@@ -129,7 +129,7 @@ pub fn meshes_matching_path_in(
     Ok(names)
 }
 
-/// File-backed alias kept for callers that used the ref-backed path index.
+/// Alias for the path-index lookup, named for path-matching callers.
 pub fn matching_mesh_names(
     repo: &gix::Repository,
     path: &str,

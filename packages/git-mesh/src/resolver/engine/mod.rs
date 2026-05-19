@@ -253,7 +253,7 @@ pub fn resolve_anchor(
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
 
     let mesh = {
-        let _perf = crate::perf::span("resolver.read-catalog");
+        let _perf = crate::perf::span("resolver.read-mesh");
         let reader = MeshFileReader::new(repo, mesh_root.to_string());
         let file = reader
             .read_effective(mesh_name)?
@@ -340,7 +340,7 @@ fn resolve_mesh_with_state_at(
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
-        let _perf = crate::perf::span("resolver.read-catalog");
+        let _perf = crate::perf::span("resolver.read-mesh");
         // Read the mesh file from the tree at the given commit.
         let mesh_path = format!("{mesh_root}/{name}");
         let oid = gix::ObjectId::from_str(commit_oid)
@@ -589,8 +589,8 @@ fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
 }
 
 /// Resolve a small caller-provided list of mesh names without scanning all
-/// mesh refs. Reuses one `EngineState` across the candidate set and resolves
-/// each name through the live mesh ref. Preserves input order; per-name
+/// mesh files. Reuses one `EngineState` across the candidate set and resolves
+/// each name through its mesh file. Preserves input order; per-name
 /// resolution failures are returned alongside the name rather than aborting
 /// the whole call so the path-index candidate workflow stays robust against a
 /// stale path-index entry.

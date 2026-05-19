@@ -7,7 +7,7 @@
 //!
 //! The mechanism: OID-based baseline snapshot at `ensure_mesh_baseline`
 //! mark-time, with lazy fallback in `run_advice_read`. The baseline is a
-//! JSON map `{name: oid, ...}`. On each observation, current mesh refs are
+//! JSON map `{name: oid, ...}`. On each observation, current mesh files are
 //! diffed against the baseline. Names not in baseline or with changed OID
 //! are appended to `meshes-committed.jsonl`.
 
@@ -46,7 +46,7 @@ fn establish_baseline(repo: &TestRepo, session: &str) -> Result<()> {
     Ok(())
 }
 
-/// Observe new mesh refs: mark+diff to capture against baseline.
+/// Observe new mesh state: mark+diff to capture against baseline.
 fn observe_new_mesh(repo: &TestRepo, session: &str) -> Result<()> {
     ok(&run_advice(repo, session, &["mark", "obs"])?);
     ok(&run_advice(repo, session, &["diff", "obs"])?);

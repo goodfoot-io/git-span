@@ -5,17 +5,13 @@
 //!
 //! * [`types`]       — data shapes (spec §4).
 //! * [`git`]         — git plumbing helpers.
-//! * [`anchor`]       — Anchor blob create/read/parse/serialize (§4.1, §6.1).
 //! * [`mesh`]        — mesh read/commit/structural (§6).
-//! * [`staging`]     — `.git/mesh/staging/` area (§6.3, §6.4).
-//! * [`file_index`]  — `.git/mesh/file-index` lookup table (§3.4).
+//! * [`mesh_file`]   — file-backed mesh document parse/serialize.
 //! * [`resolver`]    — layered staleness resolver (§5).
-//! * [`sync`]        — fetch/push + lazy refspec (§7).
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
 
 pub mod advice;
-pub mod anchor;
 pub mod cli;
 pub mod git;
 pub mod mesh;
@@ -27,7 +23,6 @@ pub mod resolver;
 pub mod types;
 pub mod validation;
 
-pub use anchor::{anchor_ref_path, create_anchor, parse_anchor, serialize_anchor};
 pub use git::read_git_text;
 pub use mesh::{
     delete_mesh, list_mesh_names, read_mesh, read_mesh_at, rename_mesh, show_mesh, show_mesh_at,

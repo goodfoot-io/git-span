@@ -132,9 +132,9 @@ fn discover_repo() -> Result<gix::Repository> {
     let _perf = git_mesh::perf::span("git.discover");
     // Canonicalise "." to an absolute path so that `gix::discover` returns
     // a repository with absolute workdir/git_dir paths.  When a repo is
-    // opened with relative paths (workdir = Some(".")), gix's
-    // `try_find_reference` — used by `resolve_ref_oid_optional_repo` —
-    // fails to locate refs that were created via `edit_references`.
+    // opened with relative paths (workdir = Some(".")), gix reference and
+    // object lookups that the resolver performs can fail to resolve paths
+    // correctly.
     let cwd = std::fs::canonicalize(".").context("canonicalize cwd")?;
     gix::discover(cwd).context("not inside a git repository")
 }

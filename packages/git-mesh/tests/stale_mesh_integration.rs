@@ -792,7 +792,7 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     repo.run_mesh(["why", "pn", "-m", "seed"])?;
     { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     // Write a commit-graph so the reverse-indexed walk can use Bloom
-    // filters. Must be done after the mesh commit so the mesh ref is
+    // filters. Must be done after the mesh commit so that commit is
     // included.
     repo.write_commit_graph()?;
     // No edits to data.tsv. Stale must report no drift.

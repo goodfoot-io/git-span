@@ -117,10 +117,10 @@ pub(crate) fn resolve_lfs_anchor(
         }
     };
 
-    // File-backed model: `r.blob` is empty; the anchored LFS pointer is
-    // the blob at `r.path` in HEAD, already resolved into
-    // `anchored.blob`. Prefer `r.blob` (legacy ref-backed) and fall
-    // back to the HEAD-resolved anchored blob.
+    // `r.blob` is empty in the file-backed model; the anchored LFS
+    // pointer is the blob at `r.path` in HEAD, already resolved into
+    // `anchored.blob`. Use `r.blob` when populated, otherwise fall back
+    // to the HEAD-resolved anchored blob.
     let anchored_blob_oid: Option<String> = if !r.blob.is_empty() {
         Some(r.blob.clone())
     } else {

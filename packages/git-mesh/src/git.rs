@@ -9,120 +9,9 @@ use std::path::Path;
 use std::str::FromStr;
 
 use gix::ObjectId;
-use gix::refs::Target;
-use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
-
-// ---------------------------------------------------------------------------
-// Ref transactions (ported from v1 legacy).
-// ---------------------------------------------------------------------------
-
-/// A single update in a `git update-ref --stdin` transaction.
-pub(crate) enum RefUpdate {
-    Create {
-        name: String,
-        new_oid: String,
-    },
-    Update {
-        name: String,
-        new_oid: String,
-        expected_old_oid: String,
-    },
-    Delete {
-        name: String,
-        expected_old_oid: String,
-    },
-}
-
-pub(crate) fn apply_ref_transaction(work_dir: &Path, updates: &[RefUpdate]) -> Result<()> {
-    crate::perf::record_gix_open();
-    let repo = gix::open(work_dir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
-    apply_ref_transaction_repo(&repo, updates)
-}
 
 fn parse_oid(hex: &str) -> Result<ObjectId> {
     ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
-}
-
-fn log_message(action: &str, name: &str) -> gix::bstr::BString {
-    format!("git-mesh: {action} {name}").into()
-}
-
-pub(crate) fn apply_ref_transaction_repo(
-    repo: &gix::Repository,
-    updates: &[RefUpdate],
-) -> Result<()> {
-    let mut edits: Vec<RefEdit> = Vec::with_capacity(updates.len());
-    for update in updates {
-        let edit = match update {
-            RefUpdate::Create { name, new_oid } => RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        mode: RefLog::AndReference,
-                        force_create_reflog: true,
-                        message: log_message("create", name),
-                    },
-                    expected: PreviousValue::MustNotExist,
-                    new: Target::Object(parse_oid(new_oid)?),
-                },
-                name: name
-                    .as_str()
-                    .try_into()
-                    .map_err(|e| Error::Git(format!("invalid ref name `{name}`: {e}")))?,
-                deref: false,
-            },
-            RefUpdate::Update {
-                name,
-                new_oid,
-                expected_old_oid,
-            } => RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        mode: RefLog::AndReference,
-                        force_create_reflog: true,
-                        message: log_message("update", name),
-                    },
-                    expected: PreviousValue::MustExistAndMatch(Target::Object(parse_oid(
-                        expected_old_oid,
-                    )?)),
-                    new: Target::Object(parse_oid(new_oid)?),
-                },
-                name: name
-                    .as_str()
-                    .try_into()
-                    .map_err(|e| Error::Git(format!("invalid ref name `{name}`: {e}")))?,
-                deref: false,
-            },
-            RefUpdate::Delete {
-                name,
-                expected_old_oid,
-            } => RefEdit {
-                change: Change::Delete {
-                    expected: PreviousValue::MustExistAndMatch(Target::Object(parse_oid(
-                        expected_old_oid,
-                    )?)),
-                    log: RefLog::AndReference,
-                },
-                name: name
-                    .as_str()
-                    .try_into()
-                    .map_err(|e| Error::Git(format!("invalid ref name `{name}`: {e}")))?,
-                deref: false,
-            },
-        };
-        edits.push(edit);
-    }
-    repo.edit_references(edits)
-        .map_err(|e| Error::Git(format!("ref transaction: {e}")))?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub(crate) fn is_reference_transaction_conflict(err: &Error) -> bool {
-    let message = err.to_string();
-    message.contains("cannot lock ref")
-        || message.contains("reference already exists")
-        || message.contains("is at ")
-        || message.contains("expected ")
 }
 
 // ---------------------------------------------------------------------------
@@ -157,74 +46,6 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
 /// so all worktrees converge on one physical directory.
 pub(crate) fn cache_dir(repo: &gix::Repository) -> std::path::PathBuf {
     common_dir(repo).join("mesh").join("cache")
-}
-
-/// Write raw bytes as a blob and return its hex OID.
-pub(crate) fn write_blob_bytes(repo: &gix::Repository, bytes: &[u8]) -> Result<String> {
-    let id = repo
-        .write_blob(bytes)
-        .map_err(|e| Error::Git(format!("write blob: {e}")))?;
-    Ok(id.detach().to_string())
-}
-
-/// List ref names with a given prefix (e.g. `refs/meshes/v1/`), returning
-/// the basename component after the prefix.
-#[allow(dead_code)]
-pub(crate) fn list_refs_stripped(repo: &gix::Repository, prefix: &str) -> Result<Vec<String>> {
-    let iter = repo
-        .references()
-        .map_err(|e| Error::Git(format!("refs: {e}")))?;
-    let full = if prefix.ends_with('/') {
-        prefix.to_string()
-    } else {
-        format!("{prefix}/")
-    };
-    let platform = iter
-        .prefixed(full.as_str())
-        .map_err(|e| Error::Git(format!("refs prefix: {e}")))?;
-    let mut out = Vec::new();
-    for r in platform {
-        let r = r.map_err(|e| Error::Git(format!("ref iter: {e}")))?;
-        let full_name = r.name().as_bstr().to_string();
-        if let Some(rest) = full_name.strip_prefix(&full) {
-            out.push(rest.to_string());
-        }
-    }
-    Ok(out)
-}
-
-/// List ref names and peeled target OIDs with a given prefix, returning the
-/// basename component after the prefix plus the object id.
-#[allow(dead_code)]
-pub(crate) fn list_refs_stripped_with_oids(
-    repo: &gix::Repository,
-    prefix: &str,
-) -> Result<Vec<(String, String)>> {
-    let iter = repo
-        .references()
-        .map_err(|e| Error::Git(format!("refs: {e}")))?;
-    let full = if prefix.ends_with('/') {
-        prefix.to_string()
-    } else {
-        format!("{prefix}/")
-    };
-    let platform = iter
-        .prefixed(full.as_str())
-        .map_err(|e| Error::Git(format!("refs prefix: {e}")))?;
-    let mut out = Vec::new();
-    for r in platform {
-        let mut r = r.map_err(|e| Error::Git(format!("ref iter: {e}")))?;
-        let full_name = r.name().as_bstr().to_string();
-        if let Some(rest) = full_name.strip_prefix(&full) {
-            let oid = r
-                .peel_to_id()
-                .map_err(|e| Error::Git(format!("peel ref `{full_name}`: {e}")))?
-                .detach()
-                .to_string();
-            out.push((rest.to_string(), oid));
-        }
-    }
-    Ok(out)
 }
 
 /// Resolve `HEAD` to a commit OID.
@@ -708,30 +529,6 @@ pub fn create_commit(
     Ok(commit.id.to_string())
 }
 
-pub(crate) fn resolve_ref_oid_optional(work_dir: &Path, ref_name: &str) -> Result<Option<String>> {
-    crate::perf::record_gix_open();
-    let repo = gix::open(work_dir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
-    resolve_ref_oid_optional_repo(&repo, ref_name)
-}
-
-pub(crate) fn resolve_ref_oid_optional_repo(
-    repo: &gix::Repository,
-    ref_name: &str,
-) -> Result<Option<String>> {
-    match repo
-        .try_find_reference(ref_name)
-        .map_err(|e| Error::Git(format!("find ref `{ref_name}`: {e}")))?
-    {
-        Some(mut r) => {
-            let id = r
-                .peel_to_id()
-                .map_err(|e| Error::Git(format!("peel ref `{ref_name}`: {e}")))?;
-            Ok(Some(id.detach().to_string()))
-        }
-        None => Ok(None),
-    }
-}
-
 pub(crate) fn read_blob_bytes(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
     blob_data(repo, blob_oid)
 }
@@ -1006,98 +803,9 @@ pub fn attr_for(
     Ok(None)
 }
 
-/// Slice 6d: read the effective value of `core.logAllRefUpdates`.
-///
-/// Returns `Some("always" | "true" | "false")` when set, or `None` when
-/// unset. Custom refs outside `refs/heads`, `refs/remotes`, `refs/notes`,
-/// and `HEAD` only get a reflog when this is set to `always`.
-pub fn log_all_ref_updates_value(repo: &gix::Repository) -> Option<String> {
-    repo.config_snapshot()
-        .string("core.logAllRefUpdates")
-        .map(|v| v.to_string())
-}
-
-/// Slice 6d: ensure `core.logAllRefUpdates` is set to a value that
-/// covers refs outside the standard set (i.e. `always`). Idempotent —
-/// if the value already covers `refs/meshes/*` (`always`) we leave it
-/// alone.
-///
-/// Greenfield: we do not migrate `true` → `always` automatically; the
-/// resolver's reflog story for mesh refs requires `always`, full stop.
-pub fn ensure_log_all_ref_updates_always(repo: &gix::Repository) -> Result<()> {
-    if log_all_ref_updates_value(repo).as_deref() == Some("always") {
-        return Ok(());
-    }
-    write_local_config_value(repo, "core", None, "logAllRefUpdates", "always")
-}
-
-/// Slice 6c/6d helper: write a single key to the local `.git/config`,
-/// replacing any existing value(s) for that key. Used for scalar config
-/// values; multi-valued lists like `remote.<name>.fetch` need their own
-/// helper.
-pub(crate) fn write_local_config_value(
-    repo: &gix::Repository,
-    section: &'static str,
-    subsection: Option<&str>,
-    key: &'static str,
-    value: &str,
-) -> Result<()> {
-    let path = common_dir(repo).join("config");
-    let mut file =
-        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
-            .map_err(|e| Error::Git(format!("load config: {e}")))?;
-    let sub_bstr = subsection.map(|s| s.as_bytes().into());
-    let mut section_mut = file
-        .section_mut_or_create_new(section, sub_bstr)
-        .map_err(|e| Error::Git(format!("section: {e}")))?;
-    section_mut.set(
-        key.try_into()
-            .map_err(|e| Error::Git(format!("key `{key}`: {e}")))?,
-        value.as_bytes().into(),
-    );
-    let bytes = file.to_bstring();
-    std::fs::write(&path, bytes.as_slice())
-        .map_err(|e| Error::Git(format!("write config: {e}")))?;
-    Ok(())
-}
-
 /// Read a single config string by full key (e.g. `"filter.lfs.process"`).
 pub fn config_string(repo: &gix::Repository, key: &str) -> Option<String> {
     repo.config_snapshot().string(key).map(|v| v.to_string())
-}
-
-pub fn update_ref_cas(
-    repo: &gix::Repository,
-    ref_name: &str,
-    new_oid: &str,
-    expected_oid: Option<&str>,
-) -> Result<()> {
-    let wd = work_dir(repo)?;
-    let updates = [match expected_oid {
-        Some(prev) => RefUpdate::Update {
-            name: ref_name.to_string(),
-            new_oid: new_oid.to_string(),
-            expected_old_oid: prev.to_string(),
-        },
-        None => RefUpdate::Create {
-            name: ref_name.to_string(),
-            new_oid: new_oid.to_string(),
-        },
-    }];
-    apply_ref_transaction(wd, &updates)
-}
-
-pub fn delete_ref(repo: &gix::Repository, ref_name: &str) -> Result<()> {
-    let wd = work_dir(repo)?;
-    let current = resolve_ref_oid_optional(wd, ref_name)?
-        .ok_or_else(|| Error::Git(format!("ref not found: {ref_name}")))?;
-    apply_ref_transaction(
-        wd,
-        &[RefUpdate::Delete {
-            name: ref_name.to_string(),
-            expected_old_oid: current,
-        }],
-    )
 }
 
 #[cfg(test)]

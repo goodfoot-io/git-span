@@ -365,8 +365,8 @@ fn ls_filtered_porcelain_scans_mesh_files() -> Result<()> {
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
 
-    // File-backed model: the path filter scans tracked `.mesh/` files
-    // directly — there is no `refs/meshes-index` path index.
+    // The path filter scans tracked `.mesh/` files directly; the path
+    // index is derived from those files, not stored separately.
     let out = repo.mesh_stdout(["list", "file1.txt#L3-L4", "--porcelain"])?;
     assert!(
         out.contains("alpha\tfile1.txt\t1-5"),

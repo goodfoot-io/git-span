@@ -98,9 +98,8 @@ fn collect_filtered_porcelain_listings_with_staging(
         (target.to_string(), None)
     };
 
-    // File-backed model: scan every visible mesh file for an anchor
-    // matching the requested (path, range) rather than consulting the
-    // ref-backed path index.
+    // Scan every visible mesh file for an anchor matching the requested
+    // (path, range).
     let _ = staged_listings;
     let mesh_pairs = {
         let _perf = crate::perf::span("list.path-filter-scan");
@@ -783,8 +782,8 @@ mod tests {
     #[test]
     fn resolve_targets_hierarchical_name_falls_through_when_no_mesh() {
         let (_td, repo) = seed_repo();
-        // "category/slug" matches mesh-name shape but no mesh ref or
-        // staging entry exists. Must fall through to path index.
+        // "category/slug" matches mesh-name shape but no mesh file
+        // exists. Must fall through to path index.
         create_path_index_entry(&repo, "some-mesh", "category/slug", 1, 5);
         let result =
             resolve_targets(&repo, ".mesh", &["category/slug".to_string()]).unwrap();

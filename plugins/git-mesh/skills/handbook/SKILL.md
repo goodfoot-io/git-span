@@ -17,4 +17,5 @@ description: Use with `git mesh` or meshes.
 - **Text in `additionalContext` / `systemMessage` carries an `<anchor> is in the <mesh> mesh with:` header, `(CHANGED)`/`(MOVED)`/`(CONFLICT)`/`(SUBMODULE)`/`(DELETED)`/`(RENAMED)` clauses, or a `Detected possible implicit semantic dependency between:` stanza; or a question is about when the PreToolUse / PostToolUse / SessionEnd hooks fire or why an injection appeared / didn't appear**: Read `./sections/understanding-hook-output.md`
 - **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
 - **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for meshes**: Read `./sections/git-hook-setup.md`
+- **A question is about where meshes/anchors are stored, whether git-mesh uses refs, or how mesh names map to files**: Read `./sections/storage-model.md`
 </instructions>

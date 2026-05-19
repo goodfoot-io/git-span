@@ -43,7 +43,7 @@ fn establish_baseline(repo: &TestRepo, session: &str) -> Result<()> {
     Ok(())
 }
 
-/// Observe new mesh refs: mark+diff to capture against baseline.
+/// Observe new mesh state: mark+diff to capture against baseline.
 fn observe_new_mesh(repo: &TestRepo, session: &str) -> Result<()> {
     ok(&run_advice(repo, session, &["mark", "obs"])?);
     ok(&run_advice(repo, session, &["diff", "obs"])?);

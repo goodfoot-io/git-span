@@ -1,15 +1,12 @@
-//! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
+//! Mesh-edit command handlers — §6.2, §6.3, §6.4, §10.5.
 //!
 //! Every function produces markdown-formatted prose output per the prose
 //! specification in CARD.md. All errors use [`CliError`] with structured
 //! remediation context.
 //!
-//! ## Migration status
-//!
-//! * **`run_add`**, **`run_remove`**, **`run_why`** — rewritten for Phase 3
-//!   (file-backed mesh storage). These edit worktree mesh files directly.
-//! * **`run_commit`**, **`run_config`** — retain the old ref-backed staging
-//!   implementation as dead code. Will be removed in Group 4 (Phase 5).
+//! `run_add`, `run_remove`, and `run_why` edit worktree mesh files
+//! directly; meshes are tracked files, so there is no separate staging
+//! area or commit step beyond the worktree write.
 
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{format_anchor_address, IDEMPOTENT_TAG};
