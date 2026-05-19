@@ -296,8 +296,28 @@ pub(crate) fn resolve_whole_file(
                 } else {
                     match deepest {
                         DriftSource::Worktree => {
-                            std::fs::read(workdir.join(&current_path))
-                                .unwrap_or_default()
+                            // Same git-normalized canonicalization the
+                            // line-anchor worktree path and `git mesh add`
+                            // use (clean filter / custom driver / CRLF→LF),
+                            // so a freshly-added whole-file anchor under EOL
+                            // or filter normalization is not falsely drifted.
+                            match super::super::layers::read_worktree_normalized(
+                                repo,
+                                &mut state.custom_filters,
+                                &current_path,
+                            ) {
+                                Ok(b) => b,
+                                // A required custom filter that fails has
+                                // no canonical content; preserve the
+                                // pre-existing raw-bytes comparison for
+                                // this uncomparable path (add records the
+                                // same raw bytes for it).
+                                Err(Error::FilterFailed { .. }) => {
+                                    std::fs::read(workdir.join(&current_path))
+                                        .unwrap_or_default()
+                                }
+                                Err(_) => Vec::new(),
+                            }
                         }
                         DriftSource::Index | DriftSource::Head => {
                             canonical_layer_bytes(repo, cur, false)

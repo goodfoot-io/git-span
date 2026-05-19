@@ -450,6 +450,80 @@ fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
     Ok(())
 }
 
+/// Regression (F3): in a repo with EOL normalization (`* text=auto`) and
+/// CRLF worktree content, `git mesh add` must derive the stored content
+/// hash from the *same* git-normalized canonical bytes the resolver
+/// compares against. Before the fix, add hashed raw CRLF bytes (line
+/// anchor: `.lines()` slices retain `\r`) while the resolver's worktree
+/// layer hashed clean-filter-normalized (LF) bytes, so a freshly-added,
+/// unmodified anchor falsely resolved as Changed/Moved with zero source
+/// edits. Both a line anchor and a whole-file anchor must be Fresh.
+#[test]
+fn add_under_eol_normalization_freshly_added_anchors_are_fresh() -> Result<()> {
+    let repo = TestRepo::new()?;
+    // EOL normalization on: committed blob is LF, worktree is CRLF.
+    write_gitattributes(&repo, "* text=auto\n")?;
+    repo.run_git(["config", "core.autocrlf", "true"])?;
+    repo.write_file(
+        "src.txt",
+        "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\n",
+    )?;
+    repo.commit_all("seed crlf source under text=auto")?;
+    repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
+
+    // Add against the CRLF worktree, then commit the mesh so the
+    // resolver sees a HEAD-layer mesh with the add-time stored hash.
+    repo.run_mesh(["add", "m", "src.txt#L2-L5"])?;
+    repo.run_mesh(["add", "m", "src.txt"])?;
+    repo.run_mesh(["why", "m", "-m", "eol normalization regression"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh m"])?;
+
+    // No source edits: both anchors must be Fresh.
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
+    let line = mr
+        .anchors
+        .iter()
+        .find(|a| matches!(a.anchored.extent, AnchorExtent::LineRange { .. }))
+        .expect("line anchor present");
+    let whole = mr
+        .anchors
+        .iter()
+        .find(|a| matches!(a.anchored.extent, AnchorExtent::WholeFile))
+        .expect("whole-file anchor present");
+    assert_eq!(
+        line.status,
+        AnchorStatus::Fresh,
+        "freshly-added line anchor under text=auto must be Fresh"
+    );
+    assert_eq!(
+        whole.status,
+        AnchorStatus::Fresh,
+        "freshly-added whole-file anchor under text=auto must be Fresh"
+    );
+
+    // Committed-only (HEAD-layer) comparison: the resolver hashes the
+    // LF-normalized blob bytes. Pre-fix, `git mesh add` stored the hash
+    // of the *raw CRLF* worktree bytes for the whole-file anchor (the
+    // `.lines()` split masks pure-CRLF for line anchors but not whole
+    // file), so this layer falsely reported Changed with no source edit.
+    let mr_head = resolve_mesh(
+        &repo.gix_repo()?,
+        ".mesh",
+        "m",
+        EngineOptions::committed_only(),
+    )?;
+    for a in &mr_head.anchors {
+        assert_eq!(
+            a.status,
+            AnchorStatus::Fresh,
+            "freshly-added {:?} anchor must be Fresh at the HEAD layer",
+            a.anchored.extent
+        );
+    }
+    Ok(())
+}
+
 /// Plan bullet: Whole-file pin on a binary asset: blob OID change → Changed;
 /// `git mesh add <name> <path>` re-anchors and acknowledges.
 #[test]

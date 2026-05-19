@@ -93,6 +93,32 @@ fn hash_anchor_content(
     extent: &AnchorExtent,
     anchor_oid: Option<&str>,
 ) -> Result<(String, String)> {
+    // Worktree reads must use the *same* canonicalization the resolver
+    // compares against, or a freshly-added anchor reads `Changed`/`Moved`
+    // with zero source edits in any repo with EOL normalization
+    // (`* text=auto`, `core.autocrlf`), a clean/smudge filter, or a
+    // custom filter driver. The resolver derives every layer's comparison
+    // hash from the git-normalized blob bytes (HEAD/index) or
+    // `read_worktree_normalized` (worktree); there is exactly one
+    // canonicalization, shared by add-time hashing and resolve-time
+    // comparison, for both line and whole-file extents. Blob reads
+    // (`--at`) are already the post-clean blob bytes on both sides.
+    // A submodule gitlink is a directory on disk — there is no file
+    // content to read. Its content identity is the recorded commit OID
+    // in the index. Whole-file pins on the gitlink root are allowed
+    // (D2); hash the gitlink OID hex so drift = the submodule pointer
+    // changing. This matches the resolver's gitlink canonicalization.
+    let gitlink_oid = || -> Option<Vec<u8>> {
+        crate::git::index_entries(repo)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .into_iter()
+                    .find(|en| en.path == path && en.mode.is_commit())
+            })
+            .map(|en| en.oid.to_string().into_bytes())
+    };
+
     let bytes = match anchor_oid {
         Some(commit_oid) => {
             let blob_oid = crate::git::path_blob_at(repo, commit_oid, path)
@@ -101,27 +127,30 @@ fn hash_anchor_content(
                 })?;
             crate::git::read_blob_bytes(repo, &blob_oid)?
         }
-        None => match crate::git::read_worktree_bytes(repo, path) {
-            Ok(b) => b,
-            Err(e) => {
-                // A submodule gitlink is a directory on disk — there is
-                // no file content to read. Its content identity is the
-                // recorded commit OID in the index. Whole-file pins on
-                // the gitlink root are allowed (D2); hash the gitlink
-                // OID hex so drift = the submodule pointer changing.
-                let gitlink = crate::git::index_entries(repo)
-                    .ok()
-                    .and_then(|entries| {
-                        entries.into_iter().find(|en| {
-                            en.path == path && en.mode.is_commit()
-                        })
-                    });
-                match gitlink {
-                    Some(en) => en.oid.to_string().into_bytes(),
-                    None => return Err(e.into()),
+        None => {
+            if let Some(oid) = gitlink_oid() {
+                oid
+            } else {
+                let mut custom_filters = crate::resolver::layers::CustomFilters::new();
+                match crate::resolver::layers::read_worktree_normalized(
+                    repo,
+                    &mut custom_filters,
+                    path,
+                ) {
+                    Ok(b) => b,
+                    // A required custom filter driver that fails has no
+                    // canonical content. The resolver short-circuits such
+                    // a path to `ContentUnavailable(FilterFailed)` and
+                    // never compares the stored hash, so record the raw
+                    // worktree bytes (pre-normalization) — add must still
+                    // succeed and register the anchor.
+                    Err(crate::Error::FilterFailed { .. }) => {
+                        crate::git::read_worktree_bytes(repo, path)?
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
-        },
+        }
     };
 
     // Validate line range extent against the actual content.
