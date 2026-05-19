@@ -1,6 +1,6 @@
 {
   "name": "agent-hooks",
-  "version": "1.0.78",
+  "version": "1.0.79",
   "type": "module",
   "scripts": {
     "build": "claude-code-hooks -i \"src/**/*.ts\" -o \"../../plugins/git-mesh/hooks.json\"",
