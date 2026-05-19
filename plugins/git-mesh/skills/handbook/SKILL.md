@@ -11,7 +11,7 @@ description: Use with `git mesh` or meshes.
 - **A finding is `DELETED`, `MERGE_CONFLICT`, or `SUBMODULE`**: Read `./sections/terminal-statuses.md`
 - **A finding is `CONTENT_UNAVAILABLE(...)`, or the failure involves LFS, partial clone, or sparse checkout**: Read `./sections/content-unavailable.md`
 - **The anchor omits `#L…`, or the path is binary, image, symlink, submodule root, or LFS-tracked**: Read `./sections/whole-file-and-lfs.md`
-- **A `git mesh` command errored or behaved unexpectedly ("needs a why", an unparseable `.mesh` file, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
+- **A `git mesh` command errored or behaved unexpectedly (first why on a new mesh, an unparseable `.mesh` file, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
 - **The job is CI wiring, PR gating, `--since <merge-base>`, syncing meshes across remotes, fresh-clone tolerance, or advisory reports**: Read `./sections/ci-and-sync.md`
 - **A question asks what meshes exist, what a mesh currently says, its history, or which meshes touch a given path/anchor**: Read `./sections/inspecting-meshes.md`
 - **Text in `additionalContext` / `systemMessage` carries an `<anchor> is in the <mesh> mesh with:` header, `(CHANGED)`/`(MOVED)`/`(CONFLICT)`/`(SUBMODULE)`/`(DELETED)`/`(RENAMED)` clauses, or a `Detected possible implicit semantic dependency between:` stanza; or a question is about when the PreToolUse / PostToolUse / SessionEnd hooks fire or why an injection appeared / didn't appear**: Read `./sections/understanding-hook-output.md`

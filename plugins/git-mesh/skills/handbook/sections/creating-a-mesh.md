@@ -97,4 +97,4 @@ git add .mesh && git commit -m "Document token/crypto coupling"
 
 Use `--at <commit-ish>` (any ref, tag, or SHA) only when the anchor should be hashed against a specific historical commit other than `HEAD`.
 
-A new mesh needs a why written before (or with) the commit that introduces it. See `./command-quirks-and-errors.md` § "First why on a new mesh".
+A why is optional but strongly recommended: write one before (or with) the commit that introduces a new mesh. A mesh without a why is valid and not flagged as stale, but the anchors carry no statement of the subsystem they form. See `./command-quirks-and-errors.md` § "First why on a new mesh".

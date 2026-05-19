@@ -226,5 +226,5 @@ Skipped automatically if `gh` is missing, unauthed, or `--no-gh`.
   use `--top-percent=10` to keep only the head of each list.
 - **Slow runs**: lower `--window`, raise `--max-commit-files` (drops mega-
   commits), or add `--skip=12,13` to disable SZZ and reviewer overlap.
-- **Buffer overflow on huge histories**: not possible since the rewrite —
-  `mine.mjs` streams git log incrementally. If you see one, file a bug.
+- **Buffer overflow on huge histories**: `mine.mjs` streams git log
+  incrementally, so this should not occur. If you see one, file a bug.

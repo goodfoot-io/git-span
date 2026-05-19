@@ -180,6 +180,22 @@ NODE
     git add yarn.lock .yarn/install-state.gz 2>/dev/null || true
 fi
 
+# --- Wiki link + frontmatter validation + auto-fix (non-blocking) ---
+# --fix rewrites drifted links/anchors in place (requires --source=worktree).
+# --no-exit-code keeps the commit from being blocked; --no-mesh defers mesh
+# coverage scaffolding to post-commit. Re-stage any files the fix rewrote.
+WIKI_BIN=$(command -v wiki || true)
+if [ -n "$WIKI_BIN" ]; then
+    "$WIKI_BIN" check --fix --no-exit-code --no-mesh --source=worktree
+    WIKI_FIXED=$(git diff --name-only --diff-filter=d -- '*.md')
+    if [ -n "$WIKI_FIXED" ]; then
+        # shellcheck disable=SC2086
+        git add $WIKI_FIXED
+        echo "Re-staged wiki-fixed files:"
+        echo "$WIKI_FIXED"
+    fi
+fi
+
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
 
 BIOME_STAGED=$(echo "$STAGED_FILES" | grep -E '\.(ts|tsx|js|jsx)$' || true)
@@ -201,5 +217,7 @@ if [ -n "$BIOME_CHANGED" ]; then
     git add $BIOME_CHANGED
     echo "Re-staged biome-fixed files:$BIOME_CHANGED"
 fi
+
+
 
 exit 0

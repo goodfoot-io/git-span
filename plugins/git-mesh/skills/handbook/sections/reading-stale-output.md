@@ -33,9 +33,6 @@ Select or peel layers:
 - `--no-worktree` drops W findings; `--no-index` drops I findings.
 - HEAD is always on — no flag turns it off.
 
-(`--no-staged-mesh` is accepted for compatibility but has no effect: mesh edits
-live in the worktree, not a separate staging area.)
-
 ## Re-anchoring silences a finding
 
 To clear a `CHANGED` finding, re-anchor the mesh (`git mesh add <name>
@@ -79,8 +76,7 @@ git mesh stale --format github-actions
 ### JSON schema (schema_version: 2)
 
 Top-level: `{ "schema_version": 2, "mesh": "<name>", "findings": [...], "pending": [...] }`.
-(`pending` is always an empty array in the file-backed model — there is no
-staging stream; it is retained only for a stable schema shape.)
+(`pending` is always an empty array — there is no staging stream.)
 
 Each finding carries:
 - `status.code` — `"FRESH"`, `"CHANGED"`, `"MOVED"`, `"DELETED"`, `"CONFLICT"`, `"SUBMODULE"`, `"CONTENT_UNAVAILABLE"`

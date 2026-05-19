@@ -60,10 +60,10 @@ Key options:
   English fix vocabulary; supply a pattern matching the project's commit
   conventions if §2 (fix-only co-change) is empty.
 
-If `mine.mjs` exits with a buffer error on very large repos, raise the
-window cutoff or add path excludes via `--exclude=path1,path2`. The default
-excludes already cover lockfiles, build outputs, snapshots, and minified
-bundles.
+`mine.mjs` streams git log incrementally, so it handles large histories
+without buffering the full log. Narrow the window with `--since` or add path
+excludes via `--exclude=path1,path2` when a run is slow. The default excludes
+already cover lockfiles, build outputs, snapshots, and minified bundles.
 
 ### `shortlist.mjs` — distill JSON to mesh-candidate ranking
 

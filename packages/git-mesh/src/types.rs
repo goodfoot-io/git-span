@@ -285,12 +285,6 @@ pub enum Error {
     #[error("nothing staged for mesh: {0}")]
     StagingEmpty(String),
 
-    /// First commit on a new mesh requires a staged why (§6.2, §10.2).
-    #[error(
-        "why required for first commit on mesh `{0}`: stage one with `git mesh why {0} -m \"…\"`"
-    )]
-    WhyRequired(String),
-
     /// `git mesh delete` refused while staging is non-empty (§6.8).
     #[error(
         "cannot delete `{name}`: {count} staged operation(s) remain.\n\

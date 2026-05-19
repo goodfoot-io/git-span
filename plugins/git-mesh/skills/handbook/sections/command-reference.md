@@ -61,8 +61,7 @@ tree at a past commit — ordinary git history, because the mesh is a tracked fi
 `git mesh stale` read-mode flags select which layer the live content is read
 from: `--head` (HEAD only), `--staged` (index over HEAD), `--worktree`
 (the default — worktree over index over HEAD). `--no-worktree` / `--no-index`
-drop a layer. (`--no-staged-mesh` is accepted for compatibility but has no
-effect: mesh edits live in the worktree, not a separate staging area.)
+drop a layer.
 
 ## Editing a mesh
 

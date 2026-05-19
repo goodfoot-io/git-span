@@ -47,7 +47,7 @@ The fast path for LFS whole-file anchors is pointer-OID equality.
 
 A whole-file anchor on the submodule path compares gitlink SHAs without opening the submodule. Submodule bumps surface as `CHANGED` with no slice diff — exactly the signal needed for "review the related code before merging."
 
-A line-range anchor inside a submodule is rejected at `git mesh add`. Legacy anchors pointing inside a submodule surface as the `SUBMODULE` terminal status; see `./terminal-statuses.md` to migrate them.
+A line-range anchor inside a submodule is rejected at `git mesh add`. An anchor pointing inside a submodule surfaces as the `SUBMODULE` terminal status; see `./terminal-statuses.md`.
 
 ## Re-anchoring whole-file anchors
 

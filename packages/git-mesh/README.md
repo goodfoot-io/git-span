@@ -1,6 +1,6 @@
 # git mesh
 
-`git mesh` tracks implicit semantic dependencies in a git repository — line-range or whole-file anchors that participate in a coupling no schema, type, or test enforces. Each mesh names its anchors, carries a `why` sentence defining the subsystem they collectively form, and surfaces drift via `git mesh stale` when those anchors diverge from their anchored state.
+`git mesh` tracks implicit semantic dependencies in a git repository — line-range or whole-file anchors that participate in a coupling no schema, type, or test enforces. Each mesh names its anchors, optionally carries a `why` sentence defining the subsystem they collectively form (recommended on every mesh), and surfaces drift via `git mesh stale` when those anchors diverge from their anchored state.
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git mesh --help` or `git mesh stale --help` for flag reference.
 

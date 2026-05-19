@@ -3,7 +3,7 @@
 A mesh is a tracked plain-text file under `.mesh/<name>`. `git mesh add` /
 `remove` / `why` edit that file in the working tree; you persist edits with
 `git add .mesh && git commit`. There is no staging area and no `git mesh commit`
-step, so the staging/sidecar failure modes from the old model cannot occur.
+step.
 
 ## A mesh edit is not in history
 
@@ -21,8 +21,9 @@ only see it after the commit lands on a shared branch.
 
 ## First why on a new mesh
 
-A new mesh has no prior why to inherit. Write one before (or alongside) the
-commit that introduces it:
+A new mesh has no prior why to inherit. A why is optional — `git mesh add`
+and `git mesh commit` succeed without one — but it is strongly recommended.
+Write one before (or alongside) the commit that introduces the mesh:
 
 ```bash
 git mesh why <name> -m "Define the subsystem the anchors form"
@@ -70,7 +71,7 @@ git mesh add <name> public/claude/codex
 
 ## `git mesh doctor`
 
-A setup audit, not a semantic-drift check. In the file-backed model its only
+A setup audit, not a semantic-drift check. Its only
 job is to confirm every visible mesh file under the mesh root parses; it reports
 `ERROR — mesh <name> failed to parse: …` for any that don't. `--strict`
 promotes findings to a non-zero exit. Run it when local behavior looks wrong.
