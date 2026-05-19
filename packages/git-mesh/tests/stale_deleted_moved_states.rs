@@ -262,39 +262,90 @@ fn whole_file_relocated_in_index_is_moved() -> Result<()> {
 #[test]
 fn stat_lists_only_stale_anchors() -> Result<()> {
     let repo = TestRepo::new()?;
+    // Two LINE anchors in the SAME file; only the second range drifts.
+    // This is the experience-evaluator's exact `m/mix` repro.
+    repo.write_file("f.ts", "l1\nl2\nl3\nl4\nl5\n")?;
+    repo.commit_all("seed")?;
+    repo.run_mesh(["add", "m/mix", "f.ts#L1-L1"])?;
+    repo.run_mesh(["add", "m/mix", "f.ts#L3-L4"])?;
+    repo.run_mesh(["why", "m/mix", "-m", "mixed anchors"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh m/mix"])?;
+
+    // Edit only lines 3-4; f.ts#L1-L1 stays Fresh.
+    repo.write_file("f.ts", "l1\nl2\nL3X\nL4X\nl5\n")?;
+
+    // Run twice: the first invocation is a cold resolve; the second hits
+    // the cache_v2 baseline, which persists only non-`Fresh` finding rows
+    // (so the cached `MeshResolved` carries only the stale anchor). The
+    // heading must read "1 of 2" on BOTH runs — the bug was the cached
+    // path falsely saying "All anchors … are stale".
+    for run in ["cold", "cached"] {
+        let out = repo.run_mesh(["stale", "--stat", "m/mix"])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+
+        assert!(
+            !text.contains("All anchors"),
+            "[{run}] only one of two anchors is stale; must not say 'All anchors': {text}"
+        );
+        assert!(
+            text.contains("1 of 2 anchors in m/mix are stale:"),
+            "[{run}] heading must report '1 of 2 anchors in m/mix are stale:': {text}"
+        );
+        assert!(
+            text.contains("f.ts#L3-L4"),
+            "[{run}] stale anchor f.ts#L3-L4 must be listed: {text}"
+        );
+        assert!(
+            !text.contains("f.ts#L1-L1"),
+            "[{run}] fresh anchor f.ts#L1-L1 must NOT be listed under --stat: {text}"
+        );
+        assert!(
+            !text.contains("+0 -0"),
+            "[{run}] no fresh `+0 -0` rows under --stat: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// F7 (all-stale): when every anchor in a mesh is stale, `--stat` heading
+/// reads "All anchors in <mesh> are stale:" (not a count fraction).
+#[test]
+fn stat_heading_all_stale() -> Result<()> {
+    let repo = TestRepo::new()?;
     repo.write_file("a.txt", "a1\na2\na3\na4\na5\n")?;
     repo.write_file("b.txt", "b1\nb2\nb3\nb4\nb5\n")?;
     repo.commit_all("seed")?;
-    repo.run_mesh(["add", "mix", "a.txt#L1-L3", "b.txt#L1-L3"])?;
-    repo.run_mesh(["why", "mix", "-m", "two anchors"])?;
+    repo.run_mesh(["add", "all", "a.txt#L1-L3", "b.txt#L1-L3"])?;
+    repo.run_mesh(["why", "all", "-m", "two anchors both stale"])?;
     repo.run_git(["add", ".mesh"])?;
-    repo.run_git(["commit", "-m", "mesh mix"])?;
+    repo.run_git(["commit", "-m", "mesh all"])?;
 
-    // Drift only a.txt's anchored slice; b.txt stays fresh.
+    // Drift both anchored slices.
     repo.write_file("a.txt", "CHANGED\na2\na3\na4\na5\n")?;
+    repo.write_file("b.txt", "CHANGED\nb2\nb3\nb4\nb5\n")?;
 
-    let out = repo.run_mesh(["stale", "--stat", "mix"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    // Cold + cached: the "All anchors" branch must hold on both paths.
+    for run in ["cold", "cached"] {
+        let out = repo.run_mesh(["stale", "--stat", "all"])?;
+        let text = String::from_utf8_lossy(&out.stdout);
 
-    assert!(
-        !text.contains("All anchors"),
-        "only one of two anchors is stale; must not say 'All anchors': {text}"
-    );
-    assert!(
-        text.contains("1 of 2 anchors in mix are stale:"),
-        "heading must report '1 of 2 anchors in mix are stale:': {text}"
-    );
-    assert!(
-        text.contains("a.txt"),
-        "stale anchor a.txt must be listed: {text}"
-    );
-    assert!(
-        !text.contains("b.txt"),
-        "fresh anchor b.txt must NOT be listed under --stat: {text}"
-    );
-    assert!(
-        !text.contains("+0 -0"),
-        "no fresh `+0 -0` rows under --stat: {text}"
-    );
+        assert!(
+            text.contains("All anchors in all are stale:"),
+            "[{run}] all-stale mesh must say 'All anchors in all are stale:': {text}"
+        );
+        assert!(
+            !text.contains("of 2 anchors"),
+            "[{run}] all-stale mesh must not use 'N of M' heading: {text}"
+        );
+        assert!(
+            text.contains("a.txt"),
+            "[{run}] stale anchor a.txt must be listed: {text}"
+        );
+        assert!(
+            text.contains("b.txt"),
+            "[{run}] stale anchor b.txt must be listed: {text}"
+        );
+    }
     Ok(())
 }

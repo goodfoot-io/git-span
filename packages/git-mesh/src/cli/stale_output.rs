@@ -144,12 +144,26 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // Count total committed meshes and anchors before stale_meshes filtering,
     // so the summary can report "0 stale across N meshes (A anchors checked)"
     // even when all are clean.
-    let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
+    // `mesh_anchor_totals` records each mesh's *full* anchor count (Fresh
+    // included). The resolver — and especially the cache_v2 path, which
+    // persists only non-`Fresh` finding rows — returns `MeshResolved`
+    // values whose `anchors` hold only the stale subset, so the renderer
+    // cannot derive a mesh's true anchor total from `m.anchors`. The
+    // `--stat` heading ("N of M anchors …") needs M = the real total.
+    let (total_committed_mesh_count, total_committed_anchor_count, mesh_anchor_totals): (
+        usize,
+        usize,
+        std::collections::HashMap<String, usize>,
+    ) = {
         let _perf = crate::perf::span("stale.count-totals");
         let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
-        (mesh_count, anchor_count)
+        let totals = pairs
+            .iter()
+            .map(|(n, m)| (n.clone(), m.anchors.len()))
+            .collect();
+        (mesh_count, anchor_count, totals)
     };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
@@ -475,6 +489,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     show_src: show_src_column,
                     named_lookup: !args.paths.is_empty(),
                 },
+                &mesh_anchor_totals,
             )?;
 
             // No-drift messages: when nothing was printed and there is no
@@ -821,6 +836,7 @@ fn render_human(
     pending: &[PendingFinding],
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
+    mesh_anchor_totals: &std::collections::HashMap<String, usize>,
 ) -> Result<bool> {
     // named_lookup: true when positional args were given (named lookup mode).
     // For workspace scan: suppress clean meshes and pending bullets.
@@ -908,7 +924,18 @@ fn render_human(
                 .copied()
                 .filter(|f| f.status != AnchorStatus::Fresh)
                 .collect();
-            let mesh_total = mesh_findings.len();
+            // The mesh's *full* anchor total comes from the mesh-file
+            // read, not from `mesh_findings`: on the cache_v2 path
+            // `m.anchors` holds only the stale subset, so
+            // `mesh_findings.len()` would equal `mesh_stale` and the
+            // heading would falsely read "All anchors … are stale" even
+            // when Fresh sibling anchors exist. Fall back to the
+            // resolved count only when the mesh is absent from the map
+            // (e.g. a staging-only mesh with no committed anchors).
+            let mesh_total = mesh_anchor_totals
+                .get(m.name.as_str())
+                .copied()
+                .unwrap_or(mesh_findings.len());
             if mesh_stale > 0 && mesh_stale == mesh_total {
                 println!("All anchors in {} are stale:", m.name);
             } else if mesh_stale > 0 {

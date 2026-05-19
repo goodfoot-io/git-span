@@ -10,7 +10,7 @@
 //! extent <start> <end> <blob>\t<path>
 //! ```
 
-use crate::git::{self, RefUpdate, apply_ref_transaction, resolve_ref_oid_optional, work_dir};
+use crate::git::{self, RefUpdate, apply_ref_transaction, work_dir};
 use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
@@ -260,19 +260,3 @@ pub fn anchor_ref_path(anchor_id: &str) -> String {
     format!("refs/anchors/v1/{anchor_id}")
 }
 
-pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
-    if let Some(blob_oid) = resolve_ref_oid_optional(work_dir(repo)?, &anchor_ref_path(anchor_id))?
-    {
-        return parse_anchor(&git::read_git_text(repo, &blob_oid)?);
-    }
-    for (_, mesh) in crate::mesh::read::load_all_meshes(repo)? {
-        if let Some((_id, anchor)) = mesh
-            .anchors
-            .into_iter()
-            .find(|(id, _anchor)| id == anchor_id)
-        {
-            return Ok(anchor);
-        }
-    }
-    Err(Error::AnchorNotFound(anchor_id.to_string()))
-}

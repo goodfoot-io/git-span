@@ -37,14 +37,6 @@ pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Resu
     Ok(mesh_from_file(name, &file))
 }
 
-/// Load every visible mesh as `(name, Mesh)` pairs via the layered
-/// mesh-file reader. Names absent from the effective view (tombstoned)
-/// are skipped. This is the file-backed replacement for
-/// `Catalog::load(repo)?.iter()`.
-pub fn load_all_meshes(repo: &gix::Repository) -> Result<Vec<(String, Mesh)>> {
-    load_all_meshes_in(repo, ".mesh")
-}
-
 /// Load every visible mesh under a specific mesh root.
 pub fn load_all_meshes_in(
     repo: &gix::Repository,

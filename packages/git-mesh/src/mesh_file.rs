@@ -272,9 +272,22 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
     }
 }
 
+/// Canonicalize an anchor path to the POSIX, forward-slash, repo-relative
+/// form. A Windows author may type `sub\dir\file.txt`; the git tree/index
+/// is forward-slash on every platform, so a backslash path would fail to
+/// resolve everywhere. Normalize at the parse (write) boundary so meshes
+/// stay portable across OSes.
+pub(crate) fn normalize_anchor_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// Parse a `<path>#L<start>-L<end>` line-anchor address, or a bare
 /// `<path>` whole-file address. Returns `None` on malformed line-anchor
 /// fragments — callers should reject those at the CLI boundary.
+///
+/// The path component is normalized to the canonical forward-slash form
+/// (see [`normalize_anchor_path`]) so a backslash-spelled path authored on
+/// Windows resolves against the forward-slash git tree everywhere.
 pub fn parse_address(text: &str) -> Option<(String, crate::types::AnchorExtent)> {
     use crate::types::AnchorExtent;
     if let Some((path, fragment)) = text.split_once("#L") {
@@ -287,7 +300,10 @@ pub fn parse_address(text: &str) -> Option<(String, crate::types::AnchorExtent)>
         if start < 1 || end < start {
             return None;
         }
-        return Some((path.to_string(), AnchorExtent::LineRange { start, end }));
+        return Some((
+            normalize_anchor_path(path),
+            AnchorExtent::LineRange { start, end },
+        ));
     }
     // A `#` without a following `L` is invalid anchor syntax (e.g., `file.ts#88`).
     if text.contains('#') {
@@ -296,12 +312,33 @@ pub fn parse_address(text: &str) -> Option<(String, crate::types::AnchorExtent)>
     if text.is_empty() {
         return None;
     }
-    Some((text.to_string(), AnchorExtent::WholeFile))
+    Some((normalize_anchor_path(text), AnchorExtent::WholeFile))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::AnchorExtent;
+
+    #[test]
+    fn backslash_path_normalized_in_line_address() {
+        let (path, extent) = parse_address("sub\\dir\\file.txt#L1-L3").unwrap();
+        assert_eq!(path, "sub/dir/file.txt");
+        assert_eq!(extent, AnchorExtent::LineRange { start: 1, end: 3 });
+    }
+
+    #[test]
+    fn backslash_path_normalized_in_whole_file_address() {
+        let (path, extent) = parse_address("sub\\dir\\file.txt").unwrap();
+        assert_eq!(path, "sub/dir/file.txt");
+        assert_eq!(extent, AnchorExtent::WholeFile);
+    }
+
+    #[test]
+    fn forward_slash_path_unchanged() {
+        let (path, _) = parse_address("sub/dir/file.txt#L1-L3").unwrap();
+        assert_eq!(path, "sub/dir/file.txt");
+    }
 
     #[test]
     fn parse_single_whole_file_anchor() {

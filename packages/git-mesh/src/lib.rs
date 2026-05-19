@@ -27,7 +27,7 @@ pub mod resolver;
 pub mod types;
 pub mod validation;
 
-pub use anchor::{anchor_ref_path, create_anchor, parse_anchor, read_anchor, serialize_anchor};
+pub use anchor::{anchor_ref_path, create_anchor, parse_anchor, serialize_anchor};
 pub use git::read_git_text;
 pub use mesh::{
     delete_mesh, list_mesh_names, read_mesh, read_mesh_at, rename_mesh, show_mesh, show_mesh_at,
