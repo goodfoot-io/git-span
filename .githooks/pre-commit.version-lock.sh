@@ -1,0 +1,180 @@
+#!/bin/bash
+# Keep package/plugin/Cargo manifest versions locked to the highest semver.
+# Fail-closed: a node/yarn failure here aborts the commit (a drifted version
+# set must not land). Re-stages every manifest it rewrites.
+set -e
+
+command -v node >/dev/null 2>&1 || exit 0
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
+[ -z "$STAGED_FILES" ] && exit 0
+
+VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-mesh/Cargo\.toml)$' || true)
+[ -z "$VERSION_LOCK_STAGED" ] && exit 0
+
+echo "Locking package + plugin versions to highest semver..."
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+function glob(dir, pattern) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .map((name) => path.join(dir, name, pattern))
+    .filter((p) => fs.existsSync(p));
+}
+
+// Each target is { file, get(json) => version, set(json, version) }.
+const targets = [];
+
+function addPackageJson(file) {
+  if (!fs.existsSync(file)) return;
+  targets.push({
+    file,
+    get: (j) => j.version,
+    set: (j, v) => { j.version = v; },
+  });
+}
+
+addPackageJson('package.json');
+for (const f of glob('packages', 'package.json')) addPackageJson(f);
+for (const f of glob('npm', 'package.json')) addPackageJson(f);
+
+// Plugin manifests: plugins/*/.claude-plugin/plugin.json
+for (const name of fs.existsSync('plugins') ? fs.readdirSync('plugins') : []) {
+  const file = path.join('plugins', name, '.claude-plugin', 'plugin.json');
+  if (fs.existsSync(file)) addPackageJson(file);
+}
+
+// Cargo manifest: packages/git-mesh/Cargo.toml. The CLI's --version is wired
+// to clap's version derive (CARGO_PKG_VERSION at build time), so this MUST
+// stay locked to the JSON manifests or the compiled binary drifts.
+const cargoFile = 'packages/git-mesh/Cargo.toml';
+if (fs.existsSync(cargoFile)) {
+  // Match the version line inside the [package] block only — never a
+  // dependency's `version = "..."`.
+  const cargoState = { text: fs.readFileSync(cargoFile, 'utf8') };
+  const readPkgVersion = (text) => {
+    const m = /^\[package\][^[]*?^version\s*=\s*"([^"]+)"/ms.exec(text);
+    if (!m) throw new Error(`Could not find [package] version in ${cargoFile}`);
+    return m[1];
+  };
+  const writePkgVersion = (text, v) => {
+    return text.replace(
+      /(^\[package\][^[]*?^version\s*=\s*")([^"]+)(")/ms,
+      `$1${v}$3`,
+    );
+  };
+  targets.push({
+    file: cargoFile,
+    get: () => readPkgVersion(cargoState.text),
+    set: (_, v) => { cargoState.text = writePkgVersion(cargoState.text, v); },
+    cargo: cargoState,
+  });
+}
+
+// Marketplace: each plugins[].version must match
+const marketplaceFile = '.claude-plugin/marketplace.json';
+const marketplaceEntries = [];
+if (fs.existsSync(marketplaceFile)) {
+  const json = JSON.parse(fs.readFileSync(marketplaceFile, 'utf8'));
+  for (let i = 0; i < (json.plugins || []).length; i += 1) {
+    if (json.plugins[i].version) {
+      targets.push({
+        file: marketplaceFile,
+        get: () => json.plugins[i].version,
+        set: (_, v) => { json.plugins[i].version = v; },
+        shared: json,
+        index: i,
+      });
+      marketplaceEntries.push(i);
+    }
+  }
+}
+
+function parseSemver(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+  if (!m) throw new Error(`Unsupported version: ${v}`);
+  return m.slice(1).map(Number);
+}
+function compareSemver(a, b) {
+  const [la, lb] = [parseSemver(a), parseSemver(b)];
+  for (let i = 0; i < 3; i += 1) if (la[i] !== lb[i]) return la[i] - lb[i];
+  return 0;
+}
+
+// Collect versions
+const loaded = new Map(); // file -> json
+function loadJson(file) {
+  if (!loaded.has(file)) loaded.set(file, JSON.parse(fs.readFileSync(file, 'utf8')));
+  return loaded.get(file);
+}
+
+const versions = [];
+for (const t of targets) {
+  if (t.cargo) {
+    versions.push(t.get());
+    continue;
+  }
+  const json = t.shared || loadJson(t.file);
+  versions.push(t.get(json));
+}
+const highest = versions.slice().sort(compareSemver).at(-1);
+
+// Write back
+const changed = new Set();
+for (const t of targets) {
+  if (t.cargo) {
+    if (t.get() !== highest) {
+      t.set(null, highest);
+      changed.add(t.file);
+    }
+    continue;
+  }
+  const json = t.shared || loadJson(t.file);
+  if (t.get(json) !== highest) {
+    t.set(json, highest);
+    changed.add(t.file);
+  }
+}
+for (const file of changed) {
+  const cargoTarget = targets.find((x) => x.cargo && x.file === file);
+  if (cargoTarget) {
+    fs.writeFileSync(file, cargoTarget.cargo.text);
+    console.log(`Updated ${file} -> ${highest}`);
+    continue;
+  }
+  const json = loaded.get(file) || (file === marketplaceFile ? targets.find((x) => x.shared).shared : null);
+  fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
+  console.log(`Updated ${file} -> ${highest}`);
+}
+
+// Also sync optionalDependencies in packages/git-mesh/package.json
+const cliFile = 'packages/git-mesh/package.json';
+if (fs.existsSync(cliFile)) {
+  const cli = loadJson(cliFile);
+  let mutated = false;
+  if (cli.optionalDependencies) {
+    for (const k of Object.keys(cli.optionalDependencies)) {
+      if (cli.optionalDependencies[k] !== highest) {
+        cli.optionalDependencies[k] = highest;
+        mutated = true;
+      }
+    }
+  }
+  if (mutated) {
+    fs.writeFileSync(cliFile, `${JSON.stringify(cli, null, 2)}\n`);
+    console.log(`Updated ${cliFile} optionalDependencies -> ${highest}`);
+  }
+}
+NODE
+yarn install
+git add package.json \
+    packages/*/package.json \
+    npm/*/package.json \
+    plugins/*/.claude-plugin/plugin.json \
+    .claude-plugin/marketplace.json \
+    packages/git-mesh/Cargo.toml \
+    packages/git-mesh/Cargo.lock 2>/dev/null || true
+git add yarn.lock .yarn/install-state.gz 2>/dev/null || true
+exit 0
