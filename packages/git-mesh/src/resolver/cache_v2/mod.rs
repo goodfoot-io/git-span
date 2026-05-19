@@ -243,11 +243,22 @@ pub(crate) fn stale_meshes_cached(
     // Overlay key: committed digest + index checksum + exact dirty
     // mesh-file and source-file content identities + layer identity.
     let workdir = crate::git::work_dir(repo)?;
+    // Each dirty source file's identity is a digest of its worktree
+    // bytes (the same content identity dirty mesh files use below), not
+    // the path string — so a worktree-only edit forces a key change and
+    // a recompute even when the index and commit are unchanged.
+    let dirty_source_ids: Vec<(String, String)> = dirty_paths
+        .iter()
+        .map(|p| {
+            let id = file_content_identity(workdir, p.as_str());
+            (p.clone(), id)
+        })
+        .collect();
     let dirty_source_fp = content_identity_fingerprint(
         b"gm.cache_v2.dirty-source\0",
-        dirty_paths
+        dirty_source_ids
             .iter()
-            .map(|p| (p.as_str(), p.as_str()))
+            .map(|(p, i)| (p.as_str(), i.as_str()))
             .collect::<Vec<_>>(),
     );
     let dirty_mesh_ids: Vec<(String, String)> = affected_meshes
