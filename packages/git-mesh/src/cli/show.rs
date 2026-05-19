@@ -289,19 +289,51 @@ struct MeshToml {
 pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Result<i32> {
     let mesh = {
         let _perf = crate::perf::span("show.read-mesh");
+        // Fail-closed: a mesh in a Git conflict state cannot be shown —
+        // refuse explicitly rather than rendering conflict-marker text as
+        // valid why/anchor data.
+        let conflict_err = |name: &str| CliError {
+            subcommand: "show",
+            summary: format!("mesh `{name}` is in a Git conflict state."),
+            what_happened: format!(
+                "The mesh file for `{name}` has an unresolved merge \
+                 (unmerged index entry or `<<<<<<<`/`>>>>>>>` markers). \
+                 git-mesh refuses to present conflict-marker content as \
+                 valid mesh data."
+            ),
+            next_steps: vec![
+                NextStep::Bash(format!("git status {mesh_root}/{name}")),
+                NextStep::Prose(
+                    "Resolve the merge conflict in the mesh file, then retry."
+                        .into(),
+                ),
+            ],
+        };
         if args.at.is_none() {
-            crate::mesh::read::read_mesh_in(repo, &args.name, mesh_root).map_err(|e| CliError {
-                subcommand: "show",
-                summary: format!("no mesh named `{}`.", args.name),
-                what_happened: format!("{}", e),
-                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            crate::mesh::read::read_mesh_in(repo, &args.name, mesh_root).map_err(|e| {
+                if matches!(e, crate::Error::MeshConflict(_)) {
+                    conflict_err(&args.name)
+                } else {
+                    CliError {
+                        subcommand: "show",
+                        summary: format!("no mesh named `{}`.", args.name),
+                        what_happened: format!("{}", e),
+                        next_steps: vec![NextStep::Bash("git mesh list".into())],
+                    }
+                }
             })?
         } else {
-            read_mesh_at_in(repo, &args.name, args.at.as_deref(), mesh_root).map_err(|e| CliError {
-                subcommand: "show",
-                summary: format!("no mesh named `{}`.", args.name),
-                what_happened: format!("{}", e),
-                next_steps: vec![NextStep::Bash("git mesh list".into())],
+            read_mesh_at_in(repo, &args.name, args.at.as_deref(), mesh_root).map_err(|e| {
+                if matches!(e, crate::Error::MeshConflict(_)) {
+                    conflict_err(&args.name)
+                } else {
+                    CliError {
+                        subcommand: "show",
+                        summary: format!("no mesh named `{}`.", args.name),
+                        what_happened: format!("{}", e),
+                        next_steps: vec![NextStep::Bash("git mesh list".into())],
+                    }
+                }
             })?
         }
     };
@@ -357,6 +389,44 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
     } else {
         Some(resolve_targets(repo, mesh_root, &args.targets)?)
     };
+
+    // Fail-closed: a mesh in a Git conflict state cannot be listed
+    // reliably (`load_all_meshes_in` skips it rather than rendering
+    // conflict-marker text). Refuse explicitly instead of silently
+    // dropping it, so an unresolved merge is never reported as a clean
+    // empty list.
+    {
+        let conflicted =
+            crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
+        let in_scope: Vec<String> = match &resolved_names {
+            Some(names) => conflicted
+                .into_iter()
+                .filter(|c| names.iter().any(|n| n == c))
+                .collect(),
+            None => conflicted,
+        };
+        if !in_scope.is_empty() {
+            let joined = in_scope.join("`, `");
+            return Err(CliError {
+                subcommand: "list",
+                summary: format!("mesh `{joined}` is in a Git conflict state."),
+                what_happened: format!(
+                    "The mesh file(s) `{joined}` have an unresolved merge \
+                     (unmerged index entry or `<<<<<<<`/`>>>>>>>` markers). \
+                     git-mesh refuses to list conflict-marker content as \
+                     valid mesh data."
+                ),
+                next_steps: vec![
+                    NextStep::Bash(format!("git status {mesh_root}")),
+                    NextStep::Prose(
+                        "Resolve the merge conflict in the mesh file(s), then retry."
+                            .into(),
+                    ),
+                ],
+            }
+            .into());
+        }
+    }
 
     let include_why = !args.porcelain || args.search.is_some();
     let include_state = !args.porcelain;

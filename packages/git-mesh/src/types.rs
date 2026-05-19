@@ -304,7 +304,7 @@ pub enum Error {
     ReservedWhyPrefix { prefix: String },
 
     /// `anchor_sha` is not reachable; resolver classifies the anchor as
-    /// `Orphaned` rather than erroring, but callers writing new anchors
+    /// `Deleted` rather than erroring, but callers writing new anchors
     /// surface this as a hard error (§5.3, §6.8).
     #[error("anchor commit unreachable: {anchor_sha}")]
     Unreachable { anchor_sha: String },
@@ -378,6 +378,13 @@ pub enum Error {
     /// Mesh file parse error (§Phase 1 tracked files).
     #[error("invalid mesh file: {0}")]
     InvalidMeshFile(String),
+
+    /// The mesh file (or its source content) is in a Git conflict state
+    /// (unmerged index entry / textual conflict markers), so it cannot be
+    /// read reliably. Fail-closed: callers must surface `Conflict`, never
+    /// present conflict-marker content as valid mesh data.
+    #[error("mesh `{0}` is in a Git conflict state (unresolved merge)")]
+    MeshConflict(String),
 
     /// Generic git-process / gix error.
     #[error("git: {0}")]
@@ -722,8 +729,8 @@ pub struct Finding {
     pub source: Option<DriftSource>,
     /// Always populated from the pinned `Anchor` record.
     pub anchored: AnchorLocation,
-    /// `None` when `Orphaned` / `Submodule` / `ContentUnavailable`;
-    /// populated with best-effort path for `MergeConflict`.
+    /// `None` when `Deleted` / `Submodule` / `ContentUnavailable`;
+    /// populated with best-effort path for `Conflict`.
     pub current: Option<AnchorLocation>,
     /// Staged re-anchor matched by `anchor_id`.
     pub acknowledged_by: Option<StagedOpRef>,
@@ -761,9 +768,9 @@ pub struct EngineOptions {
     /// Slice 5 of the review plan: `--since <commit-ish>` already
     /// resolved to a commit OID. The engine includes a anchor only when
     /// `since` is an ancestor of (or equal to) the anchor's anchor —
-    /// i.e. the anchor is anchored "at or after" `since`. Orphaned
+    /// i.e. the anchor is anchored "at or after" `since`. Deleted
     /// anchors are always included (the filter is for scoping, not
-    /// hiding orphans).
+    /// hiding removed-path anchors).
     pub since: Option<gix::ObjectId>,
     /// Phase 4: does the caller need every layer's drift evaluated, or
     /// is HEAD's verdict alone sufficient to drive the exit code? Set

@@ -122,12 +122,16 @@ fn find_relocated_range(
 /// path no longer resolves at the deepest layer (e.g. `git rm`, or a
 /// verbatim copy to a new path + remove of the original).
 ///
-/// Scans tracked paths that are *new relative to HEAD* (a relocation
-/// target is content that appeared where there was nothing committed —
-/// e.g. a verbatim copy to a fresh path). Pre-existing committed files
-/// are skipped so coincidental matches of trivial generic content do not
-/// masquerade as a relocation. Returns `(path, start, end)` on the first
-/// hit; the original `exclude` path is skipped.
+/// Scans tracked paths for the stored content. A relocation target is
+/// either content that appeared where there was nothing committed (a
+/// verbatim copy to a fresh path) or — when `anchored_absent_at_head` is
+/// true — a HEAD-present path that received the content via a committed
+/// `git mv`. When the original anchored path is still present at HEAD
+/// (`anchored_absent_at_head == false`) HEAD-present candidates are
+/// skipped so a coincidental match of trivial generic content in an
+/// unrelated committed file does not masquerade as a relocation. Returns
+/// `(path, start, end)` on the first hit; the original `exclude` path is
+/// skipped.
 fn find_relocated_range_in_paths(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -135,9 +139,20 @@ fn find_relocated_range_in_paths(
     span: usize,
     stored_hash: &str,
     exclude: &str,
+    anchored_absent_at_head: bool,
 ) -> Option<(String, u32, u32)> {
     let entries = git::index_entries(repo).ok()?;
     let workdir = git::work_dir(repo).ok()?;
+    // When the anchored path is gone from HEAD (committed `git mv` /
+    // deletion), a HEAD-present path is a valid relocation target only
+    // if it is new as of the rename commit — see
+    // `rename_target_predicate`. This excludes a coincidental match in
+    // an unrelated pre-existing file.
+    let is_rename_target = if anchored_absent_at_head {
+        Some(super::rename_target_predicate(repo, exclude))
+    } else {
+        None
+    };
     for en in entries {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
@@ -145,11 +160,13 @@ fn find_relocated_range_in_paths(
         if en.path == exclude || en.mode.is_commit() {
             continue;
         }
-        // Only a path absent from HEAD is a relocation target; an
-        // existing committed file that happens to share generic lines
-        // is not where the anchored content "moved" to.
+        // A path absent from HEAD is always a candidate. A HEAD-present
+        // path qualifies only via the committed-rename predicate.
         if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
-            continue;
+            match &is_rename_target {
+                Some(pred) if pred(repo, &en.path) => {}
+                _ => continue,
+            }
         }
         let text: String = match deepest {
             DriftSource::Worktree => match std::fs::read(workdir.join(&en.path)) {
@@ -451,9 +468,10 @@ pub(crate) fn resolve_anchor_inner(
             // path was deleted at the deepest enabled layer (`git rm`,
             // worktree delete) or is absent from HEAD (`git mv`). The
             // mesh stores content hashes, so before classifying:
-            //  - relocated verbatim to a new path → `Moved`
-            //  - path also absent from HEAD (committed deletion) →
-            //    `Deleted` (renders "orphaned")
+            //  - relocated verbatim to a new path (including a committed
+            //    `git mv` target) → `Moved`
+            //  - path also absent from HEAD with no relocation found
+            //    (committed deletion) → `Deleted`
             //  - path still at HEAD, removed only in the index/worktree
             //    → `Changed` with the layer source and no `current`,
             //    rendered "deleted in the working tree/index".
@@ -472,6 +490,7 @@ pub(crate) fn resolve_anchor_inner(
                     span,
                     &r.stored_hash,
                     &r.path,
+                    head_path_absent,
                 );
                 if let Some((new_path, rs, re)) = relocated {
                     status = AnchorStatus::Moved;
@@ -577,41 +596,48 @@ pub(crate) fn resolve_anchor_inner(
 
             let inferred_source = computed_layer_sources.first().copied();
 
-            // A committed cross-path rename detaches the anchor — the mesh
-            // stores paths, not blob identity. Detect via head_tracked
-            // diverging from the anchored path; reclassify to Orphaned so
-            // `populate_drift_locus` emits `orphaned in <rename-sha>`.
-            let head_path_diverged = head_tracked
-                .as_ref()
-                .is_some_and(|h| h.path != r.path);
-            let anchored_path_absent_at_head =
-                state.head_blob_at(repo, &r.path)?.is_none();
-            if equal && head_path_diverged && anchored_path_absent_at_head {
-                return Ok(AnchorResolved {
-                    anchor_id: anchor_id.into(),
-                    anchor_sha: r.anchor_sha,
-                    anchored,
-                    current: None,
-                    status: AnchorStatus::Deleted,
-                    source: None,
-                    layer_sources: vec![],
-                    acknowledged_by: None,
-                    locus: None,
-                });
-            }
+            // A committed cross-path rename relocates the anchored content
+            // to a new path. The mesh stores an address plus a content
+            // hash, so when the stored content is still present (here, at
+            // the rename-followed `head_tracked` path) the correct state
+            // is `Moved`, not `Deleted` — the `if equal` branch below
+            // classifies it as `Moved` with `current` at the new path.
             // File-backed `Moved`: when the tracked-range content no
             // longer matches `stored_hash`, the same content may have
             // relocated within the file (lines shifted, block moved).
             // Scan for the relocated window before classifying `Changed`.
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
+            let span = (anchored_end as usize)
+                .saturating_sub(anchored_start as usize)
+                + 1;
             let relocated: Option<(u32, u32)> = if !equal && file_backed {
-                let span = (anchored_end as usize)
-                    .saturating_sub(anchored_start as usize)
-                    + 1;
                 find_relocated_range(&cur_text, span, &r.stored_hash, anchored_start)
             } else {
                 None
             };
+            // Cross-path relocation: the stored content was duplicated
+            // verbatim to a different tracked path (e.g. a staged
+            // copy-then-replace, or a committed `git mv` whose rename
+            // detection the follow-walk did not pick up). When the
+            // anchored range still resolves but no longer matches, scan
+            // other tracked paths for the exact stored content before
+            // classifying `Changed`.
+            let relocated_path: Option<(String, u32, u32)> =
+                if !equal && file_backed && relocated.is_none() {
+                    let anchored_absent_at_head =
+                        state.head_blob_at(repo, &r.path)?.is_none();
+                    find_relocated_range_in_paths(
+                        repo,
+                        state,
+                        deepest_layer,
+                        span,
+                        &r.stored_hash,
+                        &r.path,
+                        anchored_absent_at_head,
+                    )
+                } else {
+                    None
+                };
 
             let cur_blob_oid = if worktree_hunk_applied {
                 None
@@ -661,6 +687,20 @@ pub(crate) fn resolve_anchor_inner(
                         end: rend,
                     },
                     blob: cur_blob_oid,
+                });
+            } else if let Some((rpath, rstart, rend)) = relocated_path {
+                // Exact stored content found verbatim at a different
+                // path → Moved.
+                status = AnchorStatus::Moved;
+                source = Some(deepest_layer);
+                layer_sources = vec![deepest_layer];
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(rpath),
+                    extent: AnchorExtent::LineRange {
+                        start: rstart,
+                        end: rend,
+                    },
+                    blob: None,
                 });
             } else {
                 status = AnchorStatus::Changed;
@@ -740,26 +780,11 @@ fn clean_head_fast_path(
     if head_blob != r.blob {
         return Ok(None);
     }
-    // Committed cross-path rename detaches the anchor (mesh stores paths,
-    // not blob identity). Reclassify as Orphaned so `populate_drift_locus`
-    // emits `orphaned in <rename-sha>` via the forward walk. A *copy*
-    // (anchored path still present at HEAD) is not a rename: leave it as
-    // Moved so the anchor follows the new path.
-    let anchored_path_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
-    if t.path != r.path && anchored_path_absent_at_head {
-        state.session.anchors_fast_path_hits += 1;
-        return Ok(Some(AnchorResolved {
-            anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha.clone(),
-            anchored,
-            current: None,
-            status: AnchorStatus::Deleted,
-            source: None,
-            layer_sources: vec![],
-            acknowledged_by: None,
-            locus: None,
-        }));
-    }
+    // A committed cross-path rename relocates the anchored content. The
+    // mesh stores an address plus a content hash; the rename-followed
+    // `t.path` still holds the stored bytes, so the correct state is
+    // `Moved` (handled by the `status` computation below), never
+    // `Deleted`.
     let status = if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
         AnchorStatus::Fresh
     } else {

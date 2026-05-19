@@ -35,6 +35,12 @@ impl<'repo> MeshFileReader<'repo> {
     /// Returns `Ok(None)` when the mesh file is absent from all layers, or
     /// when a higher-layer absence acts as a tombstone hiding lower layers.
     pub fn read_effective(&self, name: &str) -> Result<Option<MeshFile>> {
+        // Fail-closed: an unmerged (stage 1/2/3) index entry for the mesh
+        // file means an unresolved merge. Refuse to present any layer's
+        // content as valid — the effective view is unreliable.
+        if self.is_unmerged_in_index(name)? {
+            return Err(Error::MeshConflict(name.to_string()));
+        }
         // Worktree layer (highest priority).
         if let Some(mesh) = self.read_worktree(name)? {
             return Ok(Some(mesh));
@@ -144,6 +150,22 @@ impl<'repo> MeshFileReader<'repo> {
             .workdir()
             .expect("MeshFileReader only works in non-bare repositories");
         workdir.join(&self.mesh_root).join(name)
+    }
+
+    /// Check whether the mesh file has an unmerged (stage 1/2/3) index
+    /// entry — the canonical Git signal for an unresolved merge conflict.
+    fn is_unmerged_in_index(&self, name: &str) -> Result<bool> {
+        let mesh_path = self.mesh_path(name);
+        let entries = match crate::git::index_entries(self.repo) {
+            Ok(e) => e,
+            // No index / unreadable index is not, by itself, a conflict;
+            // the worktree-marker backstop in `MeshFile::parse` still
+            // fails closed if conflict text is present.
+            Err(_) => return Ok(false),
+        };
+        Ok(entries.iter().any(|e| {
+            e.path == mesh_path && e.stage != gix::index::entry::Stage::Unconflicted
+        }))
     }
 
     /// Check whether a file path exists in the index.

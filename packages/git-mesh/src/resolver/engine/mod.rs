@@ -1073,6 +1073,76 @@ fn anchor_at_or_after(repo: &gix::Repository, anchor_sha: &str, since: gix::Obje
     }
 }
 
+/// Predicate factory for cross-path relocation when the anchored path is
+/// absent from HEAD (a committed `git mv`/deletion).
+///
+/// Returns a closure `is_rename_target(path) -> bool`. A HEAD-present
+/// candidate is only a rename target when it did **not** exist at the
+/// point the anchored path last existed — i.e. it is new as of the
+/// rename commit (the `git mv` shape). A file that already existed
+/// alongside the anchored path (e.g. an unrelated file that happens to
+/// share generic lines) is excluded, so a coincidental content match
+/// never masquerades as a relocation.
+///
+/// Implementation: walk HEAD ancestors reverse-chronologically and find
+/// the first commit whose tree still contains `anchored_path`. That
+/// commit's tree is the "before" reference: any candidate already
+/// present there is pre-existing, not a rename destination. When the
+/// anchored path is found nowhere in history (defensive), every
+/// HEAD-present path is treated as pre-existing (no relocation), which
+/// fails closed to `Deleted`.
+pub(crate) fn rename_target_predicate(
+    repo: &gix::Repository,
+    anchored_path: &str,
+) -> impl Fn(&gix::Repository, &str) -> bool {
+    // The commit-ish whose tree still had `anchored_path` (the state
+    // before the rename/deletion). `None` => unknown => treat all
+    // HEAD-present paths as pre-existing.
+    let before_commit: Option<String> = (|| {
+        let head = crate::git::head_oid(repo).ok()?;
+        let head_oid = gix::ObjectId::from_hex(head.as_bytes()).ok()?;
+        let walk = repo
+            .rev_walk([head_oid])
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ))
+            .all()
+            .ok()?;
+        for info in walk {
+            let info = info.ok()?;
+            let cid = info.id.to_string();
+            if crate::git::tree_entry_at(
+                repo,
+                &cid,
+                std::path::Path::new(anchored_path),
+            )
+            .ok()
+            .flatten()
+            .is_some()
+            {
+                return Some(cid);
+            }
+        }
+        None
+    })();
+
+    move |repo: &gix::Repository, candidate: &str| -> bool {
+        let Some(before) = before_commit.as_ref() else {
+            return false;
+        };
+        // Rename target iff the candidate was absent from the tree that
+        // still held the anchored path (it is new as of the rename).
+        crate::git::tree_entry_at(
+            repo,
+            before,
+            std::path::Path::new(candidate),
+        )
+        .ok()
+        .flatten()
+        .is_none()
+    }
+}
+
 fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
     AnchorResolved {
         anchor_id: anchor_id.into(),

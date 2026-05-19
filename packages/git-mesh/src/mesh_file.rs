@@ -67,6 +67,15 @@ impl MeshFile {
     ///
     /// Returns `InvalidMeshFile` on malformed input.
     pub fn parse(input: &str) -> Result<Self> {
+        // Fail-closed backstop: a mesh file carrying Git textual conflict
+        // markers is the product of an unresolved merge. Refuse to parse
+        // it as valid mesh data so `show`/`list`/`stale` never present
+        // `<<<<<<<` / `=======` / `>>>>>>>` content as real why/anchors.
+        if has_conflict_markers(input) {
+            return Err(Error::MeshConflict(
+                "mesh file contains Git conflict markers".to_string(),
+            ));
+        }
         // Split on first blank line (double newline).
         let (anchor_block, why) = match input.split_once("\n\n") {
             Some((anchors, why)) => (anchors, why.to_string()),
@@ -132,6 +141,25 @@ impl MeshFile {
         }
         out
     }
+}
+
+/// Detect Git textual merge-conflict markers. A line is a conflict
+/// marker when it begins with one of the standard 7-character sentinels
+/// (`<<<<<<<`, `=======`, `>>>>>>>`) or the diff3 base sentinel
+/// (`|||||||`). The `=======` form must be the marker line exactly (or
+/// followed by whitespace) so a legitimate `=======` inside why prose is
+/// not over-matched alongside the open/close markers.
+fn has_conflict_markers(input: &str) -> bool {
+    let mut saw_open = false;
+    let mut saw_close = false;
+    for line in input.lines() {
+        if line.starts_with("<<<<<<<") {
+            saw_open = true;
+        } else if line.starts_with(">>>>>>>") {
+            saw_close = true;
+        }
+    }
+    saw_open && saw_close
 }
 
 /// Parse a single anchor line of the form:

@@ -807,23 +807,26 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     Ok(())
 }
 
-/// Card main-61 §5 "Rename handling": a committed `git mv` of a pinned path
-/// detaches the anchor (the mesh stores paths, not blob identity). The
-/// resolver reports Orphaned; the orphaning commit is surfaced separately as
-/// the drift locus (`orphaned in <sha>`).
+/// Tracked-file model (round-2): a committed `git mv` of a pinned path
+/// relocates the stored content verbatim. The resolver finds the stored
+/// content hash at the new path and reports `Moved` (never `Deleted`,
+/// never the dead ref-era "orphaned"); `current` points at the new path.
 #[test]
-fn git_mv_across_pinned_file_reports_orphaned() -> Result<()> {
+fn git_mv_across_pinned_file_is_moved() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
     repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
     repo.commit_all("rename")?;
     let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
-    assert_eq!(r.status, AnchorStatus::Deleted);
-    // Anchored path unchanged.
+    assert_eq!(r.status, AnchorStatus::Moved);
+    // Anchored (origin) path unchanged.
     assert_eq!(r.anchored.path, PathBuf::from("file1.txt"));
-    // No current location once orphaned.
-    assert!(r.current.is_none());
+    // Current location points at the relocation target.
+    assert_eq!(
+        r.current.as_ref().map(|c| c.path.clone()),
+        Some(PathBuf::from("renamed.txt"))
+    );
     Ok(())
 }
 
@@ -881,12 +884,12 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
         repo.run_git(["mv", &format!("bulk/a_{i}.txt"), &format!("bulk/b_{i}.txt")])?;
     }
     repo.commit_all("bulk rename")?;
-    // File-backed model: the mesh stores paths, not content identity,
-    // and the resolver does not run a history-walking rename detector
-    // (there is no `anchor_sha` to walk from). A committed rename of the
-    // anchored path detaches the anchor — it resolves `Deleted` — and
-    // the command must complete promptly even across a 1100-file rename
-    // changeset rather than emitting a rename-budget note.
+    // Tracked-file model (round-2): the mesh stores paths plus a content
+    // hash. A committed rename of the anchored path relocates the stored
+    // content verbatim, so the resolver finds the stored hash at a new
+    // path and reports `Moved` (never the dead ref-era "orphaned"). The
+    // command must still complete promptly across a 1100-file rename
+    // changeset and report drift.
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(
         out.status.code(),
@@ -894,8 +897,15 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
         "stale must report drift; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout)
+            .to_lowercase()
+            .contains("orphan"),
+        "the word 'orphaned' must never appear in stale output; stdout={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
-    assert_eq!(mr.anchors[0].status, AnchorStatus::Deleted);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Moved);
     Ok(())
 }
 

@@ -84,10 +84,23 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
 }
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Result<i32> {
-    let layers = LayerSet {
-        worktree: !args.no_worktree,
-        index: !args.no_index,
-        staged_mesh: !args.no_staged_mesh,
+    // Read-mode flags (card "Layered Read Model"): `--head` / `--staged`
+    // / `--worktree` select an explicit layer view. They are mutually
+    // exclusive (enforced by clap) and supersede the `--no-*` toggles
+    // (also clap-enforced). Absent any of them, the default effective
+    // view is worktree-over-index-over-HEAD, refined by `--no-*`.
+    let layers = if args.head {
+        LayerSet { worktree: false, index: false, staged_mesh: !args.no_staged_mesh }
+    } else if args.staged {
+        LayerSet { worktree: false, index: true, staged_mesh: !args.no_staged_mesh }
+    } else if args.worktree {
+        LayerSet { worktree: true, index: true, staged_mesh: !args.no_staged_mesh }
+    } else {
+        LayerSet {
+            worktree: !args.no_worktree,
+            index: !args.no_index,
+            staged_mesh: !args.no_staged_mesh,
+        }
     };
     let show_src_column = layers.worktree || layers.index;
     // Slice 5: resolve `--since <commit-ish>` once, fail-closed on
@@ -293,6 +306,57 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         meshes
     };
 
+    // Fail-closed Conflict reporting: a mesh whose file (or anchored
+    // source) is in a Git conflict state cannot be read reliably. Such
+    // meshes are skipped by the normal resolution batch; surface each
+    // one here as a `Conflict` finding so it renders and forces a
+    // non-zero exit (an unreliable read must never report "clean").
+    {
+        let _perf = crate::perf::span("stale.detect-conflicts");
+        let conflicted = crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
+        // When positional args were given, only report conflicts for the
+        // requested scope (a named mesh or a path/glob that resolves to
+        // one); a full scan reports every conflicted mesh.
+        let in_scope = |name: &str| -> bool {
+            if args.paths.is_empty() {
+                return true;
+            }
+            args.paths.iter().any(|p| p == name)
+        };
+        let mesh_root_owned = mesh_root.to_string();
+        for name in conflicted {
+            if !in_scope(&name) {
+                continue;
+            }
+            if meshes.iter().any(|m| m.name == name) {
+                continue;
+            }
+            let mesh_file_path =
+                std::path::PathBuf::from(format!("{mesh_root_owned}/{name}"));
+            meshes.push(MeshResolved {
+                name: name.clone(),
+                message: String::new(),
+                anchors: vec![crate::types::AnchorResolved {
+                    anchor_id: name.clone(),
+                    anchor_sha: String::new(),
+                    anchored: AnchorLocation {
+                        path: mesh_file_path.clone(),
+                        extent: AnchorExtent::WholeFile,
+                        blob: None,
+                    },
+                    current: None,
+                    status: AnchorStatus::MergeConflict,
+                    source: None,
+                    layer_sources: vec![],
+                    acknowledged_by: None,
+                    locus: None,
+                }],
+                pending: Vec::new(),
+                follow_moves: false,
+            });
+        }
+    }
+
     // Sort all collected meshes (including staging-only meshes with empty
     // anchors) by anchor path for deterministic output regardless of whether
     // they came from a full scan, positional args, or staging-only discovery.
@@ -304,7 +368,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     //
     // Per-layer expansion: each non-Fresh anchor emits one `Finding` per
     // drifting layer in `layer_sources` (shallow-to-deep: I → W → H).
-    // Terminal statuses (Orphaned, MergeConflict, Submodule,
+    // Terminal statuses (Deleted, Conflict, Submodule,
     // ContentUnavailable) have an empty `layer_sources` and emit exactly
     // one row with `source=None`. MOVED also emits one row.
     let (findings, pending): (Vec<Finding>, Vec<PendingFinding>) = {
@@ -488,7 +552,7 @@ fn extent_to_options(extent: AnchorExtent) -> (Option<u32>, Option<u32>) {
 
 /// Prose description of an anchor finding's status, source, and destination.
 ///
-/// Delegates to `format_drift_label` for `Changed`/`Orphaned`; renders the
+/// Delegates to `format_drift_label` for `Changed`/`Deleted`; renders the
 /// remaining statuses (Moved, MergeConflict, Submodule, ContentUnavailable)
 /// inline in the uppercase voice the human renderer's header column uses.
 fn describe_finding(f: &Finding) -> String {
@@ -512,21 +576,19 @@ fn describe_finding(f: &Finding) -> String {
             uppercase_first(&label)
         }
         AnchorStatus::Moved => {
-            let src = src_phrase(f.source);
+            // A relocation's provenance is the relocation itself (the
+            // stored content hash found at a different path/range),
+            // not a per-layer edit — a committed `git mv` is no more
+            // "in the working tree" than a staged copy is. The card
+            // defines `Moved` as "stored content hash found at a
+            // different path or range"; the destination address is the
+            // only meaningful detail, so the layer phrase is omitted.
             if let Some(cur) = &f.current {
                 let (s, e) = extent_to_options(cur.extent);
                 let dest = format::format_anchor_address(&cur.path.to_string_lossy(), s, e);
-                if src.is_empty() {
-                    format!("Moved to `{dest}`")
-                } else {
-                    format!("Moved {src} to `{dest}`")
-                }
+                format!("Moved to `{dest}`")
             } else {
-                if src.is_empty() {
-                    "Moved".to_string()
-                } else {
-                    format!("Moved {src}")
-                }
+                "Moved".to_string()
             }
         }
         AnchorStatus::Deleted => {
@@ -541,9 +603,9 @@ fn describe_finding(f: &Finding) -> String {
         AnchorStatus::MergeConflict => {
             let src = src_phrase(f.source);
             if src.is_empty() {
-                "Merge conflict".to_string()
+                "Conflict".to_string()
             } else {
-                format!("Merge conflict {src}")
+                format!("Conflict {src}")
             }
         }
         AnchorStatus::Submodule => {
@@ -580,7 +642,7 @@ fn describe_finding(f: &Finding) -> String {
 /// - "changed"
 /// - "changed in HEAD"
 /// - "moved to new/path#L1-L10"
-/// - "orphaned in HEAD (path no longer exists)"
+/// - "deleted in HEAD (path no longer exists)"
 fn describe_finding_lower(f: &Finding) -> String {
     let src_phrase = |src: Option<DriftSource>| -> &'static str {
         match src {
@@ -599,18 +661,14 @@ fn describe_finding_lower(f: &Finding) -> String {
             f.current.is_some(),
         ),
         AnchorStatus::Moved => {
-            let src = src_phrase(f.source);
+            // Relocation provenance is the move itself, not a per-layer
+            // edit (see `describe_finding`); omit the layer phrase so a
+            // committed `git mv` is not mislabeled "in the working tree".
             if let Some(cur) = &f.current {
                 let dest = render_path_extent_plain(&cur.path, cur.extent);
-                if src.is_empty() {
-                    format!("moved to {dest}")
-                } else {
-                    format!("moved {src} to {dest}")
-                }
-            } else if src.is_empty() {
-                "moved".to_string()
+                format!("moved to {dest}")
             } else {
-                format!("moved {src}")
+                "moved".to_string()
             }
         }
         AnchorStatus::Deleted => super::drift_label::format_drift_label(
@@ -622,9 +680,9 @@ fn describe_finding_lower(f: &Finding) -> String {
         AnchorStatus::MergeConflict => {
             let src = src_phrase(f.source);
             if src.is_empty() {
-                "merge conflict".to_string()
+                "conflict".to_string()
             } else {
-                format!("merge conflict {src}")
+                format!("conflict {src}")
             }
         }
         AnchorStatus::Submodule => {
@@ -669,8 +727,8 @@ fn status_str(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Fresh => "FRESH",
         AnchorStatus::Moved => "MOVED",
         AnchorStatus::Changed => "CHANGED",
-        AnchorStatus::Deleted => "ORPHANED",
-        AnchorStatus::MergeConflict => "MERGE_CONFLICT",
+        AnchorStatus::Deleted => "DELETED",
+        AnchorStatus::MergeConflict => "CONFLICT",
         AnchorStatus::Submodule => "SUBMODULE",
         AnchorStatus::ContentUnavailable(reason) => match reason {
             UnavailableReason::LfsNotFetched => "LFS_NOT_FETCHED",
@@ -688,8 +746,8 @@ fn status_word(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Fresh => "Fresh",
         AnchorStatus::Moved => "Moved",
         AnchorStatus::Changed => "Changed",
-        AnchorStatus::Deleted => "Orphaned",
-        AnchorStatus::MergeConflict => "Merge conflict",
+        AnchorStatus::Deleted => "Deleted",
+        AnchorStatus::MergeConflict => "Conflict",
         AnchorStatus::Submodule => "Submodule",
         AnchorStatus::ContentUnavailable(_) => "Content unavailable",
     }
@@ -855,7 +913,7 @@ fn render_human(
                 println!("All anchors in {} are stale:", m.name);
             } else if mesh_stale > 0 {
                 println!(
-                    "{} out of {} anchors in mesh {} are stale:",
+                    "{} of {} anchors in {} are stale:",
                     mesh_stale, mesh_total, m.name
                 );
             }
@@ -1182,7 +1240,7 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "acknowledged_by": f.acknowledged_by.as_ref().map(staged_op_ref_json),
         "locus": match f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
-            Some(DriftLocus::OrphanedAt(oid)) => json!({ "orphaned_in": oid.to_string() }),
+            Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),
             None => Value::Null,
         },
     })

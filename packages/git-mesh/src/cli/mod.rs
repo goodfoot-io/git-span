@@ -182,6 +182,34 @@ pub struct StaleArgs {
     #[arg(long)]
     pub no_exit_code: bool,
 
+    /// Read mode: resolve against the HEAD layer only (ignore index and
+    /// working tree). Mutually exclusive with `--staged`/`--worktree`
+    /// and the `--no-*` layer toggles.
+    #[arg(
+        long,
+        conflicts_with_all = ["staged", "worktree", "no_worktree", "no_index"]
+    )]
+    pub head: bool,
+
+    /// Read mode: resolve against the staged view (index overlaid on
+    /// HEAD); ignore working-tree changes. Mutually exclusive with
+    /// `--head`/`--worktree` and the `--no-*` layer toggles.
+    #[arg(
+        long,
+        conflicts_with_all = ["head", "worktree", "no_worktree", "no_index"]
+    )]
+    pub staged: bool,
+
+    /// Read mode: resolve against the full working-tree view (worktree
+    /// overlaid on index overlaid on HEAD) — the default effective view,
+    /// named explicitly. Mutually exclusive with `--head`/`--staged`
+    /// and the `--no-*` layer toggles.
+    #[arg(
+        long,
+        conflicts_with_all = ["head", "staged", "no_worktree", "no_index"]
+    )]
+    pub worktree: bool,
+
     /// Skip the working-tree layer; scan only HEAD (and the index unless `--no-index`).
     #[arg(long)]
     pub no_worktree: bool,

@@ -58,11 +58,39 @@ pub fn load_all_meshes_in(
         // A name can appear in `list_mesh_names` (e.g. present in HEAD)
         // yet be tombstoned in the effective view; skip those rather
         // than erroring so the batch resolves the live set.
-        if let Some(file) = reader.read_effective(&name)? {
-            out.push((name.clone(), mesh_from_file(&name, &file)));
+        //
+        // A mesh in a Git conflict state cannot be read reliably. It is
+        // surfaced separately as a `Conflict` finding by the stale path
+        // (see [`conflicted_mesh_names_in`]); skipping it here keeps the
+        // rest of the batch resolvable instead of aborting the whole run
+        // (still fail-closed: the conflict is reported, exit is non-zero).
+        match reader.read_effective(&name) {
+            Ok(Some(file)) => out.push((name.clone(), mesh_from_file(&name, &file))),
+            Ok(None) => {}
+            Err(Error::MeshConflict(_)) => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(out)
+}
+
+/// Names of all visible meshes that are currently in a Git conflict
+/// state (unmerged index entry or textual conflict markers). The stale
+/// path renders each as a `Conflict` finding and forces a non-zero exit.
+pub fn conflicted_mesh_names_in(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<Vec<String>> {
+    let reader = MeshFileReader::new(repo, mesh_root.to_string());
+    let mut names = reader.list_mesh_names()?;
+    names.sort();
+    let mut conflicted = Vec::new();
+    for name in names {
+        if let Err(Error::MeshConflict(_)) = reader.read_effective(&name) {
+            conflicted.push(name);
+        }
+    }
+    Ok(conflicted)
 }
 
 /// File-backed replacement for the ref-backed path index: return the

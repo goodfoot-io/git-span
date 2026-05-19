@@ -10,8 +10,8 @@
 //! | Changed in index | `changed in the index` |
 //! | Deleted in index | `deleted in the index` |
 //! | Changed at sha | `changed in <sha>` |
-//! | Orphaned at sha | `orphaned in <sha>` |
-//! | Orphaned (no sha) | `orphaned` |
+//! | Deleted at sha | `deleted in <sha>` |
+//! | Deleted (no sha) | `deleted` |
 //!
 //! Precedence is enforced by the engine before reaching this formatter:
 //! worktree → index → HEAD history walk.
@@ -62,18 +62,18 @@ pub fn format_drift_label(
                     format!("changed in {}", short_sha(oid))
                 }
                 Some(DriftLocus::OrphanedAt(oid)) => {
-                    format!("orphaned in {}", short_sha(oid))
+                    format!("deleted in {}", short_sha(oid))
                 }
                 None => "changed".to_string(),
             },
             None => "changed".to_string(),
         },
         AnchorStatus::Deleted => match locus {
-            Some(DriftLocus::OrphanedAt(oid)) => format!("orphaned in {}", short_sha(oid)),
-            Some(DriftLocus::ChangedAt(oid)) => format!("orphaned in {}", short_sha(oid)),
-            None => "orphaned".to_string(),
+            Some(DriftLocus::OrphanedAt(oid)) => format!("deleted in {}", short_sha(oid)),
+            Some(DriftLocus::ChangedAt(oid)) => format!("deleted in {}", short_sha(oid)),
+            None => "deleted".to_string(),
         },
-        // The non-Changed/Orphaned arms keep their existing vocabulary; the
+        // The non-Changed/Deleted arms keep their existing vocabulary; the
         // callers handle them directly (this formatter is the source of
         // truth only for the seven-row drift table).
         AnchorStatus::Moved => "moved".to_string(),

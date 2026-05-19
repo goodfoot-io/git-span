@@ -94,7 +94,7 @@ fn whole_file_path_removed_reads_deleted() -> Result<()> {
 }
 
 /// F4(b): committed deletion of an anchored whole-file path → `Deleted`
-/// (renders "orphaned"; the path no longer resolves at HEAD).
+/// (renders "deleted"; the path no longer resolves at HEAD).
 #[test]
 fn whole_file_path_committed_deletion_is_deleted() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -281,8 +281,8 @@ fn stat_lists_only_stale_anchors() -> Result<()> {
         "only one of two anchors is stale; must not say 'All anchors': {text}"
     );
     assert!(
-        text.contains("1 out of 2 anchors"),
-        "heading must report 1 out of 2: {text}"
+        text.contains("1 of 2 anchors in mix are stale:"),
+        "heading must report '1 of 2 anchors in mix are stale:': {text}"
     );
     assert!(
         text.contains("a.txt"),

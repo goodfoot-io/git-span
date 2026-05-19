@@ -204,12 +204,12 @@ fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Row 6: orphaned in <sha>
+// Row 6: deleted — committed deletion of the anchored path
 // ---------------------------------------------------------------------------
 
 #[test]
 
-fn committed_path_deletion_labels_orphaned_in_sha() -> Result<()> {
+fn committed_path_deletion_labels_deleted() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
 
@@ -217,53 +217,60 @@ fn committed_path_deletion_labels_orphaned_in_sha() -> Result<()> {
     repo.run_git(["rm", "file1.txt"])?;
     repo.run_git(["commit", "-m", "delete file1.txt"])?;
 
-    // File-backed model: the anchored path is gone from HEAD; the mesh
-    // stores paths, so the anchor is orphaned. No `in <sha>` locus
-    // (there is no anchor_sha history to attribute the deletion to).
+    // Tracked-file model: the anchored path is gone from HEAD and the
+    // stored content was not relocated, so the anchor is `Deleted`.
+    // The word `orphaned` must never appear in user output.
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("orphaned") && !stale.contains("orphaned in "),
-        "expected plain 'orphaned' (no sha locus); stale=\n{stale}"
+        stale.contains("deleted"),
+        "expected 'deleted'; stale=\n{stale}"
+    );
+    assert!(
+        !stale.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
     );
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Row 6b: orphaned in <sha> via rename
+// Row 6b: committed `git mv` of the anchored path → Moved
 // ---------------------------------------------------------------------------
 
 #[test]
 
-fn rename_in_history_labels_orphaned_in_rename_sha() -> Result<()> {
+fn committed_rename_of_anchored_path_is_moved() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt", 1, 5)?;
 
-    // Rename file1.txt → file1_renamed.txt and commit.
+    // Rename file1.txt → file1_renamed.txt and commit. The stored
+    // content now lives at the new path verbatim.
     repo.run_git(["mv", "file1.txt", "file1_renamed.txt"])?;
     repo.run_git(["commit", "-m", "rename file1.txt"])?;
 
-    // File-backed model: a committed rename of the anchored path
-    // detaches the anchor (the mesh stores paths). Plain `orphaned`,
-    // no `in <sha>` locus.
+    // Tracked-file model: the stored content hash is found at a
+    // different path → `Moved`, never `Deleted`/`orphaned`.
     let stale = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("orphaned") && !stale.contains("orphaned in "),
-        "expected plain 'orphaned' for rename (no sha locus); stale=\n{stale}"
+        stale.contains("moved") && stale.contains("file1_renamed.txt"),
+        "committed git mv must render 'moved' to the new path; stale=\n{stale}"
+    );
+    assert!(
+        !stale.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
     );
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Row 7: orphaned (no sha) — anchored path absent from HEAD
+// Row 7: deleted — anchored path absent from HEAD, no relocation
 // ---------------------------------------------------------------------------
 
 #[test]
 
-fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
-    // File-backed model: there is no "unreachable anchor_sha" concept —
-    // anchors carry no commit identity. The equivalent orphan condition
-    // is the anchored path being absent from HEAD entirely. The label
-    // is plain `orphaned`, never `orphaned in <sha>`.
+fn anchored_path_absent_from_head_labels_deleted() -> Result<()> {
+    // Tracked-file model: the anchored path absent from HEAD with no
+    // relocation found is `Deleted`. The label is plain `deleted`;
+    // `orphaned` must be unreachable.
     let repo = TestRepo::new()?;
     repo.write_file("file1.txt", "line1\nline2\nline3\nline4\nline5\n")?;
     repo.commit_all("initial")?;
@@ -277,8 +284,12 @@ fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
     let stale_out = repo.run_mesh(["stale", "m", "--no-exit-code"])?;
     let stale = String::from_utf8(stale_out.stdout)?;
     assert!(
-        stale.contains("orphaned") && !stale.contains("orphaned in "),
-        "expected plain 'orphaned' (no sha); stale=\n{stale}"
+        stale.contains("deleted"),
+        "expected 'deleted'; stale=\n{stale}"
+    );
+    assert!(
+        !stale.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
     );
     Ok(())
 }

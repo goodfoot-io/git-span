@@ -63,6 +63,12 @@ fn canonical_layer_bytes(
 ///
 /// `exclude` is the original anchored path (already known absent); it is
 /// skipped so a relocation is a genuinely different path.
+///
+/// When `anchored_absent_at_head` is true the anchored path itself is
+/// gone from HEAD (a committed `git mv`/deletion), so a HEAD-present
+/// path is a valid relocation target. Otherwise HEAD-present paths are
+/// skipped so an unrelated committed file is not mistaken for the move
+/// destination.
 fn find_relocated_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -70,8 +76,14 @@ fn find_relocated_whole_file(
     deepest: DriftSource,
     stored_hash: &str,
     exclude: &str,
+    anchored_absent_at_head: bool,
 ) -> Option<String> {
     let entries = git::index_entries(repo).ok()?;
+    let is_rename_target = if anchored_absent_at_head {
+        Some(super::rename_target_predicate(repo, exclude))
+    } else {
+        None
+    };
     for en in entries {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
@@ -79,11 +91,15 @@ fn find_relocated_whole_file(
         if en.path == exclude {
             continue;
         }
-        // A relocation target is content that appeared where there was
-        // nothing committed; an existing committed file is not where the
-        // anchor "moved" to.
+        // A path absent from HEAD is always a candidate. A HEAD-present
+        // path qualifies only when it is new as of the committed rename
+        // (see `rename_target_predicate`), so a coincidental content
+        // match in an unrelated pre-existing file is not a relocation.
         if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
-            continue;
+            match &is_rename_target {
+                Some(pred) if pred(repo, &en.path) => {}
+                _ => continue,
+            }
         }
         let gitlink = en.mode.is_commit();
         let bytes: Vec<u8> = match deepest {
@@ -329,7 +345,7 @@ pub(crate) fn resolve_whole_file(
     };
 
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
-    let current_loc = Some(AnchorLocation {
+    let mut current_loc = Some(AnchorLocation {
         path: PathBuf::from(&current_path),
         extent: AnchorExtent::WholeFile,
         blob: cur_blob_oid,
@@ -341,9 +357,10 @@ pub(crate) fn resolve_whole_file(
             // relocated verbatim to a different path (e.g. `git mv` not
             // yet committed, or a copy + `git rm`). Scan tracked paths
             // for the stored hash before deciding. Outcomes:
-            //  - relocated → `Moved` (current = new path)
-            //  - path also absent from HEAD (committed deletion / `git
-            //    mv`) → `Deleted` (renders "orphaned")
+            //  - relocated (including a committed `git mv` target) →
+            //    `Moved` (current = new path)
+            //  - path absent from HEAD with no relocation found
+            //    (committed deletion) → `Deleted`
             //  - path still at HEAD, removed only in the index/worktree
             //    → `Changed` with the layer source and no `current`,
             //    which the drift-label formatter renders as
@@ -360,6 +377,7 @@ pub(crate) fn resolve_whole_file(
                     deepest,
                     &r.stored_hash,
                     &current_path,
+                    head_path_absent,
                 )
             } else {
                 None
@@ -476,6 +494,36 @@ pub(crate) fn resolve_whole_file(
                 status = AnchorStatus::Fresh;
                 source = None;
                 layer_sources = vec![];
+            } else if let Some(new_path) = {
+                // Cross-path relocation: the stored whole-file content
+                // was duplicated verbatim to a different tracked path
+                // (staged copy-then-replace, or a committed `git mv` the
+                // follow-walk did not pick up). Scan before `Changed`.
+                let file_backed = !r.stored_hash.is_empty();
+                if file_backed {
+                    let anchored_absent_at_head =
+                        state.head_blob_at(repo, &r.path)?.is_none();
+                    find_relocated_whole_file(
+                        repo,
+                        state,
+                        workdir,
+                        deepest,
+                        &r.stored_hash,
+                        &current_path,
+                        anchored_absent_at_head,
+                    )
+                } else {
+                    None
+                }
+            } {
+                status = AnchorStatus::Moved;
+                source = Some(deepest);
+                layer_sources = vec![deepest];
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(new_path),
+                    extent: AnchorExtent::WholeFile,
+                    blob: None,
+                });
             } else {
                 status = AnchorStatus::Changed;
                 source = Some(deepest);
