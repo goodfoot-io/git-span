@@ -17,8 +17,8 @@ Events are either **fail-closed** or **advisory**, never mixed:
 - **Fail-closed** (`pre-*` events that run *before* the action): a non-zero
   sub-script aborts the action.
 - **Advisory** (`post-*` events that run *after* the action has landed): a
-  sub-script failure is reported but never aborts. There are currently no
-  advisory hooks in this repo.
+  sub-script failure is reported but never aborts. You cannot un-commit from
+  `post-commit`; advisory parts run for side effects only.
 
 ## pre-commit (fail-closed)
 
@@ -39,6 +39,24 @@ Each sub-script:
   fail-closed exit never discards the fixes (principle 4).
 - Is independently runnable and `bash -n`-clean. Debug one by hand:
   `.githooks/pre-commit.biome.sh`.
+
+## post-commit (advisory)
+
+`post-commit` is the advisory dispatcher. A failing part is reported
+(`post-commit: <part> exited non-zero (ignored)`) but never aborts the
+commit that already landed.
+
+| Sub-script                     | Purpose                                                                                  | Blocks? |
+| ------------------------------ | ---------------------------------------------------------------------------------------- | ------- |
+| `post-commit.wiki-scaffold.sh` | Scaffold git-mesh coverage for new fragment links; prints `git mesh add`/`why` to review | No (advisory) |
+
+This is the deferred half of the two-phase wiki hook setup: `pre-commit`
+auto-repairs fixable link/anchor drift and re-stages it; `post-commit`
+scaffolds mesh coverage for links the commit introduced. Scaffold output is
+printed for the committer to review, consolidate, and commit separately — it
+is never executed automatically. Per the git-mesh handbook, **no
+mesh-specific hook is required** for meshes themselves (a `.mesh/` file is an
+ordinary tracked file); this part only emits scaffold *suggestions*.
 
 ## Adding a concern
 
