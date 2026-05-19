@@ -118,6 +118,55 @@ fn find_relocated_range(
     best.map(|(start, _)| ((start as u32) + 1, (start as u32) + span as u32))
 }
 
+/// Cross-file `Moved` relocation scan for line anchors whose anchored
+/// path no longer resolves at the deepest layer (e.g. `git rm`, or a
+/// verbatim copy to a new path + remove of the original).
+///
+/// Scans tracked paths that are *new relative to HEAD* (a relocation
+/// target is content that appeared where there was nothing committed —
+/// e.g. a verbatim copy to a fresh path). Pre-existing committed files
+/// are skipped so coincidental matches of trivial generic content do not
+/// masquerade as a relocation. Returns `(path, start, end)` on the first
+/// hit; the original `exclude` path is skipped.
+fn find_relocated_range_in_paths(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    deepest: DriftSource,
+    span: usize,
+    stored_hash: &str,
+    exclude: &str,
+) -> Option<(String, u32, u32)> {
+    let entries = git::index_entries(repo).ok()?;
+    let workdir = git::work_dir(repo).ok()?;
+    for en in entries {
+        if en.stage != gix::index::entry::Stage::Unconflicted {
+            continue;
+        }
+        if en.path == exclude || en.mode.is_commit() {
+            continue;
+        }
+        // Only a path absent from HEAD is a relocation target; an
+        // existing committed file that happens to share generic lines
+        // is not where the anchored content "moved" to.
+        if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
+            continue;
+        }
+        let text: String = match deepest {
+            DriftSource::Worktree => match std::fs::read(workdir.join(&en.path)) {
+                Ok(b) => string_from_utf8_lossy(&b),
+                Err(_) => continue,
+            },
+            DriftSource::Index | DriftSource::Head => {
+                read_blob_text(repo, &en.oid.to_string())
+            }
+        };
+        if let Some((s, e)) = find_relocated_range(&text, span, stored_hash, 1) {
+            return Some((en.path, s, e));
+        }
+    }
+    None
+}
+
 pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -398,15 +447,66 @@ pub(crate) fn resolve_anchor_inner(
                 worktree_hunk_applied,
                 &index_blob_oid,
             )?;
-            // File-backed model: when the anchored path is absent from
-            // HEAD (e.g. `git mv` to a different path, or deletion), the
-            // mesh stores paths — not content identity — so the anchor
-            // is orphaned. Classify as `Deleted` with no current
-            // location rather than `Changed`.
+            // File-backed model: `current == None` means the anchored
+            // path was deleted at the deepest enabled layer (`git rm`,
+            // worktree delete) or is absent from HEAD (`git mv`). The
+            // mesh stores content hashes, so before classifying:
+            //  - relocated verbatim to a new path → `Moved`
+            //  - path also absent from HEAD (committed deletion) →
+            //    `Deleted` (renders "orphaned")
+            //  - path still at HEAD, removed only in the index/worktree
+            //    → `Changed` with the layer source and no `current`,
+            //    rendered "deleted in the working tree/index".
+            // A removal is never mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
             let head_path_absent =
                 file_backed && state.head_blob_at(repo, &r.path)?.is_none();
-            if head_path_absent {
+            if file_backed {
+                let span = (anchored_end as usize)
+                    .saturating_sub(anchored_start as usize)
+                    + 1;
+                let relocated = find_relocated_range_in_paths(
+                    repo,
+                    state,
+                    deepest_layer,
+                    span,
+                    &r.stored_hash,
+                    &r.path,
+                );
+                if let Some((new_path, rs, re)) = relocated {
+                    status = AnchorStatus::Moved;
+                    source = Some(deepest_layer);
+                    layer_sources = vec![deepest_layer];
+                    current_loc = Some(AnchorLocation {
+                        path: PathBuf::from(new_path),
+                        extent: AnchorExtent::LineRange { start: rs, end: re },
+                        blob: None,
+                    });
+                } else if head_path_absent {
+                    status = AnchorStatus::Deleted;
+                    source = None;
+                    current_loc = None;
+                    layer_sources = vec![];
+                } else {
+                    // Removed only in the index/worktree (still at
+                    // HEAD). Keep the per-layer attribution from
+                    // `compute_layer_sources` so the drift-label
+                    // formatter renders "deleted in the index" vs
+                    // "deleted in the working tree" correctly; with
+                    // `current = None` it never reads "changed in …".
+                    status = AnchorStatus::Changed;
+                    source = computed_layer_sources
+                        .first()
+                        .copied()
+                        .or(Some(deepest_layer));
+                    current_loc = None;
+                    layer_sources = if computed_layer_sources.is_empty() {
+                        vec![deepest_layer]
+                    } else {
+                        computed_layer_sources
+                    };
+                }
+            } else if head_path_absent {
                 status = AnchorStatus::Deleted;
                 source = None;
                 current_loc = None;

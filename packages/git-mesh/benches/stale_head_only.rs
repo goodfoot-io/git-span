@@ -78,7 +78,7 @@ fn bench_head_only(c: &mut Criterion) {
     c.bench_function("stale_meshes_head_only", |b| {
         b.iter(|| {
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
             std::hint::black_box(out);
         });
     });

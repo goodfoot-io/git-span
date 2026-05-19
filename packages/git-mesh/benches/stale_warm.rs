@@ -118,7 +118,7 @@ fn bench_cold(c: &mut Criterion) {
         b.iter(|| {
             clear_cache(&f.repo_path);
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
             std::hint::black_box(out);
         });
     });
@@ -131,13 +131,13 @@ fn bench_warm(c: &mut Criterion) {
     {
         clear_cache(&f.repo_path);
         let repo = gix::open(&f.repo_path).expect("open repo");
-        stale_meshes(&repo, EngineOptions::committed_only()).expect("prime");
+        stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("prime");
     }
     let mut g = c.benchmark_group("stale");
     g.bench_function("warm", |b| {
         b.iter(|| {
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
             std::hint::black_box(out);
         });
     });
@@ -160,13 +160,13 @@ fn bench_warm_no_cache(c: &mut Criterion) {
             std::env::set_var("GIT_MESH_CACHE", "0");
         }
         let repo = gix::open(&f.repo_path).expect("open repo");
-        stale_meshes(&repo, EngineOptions::committed_only()).expect("prime");
+        stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("prime");
     }
     let mut g = c.benchmark_group("stale");
     g.bench_function("warm-no-cache", |b| {
         b.iter(|| {
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
             std::hint::black_box(out);
         });
     });

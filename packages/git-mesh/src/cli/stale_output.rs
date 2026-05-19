@@ -842,6 +842,14 @@ fn render_human(
         }
 
         if options.stat {
+            // Only anchors that are actually stale belong in `--stat`
+            // output. Listing fresh `+0 -0` rows (or saying "All anchors
+            // … are stale" when only some are) misleads triage.
+            let stale_findings: Vec<&Finding> = mesh_findings
+                .iter()
+                .copied()
+                .filter(|f| f.status != AnchorStatus::Fresh)
+                .collect();
             let mesh_total = mesh_findings.len();
             if mesh_stale > 0 && mesh_stale == mesh_total {
                 println!("All anchors in {} are stale:", m.name);
@@ -851,7 +859,7 @@ fn render_human(
                     mesh_stale, mesh_total, m.name
                 );
             }
-            for f in &mesh_findings {
+            for f in &stale_findings {
                 let (insertions, deletions) = diff_counts(repo, f);
                 println!(
                     "  {} | +{} -{}",

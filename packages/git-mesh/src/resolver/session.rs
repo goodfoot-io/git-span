@@ -367,10 +367,14 @@ impl ResolveSession {
     /// consumers (`resolve_at_head_shared`, `follow_path_to_head_shared`) can
     /// read it without callers having to thread it through every signature.
     ///
-    /// ## Fail-closed
+    /// ## Commit-graph is optional
     ///
-    /// Returns `Err` if the repository does not have a commit-graph file with
-    /// changed-path Bloom filters. No silent fallback — per `<fail-closed>`.
+    /// The changed-path Bloom filter accelerates the walk but is not a
+    /// correctness gate: an ordinary repo (fresh `git init` + commit, no
+    /// gc, no opt-in `core.commitGraph`) has no commit-graph file, which
+    /// is a normal state, not an error. When absent the walk runs
+    /// without it (tree-diffing every commit). Absence is never surfaced
+    /// as a fatal error or a plumbing instruction.
     pub(crate) fn build_reverse_walk(
         &mut self,
         repo: &gix::Repository,
@@ -424,10 +428,16 @@ impl ResolveSession {
         }
         self.reverse_index_build_ms = t0.elapsed().as_millis() as u64;
 
-        // 2. Open the Bloom filter (fail-closed — no silent fallback).
-        let bloom = {
+        // 2. Open the Bloom filter if one exists. The changed-path Bloom
+        // filter is a pure walk accelerator, not a correctness gate: an
+        // ordinary repo (fresh `git init` + commit, no gc, no opt-in
+        // `core.commitGraph`) has no commit-graph file, and that is a
+        // normal state — not an error. When absent we walk without it,
+        // tree-diffing every commit (the loop below already treats a
+        // missing per-commit Bloom position as "maybe changed").
+        let bloom: Option<CommitGraphBloom> = {
             let _span_bloom = perf::span("resolver.build-walk.bloom-open");
-            CommitGraphBloom::open(repo).map_err(crate::Error::Git)?
+            CommitGraphBloom::open(repo).ok()
         };
 
         // 3. Walk from HEAD reverse-chronologically.
@@ -472,12 +482,15 @@ impl ResolveSession {
                 // When the commit is not in the commit-graph, fall back to
                 // assuming all tracked paths may have changed (correctness:
                 // the Bloom filter is an optimization, not a gate).
-                let positives: Vec<Arc<[u8]>> =
-                    if let Some(commit_pos) = bloom.commit_position(&commit_oid) {
+                let positives: Vec<Arc<[u8]>> = match bloom
+                    .as_ref()
+                    .and_then(|b| b.commit_position(&commit_oid).map(|pos| (b, pos)))
+                {
+                    Some((b, commit_pos)) => {
                         let v: Vec<Arc<[u8]>> = path_index
                             .active_paths()
                             .iter()
-                            .filter(|p| bloom.maybe_contains(commit_pos, p))
+                            .filter(|p| b.maybe_contains(commit_pos, p))
                             .cloned()
                             .collect();
                         if v.is_empty() {
@@ -485,9 +498,9 @@ impl ResolveSession {
                             continue;
                         }
                         v
-                    } else {
-                        path_index.active_paths().to_vec()
-                    };
+                    }
+                    None => path_index.active_paths().to_vec(),
+                };
 
                 // Bloom says "maybe" for at least one path — run tree-diff.
                 self.walk_tree_diffs += 1;

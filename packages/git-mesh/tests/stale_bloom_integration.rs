@@ -1,7 +1,10 @@
 //! Integration tests for the reverse-indexed walk with Bloom filters.
 //!
-//! 1. `stale_meshes_fails_without_commit_graph` — verifies the fail-closed
-//!    path when no commit-graph exists.
+//! 1. `stale_meshes_succeeds_without_commit_graph` — the changed-path
+//!    Bloom filter is a walk accelerator, not a correctness gate. An
+//!    ordinary repo (no gc, no opt-in `core.commitGraph`) has no
+//!    commit-graph; `stale` must still resolve, never surfacing a
+//!    plumbing instruction as a fatal error.
 //! 2. `bloom_false_positive_counter_is_zero_for_true_positives` — verifies
 //!    that the walk_bloom_false_positives counter is 0 when every tracked
 //!    path was actually changed in the commit (deterministic assertion —
@@ -15,7 +18,7 @@ use git_mesh::types::{EngineOptions, LayerSet};
 use support::TestRepo;
 
 #[test]
-fn stale_meshes_fails_without_commit_graph() -> Result<()> {
+fn stale_meshes_succeeds_without_commit_graph() -> Result<()> {
     let repo = TestRepo::new()?;
 
     // Create a file and a mesh. We must have at least one mesh so that
@@ -50,11 +53,15 @@ fn stale_meshes_fails_without_commit_graph() -> Result<()> {
         },
     );
 
-    assert!(result.is_err(), "stale_meshes should fail without commit-graph");
-    let err_msg = result.unwrap_err().to_string();
+    let resolved = result.expect("stale_meshes must succeed without a commit-graph");
+    // The single committed mesh's anchor is fresh, so it is not
+    // reportable; the call simply returns without error.
     assert!(
-        err_msg.contains("commit-graph") || err_msg.contains("commit graph"),
-        "error message should mention commit-graph, got: {err_msg}"
+        resolved.iter().all(|m| m
+            .anchors
+            .iter()
+            .all(|a| a.status == git_mesh::types::AnchorStatus::Fresh)),
+        "anchor must resolve Fresh without a commit-graph"
     );
     Ok(())
 }

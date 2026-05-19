@@ -51,6 +51,61 @@ fn canonical_layer_bytes(
     }
 }
 
+/// Scan the deepest-enabled layer's tracked paths for a file whose
+/// canonical content hashes to `stored_hash`. Used when the anchored
+/// whole-file path no longer resolves: if the exact stored content now
+/// lives at a different path the anchor `Moved`; otherwise it is
+/// `Deleted`. Returns the relocated path on a hit.
+///
+/// `deepest` selects the content source:
+/// - `Head`/`Index`: hash the blob recorded in HEAD's tree / the index.
+/// - `Worktree`: hash the on-disk file bytes.
+///
+/// `exclude` is the original anchored path (already known absent); it is
+/// skipped so a relocation is a genuinely different path.
+fn find_relocated_whole_file(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    workdir: &std::path::Path,
+    deepest: DriftSource,
+    stored_hash: &str,
+    exclude: &str,
+) -> Option<String> {
+    let entries = git::index_entries(repo).ok()?;
+    for en in entries {
+        if en.stage != gix::index::entry::Stage::Unconflicted {
+            continue;
+        }
+        if en.path == exclude {
+            continue;
+        }
+        // A relocation target is content that appeared where there was
+        // nothing committed; an existing committed file is not where the
+        // anchor "moved" to.
+        if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
+            continue;
+        }
+        let gitlink = en.mode.is_commit();
+        let bytes: Vec<u8> = match deepest {
+            DriftSource::Worktree => {
+                let abs = workdir.join(&en.path);
+                match std::fs::read(&abs) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                }
+            }
+            DriftSource::Index | DriftSource::Head => {
+                canonical_layer_bytes(repo, &en.oid.to_string(), gitlink)
+            }
+        };
+        let computed = format!("sha256:{}", sha256_hex(&bytes));
+        if computed == stored_hash {
+            return Some(en.path);
+        }
+    }
+    None
+}
+
 pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -281,9 +336,92 @@ pub(crate) fn resolve_whole_file(
     });
     match current_blob.as_deref() {
         None => {
-            status = AnchorStatus::Changed;
-            source = Some(deepest);
-            layer_sources = vec![deepest];
+            // The anchored path no longer resolves at the deepest layer.
+            // File-backed model: the exact stored content may have
+            // relocated verbatim to a different path (e.g. `git mv` not
+            // yet committed, or a copy + `git rm`). Scan tracked paths
+            // for the stored hash before deciding. Outcomes:
+            //  - relocated → `Moved` (current = new path)
+            //  - path also absent from HEAD (committed deletion / `git
+            //    mv`) → `Deleted` (renders "orphaned")
+            //  - path still at HEAD, removed only in the index/worktree
+            //    → `Changed` with the layer source and no `current`,
+            //    which the drift-label formatter renders as
+            //    "deleted in the working tree" / "deleted in the index".
+            // In no case is a removal mislabeled "changed in …".
+            let file_backed = !r.stored_hash.is_empty();
+            let head_path_absent =
+                file_backed && state.head_blob_at(repo, &r.path).ok().flatten().is_none();
+            let relocated = if file_backed {
+                find_relocated_whole_file(
+                    repo,
+                    state,
+                    workdir,
+                    deepest,
+                    &r.stored_hash,
+                    &current_path,
+                )
+            } else {
+                None
+            };
+            match relocated {
+                Some(new_path) => {
+                    status = AnchorStatus::Moved;
+                    source = Some(deepest);
+                    layer_sources = vec![deepest];
+                    return Ok(AnchorResolved {
+                        anchor_id: anchor_id.into(),
+                        anchor_sha: r.anchor_sha,
+                        anchored,
+                        current: Some(AnchorLocation {
+                            path: PathBuf::from(&new_path),
+                            extent: AnchorExtent::WholeFile,
+                            blob: None,
+                        }),
+                        status,
+                        source,
+                        layer_sources,
+                        acknowledged_by: None,
+                        locus: None,
+                    });
+                }
+                None if head_path_absent => {
+                    return Ok(AnchorResolved {
+                        anchor_id: anchor_id.into(),
+                        anchor_sha: r.anchor_sha,
+                        anchored,
+                        current: None,
+                        status: AnchorStatus::Deleted,
+                        source: None,
+                        layer_sources: vec![],
+                        acknowledged_by: None,
+                        locus: None,
+                    });
+                }
+                None => {
+                    // Removed only in the index/worktree (path still at
+                    // HEAD). Attribute to the shallowest drifting layer
+                    // so the formatter renders "deleted in the index"
+                    // vs "deleted in the working tree" correctly;
+                    // `current = None` keeps it from reading "changed".
+                    let removed_layer = if index_drifts && !worktree_drifts {
+                        DriftSource::Index
+                    } else {
+                        deepest
+                    };
+                    return Ok(AnchorResolved {
+                        anchor_id: anchor_id.into(),
+                        anchor_sha: r.anchor_sha,
+                        anchored,
+                        current: None,
+                        status: AnchorStatus::Changed,
+                        source: Some(removed_layer),
+                        layer_sources: vec![removed_layer],
+                        acknowledged_by: None,
+                        locus: None,
+                    });
+                }
+            }
         }
         Some(cur) => {
             // Determine if current content matches the anchored state.
