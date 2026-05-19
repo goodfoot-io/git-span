@@ -37,6 +37,7 @@ fn stale_meshes_fails_without_commit_graph() -> Result<()> {
 
     let result = git_mesh::stale_meshes(
         &gix,
+        ".mesh",
         EngineOptions {
             layers: LayerSet {
                 index: false,

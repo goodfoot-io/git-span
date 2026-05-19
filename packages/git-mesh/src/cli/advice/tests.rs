@@ -124,10 +124,10 @@ fn mark_flush_records_modified_file_with_id() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // A read of the path must precede the diff so the touch passes the gate.
-    run_advice_read(&gix, s.clone(), "file1.txt".into(), None)?;
+    run_advice_read(&gix, ".mesh", s.clone(), "file1.txt".into(), None)?;
     run_advice_mark(&gix, s.clone(), "tool-1".into())?;
     std::fs::write(repo.path().join("file1.txt"), "edited\n")?;
-    run_advice_diff(&gix, s.clone(), "tool-1".into())?;
+    run_advice_diff(&gix, ".mesh", s.clone(), "tool-1".into())?;
 
     let touches = touches_for(&repo.session_dir(&s));
     assert_eq!(touches.len(), 1, "got: {touches:?}");
@@ -150,14 +150,14 @@ fn mark_flush_records_added_untracked_with_id() -> Result<()> {
     // Write the file first so `read` can validate it exists, then mark/flush.
     std::fs::write(repo.path().join("new.txt"), "hello\n")?;
     // A read of the new path must precede flush for the touch to pass the gate.
-    run_advice_read(&gix, s.clone(), "new.txt".into(), None)?;
+    run_advice_read(&gix, ".mesh", s.clone(), "new.txt".into(), None)?;
     // Re-mark after the read so the snapshot captures the pre-change state.
     // For this test we just need to verify the touch is recorded; we can
     // mark → diff without a working-tree change (the file was written before mark).
     run_advice_mark(&gix, s.clone(), "tool-A".into())?;
     // Touch the file to produce a diff from the snapshot perspective (it's untracked).
     std::fs::write(repo.path().join("new.txt"), "hello world\n")?;
-    run_advice_diff(&gix, s.clone(), "tool-A".into())?;
+    run_advice_diff(&gix, ".mesh", s.clone(), "tool-A".into())?;
 
     let touches = touches_for(&repo.session_dir(&s));
     assert!(
@@ -175,7 +175,7 @@ fn diff_is_noop_when_mark_missing() -> Result<()> {
     let s = FixtureRepo::sid("noop");
     let gix = repo.gix_repo()?;
 
-    let code = run_advice_diff(&gix, s.clone(), "never-marked".into())?;
+    let code = run_advice_diff(&gix, ".mesh", s.clone(), "never-marked".into())?;
     assert_eq!(code, 0);
     let touches = touches_for(&repo.session_dir(&s));
     assert!(touches.is_empty(), "expected no touches: {touches:?}");
@@ -191,7 +191,7 @@ fn read_only_idle_session_produces_no_touches() -> Result<()> {
     // Idle: simulate a read-only tool by marking and diffing without
     // touching the working tree.
     run_advice_mark(&gix, s.clone(), "read-only-tool".into())?;
-    run_advice_diff(&gix, s.clone(), "read-only-tool".into())?;
+    run_advice_diff(&gix, ".mesh", s.clone(), "read-only-tool".into())?;
 
     let touches = touches_for(&repo.session_dir(&s));
     assert!(touches.is_empty(), "expected no touches: {touches:?}");
@@ -207,7 +207,7 @@ fn touched_lists_added_modified_deleted_dedup_first_seen_skipping_modechange() -
 
     // Force the session directory into existence.
     run_advice_mark(&gix, s.clone(), "seed".into())?;
-    run_advice_diff(&gix, s.clone(), "seed".into())?;
+    run_advice_diff(&gix, ".mesh", s.clone(), "seed".into())?;
 
     let session_dir = repo.session_dir(&s);
     let touches_path = session_dir.join("touches.jsonl");
@@ -281,6 +281,7 @@ fn read_records_optional_id_correlation() -> Result<()> {
 
     run_advice_read(
         &gix,
+        ".mesh",
         s.clone(),
         "file1.txt#L1-L5".into(),
         Some("read-tool".into()),
@@ -307,6 +308,7 @@ fn touch_line_anchored_modified_appends_touch_with_range() -> Result<()> {
 
     run_advice_touch(
         &gix,
+        ".mesh",
         s.clone(),
         "tuid-1".into(),
         "file1.txt#L2-L5".into(),
@@ -335,6 +337,7 @@ fn touch_whole_file_added_appends_touch_with_no_range() -> Result<()> {
 
     run_advice_touch(
         &gix,
+        ".mesh",
         s.clone(),
         "tuid-2".into(),
         "file1.txt".into(),
@@ -367,6 +370,7 @@ fn touch_line_anchored_range_routing() -> Result<()> {
     let s_overlap = FixtureRepo::sid("touch-route-overlap");
     run_advice_touch(
         &gix,
+        ".mesh",
         s_overlap.clone(),
         "tuid-route".into(),
         "file1.txt#L5-L10".into(),
@@ -382,6 +386,7 @@ fn touch_line_anchored_range_routing() -> Result<()> {
     let gix2 = repo.gix_repo()?;
     run_advice_touch(
         &gix2,
+        ".mesh",
         s_no_overlap.clone(),
         "tuid-no-route".into(),
         "file1.txt#L1-L4".into(),
@@ -403,6 +408,7 @@ fn touch_does_not_create_snapshot_files() -> Result<()> {
 
     run_advice_touch(
         &gix,
+        ".mesh",
         s.clone(),
         "tuid-snap".into(),
         "file1.txt#L1-L3".into(),
@@ -448,12 +454,12 @@ fn flush_after_read_writes_to_touches_not_pending() -> Result<()> {
     let gix = repo.gix_repo()?;
 
     // Read first — this seeds reads.jsonl.
-    run_advice_read(&gix, s.clone(), "file1.txt".into(), None)?;
+    run_advice_read(&gix, ".mesh", s.clone(), "file1.txt".into(), None)?;
 
     // Now mark + modify + diff.
     run_advice_mark(&gix, s.clone(), "tool-after-read".into())?;
     std::fs::write(repo.path().join("file1.txt"), "changed\n")?;
-    run_advice_diff(&gix, s.clone(), "tool-after-read".into())?;
+    run_advice_diff(&gix, ".mesh", s.clone(), "tool-after-read".into())?;
 
     let session_dir = repo.session_dir(&s);
 
@@ -660,6 +666,7 @@ fn end_removes_session_dir_and_is_idempotent() -> Result<()> {
     // Create a session with a touch so the dir exists.
     run_advice_touch(
         &gix,
+        ".mesh",
         s.clone(),
         "tuid-end".into(),
         "file1.txt".into(),

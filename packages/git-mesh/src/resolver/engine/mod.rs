@@ -244,6 +244,7 @@ impl EngineState {
 
 pub fn resolve_anchor(
     repo: &gix::Repository,
+    mesh_root: &str,
     mesh_name: &str,
     anchor_id: &str,
     options: EngineOptions,
@@ -253,7 +254,7 @@ pub fn resolve_anchor(
 
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
-        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
         let file = reader
             .read_effective(mesh_name)?
             .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?;
@@ -281,12 +282,13 @@ pub fn resolve_anchor(
 
 pub fn resolve_mesh(
     repo: &gix::Repository,
+    mesh_root: &str,
     name: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let _perf = crate::perf::span("resolver.resolve-mesh");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
-    let out = resolve_mesh_with_state(repo, &mut state, name, options)?;
+    let out = resolve_mesh_with_state(repo, mesh_root, &mut state, name, options)?;
     state.finish(repo);
     Ok(out)
 }
@@ -299,26 +301,28 @@ pub fn resolve_mesh(
 /// comes from a different commit than the CAS guard expects.
 pub fn resolve_mesh_at(
     repo: &gix::Repository,
+    mesh_root: &str,
     name: &str,
     options: EngineOptions,
     commit_oid: &str,
 ) -> Result<MeshResolved> {
     let _perf = crate::perf::span("resolver.resolve-mesh-at");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
-    let out = resolve_mesh_with_state_at(repo, &mut state, name, commit_oid, options)?;
+    let out = resolve_mesh_with_state_at(repo, mesh_root, &mut state, name, commit_oid, options)?;
     state.finish(repo);
     Ok(out)
 }
 
 fn resolve_mesh_with_state(
     repo: &gix::Repository,
+    mesh_root: &str,
     state: &mut EngineState,
     name: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
         let _perf = crate::perf::span("resolver.read-mesh-file");
-        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
         let file = reader
             .read_effective(name)?
             .ok_or_else(|| Error::MeshNotFound(name.to_string()))?;
@@ -329,6 +333,7 @@ fn resolve_mesh_with_state(
 
 fn resolve_mesh_with_state_at(
     repo: &gix::Repository,
+    mesh_root: &str,
     state: &mut EngineState,
     name: &str,
     commit_oid: &str,
@@ -337,7 +342,7 @@ fn resolve_mesh_with_state_at(
     let mesh = {
         let _perf = crate::perf::span("resolver.read-catalog");
         // Read the mesh file from the tree at the given commit.
-        let mesh_path = format!(".mesh/{name}");
+        let mesh_path = format!("{mesh_root}/{name}");
         let oid = gix::ObjectId::from_str(commit_oid)
             .map_err(|e| Error::Git(format!("parse oid {commit_oid}: {e}")))?;
         let text = match crate::git::tree_entry_at(repo, &oid.to_string(), std::path::Path::new(&mesh_path))? {
@@ -408,13 +413,14 @@ pub(crate) fn resolve_loaded_mesh_with_engine_state(
 /// an `EngineState` from scratch.
 pub(crate) fn resolve_mesh_at_with_engine_state(
     repo: &gix::Repository,
+    mesh_root: &str,
     handle: &mut EngineStateHandle,
     name: &str,
     options: EngineOptions,
     commit_oid: &str,
 ) -> Result<MeshResolved> {
     let _perf = crate::perf::span("resolver.resolve-mesh-at-with-engine-state");
-    resolve_mesh_with_state_at(repo, &mut handle.0, name, commit_oid, options)
+    resolve_mesh_with_state_at(repo, mesh_root, &mut handle.0, name, commit_oid, options)
 }
 
 fn resolve_loaded_mesh_with_state(
@@ -590,6 +596,7 @@ fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
 /// stale path-index entry.
 pub(crate) fn resolve_named_meshes(
     repo: &gix::Repository,
+    mesh_root: &str,
     names: &[String],
     options: EngineOptions,
 ) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
@@ -600,7 +607,7 @@ pub(crate) fn resolve_named_meshes(
     // per-anchor commit deltas are available to every per-mesh resolver call.
     {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
@@ -618,7 +625,7 @@ pub(crate) fn resolve_named_meshes(
 
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
+        let resolved = resolve_mesh_with_state(repo, mesh_root, &mut state, name, options);
         out.push((name.clone(), resolved));
     }
     // Emit walk perf counters matching stale_meshes_inner so named-mesh
@@ -646,6 +653,7 @@ pub(crate) fn resolve_named_meshes(
 
 fn stale_meshes_inner(
     repo: &gix::Repository,
+    mesh_root: &str,
     options: EngineOptions,
     enable_trace: bool,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
@@ -654,7 +662,7 @@ fn stale_meshes_inner(
     crate::resolver::linemap::reset_counters();
     let mesh_pairs: Vec<(String, Mesh)> = {
         let _perf = crate::perf::span("resolver.read-mesh-files");
-        crate::mesh::read::load_all_meshes(repo)?
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
     };
     let mut out = Vec::new();
     let mut state = {
@@ -825,9 +833,13 @@ fn stale_meshes_inner(
     Ok((out, trace_rows))
 }
 
-pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+pub fn stale_meshes(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    options: EngineOptions,
+) -> Result<Vec<MeshResolved>> {
     use crate::resolver::cache_v2::{CacheAttempt, stale_meshes_cached};
-    match stale_meshes_cached(repo, options)? {
+    match stale_meshes_cached(repo, mesh_root, options)? {
         CacheAttempt::Resolved(mut meshes) => {
             if meshes.len() > 1 {
                 sort_meshes_by_anchor_path(&mut meshes);
@@ -839,19 +851,21 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
             crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
         }
     }
-    let (meshes, _) = stale_meshes_inner(repo, options, false)?;
+    let (meshes, _) = stale_meshes_inner(repo, mesh_root, options, false)?;
     Ok(meshes)
 }
 
 pub fn stale_meshes_with_trace(
     repo: &gix::Repository,
+    mesh_root: &str,
     options: EngineOptions,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
-    stale_meshes_inner(repo, options, true)
+    stale_meshes_inner(repo, mesh_root, options, true)
 }
 
 pub(crate) fn resolve_meshes_in_order(
     repo: &gix::Repository,
+    mesh_root: &str,
     names: &[String],
     options: EngineOptions,
 ) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
@@ -861,7 +875,7 @@ pub(crate) fn resolve_meshes_in_order(
     // Build the reverse-indexed walk once across all named meshes.
     {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let reader = MeshFileReader::new(repo, ".mesh".to_string());
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
         let mesh_pairs: Vec<(String, Mesh)> = names
             .iter()
             .filter_map(|name| {
@@ -880,7 +894,7 @@ pub(crate) fn resolve_meshes_in_order(
     {
         let _perf = crate::perf::span("resolver.resolve-meshes");
         for name in names {
-            let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
+            let resolved = resolve_mesh_with_state(repo, mesh_root, &mut state, name, options);
             out.push((name.clone(), resolved));
         }
     }

@@ -75,9 +75,19 @@ pub fn meshes_matching_path(
     path: &str,
     range: Option<(u32, u32)>,
 ) -> Result<Vec<String>> {
+    meshes_matching_path_in(repo, path, range, ".mesh")
+}
+
+/// Path-match scan under a specific mesh root.
+pub fn meshes_matching_path_in(
+    repo: &gix::Repository,
+    path: &str,
+    range: Option<(u32, u32)>,
+    mesh_root: &str,
+) -> Result<Vec<String>> {
     use crate::types::AnchorExtent;
     let mut names: Vec<String> = Vec::new();
-    for (name, mesh) in load_all_meshes(repo)? {
+    for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
         let hit = mesh.anchors.iter().any(|(_, a)| {
             if a.path != path {
                 return false;
@@ -108,6 +118,16 @@ pub fn matching_mesh_names(
     meshes_matching_path(repo, path, range)
 }
 
+/// File-backed alias under a specific mesh root.
+pub fn matching_mesh_names_in(
+    repo: &gix::Repository,
+    path: &str,
+    range: Option<(u32, u32)>,
+    mesh_root: &str,
+) -> Result<Vec<String>> {
+    meshes_matching_path_in(repo, path, range, mesh_root)
+}
+
 pub fn is_glob_pattern(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[') || s.contains('{')
 }
@@ -118,6 +138,16 @@ pub fn matching_mesh_names_glob(
     pattern: &str,
     range: Option<(u32, u32)>,
 ) -> Result<Vec<String>> {
+    matching_mesh_names_glob_in(repo, pattern, range, ".mesh")
+}
+
+/// File-backed glob match under a specific mesh root.
+pub fn matching_mesh_names_glob_in(
+    repo: &gix::Repository,
+    pattern: &str,
+    range: Option<(u32, u32)>,
+    mesh_root: &str,
+) -> Result<Vec<String>> {
     use crate::types::AnchorExtent;
     let glob = globset::GlobBuilder::new(pattern)
         .literal_separator(true)
@@ -125,7 +155,7 @@ pub fn matching_mesh_names_glob(
         .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
         .compile_matcher();
     let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (name, mesh) in load_all_meshes(repo)? {
+    for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
         for (_id, a) in &mesh.anchors {
             if !glob.is_match(&a.path) {
                 continue;

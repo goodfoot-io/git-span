@@ -106,6 +106,7 @@ pub(crate) enum CacheAttempt {
 /// operation fails (the caller then runs the uncached resolver).
 pub(crate) fn stale_meshes_cached(
     repo: &gix::Repository,
+    mesh_root: &str,
     options: EngineOptions,
 ) -> Result<CacheAttempt> {
     let _perf = crate::perf::span("resolver.cache_v2");
@@ -113,8 +114,11 @@ pub(crate) fn stale_meshes_cached(
         return Ok(CacheAttempt::Fallback(reason.to_string()));
     }
 
-    let mesh_root = crate::mesh_root::resolve_mesh_root(repo, None, None)
-        .unwrap_or_else(|_| ".mesh".to_string());
+    // The mesh root is resolved once in `cli::dispatch` (the single
+    // precedence chain) and threaded here so the cache is keyed and
+    // populated against the same root the writer and all readers use
+    // (F1) — not a hardcoded `.mesh`.
+    let mesh_root = mesh_root.to_string();
 
     let db = match open_cache(repo) {
         Ok(db) => db,
@@ -147,7 +151,7 @@ pub(crate) fn stale_meshes_cached(
             }
             Ok(None) => {
                 crate::perf::counter("cache_v2.baseline-miss", 1);
-                let meshes = match build_committed_meshes(repo) {
+                let meshes = match build_committed_meshes(repo, &mesh_root) {
                     Ok(m) => m,
                     Err(e) => {
                         return Ok(CacheAttempt::Fallback(format!(
@@ -286,7 +290,7 @@ pub(crate) fn stale_meshes_cached(
                 let meshes = if names.is_empty() {
                     Vec::new()
                 } else {
-                    match super::engine::resolve_named_meshes(repo, &names, options) {
+                    match super::engine::resolve_named_meshes(repo, &mesh_root, &names, options) {
                         Ok(resolved) => {
                             let mut out = Vec::new();
                             for (_n, r) in resolved {
@@ -354,15 +358,19 @@ fn reportable(meshes: Vec<MeshResolved>) -> Vec<MeshResolved> {
 
 /// Full HEAD-only resolution of every visible mesh — the cold-build
 /// input for the committed baseline.
-fn build_committed_meshes(repo: &gix::Repository) -> Result<Vec<MeshResolved>> {
+fn build_committed_meshes(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<Vec<MeshResolved>> {
     let _perf = crate::perf::span("resolver.cache_v2.build-baseline");
-    let pairs = crate::mesh::read::load_all_meshes(repo)?;
+    let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
     let names: Vec<String> = pairs.into_iter().map(|(n, _)| n).collect();
     if names.is_empty() {
         return Ok(Vec::new());
     }
     let resolved = super::engine::resolve_named_meshes(
         repo,
+        mesh_root,
         &names,
         EngineOptions {
             layers: LayerSet::committed_only(),
@@ -398,7 +406,7 @@ fn meshes_affected_by(
         }
     }
     if !dirty_paths.is_empty() {
-        for (name, mesh) in crate::mesh::read::load_all_meshes(repo)? {
+        for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
             if mesh
                 .anchors
                 .iter()

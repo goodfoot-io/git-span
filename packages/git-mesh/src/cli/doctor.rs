@@ -2,11 +2,12 @@
 
 use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep};
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
-use crate::{delete_mesh, list_mesh_names, rename_mesh};
+use crate::mesh::read::list_mesh_names_in;
+use crate::mesh::structural::{delete_mesh_in, rename_mesh_in};
 use anyhow::Result;
 
-pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
-    delete_mesh(repo, &args.name).map_err(|e| CliError {
+pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, mesh_root: &str) -> Result<i32> {
+    delete_mesh_in(repo, &args.name, mesh_root).map_err(|e| CliError {
         subcommand: "delete",
         summary: format!("cannot delete `{}`.", args.name),
         what_happened: e.to_string(),
@@ -18,8 +19,8 @@ pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
-    rename_mesh(repo, &args.old, &args.new).map_err(|e| CliError {
+pub fn run_move(repo: &gix::Repository, args: MoveArgs, mesh_root: &str) -> Result<i32> {
+    rename_mesh_in(repo, &args.old, &args.new, mesh_root).map_err(|e| CliError {
         subcommand: "move",
         summary: format!("cannot rename `{}` to `{}`.", args.old, args.new),
         what_happened: e.to_string(),
@@ -31,14 +32,14 @@ pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs) -> Result<i32> {
+pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs, mesh_root: &str) -> Result<i32> {
     // File-backed model: meshes are ordinary tracked files. The only
     // health check that remains is that every visible mesh parses.
-    let names = list_mesh_names(repo).unwrap_or_default();
+    let names = list_mesh_names_in(repo, mesh_root).unwrap_or_default();
     let n_meshes = names.len();
     let mut findings: Vec<String> = Vec::new();
     for name in &names {
-        if let Err(e) = crate::read_mesh(repo, name) {
+        if let Err(e) = crate::mesh::read::read_mesh_in(repo, name, mesh_root) {
             findings.push(format!("mesh `{name}` failed to parse: {e}"));
         }
     }

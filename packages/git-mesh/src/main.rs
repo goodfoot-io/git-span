@@ -60,18 +60,45 @@ fn run() -> Result<i32> {
         println!();
         return Ok(0);
     }
-    let first = &args[1];
-    let is_flag = first.starts_with('-');
-    let is_reserved = RESERVED_MESH_NAMES.contains(&first.as_str())
-        || matches!(
-            first.as_str(),
-            "show" | "help" | "--help" | "-h" | "--version" | "-V"
-        );
+    // Skip leading global options so a bare `git mesh <name>` still
+    // routes to `show` even when prefixed by `--mesh-dir X` / `--perf`
+    // (F8: a configured-root user must be able to show a mesh).
+    // `--mesh-dir` consumes the following token as its value; `--perf`
+    // is a boolean. `--mesh-dir=VALUE` is self-contained.
+    let mut idx = 1usize;
+    while idx < args.len() {
+        let tok = args[idx].as_str();
+        if tok == "--perf" {
+            idx += 1;
+        } else if tok == "--mesh-dir" {
+            idx += 2;
+        } else if tok.starts_with("--mesh-dir=") {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
 
-    if !is_flag && !is_reserved {
-        // Bare `git mesh <name> [--flags...]` — parse the tail as ShowArgs.
-        let mut show_argv = vec![args[0].clone(), "show".to_string()];
-        show_argv.extend(args[1..].iter().cloned());
+    let first_non_opt = args.get(idx);
+    let is_bare_name = first_non_opt.is_some_and(|first| {
+        !first.starts_with('-')
+            && !RESERVED_MESH_NAMES.contains(&first.as_str())
+            && !matches!(
+                first.as_str(),
+                "show" | "help" | "--help" | "-h" | "--version" | "-V"
+            )
+    });
+
+    if is_bare_name {
+        // Bare `git mesh [global-opts] <name> [--flags...]` — splice an
+        // explicit `show` subcommand in front of the name so clap parses
+        // the tail as ShowArgs while preserving the leading global opts.
+        let first = first_non_opt.expect("is_bare_name implies Some").clone();
+        let mut show_argv: Vec<String> = Vec::with_capacity(args.len() + 1);
+        show_argv.push(args[0].clone());
+        show_argv.extend(args[1..idx].iter().cloned());
+        show_argv.push("show".to_string());
+        show_argv.extend(args[idx..].iter().cloned());
         let cli = Cli::try_parse_from(show_argv)?;
         git_mesh::perf::init(cli.perf);
         let cmd = cli.command.unwrap_or_else(|| {

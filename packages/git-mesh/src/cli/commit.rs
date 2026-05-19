@@ -18,7 +18,6 @@ use crate::mesh_file::AnchorRecord;
 use crate::mesh_file::MeshFile;
 use crate::mesh_file::parse_address;
 use crate::mesh_file_reader::MeshFileReader;
-use crate::mesh_root::resolve_mesh_root;
 use crate::types::{validate_add_target, AnchorExtent};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -67,13 +66,9 @@ fn invalid_anchor_error(subcommand: &'static str, addr: &str) -> CliError {
     }
 }
 
-/// Resolve the mesh root directory, reading from the CLI `--mesh-dir` flag,
-/// the `GIT_MESH_DIR` environment variable, git config, or the default.
-fn resolve_mesh_root_for(repo: &gix::Repository, mesh_dir: Option<&str>) -> Result<String> {
-    let env_dir = std::env::var("GIT_MESH_DIR").ok();
-    resolve_mesh_root(repo, mesh_dir, env_dir.as_deref())
-        .map_err(|e| anyhow::anyhow!("{}", e))
-}
+// The mesh root is resolved once in `cli::dispatch` (the single
+// precedence chain) and threaded into every handler. The `add`,
+// `remove`, and `why` writers receive the already-resolved root.
 
 /// Count lines in a byte slice.
 fn count_lines(bytes: &[u8]) -> u32 {
@@ -248,7 +243,7 @@ fn check_worktree_prefix_collision(
 // add
 // ---------------------------------------------------------------------------
 
-pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) -> Result<i32> {
+pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial state.
@@ -310,16 +305,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) ->
         }
     }
 
-    // Resolve mesh root.
-    let mesh_root = {
-        let _perf = crate::perf::span("add.resolve-mesh-root");
-        resolve_mesh_root_for(repo, mesh_dir)?
-    };
-
     // Check for prefix collision against existing worktree mesh files
     // before any file I/O.  The filesystem would reject the read/write
     // with a cryptic OS error, so we surface a structured mesh error.
-    check_worktree_prefix_collision(repo, &mesh_root, &args.name)
+    check_worktree_prefix_collision(repo, mesh_root, &args.name)
         .map_err(|e| CliError {
             subcommand: "add",
             summary: format!("cannot add mesh `{}`", args.name),
@@ -332,7 +321,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) ->
     // Read the current worktree mesh file.
     let mut mesh_file = {
         let _perf = crate::perf::span("add.read-current");
-        read_worktree_mesh(repo, &mesh_root, &args.name)?
+        read_worktree_mesh(repo, mesh_root, &args.name)?
     };
 
     // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
@@ -402,7 +391,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) ->
     // Write the updated mesh file.
     {
         let _perf = crate::perf::span("add.write-mesh-file");
-        write_worktree_mesh(repo, &mesh_root, &args.name, &mesh_file)?;
+        write_worktree_mesh(repo, mesh_root, &args.name, &mesh_file)?;
     }
 
     // --- Output -----------------------------------------------------------
@@ -470,7 +459,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_dir: Option<&str>) ->
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_dir: Option<&str>) -> Result<i32> {
+pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_root: &str) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial state.
@@ -483,16 +472,10 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_dir: Option<&st
         }
     }
 
-    // Resolve mesh root.
-    let mesh_root = {
-        let _perf = crate::perf::span("remove.resolve-mesh-root");
-        resolve_mesh_root_for(repo, mesh_dir)?
-    };
-
     // Read the current worktree mesh file.
     let mut mesh_file = {
         let _perf = crate::perf::span("remove.read-current");
-        read_worktree_mesh(repo, &mesh_root, &args.name)?
+        read_worktree_mesh(repo, mesh_root, &args.name)?
     };
 
     let mut removed_addrs: Vec<String> = Vec::new();
@@ -530,7 +513,7 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_dir: Option<&st
     // Write the updated mesh file.
     {
         let _perf = crate::perf::span("remove.write-mesh-file");
-        write_worktree_mesh(repo, &mesh_root, &args.name, &mesh_file)?;
+        write_worktree_mesh(repo, mesh_root, &args.name, &mesh_file)?;
     }
 
     // --- Output -----------------------------------------------------------
@@ -552,18 +535,18 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_dir: Option<&st
 // why
 // ---------------------------------------------------------------------------
 
-pub fn run_why(repo: &gix::Repository, args: WhyArgs, mesh_dir: Option<&str>) -> Result<i32> {
+pub fn run_why(repo: &gix::Repository, args: WhyArgs, mesh_root: &str) -> Result<i32> {
     // Reader vs. writer disambiguation:
     // any of `-m`/`-F`/`--edit` => writer; otherwise reader (which
     // optionally accepts `--at <commit>` for historical reads).
     let writer = args.m.is_some() || args.file.is_some() || args.edit;
     if !writer {
         let _perf = crate::perf::span("why.read");
-        return run_why_reader(repo, &args.name, args.at.as_deref(), mesh_dir);
+        return run_why_reader(repo, &args.name, args.at.as_deref(), mesh_root);
     }
     if let Some(m) = args.m {
         let _perf = crate::perf::span("why.write-message");
-        run_why_writer(repo, &args.name, &m, mesh_dir)?;
+        run_why_writer(repo, &args.name, &m, mesh_root)?;
         return print_why_written(&args.name);
     }
     if let Some(f) = args.file {
@@ -572,11 +555,11 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, mesh_dir: Option<&str>) ->
             std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?
         };
         let _perf = crate::perf::span("why.write-message");
-        run_why_writer(repo, &args.name, &body, mesh_dir)?;
+        run_why_writer(repo, &args.name, &body, mesh_root)?;
         return print_why_written(&args.name);
     }
     // Editor flow (--edit).
-    run_why_editor(repo, &args.name, mesh_dir)
+    run_why_editor(repo, &args.name, mesh_root)
 }
 
 fn print_why_written(name: &str) -> Result<i32> {
@@ -584,11 +567,10 @@ fn print_why_written(name: &str) -> Result<i32> {
     Ok(0)
 }
 
-fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, mesh_dir: Option<&str>) -> Result<()> {
-    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
-    let mut mesh_file = read_worktree_mesh(repo, &mesh_root, name)?;
+fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, mesh_root: &str) -> Result<()> {
+    let mut mesh_file = read_worktree_mesh(repo, mesh_root, name)?;
     mesh_file.why = body.to_string();
-    write_worktree_mesh(repo, &mesh_root, name, &mesh_file)?;
+    write_worktree_mesh(repo, mesh_root, name, &mesh_file)?;
     Ok(())
 }
 
@@ -596,10 +578,9 @@ fn run_why_reader(
     repo: &gix::Repository,
     name: &str,
     at: Option<&str>,
-    mesh_dir: Option<&str>,
+    mesh_root: &str,
 ) -> Result<i32> {
     crate::validation::validate_mesh_name(name)?;
-    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
 
     let mesh = if let Some(at_commit) = at {
         // Historical read: look up the mesh file in the tree at `at_commit`.
@@ -614,7 +595,7 @@ fn run_why_reader(
         }
     } else {
         // Current effective view: worktree overlays index overlays HEAD.
-        let reader = MeshFileReader::new(repo, mesh_root);
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
         reader.read_effective(name)?
     };
 
@@ -630,9 +611,8 @@ fn run_why_reader(
     Ok(0)
 }
 
-fn run_why_editor(repo: &gix::Repository, name: &str, mesh_dir: Option<&str>) -> Result<i32> {
+fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result<i32> {
     let _perf = crate::perf::span("why.edit");
-    let mesh_root = resolve_mesh_root_for(repo, mesh_dir)?;
     crate::validation::validate_mesh_name(name)?;
 
     let workdir = repo
@@ -641,7 +621,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_dir: Option<&str>) ->
 
     // Read current why as the editor template.
     let template: String = {
-        let path = workdir.join(&mesh_root).join(name);
+        let path = workdir.join(mesh_root).join(name);
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
             let mf = MeshFile::parse(&content)?;
@@ -655,7 +635,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_dir: Option<&str>) ->
         }
     };
 
-    let mesh_dir_path = workdir.join(&mesh_root);
+    let mesh_dir_path = workdir.join(mesh_root);
     std::fs::create_dir_all(&mesh_dir_path)
         .with_context(|| format!("failed to create mesh directory `{}`", mesh_dir_path.display()))?;
 
@@ -711,6 +691,6 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_dir: Option<&str>) ->
         .into());
     }
 
-    run_why_writer(repo, name, &body, mesh_dir)?;
+    run_why_writer(repo, name, &body, mesh_root)?;
     print_why_written(name)
 }

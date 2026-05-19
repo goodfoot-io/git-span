@@ -94,18 +94,18 @@ If the relationship has changed, update the why with
 .B git mesh why
 before re-anchoring.
 .PP
-Meshes are stored in a catalog tree at
-.IR refs/meshes/v1/catalog
-as individual entries using a zero-copy archive format,
-so they travel with
-.B git fetch
-and
-.B git push
-like branches and tags.
-.B git mesh fetch
-and
-.B git mesh push
-keep remote mirrors in sync.
+Each mesh is an ordinary tracked file under the mesh root (default
+.IR .mesh ,
+overridable with
+.BR \-\-mesh\-dir ,
+the
+.I GIT_MESH_DIR
+environment variable, or
+.IR "git config git-mesh.dir" ).
+Meshes are versioned, fetched, and pushed exactly like any other
+tracked file \[em] stage and commit edits with
+.B git add .mesh && git commit
+\&.
 .PP
 Bare invocations:
 .RS 4
@@ -129,8 +129,8 @@ git mesh add billing/charge-request-contract \e
 git mesh why billing/charge-request-contract \e
     -m "The doc states the request body shape the parser honors; \e
 the doc is the source of truth when they disagree."
+git add .mesh
 git commit -m "Wire checkout to charge API"
-# post-commit hook runs: git mesh commit
 .fi
 .RE
 .PP
@@ -143,7 +143,7 @@ git mesh add auth/token-contract --at HEAD \e
     packages/auth/crypto.ts#L12-L40
 git mesh why auth/token-contract \e
     -m "Token verification depends on signature verification."
-git mesh commit auth/token-contract
+git add .mesh && git commit -m "Document token/crypto coupling"
 .fi
 .RE
 .PP
@@ -153,7 +153,7 @@ Check for drift and inspect a mesh:
 .nf
 git mesh stale
 git mesh billing/charge-request-contract
-git mesh billing/charge-request-contract --log
+git mesh show billing/charge-request-contract
 .fi
 .RE
 "#;

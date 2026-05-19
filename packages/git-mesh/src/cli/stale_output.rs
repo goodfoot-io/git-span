@@ -83,7 +83,7 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
     })
 }
 
-pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
+pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Result<i32> {
     let layers = LayerSet {
         worktree: !args.no_worktree,
         index: !args.no_index,
@@ -133,7 +133,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // even when all are clean.
     let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
         let _perf = crate::perf::span("stale.count-totals");
-        let pairs = crate::mesh::read::load_all_meshes(repo)?;
+        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         (mesh_count, anchor_count)
@@ -160,11 +160,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             // Open the file before running the resolver so a bad path fails
             // in milliseconds rather than after a full scan.
             let trace_file = open_perf_trace_file(trace_path)?;
-            let (resolved, trace_rows) = stale_meshes_with_trace(repo, options)?;
+            let (resolved, trace_rows) = stale_meshes_with_trace(repo, mesh_root, options)?;
             write_perf_trace_csv(trace_file, trace_path, &trace_rows)?;
             resolved
         } else {
-            stale_meshes(repo, options)?
+            stale_meshes(repo, mesh_root, options)?
         }
     } else {
         // Resolve each positional arg through mesh-name → path-index dispatch.
@@ -173,7 +173,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
-        let reader = crate::mesh_file_reader::MeshFileReader::new(repo, ".mesh".to_string());
+        let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
 
         for arg in &args.paths {
             let mut found = false;
@@ -202,10 +202,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             // Step 2: fall back to path index (glob-aware).
             if !found {
                 let names = if crate::mesh::read::is_glob_pattern(arg) {
-                    crate::mesh::read::matching_mesh_names_glob(repo, arg, None)
+                    crate::mesh::read::matching_mesh_names_glob_in(repo, arg, None, mesh_root)
                         .unwrap_or_default()
                 } else {
-                    crate::mesh::read::matching_mesh_names(repo, arg, None)
+                    crate::mesh::read::matching_mesh_names_in(repo, arg, None, mesh_root)
                         .unwrap_or_default()
                 };
                 for name in names {
@@ -257,7 +257,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         // Step 5: resolve candidate mesh names through one shared EngineState.
         let resolved = {
             let _perf = crate::perf::span("stale.resolve-named-meshes");
-            resolve_named_meshes(repo, &mesh_names, options)?
+            resolve_named_meshes(repo, mesh_root, &mesh_names, options)?
         };
         let mut meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
         for (_name, result) in resolved {

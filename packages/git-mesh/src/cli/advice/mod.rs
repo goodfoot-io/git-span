@@ -77,7 +77,7 @@ pub enum TouchKindArg {
 }
 
 /// Top-level dispatch.
-pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
+pub fn run_advice(repo: &gix::Repository, args: AdviceArgs, mesh_root: &str) -> Result<i32> {
     let session_id = args.session_id.ok_or_else(|| {
         CliError {
             subcommand: "advice",
@@ -92,11 +92,13 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     validate_session_id(&session_id)?;
     match args.command {
         Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, session_id, id),
-        Some(AdviceCommand::Diff { id }) => run_advice_diff(repo, session_id, id),
-        Some(AdviceCommand::Flush) => run_advice_flush(repo, session_id),
-        Some(AdviceCommand::Read { anchor, id }) => run_advice_read(repo, session_id, anchor, id),
+        Some(AdviceCommand::Diff { id }) => run_advice_diff(repo, mesh_root, session_id, id),
+        Some(AdviceCommand::Flush) => run_advice_flush(repo, mesh_root, session_id),
+        Some(AdviceCommand::Read { anchor, id }) => {
+            run_advice_read(repo, mesh_root, session_id, anchor, id)
+        }
         Some(AdviceCommand::Touch { id, anchor, kind }) => {
-            run_advice_touch(repo, session_id, id, anchor, kind)
+            run_advice_touch(repo, mesh_root, session_id, id, anchor, kind)
         }
         Some(AdviceCommand::End) => run_advice_end(repo, session_id),
         Some(AdviceCommand::Touched) => run_advice_touched(repo, session_id),
@@ -245,7 +247,11 @@ fn active_advice_store_prefixes(
 /// given `(path, optional line range)` pairs, using the path index. Errors
 /// from individual path-index reads are skipped so a single bad bucket cannot
 /// break advice rendering.
-fn candidate_mesh_names_for_paths<'a, I>(repo: &gix::Repository, paths: I) -> Vec<String>
+fn candidate_mesh_names_for_paths<'a, I>(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    paths: I,
+) -> Vec<String>
 where
     I: IntoIterator<Item = (&'a str, Option<(u32, u32)>)>,
 {
@@ -254,7 +260,8 @@ where
     let mut out: Vec<String> = Vec::new();
     for (path, range) in paths {
         let names =
-            crate::mesh::read::matching_mesh_names(repo, path, range).unwrap_or_default();
+            crate::mesh::read::matching_mesh_names_in(repo, path, range, mesh_root)
+                .unwrap_or_default();
         for name in names {
             if seen.insert(name.clone()) {
                 out.push(name);
@@ -274,12 +281,13 @@ where
 /// propagate via `?` to fail-closed (no advice emitted).
 fn discover_meshes_committed_this_session(
     repo: &gix::Repository,
+    mesh_root: &str,
     store: &crate::advice::session::SessionStore,
 ) -> Result<std::collections::HashSet<String>> {
     let baseline = store.mesh_baseline_map()?;
     let mut committed = store.meshes_committed_set()?;
     let mut new_names: Vec<String> = Vec::new();
-    for (name, mesh) in crate::mesh::read::load_all_meshes(repo)? {
+    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
         let mut buf = String::new();
         for (id, a) in &mesh.anchors {
             buf.push_str(id);
@@ -441,7 +449,12 @@ fn ls_files_untracked(wd: &std::path::Path) -> Result<Vec<String>> {
 /// diff against the `mark <id>` snapshot pair, appends per-path rows to
 /// `touches.jsonl`, and discards the snapshot. Silent on stdout. A no-op when
 /// no snapshot exists for `<id>`.
-fn run_advice_diff(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
+fn run_advice_diff(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    session_id: String,
+    id: String,
+) -> Result<i32> {
     use crate::advice::session::state::{TouchInterval, UntrackedSnapshotEntry};
     use crate::advice::session::SessionStore;
 
@@ -483,7 +496,7 @@ fn run_advice_diff(repo: &gix::Repository, session_id: String, id: String) -> Re
         })
         .collect();
 
-    record_touches(repo, &store, &id, &touches)
+    record_touches(repo, mesh_root, &store, &id, &touches)
 }
 
 /// Append `touches` to `touches.jsonl`, observe newly-committed meshes, and
@@ -491,6 +504,7 @@ fn run_advice_diff(repo: &gix::Repository, session_id: String, id: String) -> Re
 /// `diff` (snapshot-derived) and `touch` (payload-driven) verbs.
 fn record_touches(
     repo: &gix::Repository,
+    mesh_root: &str,
     store: &crate::advice::session::SessionStore,
     id: &str,
     touches: &[crate::advice::session::state::TouchInterval],
@@ -501,7 +515,7 @@ fn record_touches(
     // Eager observation: capture meshes committed via this tool call's
     // `git commit` so subsequent reads hit the fast `meshes_committed_set()`
     // path. Best-effort.
-    let _ = discover_meshes_committed_this_session(repo, store);
+    let _ = discover_meshes_committed_this_session(repo, mesh_root, store);
     store.discard_snapshot(id);
     Ok(0)
 }
@@ -512,7 +526,11 @@ fn record_touches(
 /// runs the mesh-block + suggest-pipeline emit pass deduped via
 /// `meshes-seen.jsonl` and `advice-seen.jsonl`, and writes suggestions to
 /// stdout. Repeated calls only surface deltas.
-fn run_advice_flush(repo: &gix::Repository, session_id: String) -> Result<i32> {
+fn run_advice_flush(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    session_id: String,
+) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{edit_overlaps, format_anchor_resolved, Action, BasicOutput};
 
@@ -533,6 +551,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String) -> Result<i32> {
         let _perf = crate::perf::span("advice.flush.resolve-candidates");
         let candidate_names = candidate_mesh_names_for_paths(
             repo,
+            mesh_root,
             touches
                 .iter()
                 .filter(|t| !matches!(t.kind, TouchKind::Added | TouchKind::Deleted))
@@ -545,7 +564,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String) -> Result<i32> {
                 }),
         );
         let resolved =
-            crate::resolver::resolve_named_meshes(repo, &candidate_names, default_engine_options())
+            crate::resolver::resolve_named_meshes(repo, mesh_root, &candidate_names, default_engine_options())
                 .unwrap_or_default();
         resolved
             .into_iter()
@@ -839,6 +858,7 @@ fn any_participant_references_another(
 
 fn run_advice_touch(
     repo: &gix::Repository,
+    mesh_root: &str,
     session_id: String,
     id: String,
     anchor: String,
@@ -893,7 +913,7 @@ fn run_advice_touch(
         end: line_anchor.map(|(_, e)| e),
     }];
 
-    record_touches(repo, &store, "", &touches)
+    record_touches(repo, mesh_root, &store, "", &touches)
 }
 
 /// Validate an anchor for the `touch added` case. Same as `validate_read_spec`
@@ -1231,6 +1251,7 @@ fn validate_read_spec_cli(
 
 fn run_advice_read(
     repo: &gix::Repository,
+    mesh_root: &str,
     session_id: String,
     anchor: String,
     id: Option<String>,
@@ -1298,16 +1319,16 @@ fn run_advice_read(
     let meshes = {
         let _perf = crate::perf::span("advice.read.resolve-candidates");
         let candidate_names =
-            candidate_mesh_names_for_paths(repo, std::iter::once((rec.path.as_str(), line_anchor)));
+            candidate_mesh_names_for_paths(repo, mesh_root, std::iter::once((rec.path.as_str(), line_anchor)));
         let resolved =
-            crate::resolver::resolve_named_meshes(repo, &candidate_names, default_engine_options())
+            crate::resolver::resolve_named_meshes(repo, mesh_root, &candidate_names, default_engine_options())
                 .unwrap_or_default();
         resolved
             .into_iter()
             .filter_map(|(_, r)| r.ok())
             .collect::<Vec<_>>()
     };
-    let meshes_committed = discover_meshes_committed_this_session(repo, &store)?;
+    let meshes_committed = discover_meshes_committed_this_session(repo, mesh_root, &store)?;
     let meshes_seen = store.meshes_seen_set()?;
 
     let mut new_meshes_seen: Vec<String> = Vec::new();

@@ -57,10 +57,9 @@ pub struct Cli {
 /// Every subcommand the CLI accepts. Mirrors §10.2.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Show the named mesh (like `git show`). This variant is also
-    /// used by [`crate::main`] to handle the bare `git mesh <name>`
-    /// positional form.
-    #[command(name = "show", hide = true)]
+    /// Show the named mesh — its anchors, why, and config. Equivalent
+    /// to the bare `git mesh <name>` positional form.
+    #[command(name = "show")]
     Show(ShowArgs),
 
     /// List files and anchors currently tracked by a mesh.
@@ -69,10 +68,12 @@ pub enum Commands {
     /// Report anchors whose content has drifted from their anchored state.
     Stale(StaleArgs),
 
-    /// Stage anchors to add on the next mesh commit.
+    /// Add anchors to a mesh, writing the mesh file under the mesh root.
+    /// Stage and commit the change with `git add .mesh && git commit`.
     Add(AddArgs),
 
-    /// Stage anchors to remove on the next mesh commit.
+    /// Remove anchors from a mesh, editing the mesh file under the mesh
+    /// root. Stage and commit the change with `git add .mesh && git commit`.
     Remove(RemoveArgs),
 
     /// Read or stage the mesh's why — a one-sentence definition of
@@ -84,11 +85,12 @@ pub enum Commands {
     /// to the Stripe-backed server."). Leave invariants, caveats,
     /// ownership, and review triggers to source comments, commit
     /// messages, CODEOWNERS, and PR descriptions. The why is
-    /// inherited across routine re-anchors; only stage a new one
+    /// inherited across routine re-anchors; only write a new one
     /// when the subsystem itself changes.
     ///
     /// Bare `git mesh why <name>` prints the current why; the writer
-    /// flags `-m`/`-F`/`--edit` stage a new one.
+    /// flags `-m`/`-F`/`--edit` write a new one into the mesh file
+    /// (commit it with `git add .mesh && git commit`).
     Why(WhyArgs),
 
     /// Delete a mesh.
@@ -188,7 +190,8 @@ pub struct StaleArgs {
     #[arg(long)]
     pub no_index: bool,
 
-    /// Skip the staged-mesh layer (`.git/mesh/staging/`).
+    /// Accepted for compatibility; no effect in the tracked-file model
+    /// (mesh edits live in the worktree, not a separate staging area).
     #[arg(long)]
     pub no_staged_mesh: bool,
 
@@ -237,8 +240,8 @@ pub struct AddArgs {
     )]
     pub anchors: Vec<String>,
 
-    /// Anchor every staged anchor in this invocation at `<commit-ish>`.
-    /// Default is HEAD resolved at commit time.
+    /// Hash every anchor in this invocation against the file content at
+    /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
 }
@@ -281,11 +284,9 @@ pub struct WhyArgs {
     #[arg(long, conflicts_with = "at")]
     pub edit: bool,
 
-    /// Reader-only: print the why text as of a past commit. Accepts
-    /// either a source commit-ish (e.g. HEAD~3, a branch, a source SHA)
-    /// — which selects the mesh state that was current at that source
-    /// commit — or a mesh-ref commit SHA directly. Mutually exclusive
-    /// with `-m`/`-F`/`--edit`.
+    /// Reader-only: print the why text as it existed in the mesh file
+    /// at an ordinary git commit-ish (e.g. HEAD~3, a branch, a tag, a
+    /// commit SHA). Mutually exclusive with `-m`/`-F`/`--edit`.
     #[arg(long, value_name = "COMMIT-ISH", conflicts_with_all = ["m", "file", "edit"])]
     pub at: Option<String>,
 }
@@ -341,46 +342,55 @@ pub fn dispatch(
     command: Commands,
     mesh_dir: Option<&str>,
 ) -> anyhow::Result<i32> {
+    // Resolve the mesh root once, here, through the single precedence
+    // chain (`--mesh-dir` > `GIT_MESH_DIR` > `git config git-mesh.dir`
+    // > `.mesh`). Every handler — read, write, management, advice,
+    // doctor — and the resolver engine + cache key derivation operate
+    // on this resolved root, so writer and all readers agree.
+    let env_dir = std::env::var("GIT_MESH_DIR").ok();
+    let mesh_root = crate::mesh_root::resolve_mesh_root(repo, mesh_dir, env_dir.as_deref())
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mesh_root = mesh_root.as_str();
     match command {
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
-            show::run_show(repo, args)
+            show::run_show(repo, args, mesh_root)
         }
         Commands::List(args) => {
             let _perf = crate::perf::span("command.list");
-            show::run_list(repo, args)
+            show::run_list(repo, args, mesh_root)
         }
         Commands::Stale(args) => {
             let _perf = crate::perf::span("command.stale");
-            stale_output::run_stale(repo, args)
+            stale_output::run_stale(repo, args, mesh_root)
         }
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");
-            commit::run_add(repo, args, mesh_dir)
+            commit::run_add(repo, args, mesh_root)
         }
         Commands::Remove(args) => {
             let _perf = crate::perf::span("command.remove");
-            commit::run_remove(repo, args, mesh_dir)
+            commit::run_remove(repo, args, mesh_root)
         }
         Commands::Why(args) => {
             let _perf = crate::perf::span("command.why");
-            commit::run_why(repo, args, mesh_dir)
+            commit::run_why(repo, args, mesh_root)
         }
         Commands::Delete(args) => {
             let _perf = crate::perf::span("command.delete");
-            doctor::run_delete(repo, args)
+            doctor::run_delete(repo, args, mesh_root)
         }
         Commands::Move(args) => {
             let _perf = crate::perf::span("command.move");
-            doctor::run_move(repo, args)
+            doctor::run_move(repo, args, mesh_root)
         }
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");
-            doctor::run_doctor(repo, args)
+            doctor::run_doctor(repo, args, mesh_root)
         }
         Commands::Advice(args) => {
             let _perf = crate::perf::span("command.advice");
-            advice::run_advice(repo, args)
+            advice::run_advice(repo, args, mesh_root)
         }
     }
 }

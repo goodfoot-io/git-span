@@ -40,7 +40,7 @@ fn since_does_not_filter_file_backed_anchors() -> Result<()> {
             since: Some(gix::ObjectId::from_str(cutoff)?),
             ..EngineOptions::full()
         };
-        let mr = resolve_mesh(&gix, "m", opts)?;
+        let mr = resolve_mesh(&gix, ".mesh", "m", opts)?;
         assert_eq!(
             mr.anchors.len(),
             1,

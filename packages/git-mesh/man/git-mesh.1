@@ -45,18 +45,18 @@ If the relationship has changed, update the why with
 .B git mesh why
 before re-anchoring.
 .PP
-Meshes are stored in a catalog tree at
-.IR refs/meshes/v1/catalog
-as individual entries using a zero-copy archive format,
-so they travel with
-.B git fetch
-and
-.B git push
-like branches and tags.
-.B git mesh fetch
-and
-.B git mesh push
-keep remote mirrors in sync.
+Each mesh is an ordinary tracked file under the mesh root (default
+.IR .mesh ,
+overridable with
+.BR \-\-mesh\-dir ,
+the
+.I GIT_MESH_DIR
+environment variable, or
+.IR "git config git-mesh.dir" ).
+Meshes are versioned, fetched, and pushed exactly like any other
+tracked file \[em] stage and commit edits with
+.B git add .mesh && git commit
+\&.
 .PP
 Bare invocations:
 .RS 4
@@ -88,6 +88,9 @@ Print version
 .el .ds Aq '
 .SH SUBCOMMANDS
 .TP
+git\-mesh\-show(1)
+Show the named mesh — its anchors, why, and config. Equivalent to the bare `git mesh <name>` positional form
+.TP
 git\-mesh\-list(1)
 List files and anchors currently tracked by a mesh
 .TP
@@ -95,10 +98,10 @@ git\-mesh\-stale(1)
 Report anchors whose content has drifted from their anchored state
 .TP
 git\-mesh\-add(1)
-Stage anchors to add on the next mesh commit
+Add anchors to a mesh, writing the mesh file under the mesh root. Stage and commit the change with `git add .mesh && git commit`
 .TP
 git\-mesh\-remove(1)
-Stage anchors to remove on the next mesh commit
+Remove anchors from a mesh, editing the mesh file under the mesh root. Stage and commit the change with `git add .mesh && git commit`
 .TP
 git\-mesh\-why(1)
 Read or stage the mesh\*(Aqs why — a one\-sentence definition of the subsystem, flow, or concern the anchors collectively form
@@ -131,8 +134,8 @@ git mesh add billing/charge-request-contract \e
 git mesh why billing/charge-request-contract \e
     -m "The doc states the request body shape the parser honors; \e
 the doc is the source of truth when they disagree."
+git add .mesh
 git commit -m "Wire checkout to charge API"
-# post-commit hook runs: git mesh commit
 .fi
 .RE
 .PP
@@ -145,7 +148,7 @@ git mesh add auth/token-contract --at HEAD \e
     packages/auth/crypto.ts#L12-L40
 git mesh why auth/token-contract \e
     -m "Token verification depends on signature verification."
-git mesh commit auth/token-contract
+git add .mesh && git commit -m "Document token/crypto coupling"
 .fi
 .RE
 .PP
@@ -155,7 +158,7 @@ Check for drift and inspect a mesh:
 .nf
 git mesh stale
 git mesh billing/charge-request-contract
-git mesh billing/charge-request-contract --log
+git mesh show billing/charge-request-contract
 .fi
 .RE
 .SH SEE ALSO

@@ -102,7 +102,7 @@ fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Re
     // HEAD same.txt = `intro\na\ntarget\nc`. Anchor 1 (L2-L2, pinned
     // `target`) finds `target` relocated to line 3 → Moved. Anchor 2
     // (L3-L3, pinned `target`) matches in place → Fresh.
-    let resolved = resolve_mesh(&gix, "timeline-key", EngineOptions::committed_only())?;
+    let resolved = resolve_mesh(&gix, ".mesh", "timeline-key", EngineOptions::committed_only())?;
     let statuses: Vec<AnchorStatus> = resolved
         .anchors
         .iter()
@@ -200,7 +200,7 @@ fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> 
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::Changed);
     // Source / current.blob live on the Phase 1 `Finding` shape which
@@ -227,7 +227,7 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.run_git(["add", "file1.txt"])?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::Changed);
     // Index-layer reads resolve to a blob.
@@ -297,7 +297,7 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
         "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("shift")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::Moved);
     // Non-zero exit only if the ack fails to match by anchor_id — the
@@ -424,7 +424,7 @@ fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
         .current_dir(repo.path())
         .args(["merge", "feature"])
         .output()?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::MergeConflict);
     assert!(
@@ -445,7 +445,7 @@ fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
         "file1.txt",
         "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\nline9\r\nline10\r\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Fresh);
     Ok(())
 }
@@ -466,7 +466,7 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     // Mutate the binary, exit 1.
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
     repo.commit_all("mutate binary")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     assert_eq!(mr.anchors[0].anchored.extent, AnchorExtent::WholeFile);
     // Re-anchor acknowledges.
@@ -508,7 +508,7 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
         .args(["pull"])
         .output()?;
     repo.run_git(["add", "sub"])?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     Ok(())
 }
@@ -533,7 +533,7 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     std::fs::remove_file(repo.path().join("link"))?;
     support::symlink_file("file2.txt".as_ref(), &repo.path().join("link"))?;
     repo.commit_all("retarget")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     // Line-anchor pin on a symlink must be rejected at add time.
     let rej = repo.run_mesh(["add", "n", "link#L1-L1"])?;
@@ -565,7 +565,7 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     // File-backed model: drift the pointer in the working tree
     // (uncommitted) so HEAD retains the anchored pointer.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     Ok(())
 }
@@ -590,7 +590,7 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     // Pointer changes in the working tree (uncommitted), cache missing
     // for the new oid.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_d, 42)?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(
         mr.anchors[0].status,
         AnchorStatus::ContentUnavailable(UnavailableReason::LfsNotFetched)
@@ -673,7 +673,7 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
     repo.write_file("config.secret", "new payload\n")?;
     repo.commit_all("mutate")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert!(matches!(
         mr.anchors[0].status,
         AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed { .. })
@@ -743,7 +743,7 @@ fn git_mv_across_pinned_file_reports_orphaned() -> Result<()> {
     seed_line_range_mesh(&repo, "m")?;
     repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
     repo.commit_all("rename")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::Deleted);
     // Anchored path unchanged.
@@ -774,7 +774,7 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     // The pinned anchor itself drifts via the worktree layer; zero-OID
     // sibling must not poison the read.
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
@@ -820,7 +820,7 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
         "stale must report drift; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Deleted);
     Ok(())
 }
@@ -870,9 +870,9 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
 fn resolve_range_agrees_with_resolve_mesh_smoke() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
+    let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
     let rid = &mr.anchors[0].anchor_id;
-    let r = resolve_anchor(&repo.gix_repo()?, "m", rid, EngineOptions::full())?;
+    let r = resolve_anchor(&repo.gix_repo()?, ".mesh", "m", rid, EngineOptions::full())?;
     assert_eq!(r.status, mr.anchors[0].status);
     Ok(())
 }
@@ -888,7 +888,7 @@ fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
         "XXX\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("mutate")?;
-    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    let all = stale_meshes(&repo.gix_repo()?, ".mesh", EngineOptions::full())?;
     assert!(
         all.iter()
             .any(|m| m.anchors.iter().any(|r| r.status == AnchorStatus::Changed))
@@ -901,7 +901,7 @@ fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
 fn stale_meshes_excludes_clean_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "clean-only")?;
-    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    let all = stale_meshes(&repo.gix_repo()?, ".mesh", EngineOptions::full())?;
     assert!(
         !all.iter().any(|m| m.name == "clean-only"),
         "clean mesh must not appear in stale_meshes output"
@@ -919,7 +919,7 @@ fn stale_meshes_includes_changed_mesh() -> Result<()> {
         "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("mutate")?;
-    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    let all = stale_meshes(&repo.gix_repo()?, ".mesh", EngineOptions::full())?;
     assert!(
         all.iter()
             .any(|m| m.name == "drifty"
@@ -945,7 +945,7 @@ fn stale_meshes_filters_clean_leaves_stale() -> Result<()> {
         "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("mutate")?;
-    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    let all = stale_meshes(&repo.gix_repo()?, ".mesh", EngineOptions::full())?;
     assert!(
         all.iter().any(|m| m.name == "noisy"),
         "stale mesh must appear"
