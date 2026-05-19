@@ -1,4 +1,4 @@
-packages/agent-hooks/src/post-tool-use.ts#L85-L101 sha256:173b1813d4bf56e044e3362b5f034fb6524dfea9b447a842365c00826fcf7c18
-packages/git-mesh/src/cli/advice/mod.rs#L46-L53 sha256:abad9ef3357bfbbe638f23dd76309563605480d0979072511b542ad8f15e6796
+packages/agent-hooks/src/post-tool-use.ts#L85-L101 sha256:33ae4bd3790d19011bbfb2117a5b1161f92c97fe554eecfbca232b2741b633d7
+packages/git-mesh/src/cli/advice/mod.rs#L46-L53 sha256:b8674a7ed54c4bd7f6837c077580ab1eaa0ff047bc5abde350af666579e322e5
 
 Read-event recording flow: the CLI's AdviceCommand::Read variant in cli/advice/mod.rs defines the 'git mesh advice <sid> read <anchor> [id]' invocation shape, and the post-tool-use hook's Read branch in agent-hooks builds a path or path#L<start>-L<end> anchor from a Read tool call and invokes that subcommand to record the read; the caller must conform to the CLI's argument shape.

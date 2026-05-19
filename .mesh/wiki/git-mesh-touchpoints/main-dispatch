@@ -1,4 +1,4 @@
-packages/git-mesh/src/main.rs#L49-L88 sha256:545791b0062ea9da7fec1c9a4090a8958a3cf9f6fdb168ff21018d4edee2b70f
-wiki/meta/git-mesh-documentation-touchpoints.md sha256:805460873d37587fc4d902e83cec22c9df87860ea0c25e1cb32f368869bf279e
+wiki/meta/git-mesh-documentation-touchpoints.md sha256:c6c47a2b58d23d6170684dc2c947117630e8c5a9e86b024ac1d029c0384c7b40
+packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069cbca06f3087198e71d585d2a4b7eff
 
 Pre-classification logic in main.rs that resolves the bare git mesh <name> form before Clap parses, anchoring the touchpoints page's source-of-truth claim about subcommand routing.
