@@ -343,6 +343,30 @@ impl ResolveSession {
         self.per_anchor_trace = Some(Vec::new());
     }
 
+    /// Resolve the blob OID of `path` at `head_sha`, memoized through the
+    /// session-scoped `blob_oid_memo`. HEAD is constant for the whole run,
+    /// so each distinct `(head_sha, path)` pair is tree-walked at most once.
+    /// `None` means "path absent in that tree" (fail-closed, mirroring the
+    /// `PathNotInTree` arm of the prior un-memoed callers).
+    pub(crate) fn head_blob_oid(
+        &mut self,
+        repo: &gix::Repository,
+        head_sha: &str,
+        path: &str,
+    ) -> Result<Option<String>> {
+        let key = (head_sha.to_string(), path.to_string());
+        if let Some(blob) = self.blob_oid_memo.get(&key) {
+            return Ok(blob.clone());
+        }
+        let blob = match git::path_blob_at(repo, head_sha, path) {
+            Ok(blob) => Some(blob),
+            Err(crate::Error::PathNotInTree { .. }) => None,
+            Err(e) => return Err(e),
+        };
+        self.blob_oid_memo.insert(key, blob.clone());
+        Ok(blob)
+    }
+
     pub(crate) fn anchors_total(&self) -> u64 {
         self.anchors_fresh
             + self.anchors_moved
@@ -714,8 +738,9 @@ pub(crate) fn resolve_at_head_shared(
     // any wider detection the walk performed.
     let copy_detection = CopyDetection::SameCommit;
 
-    let head_blob_oid: Option<gix::ObjectId> = git::path_blob_at(repo, &head_sha, &r.path)
-        .ok()
+    let head_blob_oid_hex: Option<String> = session.head_blob_oid(repo, &head_sha, &r.path)?;
+    let head_blob_oid: Option<gix::ObjectId> = head_blob_oid_hex
+        .as_deref()
         .and_then(|s| gix::ObjectId::from_hex(s.as_bytes()).ok());
 
     let key = PathTimelineKey {
@@ -749,7 +774,16 @@ pub(crate) fn resolve_at_head_shared(
         None => return Ok(None),
     };
 
-    if git::path_blob_at(repo, &head_sha, &loc.path).is_err() {
+    // Common no-rename case: `loc.path` equals the anchor path, so the
+    // HEAD-presence answer is exactly the OID we already resolved above —
+    // no second tree walk needed. Otherwise resolve `loc.path` through the
+    // shared memo.
+    let loc_present = if loc.path == r.path {
+        head_blob_oid_hex.is_some()
+    } else {
+        session.head_blob_oid(repo, &head_sha, &loc.path)?.is_some()
+    };
+    if !loc_present {
         return Ok(None);
     }
     Ok(Some(loc))

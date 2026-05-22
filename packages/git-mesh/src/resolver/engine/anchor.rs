@@ -37,11 +37,6 @@ fn lines_equal(a: &[&str], b: &[&str], ignore_ws: bool) -> bool {
     })
 }
 
-fn head_blob_for(repo: &gix::Repository, path: &str) -> Result<String> {
-    let head_sha = git::head_oid(repo)?;
-    git::path_blob_at(repo, &head_sha, path)
-}
-
 fn string_from_utf8_lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -401,9 +396,10 @@ pub(crate) fn resolve_anchor_inner(
                             UnavailableReason::FilterFailed { filter },
                         ));
                     }
-                    let oid = index_blob_oid
-                        .clone()
-                        .or_else(|| head_blob_for(repo, &t.path).ok());
+                    let oid = match index_blob_oid.clone() {
+                        Some(o) => Some(o),
+                        None => state.head_blob_at(repo, &t.path)?,
+                    };
                     match oid {
                         Some(o) => {
                             let txt = git::read_git_text(repo, &o).unwrap_or_default();
@@ -421,7 +417,7 @@ pub(crate) fn resolve_anchor_inner(
                             UnavailableReason::FilterFailed { filter },
                         ));
                     }
-                    let oid = head_blob_for(repo, &t.path).ok();
+                    let oid = state.head_blob_at(repo, &t.path)?;
                     let txt = match &oid {
                         Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                         None => String::new(),
@@ -878,7 +874,7 @@ fn compute_layer_sources(
                 // comparisons surface drift.
                 None
             } else {
-                let oid = head_blob_for(repo, &t.path).ok();
+                let oid = state.head_blob_at(repo, &t.path)?;
                 let txt = match &oid {
                     Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                     None => String::new(),
@@ -893,11 +889,12 @@ fn compute_layer_sources(
             None => None,
             Some(t) => {
                 let oid = if index_hunk_applied {
-                    index_blob_oid
-                        .clone()
-                        .or_else(|| head_blob_for(repo, &t.path).ok())
+                    match index_blob_oid.clone() {
+                        Some(o) => Some(o),
+                        None => state.head_blob_at(repo, &t.path)?,
+                    }
                 } else {
-                    head_blob_for(repo, &t.path).ok()
+                    state.head_blob_at(repo, &t.path)?
                 };
                 let txt = match &oid {
                     Some(o) => read_blob_text(repo, o),
@@ -920,9 +917,10 @@ fn compute_layer_sources(
                         Err(_) => None,
                     }
                 } else {
-                    let oid = index_blob_oid
-                        .clone()
-                        .or_else(|| head_blob_for(repo, &t.path).ok());
+                    let oid = match index_blob_oid.clone() {
+                        Some(o) => Some(o),
+                        None => state.head_blob_at(repo, &t.path)?,
+                    };
                     let txt = match &oid {
                         Some(o) => read_blob_text(repo, o),
                         None => String::new(),

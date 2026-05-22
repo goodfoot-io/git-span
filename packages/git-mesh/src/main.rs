@@ -136,5 +136,10 @@ fn discover_repo() -> Result<gix::Repository> {
     // object lookups that the resolver performs can fail to resolve paths
     // correctly.
     let cwd = std::fs::canonicalize(".").context("canonicalize cwd")?;
-    gix::discover(cwd).context("not inside a git repository")
+    let mut repo = gix::discover(cwd).context("not inside a git repository")?;
+    // Enable gix's object cache so repeated `find_object`/tree-peel calls
+    // during the resolver hot path reuse decoded objects. No-op if a cache
+    // is already set; pure performance, no behavior change.
+    repo.object_cache_size_if_unset(16 * 1024 * 1024);
+    Ok(repo)
 }

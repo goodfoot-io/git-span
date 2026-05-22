@@ -48,10 +48,6 @@ pub(crate) struct EngineState {
     /// Per-command memo for anchor commit reachability. This avoids
     /// scanning all refs once per anchor in large repositories.
     commit_reachability: HashMap<String, bool>,
-    /// Per-command memo for blob OIDs in the current HEAD tree. Many meshes
-    /// pin the same paths, so resolving each path once avoids repeated tree
-    /// walks without storing anything across invocations.
-    head_blobs: HashMap<String, Option<String>>,
     /// Per-command memo for `.gitattributes` filter-driver lookups, keyed
     /// by `rel_path`. The workdir is constant per `EngineState`, so the
     /// repo handle is implicit. A cached `None` means "no driver / fail
@@ -87,7 +83,6 @@ impl EngineState {
             session: ResolveSession::new(repo),
             needs_all_layers,
             commit_reachability: HashMap::new(),
-            head_blobs: HashMap::new(),
             filter_attrs: HashMap::new(),
         };
         if clean_layers {
@@ -210,16 +205,11 @@ impl EngineState {
         repo: &gix::Repository,
         path: &str,
     ) -> Result<Option<String>> {
-        if let Some(blob) = self.head_blobs.get(path) {
-            return Ok(blob.clone());
-        }
-        let blob = match crate::git::path_blob_at(repo, &self.head_sha, path) {
-            Ok(blob) => Some(blob),
-            Err(Error::PathNotInTree { .. }) => None,
-            Err(e) => return Err(e),
-        };
-        self.head_blobs.insert(path.to_string(), blob.clone());
-        Ok(blob)
+        // Delegate to the single session-scoped `blob_oid_memo` (keyed by
+        // `(commit_sha, path)`) so there is exactly one source of truth for
+        // HEAD blob OIDs. `head_sha` is constant for the run.
+        let head_sha = self.head_sha.clone();
+        self.session.head_blob_oid(repo, &head_sha, path)
     }
 
     fn finish(mut self, repo: &gix::Repository) {
