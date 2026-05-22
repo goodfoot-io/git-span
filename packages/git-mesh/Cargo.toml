@@ -57,6 +57,19 @@ path = "tests/helpers/test_helper.rs"
 test = false
 bench = false
 
+# Codegen-only manpage generator: it has no unit tests, so building a test
+# harness for it is pointless. It also adds a `bin "gen-manpage" test`
+# target that needs full codegen (rlibs) of every dependency; when a
+# `cargo check`/clippy pass (rmeta-only) and `cargo test` share this
+# worktree's `target-cache/`, that target intermittently fails with
+# "crate `…` required to be available in rlib format". Dropping the test
+# harness removes the spurious target.
+[[bin]]
+name = "gen-manpage"
+path = "src/bin/gen-manpage.rs"
+test = false
+bench = false
+
 [[bench]]
 name = "stale_head_only"
 harness = false
