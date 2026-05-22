@@ -7,7 +7,7 @@
     "vscode": {
       "extensions": [
         "biomejs.biome",
-        "yutengjing.vscode-mcp-bridge"
+        ".devcontainer/no-port-forwarding"
       ],
       "settings": {
         "git.path": "/usr/bin/git",
