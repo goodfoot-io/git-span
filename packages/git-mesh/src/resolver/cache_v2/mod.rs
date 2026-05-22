@@ -209,6 +209,19 @@ pub(crate) fn stale_meshes_cached(
             }
         }
     }
+
+    // Uncommitted mesh files that `git status -uno` never reports — every
+    // worktree mesh file absent from HEAD (untracked, including
+    // gitignored). The committed baseline only contains HEAD meshes, so
+    // these must enter the dirty-overlay path to be surfaced at all; and
+    // marking them dirty is what later lets a deleted untracked mesh drop
+    // out of the result (gone from the worktree ⇒ not dirty ⇒ not in the
+    // overlay ⇒ not rendered), instead of being replayed from the cache.
+    match uncommitted_mesh_paths(repo, &mesh_root) {
+        Ok(paths) => dirty_paths.extend(paths),
+        Err(e) => return Ok(CacheAttempt::Fallback(format!("uncommitted-mesh-scan: {e}"))),
+    }
+
     if dirty_paths.iter().any(|p| is_gitattributes_path(p)) {
         return Ok(CacheAttempt::Fallback(
             "dirty-gitattributes-changes-filtering".into(),
@@ -367,15 +380,44 @@ fn reportable(meshes: Vec<MeshResolved>) -> Vec<MeshResolved> {
         .collect()
 }
 
-/// Full HEAD-only resolution of every visible mesh — the cold-build
-/// input for the committed baseline.
+/// Mesh-relative paths (`<mesh_root>/<name>`) of worktree mesh files that
+/// are not committed at `HEAD` — untracked files, including gitignored
+/// ones, which `git status -uno` does not enumerate.
+///
+/// Returned in `<mesh_root>/<name>` form so they slot directly into the
+/// `dirty_paths` set, where [`meshes_affected_by`] turns the mesh-root
+/// prefix back into a mesh name.
+fn uncommitted_mesh_paths(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<Vec<String>> {
+    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
+    let committed: HashSet<String> = reader.committed_mesh_names()?.into_iter().collect();
+    Ok(reader
+        .worktree_mesh_names()?
+        .into_iter()
+        .filter(|name| !committed.contains(name))
+        .map(|name| format!("{mesh_root}/{name}"))
+        .collect())
+}
+
+/// Full HEAD-only resolution of every mesh committed at `HEAD` — the
+/// cold-build input for the committed baseline.
 fn build_committed_meshes(
     repo: &gix::Repository,
     mesh_root: &str,
 ) -> Result<Vec<MeshResolved>> {
     let _perf = crate::perf::span("resolver.cache_v2.build-baseline");
-    let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
-    let names: Vec<String> = pairs.into_iter().map(|(n, _)| n).collect();
+    // The committed baseline is keyed by the HEAD mesh tree and resolved
+    // with `committed_only`, so it must enumerate exactly the meshes that
+    // exist at HEAD. Enumerating the worktree filesystem (the old
+    // behavior) baked untracked/gitignored mesh files into a HEAD-keyed
+    // baseline; deleting such a file changed neither the key nor `git
+    // status -uno`, so the warm-clean path replayed the deleted mesh.
+    // Worktree-only meshes are uncommitted state handled by the
+    // dirty-overlay path below.
+    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
+    let names: Vec<String> = reader.committed_mesh_names()?;
     if names.is_empty() {
         return Ok(Vec::new());
     }

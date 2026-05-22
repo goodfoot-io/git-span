@@ -138,6 +138,33 @@ impl<'repo> MeshFileReader<'repo> {
         Ok(names.into_iter().collect())
     }
 
+    /// List mesh names committed at `HEAD` (the HEAD tree under the mesh
+    /// root only — index and worktree layers excluded).
+    ///
+    /// This is the enumeration the `cache_v2` committed baseline keys on:
+    /// the baseline is resolved with `LayerSet::committed_only` and keyed
+    /// by the HEAD mesh tree, so it must contain exactly the meshes
+    /// present at HEAD. Worktree-only meshes (untracked or gitignored)
+    /// are uncommitted state and are handled by the dirty-overlay path,
+    /// never baked into the HEAD-keyed baseline.
+    pub fn committed_mesh_names(&self) -> Result<Vec<String>> {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        self.collect_head_names(&mut names)?;
+        Ok(names.into_iter().collect())
+    }
+
+    /// List mesh names present on the worktree filesystem under the mesh
+    /// root, including untracked and gitignored files.
+    ///
+    /// This is a raw directory walk — it deliberately does not consult
+    /// git's tracked/ignored state, so the dirty-overlay path can observe
+    /// uncommitted mesh files that `git status` never reports.
+    pub fn worktree_mesh_names(&self) -> Result<Vec<String>> {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        self.collect_worktree_names(&mut names)?;
+        Ok(names.into_iter().collect())
+    }
+
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
