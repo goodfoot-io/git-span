@@ -383,13 +383,25 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         let _perf = crate::perf::span("add.validate-targets");
         for (path, extent) in &parsed {
             validate_add_target(repo, std::path::Path::new(path), extent).map_err(|err| {
+                let next_steps = match &err {
+                    crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
+                        NextStep::Prose(
+                            "git-mesh tracks content through git and cannot resolve a path \
+                             git never sees. Un-ignore the path (edit `.gitignore`) or anchor \
+                             a committed file instead."
+                                .into(),
+                        ),
+                        NextStep::Bash(format!("git check-ignore -v {path}")),
+                    ],
+                    _ => vec![NextStep::Prose(
+                        "Fix the path or choose a different extent.".into(),
+                    )],
+                };
                 from_lib_error(
                     "add",
                     format!("anchor precheck failed for `{path}`."),
                     err,
-                    vec![NextStep::Prose(
-                        "Fix the path or choose a different extent.".into(),
-                    )],
+                    next_steps,
                 )
             })?;
         }

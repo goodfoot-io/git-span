@@ -803,6 +803,31 @@ pub fn attr_for(
     Ok(None)
 }
 
+/// Whether `rel_path` matches a `.gitignore` exclude rule (pattern-only;
+/// the index is not consulted, so a force-added *tracked* path that also
+/// matches a pattern still reports `true` here — callers that care about
+/// git's effective "would be excluded" semantics must additionally check
+/// trackedness).
+///
+/// Mirrors `git check-ignore`'s pattern evaluation via gix's exclude
+/// stack. Returns `Ok(false)` when the path matches no rule.
+pub fn path_is_ignored(repo: &gix::Repository, rel_path: &Path) -> Result<bool> {
+    let index = repo
+        .index_or_load_from_head()
+        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let mut stack = repo
+        .excludes(
+            &index,
+            None,
+            gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+        )
+        .map_err(|e| Error::Git(format!("exclude stack: {e}")))?;
+    let platform = stack
+        .at_entry(rel_path, None)
+        .map_err(|e| Error::Git(format!("exclude at_entry `{}`: {e}", rel_path.display())))?;
+    Ok(platform.is_excluded())
+}
+
 /// Read a single config string by full key (e.g. `"filter.lfs.process"`).
 pub fn config_string(repo: &gix::Repository, key: &str) -> Option<String> {
     repo.config_snapshot().string(key).map(|v| v.to_string())

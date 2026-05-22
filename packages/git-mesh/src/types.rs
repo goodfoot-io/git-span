@@ -799,6 +799,15 @@ impl EngineOptions {
 /// the operator gets immediate feedback before sidecars are written.
 #[derive(Debug, thiserror::Error)]
 pub enum AddPrecheckError {
+    /// Anchor target matched by a `.gitignore` rule and not tracked by
+    /// git. git-mesh resolves content through git's layers, so a path git
+    /// never sees can never resolve — `stale` would report it `deleted`
+    /// forever, with no commit able to clear it. Rejected at `add` time,
+    /// keying on the gitignore match (an untracked-but-not-ignored path
+    /// is still allowed: it resolves the moment it is committed).
+    #[error("anchor path is gitignored: {path}")]
+    GitignoredPath { path: String },
+
     /// Line-anchor pin on a `.gitattributes`-declared binary path.
     #[error("line-anchor pin rejected on binary path: {path}")]
     LineRangeOnBinary { path: String },
@@ -852,6 +861,18 @@ pub fn validate_add_target(
 
     // Submodule detection via `git ls-files --stage`.
     let submodule_kind = submodule_classify(workdir, &path_str)?;
+
+    // Gitignored target: git never tracks this path, so the resolver can
+    // never see it and `stale` would report it `deleted` forever. Reject
+    // at the source — but only when the path is *not* tracked: a path
+    // matched by a pattern yet force-added to git resolves normally, and
+    // an untracked-but-not-ignored path is a legitimate anchor that
+    // resolves on commit (so it must still be allowed).
+    if crate::git::path_is_ignored(repo, path).unwrap_or(false)
+        && !is_tracked_path(workdir, &path_str)
+    {
+        return Err(AddPrecheckError::GitignoredPath { path: path_str });
+    }
 
     // Symlink detection (worktree only).
     let is_symlink = std::fs::symlink_metadata(&abs)
@@ -934,6 +955,20 @@ enum SubmoduleKind {
     Inside,
     /// Neither.
     None,
+}
+
+/// Whether `path` (mesh-root-relative POSIX string) has an index entry —
+/// i.e. git tracks it. Used to spare force-added paths from the
+/// gitignore reject. Any open/read failure is treated as "not tracked"
+/// so the ignore check stays fail-closed.
+fn is_tracked_path(workdir: &std::path::Path, path: &str) -> bool {
+    let Ok(repo) = gix::open(workdir) else {
+        return false;
+    };
+    let Ok(entries) = crate::git::index_entries(&repo) else {
+        return false;
+    };
+    entries.iter().any(|e| e.path == path)
 }
 
 fn submodule_classify(
