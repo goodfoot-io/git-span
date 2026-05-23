@@ -28,7 +28,7 @@ the run loop — no business logic. Order is behavior; preserve it.
 | Sub-script                    | Purpose                                                              | Blocks commit?                              |
 | ----------------------------- | -------------------------------------------------------------------- | ------------------------------------------- |
 | `pre-commit.version-lock.sh`  | Lock package/plugin/Cargo manifest versions to the highest semver    | Yes, if node/yarn fails                      |
-| `pre-commit.wiki.sh`          | `wiki check --fix` — auto-fix drifted links/anchors, re-stage `*.md` | No (`--no-exit-code`)                        |
+| `pre-commit.wiki.sh`          | Phase 1: `wiki check --fix` auto-fixes drifted links/anchors, re-stages `*.md`. Phase 2: `wiki scaffold` creates git-mesh coverage for uncovered fragment links, stages exactly those meshes | Yes, if `wiki scaffold` fails (git-mesh unavailable or `git mesh add` error) |
 | `pre-commit.biome.sh`         | `biome check --fix` on staged TS/JS, re-stage fixes                  | Yes, on Biome errors it cannot autofix       |
 
 Each sub-script:
@@ -40,23 +40,13 @@ Each sub-script:
 - Is independently runnable and `bash -n`-clean. Debug one by hand:
   `.githooks/pre-commit.biome.sh`.
 
-## post-commit (advisory)
-
-`post-commit` is the advisory dispatcher. A failing part is reported
-(`post-commit: <part> exited non-zero (ignored)`) but never aborts the
-commit that already landed.
-
-| Sub-script                     | Purpose                                                                                  | Blocks? |
-| ------------------------------ | ---------------------------------------------------------------------------------------- | ------- |
-| `post-commit.wiki-scaffold.sh` | Scaffold git-mesh coverage for new fragment links; prints `git mesh add`/`why` to review | No (advisory) |
-
-This is the deferred half of the two-phase wiki hook setup: `pre-commit`
-auto-repairs fixable link/anchor drift and re-stages it; `post-commit`
-scaffolds mesh coverage for links the commit introduced. Scaffold output is
-printed for the committer to review, consolidate, and commit separately — it
-is never executed automatically. Per the git-mesh handbook, **no
-mesh-specific hook is required** for meshes themselves (a `.mesh/` file is an
-ordinary tracked file); this part only emits scaffold *suggestions*.
+Mesh coverage is no longer deferred to `post-commit`. The wiki hook's two
+phases both run in `pre-commit`: phase 1 auto-repairs fixable link/anchor
+drift and re-stages it; phase 2 runs `wiki scaffold` to create git-mesh
+coverage for any uncovered fragment links and stages exactly the meshes it
+creates or renames. Only a pre-commit hook can stage those freshly-created
+`.mesh/` files into the commit being made and abort the commit when coverage
+cannot be created, so phase 2 is fail-closed there rather than advisory.
 
 ## Adding a concern
 
