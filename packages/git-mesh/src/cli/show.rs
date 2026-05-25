@@ -85,9 +85,8 @@ fn collect_listings_for_names(
 }
 
 
-fn collect_filtered_porcelain_listings_with_staging(
-    repo: &gix::Repository,
-    mesh_root: &str,
+fn collect_filtered_porcelain_listings_from_catalog(
+    mesh_pairs: &[(String, crate::types::Mesh)],
     target: &str,
     staged_listings: Option<&[MeshListing]>,
 ) -> Result<Vec<MeshListing>> {
@@ -98,20 +97,16 @@ fn collect_filtered_porcelain_listings_with_staging(
         (target.to_string(), None)
     };
 
-    // Scan every visible mesh file for an anchor matching the requested
-    // (path, range).
+    // Scan every visible mesh in the shared catalog for an anchor matching
+    // the requested (path, range).
     let _ = staged_listings;
-    let mesh_pairs = {
-        let _perf = crate::perf::span("list.path-filter-scan");
-        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
-    };
     let mut listings = Vec::with_capacity(mesh_pairs.len());
     for (name, mesh) in mesh_pairs {
         let anchors: Vec<AnchorEntry> = mesh
             .anchors
-            .into_iter()
+            .iter()
             .map(|(_id, anchor)| AnchorEntry {
-                path: anchor.path,
+                path: anchor.path.clone(),
                 extent: anchor.extent,
             })
             .collect();
@@ -120,7 +115,7 @@ fn collect_filtered_porcelain_listings_with_staging(
             .any(|anchor| anchor_matches(anchor, &path, range))
         {
             listings.push(MeshListing {
-                name,
+                name: name.clone(),
                 why: mesh.message.trim_end_matches('\n').to_string(),
                 anchors,
             });
@@ -227,6 +222,13 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
         let _perf = crate::perf::span("list.batch-read-staged-meshes");
         collect_staged_porcelain_listings(repo)?
     };
+    // Enumerate the full mesh catalog once for the whole batch, then filter
+    // the shared in-memory catalog per input path so total work scales as
+    // O(meshes + paths) rather than O(meshes × paths).
+    let mesh_pairs = {
+        let _perf = crate::perf::span("list.path-filter-scan");
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+    };
     // File-backed model: every query line scans the same mesh files, so
     // a mesh can match more than one query. Render each matched mesh's
     // anchors once across the whole batch (dedup by name). A query that
@@ -236,9 +238,8 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
     let mut seen: HashSet<String> = HashSet::new();
     for target in stdin.lock().lines() {
         let target = target?;
-        let mut listings = collect_filtered_porcelain_listings_with_staging(
-            repo,
-            mesh_root,
+        let mut listings = collect_filtered_porcelain_listings_from_catalog(
+            &mesh_pairs,
             &target,
             Some(&staged_listings),
         )?;
