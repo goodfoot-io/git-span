@@ -170,9 +170,10 @@ pub enum StaleFormat {
 pub struct StaleArgs {
     /// File paths, globs, or mesh names to report staleness for.
     /// Omit to scan all meshes.
+    #[arg(conflicts_with = "batch")]
     pub paths: Vec<String>,
 
-    #[arg(long, value_enum, default_value_t = StaleFormat::Human)]
+    #[arg(long, value_enum, default_value_t = StaleFormat::Human, conflicts_with = "batch")]
     pub format: StaleFormat,
 
     /// Exit 0 even when drift is found (report-only mode).
@@ -251,8 +252,21 @@ pub struct StaleArgs {
     /// mesh worktree files. Each surfacing anchor is re-hashed against the
     /// deepest drifting layer (Worktree > Index > HEAD). No commit is
     /// produced. Only supported with `--format human`.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "batch")]
     pub fix: bool,
+
+    /// Emit one tab-separated row per `(mesh slug, anchor)` pair instead
+    /// of human/format output. Requires `--porcelain`.
+    #[arg(
+        long,
+        requires = "porcelain",
+        conflicts_with_all = ["paths", "format", "fix"]
+    )]
+    pub batch: bool,
+
+    /// Machine-readable output for batch mode. Required by `--batch`.
+    #[arg(long, conflicts_with = "format")]
+    pub porcelain: bool,
 }
 
 #[derive(Debug, clap::Args)]

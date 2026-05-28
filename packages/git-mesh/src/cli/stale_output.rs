@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use crate::cli::format;
+use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
@@ -23,6 +24,7 @@ use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::io::{self, BufRead};
 
 fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
@@ -83,7 +85,74 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
     })
 }
 
+/// `git mesh stale --batch --porcelain`: read newline-delimited path filters
+/// from stdin (same grammar as `list --batch`) and emit one tab-separated row
+/// per `(mesh slug, anchor)` pair for every mesh whose anchors overlap any
+/// filter line. Format: `<slug>\t<path>\t<start>-<end>` where whole-file
+/// anchors emit `0-0`. Reuses the existing stale-classification path for
+/// drift detection.
+fn run_stale_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i32> {
+    // Load the full mesh catalog once.
+    let mesh_pairs = {
+        let _perf = crate::perf::span("stale.batch-load-meshes");
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+    };
+
+    // Collect stdin lines and group by path, merging ranges.
+    let stdin = io::stdin();
+    let mut filters_by_path: std::collections::HashMap<String, Vec<BatchFilter>> =
+        std::collections::HashMap::new();
+    let mut path_order: Vec<String> = Vec::new();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let filter = BatchFilter::parse(&line)?;
+        let path = filter.path().to_string();
+        if !filters_by_path.contains_key(&path) {
+            path_order.push(path.clone());
+        }
+        filters_by_path.entry(path).or_default().push(filter);
+    }
+
+    // For each path filter, scan every mesh for matching anchors and emit rows.
+    for path in &path_order {
+        let filters = filters_by_path.get(path).unwrap();
+        // Build merged filter for overlap checking.
+        let (merged_path, merged_range) = crate::cli::show::merge_batch_filters(filters);
+        let merged_filter = match merged_range {
+            None => BatchFilter::Path(merged_path),
+            Some((s, e)) => BatchFilter::Ranged {
+                path: path.clone(),
+                start: s,
+                end: e,
+            },
+        };
+
+        for (mesh_name, mesh) in &mesh_pairs {
+            for (_id, anchor) in &mesh.anchors {
+                if !merged_filter.matches_anchor(&anchor.path, anchor.extent) {
+                    continue;
+                }
+                let extent_str = match anchor.extent {
+                    AnchorExtent::LineRange { start, end } => format!("{start}-{end}"),
+                    AnchorExtent::WholeFile => "0-0".to_string(),
+                };
+                println!("{}\t{}\t{}", mesh_name, anchor.path, extent_str);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Result<i32> {
+    // `--batch --porcelain`: read path filters from stdin and emit one row per
+    // (mesh slug, anchor) for each matching mesh. Shares the same BatchFilter
+    // grammar as `list --batch`.
+    if args.batch {
+        let _perf = crate::perf::span("stale.batch-porcelain");
+        return run_stale_batch_porcelain(repo, mesh_root);
+    }
+
     // `--fix` is only meaningful with the Human renderer (post-rewrite
     // view); machine formats stream drifted findings only.
     if args.fix && !matches!(args.format, StaleFormat::Human) {

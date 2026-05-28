@@ -98,6 +98,97 @@ fn collect_listings_for_names(
     Ok(listings)
 }
 
+// ---------------------------------------------------------------------------
+// BatchFilter — shared grammar for `list --batch` and `stale --batch`
+// ---------------------------------------------------------------------------
+
+/// A single stdin filter line for batch commands.
+///
+/// Grammar:
+///   - `<path>` — matches all anchors whose path equals `path`
+///   - `<path>#L<start>-L<end>` — matches anchors whose range overlaps
+///     `[start, end]`; whole-file anchors (`0-0`) are suppressed
+pub enum BatchFilter {
+    /// Plain path — match every anchor on this path.
+    Path(String),
+    /// Range filter — intersect each anchor's `[start, end]` against
+    /// `[start, end]`; suppress whole-file anchors.
+    Ranged { path: String, start: u32, end: u32 },
+}
+
+impl BatchFilter {
+    /// Parse one stdin line into a `BatchFilter`.
+    pub fn parse(line: &str) -> Result<Self> {
+        if line.contains("#L") {
+            let (path, start, end) = parse_range_address(line)?;
+            Ok(BatchFilter::Ranged { path, start, end })
+        } else {
+            Ok(BatchFilter::Path(line.to_string()))
+        }
+    }
+
+    /// Returns the path component of this filter.
+    pub fn path(&self) -> &str {
+        match self {
+            BatchFilter::Path(p) => p,
+            BatchFilter::Ranged { path, .. } => path,
+        }
+    }
+
+    /// Returns true if this filter matches the given anchor.
+    ///
+    /// For `Path` filters, any anchor on the path matches.
+    /// For `Ranged` filters, whole-file anchors are suppressed and
+    /// line-range anchors must overlap the filter range.
+    pub fn matches_anchor(&self, anchor_path: &str, extent: AnchorExtent) -> bool {
+        match self {
+            BatchFilter::Path(p) => anchor_path == p,
+            BatchFilter::Ranged { path, start, end } => {
+                if anchor_path != path {
+                    return false;
+                }
+                match extent {
+                    // Whole-file anchors suppressed under ranged filter
+                    AnchorExtent::WholeFile => false,
+                    AnchorExtent::LineRange {
+                        start: a_start,
+                        end: a_end,
+                    } => a_start <= *end && a_end >= *start,
+                }
+            }
+        }
+    }
+}
+
+/// Union a set of `BatchFilter` lines for the same path into a single
+/// merged range (for Ranged filters). Returns the path and an optional
+/// merged range; `None` means path-only (match everything on the path).
+pub fn merge_batch_filters(filters: &[BatchFilter]) -> (String, Option<(u32, u32)>) {
+    debug_assert!(!filters.is_empty());
+    let path = filters[0].path().to_string();
+    let mut all_ranged = true;
+    let mut merged: Option<(u32, u32)> = None;
+    for f in filters {
+        match f {
+            BatchFilter::Path(_) => {
+                all_ranged = false;
+                break;
+            }
+            BatchFilter::Ranged { start, end, .. } => {
+                merged = Some(match merged {
+                    None => (*start, *end),
+                    Some((ms, me)) => (ms.min(*start), me.max(*end)),
+                });
+            }
+        }
+    }
+    if all_ranged {
+        (path, merged)
+    } else {
+        (path, None)
+    }
+}
+
 fn collect_filtered_porcelain_listings_from_catalog(
     mesh_pairs: &[(String, crate::types::Mesh)],
     target: &str,
@@ -247,15 +338,56 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
     // anchors once across the whole batch (dedup by name). A query that
     // matches no mesh at all still prints the `no meshes` sentinel; a
     // query whose every match was already rendered prints nothing.
+    //
+    // Each stdin line is parsed into a `BatchFilter`. Multiple lines for
+    // the same path union their ranges before filtering so overlapping
+    // range inputs are collapsed to a single merged range check.
     let stdin = io::stdin();
+    // Collect all lines first so we can group by path.
+    let mut filters_by_path: std::collections::HashMap<String, Vec<BatchFilter>> =
+        std::collections::HashMap::new();
+    let mut path_order: Vec<String> = Vec::new();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let filter = BatchFilter::parse(&line)?;
+        let path = filter.path().to_string();
+        if !filters_by_path.contains_key(&path) {
+            path_order.push(path.clone());
+        }
+        filters_by_path.entry(path).or_default().push(filter);
+    }
+
     let mut seen: HashSet<String> = HashSet::new();
-    for target in stdin.lock().lines() {
-        let target = target?;
+    for path in &path_order {
+        let filters = filters_by_path.get(path).unwrap();
+        let (merged_path, merged_range) = merge_batch_filters(filters);
+
+        // Build a synthetic target string for the existing catalog function.
+        let target = match merged_range {
+            None => merged_path.clone(),
+            Some((s, e)) => format!("{merged_path}#L{s}-L{e}"),
+        };
+
         let mut listings = collect_filtered_porcelain_listings_from_catalog(
             &mesh_pairs,
             &target,
             Some(&staged_listings),
         )?;
+
+        // For ranged filters, suppress whole-file anchors in the output.
+        if merged_range.is_some() {
+            for listing in &mut listings {
+                listing.anchors.retain(|a| {
+                    match a.extent {
+                        AnchorExtent::WholeFile => false,
+                        AnchorExtent::LineRange { .. } => true,
+                    }
+                });
+            }
+            // Drop listings that became empty after suppressing whole-file anchors.
+            listings.retain(|l| !l.anchors.is_empty());
+        }
+
         listings.sort_by(|a, b| a.name.cmp(&b.name));
 
         if listings.is_empty() {
@@ -932,5 +1064,116 @@ mod tests {
         let result =
             resolve_targets(&repo, ".mesh", &["billing/payments/checkout".to_string()]).unwrap();
         assert_eq!(result, vec!["billing/payments/checkout"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // BatchFilter unit tests (six cases required by constraints)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_filter_path_only_matches_all_anchors_on_path() {
+        // Case 1: path-only line matches any anchor (whole-file or ranged)
+        let f = BatchFilter::parse("src/lib.rs").unwrap();
+        assert!(f.matches_anchor("src/lib.rs", AnchorExtent::WholeFile));
+        assert!(f.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 5, end: 10 }
+        ));
+        assert!(!f.matches_anchor("src/main.rs", AnchorExtent::WholeFile));
+    }
+
+    #[test]
+    fn batch_filter_ranged_intersects() {
+        // Case 2: ranged line that intersects anchor range
+        let f = BatchFilter::parse("src/lib.rs#L5-L15").unwrap();
+        // anchor [10, 20] overlaps filter [5, 15]
+        assert!(f.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 10, end: 20 }
+        ));
+        // anchor [1, 6] overlaps filter [5, 15]
+        assert!(f.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 1, end: 6 }
+        ));
+    }
+
+    #[test]
+    fn batch_filter_ranged_misses() {
+        // Case 3: ranged line that does not intersect anchor range
+        let f = BatchFilter::parse("src/lib.rs#L5-L10").unwrap();
+        // anchor [20, 30] does not overlap filter [5, 10]
+        assert!(!f.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 20, end: 30 }
+        ));
+        // anchor [1, 4] does not overlap filter [5, 10]
+        assert!(!f.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 1, end: 4 }
+        ));
+    }
+
+    #[test]
+    fn batch_filter_ranged_suppresses_whole_file_anchors() {
+        // Case 4: whole-file anchor is suppressed under a ranged filter
+        let f = BatchFilter::parse("src/lib.rs#L5-L10").unwrap();
+        assert!(!f.matches_anchor("src/lib.rs", AnchorExtent::WholeFile));
+    }
+
+    #[test]
+    fn batch_filter_merge_two_ranged_lines_union() {
+        // Case 5: union of two ranged lines on the same path
+        let filters = vec![
+            BatchFilter::parse("src/lib.rs#L1-L10").unwrap(),
+            BatchFilter::parse("src/lib.rs#L20-L30").unwrap(),
+        ];
+        let (path, range) = merge_batch_filters(&filters);
+        assert_eq!(path, "src/lib.rs");
+        // Merged range should span [1, 30]
+        assert_eq!(range, Some((1, 30)));
+
+        // An anchor entirely within the union should match.
+        let merged_filter = BatchFilter::Ranged {
+            path: "src/lib.rs".to_string(),
+            start: 1,
+            end: 30,
+        };
+        assert!(merged_filter.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 5, end: 8 }
+        ));
+        assert!(merged_filter.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 22, end: 25 }
+        ));
+        // An anchor between the two original ranges but within the union should match.
+        assert!(merged_filter.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 12, end: 18 }
+        ));
+    }
+
+    #[test]
+    fn batch_filter_parse_malformed_returns_error() {
+        // Case 6: malformed grammar returns an error
+        // Missing -L<end>
+        let result = BatchFilter::parse("src/lib.rs#L5");
+        assert!(
+            result.is_err(),
+            "expected error for missing -L<end>, got ok"
+        );
+        // Non-numeric start
+        let result = BatchFilter::parse("src/lib.rs#Labc-L10");
+        assert!(
+            result.is_err(),
+            "expected error for non-numeric start, got ok"
+        );
+        // start > end
+        let result = BatchFilter::parse("src/lib.rs#L10-L5");
+        assert!(
+            result.is_err(),
+            "expected error for start > end, got ok"
+        );
     }
 }

@@ -10,6 +10,10 @@
  * human-readable `git mesh list <names…>` block wrapped in
  * `<git-mesh>…</git-mesh>` as the `systemMessage` field
  * (PreToolUse's hookSpecificOutput type does not expose additionalContext).
+ *
+ * Additionally, every Read / Edit / MultiEdit / Write call is appended to a
+ * per-session JSONL journal at
+ * ~/.cache/git-mesh/session/<sanitizedSessionId>/touches.jsonl.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -17,55 +21,25 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
+import {
+  derivePath,
+  type LineRange,
+  type PorcelainRow,
+  parsePorcelain,
+  rangesIntersect,
+  relativeToRepo,
+  resolveRepoRoot,
+  sanitizeSessionId,
+  type TouchKind,
+  toPosix
+} from './agent-hooks-common.js';
+
+// Re-export for backward-compat of test imports (tests import these from here)
+export { toPosix };
 
 // ---------------------------------------------------------------------------
-// Path helpers (inlined from deleted advice-common.ts)
+// Range derivation helpers (PreToolUse-specific, not shared)
 // ---------------------------------------------------------------------------
-
-export function toPosix(p: string): string {
-  return p.replace(/\\/g, '/');
-}
-
-function isAbsolutePosix(p: string): boolean {
-  return p.startsWith('/') || /^[A-Za-z]:\//.test(p);
-}
-
-function abspathAgainst(base: string, target: string): string {
-  const t = toPosix(target);
-  if (isAbsolutePosix(t)) return t;
-  const b = toPosix(base).replace(/\/+$/, '');
-  return `${b}/${t}`;
-}
-
-function resolveRepoRoot(dir: string | undefined | null): string | null {
-  if (!dir) return null;
-  try {
-    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8'
-    });
-    const trimmed = out.trim();
-    return trimmed.length > 0 ? toPosix(trimmed) : null;
-  } catch {
-    return null;
-  }
-}
-
-function relativeToRepo(repoRoot: string, absPath: string): string {
-  const root = toPosix(repoRoot);
-  const abs = toPosix(absPath);
-  const prefix = root.endsWith('/') ? root : `${root}/`;
-  return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
-}
-
-// ---------------------------------------------------------------------------
-// Range derivation types and helpers
-// ---------------------------------------------------------------------------
-
-interface LineRange {
-  start: number;
-  end: number;
-}
 
 /** Count newlines before byteOffset in text, returning 1-based line number. */
 function byteOffsetToLine(text: string, byteOffset: number): number {
@@ -84,14 +58,6 @@ function countLines(s: string): number {
   const n = newlines + (trailingNewline ? 0 : 1);
   return n < 1 ? 1 : n;
 }
-
-function rangesIntersect(a: LineRange, b: LineRange): boolean {
-  return a.start <= b.end && a.end >= b.start;
-}
-
-// ---------------------------------------------------------------------------
-// Range derivation per tool
-// ---------------------------------------------------------------------------
 
 type ToolInput = Record<string, unknown>;
 
@@ -221,29 +187,6 @@ function deriveWriteRange(toolInput: ToolInput): LineRange | null {
   return { start: first + 1, end: tailExisting + 1 };
 }
 
-function canonicalizePath(absPath: string): string {
-  try {
-    return toPosix(fs.realpathSync.native(absPath));
-  } catch {
-    // File doesn't exist yet (e.g. Write to a new file): canonicalize the
-    // directory and rejoin the basename so symlinks in the parent are resolved.
-    try {
-      const dir = toPosix(fs.realpathSync.native(nodePath.dirname(absPath)));
-      return `${dir}/${nodePath.basename(absPath)}`;
-    } catch {
-      // Parent doesn't exist either; fall back to the un-canonicalized path.
-      return absPath;
-    }
-  }
-}
-
-function derivePath(toolInput: ToolInput, cwd: string): string | null {
-  const fp = toolInput.file_path;
-  if (typeof fp !== 'string' || fp.length === 0) return null;
-  const abs = abspathAgainst(cwd, fp);
-  return canonicalizePath(abs);
-}
-
 // ---------------------------------------------------------------------------
 // Mesh executor abstraction
 // ---------------------------------------------------------------------------
@@ -275,13 +218,6 @@ export interface MemoStore {
 }
 
 const MEMO_DIR = nodePath.join(os.tmpdir(), 'agent-hooks-git-mesh');
-
-/** Injective transform: percent-encode bytes outside [A-Za-z0-9._-] as %HH (uppercase hex). */
-function sanitizeSessionId(sessionId: string): string {
-  return sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => {
-    return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
-  });
-}
 
 function memoFilePath(sessionId: string): string {
   return nodePath.join(MEMO_DIR, `${sanitizeSessionId(sessionId)}.json`);
@@ -320,32 +256,114 @@ export function createDiskMemoStore(logger: MemoLogger): MemoStore {
 }
 
 // ---------------------------------------------------------------------------
-// Porcelain row parsing
+// Journal append
 // ---------------------------------------------------------------------------
 
-interface PorcelainRow {
-  name: string;
+/** Base path for per-session touch journals. */
+const JOURNAL_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
+
+interface TouchEntry {
+  tool: string;
   path: string;
-  start: number;
-  end: number;
+  kind: TouchKind;
+  seen: false;
+  start?: number;
+  end?: number;
 }
 
-function parsePorcelain(stdout: string): PorcelainRow[] {
-  const rows: PorcelainRow[] = [];
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split('\t');
-    if (parts.length < 3) continue;
-    const [name, path, range] = parts;
-    const dashIdx = range.indexOf('-');
-    if (dashIdx === -1) continue;
-    const start = parseInt(range.slice(0, dashIdx), 10);
-    const end = parseInt(range.slice(dashIdx + 1), 10);
-    if (Number.isNaN(start) || Number.isNaN(end)) continue;
-    rows.push({ name, path, start, end });
+/**
+ * Derive touch kind and optional range for the journal.
+ *
+ * Unlike the overlap arm, this never returns early just because the range is
+ * null — a whole-file Read or a create Write are still journal-relevant.
+ *
+ * Returns an array because MultiEdit emits one entry per edit.
+ */
+function deriveTouchEntries(
+  toolName: string,
+  toolInput: ToolInput,
+  absPath: string
+): Array<{ kind: TouchKind; range?: LineRange }> {
+  if (toolName === 'Read') {
+    const range = deriveReadRange(toolInput);
+    if (range) {
+      return [{ kind: 'read', range }];
+    }
+    return [{ kind: 'whole' }];
   }
-  return rows;
+
+  if (toolName === 'Edit') {
+    const range = deriveEditRange(toolInput);
+    if (range) {
+      return [{ kind: 'write', range }];
+    }
+    // old_string not found or empty — fall back to whole
+    return [{ kind: 'whole' }];
+  }
+
+  if (toolName === 'MultiEdit') {
+    const edits = toolInput.edits;
+    if (!Array.isArray(edits)) return [{ kind: 'whole' }];
+    const content: string | null = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null;
+    const entries: Array<{ kind: TouchKind; range?: LineRange }> = [];
+    for (const edit of edits) {
+      if (typeof edit !== 'object' || edit === null) continue;
+      const oldString = (edit as Record<string, unknown>).old_string;
+      if (typeof oldString !== 'string' || oldString === '' || content === null) {
+        entries.push({ kind: 'whole' });
+        continue;
+      }
+      const idx = content.indexOf(oldString);
+      if (idx === -1) {
+        entries.push({ kind: 'whole' });
+        continue;
+      }
+      const start = byteOffsetToLine(content, idx);
+      const end = start + countLines(oldString) - 1;
+      entries.push({ kind: 'write', range: { start, end } });
+    }
+    return entries.length > 0 ? entries : [{ kind: 'whole' }];
+  }
+
+  if (toolName === 'Write') {
+    // Detect create: file doesn't exist on disk at hook time
+    if (!fs.existsSync(absPath)) {
+      return [{ kind: 'create' }];
+    }
+    const range = deriveWriteRange(toolInput);
+    if (range) {
+      return [{ kind: 'write', range }];
+    }
+    // null from deriveWriteRange means full replacement (or no changes)
+    return [{ kind: 'whole' }];
+  }
+
+  return [];
+}
+
+function appendJournalEntries(
+  sessionId: string,
+  toolName: string,
+  repoRelPath: string,
+  entries: Array<{ kind: TouchKind; range?: LineRange }>,
+  logger: MemoLogger
+): void {
+  try {
+    const sessionDir = nodePath.join(JOURNAL_BASE_DIR, sanitizeSessionId(sessionId));
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const journalPath = nodePath.join(sessionDir, 'touches.jsonl');
+    const lines = entries.map((e) => {
+      const row: TouchEntry = { tool: toolName, path: repoRelPath, kind: e.kind, seen: false };
+      if ((e.kind === 'read' || e.kind === 'write') && e.range) {
+        row.start = e.range.start;
+        row.end = e.range.end;
+      }
+      return JSON.stringify(row);
+    });
+    fs.appendFileSync(journalPath, `${lines.join('\n')}\n`, 'utf8');
+  } catch (err) {
+    logger.warn('journal append failed', { err });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +390,24 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
     const absPath = derivePath(toolInput, cwd);
     if (!absPath) return preToolUseOutput({});
 
-    // Derive the line range
+    // Resolve repo root (needed for both overlap arm and journal)
+    const absDir = toPosix(nodePath.dirname(absPath));
+    const repoRoot = resolveRepoRoot(absDir);
+
+    // Journal append — best-effort, runs even when overlap arm returns early
+    if (repoRoot) {
+      const repoRelPath = relativeToRepo(repoRoot, absPath);
+      const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);
+      if (touchEntries.length > 0) {
+        appendJournalEntries(sessionId, toolName, repoRelPath, touchEntries, ctx.logger);
+      }
+    }
+
+    if (!repoRoot) return preToolUseOutput({});
+
+    const repoRelPath = relativeToRepo(repoRoot, absPath);
+
+    // Derive the line range for the overlap arm
     let range: LineRange | null = null;
     if (toolName === 'Read') {
       range = deriveReadRange(toolInput);
@@ -386,13 +421,6 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
 
     if (!range) return preToolUseOutput({});
 
-    // Resolve repo root
-    const absDir = toPosix(nodePath.dirname(absPath));
-    const repoRoot = resolveRepoRoot(absDir);
-    if (!repoRoot) return preToolUseOutput({});
-
-    const repoRelPath = relativeToRepo(repoRoot, absPath);
-
     // Filter pass: git mesh list <path> --porcelain
     let porcelainStdout: string;
     try {
@@ -402,7 +430,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       return preToolUseOutput({});
     }
 
-    const rows = parsePorcelain(porcelainStdout);
+    const rows: PorcelainRow[] = parsePorcelain(porcelainStdout);
     const candidateNames = new Set<string>();
     for (const row of rows) {
       if (row.path !== repoRelPath) continue;

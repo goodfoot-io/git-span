@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.241cd621.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.2ba4a1e3.mjs",
             "timeout": 10000
           }
         ],
@@ -15,8 +15,8 @@
   },
   "__generated": {
     "files": [
-      "pre-tool-use.241cd621.mjs"
+      "pre-tool-use.2ba4a1e3.mjs"
     ],
-    "timestamp": "2026-05-28T15:42:46.874Z"
+    "timestamp": "2026-05-28T17:33:13.296Z"
   }
 }
