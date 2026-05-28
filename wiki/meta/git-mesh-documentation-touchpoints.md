@@ -35,7 +35,7 @@ If a documentation update changes the recommended operator workflow, all of thes
 
 When git-mesh CLI behavior or documentation changes, use this order:
 
-1. Confirm the implementation in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L34-L107) (Clap config and Commands enum) and [packages/git-mesh/src/main.rs](/packages/git-mesh/src/main.rs#L50-L113) (pre-classification and dispatch).
+1. Confirm the implementation in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L35-L108) (Clap config and Commands enum) and [packages/git-mesh/src/main.rs](/packages/git-mesh/src/main.rs#L50-L113) (pre-classification and dispatch).
 2. Update the primary user docs in [README.md](/README.md#L18-L55) and [CLAUDE.md](/CLAUDE.md#L76-L97).
 3. Update the agent workflow contract in the git-mesh handbook skill (bundled with the `git-mesh` plugin, not tracked in this repo).
 4. Update secondary references such as the implicit-semantic-dependencies skill and the man page.

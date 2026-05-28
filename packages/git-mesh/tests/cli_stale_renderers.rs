@@ -239,20 +239,25 @@ fn human_layered_emits_src_marker() -> Result<()> {
 }
 
 #[test]
-fn discovery_human_excludes_staging_only_mesh() -> Result<()> {
-    // Workspace scan: pending-only meshes must NOT appear. Only stale meshes render.
+fn discovery_human_lists_uncommitted_mesh_with_fresh_anchors() -> Result<()> {
+    // Workspace scan (Human format) now lists every mesh's anchors in
+    // stored order. An uncommitted (worktree-only) mesh whose anchor's
+    // content matches the file is reported as Fresh and rendered as a
+    // bare bullet alongside any drifted meshes.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
 
     let out = repo.run_mesh(["stale"])?;
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
-    // The pending-only mesh must NOT appear in workspace scan output.
     assert!(
-        !text.contains("new-mesh"),
-        "pending-only mesh must not appear in workspace scan; stdout={text}"
+        text.contains("## new-mesh"),
+        "uncommitted Fresh mesh must appear in workspace scan; stdout={text}"
     );
-    // Summary line should appear.
+    assert!(
+        text.contains("file1.txt#L1-L5"),
+        "fresh anchor bullet must appear; stdout={text}"
+    );
     assert!(
         text.contains("0 stale"),
         "summary line must appear; stdout={text}"

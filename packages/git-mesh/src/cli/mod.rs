@@ -22,6 +22,7 @@ pub mod drift_label;
 pub mod error;
 pub mod format;
 pub mod show;
+pub mod stale_fix;
 pub mod stale_output;
 
 pub use drift_label::format_drift_label;
@@ -245,6 +246,13 @@ pub struct StaleArgs {
     /// See packages/git-mesh/docs/profiling.md for schema and examples.
     #[arg(long, value_name = "PATH")]
     pub perf_trace: Option<std::path::PathBuf>,
+
+    /// Re-anchor `Moved` and `Changed` anchors in place by rewriting the
+    /// mesh worktree files. Each surfacing anchor is re-hashed against the
+    /// deepest drifting layer (Worktree > Index > HEAD). No commit is
+    /// produced. Only supported with `--format human`.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 #[derive(Debug, clap::Args)]

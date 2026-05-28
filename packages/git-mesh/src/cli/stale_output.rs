@@ -84,6 +84,19 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
 }
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Result<i32> {
+    // `--fix` is only meaningful with the Human renderer (post-rewrite
+    // view); machine formats stream drifted findings only.
+    if args.fix && !matches!(args.format, StaleFormat::Human) {
+        return Err(CliError {
+            subcommand: "stale",
+            summary: "`--fix` is only supported with `--format human`.".into(),
+            what_happened: "Non-human formats stream drifted findings only and have no \
+                            post-rewrite view."
+                .into(),
+            next_steps: vec![NextStep::Bash("git mesh stale --fix".into())],
+        }
+        .into());
+    }
     // Read-mode flags (card "Layered Read Model"): `--head` / `--staged`
     // / `--worktree` select an explicit layer view. They are mutually
     // exclusive (enforced by clap) and supersede the `--no-*` toggles
@@ -382,10 +395,83 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         }
     }
 
+    // Human format: a workspace scan now lists every mesh's anchors in
+    // stored order, not just the drifted ones. The resolver's
+    // `stale_meshes` path drops fully-Fresh meshes via
+    // `mesh_is_reportable_in_stale_discovery`; supplement them here as
+    // all-Fresh `MeshResolved` synthesized straight from the mesh-file
+    // record so cache_v2's warm-clean fast path is not defeated. This is
+    // Human-only; other formats stream drifted findings.
+    if matches!(args.format, StaleFormat::Human) && args.paths.is_empty() {
+        let _perf = crate::perf::span("stale.supplement-fresh-meshes");
+        let all_pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
+        let known: HashSet<String> = meshes.iter().map(|m| m.name.clone()).collect();
+        for (name, mesh) in all_pairs {
+            if known.contains(&name) {
+                continue;
+            }
+            let anchors: Vec<crate::types::AnchorResolved> = mesh
+                .anchors
+                .iter()
+                .map(|(anchor_id, a)| crate::types::AnchorResolved {
+                    anchor_id: anchor_id.clone(),
+                    anchor_sha: a.anchor_sha.clone(),
+                    anchored: AnchorLocation {
+                        path: std::path::PathBuf::from(&a.path),
+                        extent: a.extent,
+                        blob: None,
+                    },
+                    current: None,
+                    status: AnchorStatus::Fresh,
+                    source: None,
+                    layer_sources: Vec::new(),
+                    acknowledged_by: None,
+                    locus: None,
+                })
+                .collect();
+            meshes.push(MeshResolved {
+                name,
+                message: mesh.message,
+                anchors,
+                pending: Vec::new(),
+                follow_moves: mesh.config.follow_moves,
+            });
+        }
+    }
+
     // Sort all collected meshes (including staging-only meshes with empty
     // anchors) by anchor path for deterministic output regardless of whether
     // they came from a full scan, positional args, or staging-only discovery.
     sort_meshes_by_anchor_path(&mut meshes);
+
+    // `--fix`: re-anchor drifted Moved/Changed records in the mesh worktree
+    // files, then re-resolve so the rendered post-fix view reflects the new
+    // statuses. The set of anchor ids actually rewritten drives the
+    // "auto-updated" tag and the exit-code subtraction.
+    let followed_ids: HashSet<String> = if args.fix {
+        let _perf = crate::perf::span("stale.apply-fix");
+        let rewritten = super::stale_fix::apply_fix(repo, &meshes, mesh_root)?;
+        // Re-resolve so the rendered view reflects the rewritten files.
+        if args.paths.is_empty() {
+            meshes = stale_meshes(repo, mesh_root, options)?;
+        } else {
+            // Re-resolve the same named scope.
+            let names: Vec<String> = meshes.iter().map(|m| m.name.clone()).collect();
+            let resolved = resolve_named_meshes(repo, mesh_root, &names, options)?;
+            let mut new_meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
+            for (_n, result) in resolved {
+                if let Ok(mesh) = result {
+                    new_meshes.push(mesh);
+                }
+            }
+            meshes = new_meshes;
+        }
+        sort_meshes_by_anchor_path(&mut meshes);
+        rewritten
+    } else {
+        // File-backed model: no mesh-commit rewrite, so no auto-follow.
+        HashSet::new()
+    };
 
     // Adapter: engine output (`MeshResolved`) → renderer input
     // (`Finding` / `PendingFinding`). The adapter is a pure data shape
@@ -449,9 +535,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         (findings, pending)
     };
 
-    // File-backed model: no mesh-commit rewrite, so no auto-follow.
-    let followed_ids: HashSet<String> = HashSet::new();
-
     // Plan §B3: an acknowledged finding does not drive exit code; nor
     // does a `ContentUnavailable` finding under `--ignore-unavailable`.
     // Followed Moved findings are also subtracted: we just rewrote them so
@@ -505,14 +588,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 &mesh_anchor_totals,
             )?;
 
-            // No-drift messages: when nothing was printed and there is no
-            // drift to report, output a summary or clean confirmation.
-            // Silence is the wrong answer when the user names a mesh, and
-            // even scan-all should report a clean result with counts.
-            // Scan-all, all clean: print summary line with counts.
-            // Named-lookup clean meshes: render_human already emitted the block;
-            // no fallback message needed here.
-            if !printed && stale_count == 0 && args.paths.is_empty() {
+            // No-drift messages: scan-all with zero drift prints a summary
+            // count line after the per-mesh blocks. Named-lookup clean
+            // meshes need no fallback — render_human already emitted the
+            // block. The summary line fires regardless of whether any mesh
+            // block printed (it appends a count) so the operator sees
+            // "0 stale across N meshes" alongside the per-mesh listing.
+            if stale_count == 0 && args.paths.is_empty() {
                 // Use total_committed_mesh_count / total_committed_anchor_count
                 // (all committed meshes / anchors) rather than meshes.len()
                 // or meshes[.].anchors.len() (which only includes meshes with
@@ -528,6 +610,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 } else {
                     "anchors"
                 };
+                if printed {
+                    println!();
+                }
                 println!(
                     "0 stale across {} {} ({} {} checked)",
                     total_committed_mesh_count, mesh_word, total_anchors, anchor_word,
@@ -908,12 +993,10 @@ fn render_human(
             .filter(|f| f.status != AnchorStatus::Fresh)
             .count();
 
-        // Workspace scan: suppress meshes with no stale anchors (including
-        // meshes that only have pending staged ops). Named lookup: always
-        // render the block even if fully clean.
-        if !is_named_lookup && mesh_stale == 0 {
-            continue;
-        }
+        // All meshes are printed regardless of drift state — Fresh anchors
+        // render as bare bullets so a scan with no drift still shows what
+        // is tracked. Named-lookup behavior is unchanged.
+        let _ = mesh_stale;
 
         if printed_any_mesh {
             println!();

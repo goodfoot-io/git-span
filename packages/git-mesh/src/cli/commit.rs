@@ -76,7 +76,7 @@ fn count_lines(bytes: &[u8]) -> u32 {
 /// line count.
 ///
 /// Returns `(algorithm, hex_hash)` where algorithm is `"sha256"`.
-fn hash_anchor_content(
+pub(crate) fn hash_anchor_content(
     repo: &gix::Repository,
     path: &str,
     extent: &AnchorExtent,
@@ -157,16 +157,19 @@ fn hash_anchor_content(
         }
     }
 
-    // Canonical hashed bytes:
-    //  - whole-file anchor: the entire file content;
-    //  - line anchor: the `\n`-joined slice of lines `[start, end]`.
-    // The resolver compares against this exact representation (see
-    // `resolver::engine::anchor` file-backed HEAD-drift branch), so the
-    // two must derive the hash the same way.
+    Ok(("sha256".to_string(), hash_bytes_with_extent(&bytes, extent)))
+}
+
+/// Hash `bytes` per the anchor's `extent`, matching the canonicalization
+/// used by `hash_anchor_content`. Whole-file extents hash the full byte
+/// buffer; line ranges hash the `\n`-joined slice of lines `[start, end]`.
+///
+/// Returns the lowercase hex SHA-256 digest (no `sha256:` prefix).
+pub(crate) fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
     let hashed: Vec<u8> = match extent {
-        AnchorExtent::WholeFile => bytes.clone(),
+        AnchorExtent::WholeFile => bytes.to_vec(),
         AnchorExtent::LineRange { start, end } => {
-            let text = String::from_utf8_lossy(&bytes);
+            let text = String::from_utf8_lossy(bytes);
             let lines: Vec<&str> = text.lines().collect();
             let lo = (*start as usize).saturating_sub(1);
             let hi = (*end as usize).min(lines.len());
@@ -174,16 +177,14 @@ fn hash_anchor_content(
             slice.join("\n").into_bytes()
         }
     };
-
     let mut hasher = Sha256::new();
     hasher.update(&hashed);
     let result = hasher.finalize();
-    let hex: String = result.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(("sha256".to_string(), hex))
+    result.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.
-fn mesh_file_path(
+pub(crate) fn mesh_file_path(
     repo: &gix::Repository,
     mesh_root: &str,
     name: &str,
@@ -196,7 +197,7 @@ fn mesh_file_path(
 
 /// Read a mesh file from the worktree. Returns an empty `MeshFile` when the
 /// file does not exist.
-fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<MeshFile> {
+pub(crate) fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<MeshFile> {
     let path = mesh_file_path(repo, mesh_root, name)?;
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;
@@ -210,7 +211,7 @@ fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str) -> Re
 }
 
 /// Write a mesh file to the worktree, creating parent directories as needed.
-fn write_worktree_mesh(
+pub(crate) fn write_worktree_mesh(
     repo: &gix::Repository,
     mesh_root: &str,
     name: &str,
