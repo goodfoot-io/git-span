@@ -1,103 +1,43 @@
 # Understanding hook output
 
-A one-pager for contributors and operators wiring the advice subsystem into a Claude Code session. The reader to keep in mind is a developer who has installed the hooks, sees text appearing in `additionalContext` and in the session transcript, and wants to know what each surfacing means and when to expect it. The hooks are a thin delivery layer — what they inject is the rendered output of the `git mesh advice` CLI for the current session — but the *timing* and *trigger* of each invocation is what shapes the experience around an assistant.
+## The `<git-mesh>` block
 
-## What the hooks inject
-
-The hooks do not invent advice. Each one composes a session-scoped read of the workspace's standing state by calling a `git mesh advice <session-id> <verb>` subcommand, and routes the resulting plain text into two surfaces:
-
-- **`additionalContext`** — material the assistant sees on its next turn. This is where routing belongs: the other anchors in the mesh the assistant should also consider, the why that defines the subsystem the anchors form, the mesh name that labels the coupling.
-- **`systemMessage`** — the same text mirrored into the transcript, so the developer reading the conversation later sees exactly what the assistant saw. The two surfaces always carry identical bytes; there is no agent-only channel and no developer-only channel.
-
-If a render produces nothing, neither surface is written. Silence is a valid output. A turn with no injection is the steady state, not a failure.
-
-The hook layer fails closed: if the workspace is not a git repository, if the hook payload is missing a session id, if the resolved repo cannot be located, or if the underlying `git mesh advice` call returns nothing or non-zero, the hook exits 0 and writes nothing rather than surfacing an error.
-
-## When each hook fires
-
-Three events drive the delivery layer (`plugins/git-mesh/hooks.json`, generated from `packages/agent-hooks/src/`). Only one of them produces user-visible output; the other two manage the per-session state the renderer reads from.
-
-### PreToolUse — capture a snapshot pair
-
-Matcher: `Edit|Write|Bash|mcp__.*`. Source: `packages/agent-hooks/src/pre-tool-use.ts`.
-
-For tools whose effects on the workspace are not visible from their structured input — `Bash` and any `mcp__*` tool — the hook calls `git mesh advice <sid> mark <tool_use_id>` to capture a before snapshot of the working tree. PostToolUse then captures the after snapshot and diffs the pair, so file changes produced as side effects of a shell command or MCP call can be attributed back to the exact tool call that caused them.
-
-For tools the matcher includes but the script's deny-list short-circuits (`Edit`, `Write`, plus the read-only set `Read`/`Grep`/`Glob`/`LS`/`WebFetch`/`WebSearch` if they reach this script), no snapshot is taken — PostToolUse already has structured input that names the affected path and range directly.
-
-PreToolUse never injects text. Its only job is to leave a snapshot pair on disk so PostToolUse has something to diff.
-
-### PostToolUse — render advice for what just happened
-
-Matcher: `Read|Edit|Write|Bash|mcp__.*`. Source: `packages/agent-hooks/src/post-tool-use.ts`. **The only injection point.**
-
-Per tool, it picks the right `git mesh advice` verb:
-
-- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in a mesh that was *committed during the current session*, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched. Meshes inherited from prior sessions stay silent on plain reads — their rationale is too far removed from working memory to be actionable. Edit / Write advice paths are not session-scoped: a deliberate change to a tracked anchor still surfaces any matching mesh.
-- **`Edit`** → For each hunk in the structured patch, `git mesh advice <sid> touch <tuid> <path>#L<new_start>-L<new_end> modified`. If a hunk has `newLines == 0` (whole-file deletion), or no structured patch is present, falls back to a whole-file `touch <tuid> <path> modified` once.
-- **`Write`** → For a `type=create` response, a single whole-file `git mesh advice <sid> touch <tuid> <path> added`. Otherwise, per-hunk `touch <tuid> <path>#L<new_start>-L<new_end> modified` from the structured patch, falling back to a whole-file `touch <tuid> <path> modified` when the patch is empty.
-- **`Bash`, `mcp__*`, anything else** → `git mesh advice <sid> flush <tuid>`. This is where the PreToolUse snapshot pair pays off: `flush` diffs the before/after snapshots and routes advice for any anchor the side effects crossed.
-
-The output of the chosen verb is JSON-wrapped into `{hookSpecificOutput: {hookEventName: PostToolUse, additionalContext: <text>}, systemMessage: <text>}`. Empty output writes nothing.
-
-### SessionEnd — clean up session state
-
-Matcher: `*`. Source: `packages/agent-hooks/src/session-end.ts`.
-
-Calls `git mesh advice <sid> end`, which removes the per-session advice directory and any leftover snapshot pairs. The session store lives outside the repo — under `$TMPDIR/git-mesh/advice/` by default, overridable with `GIT_MESH_ADVICE_DIR` — so it never touches `.mesh/` or git history. SessionEnd does not inject text; it exists so the on-disk session store does not grow without bound across many sessions.
-
-There is no `SessionStart` hook in the current plugin. The session store is created lazily by the first `git mesh advice <sid> <verb>` call from PostToolUse.
-
-There is no `Stop` hook. Catching deferred side effects from the assistant's full turn is folded into PostToolUse's `flush` step on the last tool call.
-
-There is no `UserPromptSubmit` hook. Path-shaped tokens lifted from prompts are not currently fed to the advice render.
-
-## What the injected text looks like
-
-Every injection is plain text rendered by `git mesh advice` (`packages/git-mesh/src/advice/render.rs`). The shape is consistent across verbs.
-
-A finding for a single mesh:
+When the agent reads or edits a partial line range that overlaps an existing line-ranged anchor, the `PreToolUse` hook injects a `<git-mesh>` block into both `additionalContext` and `systemMessage`:
 
 ```
-src/checkout.tsx#L88-L120 is in the billing/checkout-request-flow mesh with:
-- api/charge.ts#L30-L76 (CHANGED)
-- docs/billing/charge-contract.md
-```
-
-- **Header line**: `<active-anchor> is in the <mesh> mesh with:` when a triggering anchor is known. Otherwise `<mesh> mesh contains:`. The active anchor is whatever the developer or the assistant just touched (the path the read landed on, the hunk that was edited, the partner that drifted under a side effect).
-- **Bullets**: each related anchor in the mesh, in `<path>#L<start>-L<end>` form (or bare path for whole-file anchors). A status clause in parentheses follows the address when the anchor is anything other than `FRESH`. Markers used here are `(CHANGED)`, `(MOVED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`. Absence of a clause means `FRESH`. (These are the rendered forms — internally the markers are `[CHANGED]` etc.; `format_status` strips the brackets and wraps in parentheses for the user-facing line.)
-- **Excerpt block** (optional, density ≥ 1): a few lines of the related anchor's bytes, with its address, when the anchor is excerptible. Skipped for whole-file anchors and for the non-excerpt markers `[CONFLICT]`, `[SUBMODULE]`, `[DELETED]`.
-- **Command block** (optional, density 2): a one-line lead-in and an indented `git mesh …` command when the next step is unambiguous (re-record after edits, follow a rename, narrow or retire a mesh, record a candidate mesh).
-
-A new-mesh suggestion (cross-cutting candidate the suggest pipeline scored High or High+):
-
-```
-Detected possible implicit semantic dependency between:
-- web/checkout.tsx#L88-L120
-- api/charge.ts#L30-L76
-
-If this is a real implicit semantic dependency, document it with `git mesh`:
-
-```bash
-git mesh add <mesh-name> \
-  web/checkout.tsx#L88-L120 \
+<git-mesh>
+billing/checkout-request-flow
+  src/checkout.tsx#L88-L120 (this file)
   api/charge.ts#L30-L76
-git mesh why <mesh-name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]
+
+Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
+</git-mesh>
 ```
-```
 
-Multiple stanzas in one injection are separated by `\n---\n\n`.
+The block contains the output of `git mesh list <intersecting-mesh-names…>` — the human-readable mesh listing for every mesh whose anchors on the touched file intersect the tool's line range.
 
-## What the hooks deliberately do not inject
+## When the block appears
 
-- **Acknowledgements the developer or the assistant just received from a write command.** Advice composes on top of the rest of the CLI; the hooks never restate "updated `<ref>`" or "renamed `<old>` to `<new>`".
-- **Findings the session has already been told about.** Once a relationship has been surfaced for a specific reason in this session, the renderer's "advice-seen" set suppresses it until the situation changes. Each injection reports what is new since the previous render, not the full standing state.
-- **Anything when no heuristic clears its bar.** Only suggestions banded `High` or `High+` reach a render; a heuristic without the inputs it needs to be confident stays silent.
-- **Editor or agent-specific shapes.** No LSP payloads, no JSON schemas tuned to a particular tool, no network calls. The same bytes appear in `additionalContext`, in `systemMessage`, and on the developer's terminal at the prompt.
+The hook fires on `Read`, `Edit`, `MultiEdit`, and `Write`. A block is emitted when all of the following hold:
 
-## When something looks wrong
+- The tool resolves to a single file inside a git repository.
+- The tool's line range is **partial** — not the whole file.
+- The file has at least one mesh anchor (with a `#L<start>-L<end>` range) that intersects the tool's range.
+- The intersecting mesh has not already been surfaced in this session.
 
-- **An injection appeared and the developer thinks it shouldn't have.** The render is reporting what is new since the last render in this session. If the same finding seems to repeat, the underlying state changed enough to clear the suppression filter — that is the routing working, not noise. If it genuinely repeats unchanged, that is a bug in the suppression layer (`advice_seen_set`) and should be filed against the render, not the hooks.
-- **No injection appeared when the developer expected one.** Most common causes: the suggestion banded below `High`; the relationship has already been surfaced once in this session; the workspace is not a git repository; the snapshot pair PreToolUse should have written for a `Bash`/MCP call did not survive (check whether `GIT_MESH_ADVICE_DEBUG=1` and re-run — debug mode mirrors stderr from the `git mesh advice` calls into `systemMessage`); the session store was wiped by an earlier `SessionEnd` cleanup before this turn.
-- **The same text appeared in `additionalContext` and in the transcript.** That is by design — the two surfaces always carry identical bytes so the developer reading the transcript later sees exactly what the assistant saw on its next turn.
-- **A hook crashed.** All scripts trap errors and exit 0 with a `git-mesh advice hook: error rc=<n> at line <l>` breadcrumb on stderr; an internal failure must never block a turn or surface as a non-blocking exit-code error in the transcript.
+## Once-per-session guarantee
+
+Each mesh is surfaced at most once per Claude Code session. The hook tracks surfaced mesh names in a per-session file under `$TMPDIR/agent-hooks-git-mesh/`. A mesh that has already appeared in `<git-mesh>` this session is not repeated, even if the same lines are read or edited again.
+
+## What does NOT surface a block
+
+- **Whole-file reads**: `Read` without `offset`/`limit` parameters.
+- **New file writes**: `Write` to a path that does not yet exist on disk.
+- **Full-content replacements**: `Write` where every existing line changes.
+- **Whole-file anchors**: anchors in mesh files that have no `#L…` range are excluded from matching.
+- **Files outside a git repository**: the hook skips quietly if the file is not inside a working tree.
+- **Already-surfaced meshes**: meshes emitted earlier in the same session are deduplicated.
+
+## Failure behaviour
+
+If either `git mesh list` invocation fails (non-zero exit, timeout, or the `git mesh` binary is absent), the hook emits nothing and does not block the tool call. Silence is the correct steady-state when `git mesh` is not installed or the repo has no meshes.

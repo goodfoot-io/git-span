@@ -8,14 +8,13 @@ description: Use with `git mesh` or meshes.
 - **A mesh anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config / `move` / `delete` is in play**: Read `./sections/responding-to-drift.md`
 - **A new relationship needs a mesh, or a mesh needs a name, why, anchor shape, or commit sequence**: Read `./sections/creating-a-mesh.md`
 - **Candidates for a new mesh need discovering by mining git history for implicit semantic dependencies (co-change, SZZ, churn, lagged change, reviewer overlap, etc.)**: Read `./sections/finding-mesh-candidates.md`
-- **An advice session needs interpreting; `git mesh advice <id> mark|diff|flush|read|touch|end` is in play; or session state seems stale or absent**: Read `./sections/using-advice.md`
 - **A finding is `DELETED`, `MERGE_CONFLICT`, or `SUBMODULE`**: Read `./sections/terminal-statuses.md`
 - **A finding is `CONTENT_UNAVAILABLE(...)`, or the failure involves LFS, partial clone, or sparse checkout**: Read `./sections/content-unavailable.md`
 - **The anchor omits `#L…`, or the path is binary, image, symlink, submodule root, or LFS-tracked**: Read `./sections/whole-file-and-lfs.md`
 - **A `git mesh` command errored or behaved unexpectedly (first why on a new mesh, an unparseable `.mesh` file, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
 - **The job is CI wiring, PR gating, `--since <merge-base>`, syncing meshes across remotes, fresh-clone tolerance, or advisory reports**: Read `./sections/ci-and-sync.md`
 - **A question asks what meshes exist, what a mesh currently says, its history, or which meshes touch a given path/anchor**: Read `./sections/inspecting-meshes.md`
-- **Text in `additionalContext` / `systemMessage` carries an `<anchor> is in the <mesh> mesh with:` header, `(CHANGED)`/`(MOVED)`/`(CONFLICT)`/`(SUBMODULE)`/`(DELETED)`/`(RENAMED)` clauses, or a `Detected possible implicit semantic dependency between:` stanza; or a question is about when the PreToolUse / PostToolUse / SessionEnd hooks fire or why an injection appeared / didn't appear**: Read `./sections/understanding-hook-output.md`
+- **A `<git-mesh>` block appeared in `additionalContext` or `systemMessage`; or a question is about when the hook fires, why a block appeared or did not appear, or the once-per-session deduplication**: Read `./sections/understanding-hook-output.md`
 - **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
 - **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for meshes**: Read `./sections/git-hook-setup.md`
 - **A question is about where meshes/anchors are stored, whether git-mesh uses refs, or how mesh names map to files**: Read `./sections/storage-model.md`
