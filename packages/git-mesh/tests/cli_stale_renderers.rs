@@ -17,14 +17,20 @@ use support::TestRepo;
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     Ok(())
 }
 
 fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L6-L10"])?;
     repo.mesh_stdout(["why", name, "-m", "stable seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     Ok(())
 }
 
@@ -242,9 +248,15 @@ fn discovery_human_excludes_staging_only_mesh() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     // The pending-only mesh must NOT appear in workspace scan output.
-    assert!(!text.contains("new-mesh"), "pending-only mesh must not appear in workspace scan; stdout={text}");
+    assert!(
+        !text.contains("new-mesh"),
+        "pending-only mesh must not appear in workspace scan; stdout={text}"
+    );
     // Summary line should appear.
-    assert!(text.contains("0 stale"), "summary line must appear; stdout={text}");
+    assert!(
+        text.contains("0 stale"),
+        "summary line must appear; stdout={text}"
+    );
     Ok(())
 }
 
@@ -369,7 +381,10 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
 fn seed_line_range(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     Ok(())
 }
 
@@ -405,7 +420,10 @@ fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Drift only file1.txt so file2.txt#L1-L5 stays Fresh.
     repo.write_file(
         "file1.txt",

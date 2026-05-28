@@ -44,7 +44,10 @@ fn show_by_name_has_required_lines() -> Result<()> {
     assert!(out.contains("path = \"file1.txt\""), "out={out}");
     assert!(out.contains("message = \"seed\""), "out={out}");
     assert!(out.contains("[config]"), "out={out}");
-    assert!(out.contains("copy_detection = \"same-commit\""), "out={out}");
+    assert!(
+        out.contains("copy_detection = \"same-commit\""),
+        "out={out}"
+    );
     assert!(!out.contains("### Commit"), "out={out}");
     Ok(())
 }
@@ -90,10 +93,7 @@ fn show_at_bad_revision_reports_missing_mesh() -> Result<()> {
     let out = repo.run_mesh(["alpha", "--at", "does-not-exist"])?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("no mesh named `alpha`"),
-        "stderr={stderr}"
-    );
+    assert!(stderr.contains("no mesh named `alpha`"), "stderr={stderr}");
     Ok(())
 }
 

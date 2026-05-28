@@ -175,7 +175,11 @@ fn second_call_is_l1_hit_compute_not_invoked() -> Result<()> {
     })?;
 
     assert_eq!(again, Probe::sample(), "L1 hit returns persisted value");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "compute invoked exactly once");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "compute invoked exactly once"
+    );
     Ok(())
 }
 
@@ -240,7 +244,11 @@ fn open_disabled_bypasses_both_tiers() -> Result<()> {
         })?;
     }
 
-    assert_eq!(calls.load(Ordering::SeqCst), 3, "compute invoked every call");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "compute invoked every call"
+    );
 
     let common = repo.common_dir().canonicalize().expect("canonicalize");
     let v1 = common.join("mesh").join("cache").join("v1");
@@ -261,8 +269,7 @@ fn distinct_keys_same_kind_produce_distinct_files() -> Result<()> {
     key_b.head_sha = "z".repeat(40);
     let key_a = sample_rename_trail_key();
 
-    let _: Probe =
-        cache.get_or_insert_with(Kind::RenameTrail, &key_a, || Ok(Probe::sample()))?;
+    let _: Probe = cache.get_or_insert_with(Kind::RenameTrail, &key_a, || Ok(Probe::sample()))?;
     let _: Probe = cache.get_or_insert_with(Kind::RenameTrail, &key_b, || {
         Ok(Probe {
             count: 11,
@@ -403,7 +410,11 @@ fn rename_trail_payload_round_trips_fell_back_bool() -> Result<()> {
         Ok((HashSet::new(), HashSet::new(), false))
     })?;
     assert_eq!(l2, payload, "L2 hit preserves fell_back=true");
-    assert_eq!(calls_b.load(Ordering::SeqCst), 0, "L2 hit did not recompute");
+    assert_eq!(
+        calls_b.load(Ordering::SeqCst),
+        0,
+        "L2 hit did not recompute"
+    );
 
     // Sanity: a `false` bool also survives — it's not the default fallback
     // dressed up as a successful read.
@@ -411,12 +422,10 @@ fn rename_trail_payload_round_trips_fell_back_bool() -> Result<()> {
     key2.head_sha = "9".repeat(40);
     let payload_false: Payload = (closed, interesting, false);
     let pf = payload_false.clone();
-    let _: Payload =
-        cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || Ok(pf.clone()))?;
-    let again: Payload =
-        cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || {
-            Ok((HashSet::new(), HashSet::new(), true))
-        })?;
+    let _: Payload = cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || Ok(pf.clone()))?;
+    let again: Payload = cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || {
+        Ok((HashSet::new(), HashSet::new(), true))
+    })?;
     assert_eq!(again, payload_false, "fell_back=false also round-trips");
     Ok(())
 }

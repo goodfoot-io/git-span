@@ -1,7 +1,7 @@
 //! Delete / move / doctor handlers — file-backed model.
 
-use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep};
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
+use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep};
 use crate::mesh::read::list_mesh_names_in;
 use crate::mesh::structural::{delete_mesh_in, rename_mesh_in};
 use anyhow::Result;
@@ -57,9 +57,15 @@ pub fn run_move(repo: &gix::Repository, args: MoveArgs, mesh_root: &str) -> Resu
         next_steps: vec![NextStep::Bash("git mesh list".into())],
     })?;
     prune_empty_parents(repo, mesh_root, &args.old);
-    println!("Renamed `{}` to `{}`.{}", args.old, args.new, DESTRUCTIVE_TAG);
+    println!(
+        "Renamed `{}` to `{}`.{}",
+        args.old, args.new, DESTRUCTIVE_TAG
+    );
     println!();
-    println!("Run `git mesh {}` to verify the rename, then commit the change.", args.new);
+    println!(
+        "Run `git mesh {}` to verify the rename, then commit the change.",
+        args.new
+    );
     Ok(0)
 }
 

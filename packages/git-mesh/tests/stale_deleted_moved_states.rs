@@ -34,10 +34,7 @@ fn stale_succeeds_without_commit_graph() -> Result<()> {
 
     // No `git commit-graph write` here — ordinary repo state.
     assert!(
-        !repo
-            .path()
-            .join(".git/objects/info/commit-graph")
-            .exists(),
+        !repo.path().join(".git/objects/info/commit-graph").exists(),
         "test precondition: no commit-graph file"
     );
 
@@ -81,8 +78,7 @@ fn whole_file_path_removed_reads_deleted() -> Result<()> {
 
     let stale = repo.mesh_stdout(["stale", "wf", "--no-exit-code"])?;
     assert!(
-        stale.contains("deleted in the index")
-            || stale.contains("deleted in the working tree"),
+        stale.contains("deleted in the index") || stale.contains("deleted in the working tree"),
         "git rm of an anchored whole-file path must read as a deletion, \
          not 'changed'; stale=\n{stale}"
     );
@@ -134,8 +130,7 @@ fn line_range_path_removed_reads_deleted() -> Result<()> {
 
     let stale = repo.mesh_stdout(["stale", "lr", "--no-exit-code"])?;
     assert!(
-        stale.contains("deleted in the index")
-            || stale.contains("deleted in the working tree"),
+        stale.contains("deleted in the index") || stale.contains("deleted in the working tree"),
         "git rm of an anchored line-range path must read as a deletion; \
          stale=\n{stale}"
     );

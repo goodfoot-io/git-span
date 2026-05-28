@@ -102,7 +102,12 @@ fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Re
     // HEAD same.txt = `intro\na\ntarget\nc`. Anchor 1 (L2-L2, pinned
     // `target`) finds `target` relocated to line 3 → Moved. Anchor 2
     // (L3-L3, pinned `target`) matches in place → Fresh.
-    let resolved = resolve_mesh(&gix, ".mesh", "timeline-key", EngineOptions::committed_only())?;
+    let resolved = resolve_mesh(
+        &gix,
+        ".mesh",
+        "timeline-key",
+        EngineOptions::committed_only(),
+    )?;
     let statuses: Vec<AnchorStatus> = resolved
         .anchors
         .iter()
@@ -536,7 +541,10 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     // Pin the whole file (CLI omits `#L...` for whole-file per D2).
     let _ = repo.run_mesh(["add", "m", "hero.png"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Mutate the binary, exit 1.
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
     repo.commit_all("mutate binary")?;
@@ -560,7 +568,10 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
     // Pin the gitlink path itself (whole-file allowed per D2).
     let _ = repo.run_mesh(["add", "m", "sub"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Advance inner repo and stage the bump in outer repo.
     std::fs::write(inner.join("inner.txt"), "hello 2\n")?;
     std::process::Command::new("git")
@@ -602,7 +613,10 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     // Whole-file pin allowed.
     let _ = repo.run_mesh(["add", "m", "link"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Retarget the symlink.
     std::fs::remove_file(repo.path().join("link"))?;
     support::symlink_file("file2.txt".as_ref(), &repo.path().join("link"))?;
@@ -635,7 +649,10 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // File-backed model: drift the pointer in the working tree
     // (uncommitted) so HEAD retains the anchored pointer.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
@@ -660,7 +677,10 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Pointer changes in the working tree (uncommitted), cache missing
     // for the new oid.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_d, 42)?;
@@ -693,7 +713,10 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Drift the pointer in the working tree (uncommitted).
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_f, 42)?;
     // Build a sandbox PATH that contains `git` (the engine shells out to
@@ -744,7 +767,10 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     repo.commit_all("add filtered file")?;
     let _ = repo.run_mesh(["add", "m", "config.secret#L1-L1"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     repo.write_file("config.secret", "new payload\n")?;
     repo.commit_all("mutate")?;
     let mr = resolve_mesh(&repo.gix_repo()?, ".mesh", "m", EngineOptions::full())?;
@@ -790,7 +816,10 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     repo.run_git(["commit", "-m", "data"])?;
     let _ = repo.run_mesh(["add", "pn", "data.tsv#L1-L10"])?;
     repo.run_mesh(["why", "pn", "-m", "seed"])?;
-    { repo.run_git(["add", ".mesh"])?; repo.run_git(["commit", "-m", "mesh commit"])?; }
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
     // Write a commit-graph so the reverse-indexed walk can use Bloom
     // filters. Must be done after the mesh commit so that commit is
     // included.

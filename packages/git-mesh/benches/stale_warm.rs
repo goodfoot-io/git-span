@@ -69,7 +69,12 @@ fn build_fixture() -> Fixture {
         let f1 = format!("src-{}.txt#L11-L20", (m + 1) % 12);
         let f2 = format!("src-{}.txt#L21-L30", (m + 2) % 12);
         mesh(&["add", &slug, &f0, &f1, &f2]);
-        mesh(&["why", &slug, "-m", &format!("mesh {m} covers files around {m}")]);
+        mesh(&[
+            "why",
+            &slug,
+            "-m",
+            &format!("mesh {m} covers files around {m}"),
+        ]);
         mesh(&["commit", &slug]);
     }
 
@@ -82,11 +87,7 @@ fn build_fixture() -> Fixture {
             fs::write(p.join(format!("src-{i}.txt")), body).expect("write");
         }
         git(&["add", "."]);
-        git(&[
-            "commit",
-            "-m",
-            &format!("mutate round {round}"),
-        ]);
+        git(&["commit", "-m", &format!("mutate round {round}")]);
     }
 
     Fixture {

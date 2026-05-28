@@ -217,10 +217,12 @@ pub(crate) fn apply_overlay(
     baseline_meshes: &[MeshResolved],
     overlay: &DirtyOverlay,
 ) -> Vec<MeshResolved> {
-    let affected: HashSet<&str> =
-        overlay.affected_meshes.iter().map(|s| s.as_str()).collect();
-    let overlay_by_name: std::collections::HashMap<&str, &MeshResolved> =
-        overlay.meshes.iter().map(|m| (m.name.as_str(), m)).collect();
+    let affected: HashSet<&str> = overlay.affected_meshes.iter().map(|s| s.as_str()).collect();
+    let overlay_by_name: std::collections::HashMap<&str, &MeshResolved> = overlay
+        .meshes
+        .iter()
+        .map(|m| (m.name.as_str(), m))
+        .collect();
     let mut out: Vec<MeshResolved> =
         Vec::with_capacity(baseline_meshes.len() + overlay.meshes.len());
     let mut seen: HashSet<String> = HashSet::new();

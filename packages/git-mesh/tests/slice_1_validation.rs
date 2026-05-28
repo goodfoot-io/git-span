@@ -38,109 +38,6 @@ fn seeded_with_a_b() -> Result<TestRepo> {
     Ok(repo)
 }
 
-fn snapshot(_repo: &TestRepo, _sid: &str) -> Result<()> {
-    // The `snapshot` verb has been removed; `read` no longer requires a baseline.
-    Ok(())
-}
-
-// ------------------------------------------------------------------
-// 1. Read spec validation.
-// ------------------------------------------------------------------
-
-#[test]
-fn rejects_nonexistent_path() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    snapshot(&repo, "s1np")?;
-    let out = repo.run_mesh(["advice", "s1np", "read", "no/such/file.ts"])?;
-    assert_rejected(&out, "path not found");
-    Ok(())
-}
-
-#[test]
-fn rejects_inverted_range() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    snapshot(&repo, "s1ir")?;
-    let out = repo.run_mesh(["advice", "s1ir", "read", "a.ts#L99-L1"])?;
-    assert_rejected(&out, "before start");
-    Ok(())
-}
-
-#[test]
-fn rejects_range_past_eof() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    snapshot(&repo, "s1eof")?;
-    let out = repo.run_mesh(["advice", "s1eof", "read", "a.ts#L1-L9999"])?;
-    assert_rejected(&out, "past EOF");
-    Ok(())
-}
-
-#[test]
-fn rejects_empty_path() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    snapshot(&repo, "s1ep")?;
-    let out = repo.run_mesh(["advice", "s1ep", "read", ""])?;
-    assert_rejected(&out, "must not be empty");
-    Ok(())
-}
-
-// ------------------------------------------------------------------
-// 2. Empty session id.
-// ------------------------------------------------------------------
-
-#[test]
-fn rejects_empty_session_id() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "", "read", "a.ts"])?;
-    assert_rejected(&out, "session id must not be empty");
-    Ok(())
-}
-
-// ------------------------------------------------------------------
-// 3. Session id with path separator.
-// ------------------------------------------------------------------
-
-#[test]
-fn rejects_session_id_with_slash() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "foo/bar", "read", "a.ts"])?;
-    assert_rejected(&out, "is not a valid session id");
-    Ok(())
-}
-
-#[test]
-fn rejects_session_id_with_backslash() -> Result<()> {
-    let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "foo\\bar", "read", "a.ts"])?;
-    assert_rejected(&out, "is not a valid session id");
-    Ok(())
-}
-
-// ------------------------------------------------------------------
-// 4. `--help` works outside a git repo.
-// ------------------------------------------------------------------
-
-#[test]
-fn help_works_outside_repo() -> Result<()> {
-    let tmp = tempfile::tempdir()?;
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"));
-    cmd.current_dir(tmp.path());
-    cmd.args(["advice", "--help"]);
-    let out = cmd.output()?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "expected success, got code={:?}\nstdout=\n{stdout}\nstderr=\n{stderr}",
-        out.status.code()
-    );
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        combined.contains("session") || combined.contains("Usage"),
-        "expected help output, got:\n{combined}"
-    );
-    Ok(())
-}
-
 #[test]
 fn top_level_help_works_outside_repo() -> Result<()> {
     let tmp = tempfile::tempdir()?;
@@ -227,10 +124,7 @@ fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
     let out = repo.run_mesh(["why", name, "-m", "Checkout request flow."])?;
     assert!(out.status.success(), "why failed");
 
-    assert!(
-        mesh_exists(&repo, name),
-        "expected mesh `{name}`"
-    );
+    assert!(mesh_exists(&repo, name), "expected mesh `{name}`");
 
     let listed = repo.mesh_stdout(["list", "a.ts"])?;
     assert!(

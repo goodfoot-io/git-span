@@ -35,11 +35,7 @@ fn is_gitlink_path(repo: &gix::Repository, path: &str) -> bool {
 /// hex string (matching how `git mesh add` hashes gitlinks); for a
 /// regular path it is the blob text. This keeps the resolver's
 /// file-backed hash comparison consistent with the add-time hash.
-fn canonical_layer_bytes(
-    repo: &gix::Repository,
-    oid_hex: &str,
-    gitlink: bool,
-) -> Vec<u8> {
+fn canonical_layer_bytes(repo: &gix::Repository, oid_hex: &str, gitlink: bool) -> Vec<u8> {
     if gitlink {
         oid_hex.as_bytes().to_vec()
     } else if oid_hex.is_empty() {
@@ -288,8 +284,7 @@ pub(crate) fn resolve_whole_file(
     let head_drifts = if !r.stored_hash.is_empty() {
         match &head_blob {
             Some(oid) => {
-                let bytes =
-                    canonical_layer_bytes(repo, oid, is_gitlink);
+                let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
                 let computed = format!("sha256:{}", sha256_hex(&bytes));
                 computed != r.stored_hash
             }
@@ -299,43 +294,42 @@ pub(crate) fn resolve_whole_file(
         head_blob.as_deref() != Some(r.blob.as_str())
     };
     let index_drifts = if !r.stored_hash.is_empty() {
-        state.layers.index && match &index_blob {
-            Some(oid) => {
-                let bytes =
-                    canonical_layer_bytes(repo, oid, is_gitlink);
-                let computed = format!("sha256:{}", sha256_hex(&bytes));
-                computed != r.stored_hash
+        state.layers.index
+            && match &index_blob {
+                Some(oid) => {
+                    let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
+                    let computed = format!("sha256:{}", sha256_hex(&bytes));
+                    computed != r.stored_hash
+                }
+                None => true,
             }
-            None => true,
-        }
     } else {
         state.layers.index && index_blob.as_deref() != Some(r.blob.as_str())
     };
     let worktree_drifts = if !r.stored_hash.is_empty() {
-        state.layers.worktree && match &worktree_blob {
-            Some(Some(oid)) => {
-                if is_gitlink {
-                    // Gitlink: identity is the recorded commit OID hex.
-                    let computed =
-                        format!("sha256:{}", sha256_hex(oid.as_bytes()));
-                    computed != r.stored_hash
-                } else {
-                    // Worktree blob OID may not exist in repo (computed
-                    // via hash_blob). Re-read file from disk for hash.
-                    let abs = workdir.join(&current_path);
-                    match std::fs::read(&abs) {
-                        Ok(bytes) => {
-                            let computed =
-                                format!("sha256:{}", sha256_hex(&bytes));
-                            computed != r.stored_hash
+        state.layers.worktree
+            && match &worktree_blob {
+                Some(Some(oid)) => {
+                    if is_gitlink {
+                        // Gitlink: identity is the recorded commit OID hex.
+                        let computed = format!("sha256:{}", sha256_hex(oid.as_bytes()));
+                        computed != r.stored_hash
+                    } else {
+                        // Worktree blob OID may not exist in repo (computed
+                        // via hash_blob). Re-read file from disk for hash.
+                        let abs = workdir.join(&current_path);
+                        match std::fs::read(&abs) {
+                            Ok(bytes) => {
+                                let computed = format!("sha256:{}", sha256_hex(&bytes));
+                                computed != r.stored_hash
+                            }
+                            Err(_) => true,
                         }
-                        Err(_) => true,
                     }
                 }
+                Some(None) => true,
+                None => false,
             }
-            Some(None) => true,
-            None => false,
-        }
     } else {
         state.layers.worktree
             && worktree_blob
@@ -469,8 +463,7 @@ pub(crate) fn resolve_whole_file(
                                 // this uncomparable path (add records the
                                 // same raw bytes for it).
                                 Err(Error::FilterFailed { .. }) => {
-                                    std::fs::read(workdir.join(&current_path))
-                                        .unwrap_or_default()
+                                    std::fs::read(workdir.join(&current_path)).unwrap_or_default()
                                 }
                                 Err(_) => Vec::new(),
                             }
@@ -501,8 +494,7 @@ pub(crate) fn resolve_whole_file(
                 // follow-walk did not pick up). Scan before `Changed`.
                 let file_backed = !r.stored_hash.is_empty();
                 if file_backed {
-                    let anchored_absent_at_head =
-                        state.head_blob_at(repo, &r.path)?.is_none();
+                    let anchored_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
                     find_relocated_whole_file(
                         repo,
                         state,

@@ -86,7 +86,10 @@ fn ls_one_committed_mesh_block_format() -> Result<()> {
     )?;
     let out = repo.mesh_stdout(["list"])?;
     // Heading uses ## and no backticks, no state marker.
-    assert!(out.contains("## alpha"), "expected '## alpha' heading, got: {out}");
+    assert!(
+        out.contains("## alpha"),
+        "expected '## alpha' heading, got: {out}"
+    );
     assert!(
         !out.contains("- `alpha`"),
         "heading must not use backticks: {out}"
@@ -101,7 +104,10 @@ fn ls_one_committed_mesh_block_format() -> Result<()> {
         out.contains("the parser honors the spec"),
         "expected why text, got: {out}"
     );
-    assert!(!out.contains("Why:"), "no `Why:` prefix in new format: {out}");
+    assert!(
+        !out.contains("Why:"),
+        "no `Why:` prefix in new format: {out}"
+    );
     // No state marker for committed
     assert!(
         !out.contains("(staged)") && !out.contains("(pending)"),
@@ -136,7 +142,10 @@ fn ls_staged_marker_on_committed_mesh_with_staged_ops() -> Result<()> {
     // now simply has both anchors, each rendered as a plain bullet.
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     let out = repo.mesh_stdout(["list"])?;
-    assert!(out.contains("## alpha"), "expected '## alpha' heading: {out}");
+    assert!(
+        out.contains("## alpha"),
+        "expected '## alpha' heading: {out}"
+    );
     assert!(
         !out.contains("(staged)") && !out.contains("(pending)"),
         "no state markers on heading: {out}"
@@ -165,7 +174,10 @@ fn ls_pending_marker_on_staging_only_mesh() -> Result<()> {
     repo.mesh_stdout(["add", "pending-mesh", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "pending-mesh", "-m", "pending relationship"])?;
     let out = repo.mesh_stdout(["list"])?;
-    assert!(out.contains("## pending-mesh"), "expected '## pending-mesh': {out}");
+    assert!(
+        out.contains("## pending-mesh"),
+        "expected '## pending-mesh': {out}"
+    );
     assert!(
         !out.contains("(pending)") && !out.contains("(staged)"),
         "no state markers on heading: {out}"
@@ -214,10 +226,7 @@ fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
         out.contains("- file1.txt\n"),
         "expected bare-path bullet for whole-file anchor: {out}"
     );
-    assert!(
-        !out.contains("(whole"),
-        "no whole-file decoration: {out}"
-    );
+    assert!(!out.contains("(whole"), "no whole-file decoration: {out}");
     Ok(())
 }
 
@@ -244,7 +253,10 @@ fn ls_staged_flag_removed_and_meshes_listed_plainly() -> Result<()> {
     // `list` as ordinary meshes with no pending markers.
     let plain = repo.mesh_stdout(["list"])?;
     assert!(plain.contains("## clean"), "clean should appear: {plain}");
-    assert!(plain.contains("## pending-m"), "pending-m should appear: {plain}");
+    assert!(
+        plain.contains("## pending-m"),
+        "pending-m should appear: {plain}"
+    );
     assert!(plain.contains("## dirty"), "dirty should appear: {plain}");
     assert!(
         !plain.contains("pending add"),
@@ -603,7 +615,10 @@ fn ls_search_matches_why_line() -> Result<()> {
     )?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "unrelated relationship")?;
     let out = repo.mesh_stdout(["list", "--search", "parser"])?;
-    assert!(out.contains("## alpha"), "alpha should match via why: {out}");
+    assert!(
+        out.contains("## alpha"),
+        "alpha should match via why: {out}"
+    );
     assert!(!out.contains("## beta"), "beta should not match: {out}");
     Ok(())
 }
@@ -615,7 +630,10 @@ fn ls_search_matches_anchor_address() -> Result<()> {
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
     let out = repo.mesh_stdout(["list", "--search", "file2"])?;
     assert!(!out.contains("## alpha"), "alpha should not match: {out}");
-    assert!(out.contains("## beta"), "beta should match via anchor: {out}");
+    assert!(
+        out.contains("## beta"),
+        "beta should match via anchor: {out}"
+    );
     Ok(())
 }
 
@@ -748,7 +766,12 @@ fn ls_recursive_glob_matches_nested_anchored_path() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.write_file("wiki/meta/notes.md", "a\nb\nc\n")?;
     repo.commit_all("add wiki notes")?;
-    commit_mesh(&repo, "wiki/notes", "wiki/meta/notes.md", "wiki notes anchor")?;
+    commit_mesh(
+        &repo,
+        "wiki/notes",
+        "wiki/meta/notes.md",
+        "wiki notes anchor",
+    )?;
 
     let out = repo.mesh_stdout(["list", "wiki/**/*"])?;
     assert!(

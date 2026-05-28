@@ -16,7 +16,6 @@
 //!   as a subcommand; anything else is a mesh name passed to the
 //!   `Show` handler.
 
-pub mod advice;
 pub mod commit;
 pub mod doctor;
 pub mod drift_label;
@@ -101,9 +100,6 @@ pub enum Commands {
 
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
-
-    /// Append events and flush session-scoped advice.
-    Advice(advice::AdviceArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -415,10 +411,6 @@ pub fn dispatch(
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");
             doctor::run_doctor(repo, args, mesh_root)
-        }
-        Commands::Advice(args) => {
-            let _perf = crate::perf::span("command.advice");
-            advice::run_advice(repo, args, mesh_root)
         }
     }
 }

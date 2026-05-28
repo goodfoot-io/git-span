@@ -42,12 +42,7 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
     rename_mesh_in(repo, old, new, DEFAULT_MESH_ROOT)
 }
 
-pub fn rename_mesh_in(
-    repo: &gix::Repository,
-    old: &str,
-    new: &str,
-    mesh_root: &str,
-) -> Result<()> {
+pub fn rename_mesh_in(repo: &gix::Repository, old: &str, new: &str, mesh_root: &str) -> Result<()> {
     validate_mesh_name(new)?;
 
     let reader = MeshFileReader::new(repo, mesh_root.to_string());

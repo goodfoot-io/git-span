@@ -1,9 +1,7 @@
 //! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
-use super::super::layers::{
-    is_lfs_path, read_worktree_normalized, resolve_lfs_anchor,
-};
+use super::super::layers::{is_lfs_path, read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::resolve_at_head_shared;
 use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
@@ -493,12 +491,9 @@ pub(crate) fn resolve_anchor_inner(
             //    rendered "deleted in the working tree/index".
             // A removal is never mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
-            let head_path_absent =
-                file_backed && state.head_blob_at(repo, &r.path)?.is_none();
+            let head_path_absent = file_backed && state.head_blob_at(repo, &r.path)?.is_none();
             if file_backed {
-                let span = (anchored_end as usize)
-                    .saturating_sub(anchored_start as usize)
-                    + 1;
+                let span = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
                 let relocated = find_relocated_range_in_paths(
                     repo,
                     state,
@@ -548,8 +543,10 @@ pub(crate) fn resolve_anchor_inner(
                 layer_sources = vec![];
             } else {
                 status = AnchorStatus::Changed;
-                source =
-                    computed_layer_sources.first().copied().or(Some(deepest_layer));
+                source = computed_layer_sources
+                    .first()
+                    .copied()
+                    .or(Some(deepest_layer));
                 current_loc = None;
                 layer_sources = if computed_layer_sources.is_empty() {
                     vec![deepest_layer]
@@ -623,9 +620,7 @@ pub(crate) fn resolve_anchor_inner(
             // relocated within the file (lines shifted, block moved).
             // Scan for the relocated window before classifying `Changed`.
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
-            let span = (anchored_end as usize)
-                .saturating_sub(anchored_start as usize)
-                + 1;
+            let span = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
             let relocated: Option<(u32, u32)> = if !equal && file_backed {
                 find_relocated_range(&cur_text, span, &r.stored_hash, anchored_start)
             } else {
@@ -640,8 +635,7 @@ pub(crate) fn resolve_anchor_inner(
             // classifying `Changed`.
             let relocated_path: Option<(String, u32, u32)> =
                 if !equal && file_backed && relocated.is_none() {
-                    let anchored_absent_at_head =
-                        state.head_blob_at(repo, &r.path)?.is_none();
+                    let anchored_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
                     find_relocated_range_in_paths(
                         repo,
                         state,
@@ -718,9 +712,7 @@ pub(crate) fn resolve_anchor_inner(
                     },
                     blob: None,
                 });
-            } else if file_backed
-                && current_lines.len() < anchored_start as usize
-            {
+            } else if file_backed && current_lines.len() < anchored_start as usize {
                 // The tracked range no longer exists: the current file is
                 // shorter than the anchored range's start line, so the
                 // anchored content was not changed-in-place — it was
@@ -1041,7 +1033,15 @@ fn slice_pair_differs(
     let a_hi = (a_t.end as usize).min(a_lines.len());
     let b_lo = (b_t.start as usize).saturating_sub(1);
     let b_hi = (b_t.end as usize).min(b_lines.len());
-    let a_slice = if a_lo <= a_hi { &a_lines[a_lo..a_hi] } else { &[][..] };
-    let b_slice = if b_lo <= b_hi { &b_lines[b_lo..b_hi] } else { &[][..] };
+    let a_slice = if a_lo <= a_hi {
+        &a_lines[a_lo..a_hi]
+    } else {
+        &[][..]
+    };
+    let b_slice = if b_lo <= b_hi {
+        &b_lines[b_lo..b_hi]
+    } else {
+        &[][..]
+    };
     !lines_equal(a_slice, b_slice, ignore_ws)
 }

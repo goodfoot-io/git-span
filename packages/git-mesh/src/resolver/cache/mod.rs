@@ -274,9 +274,7 @@ impl Cache {
                 perf::record_l2_miss();
             }
             Err(e) => {
-                return Err(Error::Git(format!(
-                    "read cache entry {path:?}: {e}"
-                )));
+                return Err(Error::Git(format!("read cache entry {path:?}: {e}")));
             }
         }
 
@@ -332,7 +330,10 @@ impl Cache {
 
     fn l2_path(&self, kind: Kind, hash: &[u8; 32]) -> PathBuf {
         let hex = hex_encode(hash);
-        self.dir.join(kind.as_dir()).join(&hex[0..2]).join(&hex[2..])
+        self.dir
+            .join(kind.as_dir())
+            .join(&hex[0..2])
+            .join(&hex[2..])
     }
 
     /// Sweep cache entries whose bound oids are no longer reachable from any

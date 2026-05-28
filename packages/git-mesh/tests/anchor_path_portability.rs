@@ -18,8 +18,8 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::read_mesh;
-use git_mesh::types::{AnchorStatus, EngineOptions};
 use git_mesh::resolve_mesh;
+use git_mesh::types::{AnchorStatus, EngineOptions};
 use support::TestRepo;
 
 /// Seed a repo with a nested file so the separator actually matters

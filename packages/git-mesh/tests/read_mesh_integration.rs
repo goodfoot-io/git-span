@@ -10,7 +10,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::{list_mesh_names, read_mesh, read_mesh_at, show_mesh};
-use support::{create_and_commit_mesh, TestRepo};
+use support::{TestRepo, create_and_commit_mesh};
 
 fn seed_two_meshes(repo: &TestRepo) -> Result<()> {
     let gix = repo.gix_repo()?;
@@ -99,9 +99,6 @@ fn read_mesh_at_none_is_effective() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     create_and_commit_mesh(&gix, "h", &[("file1.txt", 1, 5)], "v1")?;
-    assert_eq!(
-        read_mesh_at(&gix, "h", None)?,
-        read_mesh(&gix, "h")?
-    );
+    assert_eq!(read_mesh_at(&gix, "h", None)?, read_mesh(&gix, "h")?);
     Ok(())
 }

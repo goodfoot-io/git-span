@@ -13,9 +13,7 @@ use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::cache::Cache;
-use crate::resolver::timeline::{
-    PathInterner, PathTimeline, PathTimelineKey, build_timeline,
-};
+use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use std::collections::{HashMap, HashSet};
@@ -80,7 +78,10 @@ impl AnchorReverseIndex {
             }
         }
 
-        Self { by_path, anchor_shas }
+        Self {
+            by_path,
+            anchor_shas,
+        }
     }
 }
 
@@ -315,8 +316,7 @@ pub(crate) struct ResolveSession {
     /// `None` value means the read was attempted and failed (e.g. worktree
     /// `fs::read` error); subsequent lookups for that key short-circuit without
     /// retrying. Only counts toward `relocation_candidate_reads` on memo miss.
-    pub(crate) relocation_text_memo:
-        HashMap<(String, crate::types::DriftSource), Option<String>>,
+    pub(crate) relocation_text_memo: HashMap<(String, crate::types::DriftSource), Option<String>>,
 }
 
 impl ResolveSession {
@@ -497,8 +497,7 @@ impl ResolveSession {
                 .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
 
             for info in walk {
-                let info =
-                    info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
+                let info = info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
                 let commit_oid = info.id;
 
                 // Stop-set handling: when a commit equals an anchor_sha, mark
@@ -553,9 +552,7 @@ impl ResolveSession {
                 let commit_sha_str = commit_oid.to_string();
                 let commit_obj = repo
                     .find_commit(commit_oid)
-                    .map_err(|e| {
-                        crate::Error::Git(format!("find commit {commit_oid}: {e}"))
-                    })?;
+                    .map_err(|e| crate::Error::Git(format!("find commit {commit_oid}: {e}")))?;
                 let parent_oid = match commit_obj.parent_ids().next() {
                     Some(p) => p.detach(),
                     None => continue, // root commit — nothing older to diff against.
@@ -577,13 +574,10 @@ impl ResolveSession {
                     let mut actual_paths: HashSet<&[u8]> = HashSet::new();
                     for e in &entries {
                         match e {
-                            NS::Added { path }
-                            | NS::Modified { path }
-                            | NS::Deleted { path } => {
+                            NS::Added { path } | NS::Modified { path } | NS::Deleted { path } => {
                                 actual_paths.insert(path.as_bytes());
                             }
-                            NS::Renamed { from, to }
-                            | NS::Copied { from, to } => {
+                            NS::Renamed { from, to } | NS::Copied { from, to } => {
                                 actual_paths.insert(from.as_bytes());
                                 actual_paths.insert(to.as_bytes());
                             }
@@ -609,9 +603,9 @@ impl ResolveSession {
                 let mut renames: Vec<(u32, Arc<[u8]>)> = Vec::new();
                 for entry in &delta.entries {
                     let (source_bytes, target_bytes): (&[u8], Option<&[u8]>) = match entry {
-                        NS::Added { path }
-                        | NS::Modified { path }
-                        | NS::Deleted { path } => (path.as_bytes(), None),
+                        NS::Added { path } | NS::Modified { path } | NS::Deleted { path } => {
+                            (path.as_bytes(), None)
+                        }
                         NS::Renamed { from, to } | NS::Copied { from, to } => {
                             (from.as_bytes(), Some(to.as_bytes()))
                         }
@@ -706,7 +700,6 @@ pub(crate) struct AnchorWalkState {
     /// that point, no more deltas are recorded for this anchor.
     anchor_passed: bool,
 }
-
 
 /// Shared replacement for `walker::resolve_at_head`. Consumes deltas from
 /// the session's reverse-indexed walk output instead of running its own
@@ -823,7 +816,8 @@ pub(crate) fn follow_path_to_head_shared(
     _warnings: &mut Vec<String>,
 ) -> Option<String> {
     let output = session.reverse_walk_output.as_ref()?;
-    let deltas = output.per_anchor_deltas
+    let deltas = output
+        .per_anchor_deltas
         .get(&(mesh_name.to_string(), anchor_id.to_string()))?;
     let mut current = path.to_string();
     for delta in deltas {
@@ -887,10 +881,14 @@ mod tests {
         let decomposed = session.anchors_skipped_clean_head
             + session.anchors_fast_path_hits
             + session.anchors_full_resolution;
-        assert_eq!(total, decomposed,
-            "anchors-total must equal skipped-clean-head + fast-path-hits + full-resolution");
-        assert_eq!(total, 50,
-            "anchors-total must count anchors that were skipped clean-head");
+        assert_eq!(
+            total, decomposed,
+            "anchors-total must equal skipped-clean-head + fast-path-hits + full-resolution"
+        );
+        assert_eq!(
+            total, 50,
+            "anchors-total must count anchors that were skipped clean-head"
+        );
     }
 
     #[test]
@@ -948,8 +946,10 @@ mod tests {
         let decomposed = session.anchors_skipped_clean_head
             + session.anchors_fast_path_hits
             + session.anchors_full_resolution;
-        assert_eq!(total, decomposed,
-            "anchors-total == skipped-clean-head + fast-path-hits + full-resolution");
+        assert_eq!(
+            total, decomposed,
+            "anchors-total == skipped-clean-head + fast-path-hits + full-resolution"
+        );
         assert_eq!(total, 46);
     }
 
@@ -1048,10 +1048,7 @@ mod tests {
         idx.rename(0, arc_path(b"b.rs"));
 
         assert!(idx.anchors_for_path(b"a.rs").is_none());
-        assert_eq!(
-            sorted(idx.anchors_for_path(b"b.rs").unwrap()),
-            vec![0, 1]
-        );
+        assert_eq!(sorted(idx.anchors_for_path(b"b.rs").unwrap()), vec![0, 1]);
         let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
         assert_eq!(active, vec![b"b.rs".to_vec()]);
     }

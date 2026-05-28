@@ -9,13 +9,13 @@
 //! area or commit step beyond the worktree write.
 
 use crate::cli::error::from_lib_error;
-use crate::cli::format::{format_anchor_address, IDEMPOTENT_TAG};
+use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
 use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, WhyArgs};
 use crate::mesh_file::AnchorRecord;
 use crate::mesh_file::MeshFile;
 use crate::mesh_file::parse_address;
 use crate::mesh_file_reader::MeshFileReader;
-use crate::types::{validate_add_target, AnchorExtent};
+use crate::types::{AnchorExtent, validate_add_target};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as FmtWrite;
@@ -110,10 +110,9 @@ fn hash_anchor_content(
 
     let bytes = match anchor_oid {
         Some(commit_oid) => {
-            let blob_oid = crate::git::path_blob_at(repo, commit_oid, path)
-                .map_err(|e| {
-                    anyhow::anyhow!("could not read `{path}` at commit `{commit_oid}`: {e}")
-                })?;
+            let blob_oid = crate::git::path_blob_at(repo, commit_oid, path).map_err(|e| {
+                anyhow::anyhow!("could not read `{path}` at commit `{commit_oid}`: {e}")
+            })?;
             crate::git::read_blob_bytes(repo, &blob_oid)?
         }
         None => {
@@ -149,9 +148,7 @@ fn hash_anchor_content(
             anyhow::bail!("invalid anchor: start={start} end={end}");
         }
         if *end > line_count {
-            anyhow::bail!(
-                "invalid anchor: end={end} exceeds file line count ({line_count})"
-            );
+            anyhow::bail!("invalid anchor: end={end} exceeds file line count ({line_count})");
         }
         // Also verify that the content is valid UTF-8 (no binary content
         // for line anchors).
@@ -186,7 +183,11 @@ fn hash_anchor_content(
 }
 
 /// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.
-fn mesh_file_path(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<std::path::PathBuf> {
+fn mesh_file_path(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    name: &str,
+) -> Result<std::path::PathBuf> {
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
@@ -209,7 +210,12 @@ fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str) -> Re
 }
 
 /// Write a mesh file to the worktree, creating parent directories as needed.
-fn write_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: &str, mesh: &MeshFile) -> Result<()> {
+fn write_worktree_mesh(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    name: &str,
+    mesh: &MeshFile,
+) -> Result<()> {
     let path = mesh_file_path(repo, mesh_root, name)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -315,8 +321,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
             .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?
             .to_path_buf();
         for (path, _extent) in &parsed {
-            crate::mesh_root::validate_repo_relative_path("anchor path", path)
-                .map_err(|e| CliError {
+            crate::mesh_root::validate_repo_relative_path("anchor path", path).map_err(|e| {
+                CliError {
                     subcommand: "add",
                     summary: format!("`{path}` is not a valid anchor path."),
                     what_happened: e.to_string(),
@@ -325,7 +331,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
                          `..`, and must not be inside `.git`."
                             .into(),
                     )],
-                })?;
+                }
+            })?;
 
             // Existence: tracked in the index (includes submodule
             // gitlinks, mode 160000 — a valid whole-file anchor per the
@@ -350,9 +357,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
                     ),
                     next_steps: vec![
                         NextStep::Bash(format!("ls {path}")),
-                        NextStep::Prose(
-                            "Create the file or correct the anchor path.".into(),
-                        ),
+                        NextStep::Prose("Create the file or correct the anchor path.".into()),
                     ],
                 }
                 .into());
@@ -410,15 +415,14 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     // Check for prefix collision against existing worktree mesh files
     // before any file I/O.  The filesystem would reject the read/write
     // with a cryptic OS error, so we surface a structured mesh error.
-    check_worktree_prefix_collision(repo, mesh_root, &args.name)
-        .map_err(|e| CliError {
-            subcommand: "add",
-            summary: format!("cannot add mesh `{}`", args.name),
-            what_happened: e.to_string(),
-            next_steps: vec![NextStep::Prose(
-                "Rename the mesh to avoid the prefix collision.".into(),
-            )],
-        })?;
+    check_worktree_prefix_collision(repo, mesh_root, &args.name).map_err(|e| CliError {
+        subcommand: "add",
+        summary: format!("cannot add mesh `{}`", args.name),
+        what_happened: e.to_string(),
+        next_steps: vec![NextStep::Prose(
+            "Rename the mesh to avoid the prefix collision.".into(),
+        )],
+    })?;
 
     // Read the current worktree mesh file.
     let mut mesh_file = {
@@ -430,7 +434,12 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     let existing: std::collections::HashMap<(String, u32, u32), String> = mesh_file
         .anchors
         .iter()
-        .map(|a| ((a.path.clone(), a.start_line, a.end_line), a.content_hash.clone()))
+        .map(|a| {
+            (
+                (a.path.clone(), a.start_line, a.end_line),
+                a.content_hash.clone(),
+            )
+        })
         .collect();
 
     // Track per-anchor outcomes for the summary.
@@ -439,8 +448,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         kind: AddOutcomeKind,
     }
     enum AddOutcomeKind {
-        Added,    // new anchor — record created
-        Resolved, // existing anchor — hash changed, updated
+        Added,     // new anchor — record created
+        Resolved,  // existing anchor — hash changed, updated
         Unchanged, // anchor already matches stored hash
     }
 
@@ -583,9 +592,9 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_root: &str) -> 
             };
 
             let before = mesh_file.anchors.len();
-            mesh_file
-                .anchors
-                .retain(|a| !(a.path == *path && a.start_line == start_line && a.end_line == end_line));
+            mesh_file.anchors.retain(|a| {
+                !(a.path == *path && a.start_line == start_line && a.end_line == end_line)
+            });
 
             if mesh_file.anchors.len() == before {
                 let addr = addr_from_extent(path, extent);
@@ -731,8 +740,12 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
     };
 
     let mesh_dir_path = workdir.join(mesh_root);
-    std::fs::create_dir_all(&mesh_dir_path)
-        .with_context(|| format!("failed to create mesh directory `{}`", mesh_dir_path.display()))?;
+    std::fs::create_dir_all(&mesh_dir_path).with_context(|| {
+        format!(
+            "failed to create mesh directory `{}`",
+            mesh_dir_path.display()
+        )
+    })?;
 
     let edit_path = mesh_dir_path.join(format!("{name}.EDITMSG"));
     std::fs::write(&edit_path, &template)?;

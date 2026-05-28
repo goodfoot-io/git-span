@@ -73,22 +73,21 @@ pub(crate) fn drift_locus(
     // runs after the cache returns; on failure we recompute via
     // `drift_locus_walk` directly (the cached entry remains, but the
     // caller treats this round as a miss).
-    let encoded: Result<EncodedDriftLocus> = session.cache.get_or_insert_with(
-        Kind::DriftLocus,
-        &cache_key,
-        || {
-            session.drift_locus_misses += 1;
-            let result = drift_locus_walk(
-                repo,
-                resolved,
-                anchored_start,
-                anchored_end,
-                &blob_oid,
-                &mut session.known_head_ancestors,
-            )?;
-            Ok(encode_drift_locus(result.as_ref()))
-        },
-    );
+    let encoded: Result<EncodedDriftLocus> =
+        session
+            .cache
+            .get_or_insert_with(Kind::DriftLocus, &cache_key, || {
+                session.drift_locus_misses += 1;
+                let result = drift_locus_walk(
+                    repo,
+                    resolved,
+                    anchored_start,
+                    anchored_end,
+                    &blob_oid,
+                    &mut session.known_head_ancestors,
+                )?;
+                Ok(encode_drift_locus(result.as_ref()))
+            });
     match encoded {
         Ok(v) => {
             // Validate answer_commit is still an ancestor of HEAD; on
@@ -413,7 +412,9 @@ fn range_overlaps_memo(
     } else {
         blob_text_memo
             .entry(*previous_id)
-            .or_insert_with(|| git::read_git_text(repo, &previous_id.to_string()).unwrap_or_default())
+            .or_insert_with(|| {
+                git::read_git_text(repo, &previous_id.to_string()).unwrap_or_default()
+            })
             .clone()
     };
     let new_text = if id.is_null() {
@@ -453,13 +454,17 @@ fn range_overlaps_memo(
 /// Thin test-only wrapper exposing `encode_drift_locus` for unit tests in
 /// sibling modules that need to assert round-trip correctness.
 #[cfg(test)]
-pub(crate) fn encode_drift_locus_for_test(locus: Option<&crate::types::DriftLocus>) -> EncodedDriftLocus {
+pub(crate) fn encode_drift_locus_for_test(
+    locus: Option<&crate::types::DriftLocus>,
+) -> EncodedDriftLocus {
     encode_drift_locus(locus)
 }
 
 /// Thin test-only wrapper exposing `decode_drift_locus` for unit tests in
 /// sibling modules that need to assert round-trip correctness.
 #[cfg(test)]
-pub(crate) fn decode_drift_locus_for_test(cached: &EncodedDriftLocus) -> Option<crate::types::DriftLocus> {
+pub(crate) fn decode_drift_locus_for_test(
+    cached: &EncodedDriftLocus,
+) -> Option<crate::types::DriftLocus> {
     decode_drift_locus(cached)
 }

@@ -73,7 +73,10 @@ fn reject_missing_colon_in_hash_part() {
     let result = MeshFile::parse("file.txt sha256badhash\n");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("expected") || err.contains("colon"), "got: {err}");
+    assert!(
+        err.contains("expected") || err.contains("colon"),
+        "got: {err}"
+    );
 }
 
 #[test]

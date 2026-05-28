@@ -95,9 +95,7 @@ fn build_fixture() -> tempfile::TempDir {
     // 10 mutation commits so the resolver has real history.
     for round in 0..10u32 {
         for i in 0..12u32 {
-            let body: String = (0..30)
-                .map(|n| format!("r{round}_l{i}_{n}\n"))
-                .collect();
+            let body: String = (0..30).map(|n| format!("r{round}_l{i}_{n}\n")).collect();
             fs::write(p.join(format!("src-{i}.txt")), body).expect("write");
         }
         run_git(p, &["add", "."]);
@@ -153,7 +151,10 @@ fn run_stale(repo: &Path, cache_val: &str) -> StaleResult {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let cache_l2_hits = parse_perf_counter(&stderr, "cache.l2-hits");
 
-    StaleResult { elapsed, cache_l2_hits }
+    StaleResult {
+        elapsed,
+        cache_l2_hits,
+    }
 }
 
 fn parse_perf_counter(stderr: &str, label: &str) -> u64 {

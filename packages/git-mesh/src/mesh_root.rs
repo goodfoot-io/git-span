@@ -66,9 +66,7 @@ fn validate_mesh_root(dir: &str) -> Result<()> {
 ///   containing `/.git/`, or ending with `/.git`)
 pub fn validate_repo_relative_path(kind: &str, path: &str) -> Result<()> {
     if path.is_empty() {
-        return Err(Error::InvalidMeshFile(format!(
-            "{kind} must not be empty"
-        )));
+        return Err(Error::InvalidMeshFile(format!("{kind} must not be empty")));
     }
 
     // Reject absolute paths (Unix-style).

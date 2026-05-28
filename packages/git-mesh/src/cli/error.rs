@@ -127,7 +127,10 @@ mod tests {
             what_happened: "`.mesh/checkout` does not exist.".into(),
             next_steps: vec![],
         };
-        assert_eq!(err.to_string(), "git mesh delete: no mesh named `checkout`.");
+        assert_eq!(
+            err.to_string(),
+            "git mesh delete: no mesh named `checkout`."
+        );
     }
 
     #[test]
@@ -151,7 +154,10 @@ mod tests {
             what_happened: "You must specify at least one anchor.".into(),
             next_steps: vec![
                 NextStep::Prose("Provide one or more anchors to stage.".into()),
-                NextStep::Prose("Use `<path>` for whole-file or `<path>#L<start>-L<end>` for a line range.".into()),
+                NextStep::Prose(
+                    "Use `<path>` for whole-file or `<path>#L<start>-L<end>` for a line range."
+                        .into(),
+                ),
             ],
         };
         let expected = "\
@@ -243,8 +249,10 @@ git mesh list
     #[test]
     fn from_lib_error_wraps_correctly() {
         let summary = "no mesh named `checkout`.";
-        let lib_err =
-            std::io::Error::new(std::io::ErrorKind::NotFound, "`.mesh/checkout` does not exist");
+        let lib_err = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "`.mesh/checkout` does not exist",
+        );
         let err = from_lib_error(
             "delete",
             summary,

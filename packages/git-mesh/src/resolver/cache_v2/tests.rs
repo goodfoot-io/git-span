@@ -7,15 +7,12 @@ use super::keys::{CommittedKey, OverlayKeyInputs, availability_hash};
 use super::moved::{MovedLocation, MovedScanKey, load_scan, store_scan};
 use super::overlay::{DirtyOverlay, apply_overlay, load_overlay, store_overlay};
 use super::schema::{CacheDb, KEY_SALT, hex32, open_cache_at};
-use crate::types::{
-    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, MeshResolved,
-};
+use crate::types::{AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, MeshResolved};
 use std::path::PathBuf;
 
 fn tmp_db() -> (tempfile::TempDir, CacheDb) {
     let td = tempfile::tempdir().expect("tempdir");
-    let db = open_cache_at(&td.path().join("mesh").join("stale-cache.db"))
-        .expect("open cache_v2");
+    let db = open_cache_at(&td.path().join("mesh").join("stale-cache.db")).expect("open cache_v2");
     (td, db)
 }
 
@@ -230,7 +227,10 @@ fn moved_scan_negative_result_is_a_hit() {
         extent_kind: "line-range".into(),
         line_count: 10,
     };
-    assert!(load_scan(&db, &key).unwrap().is_none(), "no manifest ⇒ miss");
+    assert!(
+        load_scan(&db, &key).unwrap().is_none(),
+        "no manifest ⇒ miss"
+    );
     store_scan(&db, &key, &[]).unwrap();
     let hit = load_scan(&db, &key)
         .unwrap()

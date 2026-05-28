@@ -32,8 +32,14 @@ fn perf_trace_emits_row_per_anchor() -> Result<()> {
 
     let csv = std::fs::read_to_string(&trace_path)?;
     let lines: Vec<&str> = csv.lines().collect();
-    assert!(lines.len() >= 2, "expected header + at least one data row; got: {csv}");
-    assert_eq!(lines[0], "mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status");
+    assert!(
+        lines.len() >= 2,
+        "expected header + at least one data row; got: {csv}"
+    );
+    assert_eq!(
+        lines[0],
+        "mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status"
+    );
     Ok(())
 }
 
@@ -49,7 +55,10 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     let csv = std::fs::read_to_string(&trace_path)?;
     let mut lines = csv.lines();
     let header = lines.next().expect("header row");
-    assert_eq!(header, "mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status");
+    assert_eq!(
+        header,
+        "mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status"
+    );
 
     let row = lines.next().expect("at least one data row");
     let cols: Vec<&str> = row.splitn(7, ',').collect();
@@ -62,7 +71,11 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     assert!(!cols[3].is_empty(), "path must be non-empty");
     // wall_us is a u128, so it can be 0 on fast hardware; just parse it.
     cols[4].parse::<u128>().expect("wall_us must be a number");
-    assert!(cols[5] == "true" || cols[5] == "false", "fast_path must be bool: {}", cols[5]);
+    assert!(
+        cols[5] == "true" || cols[5] == "false",
+        "fast_path must be bool: {}",
+        cols[5]
+    );
     assert!(!cols[6].is_empty(), "status must be non-empty");
     Ok(())
 }
@@ -102,7 +115,11 @@ fn perf_trace_rejects_positional_paths() -> Result<()> {
 
     let trace_path = repo.path().join("trace.csv");
     let out = repo.run_mesh(["stale", "m", "--perf-trace", trace_path.to_str().unwrap()])?;
-    assert_ne!(out.status.code(), Some(0), "should fail with positional paths + --perf-trace");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "should fail with positional paths + --perf-trace"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let combined = format!("{stderr}{stdout}");

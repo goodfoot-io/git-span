@@ -14,8 +14,8 @@ use super::session::ResolveSession;
 
 use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{
-    mesh_from_file, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions,
-    LayerSet, Mesh, MeshResolved, PendingFinding,
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
+    MeshResolved, PendingFinding, mesh_from_file,
 };
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
@@ -335,7 +335,11 @@ fn resolve_mesh_with_state_at(
         let mesh_path = format!("{mesh_root}/{name}");
         let oid = gix::ObjectId::from_str(commit_oid)
             .map_err(|e| Error::Git(format!("parse oid {commit_oid}: {e}")))?;
-        let text = match crate::git::tree_entry_at(repo, &oid.to_string(), std::path::Path::new(&mesh_path))? {
+        let text = match crate::git::tree_entry_at(
+            repo,
+            &oid.to_string(),
+            std::path::Path::new(&mesh_path),
+        )? {
             Some((_mode, blob_oid)) => crate::git::read_git_text(repo, &blob_oid.to_string())?,
             None => return Err(Error::MeshNotFound(name.to_string())),
         };
@@ -1109,14 +1113,10 @@ pub(crate) fn rename_target_predicate(
         for info in walk {
             let info = info.ok()?;
             let cid = info.id.to_string();
-            if crate::git::tree_entry_at(
-                repo,
-                &cid,
-                std::path::Path::new(anchored_path),
-            )
-            .ok()
-            .flatten()
-            .is_some()
+            if crate::git::tree_entry_at(repo, &cid, std::path::Path::new(anchored_path))
+                .ok()
+                .flatten()
+                .is_some()
             {
                 return Some(cid);
             }
@@ -1130,14 +1130,10 @@ pub(crate) fn rename_target_predicate(
         };
         // Rename target iff the candidate was absent from the tree that
         // still held the anchored path (it is new as of the rename).
-        crate::git::tree_entry_at(
-            repo,
-            before,
-            std::path::Path::new(candidate),
-        )
-        .ok()
-        .flatten()
-        .is_none()
+        crate::git::tree_entry_at(repo, before, std::path::Path::new(candidate))
+            .ok()
+            .flatten()
+            .is_none()
     }
 }
 

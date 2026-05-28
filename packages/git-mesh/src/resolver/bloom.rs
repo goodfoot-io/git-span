@@ -59,7 +59,8 @@ impl CommitGraphBloom {
     pub(crate) fn open(repo: &gix::Repository) -> Result<Self, String> {
         // Validate that a commit-graph exists via gix's own API.
         let _graph = repo.commit_graph().map_err(|_| {
-            "Commit graph not found. Run: git commit-graph write --reachable --changed-paths".to_string()
+            "Commit graph not found. Run: git commit-graph write --reachable --changed-paths"
+                .to_string()
         })?;
 
         // Build path to the commit-graph file.
@@ -73,12 +74,15 @@ impl CommitGraphBloom {
             let chain_dir = info_dir.join("commit-graphs");
             let chain_file = chain_dir.join("commit-graph-chain");
             if chain_file.exists() {
-                let chain = std::fs::read_to_string(&chain_file)
-                    .map_err(|e| format!("Cannot read commit-graph chain at {}: {e}", chain_file.display()))?;
-                let hash = chain
-                    .lines()
-                    .next()
-                    .ok_or_else(|| format!("Empty commit-graph chain file at {}", chain_file.display()))?;
+                let chain = std::fs::read_to_string(&chain_file).map_err(|e| {
+                    format!(
+                        "Cannot read commit-graph chain at {}: {e}",
+                        chain_file.display()
+                    )
+                })?;
+                let hash = chain.lines().next().ok_or_else(|| {
+                    format!("Empty commit-graph chain file at {}", chain_file.display())
+                })?;
                 let path = chain_dir.join(format!("graph-{hash}.graph"));
                 (mmap_file(&path)?, path)
             } else {
@@ -96,7 +100,10 @@ impl CommitGraphBloom {
         // byte 6:   chunk count
         // byte 7:   base graph count (unused here)
         if &data[..4] != b"CGPH" {
-            return Err(format!("Invalid commit-graph signature at {}", path.display()));
+            return Err(format!(
+                "Invalid commit-graph signature at {}",
+                path.display()
+            ));
         }
         let _file_hash_version = data[5]; // 1 = SHA-1, 2 = SHA-256
         let chunk_count = data[6];
@@ -118,7 +125,9 @@ impl CommitGraphBloom {
             return Err(format!("BDAT chunk too small at {}", path.display()));
         }
         let hdr_hash_version = u32::from_be_bytes(
-            data[bdat_range.start..bdat_range.start + 4].try_into().unwrap(),
+            data[bdat_range.start..bdat_range.start + 4]
+                .try_into()
+                .unwrap(),
         );
         if hdr_hash_version != 1 {
             return Err(format!(
@@ -126,22 +135,31 @@ impl CommitGraphBloom {
                 path.display()
             ));
         }
-        let num_hashes =
-            u32::from_be_bytes(data[bdat_range.start + 4..bdat_range.start + 8].try_into().unwrap());
-        let bits_per_entry =
-            u32::from_be_bytes(data[bdat_range.start + 8..bdat_range.start + 12].try_into().unwrap());
+        let num_hashes = u32::from_be_bytes(
+            data[bdat_range.start + 4..bdat_range.start + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let bits_per_entry = u32::from_be_bytes(
+            data[bdat_range.start + 8..bdat_range.start + 12]
+                .try_into()
+                .unwrap(),
+        );
 
         // ----- OID fan table (OIDF) for position lookup -----
-        let oidf_range = chunks.usize_offset_by_id(*b"OIDF").map_err(|_| {
-            "Commit graph missing OIDF chunk".to_string()
-        })?;
-        let num_commits =
-            u32::from_be_bytes(data[oidf_range.start + 255 * 4..oidf_range.start + 256 * 4].try_into().unwrap());
+        let oidf_range = chunks
+            .usize_offset_by_id(*b"OIDF")
+            .map_err(|_| "Commit graph missing OIDF chunk".to_string())?;
+        let num_commits = u32::from_be_bytes(
+            data[oidf_range.start + 255 * 4..oidf_range.start + 256 * 4]
+                .try_into()
+                .unwrap(),
+        );
 
         // ----- OID lookup table (OIDL) for position lookup -----
-        let oidl_range = chunks.usize_offset_by_id(*b"OIDL").map_err(|_| {
-            "Commit graph missing OIDL chunk".to_string()
-        })?;
+        let oidl_range = chunks
+            .usize_offset_by_id(*b"OIDL")
+            .map_err(|_| "Commit graph missing OIDL chunk".to_string())?;
 
         // ----- Hash length from file header -----
         let hash_len: usize = match data[5] {
@@ -354,8 +372,8 @@ fn murmur3_32_seeded(data: &[u8], seed: u32) -> u32 {
 // ---------------------------------------------------------------------------
 
 fn mmap_file(path: &std::path::Path) -> Result<memmap2::Mmap, String> {
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("Cannot open commit-graph at {}: {e}", path.display()))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open commit-graph at {}: {e}", path.display()))?;
     // SAFETY: The file is opened read-only and we never mutate it. The mmap
     // is private to CommitGraphBloom and lives for the duration of the struct.
     unsafe {
@@ -423,7 +441,10 @@ mod tests {
             .current_dir(repo_path)
             .status()
             .expect("git commit-graph write");
-        assert!(status.success(), "git commit-graph write failed: {status:?}");
+        assert!(
+            status.success(),
+            "git commit-graph write failed: {status:?}"
+        );
 
         let repo = gix::open(repo_path).expect("gix open");
         (repo, dir)

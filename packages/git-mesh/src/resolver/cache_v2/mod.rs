@@ -134,11 +134,8 @@ pub(crate) fn stale_meshes_cached(
     };
     // Availability inputs: LFS install + sparse/promisor activity. These
     // gate cached `ContentUnavailable` results.
-    let availability = availability_hash(
-        lfs_installed(),
-        sparse_active(repo),
-        promisor_active(repo),
-    );
+    let availability =
+        availability_hash(lfs_installed(), sparse_active(repo), promisor_active(repo));
     let availability_hex = hex32(&availability);
 
     // ── Committed baseline (load or cold-build) ───────────────────────
@@ -154,14 +151,10 @@ pub(crate) fn stale_meshes_cached(
                 let meshes = match build_committed_meshes(repo, &mesh_root) {
                     Ok(m) => m,
                     Err(e) => {
-                        return Ok(CacheAttempt::Fallback(format!(
-                            "build-baseline: {e}"
-                        )));
+                        return Ok(CacheAttempt::Fallback(format!("build-baseline: {e}")));
                     }
                 };
-                if let Err(e) =
-                    store_baseline(&db, &committed, &availability_hex, &meshes)
-                {
+                if let Err(e) = store_baseline(&db, &committed, &availability_hex, &meshes) {
                     crate::perf::note(&format!("cache_v2.store-baseline-failed: {e}"));
                 }
                 // Reload so the in-memory shape matches the cached one
@@ -184,7 +177,9 @@ pub(crate) fn stale_meshes_cached(
         Err(e) => return Ok(CacheAttempt::Fallback(format!("layer-status: {e}"))),
     };
     if layer_status.requires_full_scan {
-        return Ok(CacheAttempt::Fallback("dirty-set-requires-full-scan".into()));
+        return Ok(CacheAttempt::Fallback(
+            "dirty-set-requires-full-scan".into(),
+        ));
     }
     let index_trailer = super::layers::read_index_trailer(repo).ok();
     let conflicted = if layer_status.has_unmerged {
@@ -219,7 +214,11 @@ pub(crate) fn stale_meshes_cached(
     // overlay ⇒ not rendered), instead of being replayed from the cache.
     match uncommitted_mesh_paths(repo, &mesh_root) {
         Ok(paths) => dirty_paths.extend(paths),
-        Err(e) => return Ok(CacheAttempt::Fallback(format!("uncommitted-mesh-scan: {e}"))),
+        Err(e) => {
+            return Ok(CacheAttempt::Fallback(format!(
+                "uncommitted-mesh-scan: {e}"
+            )));
+        }
     }
 
     if dirty_paths.iter().any(|p| is_gitattributes_path(p)) {
@@ -291,8 +290,7 @@ pub(crate) fn stale_meshes_cached(
     );
 
     let mut overlay_inputs = OverlayKeyInputs::new(&committed);
-    overlay_inputs.index_checksum =
-        index_checksum_bytes(index_trailer, layer_status.index_dirty);
+    overlay_inputs.index_checksum = index_checksum_bytes(index_trailer, layer_status.index_dirty);
     overlay_inputs.dirty_source_fingerprint = dirty_source_fp;
     overlay_inputs.dirty_mesh_fingerprint = dirty_mesh_fp;
     // Layer identity: full effective view; tombstone state folds into
@@ -331,9 +329,7 @@ pub(crate) fn stale_meshes_cached(
                             out
                         }
                         Err(e) => {
-                            return Ok(CacheAttempt::Fallback(format!(
-                                "resolve-overlay: {e}"
-                            )));
+                            return Ok(CacheAttempt::Fallback(format!("resolve-overlay: {e}")));
                         }
                     }
                 };
@@ -387,10 +383,7 @@ fn reportable(meshes: Vec<MeshResolved>) -> Vec<MeshResolved> {
 /// Returned in `<mesh_root>/<name>` form so they slot directly into the
 /// `dirty_paths` set, where [`meshes_affected_by`] turns the mesh-root
 /// prefix back into a mesh name.
-fn uncommitted_mesh_paths(
-    repo: &gix::Repository,
-    mesh_root: &str,
-) -> Result<Vec<String>> {
+fn uncommitted_mesh_paths(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<String>> {
     let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
     let committed: HashSet<String> = reader.committed_mesh_names()?.into_iter().collect();
     Ok(reader
@@ -403,10 +396,7 @@ fn uncommitted_mesh_paths(
 
 /// Full HEAD-only resolution of every mesh committed at `HEAD` — the
 /// cold-build input for the committed baseline.
-fn build_committed_meshes(
-    repo: &gix::Repository,
-    mesh_root: &str,
-) -> Result<Vec<MeshResolved>> {
+fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<MeshResolved>> {
     let _perf = crate::perf::span("resolver.cache_v2.build-baseline");
     // The committed baseline is keyed by the HEAD mesh tree and resolved
     // with `committed_only`, so it must enumerate exactly the meshes that
@@ -501,11 +491,8 @@ fn promisor_active(repo: &gix::Repository) -> bool {
     let od = crate::git::common_dir(repo).join("objects");
     std::fs::read_dir(od.join("info"))
         .map(|rd| {
-            rd.flatten().any(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("promisor")
-            })
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("promisor"))
         })
         .unwrap_or(false)
 }

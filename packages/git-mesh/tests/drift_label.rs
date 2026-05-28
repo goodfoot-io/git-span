@@ -28,10 +28,7 @@ fn regex_lite_changed_in_sha(s: &str) -> bool {
     let mut from = 0;
     while let Some(pos) = s[from..].find(needle) {
         let after = &s[from + pos + needle.len()..];
-        let hex_run = after
-            .chars()
-            .take_while(|c| c.is_ascii_hexdigit())
-            .count();
+        let hex_run = after.chars().take_while(|c| c.is_ascii_hexdigit()).count();
         if hex_run >= 7 {
             return true;
         }
@@ -74,7 +71,10 @@ fn extract_label(output: &str) -> Option<&str> {
         if let Some(pos) = line.find(": ") {
             let rest = line[pos + 2..].trim();
             // Check that it matches one of the known drift label prefixes.
-            if rest.starts_with("changed") || rest.starts_with("deleted") || rest.starts_with("orphaned") {
+            if rest.starts_with("changed")
+                || rest.starts_with("deleted")
+                || rest.starts_with("orphaned")
+            {
                 return Some(rest);
             }
         }

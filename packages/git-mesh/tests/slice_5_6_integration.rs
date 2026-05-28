@@ -12,10 +12,10 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::types::EngineOptions;
 use git_mesh::resolve_mesh;
+use git_mesh::types::EngineOptions;
 use std::str::FromStr;
-use support::{create_and_commit_mesh, TestRepo};
+use support::{TestRepo, create_and_commit_mesh};
 
 // ---------------------------------------------------------------------------
 // Slice 5 — `--since` is a no-op in the file-backed model.

@@ -21,7 +21,7 @@ use crate::types::{
 };
 use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 fn csv_escape(s: &str) -> String {
@@ -90,11 +90,23 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // (also clap-enforced). Absent any of them, the default effective
     // view is worktree-over-index-over-HEAD, refined by `--no-*`.
     let layers = if args.head {
-        LayerSet { worktree: false, index: false, staged_mesh: !args.no_staged_mesh }
+        LayerSet {
+            worktree: false,
+            index: false,
+            staged_mesh: !args.no_staged_mesh,
+        }
     } else if args.staged {
-        LayerSet { worktree: false, index: true, staged_mesh: !args.no_staged_mesh }
+        LayerSet {
+            worktree: false,
+            index: true,
+            staged_mesh: !args.no_staged_mesh,
+        }
     } else if args.worktree {
-        LayerSet { worktree: true, index: true, staged_mesh: !args.no_staged_mesh }
+        LayerSet {
+            worktree: true,
+            index: true,
+            staged_mesh: !args.no_staged_mesh,
+        }
     } else {
         LayerSet {
             worktree: !args.no_worktree,
@@ -345,8 +357,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             if meshes.iter().any(|m| m.name == name) {
                 continue;
             }
-            let mesh_file_path =
-                std::path::PathBuf::from(format!("{mesh_root_owned}/{name}"));
+            let mesh_file_path = std::path::PathBuf::from(format!("{mesh_root_owned}/{name}"));
             meshes.push(MeshResolved {
                 name: name.clone(),
                 message: String::new(),
@@ -465,11 +476,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // must surface (`<fail-closed>`). Clean pending ops do not.
     let drifting_pending: usize = pending
         .iter()
-        .filter(|p| matches!(
-            p,
-            PendingFinding::Add { drift: Some(_), .. }
-                | PendingFinding::Remove { drift: Some(_), .. }
-        ))
+        .filter(|p| {
+            matches!(
+                p,
+                PendingFinding::Add { drift: Some(_), .. }
+                    | PendingFinding::Remove { drift: Some(_), .. }
+            )
+        })
         .count();
     let stale_count = unacked_findings + drifting_pending;
 
@@ -505,14 +518,19 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 // or meshes[.].anchors.len() (which only includes meshes with
                 // findings after stale_meshes filtering).
                 let total_anchors = total_committed_anchor_count;
-                let mesh_word = if total_committed_mesh_count == 1 { "mesh" } else { "meshes" };
-                let anchor_word = if total_anchors == 1 { "anchor" } else { "anchors" };
+                let mesh_word = if total_committed_mesh_count == 1 {
+                    "mesh"
+                } else {
+                    "meshes"
+                };
+                let anchor_word = if total_anchors == 1 {
+                    "anchor"
+                } else {
+                    "anchors"
+                };
                 println!(
                     "0 stale across {} {} ({} {} checked)",
-                    total_committed_mesh_count,
-                    mesh_word,
-                    total_anchors,
-                    anchor_word,
+                    total_committed_mesh_count, mesh_word, total_anchors, anchor_word,
                 );
             }
         }
@@ -945,8 +963,7 @@ fn render_human(
                 );
             }
             for f in &stale_findings {
-                let path_extent =
-                    render_path_extent_human(&f.anchored.path, f.anchored.extent);
+                let path_extent = render_path_extent_human(&f.anchored.path, f.anchored.extent);
                 if f.status == AnchorStatus::Moved {
                     // A pure relocation has no content delta — the stored
                     // bytes are intact at a new path. A `+x -0` here is
@@ -974,7 +991,12 @@ fn render_human(
         let pending_add_remove: Vec<&PendingFinding> = if is_named_lookup {
             mesh_pending
                 .iter()
-                .filter(|p| matches!(p, PendingFinding::Add { .. } | PendingFinding::Remove { .. }))
+                .filter(|p| {
+                    matches!(
+                        p,
+                        PendingFinding::Add { .. } | PendingFinding::Remove { .. }
+                    )
+                })
                 .copied()
                 .collect()
         } else {
@@ -993,7 +1015,11 @@ fn render_human(
                     let is_followed = followed_ids.contains(&f.anchor_id);
                     let desc = describe_finding_lower(f);
                     let auto_tag = if is_followed { " — auto-updated" } else { "" };
-                    let ack_tag = if f.acknowledged_by.is_some() { " — acknowledged" } else { "" };
+                    let ack_tag = if f.acknowledged_by.is_some() {
+                        " — acknowledged"
+                    } else {
+                        ""
+                    };
                     println!("- {addr} — {desc}{auto_tag}{ack_tag}");
                     if options.patch {
                         let diff = render_patch(repo, f);
@@ -1460,11 +1486,7 @@ pub(crate) fn format_relative(committer_time: i64) -> String {
 }
 
 fn plural(n: i64) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if n == 1 { "" } else { "s" }
 }
 
 // ---------------------------------------------------------------------------

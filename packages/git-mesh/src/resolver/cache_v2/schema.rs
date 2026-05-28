@@ -44,9 +44,8 @@ pub(crate) fn open_cache(repo: &gix::Repository) -> Result<CacheDb> {
 /// that do not want a full `gix::Repository`.
 pub(crate) fn open_cache_at(path: &Path) -> Result<CacheDb> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::Git(format!("create cache_v2 dir `{}`: {e}", parent.display()))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Git(format!("create cache_v2 dir `{}`: {e}", parent.display())))?;
     }
     let conn = Connection::open(path)
         .map_err(|e| Error::Git(format!("open cache_v2 db `{}`: {e}", path.display())))?;

@@ -49,7 +49,10 @@ fn read_head_present() {
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
-    let mesh = reader.read_head("test-mesh").unwrap().expect("should exist");
+    let mesh = reader
+        .read_head("test-mesh")
+        .unwrap()
+        .expect("should exist");
     assert_eq!(mesh.anchors.len(), 1);
     assert_eq!(mesh.anchors[0].path, "file1.txt");
     assert_eq!(mesh.why, "test mesh");
@@ -87,7 +90,10 @@ fn read_staged_mesh() {
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
-    let mesh = reader.read_staged("staged-mesh").unwrap().expect("should exist");
+    let mesh = reader
+        .read_staged("staged-mesh")
+        .unwrap()
+        .expect("should exist");
     assert_eq!(mesh.anchors.len(), 1);
     assert_eq!(mesh.why, "staged");
 }
@@ -112,7 +118,8 @@ fn read_staged_index_deletion_tombstone() {
     commit_mesh_file(&repo, "deleted-mesh", &content);
 
     // Delete from index (git rm --cached)
-    repo.run_git(["rm", "--cached", ".mesh/deleted-mesh"]).unwrap();
+    repo.run_git(["rm", "--cached", ".mesh/deleted-mesh"])
+        .unwrap();
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
@@ -134,7 +141,10 @@ fn read_worktree_present() {
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
-    let mesh = reader.read_worktree("wt-mesh").unwrap().expect("should exist");
+    let mesh = reader
+        .read_worktree("wt-mesh")
+        .unwrap()
+        .expect("should exist");
     assert_eq!(mesh.anchors.len(), 1);
     assert_eq!(mesh.why, "worktree");
 }
@@ -171,7 +181,10 @@ fn effective_worktree_overlays_staged() {
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
-    let mesh = reader.read_effective("overlay-test").unwrap().expect("should exist");
+    let mesh = reader
+        .read_effective("overlay-test")
+        .unwrap()
+        .expect("should exist");
     // Effective should show worktree version
     assert_eq!(mesh.why, "worktree-edit");
 }
@@ -218,7 +231,10 @@ fn worktree_deletion_tombstone() {
     // Effective should not show the committed version because worktree
     // deletion is a tombstone.
     let result = reader.read_effective("tombstone-mesh").unwrap();
-    assert!(result.is_none(), "worktree deletion should hide HEAD version");
+    assert!(
+        result.is_none(),
+        "worktree deletion should hide HEAD version"
+    );
 }
 
 #[test]
@@ -228,14 +244,18 @@ fn staged_read_respects_index_deletion() {
     commit_mesh_file(&repo, "idx-del-mesh", &content);
 
     // Remove from index (but keep worktree)
-    repo.run_git(["rm", "--cached", ".mesh/idx-del-mesh"]).unwrap();
+    repo.run_git(["rm", "--cached", ".mesh/idx-del-mesh"])
+        .unwrap();
 
     let gix = repo.gix_repo().unwrap();
     let reader = MeshFileReader::new(&gix, ".mesh".into());
 
     // Staged read should return None (index deletion hides HEAD)
     let result = reader.read_staged("idx-del-mesh").unwrap();
-    assert!(result.is_none(), "index deletion should hide HEAD for staged reads");
+    assert!(
+        result.is_none(),
+        "index deletion should hide HEAD for staged reads"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +276,10 @@ fn worktree_parse_failure_does_not_fall_back() {
 
     // Should error, not fall back to HEAD version
     let result = reader.read_effective("fail-closed");
-    assert!(result.is_err(), "parse failure must fail closed, not fall back");
+    assert!(
+        result.is_err(),
+        "parse failure must fail closed, not fall back"
+    );
 }
 
 #[test]
@@ -339,7 +362,11 @@ fn list_names_deduplicates() {
 #[test]
 fn list_nested_mesh_names() {
     let repo = support::TestRepo::seeded().unwrap();
-    commit_mesh_file(&repo, "checkout/request-flow", &make_mesh(&[], "checkout flow"));
+    commit_mesh_file(
+        &repo,
+        "checkout/request-flow",
+        &make_mesh(&[], "checkout flow"),
+    );
     commit_mesh_file(&repo, "billing/invoice", &make_mesh(&[], "billing"));
 
     let gix = repo.gix_repo().unwrap();

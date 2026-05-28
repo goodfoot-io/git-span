@@ -337,10 +337,8 @@ pub(crate) fn build_timeline(
         let parent_sha = &delta.parent;
         let commit_sha = &delta.commit;
 
-        let old_blob_oid =
-            blob_oid_at(repo, parent_sha, &cur_path_str, Some(blob_oid_memo));
-        let new_blob_oid =
-            blob_oid_at(repo, commit_sha, &new_path_str, Some(blob_oid_memo));
+        let old_blob_oid = blob_oid_at(repo, parent_sha, &cur_path_str, Some(blob_oid_memo));
+        let new_blob_oid = blob_oid_at(repo, commit_sha, &new_path_str, Some(blob_oid_memo));
 
         let old_text = old_blob_oid
             .as_deref()
@@ -749,7 +747,12 @@ mod parity_tests {
         let head_sha = rev_parse(dir, "HEAD");
 
         let repo = gix::open(dir).unwrap();
-        let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::AnyFileInCommit);
+        let deltas = collect_deltas(
+            &repo,
+            &anchor_sha,
+            &head_sha,
+            CopyDetection::AnyFileInCommit,
+        );
         // Old replay: a.ts is unchanged; new replay: copy entry triggers
         // a modification because `from == cur_path`. Both should agree.
         assert_parity(&repo, &deltas, "a.ts", 5, 7, CopyDetection::AnyFileInCommit);

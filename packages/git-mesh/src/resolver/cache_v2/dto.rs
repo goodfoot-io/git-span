@@ -210,14 +210,16 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
     type Error = crate::Error;
     fn try_from(dto: DriftLocusDto) -> Result<Self, Self::Error> {
         Ok(match dto {
-            DriftLocusDto::ChangedAt(s) => DriftLocus::ChangedAt(
-                gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}")))?,
-            ),
-            DriftLocusDto::OrphanedAt(s) => DriftLocus::OrphanedAt(
-                gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}")))?,
-            ),
+            DriftLocusDto::ChangedAt(s) => {
+                DriftLocus::ChangedAt(gix::ObjectId::from_str(&s).map_err(|e| {
+                    crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}"))
+                })?)
+            }
+            DriftLocusDto::OrphanedAt(s) => {
+                DriftLocus::OrphanedAt(gix::ObjectId::from_str(&s).map_err(|e| {
+                    crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}"))
+                })?)
+            }
         })
     }
 }

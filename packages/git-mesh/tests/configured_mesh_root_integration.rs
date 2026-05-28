@@ -21,7 +21,13 @@ fn configured_mesh_dir_flag_round_trips() -> Result<()> {
     repo.commit_all("seed")?;
 
     // add under a non-default root via --mesh-dir.
-    let add = repo.run_mesh(["--mesh-dir", "meshes", "add", "demo/coupling", "src/lib.rs#L1-L2"])?;
+    let add = repo.run_mesh([
+        "--mesh-dir",
+        "meshes",
+        "add",
+        "demo/coupling",
+        "src/lib.rs#L1-L2",
+    ])?;
     assert!(
         add.status.success(),
         "add under --mesh-dir failed: {}",
@@ -40,15 +46,30 @@ fn configured_mesh_dir_flag_round_trips() -> Result<()> {
 
     // list must see it (was empty before the fix).
     let list = repo.mesh_stdout(["--mesh-dir", "meshes", "list"])?;
-    assert!(list.contains("demo/coupling"), "list missed configured-root mesh: {list}");
+    assert!(
+        list.contains("demo/coupling"),
+        "list missed configured-root mesh: {list}"
+    );
 
     // show must resolve it (was MeshNotFound before the fix).
     let show = repo.mesh_stdout(["--mesh-dir", "meshes", "show", "demo/coupling"])?;
-    assert!(show.contains("demo/coupling"), "show missed configured-root mesh: {show}");
+    assert!(
+        show.contains("demo/coupling"),
+        "show missed configured-root mesh: {show}"
+    );
     // No vestigial ref-era fields in show output (F8).
-    assert!(!show.contains("anchor_sha"), "show emitted dead anchor_sha field: {show}");
-    assert!(!show.contains("created_at"), "show emitted dead created_at field: {show}");
-    assert!(!show.contains("blob"), "show emitted dead blob field: {show}");
+    assert!(
+        !show.contains("anchor_sha"),
+        "show emitted dead anchor_sha field: {show}"
+    );
+    assert!(
+        !show.contains("created_at"),
+        "show emitted dead created_at field: {show}"
+    );
+    assert!(
+        !show.contains("blob"),
+        "show emitted dead blob field: {show}"
+    );
 
     // Bare `git mesh <name>` with a preceding global option must work (F8).
     let bare = repo.run_mesh(["--mesh-dir", "meshes", "demo/coupling"])?;
@@ -76,7 +97,13 @@ fn configured_mesh_dir_flag_round_trips() -> Result<()> {
     );
 
     // move must find and rename it under the configured root.
-    let mv = repo.run_mesh(["--mesh-dir", "meshes", "move", "demo/coupling", "demo/renamed"])?;
+    let mv = repo.run_mesh([
+        "--mesh-dir",
+        "meshes",
+        "move",
+        "demo/coupling",
+        "demo/renamed",
+    ])?;
     assert!(
         mv.status.success(),
         "move under configured root failed: {}",
@@ -106,6 +133,9 @@ fn configured_mesh_dir_via_git_config() -> Result<()> {
     assert!(!repo.path().join(".mesh").exists());
 
     let list = repo.mesh_stdout(["list"])?;
-    assert!(list.contains("cfg/mesh"), "list missed git-config-root mesh: {list}");
+    assert!(
+        list.contains("cfg/mesh"),
+        "list missed git-config-root mesh: {list}"
+    );
     Ok(())
 }

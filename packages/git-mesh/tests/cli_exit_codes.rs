@@ -63,8 +63,7 @@ fn removed_commands_produce_usage_error() -> Result<()> {
     // These are unambiguously unrecognised as subcommands (not close enough
     // to any valid subcommand to be routed through `show`).
     let clap_rejected = [
-        "commit", "restore", "revert", "config", "fetch", "push",
-        "hooks", "rewrite",
+        "commit", "restore", "revert", "config", "fetch", "push", "hooks", "rewrite",
     ];
     for cmd in clap_rejected {
         let out = repo.run_mesh([cmd])?;

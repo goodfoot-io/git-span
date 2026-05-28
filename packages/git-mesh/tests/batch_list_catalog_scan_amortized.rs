@@ -83,13 +83,18 @@ fn batch_porcelain_scans_catalog_once_regardless_of_path_count() -> Result<()> {
     for _ in 0..4 {
         input.extend(mesh_paths.iter().cloned());
     }
-    assert!(input.len() >= 20, "want many input paths, got {}", input.len());
+    assert!(
+        input.len() >= 20,
+        "want many input paths, got {}",
+        input.len()
+    );
 
     let (_stdout, stderr) = run_batch_perf(&repo, &input)?;
 
     let scan_spans = count_lines_containing(&stderr, "list.path-filter-scan");
     assert_eq!(
-        scan_spans, 1,
+        scan_spans,
+        1,
         "catalog enumeration must be amortized across the batch: expected \
          exactly one `list.path-filter-scan` span for {} input paths, got \
          {scan_spans}.\n--- perf stderr ---\n{stderr}",

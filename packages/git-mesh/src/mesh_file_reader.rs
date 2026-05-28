@@ -72,8 +72,7 @@ impl<'repo> MeshFileReader<'repo> {
         let mesh_path = self.mesh_path(name);
         match crate::git::tree_entry_at(self.repo, "HEAD", Path::new(&mesh_path))? {
             Some((_mode, oid)) => {
-                let text =
-                    crate::git::read_git_text(self.repo, &oid.to_string())?;
+                let text = crate::git::read_git_text(self.repo, &oid.to_string())?;
                 MeshFile::parse(&text).map(Some)
             }
             None => Ok(None),
@@ -194,9 +193,9 @@ impl<'repo> MeshFileReader<'repo> {
             // fails closed if conflict text is present.
             Err(_) => return Ok(false),
         };
-        Ok(entries.iter().any(|e| {
-            e.path == mesh_path && e.stage != gix::index::entry::Stage::Unconflicted
-        }))
+        Ok(entries
+            .iter()
+            .any(|e| e.path == mesh_path && e.stage != gix::index::entry::Stage::Unconflicted))
     }
 
     /// Check whether a file path exists in the index.
@@ -241,8 +240,7 @@ impl<'repo> MeshFileReader<'repo> {
         if !mesh_dir.exists() {
             return Ok(());
         }
-        collect_file_names(&mesh_dir, "", names)
-            .map_err(Error::Io)
+        collect_file_names(&mesh_dir, "", names).map_err(Error::Io)
     }
 
     /// Collect mesh names from the HEAD tree under the mesh root.

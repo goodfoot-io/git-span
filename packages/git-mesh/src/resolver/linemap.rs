@@ -56,11 +56,7 @@ impl LineMap {
     /// Build a per-commit `LineMap` from hunks. The hunks are the same
     /// `(old_start, old_count, new_start, new_count)` tuples
     /// `walker::compute_hunks` produces.
-    pub(crate) fn from_hunks(
-        hunks: &[Hunk],
-        old_line_count: u32,
-        new_line_count: u32,
-    ) -> LineMap {
+    pub(crate) fn from_hunks(hunks: &[Hunk], old_line_count: u32, new_line_count: u32) -> LineMap {
         let _span = perf::span("linemap.from-hunks");
         let mut segments: Vec<LineSegment> = Vec::with_capacity(hunks.len() * 2 + 1);
 
@@ -96,16 +92,8 @@ impl LineMap {
             }
 
             // Emit the replacement / insert / delete segment.
-            let (o_start, o_end) = if oc == 0 {
-                (0, 0)
-            } else {
-                (os, os + oc - 1)
-            };
-            let (n_start, n_end) = if nc == 0 {
-                (0, 0)
-            } else {
-                (ns, ns + nc - 1)
-            };
+            let (o_start, o_end) = if oc == 0 { (0, 0) } else { (os, os + oc - 1) };
+            let (n_start, n_end) = if nc == 0 { (0, 0) } else { (ns, ns + nc - 1) };
             segments.push(LineSegment {
                 old_start: o_start,
                 old_end: o_end,

@@ -15,7 +15,8 @@ pub(crate) fn read_worktree_normalized(
     rel_path: &str,
 ) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
-    if let Some(name) = types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel_path))?
+    if let Some(name) =
+        types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel_path))?
         && !types::is_core_filter(&name)
     {
         let abs = workdir.join(rel_path);

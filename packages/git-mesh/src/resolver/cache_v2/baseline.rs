@@ -333,7 +333,11 @@ pub(crate) fn load_baseline(
 /// Delete the committed baseline for this exact key (tests only; the
 /// runtime invalidates by key, not by deletion). `_ = KEY_SALT` keeps
 /// the salt constant referenced from this module.
-pub(crate) fn delete_baseline(db: &CacheDb, key: &CommittedKey, availability_hex: &str) -> Result<()> {
+pub(crate) fn delete_baseline(
+    db: &CacheDb,
+    key: &CommittedKey,
+    availability_hex: &str,
+) -> Result<()> {
     let _ = KEY_SALT;
     let filter_hex = key.filter_hex();
     db.conn

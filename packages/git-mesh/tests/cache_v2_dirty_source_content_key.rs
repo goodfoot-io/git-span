@@ -100,8 +100,11 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
     run_git(p, &["config", "user.email", "test@example.com"]);
     run_git(p, &["config", "commit.gpgsign", "false"]);
 
-    fs::write(p.join("file1.txt"), "a1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nb10\n")
-        .expect("write seed");
+    fs::write(
+        p.join("file1.txt"),
+        "a1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nb10\n",
+    )
+    .expect("write seed");
     run_git(p, &["add", "-A"]);
     run_git(p, &["commit", "-m", "seed"]);
 
@@ -111,8 +114,11 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
     run_git(p, &["commit", "-m", "mesh"]);
 
     // ── Edit A: drift *inside* the anchored range (worktree-only). ────────
-    fs::write(p.join("file1.txt"), "AAA1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nb10\n")
-        .expect("write A");
+    fs::write(
+        p.join("file1.txt"),
+        "AAA1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nb10\n",
+    )
+    .expect("write A");
     let (out_a, _) = run_stale(p);
     assert!(
         out_a.contains("file1.txt#L1-L5"),
@@ -122,8 +128,11 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
     // ── Edit B: restore lines 1-5 to committed content; drift line 10
     //    (outside the anchor) so the file stays worktree-dirty with the
     //    same dirty path set, but the anchored range is now clean. ────────
-    fs::write(p.join("file1.txt"), "a1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nBBB10\n")
-        .expect("write B");
+    fs::write(
+        p.join("file1.txt"),
+        "a1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nBBB10\n",
+    )
+    .expect("write B");
     let (out_b, overlay_miss_b) = run_stale(p);
 
     // The verdict must reflect B (anchored range clean → not stale), not

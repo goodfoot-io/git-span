@@ -38,11 +38,7 @@ impl fmt::Display for AnchorRecord {
     /// - Line anchor: `<path>#L<start>-L<end> <algorithm>:<content_hash>`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.start_line == 0 && self.end_line == 0 {
-            write!(
-                f,
-                "{} {}:{}",
-                self.path, self.algorithm, self.content_hash
-            )
+            write!(f, "{} {}:{}", self.path, self.algorithm, self.content_hash)
         } else {
             write!(
                 f,
@@ -100,9 +96,8 @@ impl MeshFile {
                 // blank before the separator).
                 continue;
             }
-            let record = parse_anchor_line(line).map_err(|e| {
-                Error::InvalidMeshFile(format!("line {}: {e}", idx + 1))
-            })?;
+            let record = parse_anchor_line(line)
+                .map_err(|e| Error::InvalidMeshFile(format!("line {}: {e}", idx + 1)))?;
             anchors.push(record);
         }
 
@@ -172,18 +167,14 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
     // correctly, because the hash token `algorithm:content_hash` never
     // contains spaces.
     let space_pos = line.rfind(' ').ok_or_else(|| {
-        Error::InvalidMeshFile(format!(
-            "malformed anchor line: no space found in `{line}`"
-        ))
+        Error::InvalidMeshFile(format!("malformed anchor line: no space found in `{line}`"))
     })?;
 
     let address = &line[..space_pos];
     let hash_part = line[space_pos + 1..].trim();
 
     if address.is_empty() {
-        return Err(Error::InvalidMeshFile(
-            "empty anchor address".to_string(),
-        ));
+        return Err(Error::InvalidMeshFile("empty anchor address".to_string()));
     }
     if hash_part.is_empty() {
         return Err(Error::InvalidMeshFile(format!(
@@ -232,15 +223,11 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
         let end_str = &range_part[dash_pos + 2..];
 
         let start_line = start_str.parse::<u32>().map_err(|e| {
-            Error::InvalidMeshFile(format!(
-                "invalid start line in `{address}`: {e}"
-            ))
+            Error::InvalidMeshFile(format!("invalid start line in `{address}`: {e}"))
         })?;
-        let end_line = end_str.parse::<u32>().map_err(|e| {
-            Error::InvalidMeshFile(format!(
-                "invalid end line in `{address}`: {e}"
-            ))
-        })?;
+        let end_line = end_str
+            .parse::<u32>()
+            .map_err(|e| Error::InvalidMeshFile(format!("invalid end line in `{address}`: {e}")))?;
 
         if start_line == 0 {
             return Err(Error::InvalidMeshFile(format!(
@@ -368,7 +355,10 @@ mod tests {
         let input = "a.txt sha256:111\nb.txt sha256:222\n\nThis is the why text.\nIt can span multiple lines.\n";
         let mesh = MeshFile::parse(input).unwrap();
         assert_eq!(mesh.anchors.len(), 2);
-        assert_eq!(mesh.why, "This is the why text.\nIt can span multiple lines.");
+        assert_eq!(
+            mesh.why,
+            "This is the why text.\nIt can span multiple lines."
+        );
     }
 
     #[test]

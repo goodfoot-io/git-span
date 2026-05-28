@@ -221,10 +221,7 @@ fn read_mode_flags_select_layers() -> Result<()> {
     // Staged-only change: visible under --staged/--worktree, not --head.
     let repo2 = TestRepo::seeded()?;
     seed_line(&repo2, "m", "file1.txt", 1, 3)?;
-    repo2.write_file(
-        "file1.txt",
-        "STAGED\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n",
-    )?;
+    repo2.write_file("file1.txt", "STAGED\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n")?;
     repo2.run_git(["add", "file1.txt"])?;
     let head_only = repo2.mesh_stdout(["stale", "m", "--head", "--no-exit-code"])?;
     assert!(
@@ -242,10 +239,7 @@ fn read_mode_flags_select_layers() -> Result<()> {
     // Worktree-only change: visible only under --worktree.
     let repo3 = TestRepo::seeded()?;
     seed_line(&repo3, "m", "file1.txt", 1, 3)?;
-    repo3.write_file(
-        "file1.txt",
-        "WT\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n",
-    )?;
+    repo3.write_file("file1.txt", "WT\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n")?;
     for flag in ["--head", "--staged"] {
         let out = repo3.mesh_stdout(["stale", "m", flag, "--no-exit-code"])?;
         assert!(

@@ -5,7 +5,7 @@
 
 use crate::mesh_file::MeshFile;
 use crate::mesh_file_reader::MeshFileReader;
-use crate::types::{mesh_from_file, Mesh};
+use crate::types::{Mesh, mesh_from_file};
 use crate::{Error, Result};
 use std::path::Path;
 
@@ -38,10 +38,7 @@ pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Resu
 }
 
 /// Load every visible mesh under a specific mesh root.
-pub fn load_all_meshes_in(
-    repo: &gix::Repository,
-    mesh_root: &str,
-) -> Result<Vec<(String, Mesh)>> {
+pub fn load_all_meshes_in(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<(String, Mesh)>> {
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let mut names = reader.list_mesh_names()?;
     names.sort();
@@ -69,10 +66,7 @@ pub fn load_all_meshes_in(
 /// Names of all visible meshes that are currently in a Git conflict
 /// state (unmerged index entry or textual conflict markers). The stale
 /// path renders each as a `Conflict` finding and forces a non-zero exit.
-pub fn conflicted_mesh_names_in(
-    repo: &gix::Repository,
-    mesh_root: &str,
-) -> Result<Vec<String>> {
+pub fn conflicted_mesh_names_in(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<String>> {
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let mut names = reader.list_mesh_names()?;
     names.sort();
@@ -115,10 +109,9 @@ pub fn meshes_matching_path_in(
             match (a.extent, range) {
                 (_, None) => true,
                 (AnchorExtent::WholeFile, Some(_)) => true,
-                (
-                    AnchorExtent::LineRange { start, end },
-                    Some((qs, qe)),
-                ) => start <= qe && end >= qs,
+                (AnchorExtent::LineRange { start, end }, Some((qs, qe))) => {
+                    start <= qe && end >= qs
+                }
             }
         });
         if hit {

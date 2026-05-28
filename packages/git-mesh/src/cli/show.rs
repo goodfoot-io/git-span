@@ -1,13 +1,13 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh list` — §10.4, §3.4.
 
-use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
-use crate::types::{AnchorExtent, MeshConfig};
-use serde::Serialize;
-use crate::validation::validate_mesh_name_shape;
+use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::mesh::read::read_mesh_at_in;
+use crate::types::{AnchorExtent, MeshConfig};
+use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
 use regex::RegexBuilder;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::io::{self, BufRead};
 
@@ -41,11 +41,18 @@ fn collect_listings_with_options(
     let mesh_pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
     let mut listings: Vec<MeshListing> = Vec::new();
     for (name, mesh) in mesh_pairs {
-        let message = if include_why { mesh.message } else { String::new() };
+        let message = if include_why {
+            mesh.message
+        } else {
+            String::new()
+        };
         let anchors: Vec<AnchorEntry> = mesh
             .anchors
             .into_iter()
-            .map(|(_id, r)| AnchorEntry { path: r.path, extent: r.extent })
+            .map(|(_id, r)| AnchorEntry {
+                path: r.path,
+                extent: r.extent,
+            })
             .collect();
         listings.push(MeshListing {
             name,
@@ -69,11 +76,18 @@ fn collect_listings_for_names(
         if !name_set.contains(name.as_str()) {
             continue;
         }
-        let message = if include_why { mesh.message } else { String::new() };
+        let message = if include_why {
+            mesh.message
+        } else {
+            String::new()
+        };
         let anchors: Vec<AnchorEntry> = mesh
             .anchors
             .into_iter()
-            .map(|(_id, r)| AnchorEntry { path: r.path, extent: r.extent })
+            .map(|(_id, r)| AnchorEntry {
+                path: r.path,
+                extent: r.extent,
+            })
             .collect();
         listings.push(MeshListing {
             name,
@@ -83,7 +97,6 @@ fn collect_listings_for_names(
     }
     Ok(listings)
 }
-
 
 fn collect_filtered_porcelain_listings_from_catalog(
     mesh_pairs: &[(String, crate::types::Mesh)],
@@ -303,10 +316,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
             ),
             next_steps: vec![
                 NextStep::Bash(format!("git status {mesh_root}/{name}")),
-                NextStep::Prose(
-                    "Resolve the merge conflict in the mesh file, then retry."
-                        .into(),
-                ),
+                NextStep::Prose("Resolve the merge conflict in the mesh file, then retry.".into()),
             ],
         };
         if args.at.is_none() {
@@ -332,10 +342,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
                             "The mesh file for `{}` could not be read.",
                             args.name
                         ),
-                        next_steps: vec![NextStep::Bash(format!(
-                            "git mesh doctor {}",
-                            args.name
-                        ))],
+                        next_steps: vec![NextStep::Bash(format!("git mesh doctor {}", args.name))],
                     }
                 }
             })?
@@ -362,10 +369,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
                             "The mesh file for `{}` could not be read.",
                             args.name
                         ),
-                        next_steps: vec![NextStep::Bash(format!(
-                            "git mesh doctor {}",
-                            args.name
-                        ))],
+                        next_steps: vec![NextStep::Bash(format!("git mesh doctor {}", args.name))],
                     }
                 }
             })?
@@ -377,7 +381,10 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
         for (_id, r) in &mesh.anchors {
             match r.extent {
                 AnchorExtent::LineRange { start, end } => {
-                    println!("{}", format::format_anchor_address(&r.path, Some(start), Some(end)));
+                    println!(
+                        "{}",
+                        format::format_anchor_address(&r.path, Some(start), Some(end))
+                    );
                 }
                 AnchorExtent::WholeFile => {
                     println!("{}", format::format_anchor_address(&r.path, None, None));
@@ -409,8 +416,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, mesh_root: &str) -> Resu
     Ok(0)
 }
 
-
-
 pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Result<i32> {
     if args.batch {
         let _perf = crate::perf::span("list.batch-porcelain");
@@ -430,8 +435,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
     // dropping it, so an unresolved merge is never reported as a clean
     // empty list.
     {
-        let conflicted =
-            crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
+        let conflicted = crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
         let in_scope: Vec<String> = match &resolved_names {
             Some(names) => conflicted
                 .into_iter()
@@ -453,8 +457,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
                 next_steps: vec![
                     NextStep::Bash(format!("git status {mesh_root}")),
                     NextStep::Prose(
-                        "Resolve the merge conflict in the mesh file(s), then retry."
-                            .into(),
+                        "Resolve the merge conflict in the mesh file(s), then retry.".into(),
                     ),
                 ],
             }
@@ -483,17 +486,13 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
                 return Err(CliError {
                     subcommand: "list",
                     summary: "`--search` regex is invalid.".into(),
-                    what_happened: format!(
-                        "The regex `{pat}` failed to compile: {err}"
-                    ),
+                    what_happened: format!("The regex `{pat}` failed to compile: {err}"),
                     next_steps: vec![
                         NextStep::Prose(
                             "Try a simpler pattern or check for unescaped special characters."
                                 .into(),
                         ),
-                        NextStep::Bash(
-                            "git mesh list --search \"pattern\"".into(),
-                        ),
+                        NextStep::Bash("git mesh list --search \"pattern\"".into()),
                     ],
                 }
                 .into());
@@ -523,9 +522,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
                     AnchorExtent::LineRange { start, end } => {
                         format::format_anchor_address(&a.path, Some(start), Some(end))
                     }
-                    AnchorExtent::WholeFile => {
-                        format::format_anchor_address(&a.path, None, None)
-                    }
+                    AnchorExtent::WholeFile => format::format_anchor_address(&a.path, None, None),
                 };
                 println!("`{}` `{}`", listing.name, addr);
             }
@@ -600,8 +597,7 @@ pub(crate) fn resolve_targets(
             if reader.read_effective(arg)?.is_some() {
                 result.insert(arg.clone());
             } else {
-                let names =
-                    crate::mesh::read::meshes_matching_path_in(repo, arg, None, mesh_root)?;
+                let names = crate::mesh::read::meshes_matching_path_in(repo, arg, None, mesh_root)?;
                 if !names.is_empty() {
                     result.extend(names);
                 } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
@@ -641,7 +637,8 @@ pub(crate) fn resolve_targets(
                 NextStep::Prose("Check the spelling or list available meshes.".into()),
                 NextStep::Bash("git mesh list".into()),
             ],
-        }.into());
+        }
+        .into());
     }
 
     Ok(result.into_iter().collect())
@@ -695,7 +692,6 @@ mod tests {
         );
     }
 
-
     /// Write and commit a mesh file under `.mesh/<name>` so the
     /// file-backed `MeshFileReader` HEAD layer resolves it.
     fn create_mesh_ref(repo: &gix::Repository, name: &str) {
@@ -710,7 +706,10 @@ mod tests {
         };
         std::fs::write(&mesh_path, mf.serialize()).unwrap();
         run_git(&workdir, &["add", "-A"]);
-        run_git(&workdir, &["commit", "-m", &format!("test: create mesh {name}")]);
+        run_git(
+            &workdir,
+            &["commit", "-m", &format!("test: create mesh {name}")],
+        );
     }
 
     /// File-backed model: a mesh that anchors `path#Lstart-Lend` is a
@@ -764,8 +763,7 @@ mod tests {
     fn resolve_targets_hash_l_range() {
         let (_td, repo) = seed_repo();
         create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 10);
-        let result =
-            resolve_targets(&repo, ".mesh", &["a.txt#L1-L5".to_string()]).unwrap();
+        let result = resolve_targets(&repo, ".mesh", &["a.txt#L1-L5".to_string()]).unwrap();
         assert_eq!(result, vec!["mesh-a"]);
     }
 
@@ -775,8 +773,7 @@ mod tests {
         // so it must go straight to path index even though it contains `/`.
         let (_td, repo) = seed_repo();
         create_path_index_entry(&repo, "mesh-from-path", "src/lib.rs", 1, 10);
-        let result =
-            resolve_targets(&repo, ".mesh", &["src/lib.rs".to_string()]).unwrap();
+        let result = resolve_targets(&repo, ".mesh", &["src/lib.rs".to_string()]).unwrap();
         assert_eq!(result, vec!["mesh-from-path"]);
     }
 
@@ -786,8 +783,7 @@ mod tests {
         // "category/slug" matches mesh-name shape but no mesh file
         // exists. Must fall through to path index.
         create_path_index_entry(&repo, "some-mesh", "category/slug", 1, 5);
-        let result =
-            resolve_targets(&repo, ".mesh", &["category/slug".to_string()]).unwrap();
+        let result = resolve_targets(&repo, ".mesh", &["category/slug".to_string()]).unwrap();
         assert_eq!(result, vec!["some-mesh"]);
     }
 
@@ -796,20 +792,15 @@ mod tests {
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "mesh-a");
         create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 5);
-        let result = resolve_targets(
-            &repo,
-            ".mesh",
-            &["mesh-a".to_string(), "a.txt".to_string()],
-        )
-        .unwrap();
+        let result =
+            resolve_targets(&repo, ".mesh", &["mesh-a".to_string(), "a.txt".to_string()]).unwrap();
         assert_eq!(result, vec!["mesh-a"]);
     }
 
     #[test]
     fn resolve_targets_zero_match_errors() {
         let (_td, repo) = seed_repo();
-        let err = resolve_targets(&repo, ".mesh", &["nonexistent".to_string()])
-            .unwrap_err();
+        let err = resolve_targets(&repo, ".mesh", &["nonexistent".to_string()]).unwrap_err();
         assert!(!err.to_string().is_empty());
     }
 
@@ -825,12 +816,8 @@ mod tests {
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "mesh-a");
         create_path_index_entry(&repo, "mesh-b", "a.txt", 1, 5);
-        let result = resolve_targets(
-            &repo,
-            ".mesh",
-            &["mesh-a".to_string(), "a.txt".to_string()],
-        )
-        .unwrap();
+        let result =
+            resolve_targets(&repo, ".mesh", &["mesh-a".to_string(), "a.txt".to_string()]).unwrap();
         let mut sorted = result.clone();
         sorted.sort();
         assert_eq!(sorted, vec!["mesh-a", "mesh-b"]);
@@ -946,5 +933,4 @@ mod tests {
             resolve_targets(&repo, ".mesh", &["billing/payments/checkout".to_string()]).unwrap();
         assert_eq!(result, vec!["billing/payments/checkout"]);
     }
-
 }

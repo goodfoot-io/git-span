@@ -29,5 +29,7 @@ pub(crate) mod timeline;
 pub(crate) mod walker;
 
 pub use engine::pending::build_pending_findings;
+pub use engine::{
+    resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace,
+};
 pub(crate) use engine::{resolve_named_meshes, sort_meshes_by_anchor_path};
-pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace};

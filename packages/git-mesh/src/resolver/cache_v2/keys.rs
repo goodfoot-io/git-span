@@ -232,14 +232,8 @@ mod tests {
 
     #[test]
     fn content_identity_fingerprint_is_order_independent() {
-        let a = content_identity_fingerprint(
-            b"d\0",
-            [("a", "1"), ("b", "2")],
-        );
-        let b = content_identity_fingerprint(
-            b"d\0",
-            [("b", "2"), ("a", "1")],
-        );
+        let a = content_identity_fingerprint(b"d\0", [("a", "1"), ("b", "2")]);
+        let b = content_identity_fingerprint(b"d\0", [("b", "2"), ("a", "1")]);
         assert_eq!(a, b);
         let c = content_identity_fingerprint(b"d\0", [("a", "9"), ("b", "2")]);
         assert_ne!(a, c, "identity change must change fingerprint");

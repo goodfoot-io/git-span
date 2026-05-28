@@ -250,8 +250,14 @@ pub fn symlinks_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
         let base = std::env::temp_dir();
-        let target = base.join(format!("git-mesh-symlink-probe-target-{}", std::process::id()));
-        let link = base.join(format!("git-mesh-symlink-probe-link-{}", std::process::id()));
+        let target = base.join(format!(
+            "git-mesh-symlink-probe-target-{}",
+            std::process::id()
+        ));
+        let link = base.join(format!(
+            "git-mesh-symlink-probe-link-{}",
+            std::process::id()
+        ));
         let _ = std::fs::write(&target, b"probe");
         let ok = std::os::windows::fs::symlink_file(&target, &link).is_ok();
         let _ = std::fs::remove_file(&link);
@@ -314,8 +320,7 @@ pub fn create_and_commit_mesh(
 
     let mut records: Vec<git_mesh::mesh_file::AnchorRecord> = Vec::with_capacity(anchors.len());
     for (path, start, end) in anchors {
-        let bytes = std::fs::read(workdir.join(path))
-            .unwrap_or_else(|_| panic!("read {path}"));
+        let bytes = std::fs::read(workdir.join(path)).unwrap_or_else(|_| panic!("read {path}"));
         let hashed: Vec<u8> = if *start == 0 && *end == 0 {
             bytes.clone()
         } else {

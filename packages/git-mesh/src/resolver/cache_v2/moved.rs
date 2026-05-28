@@ -112,10 +112,7 @@ pub(crate) fn store_scan(
 /// Load the cached scan for `key`. `Ok(Some(vec))` (possibly empty) is
 /// a hit backed by a complete manifest; `Ok(None)` is a miss that
 /// requires a scan.
-pub(crate) fn load_scan(
-    db: &CacheDb,
-    key: &MovedScanKey,
-) -> Result<Option<Vec<MovedLocation>>> {
+pub(crate) fn load_scan(db: &CacheDb, key: &MovedScanKey) -> Result<Option<Vec<MovedLocation>>> {
     let complete: Option<i64> = db
         .conn
         .query_row(

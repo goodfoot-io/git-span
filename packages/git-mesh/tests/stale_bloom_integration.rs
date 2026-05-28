@@ -115,8 +115,7 @@ fn bloom_false_positive_counter_is_zero_for_true_positives() -> Result<()> {
     // File-backed model: there is no per-anchor Bloom history walk, so
     // the false-positive counter must be 0 — the Bloom walk never
     // misclassifies a path because it is not used for content drift.
-    let false_positives =
-        parse_counter(&stderr, "session.walk-bloom-false-positives");
+    let false_positives = parse_counter(&stderr, "session.walk-bloom-false-positives");
     assert_eq!(
         false_positives, 0,
         "Bloom false-positive counter must be 0 in the file-backed model, got {false_positives}, stderr:\n{stderr}"
