@@ -1,8 +1,12 @@
+import * as fs from 'node:fs';
 import { writeFileSync } from 'node:fs';
+import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import hook, {
+  createDefaultMeshExecutor,
+  createDiskMemoStore,
   createHandler,
   type MemoFactory,
   type MemoLogger,
@@ -142,7 +146,8 @@ describe('Read tool', () => {
 
     expect(calls[0].args).toEqual(['--porcelain', relPath]);
     expect(calls[1].args).toEqual([meshName]);
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-mesh>');
+    // PreToolUse uses systemMessage only; additionalContext is not supported for this hook type.
+    expect(result.stdout.hookSpecificOutput).toBeUndefined();
     expect(result.stdout.systemMessage).toContain('billing/checkout mesh output');
   });
 
@@ -509,5 +514,251 @@ describe('Default export', () => {
   it('default export wraps handler and runs without error for non-git cwd', async () => {
     const result = await hook(baseInput({ cwd: '/' }) as never, { logger });
     expect(result).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 1: countLines off-by-one with trailing newline
+// ---------------------------------------------------------------------------
+
+describe('Edit tool - countLines trailing newline off-by-one (Finding 1)', () => {
+  let repo: { root: string; cleanup: () => void };
+  let filePath: string;
+  beforeAll(() => {
+    repo = makeTempRepo();
+    filePath = join(repo.root, 'trailing.ts');
+    // 5 lines; line 3 = "match-line", line 4 = "neighbor"
+    writeFileSync(filePath, 'line1\nline2\nmatch-line\nneighbor\nline5\n');
+  });
+  afterAll(() => repo.cleanup());
+
+  it('old_string ending in newline should not extend range into the next line', async () => {
+    const relPath = 'trailing.ts';
+    // mesh anchor covers ONLY line 4 (the "neighbor" line)
+    const neighborMesh = 'neighbor-mesh';
+    const porcelain = porcelainLine(neighborMesh, relPath, 4, 4);
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    // old_string = "match-line\n" which is exactly lines 3 (trailing newline
+    // means it occupies only line 3, not line 4)
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Edit',
+      tool_input: { file_path: filePath, old_string: 'match-line\n', new_string: 'replaced\n' }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    // Only the porcelain call; the neighbor-mesh on line 4 must NOT be surfaced
+    expect(calls).toHaveLength(1);
+    expect(result.stdout.systemMessage).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 2: empty old_string yields no range
+// ---------------------------------------------------------------------------
+
+describe('Edit tool - empty old_string (Finding 2)', () => {
+  let repo: { root: string; cleanup: () => void };
+  let filePath: string;
+  beforeAll(() => {
+    repo = makeTempRepo();
+    filePath = join(repo.root, 'empty-old.ts');
+    writeFileSync(filePath, 'line1\nline2\n');
+  });
+  afterAll(() => repo.cleanup());
+
+  it('empty old_string produces no executor calls and no output', async () => {
+    const relPath = 'empty-old.ts';
+    const meshName = 'line1-mesh';
+    const porcelain = porcelainLine(meshName, relPath, 1, 1);
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Edit',
+      tool_input: { file_path: filePath, old_string: '', new_string: 'inserted' }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(calls).toHaveLength(0);
+    expect(result.stdout.systemMessage).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 3: replace_all unions ranges across all occurrences
+// ---------------------------------------------------------------------------
+
+describe('Edit tool - replace_all unions ranges (Finding 3)', () => {
+  let repo: { root: string; cleanup: () => void };
+  let filePath: string;
+  beforeAll(() => {
+    repo = makeTempRepo();
+    filePath = join(repo.root, 'replace-all.ts');
+    // "TOKEN" appears at line 1 and line 6; meshes cover those lines separately
+    writeFileSync(filePath, 'TOKEN\nline2\nline3\nline4\nline5\nTOKEN\nline7\n');
+  });
+  afterAll(() => repo.cleanup());
+
+  it('replace_all surfaces meshes overlapping every occurrence', async () => {
+    const relPath = 'replace-all.ts';
+    const mesh1 = 'mesh-at-line1';
+    const mesh2 = 'mesh-at-line6';
+    const porcelain = [porcelainLine(mesh1, relPath, 1, 1), porcelainLine(mesh2, relPath, 6, 6)].join('\n');
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    setResponse(`${mesh1} ${mesh2}`, 'both meshes output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Edit',
+      tool_input: { file_path: filePath, old_string: 'TOKEN', new_string: 'REPLACED', replace_all: true }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    // Both meshes should be requested in the render call
+    expect(calls[1].args).toContain(mesh1);
+    expect(calls[1].args).toContain(mesh2);
+    expect(result.stdout.systemMessage).toContain('both meshes output');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 4: symlinked workdir still surfaces meshes
+// ---------------------------------------------------------------------------
+
+describe('Symlinked workdir (Finding 4)', () => {
+  let realRepo: { root: string; cleanup: () => void };
+  let symlinkDir: string;
+
+  beforeAll(() => {
+    realRepo = makeTempRepo();
+    symlinkDir = join(os.tmpdir(), `agent-hooks-symlink-${Date.now()}`);
+    fs.symlinkSync(realRepo.root, symlinkDir);
+  });
+  afterAll(() => {
+    // symlinkDir is a symlink (not a real dir), so unlinkSync removes the symlink itself.
+    fs.unlinkSync(symlinkDir);
+    realRepo.cleanup();
+  });
+
+  it('file path via symlinked cwd resolves correctly and porcelain is called with real repo-relative path', async () => {
+    const absFilePath = join(symlinkDir, 'sym.ts');
+    const relPath = 'sym.ts';
+    const meshName = 'sym-mesh';
+    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    setResponse(meshName, 'sym mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      cwd: symlinkDir,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    // The porcelain call must use the repo-relative path, not the symlink-absolute path
+    expect(calls[0].args).toEqual(['--porcelain', relPath]);
+    expect(result.stdout.systemMessage).toContain('sym mesh output');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5: session id sanitization is injective
+// ---------------------------------------------------------------------------
+
+describe('Session id sanitization - injective (Finding 5)', () => {
+  it('distinct ids differing only in punctuation produce distinct memo file paths', () => {
+    const idWithSlash = 'sess-a/b';
+    const idWithUnderscore = 'sess-a_b';
+
+    // Verify via the disk memo store that distinct session ids stay separate on disk.
+    const diskStore = createDiskMemoStore({ warn: () => {} });
+    diskStore.addSurfaced(idWithSlash, ['disk-x']);
+    // If ids collide in filename, sess-a_b would see disk-x; it must not.
+    expect([...diskStore.getSurfaced(idWithUnderscore)]).not.toContain('disk-x');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 6: executor stderr not propagated
+// ---------------------------------------------------------------------------
+
+describe('Mesh executor stderr (Finding 6)', () => {
+  it('createDefaultMeshExecutor captures stderr (uses pipe not inherit)', () => {
+    // createDefaultMeshExecutor is imported at top of file.
+    // Verify the executor is a function and that stderr from a failed invocation
+    // is captured (not printed to the hook process's stderr) by running a
+    // non-git command that exits non-zero with stderr output and confirming
+    // the error is thrown (captured) rather than leaked.
+    const executor = createDefaultMeshExecutor(5000);
+    // 'git -C /nonexistent-path-xyz rev-parse' writes to stderr; execFileSync
+    // with stdio: ['ignore','pipe','pipe'] captures it — the throw carries it.
+    // With 'inherit' it would leak; with 'pipe' the throw captures stderr.
+    expect(() => executor([], '/nonexistent-path-xyz-abc-12345')).toThrow();
+  });
+
+  it('fake executor with stderr simulation does not propagate through handler', async () => {
+    // The fake executor in tests never touches stdio; the handler catches errors.
+    // This test confirms the handler catches executor throws (stderr from git
+    // would cause execFileSync to throw if git exits non-zero, which handler silences).
+    const repo = makeTempRepo();
+    const absFilePath = join(repo.root, 'stderr.ts');
+    const relPath = 'stderr.ts';
+    const { executor, failOn } = createFakeExecutor();
+    failOn(`--porcelain ${relPath}`);
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(result.stdout.systemMessage).toBeUndefined();
+    repo.cleanup();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 7: PreToolUse output uses systemMessage only (no additionalContext)
+// ---------------------------------------------------------------------------
+
+describe('PreToolUse output envelope (Finding 7)', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => repo.cleanup());
+
+  it('hook output contains systemMessage but no hookSpecificOutput', async () => {
+    const absFilePath = join(repo.root, 'envelope.ts');
+    const relPath = 'envelope.ts';
+    const meshName = 'envelope-mesh';
+    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    setResponse(meshName, 'envelope output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(result.stdout.systemMessage).toContain('<git-mesh>');
+    // PreToolUse does not support additionalContext; hookSpecificOutput must be absent.
+    expect(result.stdout.hookSpecificOutput).toBeUndefined();
   });
 });

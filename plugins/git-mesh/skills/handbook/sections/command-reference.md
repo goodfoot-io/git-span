@@ -131,4 +131,4 @@ A mesh name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a mesh name (so the bare `git mesh <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
 `delete`, `move`, `stale`, `fetch`, `push`, `doctor`, `log`, `config`, `list`,
-`help`, `pre-commit`, `advice`, `rewrite`, `hooks`.
+`help`, `pre-commit`, `rewrite`, `hooks`.

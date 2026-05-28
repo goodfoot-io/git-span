@@ -100,15 +100,11 @@ skimmability.
 
 ## Hook injections vs. CLI stale output
 
-The PostToolUse hook in `plugins/git-mesh/hooks.json` does **not** call
-`git mesh stale`. It calls `git mesh advice <sid> read|touch|flush`, whose
-render shape and marker set are different. See `./understanding-hook-output.md`
-for the advice render. Notable differences when reading text in
-`additionalContext` / `systemMessage`:
+The PreToolUse hook in `plugins/git-mesh/hooks.json` does **not** call
+`git mesh stale`. It calls `git mesh list <names…>` for meshes whose anchors
+overlap the tool's line range, wrapping the output in `<git-mesh>…</git-mesh>`
+and injecting it as a `systemMessage`. See `./understanding-hook-output.md`
+for the hook render format. Notable differences:
 
-- Header line: `<active-anchor> is in the <mesh> mesh with:` (advice) vs. per-mesh status header (`stale`).
-- Status clauses appear in **parentheses** in advice (`(CHANGED)`, `(MOVED)`, `(DELETED)`, `(CONFLICT)`, `(SUBMODULE)`, `(RENAMED)`); `stale` uses **square brackets** (`[CHANGED]`, `[MOVED]`) plus `FRESH` and `src=…` annotations that advice does not emit.
-- Advice may include an excerpt block of related anchor bytes and a one-line `git mesh …` next-step command; `stale` never does.
-
-If text in `additionalContext` carries `src=…`, something other than the
-standard hook produced it.
+- Hook output uses `<git-mesh>` XML tags; `stale` emits plain text per-mesh status headers.
+- `stale` uses bracket markers (`[CHANGED]`, `[MOVED]`) and `FRESH`/`src=…` annotations; the hook emits `git mesh list` human-readable output without those markers.

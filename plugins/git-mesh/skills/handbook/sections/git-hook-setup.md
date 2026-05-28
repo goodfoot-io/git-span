@@ -24,6 +24,5 @@ from these hooks (version bumping, build steps, doc validation, etc.). Never
 remove or rewrite such a hook on the assumption it exists for meshes — it does
 not, and `git mesh` neither installs nor depends on it.
 
-The only related automation is the optional Claude Code advice integration
-(PreToolUse / PostToolUse / SessionEnd), which is unrelated to git hooks — see
-`./understanding-hook-output.md` and `./using-advice.md`.
+The only related automation is the Claude Code mesh-overlap hook (PreToolUse),
+which surfaces intersecting mesh anchors inline — see `./understanding-hook-output.md`.

@@ -75,9 +75,12 @@ function byteOffsetToLine(text: string, byteOffset: number): number {
   return line;
 }
 
-/** Count lines in a string (at least 1). */
+/** Count lines in a string (at least 1). Trailing newline does not add an extra line. */
 function countLines(s: string): number {
-  const n = s.split('\n').length;
+  const newlines = (s.match(/\n/g) ?? []).length;
+  // A trailing newline ends the last line; it doesn't start an additional one.
+  const trailingNewline = s.length > 0 && s[s.length - 1] === '\n';
+  const n = newlines + (trailingNewline ? 0 : 1);
   return n < 1 ? 1 : n;
 }
 
@@ -104,11 +107,31 @@ function deriveEditRange(toolInput: ToolInput): LineRange | null {
   const filePath = toolInput.file_path;
   const oldString = toolInput.old_string;
   if (typeof filePath !== 'string' || typeof oldString !== 'string') return null;
+  // Empty old_string has no derivable range (indexOf('') === 0 would always hit line 1).
+  if (oldString === '') return null;
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf8');
   } catch {
     return null;
+  }
+  if (toolInput.replace_all === true) {
+    // Union all occurrence ranges when replace_all is set.
+    let union: LineRange | null = null;
+    let searchFrom = 0;
+    while (true) {
+      const idx = content.indexOf(oldString, searchFrom);
+      if (idx === -1) break;
+      const start = byteOffsetToLine(content, idx);
+      const end = start + countLines(oldString) - 1;
+      if (union === null) {
+        union = { start, end };
+      } else {
+        union = { start: Math.min(union.start, start), end: Math.max(union.end, end) };
+      }
+      searchFrom = idx + oldString.length;
+    }
+    return union;
   }
   const idx = content.indexOf(oldString);
   if (idx === -1) return null;
@@ -131,7 +154,8 @@ function deriveMultiEditRange(toolInput: ToolInput): LineRange | null {
   for (const edit of edits) {
     if (typeof edit !== 'object' || edit === null) continue;
     const oldString = (edit as Record<string, unknown>).old_string;
-    if (typeof oldString !== 'string') continue;
+    // Empty old_string has no derivable range; skip to avoid spurious line 1 hits.
+    if (typeof oldString !== 'string' || oldString === '') continue;
     const idx = content.indexOf(oldString);
     if (idx === -1) continue;
     const start = byteOffsetToLine(content, idx);
@@ -196,10 +220,27 @@ function deriveWriteRange(toolInput: ToolInput): LineRange | null {
   return { start: first + 1, end: tailExisting + 1 };
 }
 
+function canonicalizePath(absPath: string): string {
+  try {
+    return toPosix(fs.realpathSync.native(absPath));
+  } catch {
+    // File doesn't exist yet (e.g. Write to a new file): canonicalize the
+    // directory and rejoin the basename so symlinks in the parent are resolved.
+    try {
+      const dir = toPosix(fs.realpathSync.native(nodePath.dirname(absPath)));
+      return `${dir}/${nodePath.basename(absPath)}`;
+    } catch {
+      // Parent doesn't exist either; fall back to the un-canonicalized path.
+      return absPath;
+    }
+  }
+}
+
 function derivePath(toolInput: ToolInput, cwd: string): string | null {
   const fp = toolInput.file_path;
   if (typeof fp !== 'string' || fp.length === 0) return null;
-  return abspathAgainst(cwd, fp);
+  const abs = abspathAgainst(cwd, fp);
+  return canonicalizePath(abs);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +258,7 @@ export function createDefaultMeshExecutor(timeoutMs = 10_000): MeshExecutor {
     return execFileSync('git', ['mesh', 'list', ...args], {
       cwd,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'inherit'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: timeoutMs
     });
   };
@@ -234,8 +275,11 @@ export interface MemoStore {
 
 const MEMO_DIR = nodePath.join(os.tmpdir(), 'agent-hooks-git-mesh');
 
+/** Injective transform: percent-encode bytes outside [A-Za-z0-9._-] as %HH (uppercase hex). */
 function sanitizeSessionId(sessionId: string): string {
-  return sessionId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => {
+    return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
+  });
 }
 
 function memoFilePath(sessionId: string): string {
@@ -387,10 +431,8 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
     // Update memo
     memo.addSurfaced(sessionId, toSurface);
 
-    return preToolUseOutput({
-      systemMessage: wrapped,
-      hookSpecificOutput: { additionalContext: wrapped }
-    });
+    // PreToolUse does not support additionalContext in the SDK; use systemMessage only.
+    return preToolUseOutput({ systemMessage: wrapped });
   };
 }
 
