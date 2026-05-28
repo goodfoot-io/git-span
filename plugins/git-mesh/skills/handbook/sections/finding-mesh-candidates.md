@@ -1,41 +1,21 @@
----
-name: implicit-semantic-dependencies
-description: Identify pre-existing implicit semantic dependencies for use with `git mesh`
----
-
-# Implicit Semantic Dependencies
-
 An *implicit semantic dependency* is a load-bearing relationship between two
 files that the type system, test suite, and build graph do not enforce. When
 file A and file B must change together to remain correct, but nothing in the
 code mechanically links them, the contract lives in someone's head — and
 breaks silently when that person is not in the room.
 
-This skill mines git history to surface those pairs. It combines 13 signals
+This section mines git history to surface those pairs. It combines 13 signals
 (co-change, lagged co-change, defect propagation, churn correlation,
 cross-language symbol overlap, branch topology, reviewer overlap, and more)
 into a unified ranked shortlist. The pairs at the top are the strongest
 mesh candidates: real coupling that is currently invisible.
 
-## When to Use
-
-Trigger this skill when the user asks any of:
-
-- "What files secretly depend on each other in this repo?"
-- "Find implicit / hidden / latent dependencies"
-- "What are the mesh candidates here?"
-- "Which files change together but don't import each other?"
-- "Show me logical coupling / co-change analysis"
-- "Find load-bearing relationships not enforced by types"
-
-Also trigger proactively when planning a large refactor or onboarding to a
-new codebase — the shortlist is a map of where the contracts live.
-
 ## Scripts
 
-Three scripts live in `scripts/`. Run them in order: `mine.mjs` produces a
-JSON corpus, `shortlist.mjs` distills it into actionable pairs, `explain.mjs`
-drills into a single pair to verify the signal.
+Three scripts live in `../scripts/` (relative to this file). Run them in
+order: `mine.mjs` produces a JSON corpus, `shortlist.mjs` distills it into
+actionable pairs, `explain.mjs` drills into a single pair to verify the
+signal.
 
 ### `mine.mjs` — produce the JSON corpus
 
@@ -99,12 +79,13 @@ mesh candidate.
 
 ## End-to-End Workflow
 
-Identify implicit semantic dependencies in three passes:
+Identify implicit semantic dependencies in three passes. Paths below are
+relative to the handbook skill directory (`plugins/git-mesh/skills/handbook/`).
 
 **1. Mine.** From the repo root:
 
 ```bash
-node .claude/skills/implicit-semantic-dependencies/scripts/mine.mjs \
+node plugins/git-mesh/skills/handbook/scripts/mine.mjs \
   --since=6.months --top=25 --no-gh
 ```
 
@@ -115,7 +96,7 @@ for the next step.
 **2. Shortlist.** Distill to actionable candidates:
 
 ```bash
-node .claude/skills/implicit-semantic-dependencies/scripts/shortlist.mjs \
+node plugins/git-mesh/skills/handbook/scripts/shortlist.mjs \
   --min-techniques=2
 ```
 
@@ -125,7 +106,7 @@ exactly 2 techniques deserve a look — verify with explain.
 **3. Explain.** For each candidate worth pursuing:
 
 ```bash
-node .claude/skills/implicit-semantic-dependencies/scripts/explain.mjs \
+node plugins/git-mesh/skills/handbook/scripts/explain.mjs \
   packages/foo/src/Foo.ts packages/bar/src/Bar.ts
 ```
 
@@ -192,11 +173,11 @@ when planning a fix.
 
 ## Additional Resources
 
-- **`scripts/mine.mjs`** — the 13-technique mining engine. Self-contained;
+- **`../scripts/mine.mjs`** — the 13-technique mining engine. Self-contained;
   no dependencies beyond Node and git.
-- **`scripts/shortlist.mjs`** — JSON consumer; prints the actionable §0.
-- **`scripts/explain.mjs`** — per-pair commit listing.
-- **`references/techniques.md`** — deep dive on each of the 13 signals:
+- **`../scripts/shortlist.mjs`** — JSON consumer; prints the actionable §0.
+- **`../scripts/explain.mjs`** — per-pair commit listing.
+- **`../references/techniques.md`** — deep dive on each of the 13 signals:
   what they measure, when they are trustworthy, how to tune them, and how to
   read each section of the long report. Consult when output looks empty or
   when deciding whether to trust a particular signal.
