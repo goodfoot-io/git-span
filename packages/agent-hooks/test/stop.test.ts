@@ -3,8 +3,9 @@
  *
  * Uses real filesystem (tmp dir) and injected executor fakes — no vi.mock.
  *
- * The SDK wraps hook output: stopOutput({ systemMessage }) returns
- * { _type: 'Stop', stdout: { systemMessage } }. Tests access .stdout fields.
+ * The SDK wraps hook output: stopOutput({ decision, reason }) returns
+ * { _type: 'Stop', stdout: { decision, reason } }. A `null` handler return means
+ * "no output" and is normalised to an empty stdout. Tests access .stdout fields.
  */
 
 import * as fs from 'node:fs';
@@ -40,6 +41,8 @@ function makeCtx(): { logger: typeof logger } {
 type StopResult = { _type: string; stdout: Record<string, unknown> };
 
 function asResult(raw: unknown): StopResult {
+  // A `null` handler return means "no output"; normalise to empty stdout.
+  if (raw === null || raw === undefined) return { _type: 'Stop', stdout: {} };
   return raw as StopResult;
 }
 
@@ -116,7 +119,7 @@ describe('Stop hook: missing journal → silent exit', () => {
 
     const result = asResult(await handler(baseInput(sid) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.reason).toBeUndefined();
   });
 });
 
@@ -141,7 +144,7 @@ describe('Stop hook: empty journal → silent exit', () => {
     });
     const result = asResult(await handler(baseInput(sid) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.reason).toBeUndefined();
   });
 });
 
@@ -168,7 +171,7 @@ describe('Stop hook: empty status doc → silent exit, no systemMessage', () => 
     });
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.reason).toBeUndefined();
   });
 });
 
@@ -200,9 +203,10 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.systemMessage).toBeDefined();
-    expect(typeof result.stdout.systemMessage).toBe('string');
-    const msg = result.stdout.systemMessage as string;
+    expect(result.stdout.decision).toBe('block');
+    expect(result.stdout.reason).toBeDefined();
+    expect(typeof result.stdout.reason).toBe('string');
+    const msg = result.stdout.reason as string;
     expect(msg).toContain('git-mesh-status-');
 
     // Read the written doc
@@ -218,8 +222,8 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     const updated = readJournalRaw(sid);
     expect(updated[0].seen).toBe(true);
 
-    // Must not block
-    expect(result.stdout.decision).toBeUndefined();
+    // Blocks to surface the review prompt
+    expect(result.stdout.decision).toBe('block');
   });
 });
 
@@ -246,8 +250,9 @@ describe('Stop hook: uncovered write entry', () => {
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.systemMessage).toBeDefined();
-    const msg = result.stdout.systemMessage as string;
+    expect(result.stdout.decision).toBe('block');
+    expect(result.stdout.reason).toBeDefined();
+    const msg = result.stdout.reason as string;
     const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
     expect(docMatch).not.toBeNull();
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
@@ -291,7 +296,7 @@ describe('Stop hook: create entry → path-only filter line', () => {
     expect(filtersSeen[0]).toContain('src/new.ts');
     expect(filtersSeen[0]).not.toContain('#L');
 
-    const msg = result.stdout.systemMessage as string;
+    const msg = result.stdout.reason as string;
     const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
     expect(docMatch).not.toBeNull();
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
@@ -312,7 +317,7 @@ describe('Stop hook: create entry → path-only filter line', () => {
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const msg = result.stdout.systemMessage as string;
+    const msg = result.stdout.reason as string;
     const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
     expect(docMatch).not.toBeNull();
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
@@ -348,23 +353,23 @@ describe('Stop hook: idempotence', () => {
     });
 
     const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const docPath1 = (r1.stdout.systemMessage as string).match(/\/[^\s]+\.md/)![0];
+    const docPath1 = (r1.stdout.reason as string).match(/\/[^\s]+\.md/)![0];
     const doc1 = fs.readFileSync(docPath1, 'utf8');
 
     const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const docPath2 = (r2.stdout.systemMessage as string).match(/\/[^\s]+\.md/)![0];
+    const docPath2 = (r2.stdout.reason as string).match(/\/[^\s]+\.md/)![0];
     const doc2 = fs.readFileSync(docPath2, 'utf8');
 
     expect(doc1).toBe(doc2);
   });
 });
 
-describe('Stop hook: does not return decision: block', () => {
-  const sid = `stop-test-nodecision-${Date.now()}`;
+describe('Stop hook: blocks to surface the review, but breaks the stop loop', () => {
+  const sid = `stop-test-block-${Date.now()}`;
   let tmpRepo: string;
 
   beforeEach(() => {
-    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-nodec-'));
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-block-'));
     initGitRepo(tmpRepo);
     writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/x.ts', kind: 'write', seen: false, start: 1, end: 5 }]);
   });
@@ -374,17 +379,29 @@ describe('Stop hook: does not return decision: block', () => {
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('never sets decision to block even with stale meshes', async () => {
-    const stale: StaleExecutor = () => 'a-slug\tsrc/x.ts\t1-10\n';
-    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/x.ts#L1-L10\n\nDesc.\n`;
+  const stale: StaleExecutor = () => 'a-slug\tsrc/x.ts\t1-10\n';
+  const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/x.ts#L1-L10\n\nDesc.\n`;
 
+  it('sets decision to block with the review prompt in reason when meshes are stale', async () => {
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render
     });
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).not.toBe('block');
+    expect(result.stdout.decision).toBe('block');
+    expect(result.stdout.reason).toContain('git-mesh-status-');
+  });
+
+  it('allows the stop (returns no output) when stop_hook_active is already true', async () => {
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: render
+    });
+    const input = { ...baseInput(sid, tmpRepo), stop_hook_active: true };
+    const result = asResult(await handler(input as never, makeCtx() as never));
+    expect(result.stdout).toEqual({});
     expect(result.stdout.decision).toBeUndefined();
   });
 });
@@ -457,7 +474,7 @@ describe('Stop hook F2: multi-mesh section has exactly one --- between blocks', 
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const msg = result.stdout.systemMessage as string;
+    const msg = result.stdout.reason as string;
     const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
     expect(docMatch).not.toBeNull();
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
@@ -509,9 +526,10 @@ describe('Stop hook F3: cwd-absent input falls back to process.cwd()', () => {
     };
 
     const result = asResult(await handler(inputNoCwd as never, makeCtx() as never));
-    // process.cwd() should be a git repo, so we expect a systemMessage
-    expect(result.stdout.systemMessage).toBeDefined();
-    const msg = result.stdout.systemMessage as string;
+    // process.cwd() should be a git repo, so we expect a blocking review prompt
+    expect(result.stdout.decision).toBe('block');
+    expect(result.stdout.reason).toBeDefined();
+    const msg = result.stdout.reason as string;
     expect(msg).toContain('git-mesh-status-');
   });
 });
@@ -551,8 +569,9 @@ describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncov
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.systemMessage).toBeDefined();
-    const msg = result.stdout.systemMessage as string;
+    expect(result.stdout.decision).toBe('block');
+    expect(result.stdout.reason).toBeDefined();
+    const msg = result.stdout.reason as string;
     const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
     expect(docMatch).not.toBeNull();
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);

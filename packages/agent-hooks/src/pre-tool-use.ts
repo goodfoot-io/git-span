@@ -388,7 +388,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
 
     // Derive the file path
     const absPath = derivePath(toolInput, cwd);
-    if (!absPath) return preToolUseOutput({});
+    if (!absPath) return null;
 
     // Resolve repo root (needed for both overlap arm and journal)
     const absDir = toPosix(nodePath.dirname(absPath));
@@ -403,7 +403,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       }
     }
 
-    if (!repoRoot) return preToolUseOutput({});
+    if (!repoRoot) return null;
 
     const repoRelPath = relativeToRepo(repoRoot, absPath);
 
@@ -419,7 +419,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       range = deriveWriteRange(toolInput);
     }
 
-    if (!range) return preToolUseOutput({});
+    if (!range) return null;
 
     // Filter pass: git mesh list <path> --porcelain
     let porcelainStdout: string;
@@ -427,7 +427,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       porcelainStdout = executor(['--porcelain', repoRelPath], repoRoot);
     } catch (err) {
       ctx.logger.warn('git mesh list --porcelain failed', { err });
-      return preToolUseOutput({});
+      return null;
     }
 
     const rows: PorcelainRow[] = parsePorcelain(porcelainStdout);
@@ -439,12 +439,12 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       candidateNames.add(row.name);
     }
 
-    if (candidateNames.size === 0) return preToolUseOutput({});
+    if (candidateNames.size === 0) return null;
 
     // Subtract already-surfaced names
     const surfaced = memo.getSurfaced(sessionId);
     const toSurface = [...candidateNames].filter((n) => !surfaced.has(n)).sort();
-    if (toSurface.length === 0) return preToolUseOutput({});
+    if (toSurface.length === 0) return null;
 
     // Render pass: git mesh list <name1> <name2> ...
     let renderStdout: string;
@@ -452,7 +452,7 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       renderStdout = executor(toSurface, repoRoot);
     } catch (err) {
       ctx.logger.warn('git mesh list (render) failed', { err });
-      return preToolUseOutput({});
+      return null;
     }
 
     const wrapped = `\n<git-mesh>\n${renderStdout}\n</git-mesh>\n`;
@@ -460,8 +460,15 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
     // Update memo
     memo.addSurfaced(sessionId, toSurface);
 
-    // PreToolUse does not support additionalContext in the SDK; use systemMessage only.
-    return preToolUseOutput({ systemMessage: wrapped });
+    // Surface the mesh block to the agent loop via `additionalContext` (the
+    // channel that actually reaches the model) and keep `systemMessage` for the
+    // user-facing UI line.
+    return preToolUseOutput({
+      hookSpecificOutput: {
+        additionalContext: wrapped
+      },
+      systemMessage: wrapped
+    });
   };
 }
 

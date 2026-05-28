@@ -104,6 +104,8 @@ interface HookResult {
 }
 
 function toHookResult(result: unknown): HookResult {
+  // A `null` handler return means "no output"; normalise to empty stdout.
+  if (result === null || result === undefined) return { _type: 'PreToolUse', stdout: {} };
   return result as HookResult;
 }
 
@@ -146,8 +148,8 @@ describe('Read tool', () => {
 
     expect(calls[0].args).toEqual(['--porcelain', relPath]);
     expect(calls[1].args).toEqual([meshName]);
-    // PreToolUse uses systemMessage only; additionalContext is not supported for this hook type.
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+    // The mesh block reaches the agent loop via additionalContext and the UI via systemMessage.
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('billing/checkout mesh output');
     expect(result.stdout.systemMessage).toContain('billing/checkout mesh output');
   });
 
@@ -730,7 +732,8 @@ describe('Mesh executor stderr (Finding 6)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Finding 7: PreToolUse output uses systemMessage only (no additionalContext)
+// Finding 7: PreToolUse output carries the mesh block in both additionalContext
+// (reaches the agent loop) and systemMessage (user-facing UI line).
 // ---------------------------------------------------------------------------
 
 describe('PreToolUse output envelope (Finding 7)', () => {
@@ -740,7 +743,7 @@ describe('PreToolUse output envelope (Finding 7)', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('hook output contains systemMessage but no hookSpecificOutput', async () => {
+  it('hook output carries the block in both additionalContext and systemMessage', async () => {
     const absFilePath = join(repo.root, 'envelope.ts');
     const relPath = 'envelope.ts';
     const meshName = 'envelope-mesh';
@@ -758,7 +761,6 @@ describe('PreToolUse output envelope (Finding 7)', () => {
     });
     const result = toHookResult(await handler(input as never, { logger }));
     expect(result.stdout.systemMessage).toContain('<git-mesh>');
-    // PreToolUse does not support additionalContext; hookSpecificOutput must be absent.
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-mesh>');
   });
 });

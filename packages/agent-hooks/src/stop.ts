@@ -1,10 +1,13 @@
 /**
  * Stop hook: reads the per-session touch journal, drives `git mesh stale
  * --porcelain --batch` and `git mesh list --porcelain --batch`, assembles a
- * status document, and emits a systemMessage instructing the main agent to
- * dispatch a background subagent for mesh review.
+ * status document, and returns `decision: 'block'` with a `reason` instructing
+ * the main agent to dispatch a background subagent for mesh review.
  *
- * The hook NEVER returns `decision: 'block'` — session end must always complete.
+ * Stop hooks cannot return `additionalContext`, so `decision: 'block'` + `reason`
+ * is the only channel that reaches the agent loop. The block keeps the session
+ * alive long enough for the agent to act; the `stop_hook_active` guard at the top
+ * of the handler allows the subsequent stop so the session can actually end.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -230,9 +233,17 @@ export function createStopHandler(deps: StopHandlerDeps) {
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
 
+    // Step 0: Break the stop loop. We surface the review by returning
+    // `decision: 'block'`, which forces the agent to keep going. When the agent
+    // then tries to stop again this hook re-fires with `stop_hook_active = true`;
+    // because the stale section persists across runs, blocking again would loop
+    // indefinitely. Allow the stop in that case.
+    const stopHookActive = (input as unknown as Record<string, unknown>).stop_hook_active;
+    if (stopHookActive === true) return null;
+
     // Step 1: Load journal
     const entries = loadJournal(sessionId);
-    if (!entries) return stopOutput({});
+    if (!entries) return null;
 
     // Step 2: Resolve repo root.
     // Primary: input.cwd (present in most Stop events).
@@ -255,13 +266,13 @@ export function createStopHandler(deps: StopHandlerDeps) {
         if (repoRoot) break;
       }
     }
-    if (!repoRoot) return stopOutput({});
+    if (!repoRoot) return null;
 
     const finalRepoRoot = repoRoot;
 
     // Step 3: Build TOUCHED_ANCHORS
     const anchorSpecs = buildAnchorSpecs(entries);
-    if (anchorSpecs.length === 0) return stopOutput({});
+    if (anchorSpecs.length === 0) return null;
     const touchedFilterText = anchorSpecsToFilterText(anchorSpecs);
 
     // Step 4: Stale pass
@@ -366,7 +377,7 @@ export function createStopHandler(deps: StopHandlerDeps) {
       sections.push(`# Related meshes\n\n${relatedRenders.join('\n\n---\n\n')}`);
     }
 
-    if (sections.length === 0) return stopOutput({});
+    if (sections.length === 0) return null;
 
     const doc = sections.join('\n\n');
 
@@ -376,15 +387,18 @@ export function createStopHandler(deps: StopHandlerDeps) {
       fs.writeFileSync(docPath, doc, 'utf8');
     } catch (err) {
       ctx.logger.warn('failed to write status doc', { err });
-      return stopOutput({});
+      return null;
     }
 
     // Step 8: Rewrite journal with updated seen flags
     writeJournal(sessionId, entries, ctx.logger);
 
-    // Step 9: Emit systemMessage
-    const systemMessage = buildSystemMessage(docPath);
-    return stopOutput({ systemMessage });
+    // Step 9: Block the stop and surface the dispatch instructions in `reason`.
+    // Stop hooks cannot return `additionalContext`; the only channel that reaches
+    // the agent loop is `decision: 'block'` with a `reason`. The hook is otherwise
+    // idempotent, so re-running after the agent acts produces the same block.
+    const reason = buildSystemMessage(docPath);
+    return stopOutput({ decision: 'block', reason });
   };
 }
 
