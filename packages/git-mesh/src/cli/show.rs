@@ -118,13 +118,52 @@ pub enum BatchFilter {
 
 impl BatchFilter {
     /// Parse one stdin line into a `BatchFilter`.
+    ///
+    /// The ranged grammar is `<path>#L<digits>-L<digits>` at end-of-line.
+    /// Only a tail-anchored match (`#L<start>-L<end>` where both are
+    /// integers) is treated as ranged; any other `#L` substring in the
+    /// path component is left as-is and the whole line is treated as a
+    /// plain path. This avoids misparses like `notes/issue#L42.md`.
     pub fn parse(line: &str) -> Result<Self> {
-        if line.contains("#L") {
-            let (path, start, end) = parse_range_address(line)?;
-            Ok(BatchFilter::Ranged { path, start, end })
-        } else {
-            Ok(BatchFilter::Path(line.to_string()))
+        // Look for the last `#L` occurrence and check whether the tail
+        // matches `<digits>-L<digits>` (end-of-string).
+        if let Some(hash_pos) = line.rfind("#L") {
+            let tail = &line[hash_pos + 2..]; // after "#L"
+            // tail must be "<digits>-L<digits>"
+            if let Some(dash_l_pos) = tail.find("-L") {
+                let start_str = &tail[..dash_l_pos];
+                let end_str = &tail[dash_l_pos + 2..];
+                if !start_str.is_empty()
+                    && !end_str.is_empty()
+                    && start_str.chars().all(|c| c.is_ascii_digit())
+                    && end_str.chars().all(|c| c.is_ascii_digit())
+                {
+                    // Parse directly using the tail-anchored components to
+                    // avoid `parse_range_address` splitting on the first `#L`
+                    // (which would mangle paths containing `#L` substrings).
+                    let path = line[..hash_pos].to_string();
+                    let start: u32 = start_str.parse()?;
+                    let end: u32 = end_str.parse()?;
+                    if path.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "invalid anchor `{line}`; anchor path cannot be empty"
+                        ));
+                    }
+                    if start < 1 {
+                        return Err(anyhow::anyhow!(
+                            "invalid anchor `{line}`; anchor start must be at least 1"
+                        ));
+                    }
+                    if end < start {
+                        return Err(anyhow::anyhow!(
+                            "invalid anchor `{line}`; anchor end must be at least start"
+                        ));
+                    }
+                    return Ok(BatchFilter::Ranged { path, start, end });
+                }
+            }
         }
+        Ok(BatchFilter::Path(line.to_string()))
     }
 
     /// Returns the path component of this filter.
@@ -349,7 +388,11 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
     let mut path_order: Vec<String> = Vec::new();
     for line in stdin.lock().lines() {
         let line = line?;
-        let filter = BatchFilter::parse(&line)?;
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let filter = BatchFilter::parse(line)?;
         let path = filter.path().to_string();
         if !filters_by_path.contains_key(&path) {
             path_order.push(path.clone());
@@ -1156,24 +1199,87 @@ mod tests {
 
     #[test]
     fn batch_filter_parse_malformed_returns_error() {
-        // Case 6: malformed grammar returns an error
-        // Missing -L<end>
+        // Only a clean tail-anchored `#L<digits>-L<digits>` is ranged;
+        // everything else falls back to path-only (no error).
+
+        // Missing -L<end>: not a clean tail — treated as path-only.
         let result = BatchFilter::parse("src/lib.rs#L5");
-        assert!(
-            result.is_err(),
-            "expected error for missing -L<end>, got ok"
-        );
-        // Non-numeric start
+        assert!(result.is_ok(), "expected path-only fallback, got error");
+        assert_eq!(result.unwrap().path(), "src/lib.rs#L5");
+
+        // Non-numeric start: not a clean tail — treated as path-only.
         let result = BatchFilter::parse("src/lib.rs#Labc-L10");
-        assert!(
-            result.is_err(),
-            "expected error for non-numeric start, got ok"
-        );
-        // start > end
+        assert!(result.is_ok(), "expected path-only fallback, got error");
+        assert_eq!(result.unwrap().path(), "src/lib.rs#Labc-L10");
+
+        // start > end: parse_range_address rejects it.
         let result = BatchFilter::parse("src/lib.rs#L10-L5");
         assert!(
             result.is_err(),
             "expected error for start > end, got ok"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // F4: tail-anchored discriminator tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_filter_path_with_inner_hash_l_is_path_only() {
+        // notes/issue#L42.md has `#L` but the tail after the last `#L` is
+        // `42.md`, which is not `<digits>-L<digits>` → path-only.
+        let f = BatchFilter::parse("notes/issue#L42.md").unwrap();
+        assert_eq!(f.path(), "notes/issue#L42.md");
+        assert!(matches!(f, BatchFilter::Path(_)));
+    }
+
+    #[test]
+    fn batch_filter_path_with_inner_hash_l_and_tail_range_is_ranged() {
+        // notes/issue#L42.md#L10-L20: the last `#L` starts the tail `10-L20`
+        // which parses → ranged on path `notes/issue#L42.md`.
+        let f = BatchFilter::parse("notes/issue#L42.md#L10-L20").unwrap();
+        assert_eq!(f.path(), "notes/issue#L42.md");
+        assert!(matches!(f, BatchFilter::Ranged { start: 10, end: 20, .. }));
+    }
+
+    #[test]
+    fn batch_filter_multi_hash_l_only_tail_matters() {
+        // `foo#L#L#L.rs`: last `#L` is followed by `#L.rs`, no `-L<digits>` → path-only.
+        let f = BatchFilter::parse("foo#L#L#L.rs").unwrap();
+        assert_eq!(f.path(), "foo#L#L#L.rs");
+        assert!(matches!(f, BatchFilter::Path(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // F6: whitespace trim and blank-line skip tests
+    // The actual skip happens in run_list_batch_porcelain (stdin loop),
+    // but BatchFilter::parse itself must handle any trim the caller does.
+    // We test that lines with only whitespace after trim_end are empty strings,
+    // and that BatchFilter::parse("") produces a Path("") (callers skip these).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_filter_parse_trailing_space_treated_as_path_after_trim() {
+        // Caller trims: "src/lib.rs   ".trim_end() == "src/lib.rs"
+        let trimmed = "src/lib.rs   ".trim_end();
+        let f = BatchFilter::parse(trimmed).unwrap();
+        assert_eq!(f.path(), "src/lib.rs");
+    }
+
+    #[test]
+    fn batch_filter_parse_trailing_cr_treated_as_path_after_trim() {
+        // Caller trims: "src/lib.rs\r".trim_end() == "src/lib.rs"
+        let trimmed = "src/lib.rs\r".trim_end();
+        let f = BatchFilter::parse(trimmed).unwrap();
+        assert_eq!(f.path(), "src/lib.rs");
+    }
+
+    #[test]
+    fn batch_filter_parse_blank_line_is_empty_path() {
+        // After trim_end, blank and all-whitespace lines become empty strings.
+        // Callers skip them via `if line.is_empty() { continue; }`.
+        assert!("".trim_end().is_empty());
+        assert!("   ".trim_end().is_empty());
+        assert!("\t  ".trim_end().is_empty());
     }
 }

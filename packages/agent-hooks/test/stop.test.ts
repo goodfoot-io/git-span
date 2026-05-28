@@ -64,7 +64,7 @@ function baseInput(sessionId: string, cwd = '/tmp'): Record<string, unknown> {
 function writeJournalRaw(sessionId: string, entries: JournalEntry[]): void {
   const dir = nodePath.dirname(journalPath(sessionId));
   fs.mkdirSync(dir, { recursive: true });
-  const content = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  const content = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
   fs.writeFileSync(journalPath(sessionId), content, 'utf8');
 }
 
@@ -187,13 +187,15 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('produces a # Stale meshes section and marks entries seen', async () => {
+  it('produces a # Stale meshes section; entry seen only when write-coverage pass covers it', async () => {
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    // Write-coverage pass also covers the write range — marks entry seen
+    const listBatch: ListBatchExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
 
     const handler = createStopHandler({
       staleExecutor: stale,
-      listBatchExecutor: noopListBatch,
+      listBatchExecutor: listBatch,
       listRenderExecutor: render
     });
 
@@ -209,9 +211,10 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
     const doc = fs.readFileSync(docPath, 'utf8');
     expect(doc).toContain('# Stale meshes');
+    // Write is covered by a current mesh via write-coverage pass → not uncovered
     expect(doc).not.toContain('# Uncovered writes');
 
-    // Journal entries should be marked seen
+    // Journal entries should be marked seen (by write-coverage pass, not stale pass)
     const updated = readJournalRaw(sid);
     expect(updated[0].seen).toBe(true);
 
@@ -413,6 +416,151 @@ describe('Stop hook: buildAnchorSpecs unions ranges per (kind, path)', () => {
     const specs = buildAnchorSpecs(entries);
     expect(specs[0].path).toBe('src/b.ts');
     expect(specs[1].path).toBe('src/a.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F2: Duplicate --- separators in multi-mesh sections
+// ---------------------------------------------------------------------------
+
+describe('Stop hook F2: multi-mesh section has exactly one --- between blocks', () => {
+  const sid = `stop-test-f2-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-f2-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/a.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/b.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('produces exactly one --- between mesh blocks in # Stale meshes', async () => {
+    // Simulate Rust render_blocks output: two blocks with trailing --- on first block
+    const stale: StaleExecutor = () => 'mesh-a\tsrc/a.ts\t1-10\nmesh-b\tsrc/b.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => {
+      // Simulate what Rust render_blocks emits: blocks separated by \n---\n
+      const blocks = slugs.map((s) => `## ${s}\n- Details for ${s}.`);
+      return blocks.join('\n\n---\n\n');
+    };
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: render
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    const msg = result.stdout.systemMessage as string;
+    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
+    expect(docMatch).not.toBeNull();
+    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
+    const doc = fs.readFileSync(docPath, 'utf8');
+
+    // Between mesh-a and mesh-b sections there should be exactly one ---
+    // A double separator would appear as "---\n\n---"
+    expect(doc).not.toMatch(/---[\s\n]+---/);
+    // Should still contain exactly one separator between the two blocks
+    const separatorCount = (doc.match(/^---$/gm) ?? []).length;
+    expect(separatorCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F3: Stop hook resolves repo root via process.cwd() when input.cwd absent
+// ---------------------------------------------------------------------------
+
+describe('Stop hook F3: cwd-absent input falls back to process.cwd()', () => {
+  const sid = `stop-test-f3-${Date.now()}`;
+
+  beforeEach(() => {
+    // Write journal with a relative path entry
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 5, end: 15 }]);
+  });
+  afterEach(() => {
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('produces a status doc when cwd is absent but process.cwd() is a git repo', async () => {
+    // process.cwd() in tests is the workspace root which is a git repo
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t1-20\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L20\n\nDesc.\n`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: render
+    });
+
+    // Input without cwd field
+    const inputNoCwd: Record<string, unknown> = {
+      hook_event_name: 'Stop' as const,
+      session_id: sid,
+      transcript_path: '/tmp/transcript.jsonl',
+      stop_reason: 'end_turn'
+      // no cwd
+    };
+
+    const result = asResult(await handler(inputNoCwd as never, makeCtx() as never));
+    // process.cwd() should be a git repo, so we expect a systemMessage
+    expect(result.stdout.systemMessage).toBeDefined();
+    const msg = result.stdout.systemMessage as string;
+    expect(msg).toContain('git-mesh-status-');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5: Write overlapping a drifted mesh still appears in # Uncovered writes
+// ---------------------------------------------------------------------------
+
+describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncovered writes', () => {
+  const sid = `stop-test-f5-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-f5-'));
+    initGitRepo(tmpRepo);
+    // A write at lines 10-20 in src/drift.ts
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/drift.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('appears in # Uncovered writes when stale overlaps but write-coverage returns nothing', async () => {
+    // Stale pass: the same range is drifted (stale hit) — proves drift, not coverage
+    const stale: StaleExecutor = () => 'drifted-mesh\tsrc/drift.ts\t5-25\n';
+    const staleRender: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/drift.ts#L5-L25\n\nDrifted.\n`;
+
+    // Write-coverage pass: no current mesh covers src/drift.ts L10-L20
+    const listBatch: ListBatchExecutor = () => '';
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: staleRender
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.systemMessage).toBeDefined();
+    const msg = result.stdout.systemMessage as string;
+    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
+    expect(docMatch).not.toBeNull();
+    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
+    const doc = fs.readFileSync(docPath, 'utf8');
+
+    // The write should appear in Uncovered writes, NOT be silently absorbed by the stale pass
+    expect(doc).toContain('# Uncovered writes');
+    expect(doc).toContain('src/drift.ts');
   });
 });
 

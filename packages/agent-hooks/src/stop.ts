@@ -82,7 +82,7 @@ export function writeJournal(
   const path = journalPath(sessionId);
   const tmpPath = `${path}.tmp`;
   try {
-    const content = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    const content = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
     fs.writeFileSync(tmpPath, content, 'utf8');
     fs.renameSync(tmpPath, path);
   } catch (err) {
@@ -148,7 +148,7 @@ export function buildAnchorSpecs(entries: JournalEntry[]): AnchorSpec[] {
  * Format anchor specs to filter lines for `--batch` stdin.
  */
 export function anchorSpecsToFilterText(specs: AnchorSpec[]): string {
-  return specs.map((s) => formatAnchor(s.path, s.kind, s.range)).join('\n') + '\n';
+  return `${specs.map((s) => formatAnchor(s.path, s.kind, s.range)).join('\n')}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,23 +234,24 @@ export function createStopHandler(deps: StopHandlerDeps) {
     const entries = loadJournal(sessionId);
     if (!entries) return stopOutput({});
 
-    // Step 2: Resolve repo root from journal entries
+    // Step 2: Resolve repo root.
+    // Primary: input.cwd (present in most Stop events).
+    // Fallback 1: process.cwd() (the hook process's own working directory).
+    // Fallback 2: for each journal entry, resolve the entry path relative to
+    //   process.cwd() and try that directory — useful when the hook is invoked
+    //   from outside the repo but the journal paths hint at file locations.
     let repoRoot: string | null = null;
-    for (const e of entries) {
-      // paths are repo-relative, so we need to try known cwd from the hook's perspective.
-      // We try resolving each entry by using its absolute path's directory.
-      // Journal paths are repo-relative, so try from homedir-adjacent absolute guesses.
-      // The entry path may be relative — try resolving relative to known dirs.
-      // Best approach: use git rev-parse from the CWD of the stop hook input.
-      const cwd = (input as unknown as Record<string, unknown>).cwd;
-      if (typeof cwd === 'string' && cwd.length > 0) {
-        repoRoot = resolveRepoRoot(cwd);
-        if (repoRoot) break;
-      }
-      // Fallback: try the path as absolute
-      const absGuess = nodePath.isAbsolute(e.path) ? nodePath.dirname(e.path) : null;
-      if (absGuess) {
-        repoRoot = resolveRepoRoot(absGuess);
+    const cwdField = (input as unknown as Record<string, unknown>).cwd;
+    if (typeof cwdField === 'string' && cwdField.length > 0) {
+      repoRoot = resolveRepoRoot(cwdField);
+    }
+    if (!repoRoot) {
+      repoRoot = resolveRepoRoot(process.cwd());
+    }
+    if (!repoRoot) {
+      for (const e of entries) {
+        const candidate = nodePath.resolve(process.cwd(), nodePath.dirname(e.path));
+        repoRoot = resolveRepoRoot(candidate);
         if (repoRoot) break;
       }
     }
@@ -277,15 +278,6 @@ export function createStopHandler(deps: StopHandlerDeps) {
       const staleRows = parsePorcelain(stalePorcelain);
       const staleSlugs = [...new Set(staleRows.map((r) => r.name))];
 
-      // Mark journal entries seen for stale-feeding anchors
-      for (const row of staleRows) {
-        for (const e of entries) {
-          if (!e.seen && rowFeedsEntry(row.path, row.start, row.end, e)) {
-            e.seen = true;
-          }
-        }
-      }
-
       // Render stale slugs
       if (staleSlugs.length > 0) {
         try {
@@ -299,7 +291,9 @@ export function createStopHandler(deps: StopHandlerDeps) {
       }
     }
 
-    // Step 5: Write-coverage pass (unseen write/create entries)
+    // Step 5: Write-coverage pass — all unseen write/create entries, regardless of stale surfacing.
+    // `seen` means "a current mesh anchor covers this entry's range." Stale-surfaced entries are
+    // NOT pre-marked seen; they may still be uncovered by any current mesh.
     const unseenWriteEntries = entries.filter((e) => !e.seen && (e.kind === 'write' || e.kind === 'create'));
 
     const relatedRenders: string[] = [];
@@ -309,7 +303,7 @@ export function createStopHandler(deps: StopHandlerDeps) {
       // Build filter specs for write-coverage pass
       const writeSpecs = buildAnchorSpecs(unseenWriteEntries);
       const writeFilterLines = writeSpecs.map((s) => formatAnchor(s.path, s.kind, s.range));
-      const writeFilterText = writeFilterLines.join('\n') + '\n';
+      const writeFilterText = `${writeFilterLines.join('\n')}\n`;
 
       let listPorcelain: string;
       try {
@@ -333,6 +327,16 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
       const relatedSlugs = [...new Set(listRows.map((r) => r.name))];
 
+      // Mark journal entries seen when a current mesh anchor covers their range.
+      // This is the authoritative definition of "covered" for persistence purposes.
+      for (const row of listRows) {
+        for (const e of unseenWriteEntries) {
+          if (!e.seen && rowFeedsEntry(row.path, row.start, row.end, e)) {
+            e.seen = true;
+          }
+        }
+      }
+
       for (const filterLine of writeFilterLines) {
         if (!coveredFilterLines.has(filterLine)) {
           uncoveredLines.push(filterLine);
@@ -353,13 +357,13 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // Step 6: Assemble status doc
     const sections: string[] = [];
     if (staleRenders.length > 0) {
-      sections.push('# Stale meshes\n\n' + staleRenders.join('\n\n---\n\n'));
+      sections.push(`# Stale meshes\n\n${staleRenders.join('\n\n---\n\n')}`);
     }
     if (uncoveredLines.length > 0) {
-      sections.push('# Uncovered writes\n\n' + uncoveredLines.map((l) => `- ${l}`).join('\n'));
+      sections.push(`# Uncovered writes\n\n${uncoveredLines.map((l) => `- ${l}`).join('\n')}`);
     }
     if (relatedRenders.length > 0) {
-      sections.push('# Related meshes\n\n' + relatedRenders.join('\n\n---\n\n'));
+      sections.push(`# Related meshes\n\n${relatedRenders.join('\n\n---\n\n')}`);
     }
 
     if (sections.length === 0) return stopOutput({});
@@ -425,21 +429,25 @@ function filterLineMatchesRow(spec: FilterSpec, rowPath: string, rowStart: numbe
 /**
  * Split git mesh list output into per-slug blocks.
  * Blocks are separated by blank lines; each block starts with ##.
+ * Strips trailing `---` separators emitted by upstream Rust render_blocks so
+ * the caller can re-join with its own single separator without doubling.
  */
 function splitMeshBlocks(rendered: string, expectedCount: number): string[] {
-  if (expectedCount <= 1) return [rendered.trim()].filter(Boolean);
+  const stripTrailingSep = (block: string): string => block.replace(/\n+---\s*$/, '').trimEnd();
+
+  if (expectedCount <= 1) return [stripTrailingSep(rendered.trim())].filter(Boolean);
   // Split on double newlines that precede a ## heading
   const blocks: string[] = [];
   let current = '';
   for (const line of rendered.split('\n')) {
     if (line.startsWith('## ') && current.trim()) {
-      blocks.push(current.trim());
-      current = line + '\n';
+      blocks.push(stripTrailingSep(current.trim()));
+      current = `${line}\n`;
     } else {
-      current += line + '\n';
+      current += `${line}\n`;
     }
   }
-  if (current.trim()) blocks.push(current.trim());
+  if (current.trim()) blocks.push(stripTrailingSep(current.trim()));
   return blocks;
 }
 
