@@ -2,7 +2,7 @@
 
 ## The `<git-mesh>` block
 
-When the agent reads or edits a partial line range that overlaps an existing line-ranged anchor, the `PreToolUse` hook injects a `<git-mesh>` block into both `additionalContext` and `systemMessage`:
+When the agent reads or edits a partial line range that overlaps an existing line-ranged anchor, the `PreToolUse` hook injects a `<git-mesh>` block as the hook response's `systemMessage`:
 
 ```
 <git-mesh>
