@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/stop.de20e457.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.de20e457.mjs",
             "timeout": 30000
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/bin/pre-tool-use.d03ca801.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.d03ca801.mjs",
             "timeout": 10000
           }
         ],
@@ -29,6 +29,6 @@
       "stop.de20e457.mjs",
       "pre-tool-use.d03ca801.mjs"
     ],
-    "timestamp": "2026-05-28T18:21:26.039Z"
+    "timestamp": "2026-05-28T19:01:13.044Z"
   }
 }

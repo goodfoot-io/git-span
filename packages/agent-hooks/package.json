@@ -3,7 +3,7 @@
   "version": "1.0.90",
   "type": "module",
   "scripts": {
-    "build": "claude-code-hooks -i \"src/**/*.ts\" -o \"../../plugins/git-mesh/hooks.json\"",
+    "build": "claude-code-hooks -i \"src/**/*.ts\" -o \"../../plugins/git-mesh/hooks/hooks.json\"",
     "test": "vitest run",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
