@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/stop.15bd4a93.mjs",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -15,8 +26,9 @@
   },
   "__generated": {
     "files": [
+      "stop.15bd4a93.mjs",
       "pre-tool-use.2ba4a1e3.mjs"
     ],
-    "timestamp": "2026-05-28T17:33:13.296Z"
+    "timestamp": "2026-05-28T17:46:11.497Z"
   }
 }
