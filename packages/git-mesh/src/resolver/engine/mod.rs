@@ -634,6 +634,10 @@ pub(crate) fn resolve_named_meshes(
         "session.reverse-index-build-ms",
         state.session.reverse_index_build_ms,
     );
+    crate::perf::counter(
+        "session.relocation-candidate-reads",
+        state.session.relocation_candidate_reads,
+    );
     crate::resolver::timeline::emit_counters();
     emit_timeline_cache_counters(&state.session);
     crate::resolver::linemap::emit_counters();
@@ -705,6 +709,10 @@ fn stale_meshes_inner(
     crate::perf::counter(
         "session.reverse-index-build-ms",
         state.session.reverse_index_build_ms,
+    );
+    crate::perf::counter(
+        "session.relocation-candidate-reads",
+        state.session.relocation_candidate_reads,
     );
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter(

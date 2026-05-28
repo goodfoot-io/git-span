@@ -163,6 +163,7 @@ fn find_relocated_range_in_paths(
                 _ => continue,
             }
         }
+        state.session.relocation_candidate_reads += 1;
         let text: String = match deepest {
             DriftSource::Worktree => match std::fs::read(workdir.join(&en.path)) {
                 Ok(b) => string_from_utf8_lossy(&b),

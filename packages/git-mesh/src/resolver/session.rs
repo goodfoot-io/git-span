@@ -298,6 +298,15 @@ pub(crate) struct ResolveSession {
     pub(crate) timeline_cache_misses: u64,
     /// Phase 1: shared path-byte interner used while building timelines.
     pub(crate) timeline_paths: PathInterner,
+    /// Counter: candidate-path content reads performed inside the
+    /// file-backed cross-path relocation scan
+    /// (`find_relocated_range_in_paths`). Without amortization this counts
+    /// every per-anchor read of every scanned candidate path — i.e. roughly
+    /// `O(drifted_absent_anchors × tracked_paths)` on a repo where many
+    /// anchored paths were committed-renamed. With per-session memoization,
+    /// it collapses to the number of distinct `(path, layer)` pairs actually
+    /// read, regardless of anchor count.
+    pub(crate) relocation_candidate_reads: u64,
 }
 
 impl ResolveSession {
@@ -336,6 +345,7 @@ impl ResolveSession {
             timeline_cache_hits: 0,
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
+            relocation_candidate_reads: 0,
         }
     }
 
@@ -854,6 +864,7 @@ mod tests {
             timeline_cache_hits: 0,
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
+            relocation_candidate_reads: 0,
         };
 
         let total = session.anchors_total();
@@ -902,6 +913,7 @@ mod tests {
             timeline_cache_hits: 0,
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
+            relocation_candidate_reads: 0,
         };
 
         let total = session.anchors_total();
