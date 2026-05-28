@@ -435,7 +435,7 @@ pub enum Scope {
 /// Layer that produced drift for a `Finding`. There is no `StagedMesh`
 /// variant: staged-mesh-layer disagreement rides on `PendingFinding::drift`
 /// (see plan §"Key types" comment).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriftSource {
     Head,
     Index,

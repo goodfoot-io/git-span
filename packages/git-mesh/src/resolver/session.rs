@@ -307,6 +307,16 @@ pub(crate) struct ResolveSession {
     /// it collapses to the number of distinct `(path, layer)` pairs actually
     /// read, regardless of anchor count.
     pub(crate) relocation_candidate_reads: u64,
+    /// Session-scoped memo for candidate-path texts read during the file-backed
+    /// cross-path relocation scan. Keyed by `(path, layer)` — the same path at
+    /// different layers (worktree vs index vs HEAD blob) may have different
+    /// contents within a single resolve run, but for any one layer the content
+    /// is constant and the read can be shared across every anchor that scans it.
+    /// `None` value means the read was attempted and failed (e.g. worktree
+    /// `fs::read` error); subsequent lookups for that key short-circuit without
+    /// retrying. Only counts toward `relocation_candidate_reads` on memo miss.
+    pub(crate) relocation_text_memo:
+        HashMap<(String, crate::types::DriftSource), Option<String>>,
 }
 
 impl ResolveSession {
@@ -346,6 +356,7 @@ impl ResolveSession {
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
+            relocation_text_memo: HashMap::new(),
         }
     }
 
@@ -865,6 +876,7 @@ mod tests {
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
+            relocation_text_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();
@@ -914,6 +926,7 @@ mod tests {
             timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
+            relocation_text_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();

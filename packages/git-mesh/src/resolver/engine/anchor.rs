@@ -163,14 +163,33 @@ fn find_relocated_range_in_paths(
                 _ => continue,
             }
         }
-        state.session.relocation_candidate_reads += 1;
-        let text: String = match deepest {
-            DriftSource::Worktree => match std::fs::read(workdir.join(&en.path)) {
-                Ok(b) => string_from_utf8_lossy(&b),
-                Err(_) => continue,
-            },
-            DriftSource::Index | DriftSource::Head => {
-                read_blob_text(repo, &en.oid.to_string())
+        // Session-scoped memo: the same `(path, layer)` is rescanned by
+        // every drifted-absent anchor in the run, so without amortization
+        // the read cost is `O(anchors × candidates)`. The memo collapses
+        // each `(path, layer)` to a single read; `relocation_candidate_reads`
+        // counts only memo misses.
+        let memo_key = (en.path.clone(), deepest);
+        let text: String = match state.session.relocation_text_memo.get(&memo_key) {
+            Some(Some(t)) => t.clone(),
+            Some(None) => continue, // previously unreadable
+            None => {
+                state.session.relocation_candidate_reads += 1;
+                let read: Option<String> = match deepest {
+                    DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
+                        .ok()
+                        .map(|b| string_from_utf8_lossy(&b)),
+                    DriftSource::Index | DriftSource::Head => {
+                        Some(read_blob_text(repo, &en.oid.to_string()))
+                    }
+                };
+                state
+                    .session
+                    .relocation_text_memo
+                    .insert(memo_key, read.clone());
+                match read {
+                    Some(t) => t,
+                    None => continue,
+                }
             }
         };
         if let Some((s, e)) = find_relocated_range(&text, span, stored_hash, 1) {
