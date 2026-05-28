@@ -7,6 +7,7 @@ description: Use with `git mesh` or meshes.
 - **`git mesh stale` output shows mesh anchors with `[CHANGED]`, `[MOVED]`, `FRESH`, `(ack)`, or `src=…` and the markers need interpreting**: Read `./sections/reading-stale-output.md`
 - **A mesh anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config / `move` / `delete` is in play**: Read `./sections/responding-to-drift.md`
 - **A new relationship needs a mesh, or a mesh needs a name, why, anchor shape, or commit sequence**: Read `./sections/creating-a-mesh.md`
+- **Candidates for a new mesh need discovering by mining git history for implicit semantic dependencies (co-change, SZZ, churn, lagged change, reviewer overlap, etc.)**: Read `./sections/finding-mesh-candidates.md`
 - **An advice session needs interpreting; `git mesh advice <id> mark|diff|flush|read|touch|end` is in play; or session state seems stale or absent**: Read `./sections/using-advice.md`
 - **A finding is `DELETED`, `MERGE_CONFLICT`, or `SUBMODULE`**: Read `./sections/terminal-statuses.md`
 - **A finding is `CONTENT_UNAVAILABLE(...)`, or the failure involves LFS, partial clone, or sparse checkout**: Read `./sections/content-unavailable.md`
