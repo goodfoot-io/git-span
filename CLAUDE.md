@@ -71,6 +71,8 @@ Lint and typecheck the entire project frequently — these operations are cheap.
 Run validation from the package directory containing the changed files, using that package's scripts from `package.json` (e.g., `yarn lint`, `yarn typecheck`, `yarn test`).
 
 Run `yarn validate` from the workspace root for final validations — it typechecks, lints, tests, and builds all packages. The script merges stderr into stdout, prints `Exit code: N` at the end, and writes everything to `./yarn-validate-output.log`. **Run only `yarn validate` — do not add `2>&1`, `echo $?`, or any other wrapper.** Exit code 0 means all checks passed.
+
+If a new feature was added to the `git-mesh` CLI, build the latest version and use the `Bash` tool to perform smoke tests around the new feature.
 </validation>
 
 <git-mesh>
