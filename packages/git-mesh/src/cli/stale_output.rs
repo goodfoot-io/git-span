@@ -340,6 +340,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         let _perf = crate::perf::span("stale.resolve-args");
         let mut mesh_names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        // Names resolved via the path index (step 2) rather than a direct
+        // mesh-name match (step 1). Only these are eligible for the
+        // clean-mesh machine-format filter below; an explicitly named mesh
+        // is never in this set, so it always renders.
+        let mut path_resolved_names: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
         let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
@@ -379,6 +384,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 };
                 for name in names {
                     if seen.insert(name.clone()) {
+                        path_resolved_names.insert(name.clone());
                         mesh_names.push(name);
                     }
                     found = true;
@@ -457,6 +463,28 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     });
                 }
             }
+        }
+
+        // Machine formats mirror the full-scan visibility contract: clean
+        // meshes are filtered out. main-84 made the Human view list every
+        // committed mesh (clean ones included), so Human keeps clean
+        // path-resolved meshes here; only the machine renderers drop them. A
+        // path-index match merely associates a mesh with the requested file
+        // — if none of its anchors drifted and it has no pending entries, it
+        // is clean and must not surface in JSON/porcelain, where
+        // `render_json` names `meshes.first()`. Direct mesh-name matches
+        // (step 1) are never in `path_resolved_names`, so an explicitly
+        // requested mesh always renders. Conflict-injected meshes are added
+        // after this block and carry a `MergeConflict` anchor, so they are
+        // unaffected.
+        if !matches!(args.format, StaleFormat::Human) {
+            meshes.retain(|m| {
+                if !path_resolved_names.contains(&m.name) {
+                    return true;
+                }
+                m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
+                    || !m.pending.is_empty()
+            });
         }
 
         meshes
