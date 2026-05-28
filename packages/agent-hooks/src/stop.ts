@@ -236,8 +236,8 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // Step 0: Break the stop loop. We surface the review by returning
     // `decision: 'block'`, which forces the agent to keep going. When the agent
     // then tries to stop again this hook re-fires with `stop_hook_active = true`;
-    // because the stale section persists across runs, blocking again would loop
-    // indefinitely. Allow the stop in that case.
+    // allow that stop outright. (Reported entries are also marked seen below, so
+    // a re-fire would assemble no sections anyway — this is the explicit guard.)
     const stopHookActive = (input as unknown as Record<string, unknown>).stop_hook_active;
     if (stopHookActive === true) return null;
 
@@ -270,10 +270,21 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     const finalRepoRoot = repoRoot;
 
-    // Step 3: Build TOUCHED_ANCHORS
-    const anchorSpecs = buildAnchorSpecs(entries);
+    // Step 3: Build TOUCHED_ANCHORS from entries not yet reported.
+    // `seen` means "already surfaced in a status doc this session." Entries that
+    // fed an emitted section are marked seen in Step 6 and excluded here, so a
+    // later Stop with no new touches assembles no sections and dispatches nothing.
+    const unreportedEntries = entries.filter((e) => !e.seen);
+    const anchorSpecs = buildAnchorSpecs(unreportedEntries);
     if (anchorSpecs.length === 0) return null;
     const touchedFilterText = anchorSpecsToFilterText(anchorSpecs);
+
+    // Entries that fed an emitted section, collected as we go and marked seen
+    // once the doc is assembled (Step 6). Marking at the end — rather than as
+    // each pass runs — keeps a write's section placement unchanged within a
+    // single run (a stale-overlapping write can still surface as uncovered)
+    // while ensuring a later Stop with no new touches reports nothing.
+    const reportedEntries = new Set<JournalEntry>();
 
     // Step 4: Stale pass
     const staleRenders: string[] = [];
@@ -300,12 +311,22 @@ export function createStopHandler(deps: StopHandlerDeps) {
           ctx.logger.warn('git mesh list (stale render) failed', { err });
         }
       }
+
+      // Record entries the stale section reports (only when it actually rendered,
+      // so a render failure leaves them unreported and retried next run).
+      if (staleRenders.length > 0) {
+        for (const row of staleRows) {
+          for (const e of unreportedEntries) {
+            if (rowFeedsEntry(row.path, row.start, row.end, e)) reportedEntries.add(e);
+          }
+        }
+      }
     }
 
-    // Step 5: Write-coverage pass — all unseen write/create entries, regardless of stale surfacing.
-    // `seen` means "a current mesh anchor covers this entry's range." Stale-surfaced entries are
-    // NOT pre-marked seen; they may still be uncovered by any current mesh.
-    const unseenWriteEntries = entries.filter((e) => !e.seen && (e.kind === 'write' || e.kind === 'create'));
+    // Step 5: Write-coverage pass — all unreported write/create entries. A write
+    // that also overlaps a drifted anchor still appears here (covered → related,
+    // otherwise uncovered); section placement is independent of the stale pass.
+    const unseenWriteEntries = unreportedEntries.filter((e) => e.kind === 'write' || e.kind === 'create');
 
     const relatedRenders: string[] = [];
     const uncoveredLines: string[] = [];
@@ -338,14 +359,10 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
       const relatedSlugs = [...new Set(listRows.map((r) => r.name))];
 
-      // Mark journal entries seen when a current mesh anchor covers their range.
-      // This is the authoritative definition of "covered" for persistence purposes.
-      for (const row of listRows) {
-        for (const e of unseenWriteEntries) {
-          if (!e.seen && rowFeedsEntry(row.path, row.start, row.end, e)) {
-            e.seen = true;
-          }
-        }
+      // Every entry that entered this pass is reported — covered ones under
+      // "# Related meshes", the rest under "# Uncovered writes".
+      for (const e of unseenWriteEntries) {
+        reportedEntries.add(e);
       }
 
       for (const filterLine of writeFilterLines) {
@@ -378,6 +395,12 @@ export function createStopHandler(deps: StopHandlerDeps) {
     }
 
     if (sections.length === 0) return null;
+
+    // Mark every entry that fed an emitted section seen, so a later Stop with no
+    // new touches assembles no sections and dispatches nothing.
+    for (const e of reportedEntries) {
+      e.seen = true;
+    }
 
     const doc = sections.join('\n\n');
 
@@ -470,16 +493,15 @@ function splitMeshBlocks(rendered: string, expectedCount: number): string[] {
 // ---------------------------------------------------------------------------
 
 function buildSystemMessage(docPath: string): string {
-  return `A git-mesh session-status document is at ${docPath}. Spawn a background general-purpose subagent with this prompt:
+  return `Spawn a background general-purpose subagent with this prompt:
 
-  Load the git-mesh:handbook skill. Read ${docPath}.
-  - For "Stale meshes", inspect each anchor and propose
-    \`git mesh add\` / \`git mesh why\` edits or removals.
-  - For "Uncovered writes", propose one mesh slug + \`git mesh add\`
-    command if the files form a coherent subsystem; otherwise say so.
-  - For "Related meshes", note any whose scope should expand to
-    cover the uncovered writes instead of creating a new mesh.
-  Report back in under 300 words.
+  Load the git-mesh:handbook skill, then read ${docPath} and resolve it:
+  re-anchor or retire the stale meshes, create meshes for the uncovered
+  writes that form coherent subsystems, and expand related meshes that
+  should absorb an uncovered write. Act, don't propose.
+  Only commit the mesh edits once the files they anchor are themselves
+  committed; otherwise leave the mesh edits staged and say so.
+  Report what you changed and what you left for later, briefly.
 
 Run it in the background; do not block on its result.`;
 }

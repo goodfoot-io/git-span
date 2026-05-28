@@ -190,9 +190,9 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('produces a # Stale meshes section; entry seen only when write-coverage pass covers it', async () => {
+  it('produces a # Stale meshes section and marks the stale-fed entry seen', async () => {
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
-    // Write-coverage pass also covers the write range — marks entry seen
+    // Write-coverage pass also covers the write range — entry is reported.
     const listBatch: ListBatchExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
 
@@ -218,7 +218,7 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     // Write is covered by a current mesh via write-coverage pass → not uncovered
     expect(doc).not.toContain('# Uncovered writes');
 
-    // Journal entries should be marked seen (by write-coverage pass, not stale pass)
+    // The reported entry is marked seen so it is not re-dispatched next run.
     const updated = readJournalRaw(sid);
     expect(updated[0].seen).toBe(true);
 
@@ -342,7 +342,7 @@ describe('Stop hook: idempotence', () => {
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('produces identical doc on second run', async () => {
+  it('does not re-dispatch on a second run once entries are marked seen', async () => {
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
 
@@ -352,15 +352,16 @@ describe('Stop hook: idempotence', () => {
       listRenderExecutor: render
     });
 
+    // First run surfaces the review and marks the fed entries seen.
     const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const docPath1 = (r1.stdout.reason as string).match(/\/[^\s]+\.md/)![0];
-    const doc1 = fs.readFileSync(docPath1, 'utf8');
+    expect(r1.stdout.decision).toBe('block');
+    expect(r1.stdout.reason).toContain('git-mesh-status-');
 
+    // Second run, same journal and no new touches: every entry is now seen, so
+    // no section is assembled and nothing is dispatched.
     const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const docPath2 = (r2.stdout.reason as string).match(/\/[^\s]+\.md/)![0];
-    const doc2 = fs.readFileSync(docPath2, 'utf8');
-
-    expect(doc1).toBe(doc2);
+    expect(r2.stdout.decision).not.toBe('block');
+    expect(r2.stdout.reason).toBeUndefined();
   });
 });
 
