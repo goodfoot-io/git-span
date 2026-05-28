@@ -233,11 +233,9 @@ fn collect_filtered_porcelain_listings_from_catalog(
     target: &str,
     staged_listings: Option<&[MeshListing]>,
 ) -> Result<Vec<MeshListing>> {
-    let (path, range) = if target.contains("#L") {
-        let (path, start, end) = parse_range_address(target)?;
-        (path, Some((start, end)))
-    } else {
-        (target.to_string(), None)
+    let (path, range) = match BatchFilter::parse(target)? {
+        BatchFilter::Path(p) => (p, None),
+        BatchFilter::Ranged { path, start, end } => (path, Some((start, end))),
     };
 
     // Scan every visible mesh in the shared catalog for an anchor matching
