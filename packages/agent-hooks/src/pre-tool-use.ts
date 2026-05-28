@@ -8,7 +8,8 @@
  * the tool's range, drops slugs already surfaced in this Claude Code session
  * (on-disk per-session memo), and — if anything remains — emits the
  * human-readable `git mesh list <names…>` block wrapped in
- * `<git-mesh>…</git-mesh>` as both `systemMessage` and `additionalContext`.
+ * `<git-mesh>…</git-mesh>` as the `systemMessage` field
+ * (PreToolUse's hookSpecificOutput type does not expose additionalContext).
  */
 
 import { execFileSync } from 'node:child_process';
