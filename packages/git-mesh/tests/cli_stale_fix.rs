@@ -395,3 +395,148 @@ fn json_porcelain_unchanged_for_drifted_input() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// --fix line-range coalescing (card main-88)
+// ---------------------------------------------------------------------------
+
+/// Two contiguous line ranges authored on the same path — with no drift at
+/// all — collapse into a single anchor covering their union, carrying one
+/// freshly recomputed hash. Normalization is total, not fix-scoped.
+#[test]
+fn fix_coalesces_contiguous_authored_ranges() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", "m", "-m", "adjacent"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    assert_eq!(out.status.code(), Some(0), "no residual drift after merge");
+
+    let mesh = read_mesh(&repo, "m")?;
+    let file1 =
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let expected = line_slice_hash(file1, 1, 10);
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L10 sha256:{expected}")),
+        "ranges must collapse into L1-L10 with recomputed hash; mesh:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains("file1.txt#L1-L5") && !mesh.contains("file1.txt#L6-L10"),
+        "original fragmented ranges must be gone; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+/// Overlapping ranges collapse into the union of their lines.
+#[test]
+fn fix_coalesces_overlapping_ranges() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L10", "file2.txt#L5-L15"])?;
+    repo.mesh_stdout(["why", "m", "-m", "overlap"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    repo.run_mesh(["stale", "--fix"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.contains("file2.txt#L1-L15"),
+        "overlapping ranges collapse to L1-L15; mesh:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains("file2.txt#L1-L10") && !mesh.contains("file2.txt#L5-L15"),
+        "original overlapping ranges must be gone; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+/// A gap larger than one line between ranges is not contiguous: the ranges
+/// stay distinct.
+#[test]
+fn fix_leaves_non_contiguous_ranges_separate() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L5", "file2.txt#L8-L12"])?;
+    repo.mesh_stdout(["why", "m", "-m", "gap"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    repo.run_mesh(["stale", "--fix"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.contains("file2.txt#L1-L5") && mesh.contains("file2.txt#L8-L12"),
+        "non-contiguous ranges (gap > 1) stay separate; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+/// Ranges on a deleted (terminal) path are never coalesced — the merge must
+/// not paper over drift the operator still needs to see.
+#[test]
+fn fix_does_not_coalesce_terminal_ranges() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", "m", "-m", "terminal"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    std::fs::remove_file(repo.path().join("file1.txt"))?;
+    let before = read_mesh(&repo, "m")?;
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let after = read_mesh(&repo, "m")?;
+    assert_eq!(
+        before, after,
+        "contiguous ranges on a deleted path must remain untouched"
+    );
+    Ok(())
+}
+
+/// A whole-file anchor never merges with a line-range anchor on the same
+/// path, and is never split or absorbed.
+#[test]
+fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "mixed"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.lines().any(|l| l.starts_with("file1.txt sha256:")),
+        "whole-file anchor stays inert; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains("file1.txt#L1-L5"),
+        "line-range anchor with no contiguous partner is left as-is; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+/// Three contiguous ranges collapse transitively into one anchor.
+#[test]
+fn fix_coalesces_chain_of_three() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout([
+        "add", "m",
+        "file2.txt#L1-L5",
+        "file2.txt#L6-L10",
+        "file2.txt#L11-L15",
+    ])?;
+    repo.mesh_stdout(["why", "m", "-m", "chain"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    repo.run_mesh(["stale", "--fix"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.contains("file2.txt#L1-L15"),
+        "three contiguous ranges collapse to L1-L15; mesh:\n{mesh}"
+    );
+    Ok(())
+}
