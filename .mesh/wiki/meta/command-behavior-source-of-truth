@@ -3,4 +3,6 @@ packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069
 packages/git-mesh/src/validation.rs#L7-L28 sha256:87fe021db3cccc4cd7e3a6259f21a6105af30e7492bcc2b63da96c58b67622a7
 packages/git-mesh/src/cli/mod.rs#L34-L104 sha256:5588271ecbd40a2ba9d220d93b256d4fc299bf9fbad767419628e5b75228b22d
 packages/git-mesh/src/cli/mod.rs#L382-L438 sha256:f775de268cdda14ba3f8c87736eab8c1e6ae6258c60f380fd0a7acf0ef0d787c
+packages/git-mesh/src/cli/mod.rs#L34-L107 sha256:64f88bfcf291e5cbe7e185e0271e36d43d7b3d5d4ac083f65efe3584e5b777db
+packages/git-mesh/src/cli/mod.rs#L364-L416 sha256:bed59b3d3c741a9768cf790d5189e61db7e95885df620c91428e47787ffe56df
 

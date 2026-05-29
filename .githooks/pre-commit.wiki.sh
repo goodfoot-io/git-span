@@ -1,9 +1,15 @@
 #!/bin/bash
-# Single wiki concern, two phases:
-#   1. Auto-fix drifted wiki links/anchors/frontmatter on the working tree and
-#      re-stage the fixed .md files (non-blocking — --no-exit-code).
-#   2. Create git mesh coverage for any uncovered fragment links and stage
-#      exactly the meshes this run created/renamed (fail-closed).
+# Single wiki concern, two phases, reconciled with the installed `wiki` CLI:
+#   1. Auto-fix drifted links/anchors/frontmatter AND create git mesh coverage
+#      for uncovered fragment links on the working tree, then re-stage the
+#      fixed .md files and exactly the meshes this run created/extended.
+#   2. Re-run `wiki check` (no --fix) as a fail-closed gate: any residual
+#      validation error or uncovered fragment link aborts the commit.
+#
+# In this CLI version mesh coverage is folded into `check`: `check --fix`
+# performs the link/anchor/frontmatter rewrite and the mesh-coverage pass in
+# a single invocation, and `--print-applied` reports the meshes it touched.
+# There is no separate `scaffold` subcommand and no `--no-mesh` flag.
 #
 # The whole corpus is checked (not just staged files): a staged edit can
 # break a wikilink on an unstaged page or collide a title — phase 1 sees and
@@ -13,11 +19,16 @@ set -e
 command -v wiki >/dev/null 2>&1 || exit 0
 WIKI_BIN=$(command -v wiki)
 
-# ── Phase 1: auto-fix links/anchors/frontmatter, re-stage ────────────────────
-# --fix requires --source=worktree (it can only rewrite worktree files);
-# --no-exit-code keeps a fixable drift from aborting before the rewrite is
-# staged below; --no-mesh defers coverage to the fail-closed phase 2.
-"$WIKI_BIN" check --fix --no-exit-code --no-mesh --source=worktree
+# ── Phase 1: auto-fix links/anchors/frontmatter + mesh coverage, re-stage ────
+# --fix requires --source=worktree (it can only rewrite worktree files) and
+# also creates mesh coverage for uncovered fragment links. --print-applied
+# emits one repo-relative path per mesh created/extended on stdout (the
+# fix/skip summary, advisories, and diagnostics go to stderr) so we can stage
+# exactly what this run touched. A hard error here aborts the commit.
+APPLIED=$("$WIKI_BIN" check --fix --print-applied --source=worktree) || {
+    echo "wiki check --fix failed (fail-closed); aborting commit" >&2
+    exit 1
+}
 
 # mapfile + quoted array re-stages each path as one argument, so a page path
 # containing whitespace survives intact.
@@ -28,21 +39,21 @@ if [ ${#WIKI_FIXED[@]} -gt 0 ]; then
     printf '%s\n' "${WIKI_FIXED[@]}"
 fi
 
-# ── Phase 2: mesh coverage (fail-closed) ─────────────────────────────────────
-# wiki scaffold self-discovers every uncovered fragment link, creates a mesh
-# (anchors only), and is idempotent. --print-applied emits one repo-relative
-# path per mesh created/renamed on stdout (advisories go to stderr); stage
-# exactly those. A non-zero exit (git-mesh unavailable, or a genuine
-# `git mesh add` failure) aborts the commit.
-APPLIED=$("$WIKI_BIN" scaffold --print-applied) || {
-    echo "wiki scaffold failed (fail-closed); aborting commit" >&2
-    exit 1
-}
+# Stage exactly the meshes the fix pass created or extended.
 if [ -n "$APPLIED" ]; then
     while IFS= read -r mesh_path; do
         [ -n "$mesh_path" ] && git add -- "$mesh_path"
     done <<< "$APPLIED"
-    echo "Staged scaffolded meshes:"
+    echo "Staged wiki-applied meshes:"
     echo "$APPLIED"
 fi
+
+# ── Phase 2: fail-closed validation gate ─────────────────────────────────────
+# Re-run check without --fix: any residual validation error or uncovered
+# fragment link (one the fix pass could not repair) exits non-zero and aborts
+# the commit.
+"$WIKI_BIN" check || {
+    echo "wiki check found unresolved validation errors (fail-closed); aborting commit" >&2
+    exit 1
+}
 exit 0
