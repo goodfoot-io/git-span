@@ -365,6 +365,44 @@ describe('Stop hook: idempotence', () => {
   });
 });
 
+describe('Stop hook: non-write touch surfacing a stale anchor does not loop', () => {
+  const sid = `stop-test-noloop-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-noloop-'));
+    initGitRepo(tmpRepo);
+    // A whole-file READ touch — not a write, and `whole` kind never "feeds" a
+    // ranged stale row. Under the old per-entry marking it stayed unseen and
+    // re-fired the block on every Stop.
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'src/foo.ts', kind: 'whole', seen: false }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('marks the read seen and does not re-dispatch on the second run', async () => {
+    // The file the read touched has a stale ranged anchor.
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+
+    const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(r1.stdout.decision).toBe('block');
+    expect(readJournalRaw(sid)[0].seen).toBe(true);
+
+    // Same journal, no new touches: must not block again.
+    const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(r2.stdout.decision).not.toBe('block');
+    expect(r2.stdout.reason).toBeUndefined();
+  });
+});
+
 describe('Stop hook: blocks to surface the review, but breaks the stop loop', () => {
   const sid = `stop-test-block-${Date.now()}`;
   let tmpRepo: string;
@@ -581,6 +619,151 @@ describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncov
     // The write should appear in Uncovered writes, NOT be silently absorbed by the stale pass
     expect(doc).toContain('# Uncovered writes');
     expect(doc).toContain('src/drift.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale section names the specific stale files/anchors
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: stale section names the stale anchors, not the whole mesh', () => {
+  const sid = `stop-test-stale-names-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-stale-names-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
+      { tool: 'Edit', path: 'src/whole.ts', kind: 'write', seen: false, start: 1, end: 5 }
+    ]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('lists each stale anchor under its mesh and renders whole-file rows as bare paths', async () => {
+    // Two stale anchors on the same mesh: one ranged, one whole-file (0-0).
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\nmy-slug\tsrc/whole.ts\t0-0\n';
+    // listRenderExecutor must NOT be consulted for the stale section; throw if it is.
+    const render: ListRenderExecutor = () => {
+      throw new Error('listRenderExecutor should not be called for the stale section');
+    };
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: render
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    const msg = result.stdout.reason as string;
+    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
+    const doc = fs.readFileSync(docPath, 'utf8');
+
+    // Isolate the `# Stale meshes` section (up to the next top-level header).
+    const staleSection = doc.split('# Stale meshes')[1].split(/\n# /)[0];
+    expect(staleSection).toContain('## my-slug');
+    expect(staleSection).toContain('- src/foo.ts#L5-L25');
+    // Whole-file anchor renders as the bare path, no #L suffix.
+    expect(staleSection).toContain('- src/whole.ts');
+    expect(staleSection).not.toContain('src/whole.ts#L');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch message names only the sections the doc contains
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: dispatch message is specific to the situation', () => {
+  const sid = `stop-test-msg-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-msg-'));
+    initGitRepo(tmpRepo);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('does not mention stale meshes when only uncovered writes exist', async () => {
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+
+    const msg = (
+      asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string
+    ).toLowerCase();
+    expect(msg).toContain('uncovered writes');
+    expect(msg).not.toContain('stale mesh');
+    expect(msg).not.toContain('related mesh');
+  });
+
+  it('mentions only stale meshes when the write is covered (no uncovered, no related-without-write)', async () => {
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    // Write-coverage pass covers the write → covered (related), so the message
+    // mentions stale and related, but never uncovered writes.
+    const listBatch: ListBatchExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render
+    });
+
+    const msg = (
+      asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string
+    ).toLowerCase();
+    expect(msg).toContain('stale mesh');
+    expect(msg).not.toContain('uncovered writes');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Each Stop call writes a uniquely named status doc
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: status doc filename is unique per call', () => {
+  const sid = `stop-test-unique-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-unique-'));
+    initGitRepo(tmpRepo);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('two dispatching calls reference two different filenames', async () => {
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: render
+    });
+
+    // Each run needs a fresh unreported entry, so rewrite the journal between runs.
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    const m1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    const m2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
+
+    const f1 = m1.match(/git-mesh-status-[^\s]+\.md/)![0];
+    const f2 = m2.match(/git-mesh-status-[^\s]+\.md/)![0];
+    expect(f1).not.toBe(f2);
   });
 });
 

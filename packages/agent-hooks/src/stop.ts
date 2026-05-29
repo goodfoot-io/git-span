@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
@@ -18,6 +19,7 @@ import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoo
 import {
   formatAnchor,
   type LineRange,
+  type PorcelainRow,
   parsePorcelain,
   rangesIntersect,
   resolveRepoRoot,
@@ -198,26 +200,6 @@ export function createDefaultListRenderExecutor(timeoutMs = 10_000): ListRenderE
 }
 
 // ---------------------------------------------------------------------------
-// Overlap helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if a porcelain row feeds a journal entry.
- * A whole-file row (start=0, end=0) only feeds path-only (whole/create) entries.
- * A ranged row feeds ranged entries that intersect it.
- */
-function rowFeedsEntry(rowPath: string, rowStart: number, rowEnd: number, entry: JournalEntry): boolean {
-  if (entry.path !== rowPath) return false;
-  const isWholeRow = rowStart === 0 && rowEnd === 0;
-  if (isWholeRow) {
-    return entry.kind === 'whole' || entry.kind === 'create';
-  }
-  if (entry.kind === 'whole' || entry.kind === 'create') return false;
-  if (entry.start === undefined || entry.end === undefined) return false;
-  return rangesIntersect({ start: entry.start, end: entry.end }, { start: rowStart, end: rowEnd });
-}
-
-// ---------------------------------------------------------------------------
 // Main handler factory
 // ---------------------------------------------------------------------------
 
@@ -271,23 +253,24 @@ export function createStopHandler(deps: StopHandlerDeps) {
     const finalRepoRoot = repoRoot;
 
     // Step 3: Build TOUCHED_ANCHORS from entries not yet reported.
-    // `seen` means "already surfaced in a status doc this session." Entries that
-    // fed an emitted section are marked seen in Step 6 and excluded here, so a
-    // later Stop with no new touches assembles no sections and dispatches nothing.
+    // `seen` means "already surfaced in a status doc this session." Every entry
+    // processed by a dispatching run is marked seen in Step 6 and excluded here,
+    // so a later Stop with no new touches assembles no sections and dispatches
+    // nothing. Marking the whole batch — not just the entries that fed a section —
+    // is essential: a read/whole touch can surface stale ranged anchors on its
+    // file without itself being a write, so per-entry "did this feed a section"
+    // bookkeeping would leave it unmarked and re-fire the block on every Stop.
     const unreportedEntries = entries.filter((e) => !e.seen);
     const anchorSpecs = buildAnchorSpecs(unreportedEntries);
     if (anchorSpecs.length === 0) return null;
     const touchedFilterText = anchorSpecsToFilterText(anchorSpecs);
 
-    // Entries that fed an emitted section, collected as we go and marked seen
-    // once the doc is assembled (Step 6). Marking at the end — rather than as
-    // each pass runs — keeps a write's section placement unchanged within a
-    // single run (a stale-overlapping write can still surface as uncovered)
-    // while ensuring a later Stop with no new touches reports nothing.
-    const reportedEntries = new Set<JournalEntry>();
-
-    // Step 4: Stale pass
-    const staleRenders: string[] = [];
+    // Step 4: Stale pass. The porcelain rows ARE the stale findings — one row per
+    // drifted (slug, anchor) — so the section is built directly from them and
+    // names the specific stale files/anchors, matching `git mesh stale` output.
+    // We deliberately do not render the whole mesh via `git mesh list` here: that
+    // would also list the mesh's fresh anchors and obscure which files drifted.
+    let staleSection = '';
     let stalePorcelain: string;
     try {
       stalePorcelain = staleExecutor(touchedFilterText, finalRepoRoot);
@@ -298,28 +281,8 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     if (stalePorcelain.trim()) {
       const staleRows = parsePorcelain(stalePorcelain);
-      const staleSlugs = [...new Set(staleRows.map((r) => r.name))];
-
-      // Render stale slugs
-      if (staleSlugs.length > 0) {
-        try {
-          const rendered = listRenderExecutor(staleSlugs, finalRepoRoot);
-          // Split by blank lines between mesh blocks if multiple slugs
-          const blocks = splitMeshBlocks(rendered, staleSlugs.length);
-          staleRenders.push(...blocks.filter(Boolean));
-        } catch (err) {
-          ctx.logger.warn('git mesh list (stale render) failed', { err });
-        }
-      }
-
-      // Record entries the stale section reports (only when it actually rendered,
-      // so a render failure leaves them unreported and retried next run).
-      if (staleRenders.length > 0) {
-        for (const row of staleRows) {
-          for (const e of unreportedEntries) {
-            if (rowFeedsEntry(row.path, row.start, row.end, e)) reportedEntries.add(e);
-          }
-        }
+      if (staleRows.length > 0) {
+        staleSection = buildStaleSection(staleRows);
       }
     }
 
@@ -359,12 +322,6 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
       const relatedSlugs = [...new Set(listRows.map((r) => r.name))];
 
-      // Every entry that entered this pass is reported — covered ones under
-      // "# Related meshes", the rest under "# Uncovered writes".
-      for (const e of unseenWriteEntries) {
-        reportedEntries.add(e);
-      }
-
       for (const filterLine of writeFilterLines) {
         if (!coveredFilterLines.has(filterLine)) {
           uncoveredLines.push(filterLine);
@@ -384,28 +341,37 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     // Step 6: Assemble status doc
     const sections: string[] = [];
-    if (staleRenders.length > 0) {
-      sections.push(`# Stale meshes\n\n${staleRenders.join('\n\n---\n\n')}`);
+    const hasStale = staleSection.length > 0;
+    const hasUncovered = uncoveredLines.length > 0;
+    const hasRelated = relatedRenders.length > 0;
+    if (hasStale) {
+      sections.push(`# Stale meshes\n\n${staleSection}`);
     }
-    if (uncoveredLines.length > 0) {
+    if (hasUncovered) {
       sections.push(`# Uncovered writes\n\n${uncoveredLines.map((l) => `- ${l}`).join('\n')}`);
     }
-    if (relatedRenders.length > 0) {
+    if (hasRelated) {
       sections.push(`# Related meshes\n\n${relatedRenders.join('\n\n---\n\n')}`);
     }
 
     if (sections.length === 0) return null;
 
-    // Mark every entry that fed an emitted section seen, so a later Stop with no
-    // new touches assembles no sections and dispatches nothing.
-    for (const e of reportedEntries) {
+    // Mark every entry processed by this dispatching run seen, so a later Stop
+    // with no new touches assembles no sections and dispatches nothing. We mark
+    // the whole batch — not only the entries that fed a section — because a
+    // touch can surface stale anchors on its file without itself being featured,
+    // and leaving it unmarked would re-fire the block indefinitely.
+    for (const e of unreportedEntries) {
       e.seen = true;
     }
 
     const doc = sections.join('\n\n');
 
-    // Step 7: Write doc to tmp
-    const docPath = nodePath.join(os.tmpdir(), `git-mesh-status-${sanitizeSessionId(sessionId)}.md`);
+    // Step 7: Write doc to tmp. The name carries a fresh UUID so every Stop call
+    // produces a distinct file — concurrent or successive dispatches never read a
+    // doc that another call has since overwritten, and the subagent always reads
+    // the exact doc this call assembled.
+    const docPath = nodePath.join(os.tmpdir(), `git-mesh-status-${sanitizeSessionId(sessionId)}-${randomUUID()}.md`);
     try {
       fs.writeFileSync(docPath, doc, 'utf8');
     } catch (err) {
@@ -420,7 +386,7 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // Stop hooks cannot return `additionalContext`; the only channel that reaches
     // the agent loop is `decision: 'block'` with a `reason`. The hook is otherwise
     // idempotent, so re-running after the agent acts produces the same block.
-    const reason = buildSystemMessage(docPath);
+    const reason = buildSystemMessage(docPath, { hasStale, hasUncovered, hasRelated });
     return stopOutput({ decision: 'block', reason });
   };
 }
@@ -489,16 +455,67 @@ function splitMeshBlocks(rendered: string, expectedCount: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Stale section rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the `# Stale meshes` body from `git mesh stale --porcelain --batch`
+ * rows. Each row is one drifted (slug, anchor); we group by slug in
+ * first-appearance order and list the specific stale anchors, mirroring the
+ * `## <slug>` / `- <path>#L<start>-L<end>` shape of `git mesh stale`. Whole-file
+ * anchors (range `0-0`) render as the bare path. Mesh blocks are joined with a
+ * single `---` separator.
+ */
+function buildStaleSection(rows: PorcelainRow[]): string {
+  const order: string[] = [];
+  const byMesh = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!byMesh.has(row.name)) {
+      byMesh.set(row.name, []);
+      order.push(row.name);
+    }
+    const isWholeRow = row.start === 0 && row.end === 0;
+    const anchor = isWholeRow ? row.path : `${row.path}#L${row.start}-L${row.end}`;
+    const line = `- ${anchor}`;
+    const lines = byMesh.get(row.name);
+    if (lines && !lines.includes(line)) lines.push(line);
+  }
+  const blocks = order.map((name) => `## ${name}\n${(byMesh.get(name) ?? []).join('\n')}`);
+  return blocks.join('\n\n---\n\n');
+}
+
+// ---------------------------------------------------------------------------
 // System message
 // ---------------------------------------------------------------------------
 
-function buildSystemMessage(docPath: string): string {
+interface DocSummary {
+  hasStale: boolean;
+  hasUncovered: boolean;
+  hasRelated: boolean;
+}
+
+/** Join clauses into a grammatical list: "a", "a and b", "a, b, and c". */
+function joinClauses(items: string[]): string {
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+/**
+ * Build the dispatch prompt, naming only the sections the doc actually contains.
+ * A doc with no stale meshes never mentions stale meshes, and so on — so the
+ * subagent is told to do exactly the work that is present.
+ */
+function buildSystemMessage(docPath: string, summary: DocSummary): string {
+  const tasks: string[] = [];
+  if (summary.hasStale) tasks.push('re-anchor or retire the stale meshes');
+  if (summary.hasUncovered) tasks.push('create meshes for the uncovered writes that form coherent subsystems');
+  if (summary.hasRelated) tasks.push('expand related meshes that should absorb an uncovered write');
+
   return `Spawn a background general-purpose subagent with this prompt:
 
   Load the git-mesh:handbook skill, then read ${docPath} and resolve it:
-  re-anchor or retire the stale meshes, create meshes for the uncovered
-  writes that form coherent subsystems, and expand related meshes that
-  should absorb an uncovered write. Act, don't propose.
+  ${joinClauses(tasks)}. Act, don't propose.
   Only commit the mesh edits once the files they anchor are themselves
   committed; otherwise leave the mesh edits staged and say so.
   Report what you changed and what you left for later, briefly.

@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-linux-arm64",
-  "version": "1.0.92",
+  "version": "1.0.93",
   "description": "Platform-specific binary for @goodfoot/git-mesh",
   "license": "MIT",
   "os": [

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.bd48c35f.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.22721f0b.mjs",
             "timeout": 30000
           }
         ]
@@ -26,9 +26,9 @@
   },
   "__generated": {
     "files": [
-      "stop.bd48c35f.mjs",
+      "stop.22721f0b.mjs",
       "pre-tool-use.0e3ca0ea.mjs"
     ],
-    "timestamp": "2026-05-28T21:10:31.995Z"
+    "timestamp": "2026-05-29T01:18:57.569Z"
   }
 }
