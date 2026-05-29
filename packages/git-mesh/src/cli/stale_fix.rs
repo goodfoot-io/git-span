@@ -45,32 +45,6 @@ pub(crate) fn apply_fix(
             Err(_) => continue,
         };
 
-        // Record keys (path, start, end) of anchors that resolved to a
-        // terminal status this pass. Terminal anchors are never rewritten,
-        // so their record still carries the original anchored address. A
-        // line range merge must never fold a terminal anchor in, so the
-        // coalescing sweep treats these keys as barriers.
-        let terminal_keys: HashSet<(String, u32, u32)> = m
-            .anchors
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.status,
-                    AnchorStatus::Deleted
-                        | AnchorStatus::MergeConflict
-                        | AnchorStatus::Submodule
-                        | AnchorStatus::ContentUnavailable(_)
-                )
-            })
-            .map(|r| {
-                let (s, e) = match r.anchored.extent {
-                    AnchorExtent::LineRange { start, end } => (start, end),
-                    AnchorExtent::WholeFile => (0, 0),
-                };
-                (r.anchored.path.to_string_lossy().to_string(), s, e)
-            })
-            .collect();
-
         let mut any_rewritten = false;
 
         for resolved in &m.anchors {
@@ -176,6 +150,65 @@ pub(crate) fn apply_fix(
             any_rewritten = true;
         }
 
+        // Record keys (path, start, end) of anchors eligible to participate
+        // in a line-range merge. A record is mergeable ONLY when it is
+        // "worktree-fresh after the rewrite pass" — its recorded content
+        // matches the worktree at its extent — so the worktree union hash
+        // `coalesce_line_ranges` recomputes is provably correct. Anything
+        // else (terminal drift, non-worktree-layer drift, a Moved/Changed
+        // that failed to rewrite) is a barrier. Built after the rewrite loop
+        // because the Moved/Changed branch depends on the `rewritten` set.
+        let mut mergeable_keys: HashSet<(String, u32, u32)> = HashSet::new();
+        for resolved in &m.anchors {
+            match resolved.status {
+                AnchorStatus::Fresh => {
+                    // Fresh anchors are not rewritten; their record still
+                    // carries the anchored address and is worktree-fresh.
+                    let (s, e) = match resolved.anchored.extent {
+                        AnchorExtent::LineRange { start, end } => (start, end),
+                        AnchorExtent::WholeFile => (0, 0),
+                    };
+                    mergeable_keys.insert((
+                        resolved.anchored.path.to_string_lossy().to_string(),
+                        s,
+                        e,
+                    ));
+                }
+                AnchorStatus::Moved | AnchorStatus::Changed => {
+                    // Eligible only when it was actually rewritten this pass
+                    // and its deepest drift layer is the worktree (so the
+                    // rewritten record hashes the worktree content). The loop
+                    // rewrote the record to `current`'s path/extent.
+                    if !rewritten.contains(&resolved.anchor_id) {
+                        continue;
+                    }
+                    let Some(current) = &resolved.current else {
+                        continue;
+                    };
+                    let deepest = resolved
+                        .layer_sources
+                        .iter()
+                        .copied()
+                        .max_by_key(|s| match s {
+                            DriftSource::Worktree => 3,
+                            DriftSource::Index => 2,
+                            DriftSource::Head => 1,
+                        });
+                    if deepest != Some(DriftSource::Worktree) {
+                        continue;
+                    }
+                    let (s, e) = match current.extent {
+                        AnchorExtent::LineRange { start, end } => (start, end),
+                        AnchorExtent::WholeFile => (0, 0),
+                    };
+                    mergeable_keys
+                        .insert((current.path.to_string_lossy().to_string(), s, e));
+                }
+                // Terminal statuses are never eligible.
+                _ => {}
+            }
+        }
+
         // Normalize line-range anchors: collapse every contiguous or
         // overlapping pair on the same path into a single anchor. This runs
         // over the records as they stand after the per-anchor rewrite —
@@ -186,7 +219,7 @@ pub(crate) fn apply_fix(
             repo,
             &m.name,
             &mut mesh_file,
-            &terminal_keys,
+            &mergeable_keys,
             &mut rewritten,
         );
 
@@ -205,11 +238,21 @@ pub(crate) fn apply_fix(
 /// intervals overlap or are contiguous (`a.end + 1 >= b.start` after
 /// sorting by `start`); the merged anchor spans `min(start)..max(end)` and
 /// carries one freshly recomputed `sha256` hash over that combined extent.
-/// A pair merges only when both contributing anchors resolved cleanly
-/// (neither is in `terminal_keys`) and the combined region hashes without
-/// conflict — a range touching a terminal anchor, or a union the worktree
-/// cannot hash, is left as distinct anchors so the merge never papers over
-/// drift the operator still needs to see.
+/// A pair merges only when both contributing anchors are eligible — i.e.
+/// each record's key is in `mergeable_keys`, the set of anchors that are
+/// worktree-fresh after the rewrite pass (`Fresh` anchors, or `Moved`/
+/// `Changed` anchors rewritten this pass whose deepest drift layer is the
+/// worktree). A record NOT in `mergeable_keys` is a barrier: it breaks any
+/// run and is passed through unchanged. This restriction is what makes
+/// hashing the merged union from the worktree always correct — every merged
+/// run is worktree-fresh, so its recomputed worktree union hash matches the
+/// layer the per-anchor pass resolved, and the merged anchor re-resolves
+/// `Fresh`. Terminal anchors (`Deleted`, `MergeConflict`, `Submodule`,
+/// `ContentUnavailable`) and non-worktree-layer drift (committed/staged
+/// edits with a clean worktree at the extent) are thus never folded in, so
+/// the merge never papers over drift the operator still needs to see. The
+/// combined region must also hash without conflict; a union the worktree
+/// cannot hash is left as distinct anchors.
 ///
 /// Whole-file anchors (`0/0`) are inert: they never merge with line-range
 /// anchors on the same path and are never split or absorbed.
@@ -227,7 +270,7 @@ fn coalesce_line_ranges(
     repo: &gix::Repository,
     mesh_name: &str,
     mesh_file: &mut MeshFile,
-    terminal_keys: &HashSet<(String, u32, u32)>,
+    mergeable_keys: &HashSet<(String, u32, u32)>,
     merged_ids: &mut HashSet<String>,
 ) -> bool {
     // Group line-range record indices by path; whole-file anchors (0/0) are
@@ -290,11 +333,12 @@ fn coalesce_line_ranges(
 
         for &i in &idxs {
             let r = &mesh_file.anchors[i];
-            let is_terminal =
-                terminal_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
+            let is_mergeable =
+                mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
 
-            if is_terminal {
-                // Barrier: a terminal anchor breaks any run and never merges.
+            if !is_mergeable {
+                // Barrier: a record that is not worktree-fresh (terminal or
+                // non-worktree-layer drift) breaks any run and never merges.
                 flush(run.take(), &mut replacement, &mut dropped, merged_ids);
                 continue;
             }
@@ -304,7 +348,7 @@ fn coalesce_line_ranges(
                     run = Some((vec![i], r.start_line, r.end_line, None));
                 }
                 Some((mut members, start, end, hash)) => {
-                    if r.start_line <= end + 1 {
+                    if r.start_line <= end.saturating_add(1) {
                         // Contiguous or overlapping: only merge if the
                         // combined extent hashes cleanly against the worktree.
                         let new_end = end.max(r.end_line);

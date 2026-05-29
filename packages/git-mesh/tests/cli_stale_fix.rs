@@ -540,3 +540,43 @@ fn fix_coalesces_chain_of_three() -> Result<()> {
     );
     Ok(())
 }
+
+/// Two contiguous ranges whose drift surfaced at a non-worktree layer
+/// (committed change, worktree clean) must NOT merge. The worktree union
+/// hash would diverge from the Head-layer hash the per-anchor pass resolved,
+/// so a non-worktree-fresh record is a barrier and the ranges stay distinct.
+#[test]
+fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", "m", "-m", "head-layer"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    // Commit a change touching both ranges, leaving the worktree clean: the
+    // drift surfaces at the Head layer, not the worktree.
+    let new_content =
+        "lineHEAD\nline2\nline3\nline4\nline5\nlineSIX\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", new_content)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "edit file1"])?;
+
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    let h1 = line_slice_hash(new_content, 1, 5);
+    let h2 = line_slice_hash(new_content, 6, 10);
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{h1}")),
+        "first range re-anchored at Head layer, kept distinct; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains(&format!("file1.txt#L6-L10 sha256:{h2}")),
+        "second range re-anchored at Head layer, kept distinct; mesh:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains("file1.txt#L1-L10"),
+        "non-worktree-layer ranges must not collapse into L1-L10; mesh:\n{mesh}"
+    );
+    Ok(())
+}
