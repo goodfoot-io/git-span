@@ -1,4 +1,4 @@
-packages/git-mesh/src/cli/mod.rs#L34-L107 sha256:1480e052a84195c1c3a70f11990941103bfe41ed772456c2c11d6351406f7569
-packages/git-mesh/src/cli/mod.rs#L364-L424 sha256:b6b498d2323b275ac217a376d4938634d8e69aa9b7cbb3093a374dc438c9d2f5
+packages/git-mesh/src/cli/mod.rs#L34-L104 sha256:5588271ecbd40a2ba9d220d93b256d4fc299bf9fbad767419628e5b75228b22d
+packages/git-mesh/src/cli/mod.rs#L382-L438 sha256:f775de268cdda14ba3f8c87736eab8c1e6ae6258c60f380fd0a7acf0ef0d787c
 
 Clap configuration and dispatch in cli/mod.rs that the touchpoints page names as the primary source of truth for top-level git-mesh command behavior.
