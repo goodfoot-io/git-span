@@ -1,0 +1,4 @@
+.githooks/README.md#L31-L49 sha256:425bac1d1265b73f8d68ce3da114906db07b12c389b5fc115081c02e4a52a131
+.githooks/pre-commit.wiki.sh#L2-L47 sha256:7f166669bc0f81767a86df81668a482e49d253d20f05b9ceaf2250653d8c4b3e
+
+Two-phase wiki pre-commit concern whose documented contract in the hooks README—wiki check --fix --print-applied --source=worktree, *.md and mesh re-staging, fail-closed phase-2 gate—is the behavior the wiki sub-script implements.
