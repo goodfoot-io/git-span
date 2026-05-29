@@ -767,6 +767,119 @@ describe('Stop hook: status doc filename is unique per call', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Resolved-pending-commit: a stale anchor whose only drift is an uncommitted
+// edit to its own source file, with the `.mesh` re-anchor already staged, must
+// not re-dispatch. The resolver is forbidden from committing the source, so the
+// drift can never clear and re-firing loops forever.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a real mesh repo in the resolved-pending-commit state:
+ *   - source file committed, mesh committed (baseline clean)
+ *   - source edited so the anchored lines shift down (uncommitted)
+ *   - mesh re-anchored to the new range and STAGED (source still uncommitted)
+ * This is exactly the loop body the Stop hook re-fires on.
+ */
+function makePendingCommitRepo(): string {
+  const cp = require('node:child_process');
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-pending-'));
+  const git = (...args: string[]) => cp.execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  const mesh = (...args: string[]) => cp.execFileSync('git', ['mesh', ...args], { cwd: root, stdio: 'ignore' });
+  git('init', '-q');
+  git('config', 'user.email', 'test@test.com');
+  git('config', 'user.name', 'Test');
+  fs.writeFileSync(nodePath.join(root, 'app.js'), 'line1\nline2\nhandler\nbody\nend\n');
+  git('add', 'app.js');
+  git('commit', '-qm', 'init');
+  mesh('add', 'demo/h', 'app.js#L3-L5');
+  mesh('why', 'demo/h', '-m', 'handler contract');
+  git('add', '.mesh');
+  git('commit', '-qm', 'mesh');
+  // Shift the anchored lines down with an uncommitted edit.
+  fs.writeFileSync(nodePath.join(root, 'app.js'), 'pre1\npre2\nline1\nline2\nhandler\nbody\nend\n');
+  // Re-anchor to the new range and stage the mesh — source stays uncommitted.
+  mesh('remove', 'demo/h', 'app.js#L3-L5');
+  mesh('add', 'demo/h', 'app.js#L5-L7');
+  git('add', '.mesh');
+  return root;
+}
+
+describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch', () => {
+  const sid = `stop-test-pending-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = makePendingCommitRepo();
+    // A fresh, unreported touch on the anchored file — the kind the resolver
+    // subagent generates every round when it re-reads/re-anchors the source.
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'app.js', kind: 'write', seen: false, start: 5, end: 7 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('does not block when the drift is an uncommitted source edit with a staged re-anchor', async () => {
+    // git mesh stale reports the drifted anchor — this is what wakes the hook.
+    const stale: StaleExecutor = () => 'demo/h\tapp.js\t5-7\n';
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    // The drift cannot be cleared until the source commits — an action the
+    // resolver is forbidden to take — so the hook must NOT re-dispatch.
+    expect(result.stdout.decision).not.toBe('block');
+    expect(result.stdout.reason).toBeUndefined();
+  });
+});
+
+describe('Stop hook: uncommitted source with no staged re-anchor still dispatches once', () => {
+  const sid = `stop-test-firstfire-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    const cp = require('node:child_process');
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-firstfire-'));
+    const git = (...args: string[]) => cp.execFileSync('git', args, { cwd: tmpRepo, stdio: 'ignore' });
+    const mesh = (...args: string[]) => cp.execFileSync('git', ['mesh', ...args], { cwd: tmpRepo, stdio: 'ignore' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(nodePath.join(tmpRepo, 'app.js'), 'line1\nline2\nhandler\nbody\nend\n');
+    git('add', 'app.js');
+    git('commit', '-qm', 'init');
+    mesh('add', 'demo/h', 'app.js#L3-L5');
+    mesh('why', 'demo/h', '-m', 'handler contract');
+    git('add', '.mesh');
+    git('commit', '-qm', 'mesh');
+    // Source edited (uncommitted) but the mesh has NOT been re-anchored/staged.
+    fs.writeFileSync(nodePath.join(tmpRepo, 'app.js'), 'pre1\npre2\nline1\nline2\nhandler\nbody\nend\n');
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'app.js', kind: 'write', seen: false, start: 3, end: 5 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('blocks so the resolver can perform the re-anchor (no staged .mesh yet)', async () => {
+    const stale: StaleExecutor = () => 'demo/h\tapp.js\t3-5\n';
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).toBe('block');
+  });
+});
+
 describe('loadJournal: all-unparseable lines → null', () => {
   const sid = `stop-test-bad-json-${Date.now()}`;
 
