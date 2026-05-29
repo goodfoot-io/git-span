@@ -562,7 +562,7 @@ function buildSystemMessage(docPath: string, summary: DocSummary): string {
   if (summary.hasUncovered) tasks.push('create meshes for the uncovered writes that form coherent subsystems');
   if (summary.hasRelated) tasks.push('expand related meshes that should absorb an uncovered write');
 
-  return `Spawn a background general-purpose subagent with this prompt:
+  return `Spawn a background general-purpose subagent on the haiku model with this prompt:
 
   Load the git-mesh:handbook skill, then read ${docPath} and resolve it:
   ${joinClauses(tasks)}. Act, don't propose.

@@ -705,6 +705,8 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
     expect(msg).toContain('uncovered writes');
     expect(msg).not.toContain('stale mesh');
     expect(msg).not.toContain('related mesh');
+    // The resolver subagent runs on the haiku model.
+    expect(msg).toContain('haiku model');
   });
 
   it('mentions only stale meshes when the write is covered (no uncovered, no related-without-write)', async () => {
