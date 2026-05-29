@@ -164,6 +164,48 @@ export type StaleExecutor = (filterText: string, cwd: string) => string;
 export type ListBatchExecutor = (filterText: string, cwd: string) => string;
 export type ListRenderExecutor = (slugs: string[], cwd: string) => string;
 
+/**
+ * Decide whether a stale anchor's drift is *resolved-pending-commit*: its only
+ * blocker is that the anchored source file is uncommitted, and the mesh has
+ * already been re-anchored and staged. Such drift cannot clear until the source
+ * is committed — the one action the resolver is forbidden to take — so
+ * re-dispatching the resolver loops forever. Returning `true` drops the row from
+ * the stale section, breaking the loop while leaving the staged re-anchor ready
+ * to commit alongside its source.
+ */
+export type PendingCommitProbe = (repoRoot: string, slug: string, anchorPath: string) => boolean;
+
+function gitDirty(repoRoot: string, args: string[]): boolean {
+  // `git diff --quiet …` exits 0 when there is no diff and 1 when there is.
+  // execFileSync throws on non-zero exit, so a thrown error means "dirty".
+  try {
+    execFileSync('git', ['-C', repoRoot, ...args], { stdio: ['ignore', 'ignore', 'ignore'] });
+    return false;
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    // Exit 1 is the expected "has diff" signal. Any other failure (e.g. git not
+    // found, not a repo) is not a reliable "dirty" answer.
+    return status === 1;
+  }
+}
+
+/**
+ * Default probe: a row is resolved-pending-commit when its anchored source file
+ * differs from HEAD (an uncommitted edit) AND the mesh file `.mesh/<slug>` has a
+ * staged change (the resolver has already re-anchored). When git cannot answer,
+ * returns `false` so the hook falls back to surfacing the drift rather than
+ * silently hiding it.
+ */
+export function createDefaultPendingCommitProbe(): PendingCommitProbe {
+  return (repoRoot, slug, anchorPath) => {
+    const sourceUncommitted = gitDirty(repoRoot, ['diff', '--quiet', 'HEAD', '--', anchorPath]);
+    if (!sourceUncommitted) return false;
+    const meshPath = `.mesh/${slug}`;
+    const meshReanchorStaged = gitDirty(repoRoot, ['diff', '--cached', '--quiet', '--', meshPath]);
+    return meshReanchorStaged;
+  };
+}
+
 export function createDefaultStaleExecutor(timeoutMs = 10_000): StaleExecutor {
   return (filterText, cwd) => {
     return execFileSync('git', ['mesh', 'stale', '--porcelain', '--batch'], {
@@ -207,10 +249,12 @@ export interface StopHandlerDeps {
   staleExecutor: StaleExecutor;
   listBatchExecutor: ListBatchExecutor;
   listRenderExecutor: ListRenderExecutor;
+  pendingCommitProbe?: PendingCommitProbe;
 }
 
 export function createStopHandler(deps: StopHandlerDeps) {
   const { staleExecutor, listBatchExecutor, listRenderExecutor } = deps;
+  const pendingCommitProbe = deps.pendingCommitProbe ?? createDefaultPendingCommitProbe();
 
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
@@ -281,8 +325,14 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     if (stalePorcelain.trim()) {
       const staleRows = parsePorcelain(stalePorcelain);
-      if (staleRows.length > 0) {
-        staleSection = buildStaleSection(staleRows);
+      // Drop rows whose drift is resolved-pending-commit: an uncommitted source
+      // edit whose re-anchor is already staged. Surfacing those re-dispatches a
+      // resolver that cannot clear them (it may not commit the source), so the
+      // block would re-fire on every Stop. The remaining rows are genuine drift
+      // the resolver can act on.
+      const actionableRows = staleRows.filter((row) => !pendingCommitProbe(finalRepoRoot, row.name, row.path));
+      if (actionableRows.length > 0) {
+        staleSection = buildStaleSection(actionableRows);
       }
     }
 

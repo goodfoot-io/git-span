@@ -811,9 +811,11 @@ describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch',
 
   beforeEach(() => {
     tmpRepo = makePendingCommitRepo();
-    // A fresh, unreported touch on the anchored file — the kind the resolver
-    // subagent generates every round when it re-reads/re-anchors the source.
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'app.js', kind: 'write', seen: false, start: 5, end: 7 }]);
+    // A fresh, unreported READ touch on the anchored file — the kind the
+    // resolver subagent generates every round when it re-reads the source to
+    // re-anchor. (A read does not feed the uncovered-writes pass, so the stale
+    // pass is the only thing that can re-fire the block.)
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -859,7 +861,7 @@ describe('Stop hook: uncommitted source with no staged re-anchor still dispatche
     git('commit', '-qm', 'mesh');
     // Source edited (uncommitted) but the mesh has NOT been re-anchored/staged.
     fs.writeFileSync(nodePath.join(tmpRepo, 'app.js'), 'pre1\npre2\nline1\nline2\nhandler\nbody\nend\n');
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'app.js', kind: 'write', seen: false, start: 3, end: 5 }]);
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
