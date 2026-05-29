@@ -437,6 +437,48 @@ describe('Non-git cwd', () => {
   });
 });
 
+describe('Cross-repo touch', () => {
+  let cwdRepo: { root: string; cleanup: () => void };
+  let otherRepo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    cwdRepo = makeTempRepo();
+    otherRepo = makeTempRepo();
+  });
+  afterAll(() => {
+    cwdRepo.cleanup();
+    otherRepo.cleanup();
+  });
+
+  it('neither surfaces meshes nor journals when the file is in a different repo than cwd', async () => {
+    const sessionId = `cross-repo-${Date.now()}`;
+    // The touched file lives in otherRepo; cwd is cwdRepo. A porcelain response
+    // is wired so that, were the overlap arm to run, it would surface a mesh.
+    const absFilePath = join(otherRepo.root, 'foreign.ts');
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse('--porcelain foreign.ts', porcelainLine('foreign-mesh', 'foreign.ts', 1, 20));
+    setResponse('foreign-mesh', 'foreign mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sessionId,
+      cwd: cwdRepo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+
+    // Overlap arm never runs against the foreign repo.
+    expect(calls).toHaveLength(0);
+    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+
+    // And the foreign touch is never journaled.
+    const journalPath = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    expect(fs.existsSync(journalPath)).toBe(false);
+  });
+});
+
 describe('Mesh names with special characters', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {

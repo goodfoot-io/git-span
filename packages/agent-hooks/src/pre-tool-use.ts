@@ -391,22 +391,30 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
     const absPath = derivePath(toolInput, cwd);
     if (!absPath) return null;
 
-    // Resolve repo root (needed for both overlap arm and journal)
+    // Bound everything to the CWD repo. Resolve the repo root of the current
+    // working directory and require the touched file to resolve to the SAME
+    // repo root. A file in a different repository — or a different worktree —
+    // is out of scope: we neither journal it nor surface its meshes, so the
+    // Stop hook's status doc can never report foreign paths. Comparing resolved
+    // `git --show-toplevel` toplevels (not path prefixes) distinguishes separate
+    // repos and worktrees and is robust to symlinks. Fail closed: if the CWD
+    // repo can't be resolved, record nothing rather than falling back to the
+    // file's own repo.
+    const cwdRepoRoot = cwd ? resolveRepoRoot(cwd) : null;
+    if (!cwdRepoRoot) return null;
+
     const absDir = toPosix(nodePath.dirname(absPath));
-    const repoRoot = resolveRepoRoot(absDir);
+    const fileRepoRoot = resolveRepoRoot(absDir);
+    if (fileRepoRoot !== cwdRepoRoot) return null;
+
+    const repoRoot = cwdRepoRoot;
+    const repoRelPath = relativeToRepo(repoRoot, absPath);
 
     // Journal append — best-effort, runs even when overlap arm returns early
-    if (repoRoot) {
-      const repoRelPath = relativeToRepo(repoRoot, absPath);
-      const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);
-      if (touchEntries.length > 0) {
-        appendJournalEntries(sessionId, toolName, repoRelPath, touchEntries, ctx.logger);
-      }
+    const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);
+    if (touchEntries.length > 0) {
+      appendJournalEntries(sessionId, toolName, repoRelPath, touchEntries, ctx.logger);
     }
-
-    if (!repoRoot) return null;
-
-    const repoRelPath = relativeToRepo(repoRoot, absPath);
 
     // Derive the line range for the overlap arm
     let range: LineRange | null = null;

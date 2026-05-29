@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.0e3ca0ea.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.9c13fd57.mjs",
             "timeout": 10000
           }
         ],
@@ -27,8 +27,8 @@
   "__generated": {
     "files": [
       "stop.22721f0b.mjs",
-      "pre-tool-use.0e3ca0ea.mjs"
+      "pre-tool-use.9c13fd57.mjs"
     ],
-    "timestamp": "2026-05-29T01:18:57.569Z"
+    "timestamp": "2026-05-29T01:54:47.815Z"
   }
 }
