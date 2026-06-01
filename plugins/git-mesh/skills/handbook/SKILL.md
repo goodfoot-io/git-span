@@ -6,6 +6,7 @@ description: Use with `git mesh` or meshes.
 <instructions>
 - **`git mesh stale` output shows mesh anchors with `[CHANGED]`, `[MOVED]`, `FRESH`, `(ack)`, or `src=…` and the markers need interpreting**: Read `./sections/reading-stale-output.md`
 - **A mesh anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config / `move` / `delete` is in play**: Read `./sections/responding-to-drift.md`
+- **About to add a mesh whose two sides are already joined by an import, a function call, a shared type, or a test that fails when one side breaks; or whose anchors span whole modules against their own helpers or tests (a frequent trap when bulk-resolving uncovered writes)**: that coupling is already enforced — do not mesh it. Read `./sections/creating-a-mesh.md` § "Should this be a mesh?" to confirm before adding.
 - **A new relationship needs a mesh, or a mesh needs a name, why, anchor shape, or commit sequence**: Read `./sections/creating-a-mesh.md`
 - **Candidates for a new mesh need discovering by mining git history for implicit semantic dependencies (co-change, SZZ, churn, lagged change, reviewer overlap, etc.)**: Read `./sections/finding-mesh-candidates.md`
 - **A finding is `DELETED`, `MERGE_CONFLICT`, or `SUBMODULE`**: Read `./sections/terminal-statuses.md`
