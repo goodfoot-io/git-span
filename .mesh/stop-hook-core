@@ -1,0 +1,5 @@
+packages/agent-hooks/src/agent-hooks-common.ts#L79-L197 sha256:4d3998c10642f67768d9fb247d508c6d785e5806cf61501fdbff7dc7351e65b1
+packages/agent-hooks/src/stop.ts#L23-L579 sha256:1ec851d8c198fde572a5a5506867069d0cfd430dc67b3c6aa1e5e220cb894391
+packages/agent-hooks/test/stop.test.ts#L16-L735 sha256:b782625b0cd3a3e0cf59b7ea9777f7cab2ded4ec9c00a91a3d7bb8fa67396c64
+
+Stop hook reads journal entries, runs git mesh stale/list commands, and assembles a status document; anchor building and porcelain parsing utilities in agent-hooks-common support the implementation.
