@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.972090c1.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.41712f95.mjs",
             "timeout": 30000
           }
         ]
@@ -38,9 +38,9 @@
   "__generated": {
     "files": [
       "subagent-start.be4b187c.mjs",
-      "stop.972090c1.mjs",
+      "stop.41712f95.mjs",
       "pre-tool-use.a8a7e318.mjs"
     ],
-    "timestamp": "2026-06-01T17:54:20.895Z"
+    "timestamp": "2026-06-01T18:31:41.948Z"
   }
 }

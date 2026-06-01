@@ -19,7 +19,6 @@ import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoo
 import {
   formatAnchor,
   type LineRange,
-  type PorcelainRow,
   parsePorcelain,
   rangesIntersect,
   readExpertAgentId,
@@ -164,6 +163,7 @@ export function anchorSpecsToFilterText(specs: AnchorSpec[]): string {
 export type StaleExecutor = (filterText: string, cwd: string) => string;
 export type ListBatchExecutor = (filterText: string, cwd: string) => string;
 export type ListRenderExecutor = (slugs: string[], cwd: string) => string;
+export type StaleRenderExecutor = (slugs: string[], cwd: string) => string;
 
 /**
  * Decide whether a stale anchor's drift is *resolved-pending-commit*: its only
@@ -231,6 +231,29 @@ export function createDefaultListBatchExecutor(timeoutMs = 10_000): ListBatchExe
   };
 }
 
+/**
+ * Render the full `git mesh stale` text for the given mesh slugs — every anchor,
+ * a drift reason on the changed ones, and the why, exactly as the CLI prints it.
+ * `git mesh stale` exits non-zero when drift exists (the common case here), so
+ * the render arrives on the thrown error's stdout; capture it rather than fail.
+ */
+export function createDefaultStaleRenderExecutor(timeoutMs = 10_000): StaleRenderExecutor {
+  return (slugs, cwd) => {
+    try {
+      return execFileSync('git', ['mesh', 'stale', ...slugs], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs
+      });
+    } catch (err) {
+      const out = (err as { stdout?: string }).stdout;
+      if (typeof out === 'string' && out.length > 0) return out;
+      throw err;
+    }
+  };
+}
+
 export function createDefaultListRenderExecutor(timeoutMs = 10_000): ListRenderExecutor {
   return (slugs, cwd) => {
     return execFileSync('git', ['mesh', 'list', ...slugs], {
@@ -250,15 +273,20 @@ export interface StopHandlerDeps {
   staleExecutor: StaleExecutor;
   listBatchExecutor: ListBatchExecutor;
   listRenderExecutor: ListRenderExecutor;
+  staleRenderExecutor?: StaleRenderExecutor;
   pendingCommitProbe?: PendingCommitProbe;
 }
 
 export function createStopHandler(deps: StopHandlerDeps) {
   const { staleExecutor, listBatchExecutor, listRenderExecutor } = deps;
+  const staleRenderExecutor = deps.staleRenderExecutor ?? createDefaultStaleRenderExecutor();
   const pendingCommitProbe = deps.pendingCommitProbe ?? createDefaultPendingCommitProbe();
 
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
+    // The path to this session's transcript, surfaced in the status doc so the
+    // resolver can consult the conversation for the intent behind a change.
+    const transcriptPath = (input as unknown as Record<string, unknown>).transcript_path;
 
     // Step 0: Break the stop loop. We surface the review by returning
     // `decision: 'block'`, which forces the agent to keep going. When the agent
@@ -310,11 +338,12 @@ export function createStopHandler(deps: StopHandlerDeps) {
     if (anchorSpecs.length === 0) return null;
     const touchedFilterText = anchorSpecsToFilterText(anchorSpecs);
 
-    // Step 4: Stale pass. The porcelain rows ARE the stale findings — one row per
-    // drifted (slug, anchor) — so the section is built directly from them and
-    // names the specific stale files/anchors, matching `git mesh stale` output.
-    // We deliberately do not render the whole mesh via `git mesh list` here: that
-    // would also list the mesh's fresh anchors and obscure which files drifted.
+    // Step 4: Stale pass. The porcelain rows detect which touched anchors have
+    // drifted; the section then renders each affected mesh in full via
+    // `git mesh stale <slugs>` — every anchor, the drift reason on the changed
+    // ones, and the why, exactly as the CLI prints it. Detection is scoped to the
+    // touched anchors; rendering shows the whole mesh so the resolver sees the
+    // complete coupling, not just the file it happened to edit.
     let staleSection = '';
     let stalePorcelain: string;
     try {
@@ -332,8 +361,15 @@ export function createStopHandler(deps: StopHandlerDeps) {
       // block would re-fire on every Stop. The remaining rows are genuine drift
       // the resolver can act on.
       const actionableRows = staleRows.filter((row) => !pendingCommitProbe(finalRepoRoot, row.name, row.path));
-      if (actionableRows.length > 0) {
-        staleSection = buildStaleSection(actionableRows);
+      const staleSlugs = [...new Set(actionableRows.map((row) => row.name))];
+      if (staleSlugs.length > 0) {
+        try {
+          const rendered = staleRenderExecutor(staleSlugs, finalRepoRoot);
+          const blocks = splitMeshBlocks(rendered, staleSlugs.length).filter(Boolean);
+          staleSection = blocks.join('\n\n---\n\n');
+        } catch (err) {
+          ctx.logger.warn('git mesh stale (render) failed', { err });
+        }
       }
     }
 
@@ -406,6 +442,15 @@ export function createStopHandler(deps: StopHandlerDeps) {
     }
 
     if (sections.length === 0) return null;
+
+    // Append the transcript pointer only when there is work to dispatch — the
+    // resolver reads it for the intent behind a change, not as a section to act
+    // on. Selective consultation (grep the touched paths) over wholesale reading.
+    if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
+      sections.push(
+        `# Transcript\n\nThe conversation that produced these changes: ${transcriptPath}\nConsult it for the intent behind a change when a mesh's why is unclear; read selectively (grep the touched paths), not wholesale.`
+      );
+    }
 
     // Mark every entry processed by this dispatching run seen, so a later Stop
     // with no new touches assembles no sections and dispatches nothing. We mark
@@ -510,36 +555,6 @@ function splitMeshBlocks(rendered: string, expectedCount: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Stale section rendering
-// ---------------------------------------------------------------------------
-
-/**
- * Build the `# Stale meshes` body from `git mesh stale --porcelain --batch`
- * rows. Each row is one drifted (slug, anchor); we group by slug in
- * first-appearance order and list the specific stale anchors, mirroring the
- * `## <slug>` / `- <path>#L<start>-L<end>` shape of `git mesh stale`. Whole-file
- * anchors (range `0-0`) render as the bare path. Mesh blocks are joined with a
- * single `---` separator.
- */
-function buildStaleSection(rows: PorcelainRow[]): string {
-  const order: string[] = [];
-  const byMesh = new Map<string, string[]>();
-  for (const row of rows) {
-    if (!byMesh.has(row.name)) {
-      byMesh.set(row.name, []);
-      order.push(row.name);
-    }
-    const isWholeRow = row.start === 0 && row.end === 0;
-    const anchor = isWholeRow ? row.path : `${row.path}#L${row.start}-L${row.end}`;
-    const line = `- ${anchor}`;
-    const lines = byMesh.get(row.name);
-    if (lines && !lines.includes(line)) lines.push(line);
-  }
-  const blocks = order.map((name) => `## ${name}\n${(byMesh.get(name) ?? []).join('\n')}`);
-  return blocks.join('\n\n---\n\n');
-}
-
-// ---------------------------------------------------------------------------
 // System message
 // ---------------------------------------------------------------------------
 
@@ -579,7 +594,7 @@ function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAge
   if (priorExpertAgentId) {
     return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
 
-  A new mesh status doc is ready. Read ${docPath} and resolve it:
+  Read ${docPath} and resolve it:
   ${joinClauses(tasks)}.
 
 Run in the background; do not block on its result.`;
@@ -601,6 +616,7 @@ export default stopHook(
   createStopHandler({
     staleExecutor: createDefaultStaleExecutor(),
     listBatchExecutor: createDefaultListBatchExecutor(),
-    listRenderExecutor: createDefaultListRenderExecutor()
+    listRenderExecutor: createDefaultListRenderExecutor(),
+    staleRenderExecutor: createDefaultStaleRenderExecutor()
   })
 );

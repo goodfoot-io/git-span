@@ -22,7 +22,8 @@ import {
   type ListBatchExecutor,
   type ListRenderExecutor,
   loadJournal,
-  type StaleExecutor
+  type StaleExecutor,
+  type StaleRenderExecutor
 } from '../src/stop.js';
 
 // ---------------------------------------------------------------------------
@@ -196,11 +197,16 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     // Write-coverage pass also covers the write range — entry is reported.
     const listBatch: ListBatchExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    // The stale section renders the whole mesh via `git mesh stale <slug>`:
+    // every anchor, the drift reason, and the why.
+    const staleRender: StaleRenderExecutor = (slugs) =>
+      `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n- src/helper.ts#L1-L8\n\nFoo subsystem why.`;
 
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
-      listRenderExecutor: render
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
@@ -216,6 +222,11 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
     const doc = fs.readFileSync(docPath, 'utf8');
     expect(doc).toContain('# Stale meshes');
+    // The whole mesh is rendered: the drifted anchor with its reason, the other
+    // anchor, and the why — not just the touched/drifted file.
+    expect(doc).toContain('- src/foo.ts#L5-L25 — changed in the working tree');
+    expect(doc).toContain('- src/helper.ts#L1-L8');
+    expect(doc).toContain('Foo subsystem why.');
     // Write is covered by a current mesh via write-coverage pass → not uncovered
     expect(doc).not.toContain('# Uncovered writes');
 
@@ -387,10 +398,13 @@ describe('Stop hook: non-write touch surfacing a stale anchor does not loop', ()
   it('marks the read seen and does not re-dispatch on the second run', async () => {
     // The file the read touched has a stale ranged anchor.
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    const staleRender: StaleRenderExecutor = (slugs) =>
+      `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n\nWhy.`;
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
-      listRenderExecutor: noopListRender
+      listRenderExecutor: noopListRender,
+      staleRenderExecutor: staleRender
     });
 
     const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
@@ -499,18 +513,17 @@ describe('Stop hook F2: multi-mesh section has exactly one --- between blocks', 
   });
 
   it('produces exactly one --- between mesh blocks in # Stale meshes', async () => {
-    // Simulate Rust render_blocks output: two blocks with trailing --- on first block
     const stale: StaleExecutor = () => 'mesh-a\tsrc/a.ts\t1-10\nmesh-b\tsrc/b.ts\t1-10\n';
-    const render: ListRenderExecutor = (slugs) => {
-      // Simulate what Rust render_blocks emits: blocks separated by \n---\n
-      const blocks = slugs.map((s) => `## ${s}\n- Details for ${s}.`);
-      return blocks.join('\n\n---\n\n');
-    };
+    // Simulate `git mesh stale mesh-a mesh-b` (Rust render_blocks): two blocks
+    // separated by \n---\n. The hook must re-join them with a single separator.
+    const staleRender: StaleRenderExecutor = (slugs) =>
+      slugs.map((s) => `## ${s}\n- Details for ${s}.`).join('\n\n---\n\n');
 
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
-      listRenderExecutor: render
+      listRenderExecutor: noopListRender,
+      staleRenderExecutor: staleRender
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
@@ -624,20 +637,17 @@ describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncov
 });
 
 // ---------------------------------------------------------------------------
-// Stale section names the specific stale files/anchors
+// Stale section renders the whole mesh — all anchors, drift reasons, and the why
 // ---------------------------------------------------------------------------
 
-describe('Stop hook: stale section names the stale anchors, not the whole mesh', () => {
+describe('Stop hook: stale section renders the whole mesh like `git mesh stale`', () => {
   const sid = `stop-test-stale-names-${Date.now()}`;
   let tmpRepo: string;
 
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-stale-names-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [
-      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
-      { tool: 'Edit', path: 'src/whole.ts', kind: 'write', seen: false, start: 1, end: 5 }
-    ]);
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -645,9 +655,13 @@ describe('Stop hook: stale section names the stale anchors, not the whole mesh',
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('lists each stale anchor under its mesh and renders whole-file rows as bare paths', async () => {
-    // Two stale anchors on the same mesh: one ranged, one whole-file (0-0).
-    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\nmy-slug\tsrc/whole.ts\t0-0\n';
+  it('renders every anchor (touched or not), the drift reason, and the why', async () => {
+    // Porcelain detection fires on the touched anchor only…
+    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
+    // …but the render shows the whole mesh: the drifted touched anchor, a
+    // fresh untouched anchor, a whole-file anchor, and the why.
+    const staleRender: StaleRenderExecutor = (slugs) =>
+      `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n- src/untouched.ts#L1-L8\n- src/whole.ts\n\nThe my-slug subsystem why.`;
     // listRenderExecutor must NOT be consulted for the stale section; throw if it is.
     const render: ListRenderExecutor = () => {
       throw new Error('listRenderExecutor should not be called for the stale section');
@@ -656,7 +670,8 @@ describe('Stop hook: stale section names the stale anchors, not the whole mesh',
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
-      listRenderExecutor: render
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
@@ -667,10 +682,14 @@ describe('Stop hook: stale section names the stale anchors, not the whole mesh',
     // Isolate the `# Stale meshes` section (up to the next top-level header).
     const staleSection = doc.split('# Stale meshes')[1].split(/\n# /)[0];
     expect(staleSection).toContain('## my-slug');
-    expect(staleSection).toContain('- src/foo.ts#L5-L25');
-    // Whole-file anchor renders as the bare path, no #L suffix.
+    // The drifted anchor carries its reason …
+    expect(staleSection).toContain('- src/foo.ts#L5-L25 — changed in the working tree');
+    // … the untouched and whole-file anchors are present …
+    expect(staleSection).toContain('- src/untouched.ts#L1-L8');
     expect(staleSection).toContain('- src/whole.ts');
     expect(staleSection).not.toContain('src/whole.ts#L');
+    // … and the why is included.
+    expect(staleSection).toContain('The my-slug subsystem why.');
   });
 });
 
@@ -717,10 +736,13 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
     // mentions stale and related, but never uncovered writes.
     const listBatch: ListBatchExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) =>
+      `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n\nWhy.`;
     const handler = createStopHandler({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
-      listRenderExecutor: render
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
     });
 
     const msg = (
@@ -776,6 +798,38 @@ describe('Stop hook: dispatch targets a prior git-mesh:expert when recorded', ()
     // Still names the work present and the new status doc.
     expect(msg).toContain('git-mesh-status-');
     expect(msg.toLowerCase()).toContain('uncovered writes');
+    // The preamble was removed.
+    expect(msg).not.toContain('A new mesh status doc is ready');
+  });
+});
+
+describe('Stop hook: status doc carries the transcript pointer', () => {
+  const sid = `stop-test-transcript-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-transcript-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('includes a # Transcript section naming the transcript path from the input', async () => {
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+    const input = { ...baseInput(sid, tmpRepo), transcript_path: '/tmp/my-transcript.jsonl' };
+    const msg = asResult(await handler(input as never, makeCtx() as never)).stdout.reason as string;
+    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
+    const doc = fs.readFileSync(docPath, 'utf8');
+    expect(doc).toContain('# Transcript');
+    expect(doc).toContain('/tmp/my-transcript.jsonl');
   });
 });
 
