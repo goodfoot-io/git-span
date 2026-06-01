@@ -1,4 +1,4 @@
-plugins/git-mesh/agents/expert.md sha256:5c6177ee19b8aee7da92ee25fb571764e4818f445e0e03cf2b366b093913c496
+plugins/git-mesh/agents/expert.md sha256:ea031719265990d7d5e4c9f42c515f8e123e08fe6f7c4dcf46b11da0fa96c3f6
 plugins/git-mesh/skills/handbook/SKILL.md sha256:371c64f72e920972c68b1011ccf10f0188346239e0f8d8561270508504ad1faf
 
 Mesh-expert agent guides authors to create meshes and relies on the handbook skill for mechanics; both change when the mesh authoring workflow evolves.
