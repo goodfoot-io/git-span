@@ -22,6 +22,7 @@ import {
   type PorcelainRow,
   parsePorcelain,
   rangesIntersect,
+  readExpertAgentId,
   resolveRepoRoot,
   sanitizeSessionId,
   type TouchKind
@@ -436,7 +437,11 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // Stop hooks cannot return `additionalContext`; the only channel that reaches
     // the agent loop is `decision: 'block'` with a `reason`. The hook is otherwise
     // idempotent, so re-running after the agent acts produces the same block.
-    const reason = buildSystemMessage(docPath, { hasStale, hasUncovered, hasRelated });
+    // A git-mesh:expert spawned earlier this session is recorded by the
+    // SubagentStart hook. When present, instruct the agent to wake it via
+    // SendMessage rather than spawn a fresh subagent.
+    const priorExpertAgentId = readExpertAgentId(sessionId);
+    const reason = buildSystemMessage(docPath, { hasStale, hasUncovered, hasRelated }, priorExpertAgentId);
     return stopOutput({ decision: 'block', reason });
   };
 }
@@ -555,20 +560,34 @@ function joinClauses(items: string[]): string {
  * Build the dispatch prompt, naming only the sections the doc actually contains.
  * A doc with no stale meshes never mentions stale meshes, and so on — so the
  * subagent is told to do exactly the work that is present.
+ *
+ * The prompt is deliberately lean: the git-mesh:expert agent auto-loads the
+ * handbook skill and already carries its own operating rules (act don't propose,
+ * commit only after the anchored source is committed, report briefly), so the
+ * dispatch only names the doc and the work present — not how to do it.
+ *
+ * When a git-mesh:expert was spawned earlier this session (priorExpertAgentId),
+ * wake it via SendMessage with its context intact instead of spawning a fresh
+ * subagent.
  */
-function buildSystemMessage(docPath: string, summary: DocSummary): string {
+function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAgentId: string | null): string {
   const tasks: string[] = [];
   if (summary.hasStale) tasks.push('re-anchor or retire the stale meshes');
   if (summary.hasUncovered) tasks.push('create meshes for the uncovered writes that form coherent subsystems');
   if (summary.hasRelated) tasks.push('expand related meshes that should absorb an uncovered write');
 
-  return `Spawn a background general-purpose subagent on the haiku model with this prompt:
+  if (priorExpertAgentId) {
+    return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
 
-  Load the git-mesh:handbook skill, then read ${docPath} and resolve it:
-  ${joinClauses(tasks)}. Act, don't propose.
-  Only commit the mesh edits once the files they anchor are themselves
-  committed; otherwise leave the mesh edits staged and say so.
-  Report what you changed and what you left for later, briefly.
+  A new mesh status doc is ready. Read ${docPath} and resolve it:
+  ${joinClauses(tasks)}.
+
+Run in the background; do not block on its result.`;
+  }
+
+  return `Spawn a background git-mesh:expert subagent on the haiku model with this prompt:
+
+  Read ${docPath} and resolve it: ${joinClauses(tasks)}.
 
 Run it in the background; do not block on its result.`;
 }

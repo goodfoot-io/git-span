@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { expertAgentMarkerPath, recordExpertAgent } from '../src/agent-hooks-common.js';
 import {
   buildAnchorSpecs,
   createStopHandler,
@@ -727,6 +728,54 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
     ).toLowerCase();
     expect(msg).toContain('stale mesh');
     expect(msg).not.toContain('uncovered writes');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch wakes an existing git-mesh:expert via SendMessage when one is recorded
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: dispatch targets a prior git-mesh:expert when recorded', () => {
+  const sid = `stop-test-wake-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-wake-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+    const mPath = expertAgentMarkerPath(sid);
+    if (fs.existsSync(mPath)) fs.unlinkSync(mPath);
+  });
+
+  it('spawns a fresh git-mesh:expert when no prior agent is recorded', async () => {
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+    const msg = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
+    expect(msg).toContain('Spawn a background git-mesh:expert subagent on the haiku model');
+    expect(msg).not.toContain('SendMessage');
+  });
+
+  it('wakes the recorded agent via SendMessage instead of spawning', async () => {
+    recordExpertAgent(sid, 'agent-abc123');
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+    const msg = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
+    expect(msg).toContain('Use SendMessage to wake the git-mesh:expert subagent (agent agent-abc123)');
+    expect(msg).not.toContain('Spawn a background');
+    // Still names the work present and the new status doc.
+    expect(msg).toContain('git-mesh-status-');
+    expect(msg.toLowerCase()).toContain('uncovered writes');
   });
 });
 
