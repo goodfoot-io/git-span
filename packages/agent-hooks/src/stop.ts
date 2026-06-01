@@ -430,7 +430,11 @@ export function createStopHandler(deps: StopHandlerDeps) {
     const sections: string[] = [];
     const hasStale = staleSection.length > 0;
     const hasUncovered = uncoveredLines.length > 0;
-    const hasRelated = relatedRenders.length > 0;
+    // Related meshes are surfaced only as supporting context for absorbing an
+    // uncovered write — the one task they drive (see buildSystemMessage). With no
+    // uncovered write there is nothing to absorb, so surfacing them would block
+    // the stop and dispatch a resolver with a vacuous task. Gate on hasUncovered.
+    const hasRelated = hasUncovered && relatedRenders.length > 0;
     if (hasStale) {
       sections.push(`# Stale meshes\n\n${staleSection}`);
     }

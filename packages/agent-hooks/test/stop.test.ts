@@ -318,7 +318,11 @@ describe('Stop hook: create entry → path-only filter line', () => {
     expect(doc).not.toContain('#L');
   });
 
-  it('classifies create as related when a mesh row is returned', async () => {
+  it('does not dispatch when the write is fully covered (related-only, no uncovered)', async () => {
+    // The write is covered by an existing mesh and nothing is stale. Related
+    // meshes only matter as context for absorbing an *uncovered* write; with no
+    // uncovered write there is nothing for the resolver to do, so the hook must
+    // not block or dispatch.
     const listBatch: ListBatchExecutor = () => 'my-mesh\tsrc/new.ts\t0-0\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/new.ts\n\nDesc.\n`;
 
@@ -329,13 +333,8 @@ describe('Stop hook: create entry → path-only filter line', () => {
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const msg = result.stdout.reason as string;
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
-    expect(doc).toContain('# Related meshes');
-    expect(doc).not.toContain('# Uncovered writes');
+    expect(result.stdout.decision).not.toBe('block');
+    expect(result.stdout.reason).toBeUndefined();
   });
 });
 
