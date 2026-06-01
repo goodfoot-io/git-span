@@ -209,6 +209,7 @@ pub(crate) fn resolve_lfs_anchor(
             status,
             source,
             layer_sources,
+            content_equivalent: false,
             acknowledged_by: None,
             locus: None,
         };
@@ -270,6 +271,7 @@ pub(crate) fn resolve_lfs_anchor(
             status,
             source,
             layer_sources,
+            content_equivalent: false,
             acknowledged_by: None,
             locus: None,
         };
@@ -332,6 +334,7 @@ pub(crate) fn resolve_lfs_anchor(
         status,
         source,
         layer_sources,
+        content_equivalent: false,
         acknowledged_by: None,
         locus: None,
     }
@@ -351,6 +354,7 @@ fn lfs_terminal(
         status: AnchorStatus::ContentUnavailable(reason),
         source: None,
         layer_sources: vec![],
+        content_equivalent: false,
         acknowledged_by: None,
         locus: None,
     }

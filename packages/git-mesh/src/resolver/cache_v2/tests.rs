@@ -37,6 +37,7 @@ fn anchor(id: &str, status: AnchorStatus) -> AnchorResolved {
         },
         current: None,
         status,
+        content_equivalent: false,
         source: None,
         layer_sources: Vec::new(),
         acknowledged_by: None,

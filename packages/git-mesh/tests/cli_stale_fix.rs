@@ -136,12 +136,21 @@ fn lists_all_anchors_with_no_drift_at_all() -> Result<()> {
 // --fix behavior
 // ---------------------------------------------------------------------------
 
+/// Original 10-line `file1.txt` content seeded by `TestRepo::seeded`.
+const ORIGINAL: &str =
+    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+
+// Under the content-equivalence gate (card main-90) a *meaning-changing*
+// `Changed` edit must NOT be re-anchored — the broken content would silence
+// the coupling. `--fix` leaves the original recorded hash in place at every
+// layer so the drift keeps surfacing.
+
 #[test]
-fn fix_rewrites_changed_anchor_at_worktree_layer() -> Result<()> {
+fn fix_leaves_changed_anchor_at_worktree_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Edit the worktree only (no commit, no stage).
+    // Meaning-changing worktree edit (no commit, no stage).
     let new_content =
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", new_content)?;
@@ -154,43 +163,52 @@ fn fix_rewrites_changed_anchor_at_worktree_layer() -> Result<()> {
     );
 
     let mesh = read_mesh(&repo, "m")?;
-    let expected = line_slice_hash(new_content, 1, 5);
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let broken = line_slice_hash(new_content, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
-        "mesh file must carry rewritten hash; got:\n{mesh}"
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        "meaning-changed anchor must keep its original hash; got:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains(&broken),
+        "meaning-changed anchor must NOT be re-anchored; got:\n{mesh}"
     );
     Ok(())
 }
 
 #[test]
-fn fix_rewrites_changed_at_index_layer() -> Result<()> {
+fn fix_leaves_changed_at_index_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Stage an edit but do not commit; leave worktree matching the index.
+    // Stage a meaning-changing edit; leave worktree matching the index.
     let staged =
         "lineSTG\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", staged)?;
     repo.run_git(["add", "file1.txt"])?;
-    // Worktree clean of further edits (matches index).
 
     repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
 
     let mesh = read_mesh(&repo, "m")?;
-    let expected = line_slice_hash(staged, 1, 5);
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let broken = line_slice_hash(staged, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
-        "mesh must hash staged content; got:\n{mesh}"
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        "meaning-changed anchor must keep its original hash; got:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains(&broken),
+        "meaning-changed anchor must NOT be re-anchored; got:\n{mesh}"
     );
     Ok(())
 }
 
 #[test]
-fn fix_rewrites_changed_at_head_layer() -> Result<()> {
+fn fix_leaves_changed_at_head_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Commit a change to file1, then re-anchor.
+    // Commit a meaning-changing edit to file1.
     let new_content =
         "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", new_content)?;
@@ -200,10 +218,95 @@ fn fix_rewrites_changed_at_head_layer() -> Result<()> {
     repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
 
     let mesh = read_mesh(&repo, "m")?;
-    let expected = line_slice_hash(new_content, 1, 5);
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let broken = line_slice_hash(new_content, 1, 5);
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        "meaning-changed anchor must keep its original hash; got:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains(&broken),
+        "meaning-changed anchor must NOT be re-anchored; got:\n{mesh}"
+    );
+    Ok(())
+}
+
+// Whitespace-only `Changed` edits ARE content-equivalent and must still be
+// re-anchored (the gate's GREEN path) at the worktree and index layers.
+
+#[test]
+fn fix_reanchors_whitespace_only_changed_at_worktree_layer() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Whitespace-only worktree edit: reindent line 1.
+    let reindented =
+        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", reindented)?;
+
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    let expected = line_slice_hash(reindented, 1, 5);
     assert!(
         mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
-        "mesh must hash HEAD content; got:\n{mesh}"
+        "whitespace-only change must be re-anchored to current content; got:\n{mesh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Whitespace-only edit, staged; worktree matches the index.
+    let reindented =
+        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", reindented)?;
+    repo.run_git(["add", "file1.txt"])?;
+
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    let expected = line_slice_hash(reindented, 1, 5);
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
+        "whitespace-only staged change must be re-anchored; got:\n{mesh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_leaves_whitespace_only_changed_at_head_layer() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Commit a whitespace-only edit. Even though it is content-equivalent,
+    // the equivalence gate is fail-closed at the HEAD layer: once the change
+    // is committed, the *original* anchored bytes are gone from HEAD, so the
+    // resolver cannot prove `a_slice` is the genuine original (its hash will
+    // not match the recorded `stored_hash`). The anchor is therefore left
+    // drifting rather than re-anchored to content we cannot verify is a pure
+    // reshaping of the original.
+    let reindented =
+        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", reindented)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "reindent file1"])?;
+
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    let mesh = read_mesh(&repo, "m")?;
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let reanchored = line_slice_hash(reindented, 1, 5);
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        "HEAD-layer whitespace change is fail-closed: original hash retained; got:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains(&reanchored),
+        "HEAD-layer whitespace change must NOT be re-anchored; got:\n{mesh}"
     );
     Ok(())
 }
@@ -301,9 +404,11 @@ fn fix_rejected_with_json_format() -> Result<()> {
 fn fix_no_commit_produced() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+    // Whitespace-only edit so the anchor is re-anchored (content-equivalent)
+    // and the mesh file actually changes on disk.
     repo.write_file(
         "file1.txt",
-        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     let head_before = repo.head_sha()?;
     repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
@@ -542,9 +647,12 @@ fn fix_coalesces_chain_of_three() -> Result<()> {
 }
 
 /// Two contiguous ranges whose drift surfaced at a non-worktree layer
-/// (committed change, worktree clean) must NOT merge. The worktree union
-/// hash would diverge from the Head-layer hash the per-anchor pass resolved,
-/// so a non-worktree-fresh record is a barrier and the ranges stay distinct.
+/// (committed meaning-change, worktree clean) must NOT merge. Under the
+/// content-equivalence gate these meaning-changed Head-layer anchors are not
+/// re-anchored at all (the original bytes are gone from HEAD, so the change
+/// cannot be proven whitespace-equivalent): both records are left drifting
+/// with their original hashes and the coalesce pass treats them as barriers,
+/// so the ranges stay distinct.
 #[test]
 fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -564,15 +672,15 @@ fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
     repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
 
     let mesh = read_mesh(&repo, "m")?;
-    let h1 = line_slice_hash(new_content, 1, 5);
-    let h2 = line_slice_hash(new_content, 6, 10);
+    let orig1 = line_slice_hash(ORIGINAL, 1, 5);
+    let orig2 = line_slice_hash(ORIGINAL, 6, 10);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{h1}")),
-        "first range re-anchored at Head layer, kept distinct; mesh:\n{mesh}"
+        mesh.contains(&format!("file1.txt#L1-L5 sha256:{orig1}")),
+        "first range left drifting with its original hash; mesh:\n{mesh}"
     );
     assert!(
-        mesh.contains(&format!("file1.txt#L6-L10 sha256:{h2}")),
-        "second range re-anchored at Head layer, kept distinct; mesh:\n{mesh}"
+        mesh.contains(&format!("file1.txt#L6-L10 sha256:{orig2}")),
+        "second range left drifting with its original hash; mesh:\n{mesh}"
     );
     assert!(
         !mesh.contains("file1.txt#L1-L10"),

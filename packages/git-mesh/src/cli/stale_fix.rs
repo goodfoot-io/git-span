@@ -48,7 +48,17 @@ pub(crate) fn apply_fix(
         let mut any_rewritten = false;
 
         for resolved in &m.anchors {
-            if !matches!(resolved.status, AnchorStatus::Moved | AnchorStatus::Changed) {
+            // Re-anchor `Moved` unconditionally (bytes are identical, only
+            // relocated). Re-anchor `Changed` only when the change preserved
+            // the anchored content (whitespace/formatting-equivalent); a
+            // meaning-changing edit is left drifting so the coupling
+            // resurfaces. Everything else (Fresh, terminal) is skipped.
+            let reanchor = match resolved.status {
+                AnchorStatus::Moved => true,
+                AnchorStatus::Changed => resolved.content_equivalent,
+                _ => false,
+            };
+            if !reanchor {
                 continue;
             }
             let Some(current) = &resolved.current else {

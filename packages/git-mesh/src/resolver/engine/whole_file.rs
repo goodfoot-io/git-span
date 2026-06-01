@@ -150,6 +150,7 @@ pub(crate) fn resolve_whole_file(
             status: AnchorStatus::Deleted,
             source: None,
             layer_sources: vec![],
+            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             acknowledged_by: None,
             locus: None,
         });
@@ -172,6 +173,7 @@ pub(crate) fn resolve_whole_file(
             status: AnchorStatus::Fresh,
             source: None,
             layer_sources: vec![],
+            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             acknowledged_by: None,
             locus: None,
         });
@@ -225,6 +227,7 @@ pub(crate) fn resolve_whole_file(
             status,
             source,
             layer_sources,
+            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             acknowledged_by: None,
             locus: None,
         });
@@ -393,6 +396,7 @@ pub(crate) fn resolve_whole_file(
                         status,
                         source,
                         layer_sources,
+                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         acknowledged_by: None,
                         locus: None,
                     });
@@ -406,6 +410,7 @@ pub(crate) fn resolve_whole_file(
                         status: AnchorStatus::Deleted,
                         source: None,
                         layer_sources: vec![],
+                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         acknowledged_by: None,
                         locus: None,
                     });
@@ -429,6 +434,7 @@ pub(crate) fn resolve_whole_file(
                         status: AnchorStatus::Changed,
                         source: Some(removed_layer),
                         layer_sources: vec![removed_layer],
+                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         acknowledged_by: None,
                         locus: None,
                     });
@@ -543,6 +549,7 @@ pub(crate) fn resolve_whole_file(
         status,
         source,
         layer_sources,
+        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
         acknowledged_by: None,
         locus: None,
     })

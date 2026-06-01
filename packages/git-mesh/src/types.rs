@@ -183,6 +183,11 @@ pub struct AnchorResolved {
     pub anchored: AnchorLocation,
     pub current: Option<AnchorLocation>,
     pub status: AnchorStatus,
+    /// Whether the current content is whitespace-normalized-equal to the
+    /// *genuine* anchored content. Only meaningful for `Changed`; `false`
+    /// everywhere else. `--fix` re-anchors a `Changed` anchor only when this
+    /// is `true`, so a meaning-changing edit is left drifting (fail-closed).
+    pub content_equivalent: bool,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
     pub source: Option<DriftSource>,
     /// All layers that show drift for this anchor, in shallow-to-deep order

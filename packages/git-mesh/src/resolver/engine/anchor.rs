@@ -236,6 +236,7 @@ pub(crate) fn resolve_anchor_inner(
             anchored,
             current: None,
             status: AnchorStatus::Deleted,
+            content_equivalent: false,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -289,6 +290,7 @@ pub(crate) fn resolve_anchor_inner(
                     blob: None,
                 }),
                 status: AnchorStatus::MergeConflict,
+                content_equivalent: false,
                 source: None,
                 layer_sources: vec![],
                 acknowledged_by: None,
@@ -451,6 +453,10 @@ pub(crate) fn resolve_anchor_inner(
     let source: Option<DriftSource>;
     let current_loc: Option<AnchorLocation>;
     let layer_sources: Vec<DriftSource>;
+    // Only set true on the in-place `Changed` arm below where the current
+    // slice is whitespace-equivalent to the genuine original anchored slice;
+    // `false` everywhere else (Fresh, Moved, Deleted, current==None).
+    let mut content_equivalent = false;
 
     match current {
         None => {
@@ -733,6 +739,24 @@ pub(crate) fn resolve_anchor_inner(
                 } else {
                     computed_layer_sources
                 };
+                // Content-equivalence gate for `--fix`. `content_equivalent`
+                // is true only when the current slice is a whitespace-only
+                // reshaping of the *genuine* original anchored slice. For
+                // file-backed anchors `a_slice` reads the HEAD blob, which may
+                // already carry the change (HEAD-layer drift); verify it is
+                // the true original by hashing it against `stored_hash`. When
+                // the original bytes are unrecoverable the hash mismatches and
+                // we leave the anchor drifting — fail-closed. Pinned-blob
+                // anchors read `a_slice` from the anchored blob, so it is the
+                // original by construction.
+                let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty() {
+                    format!("sha256:{}", sha256_hex(a_slice.join("\n").as_bytes()))
+                        == r.stored_hash
+                } else {
+                    !r.blob.is_empty()
+                };
+                content_equivalent =
+                    anchored_is_original && lines_equal(a_slice, c_slice, true);
                 current_loc = Some(AnchorLocation {
                     path: PathBuf::from(t.path.clone()),
                     extent: AnchorExtent::LineRange {
@@ -751,6 +775,7 @@ pub(crate) fn resolve_anchor_inner(
         anchored,
         current: current_loc,
         status,
+        content_equivalent,
         source,
         layer_sources,
         acknowledged_by: None,
@@ -770,6 +795,7 @@ fn unavailable(
         anchored,
         current: None,
         status: AnchorStatus::ContentUnavailable(reason),
+        content_equivalent: false,
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,
@@ -832,6 +858,7 @@ fn clean_head_fast_path(
             blob: current_blob,
         }),
         status,
+        content_equivalent: false,
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,
