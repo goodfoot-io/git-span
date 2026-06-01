@@ -1,6 +1,6 @@
 packages/agent-hooks/src/agent-hooks-common.ts#L142-L178 sha256:1ea726e5831e14c48b55a440881b81d638112b3c45a3c0cb9afee043d8427055
 packages/agent-hooks/src/subagent-start.ts sha256:11a759566d449580cffb025b543118c443f7b8dcdf11cb9c1e1371da3a865f1e
 packages/agent-hooks/test/subagent-start.test.ts sha256:b3df8d819ceb9435d7886aa682808f945da506e1f1db2fd9f28105a938f433ff
-packages/agent-hooks/src/stop.ts#L485-L489 sha256:b5a8dd238b911057b59565c0155f8e8d5663774e7762e432c54a027c342951fd
+packages/agent-hooks/src/stop.ts#L517-L521 sha256:b5a8dd238b911057b59565c0155f8e8d5663774e7762e432c54a027c342951fd
 
 SubagentStart hook writes the expert agent ID to a per-session marker; Stop hook reads it to wake the existing expert agent instead of spawning a duplicate.
