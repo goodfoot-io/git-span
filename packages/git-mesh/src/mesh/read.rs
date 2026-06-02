@@ -79,6 +79,92 @@ pub fn conflicted_mesh_names_in(repo: &gix::Repository, mesh_root: &str) -> Resu
     Ok(conflicted)
 }
 
+/// True when an anchor of `extent` matches the optional 1-based inclusive
+/// line `range`. A whole-file anchor matches any range query; a line anchor
+/// matches when the ranges overlap; with no range every anchor matches.
+fn extent_in_range(extent: crate::types::AnchorExtent, range: Option<(u32, u32)>) -> bool {
+    use crate::types::AnchorExtent;
+    match (extent, range) {
+        (_, None) => true,
+        (AnchorExtent::WholeFile, Some(_)) => true,
+        (AnchorExtent::LineRange { start, end }, Some((qs, qe))) => start <= qe && end >= qs,
+    }
+}
+
+/// In-memory index over every visible mesh's anchors, built by reading the
+/// whole corpus **once**. Resolving many positional paths (e.g. a
+/// shell-expanded `public/**/*` glob) must reuse a single index instead of
+/// calling [`meshes_matching_path_in`] per arg — the latter reloads and
+/// reparses all meshes on every call, which is O(args × meshes) and freezes
+/// on large repos. See [`MeshPathIndex::matching_names`] /
+/// [`MeshPathIndex::matching_names_glob`].
+pub struct MeshPathIndex {
+    /// Exact anchor-path → (mesh name, extent) pairs, for the common
+    /// non-glob lookup.
+    by_path: std::collections::HashMap<String, Vec<(String, crate::types::AnchorExtent)>>,
+    /// Flat (mesh name, anchor path, extent) list, scanned for glob queries.
+    all: Vec<(String, String, crate::types::AnchorExtent)>,
+}
+
+impl MeshPathIndex {
+    /// Load the full mesh corpus once and build the index.
+    pub fn load_in(repo: &gix::Repository, mesh_root: &str) -> Result<Self> {
+        let mut by_path: std::collections::HashMap<
+            String,
+            Vec<(String, crate::types::AnchorExtent)>,
+        > = std::collections::HashMap::new();
+        let mut all = Vec::new();
+        for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
+            for (_id, a) in &mesh.anchors {
+                by_path
+                    .entry(a.path.clone())
+                    .or_default()
+                    .push((name.clone(), a.extent));
+                all.push((name.clone(), a.path.clone(), a.extent));
+            }
+        }
+        Ok(Self { by_path, all })
+    }
+
+    /// Names of meshes with an anchor whose path equals `path` and whose
+    /// extent matches the optional line `range`. Sorted and deduped.
+    pub fn matching_names(&self, path: &str, range: Option<(u32, u32)>) -> Vec<String> {
+        let mut names: Vec<String> = match self.by_path.get(path) {
+            None => return Vec::new(),
+            Some(entries) => entries
+                .iter()
+                .filter(|(_, extent)| extent_in_range(*extent, range))
+                .map(|(name, _)| name.clone())
+                .collect(),
+        };
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Names of meshes with an anchor whose path matches the `pattern` glob
+    /// (path separators are literal) and whose extent matches the optional
+    /// line `range`. Sorted.
+    pub fn matching_names_glob(
+        &self,
+        pattern: &str,
+        range: Option<(u32, u32)>,
+    ) -> Result<Vec<String>> {
+        let glob = globset::GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
+            .compile_matcher();
+        let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (name, path, extent) in &self.all {
+            if glob.is_match(path) && extent_in_range(*extent, range) {
+                matched.insert(name.clone());
+            }
+        }
+        Ok(matched.into_iter().collect())
+    }
+}
+
 /// Path index over the mesh files: return the
 /// names of all visible meshes that have at least one anchor matching
 /// `path` (exact path equality) and the optional 1-based inclusive line
@@ -99,21 +185,12 @@ pub fn meshes_matching_path_in(
     range: Option<(u32, u32)>,
     mesh_root: &str,
 ) -> Result<Vec<String>> {
-    use crate::types::AnchorExtent;
     let mut names: Vec<String> = Vec::new();
     for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
-        let hit = mesh.anchors.iter().any(|(_, a)| {
-            if a.path != path {
-                return false;
-            }
-            match (a.extent, range) {
-                (_, None) => true,
-                (AnchorExtent::WholeFile, Some(_)) => true,
-                (AnchorExtent::LineRange { start, end }, Some((qs, qe))) => {
-                    start <= qe && end >= qs
-                }
-            }
-        });
+        let hit = mesh
+            .anchors
+            .iter()
+            .any(|(_, a)| a.path == path && extent_in_range(a.extent, range));
         if hit {
             names.push(name);
         }
@@ -161,7 +238,6 @@ pub fn matching_mesh_names_glob_in(
     range: Option<(u32, u32)>,
     mesh_root: &str,
 ) -> Result<Vec<String>> {
-    use crate::types::AnchorExtent;
     let glob = globset::GlobBuilder::new(pattern)
         .literal_separator(true)
         .build()
@@ -170,17 +246,7 @@ pub fn matching_mesh_names_glob_in(
     let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
         for (_id, a) in &mesh.anchors {
-            if !glob.is_match(&a.path) {
-                continue;
-            }
-            let in_range = match (a.extent, range) {
-                (_, None) => true,
-                (AnchorExtent::WholeFile, Some(_)) => true,
-                (AnchorExtent::LineRange { start, end }, Some((rs, re))) => {
-                    start <= re && end >= rs
-                }
-            };
-            if in_range {
+            if glob.is_match(&a.path) && extent_in_range(a.extent, range) {
                 matched.insert(name.clone());
                 break;
             }

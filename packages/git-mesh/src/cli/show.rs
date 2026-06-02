@@ -744,6 +744,12 @@ pub(crate) fn resolve_targets(
     let mut result: HashSet<String> = HashSet::new();
     let mut missing_args: Vec<&str> = Vec::new();
 
+    // Build the path index once. Resolving each arg through
+    // `meshes_matching_path_in` reloaded the whole mesh corpus per arg —
+    // O(args × meshes) — which freezes when a shell-expanded glob hands this
+    // resolver hundreds of paths against a large mesh set.
+    let path_index = crate::mesh::read::MeshPathIndex::load_in(repo, mesh_root)?;
+
     // Resolve each arg. Rule: a zero-match against the mesh set is fine on
     // its own — exit 0 silently. We only error when the arg names something
     // that doesn't exist: a missing file, a missing mesh name, or a glob the
@@ -752,12 +758,7 @@ pub(crate) fn resolve_targets(
         if arg.contains("#L") {
             // Range address: parse path and range, scan mesh files.
             let (path, start, end) = parse_range_address(arg)?;
-            let names = crate::mesh::read::meshes_matching_path_in(
-                repo,
-                &path,
-                Some((start, end)),
-                mesh_root,
-            )?;
+            let names = path_index.matching_names(&path, Some((start, end)));
             if !names.is_empty() {
                 result.extend(names);
             } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
@@ -770,7 +771,7 @@ pub(crate) fn resolve_targets(
             if reader.read_effective(arg)?.is_some() {
                 result.insert(arg.clone());
             } else {
-                let names = crate::mesh::read::meshes_matching_path_in(repo, arg, None, mesh_root)?;
+                let names = path_index.matching_names(arg, None);
                 if !names.is_empty() {
                     result.extend(names);
                 } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
@@ -778,7 +779,7 @@ pub(crate) fn resolve_targets(
                 }
             }
         } else if crate::mesh::read::is_glob_pattern(arg) {
-            let names = crate::mesh::read::matching_mesh_names_glob_in(repo, arg, None, mesh_root)?;
+            let names = path_index.matching_names_glob(arg, None)?;
             if !names.is_empty() {
                 result.extend(names);
             } else {
@@ -787,7 +788,7 @@ pub(crate) fn resolve_targets(
         } else {
             // Not mesh-name shape (path with extension): scan mesh files
             // for an anchor on this path.
-            let names = crate::mesh::read::meshes_matching_path_in(repo, arg, None, mesh_root)?;
+            let names = path_index.matching_names(arg, None);
             if !names.is_empty() {
                 result.extend(names);
             } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {

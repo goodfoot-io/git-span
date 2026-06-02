@@ -349,6 +349,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
 
         let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
 
+        // Build the path index once. The previous code resolved each
+        // positional arg through `matching_mesh_names_in`, which reloaded and
+        // reparsed the entire mesh corpus per arg — O(args × meshes). A
+        // shell-expanded glob like `public/**/*` (hundreds of args) against a
+        // large repo (thousands of meshes) made that effectively freeze.
+        let path_index = crate::mesh::read::MeshPathIndex::load_in(repo, mesh_root)?;
+
         for arg in &args.paths {
             let mut found = false;
 
@@ -373,14 +380,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 }
             }
 
-            // Step 2: fall back to path index (glob-aware).
+            // Step 2: fall back to path index (glob-aware). Resolved against
+            // the pre-built `path_index` so this stays O(meshes + args)
+            // instead of reloading the corpus per arg.
             if !found {
                 let names = if crate::mesh::read::is_glob_pattern(arg) {
-                    crate::mesh::read::matching_mesh_names_glob_in(repo, arg, None, mesh_root)
-                        .unwrap_or_default()
+                    path_index.matching_names_glob(arg, None).unwrap_or_default()
                 } else {
-                    crate::mesh::read::matching_mesh_names_in(repo, arg, None, mesh_root)
-                        .unwrap_or_default()
+                    path_index.matching_names(arg, None)
                 };
                 for name in names {
                     if seen.insert(name.clone()) {
