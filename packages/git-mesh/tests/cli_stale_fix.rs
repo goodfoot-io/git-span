@@ -43,7 +43,7 @@ fn seed_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()>
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lists_all_anchors_in_all_fresh_mesh() -> Result<()> {
+fn fully_fresh_mesh_is_absent_from_scan() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "all fresh"])?;
@@ -51,19 +51,15 @@ fn lists_all_anchors_in_all_fresh_mesh() -> Result<()> {
     repo.run_git(["commit", "-m", "mesh commit"])?;
 
     let stdout = repo.mesh_stdout(["stale"])?;
-    assert!(stdout.contains("## m"), "block heading; stdout=\n{stdout}");
+    // A scan is a drift report: a fully-fresh mesh does not surface.
     assert!(
-        stdout.contains("file1.txt#L1-L5"),
-        "first fresh anchor must render as bare bullet; stdout=\n{stdout}"
+        !stdout.contains("## m"),
+        "fully-fresh mesh must not surface in a scan; stdout=\n{stdout}"
     );
     assert!(
-        stdout.contains("file2.txt#L1-L5"),
-        "second fresh anchor must render as bare bullet; stdout=\n{stdout}"
+        stdout.contains("0 stale"),
+        "summary line must appear; stdout=\n{stdout}"
     );
-    // Stored order: file1 then file2.
-    let p1 = stdout.find("file1.txt#L1-L5").unwrap();
-    let p2 = stdout.find("file2.txt#L1-L5").unwrap();
-    assert!(p1 < p2, "stored order preserved; stdout=\n{stdout}");
     Ok(())
 }
 
@@ -112,21 +108,18 @@ fn lists_all_anchors_in_mixed_mesh_in_stored_order() -> Result<()> {
 }
 
 #[test]
-fn lists_all_anchors_with_no_drift_at_all() -> Result<()> {
+fn no_drift_scan_lists_no_meshes() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "a", "file1.txt#L1-L5", "a")?;
     seed_mesh(&repo, "b", "file2.txt#L1-L5", "b")?;
     let out = repo.run_mesh(["stale"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## a"), "mesh a; stdout=\n{stdout}");
-    assert!(stdout.contains("## b"), "mesh b; stdout=\n{stdout}");
+    // No mesh has drifted: the scan prints only the summary line.
+    assert!(!stdout.contains("## a"), "mesh a must not surface; stdout=\n{stdout}");
+    assert!(!stdout.contains("## b"), "mesh b must not surface; stdout=\n{stdout}");
     assert!(
-        stdout.contains("file1.txt#L1-L5"),
-        "anchor a; stdout=\n{stdout}"
-    );
-    assert!(
-        stdout.contains("file2.txt#L1-L5"),
-        "anchor b; stdout=\n{stdout}"
+        stdout.contains("0 stale"),
+        "summary line must appear; stdout=\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(0));
     Ok(())
