@@ -319,6 +319,66 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     Ok(())
 }
 
+/// A no-argument workspace scan is a drift report: a fully-fresh mesh
+/// (every anchor still matching its anchored hash) must NOT appear at all.
+#[test]
+fn workspace_scan_hides_fully_fresh_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_stable(&repo, "quiet-mesh")?; // anchors lines 6-10 — unaffected by drift
+    seed(&repo, "drifted-mesh")?; // anchors lines 1-5 — will drift
+    drift(&repo, "mutate")?;
+    let out = repo.run_mesh(["stale"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("drifted-mesh"),
+        "drifted mesh must appear in scan; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("quiet-mesh"),
+        "fully-fresh mesh must NOT appear in a workspace scan; stdout=\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(1), "exit 1 because a mesh drifted");
+    Ok(())
+}
+
+/// A stale mesh surfaced by a no-argument scan must list its *complete*
+/// anchor set in stored order: drifted anchors carry their reason suffix,
+/// fresh siblings render as bare bullets, and the `why` text follows.
+#[test]
+fn workspace_scan_stale_mesh_shows_fresh_sibling_and_why() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "spans two files"])?;
+    {
+        repo.run_git(["add", ".mesh"])?;
+        repo.run_git(["commit", "-m", "mesh commit"])?;
+    }
+    // Drift only file1.txt so file2.txt#L1-L5 stays Fresh.
+    repo.write_file(
+        "file1.txt",
+        "edit1\nedit2\nedit3\nedit4\nedit5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    // Warm the cache_v2 store: the first scan persists only the non-Fresh
+    // finding rows for `m`, so a subsequent warm scan resolves `m.anchors`
+    // to the drifted subset alone — the cache path that drops fresh siblings.
+    let _warm = repo.run_mesh(["stale"])?;
+    let out = repo.run_mesh(["stale"])?; // no args → workspace scan (warm)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("file1.txt#L1-L5 — changed"),
+        "drifted anchor must carry its reason suffix; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("file2.txt#L1-L5"),
+        "fresh sibling anchor must appear in the scan block; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("spans two files"),
+        "why text must follow the anchors; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
 fn commit_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, anchor])?;
     repo.mesh_stdout(["why", name, "-m", why])?;
