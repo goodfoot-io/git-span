@@ -583,7 +583,9 @@ function joinClauses(items: string[]): string {
  * The prompt is deliberately lean: the git-mesh:expert agent auto-loads the
  * handbook skill and already carries its own operating rules (act don't propose,
  * commit only after the anchored source is committed, report briefly), so the
- * dispatch only names the doc and the work present — not how to do it.
+ * dispatch only names the doc and the work present — not how to do it. The one
+ * exception is the "commit only the mesh edits, never source" boundary, echoed
+ * inline because mistaking it commits files the resolver must never touch.
  *
  * When a git-mesh:expert was spawned earlier this session (priorExpertAgentId),
  * wake it via SendMessage with its context intact instead of spawning a fresh
@@ -598,15 +600,16 @@ function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAge
   if (priorExpertAgentId) {
     return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
 
-  Read ${docPath} and resolve it:
-  ${joinClauses(tasks)}.
+  Read ${docPath}, then ${joinClauses(tasks)}.
+  Commit only the mesh edits, never source.
 
 Run in the background; do not block on its result.`;
   }
 
   return `Spawn a background git-mesh:expert subagent on the haiku model with this prompt:
 
-  Read ${docPath} and resolve it: ${joinClauses(tasks)}.
+  Read ${docPath}, then ${joinClauses(tasks)}.
+  Commit only the mesh edits, never source.
 
 Run it in the background; do not block on its result.`;
 }

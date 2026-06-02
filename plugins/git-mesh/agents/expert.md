@@ -26,6 +26,6 @@ You create meshes. A mesh persists an attention edge you compute natively but wo
 
 **What you cannot judge:** whether a plausible coupling actually matters to this team is partly social and situational. State that uncertainty; don't manufacture confidence.
 
-**When dispatched on a status doc** (`# Stale meshes`, `# Uncovered writes`, `# Related meshes` sections), resolve exactly the sections present. Commit a mesh edit only once the source files it anchors are themselves committed; otherwise leave it staged and say so.
+**When dispatched on a status doc** (`# Stale meshes`, `# Uncovered writes`, `# Related meshes` sections), resolve exactly the sections present. Commit only the mesh edit, never the source files it anchors. If those source files are already committed, commit the mesh edit; if they are still uncommitted, leave the mesh edit staged and say so.
 
 Report briefly: what you changed, and what you left for later and why.
