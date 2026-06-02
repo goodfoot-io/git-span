@@ -2,18 +2,17 @@
  * PreToolUse: surface overlapping mesh anchors inline when an agent reads or
  * edits a line range that intersects an existing mesh anchor on the same file.
  *
- * On every Read / Edit / MultiEdit / Write whose tool input resolves to a
- * partial line range on one file, the hook calls `git mesh list <path>
- * --porcelain`, keeps only meshes that have a line-ranged anchor intersecting
- * the tool's range, drops slugs already surfaced in this Claude Code session
- * (on-disk per-session memo), and — if anything remains — emits the
- * human-readable `git mesh list <names…>` block wrapped in
- * `<git-mesh>…</git-mesh>` on both channels: `hookSpecificOutput.additionalContext`
- * (the channel that reaches the model loop) and `systemMessage` (the
- * user-facing UI line).
+ * On every Read / Edit / Write whose tool input resolves to a partial line
+ * range on one file, the hook calls `git mesh list <path> --porcelain`, keeps
+ * only meshes that have a line-ranged anchor intersecting the tool's range,
+ * drops slugs already surfaced in this Claude Code session (on-disk
+ * per-session memo), and — if anything remains — emits the human-readable
+ * `git mesh list <names…>` block wrapped in `<git-mesh>…</git-mesh>` on both
+ * channels: `hookSpecificOutput.additionalContext` (the channel that reaches
+ * the model loop) and `systemMessage` (the user-facing UI line).
  *
- * Additionally, every Read / Edit / MultiEdit / Write call is appended to a
- * per-session JSONL journal at
+ * Additionally, every Read / Edit / Write call is appended to a per-session
+ * JSONL journal at
  * ~/.cache/git-mesh/session/<sanitizedSessionId>/touches.jsonl.
  */
 
@@ -106,38 +105,6 @@ function deriveEditRange(toolInput: ToolInput): LineRange | null {
   const start = byteOffsetToLine(content, idx);
   const end = start + countLines(oldString) - 1;
   return { start, end };
-}
-
-function deriveMultiEditRange(toolInput: ToolInput): LineRange | null {
-  const filePath = toolInput.file_path;
-  const edits = toolInput.edits;
-  if (typeof filePath !== 'string' || !Array.isArray(edits)) return null;
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
-  let union: LineRange | null = null;
-  for (const edit of edits) {
-    if (typeof edit !== 'object' || edit === null) continue;
-    const oldString = (edit as Record<string, unknown>).old_string;
-    // Empty old_string has no derivable range; skip to avoid spurious line 1 hits.
-    if (typeof oldString !== 'string' || oldString === '') continue;
-    const idx = content.indexOf(oldString);
-    if (idx === -1) continue;
-    const start = byteOffsetToLine(content, idx);
-    const end = start + countLines(oldString) - 1;
-    if (union === null) {
-      union = { start, end };
-    } else {
-      union = {
-        start: Math.min(union.start, start),
-        end: Math.max(union.end, end)
-      };
-    }
-  }
-  return union;
 }
 
 /** Strip trailing empty strings produced by a trailing newline in split("\n"). */
@@ -278,7 +245,8 @@ interface TouchEntry {
  * Unlike the overlap arm, this never returns early just because the range is
  * null — a whole-file Read or a create Write are still journal-relevant.
  *
- * Returns an array because MultiEdit emits one entry per edit.
+ * Returns an array for uniformity with callers that iterate the result;
+ * each tool currently emits at most one entry.
  */
 function deriveTouchEntries(
   toolName: string,
@@ -300,30 +268,6 @@ function deriveTouchEntries(
     }
     // old_string not found or empty — fall back to whole-write
     return [{ kind: 'whole-write' }];
-  }
-
-  if (toolName === 'MultiEdit') {
-    const edits = toolInput.edits;
-    if (!Array.isArray(edits)) return [{ kind: 'whole-write' }];
-    const content: string | null = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null;
-    const entries: Array<{ kind: TouchKind; range?: LineRange }> = [];
-    for (const edit of edits) {
-      if (typeof edit !== 'object' || edit === null) continue;
-      const oldString = (edit as Record<string, unknown>).old_string;
-      if (typeof oldString !== 'string' || oldString === '' || content === null) {
-        entries.push({ kind: 'whole-write' });
-        continue;
-      }
-      const idx = content.indexOf(oldString);
-      if (idx === -1) {
-        entries.push({ kind: 'whole-write' });
-        continue;
-      }
-      const start = byteOffsetToLine(content, idx);
-      const end = start + countLines(oldString) - 1;
-      entries.push({ kind: 'write', range: { start, end } });
-    }
-    return entries.length > 0 ? entries : [{ kind: 'whole-write' }];
   }
 
   if (toolName === 'Write') {
@@ -422,8 +366,6 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       range = deriveReadRange(toolInput);
     } else if (toolName === 'Edit') {
       range = deriveEditRange(toolInput);
-    } else if (toolName === 'MultiEdit') {
-      range = deriveMultiEditRange(toolInput);
     } else if (toolName === 'Write') {
       range = deriveWriteRange(toolInput);
     }
@@ -482,6 +424,6 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
 }
 
 export default preToolUseHook(
-  { matcher: 'Read|Edit|MultiEdit|Write', timeout: 10_000 },
+  { matcher: 'Read|Edit|Write', timeout: 10_000 },
   createHandler(createDefaultMeshExecutor(), diskMemoFactory)
 );

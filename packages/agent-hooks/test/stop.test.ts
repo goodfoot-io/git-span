@@ -150,6 +150,35 @@ describe('Stop hook: empty journal → silent exit', () => {
   });
 });
 
+describe('loadJournal: unknown/legacy kind is rejected', () => {
+  const sid = `stop-test-unknown-kind-${Date.now()}`;
+
+  afterEach(() => {
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('rejects entries with unknown or legacy kinds while accepting valid ones on either side', () => {
+    const dir = nodePath.dirname(journalPath(sid));
+    fs.mkdirSync(dir, { recursive: true });
+    // A valid entry, a legacy 'whole' kind entry, and another valid entry
+    const lines = `${[
+      JSON.stringify({ tool: 'Edit', path: 'a.ts', kind: 'write', seen: false, start: 1, end: 2 }),
+      JSON.stringify({ tool: 'Edit', path: 'b.ts', kind: 'whole', seen: false }),
+      JSON.stringify({ tool: 'Write', path: 'c.ts', kind: 'create', seen: false })
+    ].join('\n')}\n`;
+    fs.writeFileSync(journalPath(sid), lines, 'utf8');
+
+    const entries = loadJournal(sid);
+    expect(entries).not.toBeNull();
+    expect(entries).toHaveLength(2);
+    expect(entries![0].path).toBe('a.ts');
+    expect(entries![1].path).toBe('c.ts');
+    // The legacy 'whole' kind entry must not appear
+    expect(entries!.every((e) => (e.kind as string) !== 'whole')).toBe(true);
+  });
+});
+
 describe('Stop hook: empty status doc → silent exit, no systemMessage', () => {
   const sid = `stop-test-empty-doc-${Date.now()}`;
   let tmpRepo: string;

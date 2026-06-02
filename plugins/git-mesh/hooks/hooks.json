@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.634e2a63.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.4534c23c.mjs",
             "timeout": 30000
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.5cf2c3f5.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.0c601abe.mjs",
             "timeout": 10000
           }
         ],
@@ -38,9 +38,9 @@
   "__generated": {
     "files": [
       "subagent-start.0827b2ec.mjs",
-      "stop.634e2a63.mjs",
-      "pre-tool-use.5cf2c3f5.mjs"
+      "stop.4534c23c.mjs",
+      "pre-tool-use.0c601abe.mjs"
     ],
-    "timestamp": "2026-06-02T17:25:51.002Z"
+    "timestamp": "2026-06-02T17:21:25.776Z"
   }
 }

@@ -54,6 +54,15 @@ export function journalPath(sessionId: string): string {
   return nodePath.join(journalDir(sessionId), 'touches.jsonl');
 }
 
+/** The set of valid current TouchKind values. Any other string is rejected. */
+const VALID_TOUCH_KINDS: ReadonlySet<string> = new Set<string>([
+  'read',
+  'write',
+  'whole-read',
+  'whole-write',
+  'create'
+]);
+
 export function loadJournal(sessionId: string): JournalEntry[] | null {
   const path = journalPath(sessionId);
   let raw: string;
@@ -68,7 +77,7 @@ export function loadJournal(sessionId: string): JournalEntry[] | null {
   for (const line of lines) {
     try {
       const e = JSON.parse(line) as JournalEntry;
-      if (typeof e.path === 'string' && typeof e.kind === 'string') {
+      if (typeof e.path === 'string' && typeof e.kind === 'string' && VALID_TOUCH_KINDS.has(e.kind)) {
         entries.push(e);
       }
     } catch (_) {

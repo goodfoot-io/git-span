@@ -115,9 +115,9 @@ function toHookResult(result: unknown): HookResult {
 // ---------------------------------------------------------------------------
 
 describe('pre-tool-use hook registration', () => {
-  it('registers PreToolUse with matcher Read|Edit|MultiEdit|Write', () => {
+  it('registers PreToolUse with matcher Read|Edit|Write', () => {
     expect(hook.hookEventName).toBe('PreToolUse');
-    expect(hook.matcher).toBe('Read|Edit|MultiEdit|Write');
+    expect(hook.matcher).toBe('Read|Edit|Write');
   });
 });
 
@@ -254,43 +254,6 @@ describe('Edit tool', () => {
     const result = toHookResult(await handler(input as never, { logger }));
     expect(calls).toHaveLength(0);
     expect(result.stdout.systemMessage).toBeUndefined();
-  });
-});
-
-describe('MultiEdit tool', () => {
-  let repo: { root: string; cleanup: () => void };
-  let filePath: string;
-  beforeAll(() => {
-    repo = makeTempRepo();
-    filePath = join(repo.root, 'multi.ts');
-    writeFileSync(filePath, 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n');
-  });
-  afterAll(() => repo.cleanup());
-
-  it('unions ranges from multiple edits and surfaces intersecting mesh', async () => {
-    const relPath = 'multi.ts';
-    const meshName = 'multi-mesh';
-    // Mesh anchor at lines 1-3; first edit ("a") is at line 1
-    const porcelain = porcelainLine(meshName, relPath, 1, 3);
-    const { executor, setResponse } = createFakeExecutor();
-    setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'multi output');
-    const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
-
-    const input = baseInput({
-      cwd: repo.root,
-      tool_name: 'MultiEdit',
-      tool_input: {
-        file_path: filePath,
-        edits: [
-          { old_string: 'a', new_string: 'A' },
-          { old_string: 'i', new_string: 'I' }
-        ]
-      }
-    });
-    const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('multi output');
   });
 });
 
@@ -895,30 +858,6 @@ describe('Touch kind emission', () => {
     const entries = loadJournal(sid);
     expect(entries).not.toBeNull();
     const e = entries!.find((x) => x.path === 'emit-write-replace.ts');
-    expect(e?.kind).toBe('whole-write');
-  });
-
-  it('MultiEdit with empty old_string emits whole-write kind', async () => {
-    const absFilePath = join(repo.root, 'emit-multiedit-fallback.ts');
-    writeFileSync(absFilePath, 'line1\nline2\n');
-    const { executor } = createFakeExecutor();
-    const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
-
-    const input = baseInput({
-      session_id: sid,
-      cwd: repo.root,
-      tool_name: 'MultiEdit',
-      tool_input: {
-        file_path: absFilePath,
-        edits: [{ old_string: '', new_string: 'replacement' }]
-      }
-    });
-    await handler(input as never, { logger });
-
-    const entries = loadJournal(sid);
-    expect(entries).not.toBeNull();
-    const e = entries!.find((x) => x.path === 'emit-multiedit-fallback.ts');
     expect(e?.kind).toBe('whole-write');
   });
 });

@@ -188,49 +188,6 @@ describe('Journal: Edit with derivable old_string → kind=write with range', ()
   });
 });
 
-describe('Journal: MultiEdit with N edits → N journal lines', () => {
-  let repo: { root: string; cleanup: () => void };
-  const sid = `journal-test-multiedit-${Date.now()}`;
-
-  beforeAll(() => {
-    repo = makeTempRepo();
-    clearJournal(sid);
-  });
-  afterAll(() => {
-    repo.cleanup();
-    clearJournal(sid);
-  });
-
-  it('appends one entry per edit', async () => {
-    const handler = createHandler(noopExecutor, inMemoryMemoFactory());
-    const fp = join(repo.root, 'multi.ts');
-    writeFileSync(fp, 'alpha\nbeta\ngamma\ndelta\n');
-
-    await handler(
-      baseInput({
-        session_id: sid,
-        cwd: repo.root,
-        tool_name: 'MultiEdit',
-        tool_input: {
-          file_path: fp,
-          edits: [
-            { old_string: 'alpha', new_string: 'ALPHA' },
-            { old_string: 'gamma', new_string: 'GAMMA' }
-          ]
-        }
-      }) as never,
-      { logger }
-    );
-
-    const entries = readJournal(sid);
-    expect(entries).toHaveLength(2);
-    expect(entries[0].kind).toBe('write');
-    expect(entries[1].kind).toBe('write');
-    expect(entries[0].start).toBe(1); // 'alpha' is line 1
-    expect(entries[1].start).toBe(3); // 'gamma' is line 3
-  });
-});
-
 describe('Journal: Write to existing file (partial change) → kind=write with range', () => {
   let repo: { root: string; cleanup: () => void };
   const sid = `journal-test-write-partial-${Date.now()}`;
