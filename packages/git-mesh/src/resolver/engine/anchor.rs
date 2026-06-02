@@ -594,6 +594,37 @@ pub(crate) fn resolve_anchor_inner(
                 lines_equal(a_slice, c_slice, cfg.ignore_whitespace)
             };
 
+            // Worktree-fresh terminal verdict — extends the
+            // worktree-is-authority principle (in-place case, main-93) to
+            // the relocation case. When the worktree layer is enabled and
+            // the worktree slice at the anchor's *recorded* range hashes
+            // to `stored_hash`, the anchor accurately represents the
+            // working tree and is `Fresh`, regardless of where the layered
+            // hunk walk placed `current` by shifting the recorded range
+            // through a deeper layer's diff. The shift is double-counting:
+            // the anchor was re-anchored to the worktree range, so applying
+            // the worktree diff on top of it moves `current` off the
+            // content even though the content sits exactly where the anchor
+            // records it. A genuine relocation (the recorded-range slice
+            // does *not* match) falls through to the layered classification
+            // below and may still be `Moved`; `--head`/`--staged` views do
+            // not enable the worktree layer, so they are unaffected.
+            let worktree_recorded_fresh = state.layers.worktree
+                && !r.stored_hash.is_empty()
+                && r.blob.is_empty()
+                && t.path == r.path
+                && {
+                    let w_lo = (anchored_start as usize).saturating_sub(1);
+                    let w_hi = (anchored_end as usize).min(current_lines.len());
+                    let w_slice = if w_lo <= w_hi {
+                        &current_lines[w_lo..w_hi]
+                    } else {
+                        &[][..]
+                    };
+                    let w_text: String = w_slice.join("\n");
+                    format!("sha256:{}", sha256_hex(w_text.as_bytes())) == r.stored_hash
+                };
+
             // Compute per-layer drift: compare each enabled layer's content
             // independently against the anchor. Emit a Finding per drifting
             // layer in shallow-to-deep order (I → W → H).
@@ -663,7 +694,19 @@ pub(crate) fn resolve_anchor_inner(
                 cur_blob
             };
 
-            if equal {
+            if worktree_recorded_fresh {
+                status = AnchorStatus::Fresh;
+                source = None;
+                layer_sources = vec![];
+                current_loc = Some(AnchorLocation {
+                    path: PathBuf::from(r.path.clone()),
+                    extent: AnchorExtent::LineRange {
+                        start: anchored_start,
+                        end: anchored_end,
+                    },
+                    blob: cur_blob_oid,
+                });
+            } else if equal {
                 if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
                     status = AnchorStatus::Fresh;
                     source = None;
