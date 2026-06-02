@@ -181,12 +181,12 @@ export function readExpertAgentId(sessionId: string): string | null {
 // Touch kind and anchor formatting
 // ---------------------------------------------------------------------------
 
-export type TouchKind = 'read' | 'write' | 'whole' | 'create';
+export type TouchKind = 'read' | 'write' | 'whole-read' | 'whole-write' | 'create';
 
 /**
  * Format a mesh anchor string.
  *
- * - `whole` and `create`: returns just the path
+ * - `whole-read`, `whole-write`, and `create`: returns just the path
  * - `read` and `write`: returns `path#L<start>-L<end>` (requires range)
  */
 export function formatAnchor(path: string, kind: TouchKind, range?: LineRange): string {

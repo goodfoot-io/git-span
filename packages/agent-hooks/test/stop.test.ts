@@ -157,7 +157,7 @@ describe('Stop hook: empty status doc → silent exit, no systemMessage', () => 
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Read', path: 'src/foo.ts', kind: 'whole', seen: false }]);
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'src/foo.ts', kind: 'whole-read', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -376,17 +376,17 @@ describe('Stop hook: idempotence', () => {
   });
 });
 
-describe('Stop hook: non-write touch surfacing a stale anchor does not loop', () => {
+describe('Stop hook: read-only session does not dispatch even when a touched file is stale', () => {
   const sid = `stop-test-noloop-${Date.now()}`;
   let tmpRepo: string;
 
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-noloop-'));
     initGitRepo(tmpRepo);
-    // A whole-file READ touch — not a write, and `whole` kind never "feeds" a
-    // ranged stale row. Under the old per-entry marking it stayed unseen and
-    // re-fired the block on every Stop.
-    writeJournalRaw(sid, [{ tool: 'Read', path: 'src/foo.ts', kind: 'whole', seen: false }]);
+    // A whole-file READ touch — not a write. Reads must not feed the stale pass;
+    // a read-only session must never dispatch a resolver, even when the read file
+    // has drifted mesh anchors.
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'src/foo.ts', kind: 'whole-read', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -394,8 +394,9 @@ describe('Stop hook: non-write touch surfacing a stale anchor does not loop', ()
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('marks the read seen and does not re-dispatch on the second run', async () => {
-    // The file the read touched has a stale ranged anchor.
+  it('does not block on the first run and marks the read entry seen', async () => {
+    // The file the read touched has a stale ranged anchor — but reads don't feed
+    // the stale pass, so the handler must return null (no block) immediately.
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const staleRender: StaleRenderExecutor = (slugs) =>
       `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n\nWhy.`;
@@ -407,10 +408,11 @@ describe('Stop hook: non-write touch surfacing a stale anchor does not loop', ()
     });
 
     const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(r1.stdout.decision).toBe('block');
+    expect(r1.stdout.decision).not.toBe('block');
+    expect(r1.stdout.reason).toBeUndefined();
     expect(readJournalRaw(sid)[0].seen).toBe(true);
 
-    // Same journal, no new touches: must not block again.
+    // Same journal, no new touches: still must not block.
     const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(r2.stdout.decision).not.toBe('block');
     expect(r2.stdout.reason).toBeUndefined();
@@ -487,6 +489,107 @@ describe('Stop hook: buildAnchorSpecs unions ranges per (kind, path)', () => {
     expect(specs[0].path).toBe('src/b.ts');
     expect(specs[1].path).toBe('src/a.ts');
   });
+
+  it('places whole-read in the whole bucket (no range)', () => {
+    const entries: JournalEntry[] = [{ tool: 'Read', path: 'src/c.ts', kind: 'whole-read', seen: false }];
+    const specs = buildAnchorSpecs(entries);
+    expect(specs).toHaveLength(1);
+    expect(specs[0].kind).toBe('whole-read');
+    expect(specs[0].range).toBeUndefined();
+  });
+
+  it('places whole-write in the whole bucket (no range)', () => {
+    const entries: JournalEntry[] = [{ tool: 'Edit', path: 'src/d.ts', kind: 'whole-write', seen: false }];
+    const specs = buildAnchorSpecs(entries);
+    expect(specs).toHaveLength(1);
+    expect(specs[0].kind).toBe('whole-write');
+    expect(specs[0].range).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale pass scoped to write kinds only
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: read-only session (ranged read + whole-read) produces no stale dispatch', () => {
+  const sid = `stop-test-readonly-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-readonly-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [
+      { tool: 'Read', path: 'src/foo.ts', kind: 'read', seen: false, start: 1, end: 10 },
+      { tool: 'Read', path: 'src/bar.ts', kind: 'whole-read', seen: false }
+    ]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('returns null (no block, no dispatch) even when stale would return rows', async () => {
+    // stale executor would return drift — but reads must never trigger dispatch.
+    const stale: StaleExecutor = () => 'my-mesh\tsrc/foo.ts\t1-10\n';
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nWhy.`;
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender,
+      staleRenderExecutor: staleRender
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).not.toBe('block');
+    expect(result.stdout.reason).toBeUndefined();
+    // Both read entries are still marked seen (prevents re-examination on next Stop).
+    const entries = readJournalRaw(sid);
+    expect(entries.every((e) => e.seen)).toBe(true);
+  });
+});
+
+describe('Stop hook: write variants over drifted mesh each dispatch', () => {
+  const cases: Array<{
+    label: string;
+    entry: { tool: string; path: string; kind: JournalEntry['kind']; start?: number; end?: number; seen: boolean };
+  }> = [
+    { label: 'ranged write', entry: { tool: 'Edit', path: 'src/f.ts', kind: 'write', seen: false, start: 5, end: 15 } },
+    { label: 'whole-write', entry: { tool: 'Edit', path: 'src/f.ts', kind: 'whole-write', seen: false } },
+    { label: 'create', entry: { tool: 'Write', path: 'src/f.ts', kind: 'create', seen: false } }
+  ];
+
+  for (const { label, entry } of cases) {
+    describe(`write variant: ${label}`, () => {
+      const sid = `stop-test-write-${label.replace(/ /g, '-')}-${Date.now()}`;
+      let tmpRepo: string;
+
+      beforeEach(() => {
+        tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-write-'));
+        initGitRepo(tmpRepo);
+        writeJournalRaw(sid, [entry]);
+      });
+      afterEach(() => {
+        fs.rmSync(tmpRepo, { recursive: true, force: true });
+        const jPath = journalPath(sid);
+        if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+      });
+
+      it(`dispatches (blocks) when the file has drifted mesh anchors`, async () => {
+        const stale: StaleExecutor = () => 'my-mesh\tsrc/f.ts\t5-15\n';
+        const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/f.ts#L5-L15\n\nWhy.`;
+        const handler = createStopHandler({
+          staleExecutor: stale,
+          listBatchExecutor: noopListBatch,
+          listRenderExecutor: noopListRender,
+          staleRenderExecutor: staleRender
+        });
+
+        const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+        expect(result.stdout.decision).toBe('block');
+      });
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -917,9 +1020,9 @@ describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch',
     tmpRepo = makePendingCommitRepo();
     // A fresh, unreported READ touch on the anchored file — the kind the
     // resolver subagent generates every round when it re-reads the source to
-    // re-anchor. (A read does not feed the uncovered-writes pass, so the stale
-    // pass is the only thing that can re-fire the block.)
-    writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole', seen: false }]);
+    // re-anchor. Reads do not feed the stale pass, so this session produces
+    // no dispatch regardless of whether the mesh has drifted.
+    writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole-read', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -965,7 +1068,8 @@ describe('Stop hook: uncommitted source with no staged re-anchor still dispatche
     git('commit', '-qm', 'mesh');
     // Source edited (uncommitted) but the mesh has NOT been re-anchored/staged.
     fs.writeFileSync(nodePath.join(tmpRepo, 'app.js'), 'pre1\npre2\nline1\nline2\nhandler\nbody\nend\n');
-    writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole', seen: false }]);
+    // The session wrote the file — a whole-write touch triggers the stale pass.
+    writeJournalRaw(sid, [{ tool: 'Write', path: 'app.js', kind: 'whole-write', seen: false }]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });

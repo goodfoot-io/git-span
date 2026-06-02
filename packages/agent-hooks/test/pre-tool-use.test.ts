@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import hook, {
   createDefaultMeshExecutor,
   createDiskMemoStore,
@@ -13,6 +13,7 @@ import hook, {
   type MemoStore,
   type MeshExecutor
 } from '../src/pre-tool-use.js';
+import { journalPath, loadJournal } from '../src/stop.js';
 import { makeTempRepo } from './helpers.js';
 
 const logger = new Logger();
@@ -804,5 +805,120 @@ describe('PreToolUse output envelope (Finding 7)', () => {
     const result = toHookResult(await handler(input as never, { logger }));
     expect(result.stdout.systemMessage).toContain('<git-mesh>');
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-mesh>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TouchKind emission: whole-read vs whole-write
+// ---------------------------------------------------------------------------
+
+describe('Touch kind emission', () => {
+  let repo: { root: string; cleanup: () => void };
+  let sid: string;
+
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => {
+    repo.cleanup();
+  });
+
+  beforeEach(() => {
+    sid = `pre-emission-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Clean up any prior journal for this session.
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  afterEach(() => {
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('whole-file Read emits whole-read kind', async () => {
+    const absFilePath = join(repo.root, 'emit-read.ts');
+    writeFileSync(absFilePath, 'line1\nline2\n');
+    const { executor } = createFakeExecutor();
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sid,
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath } // no offset/limit → whole-file
+    });
+    await handler(input as never, { logger });
+
+    const entries = loadJournal(sid);
+    expect(entries).not.toBeNull();
+    const e = entries!.find((x) => x.path === 'emit-read.ts');
+    expect(e?.kind).toBe('whole-read');
+  });
+
+  it('Edit without old_string (fallback) emits whole-write kind', async () => {
+    const absFilePath = join(repo.root, 'emit-edit-fallback.ts');
+    writeFileSync(absFilePath, 'line1\nline2\n');
+    const { executor } = createFakeExecutor();
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sid,
+      cwd: repo.root,
+      tool_name: 'Edit',
+      tool_input: { file_path: absFilePath, old_string: '', new_string: 'replacement' }
+    });
+    await handler(input as never, { logger });
+
+    const entries = loadJournal(sid);
+    expect(entries).not.toBeNull();
+    const e = entries!.find((x) => x.path === 'emit-edit-fallback.ts');
+    expect(e?.kind).toBe('whole-write');
+  });
+
+  it('Write to existing file (full replacement) emits whole-write kind', async () => {
+    const absFilePath = join(repo.root, 'emit-write-replace.ts');
+    writeFileSync(absFilePath, 'original\n');
+    const { executor } = createFakeExecutor();
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sid,
+      cwd: repo.root,
+      tool_name: 'Write',
+      tool_input: { file_path: absFilePath, content: 'replaced\n' }
+    });
+    await handler(input as never, { logger });
+
+    const entries = loadJournal(sid);
+    expect(entries).not.toBeNull();
+    const e = entries!.find((x) => x.path === 'emit-write-replace.ts');
+    expect(e?.kind).toBe('whole-write');
+  });
+
+  it('MultiEdit with empty old_string emits whole-write kind', async () => {
+    const absFilePath = join(repo.root, 'emit-multiedit-fallback.ts');
+    writeFileSync(absFilePath, 'line1\nline2\n');
+    const { executor } = createFakeExecutor();
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sid,
+      cwd: repo.root,
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: absFilePath,
+        edits: [{ old_string: '', new_string: 'replacement' }]
+      }
+    });
+    await handler(input as never, { logger });
+
+    const entries = loadJournal(sid);
+    expect(entries).not.toBeNull();
+    const e = entries!.find((x) => x.path === 'emit-multiedit-fallback.ts');
+    expect(e?.kind).toBe('whole-write');
   });
 });

@@ -114,7 +114,7 @@ export function buildAnchorSpecs(entries: JournalEntry[]): AnchorSpec[] {
   // key: `${kind}:${path}`
   const order: string[] = [];
   const ranged = new Map<string, LineRange>(); // for read/write kinds
-  const whole = new Set<string>(); // for whole/create kinds
+  const whole = new Set<string>(); // for whole-read/whole-write/create kinds
 
   for (const e of entries) {
     const key = `${e.kind}:${e.path}`;
@@ -130,7 +130,7 @@ export function buildAnchorSpecs(entries: JournalEntry[]): AnchorSpec[] {
         }
       }
     } else {
-      // whole or create
+      // whole-read, whole-write, or create
       if (!whole.has(key)) {
         whole.add(key);
         if (!order.includes(key)) order.push(key);
@@ -325,17 +325,27 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     const finalRepoRoot = repoRoot;
 
-    // Step 3: Build TOUCHED_ANCHORS from entries not yet reported.
+    // Step 3: Build TOUCHED_ANCHORS from write-kind entries not yet reported.
     // `seen` means "already surfaced in a status doc this session." Every entry
     // processed by a dispatching run is marked seen in Step 6 and excluded here,
     // so a later Stop with no new touches assembles no sections and dispatches
-    // nothing. Marking the whole batch — not just the entries that fed a section —
-    // is essential: a read/whole touch can surface stale ranged anchors on its
-    // file without itself being a write, so per-entry "did this feed a section"
-    // bookkeeping would leave it unmarked and re-fire the block on every Stop.
+    // nothing. Only written anchors (write, create, whole-write) feed the stale
+    // pass — reads (read, whole-read) do not cause drift and must not wake a
+    // resolver. The whole unreported batch (reads included) is still marked seen
+    // in Step 6: reads now feed no section, but marking them seen prevents a
+    // later Stop from re-examining them and dispatching on drift they didn't cause.
     const unreportedEntries = entries.filter((e) => !e.seen);
-    const anchorSpecs = buildAnchorSpecs(unreportedEntries);
-    if (anchorSpecs.length === 0) return null;
+    const isWriteKind = (kind: TouchKind): boolean => kind === 'write' || kind === 'create' || kind === 'whole-write';
+    const anchorSpecs = buildAnchorSpecs(unreportedEntries.filter((e) => isWriteKind(e.kind)));
+    if (anchorSpecs.length === 0) {
+      // Read-only session: no writes to check. Mark all unreported entries seen so
+      // a later Stop does not re-examine them, then exit silently.
+      for (const e of unreportedEntries) {
+        e.seen = true;
+      }
+      writeJournal(sessionId, entries, ctx.logger);
+      return null;
+    }
     const touchedFilterText = anchorSpecsToFilterText(anchorSpecs);
 
     // Step 4: Stale pass. The porcelain rows detect which touched anchors have

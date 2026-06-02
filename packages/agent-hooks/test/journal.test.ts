@@ -145,7 +145,7 @@ describe('Journal: Read without offset/limit → kind=whole', () => {
 
     const entries = readJournal(sid);
     expect(entries).toHaveLength(1);
-    expect(entries[0].kind).toBe('whole');
+    expect(entries[0].kind).toBe('whole-read');
     expect(entries[0].start).toBeUndefined();
     expect(entries[0].end).toBeUndefined();
   });
@@ -296,7 +296,7 @@ describe('Journal: Write to existing file (full replacement) → kind=whole', ()
 
     const entries = readJournal(sid);
     expect(entries).toHaveLength(1);
-    expect(entries[0].kind).toBe('whole');
+    expect(entries[0].kind).toBe('whole-write');
     expect(entries[0].start).toBeUndefined();
   });
 });

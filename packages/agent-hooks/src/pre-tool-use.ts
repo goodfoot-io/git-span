@@ -290,7 +290,7 @@ function deriveTouchEntries(
     if (range) {
       return [{ kind: 'read', range }];
     }
-    return [{ kind: 'whole' }];
+    return [{ kind: 'whole-read' }];
   }
 
   if (toolName === 'Edit') {
@@ -298,32 +298,32 @@ function deriveTouchEntries(
     if (range) {
       return [{ kind: 'write', range }];
     }
-    // old_string not found or empty — fall back to whole
-    return [{ kind: 'whole' }];
+    // old_string not found or empty — fall back to whole-write
+    return [{ kind: 'whole-write' }];
   }
 
   if (toolName === 'MultiEdit') {
     const edits = toolInput.edits;
-    if (!Array.isArray(edits)) return [{ kind: 'whole' }];
+    if (!Array.isArray(edits)) return [{ kind: 'whole-write' }];
     const content: string | null = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null;
     const entries: Array<{ kind: TouchKind; range?: LineRange }> = [];
     for (const edit of edits) {
       if (typeof edit !== 'object' || edit === null) continue;
       const oldString = (edit as Record<string, unknown>).old_string;
       if (typeof oldString !== 'string' || oldString === '' || content === null) {
-        entries.push({ kind: 'whole' });
+        entries.push({ kind: 'whole-write' });
         continue;
       }
       const idx = content.indexOf(oldString);
       if (idx === -1) {
-        entries.push({ kind: 'whole' });
+        entries.push({ kind: 'whole-write' });
         continue;
       }
       const start = byteOffsetToLine(content, idx);
       const end = start + countLines(oldString) - 1;
       entries.push({ kind: 'write', range: { start, end } });
     }
-    return entries.length > 0 ? entries : [{ kind: 'whole' }];
+    return entries.length > 0 ? entries : [{ kind: 'whole-write' }];
   }
 
   if (toolName === 'Write') {
@@ -336,7 +336,7 @@ function deriveTouchEntries(
       return [{ kind: 'write', range }];
     }
     // null from deriveWriteRange means full replacement (or no changes)
-    return [{ kind: 'whole' }];
+    return [{ kind: 'whole-write' }];
   }
 
   return [];
