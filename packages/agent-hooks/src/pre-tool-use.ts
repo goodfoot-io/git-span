@@ -23,6 +23,7 @@ import * as nodePath from 'node:path';
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
 import {
   derivePath,
+  isGitIgnored,
   type LineRange,
   type PorcelainRow,
   parsePorcelain,
@@ -353,6 +354,13 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
 
     const repoRoot = cwdRepoRoot;
     const repoRelPath = relativeToRepo(repoRoot, absPath);
+
+    // Skip gitignored files entirely. Build output, caches, and logs are not
+    // mesh-relevant: they must never enter the touch journal, so the Stop hook
+    // can never surface them as reads, writes, or uncovered writes — nor offer
+    // mesh overlaps on them. This sits with the repo-scoping guard above: both
+    // bound what the journal may ever contain.
+    if (isGitIgnored(repoRoot, repoRelPath)) return null;
 
     // Journal append — best-effort, runs even when overlap arm returns early
     const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);

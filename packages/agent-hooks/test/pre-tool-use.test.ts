@@ -443,6 +443,66 @@ describe('Cross-repo touch', () => {
   });
 });
 
+describe('Gitignored file touch', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+    fs.writeFileSync(join(repo.root, '.gitignore'), 'dist/\n*.log\n', 'utf8');
+  });
+  afterAll(() => repo.cleanup());
+
+  it('neither surfaces meshes nor journals a read of a gitignored file', async () => {
+    const sessionId = `gitignored-${Date.now()}`;
+    const absFilePath = join(repo.root, 'dist', 'bundle.ts');
+    const { executor, calls, setResponse } = createFakeExecutor();
+    // Wire a porcelain response so the overlap arm would surface a mesh if it ran.
+    setResponse('--porcelain dist/bundle.ts', porcelainLine('dist-mesh', 'dist/bundle.ts', 1, 20));
+    setResponse('dist-mesh', 'dist mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sessionId,
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+
+    // Overlap arm never runs against an ignored file.
+    expect(calls).toHaveLength(0);
+    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+
+    // And the ignored touch is never journaled.
+    const journalFile = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    expect(fs.existsSync(journalFile)).toBe(false);
+  });
+
+  it('still journals a write of a tracked sibling file', async () => {
+    const sessionId = `gitignored-tracked-${Date.now()}`;
+    const absFilePath = join(repo.root, 'tracked.log.ts');
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse('--porcelain tracked.log.ts', '');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sessionId,
+      cwd: repo.root,
+      tool_name: 'Write',
+      tool_input: { file_path: absFilePath, content: 'export const x = 1;\n' }
+    });
+    await handler(input as never, { logger });
+
+    const entries = loadJournal(sessionId);
+    expect(entries).not.toBeNull();
+    expect(entries!.some((e) => e.path === 'tracked.log.ts')).toBe(true);
+    const journalFile = journalPath(sessionId);
+    if (fs.existsSync(journalFile)) fs.unlinkSync(journalFile);
+  });
+});
+
 describe('Mesh names with special characters', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {

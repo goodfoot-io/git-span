@@ -45,6 +45,30 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
   }
 }
 
+/**
+ * Report whether a repo-relative path is excluded by git's ignore rules
+ * (.gitignore, .git/info/exclude, core.excludesFile). Used to keep ignored
+ * files — build output, caches, logs — out of the touch journal entirely, so
+ * the Stop hook never reports reads, writes, or uncovered writes on them.
+ *
+ * `git check-ignore -q <path>` exits 0 when the path is ignored, 1 when it is
+ * not, and 128 on error. execFileSync throws on any non-zero exit, so a clean
+ * return means "ignored". A status-1 throw is the expected "not ignored"
+ * signal; any other failure is an unreliable answer, so we report `false`
+ * (do not drop the touch) rather than silently hiding a tracked file.
+ */
+export function isGitIgnored(repoRoot: string, repoRelPath: string): boolean {
+  try {
+    execFileSync('git', ['-C', repoRoot, 'check-ignore', '-q', '--', repoRelPath], {
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+    return true;
+  } catch (err) {
+    void err;
+    return false;
+  }
+}
+
 export function relativeToRepo(repoRoot: string, absPath: string): string {
   const root = toPosix(repoRoot);
   const abs = toPosix(absPath);
