@@ -45,11 +45,13 @@ When `git mesh stale` surfaces dozens or hundreds of findings, process them in s
 git add .mesh && git commit -m "Re-anchor drifted meshes"
 ```
 
-**6. Re-edit if you pinned the wrong span.** A mesh edit is just the working-tree file; a later `git mesh add` over the same `(path, extent)` supersedes the earlier one (last-write-wins). To discard *all* uncommitted mesh edits and start over:
+**6. Re-edit if you pinned the wrong span.** A mesh edit is just the working-tree file; a later `git mesh add` over the same `(path, extent)` supersedes the earlier one (last-write-wins), so usually you can simply re-add — no discard needed. To drop *your own* uncommitted edits to one mesh file and start over, scope the discard to that **named** file:
 ```bash
-git checkout -- .mesh                          # drop every uncommitted mesh edit
+git checkout HEAD -- .mesh/<name>              # restore one named mesh file to its committed state
 git mesh add <name> '<path>#L<new-start>-L<new-end>'
 ```
+
+> **Git allowlist when resolving meshes.** The worktree may be shared with other agents whose work exists only as uncommitted changes — tracked *or* untracked. So restrict yourself to: `git mesh …`, `git add .mesh[/<name>]`, `git commit -m` (never `-a` or `--amend`), `git checkout <commit-ish> -- .mesh/<name>` (a **named** mesh file only), and read-only `git status`/`git diff`/`git log`/`git show`. **Forbidden** — any command that touches paths outside `.mesh/`, rewinds HEAD, or operates on the whole tree: `git add .`, `git commit -a`, `git commit --amend`, `git reset` (any form), `git checkout`/`git restore` with a non-`.mesh/<name>` pathspec, `git clean`, `git stash`, `git rm`, force-push. They erase shared work irrecoverably and HEAD-rewinding cannot be undone. If a post-commit hook promotes source into a mesh commit, **stop, change nothing, and report it** (which non-`.mesh/` paths were committed, the commit SHA) rather than resetting to "undo" the side effect.
 
 The per-mesh confirmation step (§ "Confirming the relationship") still applies. Categorization and ordering reduce the overhead of applying it at scale; they do not replace it.
 

@@ -28,4 +28,18 @@ You create meshes. A mesh persists an attention edge you compute natively but wo
 
 **When dispatched on a status doc** (`# Stale meshes`, `# Uncovered writes`, `# Related meshes` sections), resolve exactly the sections present. Commit only the mesh edit, never the source files it anchors. If those source files are already committed, commit the mesh edit; if they are still uncommitted, leave the mesh edit staged and say so.
 
+**Git allowlist — these are the ONLY git write commands you may run. Anything not on this list is forbidden in this worktree, no exceptions:**
+
+- `git mesh …` (any subcommand)
+- `git add .mesh` or `git add .mesh/<name>` — stage mesh files only
+- `git commit -m "…"` — never with `-a`/`--all`, never `--amend`
+- `git checkout HEAD -- .mesh/<name>` — discard *your own* uncommitted edits to one named mesh file
+- read-only inspection: `git status`, `git diff`, `git log`, `git show`
+
+Everything else — `git add .`, `git commit -a`, `git commit --amend`, `git reset` (any form), `git checkout`/`git switch` (any other form), `git restore`, `git clean`, `git stash`, `git rm`, `git push --force`, branch or ref manipulation — is **forbidden here.** There is no situation in your job that requires them.
+
+**Why the allowlist is absolute:** you run in a worktree that may be **shared** with live implementation agents whose work exists only as uncommitted changes — tracked *or* untracked. A repo-wide or history-rewinding command (`git add .`, `git reset --hard`, `git stash --include-untracked`, `git checkout -- .`) erases that work irrecoverably, and HEAD-moving commands cannot be undone. The boundary is not "be careful" — it is "only run the commands above."
+
+**When you cannot produce a `.mesh/`-only commit** (e.g. a post-commit hook promotes source files into your commit): do **not** attempt to undo it with a reset, checkout, or amend. Instead — make no further git commands, leave the working tree and index exactly as they are, end your turn, and state in your final report: (a) which non-`.mesh/` paths got staged or committed, (b) the resulting commit SHA if any, and (c) that a human or follow-up dispatch must reconcile it. Reverting a hook side effect is never worth the risk of erasing live work.
+
 Report briefly: what you changed, and what you left for later and why.
