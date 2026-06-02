@@ -541,48 +541,64 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         }
     }
 
-    // Human format: a workspace scan now lists every mesh's anchors in
-    // stored order, not just the drifted ones. The resolver's
-    // `stale_meshes` path drops fully-Fresh meshes via
-    // `mesh_is_reportable_in_stale_discovery`; supplement them here as
-    // all-Fresh `MeshResolved` synthesized straight from the mesh-file
-    // record so cache_v2's warm-clean fast path is not defeated. This is
-    // Human-only; other formats stream drifted findings.
+    // Human format: a workspace scan is a drift report — only meshes with
+    // a non-Fresh anchor (or a drifting pending entry) surface. The
+    // resolver's `stale_meshes` path already drops fully-Fresh meshes, so
+    // we do NOT re-add them. For each mesh that *does* surface, list its
+    // complete anchor set in stored order: drifted anchors keep their
+    // resolved finding, fresh siblings render as bare bullets. On the
+    // cache_v2 warm path the resolver persists only the non-Fresh finding
+    // rows, so `m.anchors` may hold just the drifted subset; reconstruct
+    // the full set from the mesh-file record, synthesizing Fresh
+    // `AnchorResolved` for anchor ids absent from the resolved subset.
+    // Resolved anchors absent from the file record (e.g. injected
+    // `MergeConflict` anchors, whose mesh is unreadable and so is skipped
+    // by `load_all_meshes_in`) are preserved as-is. This is Human-only;
+    // other formats stream drifted findings.
     if matches!(args.format, StaleFormat::Human) && args.paths.is_empty() {
-        let _perf = crate::perf::span("stale.supplement-fresh-meshes");
-        let all_pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
-        let known: HashSet<String> = meshes.iter().map(|m| m.name.clone()).collect();
-        for (name, mesh) in all_pairs {
-            if known.contains(&name) {
-                continue;
-            }
-            let anchors: Vec<crate::types::AnchorResolved> = mesh
-                .anchors
-                .iter()
-                .map(|(anchor_id, a)| crate::types::AnchorResolved {
-                    anchor_id: anchor_id.clone(),
-                    anchor_sha: a.anchor_sha.clone(),
-                    anchored: AnchorLocation {
-                        path: std::path::PathBuf::from(&a.path),
-                        extent: a.extent,
-                        blob: None,
-                    },
-                    current: None,
-                    status: AnchorStatus::Fresh,
-                    content_equivalent: false,
-                    source: None,
-                    layer_sources: Vec::new(),
-                    acknowledged_by: None,
-                    locus: None,
-                })
+        let _perf = crate::perf::span("stale.backfill-fresh-anchors");
+        let file_records: std::collections::HashMap<String, crate::types::Mesh> =
+            crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+                .into_iter()
                 .collect();
-            meshes.push(MeshResolved {
-                name,
-                message: mesh.message,
-                anchors,
-                pending: Vec::new(),
-                follow_moves: mesh.config.follow_moves,
-            });
+        for m in meshes.iter_mut() {
+            let Some(record) = file_records.get(&m.name) else {
+                continue;
+            };
+            // Rebuild in stored order: each file-record anchor keeps its
+            // resolved finding when present, else gets a synthesized Fresh
+            // row.
+            let mut rebuilt: Vec<crate::types::AnchorResolved> =
+                Vec::with_capacity(record.anchors.len());
+            for (anchor_id, a) in &record.anchors {
+                if let Some(existing) = m.anchors.iter().find(|r| &r.anchor_id == anchor_id) {
+                    rebuilt.push(existing.clone());
+                } else {
+                    rebuilt.push(crate::types::AnchorResolved {
+                        anchor_id: anchor_id.clone(),
+                        anchor_sha: a.anchor_sha.clone(),
+                        anchored: AnchorLocation {
+                            path: std::path::PathBuf::from(&a.path),
+                            extent: a.extent,
+                            blob: None,
+                        },
+                        current: None,
+                        status: AnchorStatus::Fresh,
+                        content_equivalent: false,
+                        source: None,
+                        layer_sources: Vec::new(),
+                        acknowledged_by: None,
+                        locus: None,
+                    });
+                }
+            }
+            // Preserve resolved anchors not present in the file record.
+            for r in &m.anchors {
+                if !record.anchors.iter().any(|(id, _)| id == &r.anchor_id) {
+                    rebuilt.push(r.clone());
+                }
+            }
+            m.anchors = rebuilt;
         }
     }
 

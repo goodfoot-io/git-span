@@ -239,11 +239,10 @@ fn human_layered_emits_src_marker() -> Result<()> {
 }
 
 #[test]
-fn discovery_human_lists_uncommitted_mesh_with_fresh_anchors() -> Result<()> {
-    // Workspace scan (Human format) now lists every mesh's anchors in
-    // stored order. An uncommitted (worktree-only) mesh whose anchor's
-    // content matches the file is reported as Fresh and rendered as a
-    // bare bullet alongside any drifted meshes.
+fn discovery_human_hides_fully_fresh_mesh() -> Result<()> {
+    // Workspace scan (Human format) is a drift report: a fully-fresh mesh
+    // (here an uncommitted, worktree-only mesh whose anchor matches the
+    // file) does not surface. Only the summary line is printed.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
 
@@ -251,12 +250,8 @@ fn discovery_human_lists_uncommitted_mesh_with_fresh_anchors() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("## new-mesh"),
-        "uncommitted Fresh mesh must appear in workspace scan; stdout={text}"
-    );
-    assert!(
-        text.contains("file1.txt#L1-L5"),
-        "fresh anchor bullet must appear; stdout={text}"
+        !text.contains("## new-mesh"),
+        "fully-fresh mesh must NOT appear in workspace scan; stdout={text}"
     );
     assert!(
         text.contains("0 stale"),

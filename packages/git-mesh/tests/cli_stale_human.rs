@@ -202,11 +202,11 @@ fn human_output_has_drift_summary_line() -> Result<()> {
     Ok(())
 }
 
-/// Without `--name`, every mesh appears in stored order — clean meshes
-/// render as bare-bullet listings alongside the drifted ones. The exit
-/// code reflects drift, not visibility.
+/// Without `--name`, a workspace scan is a drift report: only meshes with a
+/// drifted anchor appear. Fully-fresh meshes are omitted. The exit code
+/// reflects drift.
 #[test]
-fn workspace_scan_lists_clean_and_drifted_meshes() -> Result<()> {
+fn workspace_scan_lists_only_drifted_meshes() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_stable(&repo, "quiet-mesh")?; // anchors lines 6-10 — unaffected by drift
     seed(&repo, "drifted-mesh")?; // anchors lines 1-5 — will drift
@@ -218,8 +218,8 @@ fn workspace_scan_lists_clean_and_drifted_meshes() -> Result<()> {
         "drifted mesh must appear in output"
     );
     assert!(
-        stdout.contains("quiet-mesh"),
-        "clean mesh must also appear in output; stdout=\n{stdout}"
+        !stdout.contains("quiet-mesh"),
+        "fully-fresh mesh must NOT appear in a workspace scan; stdout=\n{stdout}"
     );
     assert_eq!(
         out.status.code(),

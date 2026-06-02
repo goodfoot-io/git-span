@@ -1,18 +1,17 @@
-//! CLI: `git mesh stale <path>` must mirror the full-scan visibility
-//! contract established by main-84 (`ac81e6c`).
+//! CLI: positional `git mesh stale <path>` visibility for clean meshes.
 //!
-//! main-84 inverted the default Human renderer: a full workspace scan now
-//! lists *every* committed mesh — including entirely-clean ones — so
-//! operators see the shape of what they carry, while machine formats (JSON,
-//! porcelain, …) continue to filter clean meshes down to drift findings.
+//! A no-argument workspace scan is a drift report: the Human renderer omits
+//! fully-clean meshes (main-92 reverted the main-84 "list every mesh"
+//! behavior for the scan path). The positional `stale <path>` branch is
+//! treated as a named lookup and is out of that scope — Human still shows
+//! every path-resolved mesh (clean and drifted alike) so a path query can
+//! confirm what it carries.
 //!
-//! The positional `stale <path>` branch must match that contract: Human
-//! shows every path-resolved mesh (clean and drifted alike), but machine
-//! formats must not surface a clean mesh. The leak this suite reproduces is
-//! the JSON envelope's top-level `mesh` field, which is `meshes.first()`:
-//! when a clean path-resolved mesh sorts ahead of the drifted one, the
-//! machine envelope names the clean mesh — a clean-mesh leak the full-scan
-//! JSON path never produces.
+//! Across all paths the machine formats (JSON, porcelain, …) filter clean
+//! meshes down to drift findings. The leak this suite guards is the JSON
+//! envelope's top-level `mesh` field, which is `meshes.first()`: when a
+//! clean path-resolved mesh sorts ahead of the drifted one, the machine
+//! envelope must still name the drifted mesh, never the clean one.
 
 mod support;
 
@@ -57,10 +56,10 @@ fn drift(repo: &TestRepo) -> Result<()> {
     Ok(())
 }
 
-/// Precondition (main-84 contract): the full-scan Human view lists the clean
-/// mesh alongside the drifted one.
+/// A full-scan Human view is a drift report: it lists the drifted mesh and
+/// omits the fully-clean one (main-92).
 #[test]
-fn full_scan_human_lists_clean_and_drifted() -> Result<()> {
+fn full_scan_human_lists_only_drifted() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_fixture(&repo)?;
     drift(&repo)?;
@@ -71,8 +70,8 @@ fn full_scan_human_lists_clean_and_drifted() -> Result<()> {
         "full-scan Human must list the drifted mesh; stdout=\n{stdout}"
     );
     assert!(
-        stdout.contains("clean-mesh"),
-        "full-scan Human must list the clean mesh (main-84 contract); stdout=\n{stdout}"
+        !stdout.contains("clean-mesh"),
+        "full-scan Human must omit the fully-clean mesh; stdout=\n{stdout}"
     );
     Ok(())
 }
