@@ -1,0 +1,3 @@
+packages/git-mesh/tests/mesh_file_format.rs#L65-L161 sha256:3453546a58d691d0bdfd7624d344ed64eab3068b460d5d44e40a419f80a068e3
+
+Unit tests for mesh_file format parsing including validation of hash part structure, line ranges, and field requirements; tests now pass mesh_root to MeshFile::parse invocations.

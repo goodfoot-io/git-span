@@ -1,0 +1,3 @@
+packages/agent-hooks/src/agent-hooks-common.ts#L60-L60 sha256:8d64a30d9de151b649006a1d9871037ac5649ab6162ea5d7fd77c54fed07b155
+
+Agent hooks common utilities include isInsideMeshRoot to prevent the hook from surfacing meshes whose anchors were themselves contained in the mesh directory.

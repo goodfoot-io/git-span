@@ -1,0 +1,3 @@
+packages/git-mesh/src/mesh_root.rs#L105-L184 sha256:81de1b0accdce4c996e0f156ddd5d2bc78d42bfc92d7781d5587edeeaa579642
+
+Containment predicate that detects when a file path is equal to or nested beneath the mesh root, after normalizing trailing slashes and leading ./; shared by add-time CLI validation and read-time MeshFile::parse enforcement.

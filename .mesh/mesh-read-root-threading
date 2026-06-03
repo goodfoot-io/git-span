@@ -1,0 +1,3 @@
+packages/git-mesh/src/mesh/read.rs#L279-L280 sha256:04b8679cc75306c4b9c1816e3a4a817e4ed2694811184815a89f82ec8e06dcb5
+
+Mesh read module threads mesh_root to MeshFile::parse to enforce containment check across all read paths.

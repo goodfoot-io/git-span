@@ -1,0 +1,3 @@
+packages/git-mesh/src/mesh_file_reader.rs#L75-L115 sha256:67a7df738d11a1a812e2e4a1b6ef332ce0a214727f0fb059c6f05a67c83338f4
+
+MeshFileReader read methods (HEAD, staged, worktree) thread the in-scope mesh_root to MeshFile::parse so the read-time containment check has access to the correct root for the invocation.

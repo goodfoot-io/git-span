@@ -1,0 +1,3 @@
+packages/git-mesh/src/resolver/engine/mod.rs#L346-L347 sha256:a0927fbbec1cdc5750ce62ee4b39476c9b64e39d482b218c27707b6e7a92d47c
+
+Resolver engine threads mesh_root to MeshFile::parse so the containment check covers historical mesh reads and prevents the resolver from processing malformed meshes with interior anchors.
