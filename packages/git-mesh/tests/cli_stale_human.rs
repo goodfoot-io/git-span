@@ -245,26 +245,23 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     Ok(())
 }
 
-/// A clean named mesh always renders the full block (no "is clean" line).
+/// A clean named mesh is a drift report: no mesh block renders, the "0 stale"
+/// summary prints instead, and the command exits 0.
 #[test]
-fn named_lookup_clean_mesh_is_confirmed() -> Result<()> {
+fn named_lookup_clean_mesh_reports_zero_stale() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_mesh(["stale", "quiet"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // New: fully-clean named mesh renders the unified block with bare anchor lines.
+    // A fully-clean named mesh renders no block.
     assert!(
-        stdout.contains("## quiet"),
-        "block heading must appear for clean named mesh, got: {stdout}"
+        !stdout.contains("## quiet"),
+        "clean named mesh must not render a block, got: {stdout}"
     );
+    // Explicit "checked, all clean" feedback instead of empty output.
     assert!(
-        stdout.contains("file1.txt#L1-L5"),
-        "fresh anchor must appear bare, got: {stdout}"
-    );
-    // No old "is clean" prose.
-    assert!(
-        !stdout.contains("is clean"),
-        "legacy confirmation line must be absent, got: {stdout}"
+        stdout.contains("0 stale across"),
+        "summary must mention 0 stale for a clean named mesh, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())

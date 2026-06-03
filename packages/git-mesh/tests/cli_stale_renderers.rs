@@ -320,6 +320,12 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
     seed(&repo, "m")?;
     repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
     repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
+    // Drift the remaining anchor so the (now drift-report) named lookup
+    // surfaces the mesh: edit line 1 of file2.txt.
+    repo.write_file(
+        "file2.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(out.contains("file2.txt#L1-L5"), "stdout={out}");
@@ -360,16 +366,19 @@ fn human_patch_mode_prints_unified_diff() -> Result<()> {
 }
 
 #[test]
-fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
+fn named_stale_clean_new_mesh_reports_zero_stale() -> Result<()> {
     // File-backed model: `git mesh add` writes the anchor directly into
-    // the worktree mesh file (no staging area). A named lookup on the
-    // new mesh shows the anchor as a normal bullet; since file1.txt is
-    // unchanged from HEAD it resolves Fresh.
+    // the worktree mesh file (no staging area). The new mesh's anchor on
+    // unchanged file1.txt resolves Fresh, so the (drift-report) named
+    // lookup renders no block and prints the 0-stale summary instead.
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
-    assert!(out.contains("## new-mesh"), "stdout={out}");
-    assert!(out.contains("file1.txt#L1-L5"), "stdout={out}");
+    assert!(
+        !out.contains("## new-mesh"),
+        "clean named mesh must not render a block; stdout={out}"
+    );
+    assert!(out.contains("0 stale across"), "stdout={out}");
     Ok(())
 }
 

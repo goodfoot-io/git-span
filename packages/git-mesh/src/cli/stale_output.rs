@@ -321,6 +321,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         .into());
     }
 
+    // For a scoped query (positional args), the "0 stale" summary reports the
+    // meshes/anchors actually in scope, not the full committed corpus. Captured
+    // just before clean meshes are filtered out of the resolved set.
+    let mut scoped_totals: Option<(usize, usize)> = None;
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
@@ -340,11 +345,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         let _perf = crate::perf::span("stale.resolve-args");
         let mut mesh_names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        // Names resolved via the path index (step 2) rather than a direct
-        // mesh-name match (step 1). Only these are eligible for the
-        // clean-mesh machine-format filter below; an explicitly named mesh
-        // is never in this set, so it always renders.
-        let mut path_resolved_names: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
         let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
@@ -391,7 +391,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 };
                 for name in names {
                     if seen.insert(name.clone()) {
-                        path_resolved_names.insert(name.clone());
                         mesh_names.push(name);
                     }
                     found = true;
@@ -472,27 +471,28 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             }
         }
 
-        // Machine formats mirror the full-scan visibility contract: clean
-        // meshes are filtered out. main-84 made the Human view list every
-        // committed mesh (clean ones included), so Human keeps clean
-        // path-resolved meshes here; only the machine renderers drop them. A
-        // path-index match merely associates a mesh with the requested file
-        // — if none of its anchors drifted and it has no pending entries, it
-        // is clean and must not surface in JSON/porcelain, where
-        // `render_json` names `meshes.first()`. Direct mesh-name matches
-        // (step 1) are never in `path_resolved_names`, so an explicitly
-        // requested mesh always renders. Conflict-injected meshes are added
-        // after this block and carry a `MergeConflict` anchor, so they are
-        // unaffected.
-        if !matches!(args.format, StaleFormat::Human) {
-            meshes.retain(|m| {
-                if !path_resolved_names.contains(&m.name) {
-                    return true;
-                }
-                m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
-                    || !m.pending.is_empty()
-            });
-        }
+        // Every scoped query is a drift report: clean meshes are filtered
+        // out across all formats, whether they were resolved by path/glob or
+        // named explicitly. A scope merely selects which meshes to check — if
+        // none of a mesh's anchors drifted and it has no pending entries, it
+        // is clean and must not surface, in Human or in JSON/porcelain (where
+        // `render_json` names `meshes.first()`). A clean scope prints the
+        // "0 stale" summary instead (see the no-drift block below).
+        // Conflict-injected meshes are added after this block and carry a
+        // `MergeConflict` anchor, so they are unaffected.
+        // `m.anchors` may hold only the stale subset (the cache_v2 resolver
+        // persists non-Fresh rows only), so derive the true anchor total from
+        // `mesh_anchor_totals`, which records each mesh's full anchor count.
+        scoped_totals = Some((
+            meshes.len(),
+            meshes
+                .iter()
+                .map(|m| mesh_anchor_totals.get(&m.name).copied().unwrap_or(m.anchors.len()))
+                .sum(),
+        ));
+        meshes.retain(|m| {
+            m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
+        });
 
         meshes
     };
@@ -787,23 +787,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 &mesh_anchor_totals,
             )?;
 
-            // No-drift messages: scan-all with zero drift prints a summary
-            // count line after the per-mesh blocks. Named-lookup clean
-            // meshes need no fallback — render_human already emitted the
-            // block. The summary line fires regardless of whether any mesh
-            // block printed (it appends a count) so the operator sees
-            // "0 stale across N meshes" alongside the per-mesh listing.
-            if stale_count == 0 && args.paths.is_empty() {
-                // Use total_committed_mesh_count / total_committed_anchor_count
-                // (all committed meshes / anchors) rather than meshes.len()
-                // or meshes[.].anchors.len() (which only includes meshes with
-                // findings after stale_meshes filtering).
-                let total_anchors = total_committed_anchor_count;
-                let mesh_word = if total_committed_mesh_count == 1 {
-                    "mesh"
-                } else {
-                    "meshes"
+            // No-drift message: zero drift prints a summary count line. A
+            // full scan reports the whole committed corpus; a scoped query
+            // (positional args) reports only the meshes/anchors in scope, so
+            // a clean named-mesh or path lookup gets explicit "checked, all
+            // clean" feedback rather than empty output. The line fires
+            // regardless of whether any mesh block printed.
+            if stale_count == 0 {
+                let (mesh_count, total_anchors) = match scoped_totals {
+                    Some(scope) => scope,
+                    None => (total_committed_mesh_count, total_committed_anchor_count),
                 };
+                let mesh_word = if mesh_count == 1 { "mesh" } else { "meshes" };
                 let anchor_word = if total_anchors == 1 {
                     "anchor"
                 } else {
@@ -814,7 +809,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 }
                 println!(
                     "0 stale across {} {} ({} {} checked)",
-                    total_committed_mesh_count, mesh_word, total_anchors, anchor_word,
+                    mesh_count, mesh_word, total_anchors, anchor_word,
                 );
             }
         }

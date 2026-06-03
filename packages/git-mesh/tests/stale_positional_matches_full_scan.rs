@@ -1,17 +1,17 @@
 //! CLI: positional `git mesh stale <path>` visibility for clean meshes.
 //!
-//! A no-argument workspace scan is a drift report: the Human renderer omits
-//! fully-clean meshes (main-92 reverted the main-84 "list every mesh"
-//! behavior for the scan path). The positional `stale <path>` branch is
-//! treated as a named lookup and is out of that scope — Human still shows
-//! every path-resolved mesh (clean and drifted alike) so a path query can
-//! confirm what it carries.
+//! Every `git mesh stale` invocation is a drift report, scoped or not. A
+//! no-argument workspace scan omits fully-clean meshes, and a scoped query
+//! (a path, glob, or an explicit mesh name) does the same: only stale meshes
+//! render, in every format. A scoped query that finds nothing stale prints a
+//! "0 stale across N meshes (A anchors checked)" summary so the operator gets
+//! explicit "checked, all clean" feedback instead of empty output.
 //!
-//! Across all paths the machine formats (JSON, porcelain, …) filter clean
-//! meshes down to drift findings. The leak this suite guards is the JSON
-//! envelope's top-level `mesh` field, which is `meshes.first()`: when a
-//! clean path-resolved mesh sorts ahead of the drifted one, the machine
-//! envelope must still name the drifted mesh, never the clean one.
+//! The machine formats (JSON, porcelain, …) likewise carry only drift
+//! findings. The leak this suite also guards is the JSON envelope's top-level
+//! `mesh` field, which is `meshes.first()`: when a clean path-resolved mesh
+//! sorts ahead of the drifted one, the machine envelope must still name the
+//! drifted mesh, never the clean one.
 
 mod support;
 
@@ -76,10 +76,10 @@ fn full_scan_human_lists_only_drifted() -> Result<()> {
     Ok(())
 }
 
-/// Positional Human mirrors the full-scan Human view: every path-resolved
-/// mesh appears, clean or drifted.
+/// Positional Human mirrors the full-scan Human view: it is a drift report,
+/// listing the drifted mesh and omitting the clean one.
 #[test]
-fn positional_human_lists_clean_and_drifted() -> Result<()> {
+fn positional_human_drops_clean_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_fixture(&repo)?;
     drift(&repo)?;
@@ -90,8 +90,8 @@ fn positional_human_lists_clean_and_drifted() -> Result<()> {
         "positional Human must list the drifted mesh; stdout=\n{stdout}"
     );
     assert!(
-        stdout.contains("clean-mesh"),
-        "positional Human must list the clean mesh, matching full-scan; stdout=\n{stdout}"
+        !stdout.contains("clean-mesh"),
+        "positional Human must omit the clean mesh; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -140,19 +140,23 @@ fn positional_porcelain_drops_clean_mesh() -> Result<()> {
     Ok(())
 }
 
-/// A direct mesh-name request is always exempt: `stale clean-mesh` renders
-/// the clean mesh's Human block even though it is fully Fresh. The
-/// machine-format filter must not strip an explicitly-named mesh.
+/// A direct mesh-name request is a drift report too: `stale clean-mesh`
+/// renders no mesh block for a fully-Fresh mesh, prints the "0 stale"
+/// summary instead, and exits 0.
 #[test]
-fn direct_named_clean_mesh_renders_in_human() -> Result<()> {
+fn direct_named_clean_mesh_reports_zero_stale() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_fixture(&repo)?;
     drift(&repo)?;
     let out = repo.run_mesh(["stale", "clean-mesh"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("## clean-mesh"),
-        "explicitly-named clean mesh must render its block; stdout=\n{stdout}"
+        !stdout.contains("## clean-mesh"),
+        "clean named mesh must not render a mesh block; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 stale across"),
+        "clean named mesh must print the 0-stale summary; stdout=\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "named clean mesh → exit 0");
     Ok(())
