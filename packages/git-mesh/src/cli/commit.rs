@@ -201,7 +201,7 @@ pub(crate) fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: 
     let path = mesh_file_path(repo, mesh_root, name)?;
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;
-        Ok(MeshFile::parse(&content, mesh_root)?)
+        Ok(MeshFile::parse(&content)?)
     } else {
         Ok(MeshFile {
             anchors: Vec::new(),
@@ -706,7 +706,7 @@ fn run_why_reader(
         match tree_result {
             Some((_mode, oid)) => {
                 let text = crate::git::read_git_text(repo, &oid.to_string())?;
-                MeshFile::parse(&text, mesh_root).ok()
+                MeshFile::parse(&text).ok()
             }
             None => None,
         }
@@ -741,7 +741,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
         let path = workdir.join(mesh_root).join(name);
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            let mf = MeshFile::parse(&content, mesh_root)?;
+            let mf = MeshFile::parse(&content)?;
             if mf.why.is_empty() {
                 String::from("\n# Write the relationship description. Empty why aborts.\n")
             } else {

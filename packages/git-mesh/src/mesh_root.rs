@@ -134,9 +134,55 @@ pub fn reject_anchor_inside_mesh_root(mesh_root: &str, path: &str) -> Result<()>
     Ok(())
 }
 
+/// Classify a stored anchor `path` against `mesh_root` for read-time
+/// surfacing.
+///
+/// Returns:
+/// - `None` — the path is not inside the mesh root (nothing to surface).
+/// - `Some(detail)` — the path is inside the mesh root; `detail` is a
+///   human-readable clause naming why. A path that *structurally* matches the
+///   `"{root}/"` prefix yet contains a `..` component (e.g. `.mesh/../foo`)
+///   escapes the root on disk, so it is classified distinctly rather than
+///   misreported as a plain interior anchor.
+pub fn classify_interior_anchor(mesh_root: &str, path: &str) -> Option<String> {
+    if !is_inside_mesh_root(mesh_root, path) {
+        return None;
+    }
+    let has_parent_ref = path.split('/').any(|c| c == "..");
+    if has_parent_ref {
+        Some(format!(
+            "path `{path}` is written under the mesh root `{mesh_root}` but contains a `..` \
+             traversal — it is a malformed, non-portable anchor that must be removed"
+        ))
+    } else {
+        Some(format!(
+            "path `{path}` points inside the mesh root `{mesh_root}`; a mesh anchors code, \
+             never another mesh document"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_returns_none_for_outside_path() {
+        assert!(classify_interior_anchor(".mesh", "src/lib.rs").is_none());
+    }
+
+    #[test]
+    fn classify_flags_plain_interior_anchor() {
+        let d = classify_interior_anchor(".mesh", ".mesh/foo").unwrap();
+        assert!(d.contains(".mesh/foo"));
+        assert!(!d.contains(".."));
+    }
+
+    #[test]
+    fn classify_flags_parent_traversal_distinctly() {
+        let d = classify_interior_anchor(".mesh", ".mesh/../foo").unwrap();
+        assert!(d.contains(".."), "traversal must be named distinctly: {d}");
+    }
 
     // -----------------------------------------------------------------------
     // is_inside_mesh_root / reject_anchor_inside_mesh_root — predicate units

@@ -766,6 +766,35 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             )
         })
         .count();
+    // Interior-anchor surfacing (CARD AC4: surfaced at stale/validate time).
+    // Scanned per-mesh so one poisoned mesh never blanks the others; emitted
+    // as a loud, actionable report to stderr (keeping stdout's machine
+    // formats clean) and counted into the exit code so the violation cannot
+    // report "clean". For a scoped query, only surface meshes in scope.
+    let interior_violations: Vec<crate::cli::interior_anchor::InteriorAnchorViolation> = {
+        let _perf = crate::perf::span("stale.scan-interior-anchors");
+        let all = crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)?;
+        if args.paths.is_empty() {
+            all
+        } else {
+            all.into_iter()
+                .filter(|v| args.paths.iter().any(|p| p == &v.mesh_name))
+                .collect()
+        }
+    };
+    if !interior_violations.is_empty() {
+        eprintln!();
+        eprintln!(
+            "# mesh stale: {} interior-anchor violation(s)",
+            interior_violations.len()
+        );
+        for v in &interior_violations {
+            eprintln!();
+            eprintln!("{}", v.report_block(mesh_root));
+        }
+        eprintln!();
+    }
+
     let stale_count = unacked_findings + drifting_pending;
 
     match args.format {
@@ -831,7 +860,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         }
     }
 
-    let exit = if stale_count == 0 || args.no_exit_code {
+    // An interior-anchor violation is a fail-closed integrity problem: it
+    // drives a non-zero exit even when no anchor drifted, and `--no-exit-code`
+    // (which suppresses drift exit codes) does not mask it.
+    let exit = if !interior_violations.is_empty() {
+        1
+    } else if stale_count == 0 || args.no_exit_code {
         0
     } else {
         1

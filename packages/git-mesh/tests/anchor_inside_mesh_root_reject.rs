@@ -3,8 +3,10 @@
 //! Two enforcement layers:
 //! - Layer 1 (add-time): `git mesh add` refuses an anchor path inside the mesh root before
 //!   any I/O, with a message naming both the offending path and the mesh root.
-//! - Layer 2 (read-time): `MeshFile::parse` refuses a mesh file whose anchor block contains
-//!   a mesh-root-interior path; `stale` and `show` surface the error.
+//! - Layer 2 (read-time surfacing): `MeshFile::parse` stays a pure text→struct transform so a
+//!   poisoned mesh remains loadable and repairable. `stale`/`doctor` surface the interior
+//!   anchor per-mesh as a loud, actionable report (without aborting the whole corpus), while
+//!   `show`/`list`/`remove`/`delete` continue to operate on the poisoned mesh.
 //!
 //! Tests are modeled on `round2_eval_qa_fixes.rs` and `add_gitignored_anchor_reject.rs`.
 
@@ -169,21 +171,30 @@ fn stale_surfaces_error_for_mesh_root_anchor_in_mesh_file() -> Result<()> {
     repo.write_commit_graph()?;
 
     let out = repo.run_mesh(["stale"])?;
-    // stale must not succeed silently — it should either fail or report an error.
+    // stale surfaces the interior anchor as a loud per-mesh report on stderr
+    // and drives a non-zero exit (fail-closed), without aborting the corpus.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{stdout}{stderr}");
     assert!(
-        !out.status.success() || combined.contains("invalid") || combined.contains("mesh root") || combined.contains(".mesh"),
-        "stale must surface the error for a mesh-root anchor; stdout:\n{stdout}\nstderr:\n{stderr}"
+        !out.status.success(),
+        "stale must exit non-zero for a mesh-root anchor; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("interior-anchor") && stderr.contains(".mesh/something"),
+        "stale must name the interior anchor in its report; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("git mesh remove bad-mesh"),
+        "stale report must name a working repair command; stderr:\n{stderr}"
     );
     Ok(())
 }
 
-/// `git mesh show` on a mesh file containing a mesh-root anchor surfaces
-/// an error rather than returning it as valid content.
+/// `git mesh show` on a mesh file containing a mesh-root anchor must still
+/// operate (parse is pure) — the poisoned mesh stays loadable so it can be
+/// inspected and repaired, rather than aborting the whole corpus.
 #[test]
-fn show_surfaces_error_for_mesh_root_anchor_in_mesh_file() -> Result<()> {
+fn show_operates_on_mesh_with_mesh_root_anchor() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "line1\nline2\n")?;
     repo.commit_all("seed")?;
@@ -195,10 +206,9 @@ fn show_surfaces_error_for_mesh_root_anchor_in_mesh_file() -> Result<()> {
     repo.commit_all("add bad mesh")?;
 
     let out = repo.run_mesh(["show", "bad-mesh"])?;
-    // show must fail or surface an error message.
     assert!(
-        !out.status.success(),
-        "show must fail for a mesh file with a mesh-root anchor; exit {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status.success(),
+        "show must operate on a poisoned mesh; exit {:?}\nstdout:\n{}\nstderr:\n{}",
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)

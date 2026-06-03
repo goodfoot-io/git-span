@@ -81,6 +81,14 @@ pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs, mesh_root: &str) -> 
         }
     }
 
+    // Interior-anchor surfacing: a mesh that parses cleanly may still carry a
+    // hand-edited anchor pointing inside the mesh root. Surface each such
+    // anchor as a loud, actionable, per-mesh finding (parse stays pure so the
+    // mesh remains repairable via `git mesh remove`/`delete`).
+    for v in crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)? {
+        findings.push(v.report_block(mesh_root));
+    }
+
     if findings.is_empty() {
         println!("mesh doctor: {n_meshes} meshes checked, no findings.{IDEMPOTENT_TAG}");
         return Ok(0);

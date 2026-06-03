@@ -47,6 +47,20 @@ pub(crate) fn apply_fix(
 
         let mut any_rewritten = false;
 
+        // Repair interior anchors in place: drop every anchor record whose
+        // path falls inside the mesh root. `parse` is pure, so a poisoned
+        // mesh loads fine and `--fix` can excise the offending anchor rather
+        // than silently no-opping past it. The remaining loud surfacing in
+        // `run_stale` covers any mesh `--fix` does not write (e.g. the anchor
+        // lived only in a non-worktree layer).
+        let before = mesh_file.anchors.len();
+        mesh_file
+            .anchors
+            .retain(|r| crate::mesh_root::classify_interior_anchor(mesh_root, &r.path).is_none());
+        if mesh_file.anchors.len() != before {
+            any_rewritten = true;
+        }
+
         for resolved in &m.anchors {
             // Re-anchor `Moved` unconditionally (bytes are identical, only
             // relocated). Re-anchor `Changed` only when the change preserved

@@ -343,8 +343,12 @@ fn resolve_mesh_with_state_at(
             Some((_mode, blob_oid)) => crate::git::read_git_text(repo, &blob_oid.to_string())?,
             None => return Err(Error::MeshNotFound(name.to_string())),
         };
-        let file = crate::mesh_file::MeshFile::parse(&text, mesh_root)
-            .map_err(|_| Error::MeshNotFound(name.to_string()))?;
+        // `parse` is a pure text→struct transform; surface a genuine
+        // parse/conflict error rather than masking it as a missing mesh.
+        // Interior-anchor containment is NOT enforced here — it is surfaced
+        // at the `stale`/`doctor` reporting surfaces so drift never silently
+        // honors an interior anchor while a poisoned mesh stays repairable.
+        let file = crate::mesh_file::MeshFile::parse(&text)?;
         mesh_from_file(name, &file)
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)

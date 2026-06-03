@@ -58,21 +58,52 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
  * (do not drop the touch) rather than silently hiding a tracked file.
  */
 /**
- * The mesh root directory, relative to the repo root. All mesh documents live
- * under this directory. The hook subsystem consistently assumes this literal
- * path throughout (HOOK_IGNORE_REL, slug paths in stop.ts, etc.) — no dynamic
- * resolution is needed or desired.
+ * The default mesh root directory, relative to the repo root, used when no
+ * environment variable or git config overrides the location.
  */
 export const MESH_ROOT = '.mesh';
 
 /**
- * Report whether a repo-relative POSIX path falls inside the mesh root
- * directory. A path is inside when it equals the mesh root exactly or is
- * nested beneath it (i.e. starts with ".mesh/"). The "/" boundary prevents
- * false positives for siblings like ".meshes/x" or ".mesh-notes/x".
+ * Resolve the mesh root directory for a given repo, mirroring the Rust CLI
+ * precedence (minus the --mesh-dir CLI flag, which is invisible to file-write
+ * hooks):
+ *   1. GIT_MESH_DIR environment variable
+ *   2. `git config git-mesh.dir` in the repo
+ *   3. Default: ".mesh"
+ *
+ * The returned value is a POSIX-style path with no trailing slash.
+ * Fail-safe: any resolution error falls back to ".mesh" so the hook never
+ * crashes.
  */
-export function isInsideMeshRoot(repoRelPath: string): boolean {
-  return repoRelPath === MESH_ROOT || repoRelPath.startsWith(`${MESH_ROOT}/`);
+export function resolveMeshRoot(repoRoot: string): string {
+  const envDir = process.env['GIT_MESH_DIR'];
+  if (envDir && envDir.trim().length > 0) {
+    return toPosix(envDir.trim()).replace(/\/+$/, '');
+  }
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'config', 'git-mesh.dir'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8'
+    });
+    const trimmed = toPosix(out.trim()).replace(/\/+$/, '');
+    if (trimmed.length > 0) return trimmed;
+  } catch (err) {
+    void err; // config key absent or git error — fall through to default
+  }
+  return MESH_ROOT;
+}
+
+/**
+ * Report whether a repo-relative POSIX path falls inside the given mesh root
+ * directory. A path is inside when it equals the mesh root exactly or is
+ * nested beneath it (i.e. starts with "<meshRoot>/"). The "/" boundary prevents
+ * false positives for siblings like ".meshes/x" or ".mesh-notes/x".
+ *
+ * Pass the result of `resolveMeshRoot(repoRoot)` as `meshRoot`.
+ */
+export function isInsideMeshRoot(repoRelPath: string, meshRoot: string = MESH_ROOT): boolean {
+  const root = meshRoot.replace(/\/+$/, '');
+  return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
 }
 
 export function isGitIgnored(repoRoot: string, repoRelPath: string): boolean {

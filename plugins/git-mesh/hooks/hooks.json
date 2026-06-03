@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.aa855ae0.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.a05ca35d.mjs",
             "timeout": 10000
           }
         ],
@@ -39,8 +39,8 @@
     "files": [
       "subagent-start.0827b2ec.mjs",
       "stop.e8f757bf.mjs",
-      "pre-tool-use.aa855ae0.mjs"
+      "pre-tool-use.a05ca35d.mjs"
     ],
-    "timestamp": "2026-06-03T15:34:20.006Z"
+    "timestamp": "2026-06-03T16:03:19.025Z"
   }
 }

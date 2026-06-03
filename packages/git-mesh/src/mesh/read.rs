@@ -277,7 +277,7 @@ pub fn read_mesh_at_in(
             let (_mode, oid) = crate::git::tree_entry_at(repo, commit_ish, Path::new(&mesh_path))?
                 .ok_or_else(|| Error::MeshNotFound(name.to_string()))?;
             let text = crate::git::read_git_text(repo, &oid.to_string())?;
-            let file = MeshFile::parse(&text, mesh_root)?;
+            let file = MeshFile::parse(&text)?;
             Ok(mesh_from_file(name, &file))
         }
     }

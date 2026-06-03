@@ -21,6 +21,7 @@ pub mod doctor;
 pub mod drift_label;
 pub mod error;
 pub mod format;
+pub mod interior_anchor;
 pub mod show;
 pub mod stale_fix;
 pub mod stale_output;

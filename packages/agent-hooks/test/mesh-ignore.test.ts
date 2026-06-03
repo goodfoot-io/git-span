@@ -2,10 +2,11 @@
  * Tests for path-scoped mesh suppression (packages/agent-hooks/src/mesh-ignore.ts).
  */
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isInsideMeshRoot } from '../src/agent-hooks-common.js';
+import { isInsideMeshRoot, resolveMeshRoot } from '../src/agent-hooks-common.js';
 import { isMeshSuppressed, loadHookIgnore, parseHookIgnore } from '../src/mesh-ignore.js';
 import { makeTempRepo } from './helpers.js';
 
@@ -144,5 +145,84 @@ describe('isInsideMeshRoot', () => {
   it('returns false for an ordinary source path', () => {
     expect(isInsideMeshRoot('packages/agent-hooks/src/stop.ts')).toBe(false);
     expect(isInsideMeshRoot('src/index.ts')).toBe(false);
+  });
+
+  describe('with a custom mesh root', () => {
+    const customRoot = 'docs/mesh';
+
+    it('returns true for the custom root itself', () => {
+      expect(isInsideMeshRoot('docs/mesh', customRoot)).toBe(true);
+    });
+
+    it('returns true for a path nested under the custom root', () => {
+      expect(isInsideMeshRoot('docs/mesh/x/y', customRoot)).toBe(true);
+    });
+
+    it('returns false for a sibling that shares the prefix', () => {
+      expect(isInsideMeshRoot('docs/meshes/x', customRoot)).toBe(false);
+      expect(isInsideMeshRoot('docs/mesh-notes/x', customRoot)).toBe(false);
+    });
+
+    it('returns false for the default .mesh root when the configured root is docs/mesh', () => {
+      expect(isInsideMeshRoot('.mesh/x', customRoot)).toBe(false);
+    });
+
+    it('normalizes a trailing slash on the provided root', () => {
+      expect(isInsideMeshRoot('docs/mesh/slug', 'docs/mesh/')).toBe(true);
+      expect(isInsideMeshRoot('docs/mesh', 'docs/mesh/')).toBe(true);
+    });
+  });
+});
+
+describe('resolveMeshRoot', () => {
+  it('falls back to .mesh when no env var or git config is set', () => {
+    const repo = makeTempRepo();
+    try {
+      const original = process.env['GIT_MESH_DIR'];
+      delete process.env['GIT_MESH_DIR'];
+      try {
+        expect(resolveMeshRoot(repo.root)).toBe('.mesh');
+      } finally {
+        if (original !== undefined) process.env['GIT_MESH_DIR'] = original;
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('returns the value from git config git-mesh.dir when set', () => {
+    const repo = makeTempRepo();
+    try {
+      const original = process.env['GIT_MESH_DIR'];
+      delete process.env['GIT_MESH_DIR'];
+      try {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-mesh.dir', 'docs/mesh'], { stdio: 'ignore' });
+        expect(resolveMeshRoot(repo.root)).toBe('docs/mesh');
+      } finally {
+        if (original !== undefined) process.env['GIT_MESH_DIR'] = original;
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('GIT_MESH_DIR env var takes precedence over git config', () => {
+    const repo = makeTempRepo();
+    try {
+      const original = process.env['GIT_MESH_DIR'];
+      process.env['GIT_MESH_DIR'] = 'env/mesh';
+      try {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-mesh.dir', 'docs/mesh'], { stdio: 'ignore' });
+        expect(resolveMeshRoot(repo.root)).toBe('env/mesh');
+      } finally {
+        if (original !== undefined) {
+          process.env['GIT_MESH_DIR'] = original;
+        } else {
+          delete process.env['GIT_MESH_DIR'];
+        }
+      }
+    } finally {
+      repo.cleanup();
+    }
   });
 });

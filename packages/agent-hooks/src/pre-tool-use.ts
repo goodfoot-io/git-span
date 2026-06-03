@@ -30,6 +30,7 @@ import {
   parsePorcelain,
   rangesIntersect,
   relativeToRepo,
+  resolveMeshRoot,
   resolveRepoRoot,
   sanitizeSessionId,
   type TouchKind,
@@ -368,12 +369,14 @@ export function createHandler(
     // bound what the journal may ever contain.
     if (isGitIgnored(repoRoot, repoRelPath)) return null;
 
-    // Skip mesh documents entirely. Files under .mesh/ are managed by git mesh
-    // itself and must never enter the touch journal — they are not application
-    // sources that need mesh coverage. Dropping here is strictly better than
-    // filtering only in the uncovered-writes pass: it uniformly prevents reads,
-    // writes, and uncovered-writes surfacing, matching the gitignore precedent.
-    if (isInsideMeshRoot(repoRelPath)) return null;
+    // Skip mesh documents entirely. Files under the resolved mesh root are
+    // managed by git mesh itself and must never enter the touch journal — they
+    // are not application sources that need mesh coverage. Dropping here is
+    // strictly better than filtering only in the uncovered-writes pass: it
+    // uniformly prevents reads, writes, and uncovered-writes surfacing,
+    // matching the gitignore precedent.
+    const meshRoot = resolveMeshRoot(repoRoot);
+    if (isInsideMeshRoot(repoRelPath, meshRoot)) return null;
 
     // Journal append — best-effort, runs even when overlap arm returns early
     const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);
