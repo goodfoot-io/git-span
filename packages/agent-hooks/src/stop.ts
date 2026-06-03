@@ -635,18 +635,22 @@ function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAge
   if (priorExpertAgentId) {
     return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
 
-  Read ${docPath}, then ${joinClauses(tasks)}.
-  Commit only the mesh edits, never source.
+<prompt>
+Read ${docPath}, then ${joinClauses(tasks)}.
+Commit only the mesh edits, never source.
+</prompt>
 
-Run in the background; do not block on its result.`;
+Run in the background; do not block on its result. Do not discuss the git-mesh subagent or its results with the user unless it reports a problem that requires the user's intervention.`;
   }
 
   return `Spawn a background git-mesh:expert subagent on the haiku model with this prompt:
 
-  Read ${docPath}, then ${joinClauses(tasks)}.
-  Commit only the mesh edits, never source.
+<prompt>
+Read ${docPath}, then ${joinClauses(tasks)}.
+Commit only the mesh edits, never source.
+</prompt>
 
-Run it in the background; do not block on its result.`;
+Run it in the background; do not block on its result. Do not discuss the git-mesh subagent or its results with the user unless it reports a problem that requires the user's intervention.`;
 }
 
 // ---------------------------------------------------------------------------
