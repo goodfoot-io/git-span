@@ -1,3 +1,0 @@
-packages/agent-hooks/test/mesh-ignore.test.ts#L8-L123 sha256:11326bf253cfd0cfbe3964dfdf7396bfc183153ad19a7e88f34bf6ae62bd8f33
-
-Unit tests for mesh ignore patterns; includes test coverage for mesh root containment filtering.

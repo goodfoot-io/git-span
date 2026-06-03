@@ -1,3 +1,0 @@
-packages/git-mesh/tests/anchor_inside_mesh_root_reject.rs sha256:57008993ce60d6df683335f163fff47911cb99e70d909c523e410f4def23642b
-
-Integration test module documenting and exercising the two enforcement layers: add-time rejection with error message and read-time rejection via MeshFile::parse.

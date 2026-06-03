@@ -1,3 +1,0 @@
-packages/git-mesh/src/mesh_file.rs#L13-L440 sha256:d0682cf5bb9579204600a04a82ebd78b4f70cc5106b9d1ac8a0c6ad736ab3279
-
-MeshFile::parse now takes mesh_root argument and rejects any AnchorRecord inside the root before returning, enforcing the mesh-root-containment-predicate at the single read-time chokepoint covering all downstream readers (commit hook, stale/validate, show, resolver engine).

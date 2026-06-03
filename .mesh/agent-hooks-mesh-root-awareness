@@ -1,3 +1,4 @@
-packages/agent-hooks/src/agent-hooks-common.ts#L60-L60 sha256:8d64a30d9de151b649006a1d9871037ac5649ab6162ea5d7fd77c54fed07b155
+packages/agent-hooks/src/agent-hooks-common.ts#L60-L107 sha256:482877bc476b53886d45bf827bc6b7a60a5bca3ab5251886a84efd60d11148ab
+packages/git-mesh/src/mesh_root.rs#L25-L41 sha256:b5fea9f141a378aef2727a29c2751743628be958a7a642626011963ac990e0dc
 
-Agent hooks common utilities include isInsideMeshRoot to prevent the hook from surfacing meshes whose anchors were themselves contained in the mesh directory.
+TypeScript resolveMeshRoot mirrors the Rust CLI mesh-root precedence (GIT_MESH_DIR, then git config git-mesh.dir, then default .mesh) minus the --mesh-dir flag that file-write hooks cannot see; isInsideMeshRoot reimplements the Rust containment predicate. Both are unenforced cross-language mirrors of packages/git-mesh/src/mesh_root.rs — if the Rust precedence or containment rule changes, this copy must change too, and isInsideMeshRoot's (path, root) argument order is the reverse of the Rust signature.

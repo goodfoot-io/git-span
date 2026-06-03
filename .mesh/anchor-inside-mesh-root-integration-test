@@ -1,3 +1,0 @@
-packages/git-mesh/tests/anchor_inside_mesh_root_reject.rs#L23-L187 sha256:e6c43a4241731e4a8a7b4770b7cfef335597dd83b4d60431666505c99b22ec80
-
-Two-layer integration tests: add-time rejection in run_add rejects mesh-directory anchors with error message naming both path and root; read-time rejection in MeshFile::parse catches hand-edited mesh files with interior anchors covering both default and custom mesh roots.

@@ -1,3 +1,3 @@
-packages/agent-hooks/src/pre-tool-use.ts#L26-L371 sha256:277328f39efca6549bea62707e1a41aca152829100e5f87520e06c14d26b2fb5
+packages/agent-hooks/src/pre-tool-use.ts#L372-L379 sha256:70c56e006cd5adc5bf02dc4dea81f7fa95f8a49342639bb54d17ee9037715af5
 
-PreToolUse hook invokes isInsideMeshRoot check to exclude any mesh anchor that falls within the resolved mesh root from being surfaced to the model, preventing interior-mesh reference loops.
+PreToolUse resolves the mesh root and drops any touch whose path is inside it, so files under the mesh root never enter the touch journal (matching the gitignore precedent) and the Stop hook never flags a mesh document as a read, write, or uncovered write. Relies on resolveMeshRoot/isInsideMeshRoot from agent-hooks-common.ts, whose isInsideMeshRoot takes (path, root) — the reverse of the Rust signature.
