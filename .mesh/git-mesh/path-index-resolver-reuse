@@ -1,5 +1,5 @@
 packages/git-mesh/src/mesh/read.rs#L94-L166 sha256:28996bf9b3db6806635f9fad3e9395c32b6029a8a9debcd3847df0b0dfd6fa16
-packages/git-mesh/src/cli/stale_output.rs#L350-L399 sha256:cdc40641128b34bd868a76af8d76494f191b6cd60705d1e5243951eb1900efc2
 packages/git-mesh/src/cli/show.rs#L743-L797 sha256:1bc5cab552609928b29488861f8b444f661558ce67104a8316adcfd193e7a7fa
+packages/git-mesh/src/cli/stale_output.rs#L357-L406 sha256:cdc40641128b34bd868a76af8d76494f191b6cd60705d1e5243951eb1900efc2
 
 Per-arg mesh resolution must build MeshPathIndex once and resolve every positional arg through it; the stale and list/show resolvers each reimplement this loop and must never reintroduce a per-arg corpus-reload helper (meshes_matching_path_in / matching_mesh_names_in), which turns a shell-expanded glob of hundreds of args against a large mesh set into an O(args x meshes) freeze. The compiler accepts either form, so this contract is unenforced.
