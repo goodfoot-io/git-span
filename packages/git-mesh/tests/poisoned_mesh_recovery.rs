@@ -161,6 +161,78 @@ fn stale_fix_does_not_silently_noop_on_poisoned_mesh() -> Result<()> {
     Ok(())
 }
 
+/// `git mesh stale <filepath>` where the mesh anchoring `<filepath>` ALSO
+/// carries an interior anchor must surface the violation and exit non-zero,
+/// matching the behavior of bare `stale` and mesh-name-form `stale`.
+///
+/// Regression guard for the literal `p == &v.mesh_name` compare that silently
+/// dropped in-scope interior violations when the arg was a file path rather than
+/// a mesh name.
+#[test]
+fn scoped_stale_by_filepath_surfaces_interior_violation() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("src/lib.rs", "line1\nline2\nline3\n")?;
+    repo.commit_all("seed source")?;
+
+    // Create a legitimate mesh that anchors src/lib.rs.
+    let out = repo.run_mesh(["add", "my/flow", "src/lib.rs"])?;
+    assert!(
+        out.status.success(),
+        "seeding mesh failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Hand-inject an interior anchor into that same mesh file, simulating a
+    // bypass of the add-time Layer-1 check. The mesh file format is:
+    //   <anchor-line>+\n\n<why>\n
+    // Read the file, split at the blank line, prepend the interior anchor to
+    // the anchors section, then rejoin.
+    let mesh_path = repo.path().join(".mesh/my/flow");
+    let current = std::fs::read_to_string(&mesh_path)?;
+    // Split on first blank line (anchors / why separator).
+    let (anchors_section, why_section) = current
+        .split_once("\n\n")
+        .expect("mesh file must contain blank-line separator");
+    let poisoned = format!(
+        "{anchors_section}\n.mesh/my/flow {POISON_HASH}\n\n{why_section}"
+    );
+    std::fs::write(&mesh_path, &poisoned)?;
+    repo.commit_all("inject interior anchor into my/flow")?;
+    repo.write_commit_graph()?;
+
+    // Scoped by file path — the mesh my/flow anchors src/lib.rs.
+    let out = repo.run_mesh(["stale", "src/lib.rs"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "`git mesh stale src/lib.rs` must exit non-zero when in-scope mesh carries interior anchor;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("interior-anchor"),
+        "interior-anchor report header must appear; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(".mesh/my/flow") || stderr.contains("my/flow"),
+        "report must identify the mesh with the interior anchor; stderr:\n{stderr}"
+    );
+
+    // Mesh-name-form must behave identically (regression guard: this already worked).
+    let out2 = repo.run_mesh(["stale", "my/flow"])?;
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        !out2.status.success(),
+        "`git mesh stale my/flow` must also exit non-zero; stderr:\n{stderr2}"
+    );
+    assert!(
+        stderr2.contains("interior-anchor"),
+        "mesh-name-form stale must report interior anchor; stderr:\n{stderr2}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn list_operates_with_poisoned_mesh_present() -> Result<()> {
     let repo = repo_with_poisoned_and_clean_mesh()?;

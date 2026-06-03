@@ -326,6 +326,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // just before clean meshes are filtered out of the resolved set.
     let mut scoped_totals: Option<(usize, usize)> = None;
 
+    // When positional args are present, this holds the resolved mesh names
+    // (after path→mesh resolution) so that downstream scoping — conflict
+    // detection, interior-anchor filtering — can test membership without
+    // re-running resolution or comparing args literally against mesh names.
+    // None means "no scope restriction" (bare `git mesh stale`).
+    let mut scoped_mesh_names: Option<HashSet<String>> = None;
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
@@ -490,6 +497,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 .map(|m| mesh_anchor_totals.get(&m.name).copied().unwrap_or(m.anchors.len()))
                 .sum(),
         ));
+        // Capture the resolved mesh-name set for downstream scoping (conflict
+        // detection, interior-anchor filtering). Built from `mesh_names` which
+        // already contains the result of path→mesh resolution, so a path-form
+        // arg like `src/lib.rs` contributes the mesh(es) that anchor it.
+        scoped_mesh_names = Some(mesh_names.iter().cloned().collect());
         meshes.retain(|m| {
             m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
         });
@@ -509,10 +521,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // requested scope (a named mesh or a path/glob that resolves to
         // one); a full scan reports every conflicted mesh.
         let in_scope = |name: &str| -> bool {
-            if args.paths.is_empty() {
-                return true;
+            match &scoped_mesh_names {
+                None => true,
+                Some(names) => names.contains(name),
             }
-            args.paths.iter().any(|p| p == name)
         };
         let mesh_root_owned = mesh_root.to_string();
         for name in conflicted {
@@ -774,12 +786,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     let interior_violations: Vec<crate::cli::interior_anchor::InteriorAnchorViolation> = {
         let _perf = crate::perf::span("stale.scan-interior-anchors");
         let all = crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)?;
-        if args.paths.is_empty() {
-            all
-        } else {
-            all.into_iter()
-                .filter(|v| args.paths.iter().any(|p| p == &v.mesh_name))
-                .collect()
+        match &scoped_mesh_names {
+            None => all,
+            Some(names) => all
+                .into_iter()
+                .filter(|v| names.contains(&v.mesh_name))
+                .collect(),
         }
     };
     if !interior_violations.is_empty() {
