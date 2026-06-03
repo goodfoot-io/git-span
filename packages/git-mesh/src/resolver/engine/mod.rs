@@ -343,7 +343,7 @@ fn resolve_mesh_with_state_at(
             Some((_mode, blob_oid)) => crate::git::read_git_text(repo, &blob_oid.to_string())?,
             None => return Err(Error::MeshNotFound(name.to_string())),
         };
-        let file = crate::mesh_file::MeshFile::parse(&text)
+        let file = crate::mesh_file::MeshFile::parse(&text, mesh_root)
             .map_err(|_| Error::MeshNotFound(name.to_string()))?;
         mesh_from_file(name, &file)
     };

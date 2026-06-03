@@ -10,7 +10,7 @@
 //! <why>
 //! ```
 
-use crate::{Error, Result};
+use crate::{mesh_root, Error, Result};
 use std::fmt;
 
 /// A single anchor record within a mesh file.
@@ -61,8 +61,13 @@ pub struct MeshFile {
 impl MeshFile {
     /// Parse a mesh file from its text format.
     ///
+    /// `mesh_root` is the resolved mesh root for this invocation. After the
+    /// anchor block is parsed, every anchor path is checked against
+    /// `mesh_root` via `reject_anchor_inside_mesh_root`; any offender causes
+    /// `Error::InvalidMeshFile`.
+    ///
     /// Returns `InvalidMeshFile` on malformed input.
-    pub fn parse(input: &str) -> Result<Self> {
+    pub fn parse(input: &str, mesh_root: &str) -> Result<Self> {
         // Fail-closed backstop: a mesh file carrying Git textual conflict
         // markers is the product of an unresolved merge. Refuse to parse
         // it as valid mesh data so `show`/`list`/`stale` never present
@@ -103,6 +108,11 @@ impl MeshFile {
 
         // Trim trailing newlines from why.
         let why = why.trim_end().to_string();
+
+        // Fail-closed: reject any anchor whose path falls inside the mesh root.
+        for record in &anchors {
+            mesh_root::reject_anchor_inside_mesh_root(mesh_root, &record.path)?;
+        }
 
         Ok(MeshFile { anchors, why })
     }
@@ -330,7 +340,7 @@ mod tests {
     #[test]
     fn parse_single_whole_file_anchor() {
         let input = "path/to/file.txt sha256:abc123\n\n";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         assert_eq!(mesh.anchors.len(), 1);
         assert_eq!(mesh.anchors[0].path, "path/to/file.txt");
         assert_eq!(mesh.anchors[0].start_line, 0);
@@ -343,7 +353,7 @@ mod tests {
     #[test]
     fn parse_line_anchor() {
         let input = "src/lib.rs#L10-L35 sha256:def456\n\n";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         assert_eq!(mesh.anchors.len(), 1);
         assert_eq!(mesh.anchors[0].path, "src/lib.rs");
         assert_eq!(mesh.anchors[0].start_line, 10);
@@ -353,7 +363,7 @@ mod tests {
     #[test]
     fn parse_with_why() {
         let input = "a.txt sha256:111\nb.txt sha256:222\n\nThis is the why text.\nIt can span multiple lines.\n";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         assert_eq!(mesh.anchors.len(), 2);
         assert_eq!(
             mesh.why,
@@ -364,7 +374,7 @@ mod tests {
     #[test]
     fn parse_no_blank_line() {
         let input = "a.txt sha256:111\nb.txt sha256:222\n";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         assert_eq!(mesh.anchors.len(), 2);
         assert_eq!(mesh.why, "");
     }
@@ -372,34 +382,34 @@ mod tests {
     #[test]
     fn parse_empty_anchors_with_why() {
         let input = "\n\nwhy text here";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         assert_eq!(mesh.anchors.len(), 0);
         assert_eq!(mesh.why, "why text here");
     }
 
     #[test]
     fn parse_rejects_missing_space() {
-        let result = MeshFile::parse("badline\n");
+        let result = MeshFile::parse("badline\n", ".mesh");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no space"));
     }
 
     #[test]
     fn parse_rejects_bad_hash_format() {
-        let result = MeshFile::parse("file.txt badhash\n");
+        let result = MeshFile::parse("file.txt badhash\n", ".mesh");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expected"));
     }
 
     #[test]
     fn parse_rejects_invalid_start_line() {
-        let result = MeshFile::parse("file.txt#L0-L10 sha256:abc\n");
+        let result = MeshFile::parse("file.txt#L0-L10 sha256:abc\n", ".mesh");
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_rejects_end_before_start() {
-        let result = MeshFile::parse("file.txt#L10-L5 sha256:abc\n");
+        let result = MeshFile::parse("file.txt#L10-L5 sha256:abc\n", ".mesh");
         assert!(result.is_err());
     }
 
@@ -430,9 +440,9 @@ mod tests {
     #[test]
     fn serialize_roundtrip() {
         let input = "a.txt sha256:111\nb.rs#L1-L5 sha256:222\n\nSome why text.\n";
-        let mesh = MeshFile::parse(input).unwrap();
+        let mesh = MeshFile::parse(input, ".mesh").unwrap();
         let serialized = mesh.serialize();
-        let reparsed = MeshFile::parse(&serialized).unwrap();
+        let reparsed = MeshFile::parse(&serialized, ".mesh").unwrap();
         assert_eq!(mesh, reparsed);
     }
 }

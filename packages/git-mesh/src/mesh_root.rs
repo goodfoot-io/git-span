@@ -102,9 +102,87 @@ pub fn validate_repo_relative_path(kind: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Returns `true` when repo-relative `path` is equal to, or nested beneath,
+/// `mesh_root`.
+///
+/// Both sides are compared after trimming a trailing `/` and a leading `./`.
+/// Containment is `path == root` OR `path` starts with `"{root}/"` — the
+/// `/`-boundary guard prevents sibling-prefix false positives like
+/// `docs/meshes` being matched by a root of `docs/mesh`.
+pub fn is_inside_mesh_root(mesh_root: &str, path: &str) -> bool {
+    // Normalize: trim trailing '/' and leading './' from both sides.
+    let root = mesh_root.trim_end_matches('/');
+    let root = root.strip_prefix("./").unwrap_or(root);
+
+    let path = path.trim_end_matches('/');
+    let path = path.strip_prefix("./").unwrap_or(path);
+
+    // Equal to root, or nested beneath root (guarded by '/'-boundary).
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+/// Reject an anchor path that falls inside the mesh directory.
+///
+/// Returns `Error::InvalidMeshFile` naming both the offending path and the
+/// mesh root when `is_inside_mesh_root(mesh_root, path)` is true.
+pub fn reject_anchor_inside_mesh_root(mesh_root: &str, path: &str) -> Result<()> {
+    if is_inside_mesh_root(mesh_root, path) {
+        return Err(Error::InvalidMeshFile(format!(
+            "anchor path `{path}` is inside the mesh root `{mesh_root}`"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // is_inside_mesh_root / reject_anchor_inside_mesh_root — predicate units
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn predicate_equal_to_root_is_rejected() {
+        assert!(is_inside_mesh_root(".mesh", ".mesh"));
+    }
+
+    #[test]
+    fn predicate_nested_path_is_rejected() {
+        assert!(is_inside_mesh_root(".mesh", ".mesh/subdir/file.rs"));
+    }
+
+    #[test]
+    fn predicate_sibling_prefix_is_accepted() {
+        // "docs/meshes" must NOT be considered inside root "docs/mesh".
+        assert!(!is_inside_mesh_root("docs/mesh", "docs/meshes/x"));
+    }
+
+    #[test]
+    fn predicate_trailing_slash_normalized() {
+        // Trailing slash on root is trimmed before comparison.
+        assert!(is_inside_mesh_root(".mesh/", ".mesh/bar"));
+    }
+
+    #[test]
+    fn predicate_leading_dot_slash_normalized() {
+        // Leading "./" on path is trimmed before comparison.
+        assert!(is_inside_mesh_root(".mesh", "./.mesh/bar"));
+    }
+
+    #[test]
+    fn reject_returns_err_for_inside_path() {
+        assert!(reject_anchor_inside_mesh_root(".mesh", ".mesh/bar").is_err());
+        let err = reject_anchor_inside_mesh_root(".mesh", ".mesh/bar").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(".mesh/bar"), "message must name path; got: {msg}");
+        assert!(msg.contains(".mesh"), "message must name mesh root; got: {msg}");
+    }
+
+    #[test]
+    fn reject_returns_ok_for_outside_path() {
+        assert!(reject_anchor_inside_mesh_root(".mesh", "src/lib.rs").is_ok());
+    }
 
     #[test]
     fn validate_accepts_dot_mesh() {

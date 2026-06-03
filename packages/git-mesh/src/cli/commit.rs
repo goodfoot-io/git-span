@@ -201,7 +201,7 @@ pub(crate) fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: 
     let path = mesh_file_path(repo, mesh_root, name)?;
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;
-        Ok(MeshFile::parse(&content)?)
+        Ok(MeshFile::parse(&content, mesh_root)?)
     } else {
         Ok(MeshFile {
             anchors: Vec::new(),
@@ -332,6 +332,18 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
                          `..`, and must not be inside `.git`."
                             .into(),
                     )],
+                }
+            })?;
+
+            crate::mesh_root::reject_anchor_inside_mesh_root(mesh_root, path).map_err(|e| {
+                CliError {
+                    subcommand: "add",
+                    summary: format!("`{path}` is not a valid anchor path."),
+                    what_happened: e.to_string(),
+                    next_steps: vec![NextStep::Prose(format!(
+                        "Anchor paths must not be inside the mesh root `{mesh_root}`. \
+                         Choose a source file outside the mesh directory."
+                    ))],
                 }
             })?;
 
@@ -694,7 +706,7 @@ fn run_why_reader(
         match tree_result {
             Some((_mode, oid)) => {
                 let text = crate::git::read_git_text(repo, &oid.to_string())?;
-                MeshFile::parse(&text).ok()
+                MeshFile::parse(&text, mesh_root).ok()
             }
             None => None,
         }
@@ -729,7 +741,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
         let path = workdir.join(mesh_root).join(name);
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            let mf = MeshFile::parse(&content)?;
+            let mf = MeshFile::parse(&content, mesh_root)?;
             if mf.why.is_empty() {
                 String::from("\n# Write the relationship description. Empty why aborts.\n")
             } else {
