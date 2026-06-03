@@ -1,0 +1,4 @@
+plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L22-L24 sha256:002605a12ef5a7849ee8b79f55fef6203eb2fb3d310f228a3568f900dd98b9ea
+plugins/git-mesh/agents/expert.md#L17-L17 sha256:c7d208db9a7f3597803803ddbc9857493551d906fb72da7406ec3d95b99974b6
+
+Distinguishes content-based (someone reads and acts) from corpus-based (accuracy is a maintained contract, meshes provide drift detection) load-bearing prose; agent guidance on when prose warrants a mesh must reflect both forms.
