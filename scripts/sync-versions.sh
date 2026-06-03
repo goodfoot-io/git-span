@@ -51,7 +51,7 @@ done
 # Update optionalDependencies in packages/git-mesh/package.json
 cli_json="$REPO_ROOT/packages/git-mesh/package.json"
 if [ -f "$cli_json" ]; then
-  node -e "
+  result=$(node -e "
     const fs = require('fs');
     const pkg = JSON.parse(fs.readFileSync('$cli_json', 'utf8'));
     let changed = false;
@@ -67,12 +67,12 @@ if [ -f "$cli_json" ]; then
       fs.writeFileSync('$cli_json', JSON.stringify(pkg, null, 2) + '\n');
     }
     process.stdout.write(changed ? 'updated' : 'ok');
-  "
-  result=$?
-  echo ""
-  if [ $result -eq 0 ]; then
+  ")
+  if [ "$result" = "updated" ]; then
     echo "Updated: $cli_json optionalDependencies -> $VERSION"
     updated=$((updated + 1))
+  else
+    echo "OK:      $cli_json optionalDependencies (already $VERSION)"
   fi
 fi
 

@@ -36,3 +36,8 @@ NEW_VERSION=$(node -e "
 echo "Bumped packages/git-mesh to $NEW_VERSION"
 echo ""
 bash "$REPO_ROOT/scripts/sync-versions.sh"
+
+# Refresh the workspace lockfile so the bumped versions resolve. Run from the
+# repo root regardless of the caller's CWD.
+echo ""
+(cd "$REPO_ROOT" && yarn install)

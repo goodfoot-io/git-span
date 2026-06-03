@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-monorepo",
-  "version": "1.0.105",
+  "version": "1.0.106",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/goodfoot-io/git-mesh.git"
@@ -25,7 +25,7 @@
     "clean:tsbuildinfo": "find . \\( -name 'tsconfig.tsbuildinfo' -o -name 'tsconfig.typecheck-main.tsbuildinfo' \\) -not -path '*/node_modules/*' -not -path '*/.worktrees/*' -delete",
     "build:migration": "node scripts/build-migration.mjs",
     "validate": "bash scripts/validate.sh",
-    "bump": "bash scripts/bump.sh && yarn install",
+    "bump": "bash scripts/bump.sh",
     "release": "bash scripts/release.sh"
   },
   "private": true,
