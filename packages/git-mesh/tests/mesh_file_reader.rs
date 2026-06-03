@@ -375,3 +375,39 @@ fn list_nested_mesh_names() {
     assert!(names.contains(&"checkout/request-flow".to_string()));
     assert!(names.contains(&"billing/invoice".to_string()));
 }
+
+/// A dotfile sibling under the mesh root (e.g. the `.hookignore` config
+/// file) must be skipped by discovery and must NOT be parsed as a mesh —
+/// regression for the `.mesh/.hookignore` discovery choke crash.
+#[test]
+fn list_skips_dotfile_config_under_mesh_root() {
+    let repo = support::TestRepo::seeded().unwrap();
+    write_worktree_mesh(&repo, "real-mesh", &make_mesh(&[], "real"));
+    // gitignore-style config text that is NOT a valid mesh file.
+    repo.write_file(".mesh/.hookignore", "# comment\nhooks.foo\n")
+        .unwrap();
+
+    let gix = repo.gix_repo().unwrap();
+    let reader = MeshFileReader::new(&gix, ".mesh".into());
+    let names = reader.list_mesh_names().unwrap();
+    assert!(names.contains(&"real-mesh".to_string()), "names: {names:?}");
+    assert!(
+        !names.iter().any(|n| n.contains(".hookignore")),
+        "dotfile leaked into discovery: {names:?}"
+    );
+}
+
+/// A dot-directory under the mesh root and any non-mesh files nested
+/// inside it must be skipped entirely by discovery.
+#[test]
+fn list_skips_dot_directory_under_mesh_root() {
+    let repo = support::TestRepo::seeded().unwrap();
+    write_worktree_mesh(&repo, "real-mesh", &make_mesh(&[], "real"));
+    repo.write_file(".mesh/.config/settings.txt", "not a mesh\n")
+        .unwrap();
+
+    let gix = repo.gix_repo().unwrap();
+    let reader = MeshFileReader::new(&gix, ".mesh".into());
+    let names = reader.list_mesh_names().unwrap();
+    assert_eq!(names, vec!["real-mesh".to_string()], "names: {names:?}");
+}

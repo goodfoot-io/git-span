@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parseHookIgnore } from '../src/mesh-ignore.js';
 import hook, {
   createDefaultMeshExecutor,
   createDiskMemoStore,
@@ -919,5 +920,61 @@ describe('Touch kind emission', () => {
     expect(entries).not.toBeNull();
     const e = entries!.find((x) => x.path === 'emit-write-replace.ts');
     expect(e?.kind).toBe('whole-write');
+  });
+});
+
+describe('path-scoped mesh suppression', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => repo.cleanup());
+
+  it('does not surface a mesh whose slug prefix is suppressed for the touched path', async () => {
+    const relPath = 'src/component.ts';
+    const absFilePath = join(repo.root, relPath);
+    fs.mkdirSync(join(repo.root, 'src'), { recursive: true });
+    writeFileSync(absFilePath, 'line\n'.repeat(30));
+    const meshName = 'wiki/onboarding';
+    const porcelain = porcelainLine(meshName, relPath, 5, 20);
+    const { executor, calls, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    setResponse(meshName, 'wiki mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    // Inject a rule loader suppressing the `wiki` prefix under `src`.
+    const handler = createHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+
+    // Only the porcelain call happened; the suppressed mesh is never rendered.
+    expect(calls).toHaveLength(1);
+    expect(result.stdout.systemMessage).toBeUndefined();
+  });
+
+  it('still surfaces a non-suppressed mesh on the same suppressed path', async () => {
+    const relPath = 'src/widget.ts';
+    const absFilePath = join(repo.root, relPath);
+    fs.mkdirSync(join(repo.root, 'src'), { recursive: true });
+    writeFileSync(absFilePath, 'line\n'.repeat(30));
+    const meshName = 'billing/checkout';
+    const porcelain = porcelainLine(meshName, relPath, 5, 20);
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelain);
+    setResponse(meshName, 'billing mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(result.stdout.systemMessage).toContain('billing mesh output');
   });
 });

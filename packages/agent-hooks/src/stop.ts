@@ -26,6 +26,7 @@ import {
   sanitizeSessionId,
   type TouchKind
 } from './agent-hooks-common.js';
+import { type HookIgnoreLoader, isMeshSuppressed, loadHookIgnore } from './mesh-ignore.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -284,12 +285,14 @@ export interface StopHandlerDeps {
   listRenderExecutor: ListRenderExecutor;
   staleRenderExecutor?: StaleRenderExecutor;
   pendingCommitProbe?: PendingCommitProbe;
+  loadRules?: HookIgnoreLoader;
 }
 
 export function createStopHandler(deps: StopHandlerDeps) {
   const { staleExecutor, listBatchExecutor, listRenderExecutor } = deps;
   const staleRenderExecutor = deps.staleRenderExecutor ?? createDefaultStaleRenderExecutor();
   const pendingCommitProbe = deps.pendingCommitProbe ?? createDefaultPendingCommitProbe();
+  const loadRules = deps.loadRules ?? loadHookIgnore;
 
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
@@ -334,6 +337,11 @@ export function createStopHandler(deps: StopHandlerDeps) {
 
     const finalRepoRoot = repoRoot;
 
+    // Path-scoped suppression rules (.mesh/.hookignore): hold back mesh slug
+    // prefixes for anchors under given paths, so neither the stale nor the
+    // related section surfaces a mesh the repo asked to hide for that path.
+    const ignoreRules = loadRules(finalRepoRoot);
+
     // Step 3: Build TOUCHED_ANCHORS from write-kind entries not yet reported.
     // `seen` means "already surfaced in a status doc this session." Every entry
     // processed by a dispatching run is marked seen in Step 6 and excluded here,
@@ -373,7 +381,10 @@ export function createStopHandler(deps: StopHandlerDeps) {
     }
 
     if (stalePorcelain.trim()) {
-      const staleRows = parsePorcelain(stalePorcelain);
+      // Drop suppressed meshes outright — hidden drift is not surfaced.
+      const staleRows = parsePorcelain(stalePorcelain).filter(
+        (row) => !isMeshSuppressed(ignoreRules, row.path, row.name)
+      );
       // Drop rows whose drift is resolved-pending-commit: an uncommitted source
       // edit whose re-anchor is already staged. Surfacing those re-dispatches a
       // resolver that cannot clear them (it may not commit the source), so the
@@ -426,7 +437,12 @@ export function createStopHandler(deps: StopHandlerDeps) {
         }
       }
 
-      const relatedSlugs = [...new Set(listRows.map((r) => r.name))];
+      // Suppressed meshes still count toward coverage above — a write they
+      // cover must not be miscounted as uncovered — but are excluded from the
+      // related render so the hidden mesh is never surfaced.
+      const relatedSlugs = [
+        ...new Set(listRows.filter((r) => !isMeshSuppressed(ignoreRules, r.path, r.name)).map((r) => r.name))
+      ];
 
       for (const filterLine of writeFilterLines) {
         if (!coveredFilterLines.has(filterLine)) {

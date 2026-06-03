@@ -14,6 +14,7 @@ import * as nodePath from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { expertAgentMarkerPath, recordExpertAgent } from '../src/agent-hooks-common.js';
+import { parseHookIgnore } from '../src/mesh-ignore.js';
 import {
   buildAnchorSpecs,
   createStopHandler,
@@ -1134,5 +1135,67 @@ describe('loadJournal: all-unparseable lines → null', () => {
 
   it('returns null', () => {
     expect(loadJournal(sid)).toBeNull();
+  });
+});
+
+describe('Stop hook: path-scoped mesh suppression', () => {
+  const sid = `stop-test-suppress-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-suppress-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+  });
+
+  it('drops a stale row whose slug prefix is suppressed for its path', async () => {
+    // The only stale/related mesh is `wiki/...` on a suppressed path, so the
+    // whole status doc collapses and the stop is allowed (no block).
+    const stale: StaleExecutor = () => 'wiki/onboarding\tsrc/foo.ts\t5-25\n';
+    const listBatch: ListBatchExecutor = () => 'wiki/onboarding\tsrc/foo.ts\t5-25\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed\n\nWiki why.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender,
+      loadRules: () => parseHookIgnore('src wiki\n')
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    // Write is still covered (coverage counts the suppressed mesh) → no uncovered
+    // section; the stale row is suppressed → no stale section. Nothing to surface.
+    expect(result.stdout).toEqual({});
+    expect(result.stdout.decision).toBeUndefined();
+  });
+
+  it('still surfaces a non-suppressed stale mesh on a suppressed path', async () => {
+    const stale: StaleExecutor = () => 'billing/checkout\tsrc/foo.ts\t5-25\n';
+    const listBatch: ListBatchExecutor = () => 'billing/checkout\tsrc/foo.ts\t5-25\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed\n\nBilling why.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender,
+      loadRules: () => parseHookIgnore('src wiki\n')
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).toBe('block');
+    const msg = result.stdout.reason as string;
+    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
+    const doc = fs.readFileSync(docPath, 'utf8');
+    expect(doc).toContain('# Stale meshes');
+    expect(doc).toContain('Billing why.');
   });
 });

@@ -34,6 +34,7 @@ import {
   type TouchKind,
   toPosix
 } from './agent-hooks-common.js';
+import { type HookIgnoreLoader, isMeshSuppressed, loadHookIgnore } from './mesh-ignore.js';
 
 // Re-export for backward-compat of test imports (tests import these from here)
 export { toPosix };
@@ -324,7 +325,11 @@ export function diskMemoFactory(logger: MemoLogger): MemoStore {
   return createDiskMemoStore(logger);
 }
 
-export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) {
+export function createHandler(
+  executor: MeshExecutor,
+  memoFactory: MemoFactory,
+  loadRules: HookIgnoreLoader = loadHookIgnore
+) {
   return (input: PreToolUseInput, ctx: HookContext) => {
     const memo = memoFactory(ctx.logger);
     const sessionId = input.session_id;
@@ -389,12 +394,18 @@ export function createHandler(executor: MeshExecutor, memoFactory: MemoFactory) 
       return null;
     }
 
+    // Path-scoped suppression: a repo's .mesh/.hookignore can hold back mesh
+    // slug prefixes (e.g. wiki, marketing) for anchors under given paths. A
+    // suppressed mesh is dropped here so it is never surfaced inline.
+    const ignoreRules = loadRules(repoRoot);
+
     const rows: PorcelainRow[] = parsePorcelain(porcelainStdout);
     const candidateNames = new Set<string>();
     for (const row of rows) {
       if (row.path !== repoRelPath) continue;
       if (row.start === 0 && row.end === 0) continue; // whole-file anchor
       if (!rangesIntersect(range, { start: row.start, end: row.end })) continue;
+      if (isMeshSuppressed(ignoreRules, row.path, row.name)) continue;
       candidateNames.add(row.name);
     }
 

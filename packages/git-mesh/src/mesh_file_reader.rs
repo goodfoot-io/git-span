@@ -285,12 +285,25 @@ impl<'repo> MeshFileReader<'repo> {
         let prefix = format!("{}/", self.mesh_root);
         for entry in index.entries() {
             let ep = entry.path(&index).to_string();
-            if let Some(rest) = ep.strip_prefix(&prefix) {
+            if let Some(rest) = ep.strip_prefix(&prefix)
+                && rest.split('/').all(is_mesh_name_segment)
+            {
                 names.insert(rest.to_string());
             }
         }
         Ok(())
     }
+}
+
+/// Whether a directory-entry basename names a mesh (or mesh subdirectory).
+///
+/// Mesh names and slugs never begin with `.`, so any dotfile or
+/// dot-directory under the mesh root (e.g. the `.hookignore` config
+/// sibling) is a non-mesh config artifact and must be skipped by every
+/// enumeration path — filesystem walk, HEAD-tree walk, and index scan.
+/// This is the single choke-point predicate shared by all three.
+fn is_mesh_name_segment(basename: &str) -> bool {
+    !basename.starts_with('.')
 }
 
 /// Recursively collect file names from a directory tree.
@@ -302,6 +315,9 @@ fn collect_file_names(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
+        if !is_mesh_name_segment(&name) {
+            continue;
+        }
         let rel = if prefix.is_empty() {
             name
         } else {
@@ -329,6 +345,9 @@ fn collect_tree_entry_names(
             Err(_) => continue,
         };
         let name = entry.filename().to_string();
+        if !is_mesh_name_segment(&name) {
+            continue;
+        }
         let rel = if prefix.is_empty() {
             name
         } else {
@@ -344,4 +363,24 @@ fn collect_tree_entry_names(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_mesh_name_segment;
+
+    #[test]
+    fn accepts_normal_names() {
+        assert!(is_mesh_name_segment("checkout-flow"));
+        assert!(is_mesh_name_segment("billing"));
+        assert!(is_mesh_name_segment("index"));
+    }
+
+    #[test]
+    fn rejects_dotfiles_and_dot_dirs() {
+        assert!(!is_mesh_name_segment(".hookignore"));
+        assert!(!is_mesh_name_segment(".config"));
+        assert!(!is_mesh_name_segment(".git"));
+        assert!(!is_mesh_name_segment("."));
+    }
 }
