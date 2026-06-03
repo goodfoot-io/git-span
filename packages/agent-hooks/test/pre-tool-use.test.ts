@@ -978,3 +978,41 @@ describe('path-scoped mesh suppression', () => {
     expect(result.stdout.systemMessage).toContain('billing mesh output');
   });
 });
+
+describe('Mesh document touch', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => repo.cleanup());
+
+  it('neither surfaces meshes nor journals a write to a .mesh/<slug> path', async () => {
+    const sessionId = `mesh-doc-write-${Date.now()}`;
+    const absFilePath = join(repo.root, '.mesh', 'wiki', 'reference', 'codex', 'instruction-loading');
+    const { executor, calls, setResponse } = createFakeExecutor();
+    // Wire a porcelain response so the overlap arm would surface a mesh if it ran.
+    setResponse(
+      '--porcelain .mesh/wiki/reference/codex/instruction-loading',
+      porcelainLine('wiki', '.mesh/wiki/reference/codex/instruction-loading', 1, 50)
+    );
+    setResponse('wiki', 'wiki mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory);
+
+    const input = baseInput({
+      session_id: sessionId,
+      cwd: repo.root,
+      tool_name: 'Write',
+      tool_input: { file_path: absFilePath, content: '# instruction-loading\n' }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+
+    // Overlap arm never runs against a mesh document.
+    expect(calls).toHaveLength(0);
+    expect(result.stdout.systemMessage).toBeUndefined();
+
+    // And the mesh document touch is never journaled.
+    const journalFile = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    expect(fs.existsSync(journalFile)).toBe(false);
+  });
+});

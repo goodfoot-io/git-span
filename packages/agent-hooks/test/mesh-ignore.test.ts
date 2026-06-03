@@ -5,6 +5,7 @@
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isInsideMeshRoot } from '../src/agent-hooks-common.js';
 import { isMeshSuppressed, loadHookIgnore, parseHookIgnore } from '../src/mesh-ignore.js';
 import { makeTempRepo } from './helpers.js';
 
@@ -118,5 +119,30 @@ describe('loadHookIgnore', () => {
     } finally {
       repo.cleanup();
     }
+  });
+});
+
+describe('isInsideMeshRoot', () => {
+  it('returns true for the mesh root itself', () => {
+    expect(isInsideMeshRoot('.mesh')).toBe(true);
+  });
+
+  it('returns true for a direct child', () => {
+    expect(isInsideMeshRoot('.mesh/wiki')).toBe(true);
+  });
+
+  it('returns true for a deeply nested path', () => {
+    expect(isInsideMeshRoot('.mesh/wiki/reference/codex/instruction-loading')).toBe(true);
+    expect(isInsideMeshRoot('.mesh/codex-parity/some/deep/doc')).toBe(true);
+  });
+
+  it('returns false for a sibling directory that starts with .mesh', () => {
+    expect(isInsideMeshRoot('.meshes/x')).toBe(false);
+    expect(isInsideMeshRoot('.mesh-notes/x')).toBe(false);
+  });
+
+  it('returns false for an ordinary source path', () => {
+    expect(isInsideMeshRoot('packages/agent-hooks/src/stop.ts')).toBe(false);
+    expect(isInsideMeshRoot('src/index.ts')).toBe(false);
   });
 });

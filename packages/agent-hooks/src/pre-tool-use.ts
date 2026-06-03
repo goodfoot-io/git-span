@@ -24,6 +24,7 @@ import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutpu
 import {
   derivePath,
   isGitIgnored,
+  isInsideMeshRoot,
   type LineRange,
   type PorcelainRow,
   parsePorcelain,
@@ -366,6 +367,13 @@ export function createHandler(
     // mesh overlaps on them. This sits with the repo-scoping guard above: both
     // bound what the journal may ever contain.
     if (isGitIgnored(repoRoot, repoRelPath)) return null;
+
+    // Skip mesh documents entirely. Files under .mesh/ are managed by git mesh
+    // itself and must never enter the touch journal — they are not application
+    // sources that need mesh coverage. Dropping here is strictly better than
+    // filtering only in the uncovered-writes pass: it uniformly prevents reads,
+    // writes, and uncovered-writes surfacing, matching the gitignore precedent.
+    if (isInsideMeshRoot(repoRelPath)) return null;
 
     // Journal append — best-effort, runs even when overlap arm returns early
     const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);

@@ -57,6 +57,24 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
  * signal; any other failure is an unreliable answer, so we report `false`
  * (do not drop the touch) rather than silently hiding a tracked file.
  */
+/**
+ * The mesh root directory, relative to the repo root. All mesh documents live
+ * under this directory. The hook subsystem consistently assumes this literal
+ * path throughout (HOOK_IGNORE_REL, slug paths in stop.ts, etc.) — no dynamic
+ * resolution is needed or desired.
+ */
+export const MESH_ROOT = '.mesh';
+
+/**
+ * Report whether a repo-relative POSIX path falls inside the mesh root
+ * directory. A path is inside when it equals the mesh root exactly or is
+ * nested beneath it (i.e. starts with ".mesh/"). The "/" boundary prevents
+ * false positives for siblings like ".meshes/x" or ".mesh-notes/x".
+ */
+export function isInsideMeshRoot(repoRelPath: string): boolean {
+  return repoRelPath === MESH_ROOT || repoRelPath.startsWith(`${MESH_ROOT}/`);
+}
+
 export function isGitIgnored(repoRoot: string, repoRelPath: string): boolean {
   try {
     execFileSync('git', ['-C', repoRoot, 'check-ignore', '-q', '--', repoRelPath], {
