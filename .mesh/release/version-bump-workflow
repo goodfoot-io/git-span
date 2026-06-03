@@ -1,0 +1,5 @@
+package.json#L28-L28 sha256:4e93029e9b9b02b97ce3c1d657709690e87656cf683cb73ffbbb99d0dcf9a5f6
+scripts/bump.sh#L37-L43 sha256:c2aeb3a740b1346579e6271e750b989b396463efc6d383cd9949a26f014fcd17
+scripts/sync-versions.sh#L54-L76 sha256:a86486cdc43021079ba794f17263f8098cef9df71c0da67118ca65e007fdee68
+
+Version bump workflow that synchronizes package versions across the monorepo and refreshes the lockfile after bumping the source package.
