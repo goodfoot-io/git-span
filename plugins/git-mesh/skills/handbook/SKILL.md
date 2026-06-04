@@ -19,6 +19,7 @@ description: Use with `git mesh` or meshes.
 - **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
 - **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for meshes**: Read `./sections/git-hook-setup.md`
 - **A question is about where meshes/anchors are stored, whether git-mesh uses refs, or how mesh names map to files**: Read `./sections/storage-model.md`
+- **A mesh should be hidden from the hooks for certain paths, or a `.mesh/.hookignore` file / per-path mesh suppression is in play**: Read `./sections/hookignore.md`
 
 **Note that full codebase validation is not required for mesh-only changes.**
 </instructions>
