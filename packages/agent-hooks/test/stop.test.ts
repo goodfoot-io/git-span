@@ -13,7 +13,12 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { expertAgentMarkerPath, recordExpertAgent } from '../src/agent-hooks-common.js';
+import {
+  expertAgentMarkerPath,
+  incrementSubagentCount,
+  recordExpertAgent,
+  subagentCountPath
+} from '../src/agent-hooks-common.js';
 import { parseHookIgnore } from '../src/mesh-ignore.js';
 import {
   buildAnchorSpecs,
@@ -1197,5 +1202,101 @@ describe('Stop hook: path-scoped mesh suppression', () => {
     const doc = fs.readFileSync(docPath, 'utf8');
     expect(doc).toContain('# Stale meshes');
     expect(doc).toContain('Billing why.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent-count suppression
+// ---------------------------------------------------------------------------
+
+describe('Stop hook: subagent-count suppression', () => {
+  const sid = `stop-test-count-suppress-${Date.now()}`;
+  let tmpRepo: string;
+
+  beforeEach(() => {
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-count-'));
+    initGitRepo(tmpRepo);
+    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    const jPath = journalPath(sid);
+    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
+    const countPath = subagentCountPath(sid);
+    if (fs.existsSync(countPath)) fs.unlinkSync(countPath);
+    const lockPath = `${countPath}.lock`;
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+  });
+
+  it('returns null (no dispatch) when active-subagent count is > 0', async () => {
+    const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
+    });
+
+    incrementSubagentCount(sid);
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    // Suppressed: returns null → empty stdout, no decision
+    expect(result.stdout).toEqual({});
+    expect(result.stdout.decision).toBeUndefined();
+  });
+
+  it('leaves the journal unmarked when suppressed (same entries dispatch on next clean Stop)', async () => {
+    const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
+    });
+
+    incrementSubagentCount(sid);
+
+    // First Stop: suppressed — count > 0
+    const suppressedResult = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(suppressedResult.stdout).toEqual({});
+
+    // Journal must still have the unseen entry
+    const afterSuppressed = readJournalRaw(sid);
+    expect(afterSuppressed.every((e) => !e.seen)).toBe(true);
+
+    // Decrement to 0 so the next Stop is clean
+    // (Directly write 0 via readSubagentCount: decrement the count)
+    const countPath = subagentCountPath(sid);
+    fs.writeFileSync(countPath, '0', 'utf8');
+
+    // Second Stop: count == 0 → should dispatch
+    const cleanResult = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(cleanResult.stdout.decision).toBe('block');
+  });
+
+  it('count == 0 path is unchanged — still dispatches normally', async () => {
+    const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
+    });
+
+    // No active subagents — counter absent → reads as 0
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).toBe('block');
   });
 });

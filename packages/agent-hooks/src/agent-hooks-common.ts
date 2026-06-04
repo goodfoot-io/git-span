@@ -251,6 +251,131 @@ export function readExpertAgentId(sessionId: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Per-session subagent counter
+// ---------------------------------------------------------------------------
+
+export function subagentCountPath(sessionId: string): string {
+  return nodePath.join(SESSION_BASE_DIR, sanitizeSessionId(sessionId), 'subagent-count');
+}
+
+// Lock constants
+const LOCK_RETRY_INTERVAL_MS = 10;
+const LOCK_MAX_RETRIES = 50; // 500 ms total budget
+const LOCK_STALE_MS = 5000; // 5 s — reclaim locks older than this
+
+type CountLogger = { warn: (msg: string, meta?: Record<string, unknown>) => void } | undefined;
+
+/**
+ * Acquire an exclusive per-session filesystem lock.
+ * Spins with LOCK_RETRY_INTERVAL_MS sleeps up to LOCK_MAX_RETRIES attempts.
+ * Reclaims stale locks (mtime older than LOCK_STALE_MS).
+ * Returns the lock path for the caller to unlink in finally.
+ */
+function acquireLock(countFilePath: string): string {
+  const lockPath = `${countFilePath}.lock`;
+  let attempts = 0;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.closeSync(fd);
+      return lockPath;
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code !== 'EEXIST') throw err;
+      // Lock exists — check staleness
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          // Stale: reclaim by unlinking and retrying immediately
+          try {
+            fs.unlinkSync(lockPath);
+          } catch (e) {
+            void e;
+          }
+          continue;
+        }
+      } catch {
+        // Lock disappeared between existence check and stat — retry
+        continue;
+      }
+      if (++attempts >= LOCK_MAX_RETRIES) {
+        throw new Error(`subagent-count: could not acquire lock after ${LOCK_MAX_RETRIES} retries`);
+      }
+      // Busy-wait with a synchronous sleep (hooks are short-lived processes)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_INTERVAL_MS);
+    }
+  }
+}
+
+function readCountRaw(countFilePath: string): number {
+  try {
+    const raw = fs.readFileSync(countFilePath, 'utf8').trim();
+    if (!raw) return 0;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) || n < 0 ? 0 : n;
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'ENOENT') return 0;
+    throw err;
+  }
+}
+
+function withCountLock(countFilePath: string, fn: (current: number) => number): void {
+  // Ensure the session directory exists before acquiring the lock — the lock
+  // file lives in the same directory as the count file.
+  fs.mkdirSync(nodePath.dirname(countFilePath), { recursive: true });
+  const lockPath = acquireLock(countFilePath);
+  try {
+    const current = readCountRaw(countFilePath);
+    const next = fn(current);
+    fs.writeFileSync(countFilePath, `${next}`, 'utf8');
+  } finally {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
+/**
+ * Increment the per-session active-subagent count by 1. Atomic RMW under a
+ * per-session filesystem lock. Best-effort — a failure is logged and swallowed.
+ */
+export function incrementSubagentCount(sessionId: string, logger?: CountLogger): void {
+  try {
+    withCountLock(subagentCountPath(sessionId), (n) => n + 1);
+  } catch (err) {
+    logger?.warn('failed to increment subagent count', { err });
+  }
+}
+
+/**
+ * Decrement the per-session active-subagent count by 1, flooring at zero.
+ * Atomic RMW under a per-session filesystem lock. Best-effort — a failure is
+ * logged and swallowed.
+ */
+export function decrementSubagentCount(sessionId: string, logger?: CountLogger): void {
+  try {
+    withCountLock(subagentCountPath(sessionId), (n) => Math.max(0, n - 1));
+  } catch (err) {
+    logger?.warn('failed to decrement subagent count', { err });
+  }
+}
+
+/**
+ * Read the current active-subagent count. Returns 0 when the file is
+ * absent, empty, unparseable, or the value is negative. Never throws.
+ */
+export function readSubagentCount(sessionId: string): number {
+  try {
+    return readCountRaw(subagentCountPath(sessionId));
+  } catch {
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Touch kind and anchor formatting
 // ---------------------------------------------------------------------------
 

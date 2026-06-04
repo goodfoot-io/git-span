@@ -22,6 +22,7 @@ import {
   parsePorcelain,
   rangesIntersect,
   readExpertAgentId,
+  readSubagentCount,
   resolveRepoRoot,
   sanitizeSessionId,
   type TouchKind
@@ -307,6 +308,17 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // a re-fire would assemble no sections anyway — this is the explicit guard.)
     const stopHookActive = (input as unknown as Record<string, unknown>).stop_hook_active;
     if (stopHookActive === true) return null;
+
+    // Step 0.5: Suppress dispatch while subagents are in flight. The journal may
+    // still be changing under them, so this is not a "ready to document" moment.
+    // Read failure suppresses too — fail-closed, like every other error path here.
+    let activeSubagents: number;
+    try {
+      activeSubagents = readSubagentCount(sessionId);
+    } catch {
+      return null;
+    }
+    if (activeSubagents > 0) return null;
 
     // Step 1: Load journal
     const entries = loadJournal(sessionId);
