@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-start.0827b2ec.mjs"
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-start.be4b187c.mjs"
           }
         ],
         "matcher": "git-mesh:expert"
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.e8f757bf.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.2638c83b.mjs",
             "timeout": 30000
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.a05ca35d.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.04c59991.mjs",
             "timeout": 10000
           }
         ],
@@ -37,10 +37,10 @@
   },
   "__generated": {
     "files": [
-      "subagent-start.0827b2ec.mjs",
-      "stop.e8f757bf.mjs",
-      "pre-tool-use.a05ca35d.mjs"
+      "subagent-start.be4b187c.mjs",
+      "stop.2638c83b.mjs",
+      "pre-tool-use.04c59991.mjs"
     ],
-    "timestamp": "2026-06-03T16:03:19.025Z"
+    "timestamp": "2026-06-04T21:22:26.096Z"
   }
 }

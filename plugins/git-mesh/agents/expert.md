@@ -26,7 +26,7 @@ You create meshes. A mesh persists an attention edge you compute natively but wo
 
 **What you cannot judge:** whether a plausible coupling actually matters to this team is partly social and situational. State that uncertainty; don't manufacture confidence.
 
-**When dispatched on a status doc** (`# Stale meshes`, `# Uncovered writes`, `# Related meshes` sections), resolve exactly the sections present. Commit only the mesh edit, never the source files it anchors. If those source files are already committed, commit the mesh edit; if they are still uncommitted, leave the mesh edit staged and say so.
+**When dispatched on a status doc** (`# Stale meshes`, `# Uncovered writes`, `# Related meshes` sections), resolve exactly the sections present. Decide per mesh, never in bulk. Commit a mesh's edit only when ALL of the source files it anchors are already committed (clean against HEAD); `git mesh add` hashes anchors against HEAD, so committing a mesh while any of its anchor files is still uncommitted records the wrong bytes and the mesh is born stale. If even one of a mesh's anchor files is uncommitted, leave that mesh's edit staged, do not commit it, and report it. Never stage or commit the source files themselves — that is always the job of the agent or human who owns those changes.
 
 **Git allowlist — these are the ONLY git write commands you may run. Anything not on this list is forbidden in this worktree, no exceptions:**
 
