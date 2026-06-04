@@ -1299,4 +1299,34 @@ describe('Stop hook: subagent-count suppression', () => {
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(result.stdout.decision).toBe('block');
   });
+
+  it('suppresses (returns null) when the count file is present but unparseable — fail closed', async () => {
+    const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
+    const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
+
+    const handler = createStopHandler({
+      staleExecutor: stale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render,
+      staleRenderExecutor: staleRender
+    });
+
+    // A torn/corrupt count file (present but not a parseable integer) must make
+    // the read throw, so stop.ts's Step 0.5 catch fires and suppresses dispatch
+    // rather than treating it as 0 and dispatching mid-fan-out.
+    const countPath = subagentCountPath(sid);
+    fs.mkdirSync(nodePath.dirname(countPath), { recursive: true });
+    fs.writeFileSync(countPath, 'garbage', 'utf8');
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout).toEqual({});
+    expect(result.stdout.decision).toBeUndefined();
+
+    // The journal must stay unmarked so the same entry dispatches on a later
+    // clean Stop — suppression must not lose the withheld touches.
+    const after = readJournalRaw(sid);
+    expect(after.every((e) => !e.seen)).toBe(true);
+  });
 });

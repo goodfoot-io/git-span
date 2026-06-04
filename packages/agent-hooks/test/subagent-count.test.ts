@@ -45,27 +45,33 @@ describe('readSubagentCount', () => {
     expect(readSubagentCount(id)).toBe(0);
   });
 
-  it('returns 0 for an empty count file', () => {
+  it('throws for an empty (present-but-torn) count file — fail closed, not 0', () => {
     const id = sid('read-empty');
     const p = subagentCountPath(id);
     fs.mkdirSync(nodePath.dirname(p), { recursive: true });
     fs.writeFileSync(p, '', 'utf8');
-    expect(readSubagentCount(id)).toBe(0);
+    expect(() => readSubagentCount(id)).toThrow();
   });
 
-  it('returns 0 for a garbage count file', () => {
+  it('throws for a garbage (unparseable) count file — fail closed, not 0', () => {
     const id = sid('read-garbage');
     const p = subagentCountPath(id);
     fs.mkdirSync(nodePath.dirname(p), { recursive: true });
     fs.writeFileSync(p, 'not-a-number', 'utf8');
-    expect(readSubagentCount(id)).toBe(0);
+    expect(() => readSubagentCount(id)).toThrow();
   });
 
-  it('returns 0 for a negative value in the count file', () => {
+  it('throws for a negative value in the count file — fail closed, not 0', () => {
     const id = sid('read-negative');
     const p = subagentCountPath(id);
     fs.mkdirSync(nodePath.dirname(p), { recursive: true });
     fs.writeFileSync(p, '-3', 'utf8');
+    expect(() => readSubagentCount(id)).toThrow();
+  });
+
+  it('does NOT throw for an absent count file — absent is the only legitimate 0', () => {
+    const id = sid('read-absent-no-throw');
+    expect(() => readSubagentCount(id)).not.toThrow();
     expect(readSubagentCount(id)).toBe(0);
   });
 
@@ -120,6 +126,24 @@ describe('decrementSubagentCount', () => {
     incrementSubagentCount(id, logger);
     decrementSubagentCount(id, logger);
     expect(readSubagentCount(id)).toBe(1);
+  });
+});
+
+describe('atomic write', () => {
+  it('the persisted count file holds exactly the integer, with no temp residue', () => {
+    const id = sid('atomic-clean');
+    const p = subagentCountPath(id);
+    incrementSubagentCount(id, logger);
+    incrementSubagentCount(id, logger);
+    // The file is a clean multi-digit-capable integer (here single digit), and
+    // no temp sibling from the tmp+rename survives in the directory.
+    expect(fs.readFileSync(p, 'utf8')).toBe('2');
+    const dir = nodePath.dirname(p);
+    const base = nodePath.basename(p);
+    const leftover = fs.readdirSync(dir).filter((f) => f.startsWith(`${base}.tmp.`));
+    expect(leftover).toEqual([]);
+    // Clean the session directory created for this test.
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

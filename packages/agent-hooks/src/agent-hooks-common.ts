@@ -8,6 +8,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
@@ -259,16 +260,32 @@ export function subagentCountPath(sessionId: string): string {
 }
 
 // Lock constants
-const LOCK_RETRY_INTERVAL_MS = 10;
-const LOCK_MAX_RETRIES = 50; // 500 ms total budget
-const LOCK_STALE_MS = 5000; // 5 s — reclaim locks older than this
+const LOCK_RETRY_INTERVAL_MS = 5;
+// The critical section is a microsecond-scale read-modify-write, so real
+// contention resolves almost immediately. A generous budget (~5 s of retries)
+// means the only way to exhaust it is a genuinely abandoned lock — which the
+// stale-lock breaker reclaims below — rather than ordinary contention.
+const LOCK_MAX_RETRIES = 1000; // ~5 s total budget at 5 ms/retry
+// Reclaim locks older than this. The hold is microsecond-scale, so a threshold
+// this far above any real hold time means a lock this old is genuinely
+// abandoned (a crashed/killed holder), never one mid-critical-section.
+const LOCK_STALE_MS = 30_000; // 30 s
 
 type CountLogger = { warn: (msg: string, meta?: Record<string, unknown>) => void } | undefined;
 
 /**
  * Acquire an exclusive per-session filesystem lock.
- * Spins with LOCK_RETRY_INTERVAL_MS sleeps up to LOCK_MAX_RETRIES attempts.
- * Reclaims stale locks (mtime older than LOCK_STALE_MS).
+ *
+ * Spins with LOCK_RETRY_INTERVAL_MS sleeps up to LOCK_MAX_RETRIES attempts,
+ * giving a generous budget so ordinary contention never exhausts it. A lock
+ * whose mtime is older than LOCK_STALE_MS is treated as abandoned and reclaimed.
+ *
+ * Reclaim is race-free: the contender first atomically renames the stale lock to
+ * a unique sidelined name (`rename` has exactly one winner across processes),
+ * then unlinks the sideline and retries the exclusive `open(wx)`. Two contenders
+ * cannot both win the rename, so they cannot both acquire — at most one reclaims
+ * and the rest fall back to the normal exclusive-create contention.
+ *
  * Returns the lock path for the caller to unlink in finally.
  */
 function acquireLock(countFilePath: string): string {
@@ -282,40 +299,89 @@ function acquireLock(countFilePath: string): string {
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e.code !== 'EEXIST') throw err;
-      // Lock exists — check staleness
+      // Lock exists — check staleness.
       try {
         const stat = fs.statSync(lockPath);
         if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          // Stale: reclaim by unlinking and retrying immediately
+          // Abandoned: reclaim atomically. Rename the stale lock aside; only one
+          // contender can win this rename, so reclaim cannot race two acquirers.
+          const sideline = `${lockPath}.stale.${process.pid}.${randomUUID()}`;
           try {
-            fs.unlinkSync(lockPath);
-          } catch (e) {
-            void e;
+            fs.renameSync(lockPath, sideline);
+            try {
+              fs.unlinkSync(sideline);
+            } catch (e2) {
+              void e2;
+            }
+          } catch (e2) {
+            // Lost the rename race (another contender reclaimed it) or the lock
+            // vanished — either way, retry the exclusive create.
+            void e2;
           }
           continue;
         }
       } catch {
-        // Lock disappeared between existence check and stat — retry
+        // Lock disappeared between existence check and stat — retry.
         continue;
       }
       if (++attempts >= LOCK_MAX_RETRIES) {
         throw new Error(`subagent-count: could not acquire lock after ${LOCK_MAX_RETRIES} retries`);
       }
-      // Busy-wait with a synchronous sleep (hooks are short-lived processes)
+      // Busy-wait with a synchronous sleep (hooks are short-lived processes).
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_INTERVAL_MS);
     }
   }
 }
 
+/**
+ * Read and parse the count file. Distinguishes three states:
+ *   - absent (ENOENT) → 0 (legitimate "no subagent has started this session")
+ *   - present but empty / unparseable / negative → throws (ambiguous; the caller
+ *     must fail closed and suppress rather than treat as 0)
+ *   - present and a valid non-negative integer → that value
+ *
+ * Any non-ENOENT I/O error (EACCES, EIO, EISDIR, …) propagates unchanged.
+ */
 function readCountRaw(countFilePath: string): number {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(countFilePath, 'utf8').trim();
-    if (!raw) return 0;
-    const n = parseInt(raw, 10);
-    return Number.isNaN(n) || n < 0 ? 0 : n;
+    raw = fs.readFileSync(countFilePath, 'utf8').trim();
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'ENOENT') return 0;
+    throw err;
+  }
+  if (!raw) {
+    throw new Error(`subagent-count: count file is present but empty: ${countFilePath}`);
+  }
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) {
+    throw new Error(`subagent-count: count file holds an unparseable or negative value: ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+/**
+ * Atomically persist the count: write a uniquely-named temp file in the same
+ * directory, then `rename` it into place. Rename is atomic on the same
+ * filesystem, so a concurrent lock-free reader observes either the old complete
+ * file or the new complete file — never a torn or zero-byte intermediate. The
+ * temp name carries the pid and a uuid so two writers never collide. Mirrors
+ * `writeJournal` in stop.ts.
+ */
+function writeCountAtomic(countFilePath: string, value: number | string): void {
+  const tmpPath = `${countFilePath}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    fs.writeFileSync(tmpPath, `${value}`, 'utf8');
+    fs.renameSync(tmpPath, countFilePath);
+  } catch (err) {
+    // Best-effort cleanup of the temp file on failure, then re-throw so the
+    // caller (incrementSubagentCount/decrementSubagentCount) logs it.
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch (e) {
+      void e;
+    }
     throw err;
   }
 }
@@ -326,9 +392,12 @@ function withCountLock(countFilePath: string, fn: (current: number) => number): 
   fs.mkdirSync(nodePath.dirname(countFilePath), { recursive: true });
   const lockPath = acquireLock(countFilePath);
   try {
+    // Under the lock the file is never torn, so a present-but-empty/unparseable
+    // read here would be genuine corruption; readCountRaw throws and we let it
+    // propagate to the caller's catch rather than silently resetting to 0.
     const current = readCountRaw(countFilePath);
     const next = fn(current);
-    fs.writeFileSync(countFilePath, `${next}`, 'utf8');
+    writeCountAtomic(countFilePath, next);
   } finally {
     try {
       fs.unlinkSync(lockPath);
@@ -338,15 +407,37 @@ function withCountLock(countFilePath: string, fn: (current: number) => number): 
   }
 }
 
+// The marker an increment writes when it cannot acquire the lock to perform a
+// proper +1. It is deliberately unparseable so the lock-free Stop read throws
+// and the Stop hook fails closed (suppresses) rather than dispatching on a
+// silently-undercounted value. A subsequent successful increment/decrement
+// re-establishes a numeric count under the lock.
+const COUNT_FAILCLOSED_MARKER = 'FAIL_CLOSED';
+
 /**
  * Increment the per-session active-subagent count by 1. Atomic RMW under a
- * per-session filesystem lock. Best-effort — a failure is logged and swallowed.
+ * per-session filesystem lock.
+ *
+ * Non-fatal to the hook: a failure is logged, never thrown. But an increment
+ * must never silently undercount — a dropped +1 lets a later Stop read a
+ * too-low count and dispatch mid-fan-out (fail-open). So when the RMW cannot be
+ * completed (e.g. the lock budget is exhausted by a genuinely stuck holder), we
+ * write a fail-closed marker that makes the lock-free Stop read throw and the
+ * Stop hook suppress, rather than leaving a stale low number in place.
  */
 export function incrementSubagentCount(sessionId: string, logger?: CountLogger): void {
+  const countPath = subagentCountPath(sessionId);
   try {
-    withCountLock(subagentCountPath(sessionId), (n) => n + 1);
+    withCountLock(countPath, (n) => n + 1);
   } catch (err) {
-    logger?.warn('failed to increment subagent count', { err });
+    logger?.warn('failed to increment subagent count; writing fail-closed marker', { err });
+    // Fail closed: an unparseable count suppresses dispatch (see readCountRaw).
+    try {
+      fs.mkdirSync(nodePath.dirname(countPath), { recursive: true });
+      writeCountAtomic(countPath, COUNT_FAILCLOSED_MARKER);
+    } catch (err2) {
+      logger?.warn('failed to write fail-closed subagent-count marker', { err: err2 });
+    }
   }
 }
 
@@ -364,15 +455,18 @@ export function decrementSubagentCount(sessionId: string, logger?: CountLogger):
 }
 
 /**
- * Read the current active-subagent count. Returns 0 when the file is
- * absent, empty, unparseable, or the value is negative. Never throws.
+ * Read the current active-subagent count.
+ *
+ * Fail-closed contract for the Stop hook: the only state that legitimately means
+ * "0 active subagents, dispatch normally" is the count file being **absent**, so
+ * absent → 0. Every other ambiguity — an I/O/permission error, an unreadable
+ * path, a torn/empty/partial/unparseable file — **throws**, so the caller
+ * (stop.ts Step 0.5) suppresses dispatch rather than dispatching on a value it
+ * cannot confidently confirm. This deliberately does NOT swallow errors to 0;
+ * doing so would make stop.ts's fail-closed catch dead code.
  */
 export function readSubagentCount(sessionId: string): number {
-  try {
-    return readCountRaw(subagentCountPath(sessionId));
-  } catch {
-    return 0;
-  }
+  return readCountRaw(subagentCountPath(sessionId));
 }
 
 // ---------------------------------------------------------------------------
