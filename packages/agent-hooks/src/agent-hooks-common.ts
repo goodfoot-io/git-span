@@ -407,11 +407,17 @@ function withCountLock(countFilePath: string, fn: (current: number) => number): 
   }
 }
 
-// The marker an increment writes when it cannot acquire the lock to perform a
-// proper +1. It is deliberately unparseable so the lock-free Stop read throws
-// and the Stop hook fails closed (suppresses) rather than dispatching on a
-// silently-undercounted value. A subsequent successful increment/decrement
-// re-establishes a numeric count under the lock.
+// The marker an increment writes when it cannot complete its read-modify-write
+// (e.g. lock-budget exhaustion or count-file corruption). It is deliberately
+// unparseable so every subsequent readCountRaw call throws — including any
+// later increment's pre-write read inside withCountLock — which means no
+// successful RMW can ever re-establish a numeric count once the marker is on
+// disk. The latch is permanent for the remainder of the session: the Stop hook
+// will suppress mesh-review dispatch on every Stop for this session, and
+// recovery requires a fresh session (new session id → new per-session
+// directory). This is the safe (fail-closed) direction and is consistent with
+// the accepted "crashed subagent leaks the count and suppresses session-wide"
+// limitation.
 const COUNT_FAILCLOSED_MARKER = 'FAIL_CLOSED';
 
 /**
