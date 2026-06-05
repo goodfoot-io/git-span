@@ -17,7 +17,10 @@ use crate::mesh_file::parse_address;
 use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{AnchorExtent, validate_add_target};
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
+// The hashing contract lives in the gix-free kernel. Re-export it on the
+// original `crate::cli::commit::hash_bytes_with_extent` path so existing
+// callers (e.g. `cli::stale_fix`) are unchanged.
+pub use git_mesh_core::hash_bytes_with_extent;
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
@@ -158,29 +161,6 @@ pub(crate) fn hash_anchor_content(
     }
 
     Ok(("sha256".to_string(), hash_bytes_with_extent(&bytes, extent)))
-}
-
-/// Hash `bytes` per the anchor's `extent`, matching the canonicalization
-/// used by `hash_anchor_content`. Whole-file extents hash the full byte
-/// buffer; line ranges hash the `\n`-joined slice of lines `[start, end]`.
-///
-/// Returns the lowercase hex SHA-256 digest (no `sha256:` prefix).
-pub(crate) fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
-    let hashed: Vec<u8> = match extent {
-        AnchorExtent::WholeFile => bytes.to_vec(),
-        AnchorExtent::LineRange { start, end } => {
-            let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (*start as usize).saturating_sub(1);
-            let hi = (*end as usize).min(lines.len());
-            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-            slice.join("\n").into_bytes()
-        }
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(&hashed);
-    let result = hasher.finalize();
-    result.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.

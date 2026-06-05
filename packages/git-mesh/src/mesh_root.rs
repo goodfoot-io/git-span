@@ -65,41 +65,9 @@ fn validate_mesh_root(dir: &str) -> Result<()> {
 /// - Paths inside `.git` (equal to `.git`, starting with `.git/`,
 ///   containing `/.git/`, or ending with `/.git`)
 pub fn validate_repo_relative_path(kind: &str, path: &str) -> Result<()> {
-    if path.is_empty() {
-        return Err(Error::InvalidMeshFile(format!("{kind} must not be empty")));
-    }
-
-    // Reject absolute paths (Unix-style).
-    if path.starts_with('/') {
-        return Err(Error::InvalidMeshFile(format!(
-            "{kind} must be repo-relative, got absolute path: `{path}`"
-        )));
-    }
-
-    // Reject paths containing `..`.
-    // We split on '/' and check each component to avoid false positives
-    // like `foo..bar`.
-    for component in path.split('/') {
-        if component == ".." {
-            return Err(Error::InvalidMeshFile(format!(
-                "{kind} must not contain `..`: `{path}`"
-            )));
-        }
-    }
-
-    // Reject paths inside `.git`.
-    let normalized = path.trim_end_matches('/');
-    if normalized == ".git"
-        || normalized.starts_with(".git/")
-        || normalized.contains("/.git/")
-        || normalized.ends_with("/.git")
-    {
-        return Err(Error::InvalidMeshFile(format!(
-            "{kind} must not be inside `.git`: `{path}`"
-        )));
-    }
-
-    Ok(())
+    // The path-safety predicate is pure and lives in the gix-free kernel;
+    // delegate and lift its error into this crate's `Error` via `From`.
+    Ok(git_mesh_core::validate_repo_relative_path(kind, path)?)
 }
 
 /// Returns `true` when repo-relative `path` is equal to, or nested beneath,

@@ -28,4 +28,8 @@ pub use mesh::{
 };
 pub use resolver::{resolve_anchor, resolve_mesh, stale_meshes};
 pub use types::*;
+// The gix-free kernel's matcher contract. `AnchorExtent` and `sha256_hex`
+// already reach the crate root via `types::*`; these are the remaining
+// pure-kernel items consumers share.
+pub use git_mesh_core::{Location, hash_bytes_with_extent, scan_for_content_hash};
 pub use validation::{RESERVED_MESH_NAMES, validate_anchor_id, validate_mesh_name};

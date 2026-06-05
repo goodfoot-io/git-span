@@ -91,24 +91,19 @@ fn find_relocated_range(
     if span == 0 {
         return None;
     }
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() < span {
-        return None;
-    }
-    let near0 = (near_start as usize).saturating_sub(1);
-    let mut best: Option<(usize, usize)> = None; // (start_idx, distance)
-    for start in 0..=(lines.len() - span) {
-        let slice_text = lines[start..start + span].join("\n");
-        let h = format!("sha256:{}", sha256_hex(slice_text.as_bytes()));
-        if h == stored_hash {
-            let dist = start.abs_diff(near0);
-            match best {
-                Some((_, bd)) if bd <= dist => {}
-                _ => best = Some((start, dist)),
-            }
-        }
-    }
-    best.map(|(start, _)| ((start as u32) + 1, (start as u32) + span as u32))
+    // Single shared matcher: the pure window scan lives in `git-mesh-core`.
+    // Feed it the one candidate file and take the window nearest
+    // `near_start` (the kernel returns nearest-first, ties toward the lower
+    // start line — the preference this scan has always had).
+    let extent = AnchorExtent::LineRange {
+        start: 1,
+        end: span as u32,
+    };
+    let files = [(String::new(), text.as_bytes().to_vec())];
+    git_mesh_core::scan_for_content_hash(&files, stored_hash, extent, Some(near_start))
+        .into_iter()
+        .next()
+        .map(|loc| (loc.start_line, loc.end_line))
 }
 
 /// Cross-file `Moved` relocation scan for line anchors whose anchored

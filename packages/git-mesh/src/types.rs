@@ -18,13 +18,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The extent of a pinned anchor: either the whole file, or an inclusive
-/// 1-based line range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub enum AnchorExtent {
-    WholeFile,
-    LineRange { start: u32, end: u32 },
-}
+// `AnchorExtent` is the pure anchor-extent shape; it lives in the gix-free
+// `git-mesh-core` kernel (its `Serialize` derive comes from core's `serde`
+// feature, which this crate enables). Re-exported here so every existing
+// `crate::types::AnchorExtent` / `git_mesh::AnchorExtent` path is unchanged.
+pub use git_mesh_core::AnchorExtent;
 
 /// In-memory representation of an Anchor derived from a mesh file anchor record.
 ///
@@ -389,6 +387,21 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// The gix-free kernel owns a small, matchable error type covering its pure
+// parse/validate surface. Map each variant 1:1 into this crate's larger
+// `Error` so callers (and the `?` operator) see git-mesh's `Error` exactly
+// as before — message text and matchable variant are preserved.
+impl From<git_mesh_core::Error> for Error {
+    fn from(e: git_mesh_core::Error) -> Self {
+        match e {
+            git_mesh_core::Error::ReservedName(s) => Error::ReservedName(s),
+            git_mesh_core::Error::InvalidName(s) => Error::InvalidName(s),
+            git_mesh_core::Error::InvalidMeshFile(s) => Error::InvalidMeshFile(s),
+            git_mesh_core::Error::MeshConflict(s) => Error::MeshConflict(s),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1 scaffold types — layered engine / renderers / prechecks.
@@ -1145,13 +1158,9 @@ pub(crate) fn sha1_hex(bytes: &[u8]) -> String {
     use_sha1::sha1_hex(bytes)
 }
 
-/// Lowercase hex SHA-256 of `bytes`.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(bytes);
-    format!("{:x}", h.finalize())
-}
+// `sha256_hex` is the leaf digest helper; it lives in `git-mesh-core` and
+// is re-exported here so every `crate::types::sha256_hex` path is unchanged.
+pub use git_mesh_core::sha256_hex;
 
 pub(crate) mod use_sha1 {
     /// Minimal SHA-1. Returns lowercase hex.

@@ -1,0 +1,20 @@
+[package]
+name = "git-mesh-core"
+version = "0.1.0"
+edition = "2024"
+description = "Pure, gix-free kernel shared by git-mesh and downstream consumers: the anchor extent shape, the content-hash freshness rule, and a stateless content-hash move matcher."
+repository = "https://github.com/goodfoot-io/git-mesh.git"
+license = "MIT"
+
+# The leaf contract deliberately carries no gix, rusqlite, tree-sitter,
+# blake3, globset, or memmap2. Hard dependencies are `sha2` (the hashing
+# kernel) and `thiserror` (the matchable error type for the parse/validate
+# surface); serde is optional so a consumer that does not serialize anchors
+# inherits nothing extra.
+[features]
+serde = ["dep:serde"]
+
+[dependencies]
+sha2 = "0.10"
+thiserror = "2.0.9"
+serde = { version = "1.0.228", optional = true, features = ["derive"] }

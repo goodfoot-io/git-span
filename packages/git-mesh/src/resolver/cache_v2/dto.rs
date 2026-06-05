@@ -39,9 +39,13 @@ impl From<AnchorExtent> for AnchorExtentDto {
     }
 }
 
-impl From<AnchorExtentDto> for AnchorExtent {
-    fn from(e: AnchorExtentDto) -> Self {
-        match e {
+impl AnchorExtentDto {
+    // `AnchorExtent` lives in `git-mesh-core`, so a `From<AnchorExtentDto>
+    // for AnchorExtent` impl would violate the orphan rule (both the trait
+    // and the target type are foreign). An inherent method on the local DTO
+    // is the equivalent total conversion.
+    pub(crate) fn into_extent(self) -> AnchorExtent {
+        match self {
             AnchorExtentDto::WholeFile => AnchorExtent::WholeFile,
             AnchorExtentDto::LineRange { start, end } => AnchorExtent::LineRange { start, end },
         }
@@ -77,7 +81,7 @@ impl TryFrom<AnchorLocationDto> for AnchorLocation {
         };
         Ok(AnchorLocation {
             path: PathBuf::from(dto.path),
-            extent: dto.extent.into(),
+            extent: dto.extent.into_extent(),
             blob,
         })
     }

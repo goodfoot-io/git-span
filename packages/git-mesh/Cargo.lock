@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "git-mesh"
-version = "1.0.109"
+version = "1.0.110"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -661,6 +661,7 @@ dependencies = [
  "clap_mangen",
  "criterion",
  "fs4",
+ "git-mesh-core",
  "gix",
  "gix-chunk",
  "gix-lock",
@@ -685,6 +686,15 @@ dependencies = [
  "tree-sitter-typescript",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "git-mesh-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]
