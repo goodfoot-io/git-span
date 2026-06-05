@@ -333,6 +333,32 @@ pub fn hash_extent_indexed(idx: &LineIndex, extent: &AnchorExtent) -> String {
 // ambiguity guarantee — exact while paying the per-window SHA only at genuine
 // candidates.
 
+/// The stored algorithm name for an rk64 fingerprint anchor: a line-format
+/// token of `rk64:<hex>` where `<hex>` is [`rk64_to_hex`] of the `u64`. This
+/// is an opaque `<algorithm>:<hash>` token to [`mesh_file::MeshFile::parse`],
+/// so it rides the existing line format with no parser change; consumers that
+/// adopt rk64 identity store it under this name.
+pub const RK64_ALGORITHM: &str = "rk64";
+
+/// Canonical hex encoding of an rk64 fingerprint for the stored
+/// `rk64:<hex>` token: **lowercase, zero-padded to 16 digits, big-endian**
+/// (most-significant nibble first), i.e. `format!("{fp:016x}")`. Pair with
+/// [`rk64_from_hex`] so a writer and any reader agree on the exact bytes.
+pub fn rk64_to_hex(fp: u64) -> String {
+    format!("{fp:016x}")
+}
+
+/// Parse the canonical [`rk64_to_hex`] encoding back to a `u64`. Returns
+/// `None` for anything other than exactly 16 lowercase hex digits, so a
+/// malformed or non-canonical token is rejected rather than silently
+/// mis-decoded.
+pub fn rk64_from_hex(s: &str) -> Option<u64> {
+    if s.len() != 16 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    u64::from_str_radix(s, 16).ok()
+}
+
 /// Polynomial base for the cheap fingerprint (the FNV-64 prime — odd, so the
 /// rolling subtraction below is exact over wrapping `u64` arithmetic).
 const FP_BASE: u64 = 0x0000_0100_0000_01b3;
@@ -449,7 +475,16 @@ pub fn scan_indexed_prefiltered(
         if n < span {
             continue;
         }
-        scan_one_file_prefiltered(path, idx, span, (0, n - span), &target, want, cheap_fp, &mut out);
+        // Confirm each fingerprint candidate with the authoritative SHA-256.
+        let confirm = |slice: &[u8]| match &target {
+            Some(t) => {
+                let mut h = Sha256::new();
+                h.update(slice);
+                h.finalize().as_slice() == t.as_slice()
+            }
+            None => sha256_hex(slice) == want,
+        };
+        scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, confirm, &mut out);
     }
     if let Some(near) = near {
         let near0 = near.saturating_sub(1);
@@ -458,21 +493,94 @@ pub fn scan_indexed_prefiltered(
     out
 }
 
-/// [`scan_one_file`] with a cheap-fingerprint prefilter: the per-window SHA-256
-/// fires only when the window's rolling polynomial fingerprint equals
-/// `cheap_fp`. On the LF-and-UTF-8 fast path a single prefix-hash pass over the
-/// buffer makes each window's fingerprint an O(1) subtraction; the
-/// `\r`/non-UTF-8 fallback fingerprints the canonical lossy join per window so
-/// results stay byte-identical to the reference matcher.
-#[allow(clippy::too_many_arguments)]
-fn scan_one_file_prefiltered(
+/// Find every window whose rk64 fingerprint
+/// ([`cheap_fingerprint_with_extent`]) equals `cheap_fp`, with **no SHA-256
+/// confirmation** — the 64-bit fingerprint is the sole content identity.
+///
+/// Same return contract as [`scan_indexed`] — all matches, same `near`
+/// ordering, ≥2 ⇒ ambiguous — but a returned location is a window whose
+/// *fingerprint* matches, not one proven byte-identical. Callers accept a
+/// ~`2⁻⁶⁴`-per-comparison chance that a hit is a fingerprint collision rather
+/// than the anchored content.
+///
+/// rk64 is a 64-bit, **non-cryptographic**, linear (polynomial/Rabin–Karp)
+/// fingerprint — fine for prefiltering or for content where a rare wrong/missed
+/// match is self-correcting (e.g. documentation-link tracking), but **not** a
+/// content-integrity hash. For byte-exact matching use [`scan_indexed`] or the
+/// SHA-confirmed [`scan_indexed_prefiltered`]. The work is the prefilter's
+/// rolling pass with the verify step removed: O(N·L) per file, no SHA-256,
+/// pure and caller-fed. A whole-file extent matches whole files by their
+/// fingerprint (the rk64 of the full buffer).
+pub fn scan_indexed_rk64(
+    files: &[(String, LineIndex)],
+    cheap_fp: u64,
+    extent: AnchorExtent,
+    near: Option<u32>,
+) -> Vec<Location> {
+    match extent {
+        AnchorExtent::WholeFile => files
+            .iter()
+            .filter(|(_, idx)| horner(idx.bytes) == cheap_fp)
+            .map(|(path, _)| Location {
+                path: path.clone(),
+                start_line: 0,
+                end_line: 0,
+            })
+            .collect(),
+        AnchorExtent::LineRange { start, end } => {
+            let span = (end.saturating_sub(start) + 1) as usize;
+            if span == 0 {
+                return Vec::new();
+            }
+            let mut out: Vec<Location> = Vec::new();
+            for (path, idx) in files {
+                let n = idx.line_count();
+                if n < span {
+                    continue;
+                }
+                // No SHA verify: a matching fingerprint is the match.
+                scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, |_| true, &mut out);
+            }
+            if let Some(near) = near {
+                let near0 = near.saturating_sub(1);
+                out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+            }
+            out
+        }
+    }
+}
+
+/// [`scan_indexed_rk64`] over `Vec<u8>` inputs, building each [`LineIndex`]
+/// internally — mirrors the [`scan_for_content_hash`]/[`scan_indexed`] pair for
+/// callers that have not already indexed their files.
+pub fn scan_for_content_hash_rk64(
+    files: &[(String, Vec<u8>)],
+    cheap_fp: u64,
+    extent: AnchorExtent,
+    near: Option<u32>,
+) -> Vec<Location> {
+    let indexed: Vec<(String, LineIndex)> = files
+        .iter()
+        .map(|(path, bytes)| (path.clone(), LineIndex::build(bytes)))
+        .collect();
+    scan_indexed_rk64(&indexed, cheap_fp, extent, near)
+}
+
+/// Scan one file's `span`-high windows, emitting a [`Location`] for every
+/// window whose rolling polynomial fingerprint equals `cheap_fp` **and** that
+/// `confirm` accepts. On the LF-and-UTF-8 fast path a single prefix-hash pass
+/// over the buffer makes each window's fingerprint an O(1) subtraction;
+/// `\r`/non-UTF-8 files fingerprint the canonical lossy join per window so
+/// results stay byte-identical to the reference matcher. `confirm` receives the
+/// window's canonical content bytes — the SHA-confirmed prefilter passes a
+/// digest check, the rk64-only matcher passes `|_| true`.
+fn scan_one_file_fp_filtered(
     path: &str,
     idx: &LineIndex,
     span: usize,
     wins: (usize, usize),
-    target: &Option<[u8; 32]>,
-    want: &str,
     cheap_fp: u64,
+    mut confirm: impl FnMut(&[u8]) -> bool,
     out: &mut Vec<Location>,
 ) {
     let (win_lo, win_hi) = wins;
@@ -488,19 +596,7 @@ fn scan_one_file_prefiltered(
             let rs = idx.starts[win] as usize;
             let re = idx.ends[win + span - 1] as usize;
             let fp = ph[re].wrapping_sub(ph[rs].wrapping_mul(pow[re - rs]));
-            if fp != cheap_fp {
-                continue;
-            }
-            let slice = &bytes[rs..re];
-            let matched = match target {
-                Some(t) => {
-                    let mut h = Sha256::new();
-                    h.update(slice);
-                    h.finalize().as_slice() == t.as_slice()
-                }
-                None => sha256_hex(slice) == want,
-            };
-            if matched {
+            if fp == cheap_fp && confirm(&bytes[rs..re]) {
                 out.push(Location {
                     path: path.to_string(),
                     start_line: (win as u32) + 1,
@@ -513,10 +609,7 @@ fn scan_one_file_prefiltered(
         let lines: Vec<&str> = text.lines().collect();
         for win in win_lo..=win_hi {
             let joined = lines[win..win + span].join("\n");
-            if horner(joined.as_bytes()) != cheap_fp {
-                continue;
-            }
-            if sha256_hex(joined.as_bytes()) == want {
+            if horner(joined.as_bytes()) == cheap_fp && confirm(joined.as_bytes()) {
                 out.push(Location {
                     path: path.to_string(),
                     start_line: (win as u32) + 1,
@@ -1348,5 +1441,165 @@ mod tests {
             scan_indexed_prefiltered(&indexed2, &want2, fp2, extent2, None),
             scan_indexed(&indexed2, &want2, extent2, None),
         );
+    }
+
+    // --- rk64-only (SHA-free) matcher ---
+
+    /// Reference: every window whose rk64 fingerprint equals `fp`, in ascending
+    /// (path, start) order, re-sorted nearest-first when `near` is given.
+    fn ref_rk64(
+        files: &[(String, Vec<u8>)],
+        fp: u64,
+        extent: AnchorExtent,
+        near: Option<u32>,
+    ) -> Vec<Location> {
+        let AnchorExtent::LineRange { start, end } = extent else {
+            return files
+                .iter()
+                .filter(|(_, b)| cheap_fingerprint_with_extent(b, &AnchorExtent::WholeFile) == fp)
+                .map(|(p, _)| Location { path: p.clone(), start_line: 0, end_line: 0 })
+                .collect();
+        };
+        let span = (end.saturating_sub(start) + 1) as usize;
+        if span == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (path, bytes) in files {
+            let idx = LineIndex::build(bytes);
+            let n = idx.line_count();
+            if n < span {
+                continue;
+            }
+            for win in 0..=(n - span) {
+                let w = (win as u32) + 1;
+                let e = (win as u32) + span as u32;
+                let wfp = cheap_fingerprint_indexed(&idx, &AnchorExtent::LineRange { start: w, end: e });
+                if wfp == fp {
+                    out.push(Location { path: path.clone(), start_line: w, end_line: e });
+                }
+            }
+        }
+        if let Some(near) = near {
+            let near0 = near.saturating_sub(1);
+            out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+        }
+        out
+    }
+
+    #[test]
+    fn rk64_matches_duplicated_windows_fail_closed() {
+        // Two identical blocks ⇒ ≥2 fingerprint hits ⇒ the caller's ambiguity
+        // rule refuses the rewrite. No SHA is consulted.
+        let files = vec![("dup.txt".to_string(), b"x\ny\nz\nq\nx\ny\nz\n".to_vec())];
+        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
+        let fp = cheap_fingerprint_with_extent(b"x\ny\nz", &AnchorExtent::WholeFile);
+        let hits = scan_for_content_hash_rk64(&files, fp, extent, None);
+        assert_eq!(
+            hits,
+            vec![
+                Location { path: "dup.txt".into(), start_line: 1, end_line: 3 },
+                Location { path: "dup.txt".into(), start_line: 5, end_line: 7 },
+            ]
+        );
+    }
+
+    #[test]
+    fn rk64_property_matches_fingerprint_filter_reference() {
+        let mut state = 0x5151515151515151u64;
+        for _ in 0..3000 {
+            let files: Vec<(String, Vec<u8>)> = (0..3)
+                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
+                .collect();
+            let indexed = index_all(&files);
+            let start = 1 + (lcg(&mut state) % 6) as u32;
+            let end = start + (lcg(&mut state) % 4) as u32;
+            let extent = AnchorExtent::LineRange { start, end };
+            let span = (end - start + 1) as usize;
+
+            // Mostly target a real window's fingerprint; sometimes a random fp
+            // (overwhelmingly a miss) to exercise the empty path.
+            let fp = if lcg(&mut state).is_multiple_of(4) {
+                lcg(&mut state)
+            } else {
+                let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
+                let text = String::from_utf8_lossy(pick);
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() < span {
+                    continue;
+                }
+                let w = (lcg(&mut state) as usize) % (lines.len() - span + 1);
+                cheap_fingerprint_with_extent(
+                    lines[w..w + span].join("\n").as_bytes(),
+                    &AnchorExtent::WholeFile,
+                )
+            };
+
+            let near = if lcg(&mut state).is_multiple_of(2) {
+                None
+            } else {
+                Some((lcg(&mut state) % 12) as u32)
+            };
+
+            assert_eq!(
+                scan_indexed_rk64(&indexed, fp, extent, near),
+                ref_rk64(&files, fp, extent, near),
+                "rk64 drift: files={files:?} {extent:?} near={near:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rk64_equals_prefiltered_minus_the_sha_step_on_unique_content() {
+        // With genuinely unique content (no fingerprint collision in the file),
+        // the rk64-only matcher and the SHA-confirmed prefilter agree — the SHA
+        // is confirming a match the fingerprint already isolated.
+        let files = vec![
+            ("a.txt".to_string(), b"h1\nh2\nx\ny\nz\n".to_vec()),
+            ("b.txt".to_string(), b"p\nq\nr\ns\n".to_vec()),
+        ];
+        let indexed = index_all(&files);
+        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
+        let content = b"x\ny\nz";
+        let fp = cheap_fingerprint_with_extent(content, &AnchorExtent::WholeFile);
+        let sha = sha256_hex(content);
+        for near in [None, Some(1), Some(3)] {
+            assert_eq!(
+                scan_indexed_rk64(&indexed, fp, extent, near),
+                scan_indexed_prefiltered(&indexed, &sha, fp, extent, near),
+            );
+        }
+    }
+
+    #[test]
+    fn rk64_whole_file_matches_by_fingerprint() {
+        let files = vec![
+            ("yes.txt".to_string(), b"whole\ncontent\n".to_vec()),
+            ("no.txt".to_string(), b"other\n".to_vec()),
+        ];
+        let fp = cheap_fingerprint_with_extent(b"whole\ncontent\n", &AnchorExtent::WholeFile);
+        assert_eq!(
+            scan_for_content_hash_rk64(&files, fp, AnchorExtent::WholeFile, None),
+            vec![Location { path: "yes.txt".into(), start_line: 0, end_line: 0 }],
+        );
+    }
+
+    #[test]
+    fn rk64_hex_roundtrips_and_is_canonical() {
+        for fp in [0u64, 1, 0xff, 0x1234_5678_9abc_def0, u64::MAX, FP_BASE] {
+            let hex = rk64_to_hex(fp);
+            assert_eq!(hex.len(), 16, "must be zero-padded to 16 digits");
+            assert_eq!(hex, hex.to_lowercase(), "must be lowercase");
+            assert_eq!(rk64_from_hex(&hex), Some(fp), "must round-trip");
+        }
+        // Big-endian: the most-significant nibble leads.
+        assert_eq!(rk64_to_hex(0x1), "0000000000000001");
+        assert_eq!(rk64_to_hex(0xf000_0000_0000_0000), "f000000000000000");
+        // Non-canonical inputs are rejected, not silently coerced.
+        assert_eq!(rk64_from_hex("1"), None, "wrong length");
+        assert_eq!(rk64_from_hex("00000000000000001"), None, "17 digits");
+        assert_eq!(rk64_from_hex("0000000000ABCDEF"), None, "uppercase");
+        assert_eq!(rk64_from_hex("000000000000000g"), None, "non-hex");
+        assert_eq!(RK64_ALGORITHM, "rk64");
     }
 }
