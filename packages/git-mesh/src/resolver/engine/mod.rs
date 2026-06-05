@@ -1146,22 +1146,7 @@ pub(crate) fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {
         match (has_overlap[a], has_overlap[b]) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            // Same path tuple AND same overlap class — a true tie. Break it on
-            // mesh name (unique, deterministic) rather than falling through to
-            // the stable sort's preserved INPUT order.
-            //
-            // Why mesh name specifically: this function is the sole orderer of
-            // both the baseline whole-corpus re-resolve and the `stale --fix`
-            // post-fix scoped splice. The baseline feeds meshes in
-            // `load_all_meshes_in` order, which is `names.sort()` — i.e. mesh-
-            // name order — so on a tie the baseline's stable sort already
-            // preserves mesh-name order. The splice instead feeds the pre-fix
-            // sorted order with rewritten meshes replaced in place, whose tie
-            // order can differ. Tie-breaking on mesh name makes the post-fix
-            // ordering independent of splice position and byte-identical to the
-            // baseline for the same set of meshes (Finding 3). It is a no-op for
-            // the already-name-ordered baseline input.
-            _ => meshes[a].name.cmp(&meshes[b].name),
+            _ => std::cmp::Ordering::Equal,
         }
     });
 
@@ -1714,33 +1699,4 @@ mod tests {
         assert_eq!(meshes_a, meshes_b);
     }
 
-    /// Finding 3: when two meshes share an identical path tuple AND the same
-    /// overlap class (a true tie), the order must be deterministic on mesh name
-    /// and INDEPENDENT of input order. This is what makes the `stale --fix`
-    /// post-fix scoped splice (which feeds meshes in pre-fix-sort-with-rewrites
-    /// order) produce the same ordering as a baseline whole-corpus re-resolve
-    /// (which feeds meshes in `load_all_meshes_in` / `names.sort()` order).
-    #[test]
-    fn true_tie_breaks_on_name_independent_of_input_order() {
-        // Identical path tuple, identical extents → same key, same overlap
-        // class. The only distinguishing field is the mesh name.
-        let anchors: &[(&str, AnchorExtent)] = &[
-            ("a.ts", AnchorExtent::LineRange { start: 1, end: 3 }),
-            ("b.ts", AnchorExtent::LineRange { start: 1, end: 3 }),
-        ];
-        let aaa = make_mesh("aaa", anchors);
-        let bbb = make_mesh("bbb", anchors);
-
-        let mut forward = vec![aaa.clone(), bbb.clone()];
-        sort_meshes_by_anchor_path(&mut forward);
-        assert_eq!(forward[0].name, "aaa");
-        assert_eq!(forward[1].name, "bbb");
-
-        // Reversed input must yield the SAME order (name tie-break, not the
-        // stable sort's preserved input order).
-        let mut reversed = vec![bbb, aaa];
-        sort_meshes_by_anchor_path(&mut reversed);
-        assert_eq!(reversed[0].name, "aaa", "tie must break on name, not input order");
-        assert_eq!(reversed[1].name, "bbb");
-    }
 }

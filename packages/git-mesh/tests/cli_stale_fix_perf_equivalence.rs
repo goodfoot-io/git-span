@@ -559,6 +559,16 @@ poisoned interior anchor\n";
 // rendered order deterministic and matches `names.sort()` discovery order.
 // ---------------------------------------------------------------------------
 
+/// Named-scope `git mesh stale [mesh...]` with two meshes sharing an identical
+/// anchor path tuple (a true tie) must preserve **argument order**, not reorder
+/// by mesh name.  Baseline behavior: `sort_meshes_by_anchor_path` returns Equal
+/// on a true tie and the stable sort preserves the caller's input order, which
+/// for a named-scope query is the argument order.
+///
+/// Fixture: `zzz` and `aaa` both anchored to `shared.txt#L1-L3`.  A content
+/// edit drifts both so they surface as stale.  Running `stale zzz aaa` must
+/// render `## zzz` before `## aaa`; running `stale aaa zzz` must render
+/// `## aaa` before `## zzz`.  The same assertion holds for `stale --fix`.
 #[test]
 fn golden_near_tie_ordering_stable() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -568,56 +578,74 @@ fn golden_near_tie_ordering_stable() -> Result<()> {
     repo.run_git(["commit", "-m", "add shared.txt"])?;
     repo.write_commit_graph()?;
 
-    // Two meshes anchoring the identical path+range → identical sort key.
-    // `bbb` is alphabetically later and carries an additional Changed anchor so
-    // it stays reportable after the fix; `aaa` carries a Moved anchor that
-    // --fix re-anchors.
-    repo.write_file("other.txt", "x1\nx2\nx3\nx4\nx5\n")?;
-    repo.run_git(["add", "other.txt"])?;
-    repo.run_git(["commit", "-m", "add other.txt"])?;
-    repo.write_commit_graph()?;
-
-    repo.mesh_stdout(["add", "aaa-tie", "shared.txt#L1-L3", "other.txt#L1-L3"])?;
-    repo.mesh_stdout(["why", "aaa-tie", "-m", "aaa shares key with bbb"])?;
-    repo.mesh_stdout(["add", "bbb-tie", "shared.txt#L1-L3", "other.txt#L1-L3"])?;
-    repo.mesh_stdout(["why", "bbb-tie", "-m", "bbb shares key with aaa"])?;
+    // Two meshes anchored to the identical path+range → identical sort key.
+    // Names are intentionally in reverse-alphabetical order (zzz before aaa)
+    // to distinguish argument order from name order.
+    repo.mesh_stdout(["add", "zzz-tie", "shared.txt#L1-L3"])?;
+    repo.mesh_stdout(["why", "zzz-tie", "-m", "zzz ties with aaa"])?;
+    repo.mesh_stdout(["add", "aaa-tie", "shared.txt#L1-L3"])?;
+    repo.mesh_stdout(["why", "aaa-tie", "-m", "aaa ties with zzz"])?;
     repo.run_git(["add", ".mesh"])?;
-    repo.run_git(["commit", "-m", "add tie meshes"])?;
+    repo.run_git(["commit", "-m", "add zzz-tie and aaa-tie meshes"])?;
     repo.write_commit_graph()?;
 
-    // Drift both: rename other.txt (Moved for both), and edit shared.txt
-    // (Changed for both) so both meshes stay reportable post-fix.
-    repo.run_git(["mv", "other.txt", "renamed.txt"])?;
+    // Drift both meshes: edit shared.txt so both surfaces as Changed.
     repo.write_file("shared.txt", "L1\nl2\nl3\nl4\nl5\n")?;
-    repo.run_git(["commit", "-m", "rename other.txt, edit shared.txt"])?;
+    repo.run_git(["add", "shared.txt"])?;
+    repo.run_git(["commit", "-m", "edit shared.txt to drift both meshes"])?;
     repo.write_commit_graph()?;
 
-    // Run twice (revert between) and assert byte-identity AND that both tie
-    // meshes appear in deterministic name order (aaa before bbb) in stdout.
-    let snap_a = read_mesh_bytes(&repo, "aaa-tie")?;
-    let snap_b = read_mesh_bytes(&repo, "bbb-tie")?;
+    // Helper to find heading position in output.
+    let heading_pos = |s: &str, name: &str| -> Option<usize> { s.find(&format!("## {name}")) };
 
-    let (stdout1, _e1, c1) = run_fix(&repo, ["--no-exit-code"])?;
-    write_raw_mesh(&repo, "aaa-tie", &snap_a)?;
-    write_raw_mesh(&repo, "bbb-tie", &snap_b)?;
-    let (stdout2, _e2, c2) = run_fix(&repo, ["--no-exit-code"])?;
+    // --- read-only stale (no --fix) ---
 
-    let s1 = String::from_utf8_lossy(&stdout1);
-    let s2 = String::from_utf8_lossy(&stdout2);
-    assert_eq!(c1, c2, "exit stable");
-    assert_eq!(s1, s2, "near-tie stdout byte-identical across runs:\n{s1}\n---\n{s2}");
+    // zzz aaa → zzz rendered first (argument order, not name order)
+    let out_za = repo.run_mesh(["stale", "--no-exit-code", "zzz-tie", "aaa-tie"])?;
+    let s_za = String::from_utf8_lossy(&out_za.stdout).into_owned();
+    let pz = heading_pos(&s_za, "zzz-tie");
+    let pa = heading_pos(&s_za, "aaa-tie");
+    assert!(
+        pz < pa,
+        "stale zzz-tie aaa-tie: expected zzz-tie before aaa-tie (argument order), got:\n{s_za}"
+    );
 
-    // Name tie-break: aaa-tie must render before bbb-tie deterministically.
-    let pa = s1.find("aaa-tie");
-    let pb = s1.find("bbb-tie");
-    if let (Some(pa), Some(pb)) = (pa, pb) {
-        assert!(
-            pa < pb,
-            "tie-break on mesh name renders aaa-tie before bbb-tie:\n{s1}"
-        );
-    } else {
-        panic!("both tie meshes must surface as drift:\n{s1}");
-    }
+    // aaa zzz → aaa rendered first
+    let out_az = repo.run_mesh(["stale", "--no-exit-code", "aaa-tie", "zzz-tie"])?;
+    let s_az = String::from_utf8_lossy(&out_az.stdout).into_owned();
+    let pa2 = heading_pos(&s_az, "aaa-tie");
+    let pz2 = heading_pos(&s_az, "zzz-tie");
+    assert!(
+        pa2 < pz2,
+        "stale aaa-tie zzz-tie: expected aaa-tie before zzz-tie (argument order), got:\n{s_az}"
+    );
+
+    // --- stale --fix ---
+
+    let snap_zzz = read_mesh_bytes(&repo, "zzz-tie")?;
+    let snap_aaa = read_mesh_bytes(&repo, "aaa-tie")?;
+
+    // zzz aaa → zzz rendered first
+    let (fix_za, _e, _c) = run_fix(&repo, ["--no-exit-code", "zzz-tie", "aaa-tie"])?;
+    write_raw_mesh(&repo, "zzz-tie", &snap_zzz)?;
+    write_raw_mesh(&repo, "aaa-tie", &snap_aaa)?;
+    let s_fix_za = String::from_utf8_lossy(&fix_za).into_owned();
+    let pz3 = heading_pos(&s_fix_za, "zzz-tie");
+    let pa3 = heading_pos(&s_fix_za, "aaa-tie");
+    assert!(
+        pz3 < pa3,
+        "stale --fix zzz-tie aaa-tie: expected zzz-tie before aaa-tie, got:\n{s_fix_za}"
+    );
+
+    // aaa zzz → aaa rendered first
+    let (fix_az, _e, _c) = run_fix(&repo, ["--no-exit-code", "aaa-tie", "zzz-tie"])?;
+    let s_fix_az = String::from_utf8_lossy(&fix_az).into_owned();
+    let pa4 = heading_pos(&s_fix_az, "aaa-tie");
+    let pz4 = heading_pos(&s_fix_az, "zzz-tie");
+    assert!(
+        pa4 < pz4,
+        "stale --fix aaa-tie zzz-tie: expected aaa-tie before zzz-tie, got:\n{s_fix_az}"
+    );
 
     Ok(())
 }
