@@ -582,7 +582,7 @@ fn emit_timeline_cache_counters(session: &super::session::ResolveSession) {
     crate::perf::counter("timeline.cache-entries", session.timelines.len() as u64);
 }
 
-fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
+pub(crate) fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
 }
 

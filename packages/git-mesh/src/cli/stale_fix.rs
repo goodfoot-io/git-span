@@ -16,9 +16,22 @@ use anyhow::Result;
 use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Carries the result of a single `apply_fix` invocation.
+pub(crate) struct FixResult {
+    /// Anchor ids actually rewritten or merged this invocation.
+    /// Used by `run_stale` for the exit-code subtraction and the
+    /// "auto-updated" tag.
+    pub(crate) rewritten_anchor_ids: HashSet<String>,
+    /// Names of mesh files written to disk (`write_worktree_mesh` called).
+    /// Exact: a name appears here iff `any_rewritten || coalesced` was true
+    /// for that mesh.  Used by `run_stale` to scope the post-fix re-resolve.
+    pub(crate) rewritten_mesh_names: HashSet<String>,
+}
+
 /// Re-anchor every `Moved`/`Changed` anchor in `meshes` by rewriting the
-/// matching mesh worktree files. Returns the set of `anchor_id`s actually
-/// rewritten (anchors whose hash/location were updated this invocation).
+/// matching mesh worktree files. Returns a [`FixResult`] carrying the set of
+/// `anchor_id`s actually rewritten and the set of mesh names whose files were
+/// written to disk.
 ///
 /// Terminal statuses (`Deleted`, `ContentUnavailable`, `MergeConflict`,
 /// `Submodule`, `Orphaned`) are left untouched. `Fresh` anchors are not
@@ -27,8 +40,9 @@ pub(crate) fn apply_fix(
     repo: &gix::Repository,
     meshes: &[MeshResolved],
     mesh_root: &str,
-) -> Result<HashSet<String>> {
+) -> Result<FixResult> {
     let mut rewritten: HashSet<String> = HashSet::new();
+    let mut rewritten_mesh_names: HashSet<String> = HashSet::new();
 
     // Resolve HEAD once for HEAD-layer rewrites. Some test scenarios may
     // have no HEAD yet (unborn branch); in that case we simply skip
@@ -250,10 +264,14 @@ pub(crate) fn apply_fix(
 
         if any_rewritten || coalesced {
             write_worktree_mesh(repo, mesh_root, &m.name, &mesh_file)?;
+            rewritten_mesh_names.insert(m.name.clone());
         }
     }
 
-    Ok(rewritten)
+    Ok(FixResult {
+        rewritten_anchor_ids: rewritten,
+        rewritten_mesh_names,
+    })
 }
 
 /// Coalesce contiguous and overlapping line-range anchors on the same path

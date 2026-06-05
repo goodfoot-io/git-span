@@ -12,9 +12,10 @@ use crate::cli::format;
 use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
-    stale_meshes_with_trace,
+    build_pending_findings, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
+    sort_meshes_by_anchor_path, stale_meshes, stale_meshes_with_trace,
 };
+use std::collections::HashMap;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
     LayerSet, MeshResolved, PendingDrift, PendingFinding, StagedAdd, StagedConfig, StagedOpRef,
@@ -603,24 +604,29 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             // A named scope already carries each mesh's full anchor set.
             meshes.clone()
         };
-        let rewritten = super::stale_fix::apply_fix(repo, &fix_input, mesh_root)?;
-        // Re-resolve so the rendered view reflects the rewritten files.
+        let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root)?;
+        // Re-resolve only the meshes that apply_fix actually rewrote, then
+        // splice the results back into the pre-fix set. This avoids a
+        // whole-corpus re-resolve for meshes the fix never touched.
         if args.paths.is_empty() {
-            meshes = stale_meshes(repo, mesh_root, options)?;
+            meshes = splice_bare_scan_post_fix(
+                repo,
+                mesh_root,
+                options,
+                meshes,
+                &fix_result.rewritten_mesh_names,
+            )?;
         } else {
-            // Re-resolve the same named scope.
-            let names: Vec<String> = meshes.iter().map(|m| m.name.clone()).collect();
-            let resolved = resolve_named_meshes(repo, mesh_root, &names, options)?;
-            let mut new_meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
-            for (_n, result) in resolved {
-                if let Ok(mesh) = result {
-                    new_meshes.push(mesh);
-                }
-            }
-            meshes = new_meshes;
+            meshes = splice_named_scope_post_fix(
+                repo,
+                mesh_root,
+                options,
+                meshes,
+                &fix_result.rewritten_mesh_names,
+            )?;
         }
         sort_meshes_by_anchor_path(&mut meshes);
-        rewritten
+        fix_result.rewritten_anchor_ids
     } else {
         // File-backed model: no mesh-commit rewrite, so no auto-follow.
         HashSet::new()
@@ -888,6 +894,115 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         let _ = std::io::stdout().flush();
     }
     Ok(exit)
+}
+
+// ---------------------------------------------------------------------------
+// Post-fix scoped splice helpers.
+// ---------------------------------------------------------------------------
+
+/// Re-resolve only the meshes that `apply_fix` rewrote and splice the results
+/// back into the pre-fix set, for the **bare-scan** arm (`git mesh stale --fix`
+/// with no positional paths).
+///
+/// Bare-scan semantics: drop any rewritten mesh that resolves fully Fresh
+/// (mirrors `stale_meshes` which filters via `mesh_is_reportable_in_stale_discovery`).
+fn splice_bare_scan_post_fix(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    options: EngineOptions,
+    pre_fix_meshes: Vec<MeshResolved>,
+    rewritten_names: &HashSet<String>,
+) -> Result<Vec<MeshResolved>> {
+    if rewritten_names.is_empty() {
+        return Ok(pre_fix_meshes);
+    }
+
+    let names: Vec<String> = rewritten_names.iter().cloned().collect();
+    let post_fix = resolve_named_meshes(repo, mesh_root, &names, options)?;
+
+    // Build a map of Ok results from the post-fix resolve.
+    let mut updated: HashMap<String, MeshResolved> = post_fix
+        .into_iter()
+        .filter_map(|(name, r)| r.ok().map(|m| (name, m)))
+        .collect();
+
+    // Bare-scan: keep only reportable meshes (drop fully-Fresh).
+    let mut result: Vec<MeshResolved> = pre_fix_meshes
+        .into_iter()
+        .filter_map(|m| {
+            if rewritten_names.contains(&m.name) {
+                updated
+                    .remove(&m.name)
+                    .filter(mesh_is_reportable_in_stale_discovery)
+            } else {
+                Some(m)
+            }
+        })
+        .collect();
+
+    // Rewritten meshes absent from pre_fix_meshes (coalesce-only on a
+    // synthesized all-Fresh fix_input entry): add if now reportable.
+    for (_, resolved) in updated {
+        if mesh_is_reportable_in_stale_discovery(&resolved) {
+            result.push(resolved);
+        }
+    }
+
+    sort_meshes_by_anchor_path(&mut result);
+    Ok(result)
+}
+
+/// Re-resolve only the meshes that `apply_fix` rewrote and splice the results
+/// back into the pre-fix set, for the **named-scope** arm (`git mesh stale
+/// <name> --fix` with positional paths).
+///
+/// Named-scope semantics: keep ALL meshes including fully-Fresh (rendered as
+/// bare bullets). A rewritten mesh that re-resolves as `Err` is dropped,
+/// mirroring the current arm's `if let Ok(mesh) = result` pattern.
+fn splice_named_scope_post_fix(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    options: EngineOptions,
+    pre_fix_meshes: Vec<MeshResolved>,
+    rewritten_names: &HashSet<String>,
+) -> Result<Vec<MeshResolved>> {
+    if rewritten_names.is_empty() {
+        return Ok(pre_fix_meshes);
+    }
+
+    let names: Vec<String> = rewritten_names.iter().cloned().collect();
+    let post_fix = resolve_named_meshes(repo, mesh_root, &names, options)?;
+
+    // Build a map of Ok results from the post-fix resolve.
+    // Err results are absent from this map → dropped on the filter_map below,
+    // mirroring the current arm's `if let Ok(mesh) = result { push }`.
+    let mut updated: HashMap<String, MeshResolved> = post_fix
+        .into_iter()
+        .filter_map(|(name, r)| r.ok().map(|m| (name, m)))
+        .collect();
+
+    // Named-scope: keep ALL meshes including fully-Fresh (rendered as bare
+    // bullets). A rewritten mesh absent from `updated` (Err path) is dropped.
+    let mut result: Vec<MeshResolved> = pre_fix_meshes
+        .into_iter()
+        .filter_map(|m| {
+            if rewritten_names.contains(&m.name) {
+                updated.remove(&m.name) // None = Err path → dropped
+            } else {
+                Some(m)
+            }
+        })
+        .collect();
+
+    // Rewritten meshes not in pre_fix_meshes: add unconditionally (named-scope
+    // shows all named meshes). In practice this should not occur because the
+    // named scope only includes meshes explicitly requested.
+    for (_, resolved) in updated {
+        result.push(resolved);
+    }
+
+    sort_meshes_by_anchor_path(&mut result);
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
