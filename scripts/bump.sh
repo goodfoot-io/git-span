@@ -41,3 +41,11 @@ bash "$REPO_ROOT/scripts/sync-versions.sh"
 # repo root regardless of the caller's CWD.
 echo ""
 (cd "$REPO_ROOT" && yarn install)
+
+# Regenerate the version-stamped manpage so the checked-in artifact tracks the
+# new version. The manpage embeds the version in its `.TH` header, so without
+# this the `generated_manpage_matches_checked_in_artifact` test fails on the
+# very next `yarn validate` after a bump.
+echo ""
+echo "Regenerating manpage for $NEW_VERSION"
+(cd "$REPO_ROOT/packages/git-mesh" && yarn build:man)
