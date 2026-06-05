@@ -55,6 +55,25 @@ pub(crate) struct EngineState {
     filter_attrs: HashMap<String, Option<String>>,
 }
 
+/// Reusable source-layer state captured from a pre-fix `EngineState` so the
+/// post-fix re-resolve in `stale --fix` can skip re-reading the worktree
+/// source layer (`read_worktree_layer*`) on the cold path.
+///
+/// Carries ONLY the static source-layer fields. It deliberately does NOT
+/// carry `warnings` or `index_trailer_start`: those are consumed/emitted by
+/// the pre-fix `finish_retaining_layers` and must not be re-emitted by the
+/// post-fix pass (see the stderr-parity equivalence guard).
+pub(crate) struct SourceLayers {
+    pub(crate) layers: LayerSet,
+    pub(crate) head_sha: String,
+    pub(crate) clean_layers: bool,
+    pub(crate) index_diffs: Option<LayerDiffs>,
+    pub(crate) worktree_diffs: Option<LayerDiffs>,
+    pub(crate) conflicted_paths: HashSet<String>,
+    pub(crate) lfs: LfsState,
+    pub(crate) custom_filters: CustomFilters,
+}
+
 impl EngineState {
     fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
         let _perf = crate::perf::span("resolver.init-layers");
@@ -229,6 +248,79 @@ impl EngineState {
         // closes stdin (signalling EOF) before waiting on the child.
         let _ = self.lfs;
         let _ = self.custom_filters;
+    }
+
+    /// Like `finish`, but returns the reusable source-layer state instead of
+    /// dropping it, so the post-fix re-resolve in `stale --fix` can rebuild an
+    /// `EngineState` without re-reading the worktree source layer.
+    ///
+    /// Emits the pre-fix session + engine warnings and the index-trailer
+    /// change warning exactly as `finish` does — these are consumed here and
+    /// are intentionally NOT carried in `SourceLayers`, so the post-fix
+    /// `from_source_layers` starts clean and cannot re-emit them.
+    fn finish_retaining_layers(mut self, repo: &gix::Repository) -> SourceLayers {
+        // Forward session warnings (rename budget, budget downgrade, etc.)
+        // from the reverse-indexed walk into the engine's warning buffer.
+        self.warnings.append(&mut self.session.warnings);
+        if let Some(start) = self.index_trailer_start
+            && let Ok(end) = read_index_trailer(repo)
+            && end != start
+        {
+            eprintln!("warning: index changed during stale; consider re-running");
+        }
+        for w in &self.warnings {
+            eprintln!("{w}");
+        }
+        // LFS and custom_filters move into SourceLayers rather than dropping
+        // here: their subprocess handles stay alive for the post-fix pass.
+        SourceLayers {
+            layers: self.layers,
+            head_sha: self.head_sha,
+            clean_layers: self.clean_layers,
+            index_diffs: self.index_diffs,
+            worktree_diffs: self.worktree_diffs,
+            conflicted_paths: self.conflicted_paths,
+            lfs: self.lfs,
+            custom_filters: self.custom_filters,
+        }
+    }
+
+    /// Reconstruct an `EngineState` from source-layer state captured by a
+    /// pre-fix `finish_retaining_layers`, reusing the worktree/index source
+    /// layer instead of re-reading it via `read_worktree_layer*`.
+    fn from_source_layers(
+        layers: SourceLayers,
+        repo: &gix::Repository,
+        needs_all_layers: bool,
+    ) -> Self {
+        // Soundness: `apply_fix` writes only under `mesh_root`, and no anchor
+        // path is under `mesh_root` (interior anchors are excised before the
+        // write). Therefore the pre-fix `worktree_diffs` / `clean_layers` /
+        // `conflicted_paths` are correct for every post-fix per-anchor source
+        // resolution — the rewritten mesh files appear dirty in `git status`
+        // but the resolver never examines a mesh-root path. The reverse-walk
+        // is NOT reused (a fresh `ResolveSession` rebuilds it for the
+        // rewritten meshes); only these static source-layer fields are reused.
+        EngineState {
+            layers: layers.layers,
+            head_sha: layers.head_sha,
+            clean_layers: layers.clean_layers,
+            index_diffs: layers.index_diffs,
+            worktree_diffs: layers.worktree_diffs,
+            conflicted_paths: layers.conflicted_paths,
+            // Re-read fresh so the post-fix finish detects index changes that
+            // occur during the post-fix resolve window (not the pre-fix one).
+            index_trailer_start: read_index_trailer(repo).ok(),
+            // Start clean: pre-fix warnings were already emitted by
+            // finish_retaining_layers and must not be re-emitted.
+            warnings: Vec::new(),
+            lfs: layers.lfs,
+            custom_filters: layers.custom_filters,
+            session: ResolveSession::new(repo),
+            needs_all_layers,
+            commit_reachability: HashMap::new(),
+            filter_attrs: HashMap::new(),
+        }
     }
 }
 
@@ -592,14 +684,61 @@ pub(crate) fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
 /// resolution failures are returned alongside the name rather than aborting
 /// the whole call so the path-index candidate workflow stays robust against a
 /// stale path-index entry.
+/// Per-name resolution outcomes: input order preserved, each name paired with
+/// its `Ok(MeshResolved)` or a per-name resolution `Err`.
+type NamedMeshResults = Vec<(String, std::result::Result<MeshResolved, Error>)>;
+
 pub(crate) fn resolve_named_meshes(
     repo: &gix::Repository,
     mesh_root: &str,
     names: &[String],
     options: EngineOptions,
-) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
+) -> Result<NamedMeshResults> {
+    let state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let (out, _) = resolve_named_meshes_with_state(repo, mesh_root, names, options, state, false)?;
+    Ok(out)
+}
+
+/// Like `resolve_named_meshes`, but reuses source-layer state captured by a
+/// pre-fix `stale_meshes_retaining_source_layers` instead of re-reading the
+/// worktree source layer via `EngineState::new`. Used by the cold-path
+/// post-fix re-resolve in `stale --fix` to skip a second `read-worktree-layer`.
+pub(crate) fn resolve_named_meshes_with_source_layers(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+    options: EngineOptions,
+    source_layers: SourceLayers,
+) -> Result<NamedMeshResults> {
+    let state = EngineState::from_source_layers(source_layers, repo, options.needs_all_layers);
+    let (out, _) = resolve_named_meshes_with_state(repo, mesh_root, names, options, state, false)?;
+    Ok(out)
+}
+
+/// Like `resolve_named_meshes`, but on the named-scope pre-fix pass retains the
+/// source-layer state so the post-fix re-resolve can skip a second
+/// `read-worktree-layer`. Returns the retained `SourceLayers`.
+pub(crate) fn resolve_named_meshes_retaining_source_layers(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+    options: EngineOptions,
+) -> Result<(NamedMeshResults, SourceLayers)> {
+    let state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let (out, layers) =
+        resolve_named_meshes_with_state(repo, mesh_root, names, options, state, true)?;
+    Ok((out, layers.expect("retain_layers=true yields Some(SourceLayers)")))
+}
+
+fn resolve_named_meshes_with_state(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+    options: EngineOptions,
+    mut state: EngineState,
+    retain_layers: bool,
+) -> Result<(NamedMeshResults, Option<SourceLayers>)> {
     let _perf = crate::perf::span("resolver.resolve-named-meshes");
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
 
     // Build the reverse-indexed walk once across all named meshes so that
     // per-anchor commit deltas are available to every per-mesh resolver call.
@@ -649,8 +788,13 @@ pub(crate) fn resolve_named_meshes(
     crate::resolver::timeline::emit_counters();
     emit_timeline_cache_counters(&state.session);
     crate::resolver::linemap::emit_counters();
-    state.finish(repo);
-    Ok(out)
+    let source_layers = if retain_layers {
+        Some(state.finish_retaining_layers(repo))
+    } else {
+        state.finish(repo);
+        None
+    };
+    Ok((out, source_layers))
 }
 
 fn stale_meshes_inner(
@@ -658,7 +802,8 @@ fn stale_meshes_inner(
     mesh_root: &str,
     options: EngineOptions,
     enable_trace: bool,
-) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
+    retain_layers: bool,
+) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>, Option<SourceLayers>)> {
     crate::perf::reset_subroutine_counters();
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
@@ -832,11 +977,16 @@ fn stale_meshes_inner(
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.session.per_anchor_trace.take().unwrap_or_default();
-    state.finish(repo);
+    let source_layers = if retain_layers {
+        Some(state.finish_retaining_layers(repo))
+    } else {
+        state.finish(repo);
+        None
+    };
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);
     }
-    Ok((out, trace_rows))
+    Ok((out, trace_rows, source_layers))
 }
 
 pub fn stale_meshes(
@@ -857,8 +1007,38 @@ pub fn stale_meshes(
             crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
         }
     }
-    let (meshes, _) = stale_meshes_inner(repo, mesh_root, options, false)?;
+    let (meshes, _, _) = stale_meshes_inner(repo, mesh_root, options, false, false)?;
     Ok(meshes)
+}
+
+/// Like `stale_meshes`, but on the cold path (cache_v2 miss → an
+/// `EngineState` is built) it retains the source-layer state so the post-fix
+/// re-resolve in `stale --fix` can skip a second `read-worktree-layer`.
+///
+/// Returns `(meshes, Some(source_layers))` on the cold path and
+/// `(meshes, None)` on a warm cache_v2 hit (where there is no `EngineState`
+/// to retain — the post-fix pass then builds one fresh `EngineState`, which is
+/// already optimal).
+pub(crate) fn stale_meshes_retaining_source_layers(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    options: EngineOptions,
+) -> Result<(Vec<MeshResolved>, Option<SourceLayers>)> {
+    use crate::resolver::cache_v2::{CacheAttempt, stale_meshes_cached};
+    match stale_meshes_cached(repo, mesh_root, options)? {
+        CacheAttempt::Resolved(mut meshes) => {
+            if meshes.len() > 1 {
+                sort_meshes_by_anchor_path(&mut meshes);
+            }
+            return Ok((meshes, None));
+        }
+        CacheAttempt::Fallback(reason) => {
+            crate::perf::counter("cache_v2.fallback", 1);
+            crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
+        }
+    }
+    let (meshes, _, source_layers) = stale_meshes_inner(repo, mesh_root, options, false, true)?;
+    Ok((meshes, source_layers))
 }
 
 pub fn stale_meshes_with_trace(
@@ -866,7 +1046,8 @@ pub fn stale_meshes_with_trace(
     mesh_root: &str,
     options: EngineOptions,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
-    stale_meshes_inner(repo, mesh_root, options, true)
+    let (meshes, trace_rows, _) = stale_meshes_inner(repo, mesh_root, options, true, false)?;
+    Ok((meshes, trace_rows))
 }
 
 pub(crate) fn resolve_meshes_in_order(

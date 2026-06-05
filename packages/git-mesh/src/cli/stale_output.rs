@@ -12,8 +12,10 @@ use crate::cli::format;
 use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    build_pending_findings, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
-    sort_meshes_by_anchor_path, stale_meshes, stale_meshes_with_trace,
+    SourceLayers, build_pending_findings, mesh_is_reportable_in_stale_discovery,
+    resolve_named_meshes, resolve_named_meshes_retaining_source_layers,
+    resolve_named_meshes_with_source_layers, sort_meshes_by_anchor_path, stale_meshes,
+    stale_meshes_retaining_source_layers, stale_meshes_with_trace,
 };
 use std::collections::HashMap;
 use crate::types::{
@@ -334,6 +336,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // None means "no scope restriction" (bare `git mesh stale`).
     let mut scoped_mesh_names: Option<HashSet<String>> = None;
 
+    // Cold-path source-layer state retained by the pre-fix resolve so the
+    // post-fix re-resolve (`--fix`) can skip a second `read-worktree-layer`.
+    // `None` on a warm cache_v2 hit (no `EngineState` to retain) or when not
+    // running `--fix`.
+    let mut pre_fix_source_layers: Option<SourceLayers> = None;
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
@@ -344,6 +352,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             let trace_file = open_perf_trace_file(trace_path)?;
             let (resolved, trace_rows) = stale_meshes_with_trace(repo, mesh_root, options)?;
             write_perf_trace_csv(trace_file, trace_path, &trace_rows)?;
+            resolved
+        } else if args.fix {
+            // Retain source layers for the post-fix re-resolve. `--fix` is
+            // incompatible with `--perf-trace` discovery above.
+            let (resolved, layers) =
+                stale_meshes_retaining_source_layers(repo, mesh_root, options)?;
+            pre_fix_source_layers = layers;
             resolved
         } else {
             stale_meshes(repo, mesh_root, options)?
@@ -446,7 +461,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // Step 5: resolve candidate mesh names through one shared EngineState.
         let resolved = {
             let _perf = crate::perf::span("stale.resolve-named-meshes");
-            resolve_named_meshes(repo, mesh_root, &mesh_names, options)?
+            if args.fix {
+                // Retain source layers for the post-fix re-resolve. The
+                // named-scope pre-fix pass always builds an `EngineState`
+                // (no cache_v2), so it always yields `SourceLayers`.
+                let (resolved, layers) = resolve_named_meshes_retaining_source_layers(
+                    repo, mesh_root, &mesh_names, options,
+                )?;
+                pre_fix_source_layers = Some(layers);
+                resolved
+            } else {
+                resolve_named_meshes(repo, mesh_root, &mesh_names, options)?
+            }
         };
         let mut meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
         for (_name, result) in resolved {
@@ -615,6 +641,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 options,
                 meshes,
                 &fix_result.rewritten_mesh_names,
+                pre_fix_source_layers.take(),
             )?;
         } else {
             meshes = splice_named_scope_post_fix(
@@ -623,6 +650,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 options,
                 meshes,
                 &fix_result.rewritten_mesh_names,
+                pre_fix_source_layers.take(),
             )?;
         }
         sort_meshes_by_anchor_path(&mut meshes);
@@ -912,13 +940,22 @@ fn splice_bare_scan_post_fix(
     options: EngineOptions,
     pre_fix_meshes: Vec<MeshResolved>,
     rewritten_names: &HashSet<String>,
+    source_layers: Option<SourceLayers>,
 ) -> Result<Vec<MeshResolved>> {
     if rewritten_names.is_empty() {
         return Ok(pre_fix_meshes);
     }
 
     let names: Vec<String> = rewritten_names.iter().cloned().collect();
-    let post_fix = resolve_named_meshes(repo, mesh_root, &names, options)?;
+    // Cold path (`Some`): reuse the pre-fix source layers so the post-fix
+    // resolve skips a second `read-worktree-layer`. Warm path (`None`): build
+    // a fresh `EngineState` (one `read-worktree-layer`, already optimal).
+    let post_fix = match source_layers {
+        Some(layers) => {
+            resolve_named_meshes_with_source_layers(repo, mesh_root, &names, options, layers)?
+        }
+        None => resolve_named_meshes(repo, mesh_root, &names, options)?,
+    };
 
     // Build a map of Ok results from the post-fix resolve.
     let mut updated: HashMap<String, MeshResolved> = post_fix
@@ -965,13 +1002,22 @@ fn splice_named_scope_post_fix(
     options: EngineOptions,
     pre_fix_meshes: Vec<MeshResolved>,
     rewritten_names: &HashSet<String>,
+    source_layers: Option<SourceLayers>,
 ) -> Result<Vec<MeshResolved>> {
     if rewritten_names.is_empty() {
         return Ok(pre_fix_meshes);
     }
 
     let names: Vec<String> = rewritten_names.iter().cloned().collect();
-    let post_fix = resolve_named_meshes(repo, mesh_root, &names, options)?;
+    // Cold path (`Some`): reuse the pre-fix source layers so the post-fix
+    // resolve skips a second `read-worktree-layer`. Warm path (`None`): build
+    // a fresh `EngineState`.
+    let post_fix = match source_layers {
+        Some(layers) => {
+            resolve_named_meshes_with_source_layers(repo, mesh_root, &names, options, layers)?
+        }
+        None => resolve_named_meshes(repo, mesh_root, &names, options)?,
+    };
 
     // Build a map of Ok results from the post-fix resolve.
     // Err results are absent from this map → dropped on the filter_map below,

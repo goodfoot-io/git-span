@@ -33,5 +33,7 @@ pub use engine::{
     resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace,
 };
 pub(crate) use engine::{
-    mesh_is_reportable_in_stale_discovery, resolve_named_meshes, sort_meshes_by_anchor_path,
+    SourceLayers, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
+    resolve_named_meshes_retaining_source_layers, resolve_named_meshes_with_source_layers,
+    sort_meshes_by_anchor_path, stale_meshes_retaining_source_layers,
 };
