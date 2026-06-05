@@ -1,5 +1,7 @@
-packages/git-mesh/tests/cli_stale_fix_perf_equivalence.rs#L23-L284 rk64:26e335a8af120d50
 packages/git-mesh/src/resolver/mod.rs#L35-L35 rk64:fbf80b9853416cb1
 packages/git-mesh/src/resolver/engine/mod.rs#L677-L677 rk64:336e9ed2f1151abb
+packages/git-mesh/tests/cli_stale_fix_perf_equivalence.rs#L40-L301 rk64:26e335a8af120d50
+packages/git-mesh/src/resolver/engine/mod.rs#L1145-L1150 rk64:7286db5a1c4f5622
+packages/git-mesh/tests/cli_stale_fix_perf_equivalence.rs#L562-L651 rk64:ef4a8a86ea88cc99
 
-Output-equivalence test suite guards that consecutive --fix runs produce byte-identical stdout/stderr/exit codes. The test depends on mesh_is_reportable_in_stale_discovery predicate: a fully-freshened mesh (all anchors become Fresh after --fix) must be excluded from the bare-scan arm but included (as bare bullets) in the named-scope arm. Both splice helpers call this predicate to filter meshes before rendering.
+Output-equivalence subsystem keeping consecutive stale --fix runs byte-identical to a baseline full re-resolve. The test suite guards stdout/stderr/exit identity and rendered mesh ordering; the splice depends on two invariants it cannot type-enforce: mesh_is_reportable_in_stale_discovery (which fully-freshened meshes render) and sort_meshes_by_anchor_path returning Equal on a true tie so the stable sort preserves caller input (argument) order across both the read-only and --fix paths.
