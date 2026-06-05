@@ -1,5 +1,5 @@
 README.md#L18-L55 sha256:d4310eb5d6c1cc62f04226f139c77b285c71468f91d5171052b89fc771ebc087
 wiki/meta/git-mesh-documentation-touchpoints.md sha256:c6c47a2b58d23d6170684dc2c947117630e8c5a9e86b024ac1d029c0384c7b40
-CLAUDE.md#L76-L97 sha256:187c6bd36126f27004a004db35a6f32db03cfb8b8edde44a25431c6fdaacb3c6
+CLAUDE.md#L88-L109 sha256:187c6bd36126f27004a004db35a6f32db03cfb8b8edde44a25431c6fdaacb3c6
 
 Operator-facing guidance surfaces (README CLI section and CLAUDE.md git-mesh block) that the touchpoints page lists as drift-prone when the CLI contract changes.
