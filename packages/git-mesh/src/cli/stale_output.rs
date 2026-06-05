@@ -598,6 +598,31 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // "auto-updated" tag and the exit-code subtraction.
     let followed_ids: HashSet<String> = if args.fix {
         let _perf = crate::perf::span("stale.apply-fix");
+        // Fail-closed interior-anchor gate, evaluated on the PRE-fix corpus
+        // (before `apply_fix` mutates mesh files — the fix can excise the
+        // interior anchor line, which would hide it from a post-fix scan). The
+        // scoped post-fix splice and cold-path source-layer reuse are only
+        // sound when no anchor path is under `mesh_root`. `MeshFile::parse`
+        // deliberately accepts interior anchors (so poisoned meshes stay
+        // loadable for repair), so a mesh file can also be an anchor target.
+        // With an interior anchor present in the pre-fix corpus:
+        //   - a non-rewritten mesh whose interior anchor targets a rewritten
+        //     mesh file is never re-resolved by the splice, so its drift status
+        //     renders stale; and
+        //   - a rewritten mesh re-resolved via reused `worktree_diffs` resolves
+        //     its interior anchor against stale (pre-fix) mesh-file content.
+        // In that case fall back to the baseline full re-resolve (a freshly
+        // built `EngineState`, no source-layer reuse, no scoped splice), which
+        // is byte-identical to the pre-optimization output. Interior anchors
+        // are a loud, rare error condition, so the perf hit is irrelevant.
+        let has_interior_anchor = {
+            let _perf = crate::perf::span("stale.scan-interior-anchors");
+            crate::cli::interior_anchor::scope_has_interior_anchor(
+                repo,
+                mesh_root,
+                scoped_mesh_names.as_ref(),
+            )?
+        };
         // `apply_fix`'s range coalescing is workspace-total: it collapses
         // contiguous/overlapping fresh ranges on a path regardless of
         // drift. A scan's resolved `meshes` omits fully-Fresh meshes (the
@@ -631,10 +656,28 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             meshes.clone()
         };
         let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root)?;
-        // Re-resolve only the meshes that apply_fix actually rewrote, then
-        // splice the results back into the pre-fix set. This avoids a
-        // whole-corpus re-resolve for meshes the fix never touched.
-        if args.paths.is_empty() {
+        if has_interior_anchor {
+            // Baseline path: full re-resolve with no splice / no source-layer
+            // reuse. Drop the retained source layers (their subprocess handles
+            // are released here).
+            drop(pre_fix_source_layers.take());
+            if args.paths.is_empty() {
+                meshes = stale_meshes(repo, mesh_root, options)?;
+            } else {
+                let names: Vec<String> = meshes.iter().map(|m| m.name.clone()).collect();
+                let resolved = resolve_named_meshes(repo, mesh_root, &names, options)?;
+                let mut new_meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
+                for (_n, result) in resolved {
+                    if let Ok(mesh) = result {
+                        new_meshes.push(mesh);
+                    }
+                }
+                meshes = new_meshes;
+            }
+        } else if args.paths.is_empty() {
+            // Re-resolve only the meshes that apply_fix actually rewrote, then
+            // splice the results back into the pre-fix set. This avoids a
+            // whole-corpus re-resolve for meshes the fix never touched.
             meshes = splice_bare_scan_post_fix(
                 repo,
                 mesh_root,
@@ -1005,6 +1048,17 @@ fn splice_named_scope_post_fix(
     source_layers: Option<SourceLayers>,
 ) -> Result<Vec<MeshResolved>> {
     if rewritten_names.is_empty() {
+        // No mesh was rewritten, so the pre-fix resolved set already reflects
+        // the post-fix state — return it without a second resolve.
+        //
+        // Intentional, authorized single-emit stderr: when a resolve-time
+        // warning fired during the pre-fix pass AND `apply_fix` rewrote
+        // nothing, skipping the second resolve here means that warning prints
+        // once, not twice. The pre-optimization code re-resolved the whole
+        // named scope unconditionally and so emitted the warning a second
+        // time. Single emission is the correct, intended behavior (per user
+        // decision) — this early return must NOT be "fixed" by reintroducing
+        // the redundant resolve.
         return Ok(pre_fix_meshes);
     }
 

@@ -80,6 +80,41 @@ pub fn scan_interior_anchors(
     Ok(violations)
 }
 
+/// Whether any mesh in scope carries an interior anchor (an anchor whose path
+/// is under `mesh_root`).
+///
+/// `stale --fix` uses this as a fail-closed gate: when an interior anchor is
+/// present, the scoped post-fix splice and source-layer reuse are unsound (a
+/// rewritten mesh file is also an anchor target, so reused pre-fix
+/// `worktree_diffs` and un-re-resolved sibling meshes can render stale drift
+/// status). In that case the caller falls back to a full whole-corpus /
+/// full-named re-resolve, which matches the baseline byte-for-byte. Interior
+/// anchors are a loud, rare error condition, so the perf cost of the fallback
+/// is irrelevant — correctness wins.
+///
+/// `scope` is `None` for a bare scan (check the whole corpus) or `Some(names)`
+/// for a named-scope query (check only the requested meshes), mirroring the
+/// scoping `run_stale` already applies to `scan_interior_anchors`.
+pub(crate) fn scope_has_interior_anchor(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    scope: Option<&std::collections::HashSet<String>>,
+) -> crate::Result<bool> {
+    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
+        if let Some(names) = scope
+            && !names.contains(&name)
+        {
+            continue;
+        }
+        for (_anchor_id, anchor) in &mesh.anchors {
+            if classify_interior_anchor(mesh_root, &anchor.path).is_some() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Format a stored anchor address (`path` or `path#L<start>-L<end>`) for
 /// display in a violation report — the same shape `git mesh remove` accepts.
 fn address_for(path: &str, extent: &crate::types::AnchorExtent) -> String {
