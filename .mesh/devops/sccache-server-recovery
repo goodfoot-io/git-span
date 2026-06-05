@@ -1,0 +1,8 @@
+scripts/ensure-sccache.sh sha256:13738e12a22ac0d14d756afec8c77de5272f3370e358565af967cbbc17e6d68f
+packages/agent-hooks/test/ensure-sccache.test.ts sha256:a0908e1738091de2bcf4fdef4655196dbc3e5a67f43598241152f680c81fdd86
+scripts/validate.sh#L26-L28 sha256:32e285337e2895824f17eff4a433b31559df5fdb1acccf4ade161942a3c5c5b7
+scripts/bump.sh#L49-L51 sha256:911dafd0a9be30ee17fa105202135a0780c62dd4c0a640abd1ad2bef0356d3e7
+.devcontainer/devcontainer.json#L50-L51 sha256:c68c6c8466e87b93d97fe09ea7ca27286987aa34c0a2242f82cd10e4e36f009f
+CLAUDE.md#L38-L50 sha256:dd9d23ac72768af1b603980848d9128e0919a654aa73cd9484435607355f46e3
+
+Sccache server recovery preflight ensures a reachable server before Rust builds at devcontainer start, validate, and bump stages, protecting against stale/wedged servers that manifest as opaque compile failures.
