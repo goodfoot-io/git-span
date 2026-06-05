@@ -1,5 +1,5 @@
 packages/git-mesh/src/cli/commit.rs#L82-L164 sha256:01ea50796d44aa460bb4959b31bb24cac7c971c1103433873adf4449b511835c
-packages/git-mesh/src/cli/commit.rs#L168-L184 sha256:84b44f97509c79ab0bdbf60abdf42740aa80a5bdc958a630d940aad0f409026d
+packages/git-mesh/src/cli/commit.rs#L168-L184 sha256:922299d8a810b575aa36f3d3b7046f1912cf9b4049f685ea638e2ae1da98fae1
 packages/git-mesh/src/cli/stale_fix.rs#L117-L148 sha256:7e2de094c7e3ae952c0d7f710ca082e02d538682c4a4aef26c16b77b673e8b06
 
 Anchor-content hashing canonicalization that stale --fix must reproduce when it hashes the index layer by hand, so re-anchored hashes stay comparable with the resolver's add-time and resolve-time hashes.

@@ -1,4 +1,4 @@
 CLAUDE.md#L83-L83 sha256:35703b7af9511e184b13211db6bb9076d2c2cbe2667c3f5f0e4f1be6993921ab
-scripts/validate.sh sha256:70330b1c80c1ccbafba683f1a4e1a3ea498b485885a591875cc665043bfdd6e4
+scripts/validate.sh sha256:0e3836f044192c9dfa7399180341e767ce175a9e3aab957628e1e97c55a44dff
 
 The instructions tell the operator that running the script writes ./yarn-validate-output.log and prints 'Exit code: N'; the script is the source of truth for those output facts when they disagree.
