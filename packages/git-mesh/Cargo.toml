@@ -13,9 +13,9 @@ chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 fs4 = "0.13"
 clap_mangen = "0.2"
-gix = { version = "0.81.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }
+gix = { version = "0.84.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }
 gix-chunk = "0.7.1"
-gix-lock = "21.0"
+gix-lock = "23.0"
 memmap2 = "0.9"
 globset = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -43,7 +43,7 @@ serde_json = "1.0.149"
 [dev-dependencies]
 assert_cmd = "2.0.16"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-gix = { version = "0.81.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }
+gix = { version = "0.84.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }
 predicates = "3.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

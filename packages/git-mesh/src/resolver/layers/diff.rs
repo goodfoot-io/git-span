@@ -592,36 +592,32 @@ fn compute_blob_hunks(
 
 fn compute_hunks_from_bytes(old_bytes: &[u8], new_bytes: &[u8]) -> Vec<(u32, u32, u32, u32)> {
     use gix::diff::blob::sources::byte_lines;
-    use gix::diff::blob::{Algorithm, diff, intern::InternedInput};
+    use gix::diff::blob::{Algorithm, Diff, InternedInput};
 
     let input = InternedInput::new(byte_lines(old_bytes), byte_lines(new_bytes));
     let mut hunks: Vec<(u32, u32, u32, u32)> = Vec::new();
-    diff(
-        Algorithm::Histogram,
-        &input,
-        |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
-            // Convert 0-based imara token ranges into git's 1-based
-            // unified-hunk header semantics (`@@ -os,oc +ns,nc @@`):
-            //   * for an empty (oc==0) before-anchor the start is the
-            //     line *before* the insertion (so 0 when inserting at
-            //     line 1, matching git's `-0,0` for prepended content
-            //     and `-N,0` for inserts after line N).
-            //   * the after-anchor follows symmetrically.
-            let oc = before.end - before.start;
-            let nc = after.end - after.start;
-            let os = if oc == 0 {
-                before.start
-            } else {
-                before.start + 1
-            };
-            let ns = if nc == 0 {
-                after.start
-            } else {
-                after.start + 1
-            };
-            hunks.push((os, oc, ns, nc));
-        },
-    );
+    for hunk in Diff::compute(Algorithm::Histogram, &input).hunks() {
+        // Convert 0-based imara token ranges into git's 1-based
+        // unified-hunk header semantics (`@@ -os,oc +ns,nc @@`):
+        //   * for an empty (oc==0) before-anchor the start is the
+        //     line *before* the insertion (so 0 when inserting at
+        //     line 1, matching git's `-0,0` for prepended content
+        //     and `-N,0` for inserts after line N).
+        //   * the after-anchor follows symmetrically.
+        let oc = hunk.before.end - hunk.before.start;
+        let nc = hunk.after.end - hunk.after.start;
+        let os = if oc == 0 {
+            hunk.before.start
+        } else {
+            hunk.before.start + 1
+        };
+        let ns = if nc == 0 {
+            hunk.after.start
+        } else {
+            hunk.after.start + 1
+        };
+        hunks.push((os, oc, ns, nc));
+    }
     hunks
 }
 
