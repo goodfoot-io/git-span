@@ -37,6 +37,16 @@ deduplicates dependency compilation across worktrees. Run `yarn validate` from a
 worktree; concurrent runs are safe. Direct `cargo` invocations also use `target-cache/`
 via `packages/git-mesh/.cargo/config.toml`. If you see `error: could not exec sccache`,
 rebuild the devcontainer.
+
+`yarn validate` and `yarn bump` run `scripts/ensure-sccache.sh` first, and the
+devcontainer runs it at every container start (`postStartCommand`), so a stale or
+version-mismatched `sccache` server holding the server socket is reclaimed and a
+clean server started before any Rust compile. If a *direct* `cargo build` ever
+aborts with `sccache: error: Failed to read response header` / `failed to fill
+whole buffer` (a wedged server the client can't replace), run
+`bash scripts/ensure-sccache.sh` to recover. If automatic recovery fails it exits
+non-zero with the manual steps: `pkill -9 -f sccache`, then
+`SCCACHE_DIR=/home/node/.cache/sccache SCCACHE_START_SERVER=1 sccache`.
 </workspace-information>
 
 <jsdoczoom>

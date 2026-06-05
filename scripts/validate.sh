@@ -23,6 +23,10 @@ if [ -d "$guardrail_root" ]; then
   fi
 fi
 
+# Guarantee a reachable sccache server before the Rust pipeline so a stale or
+# wedged server can't surface as an opaque compile failure mid-validate.
+bash "$(dirname "${BASH_SOURCE[0]}")/ensure-sccache.sh" || exit 1
+
 {
   yarn typecheck &&
   yarn lint &&
