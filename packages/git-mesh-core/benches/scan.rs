@@ -10,7 +10,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use git_mesh_core::{
-    AnchorExtent, Location, scan_for_content_hash, scan_for_content_hash_near_radius, sha256_hex,
+    AnchorExtent, LineIndex, Location, cheap_fingerprint_with_extent, scan_for_content_hash,
+    scan_for_content_hash_near_radius, scan_indexed_prefiltered, sha256_hex,
 };
 
 /// A representative ~2500-line LF source file (~40 bytes/line).
@@ -91,6 +92,18 @@ fn bench_scan(c: &mut Criterion) {
         full,
     );
 
+    // The fingerprint prefilter reaches the *exhaustive* (fail-closed) set at
+    // near-radius cost: the caller stores the fingerprint of the anchored
+    // content and the per-window SHA fires only at genuine candidates.
+    let indexed: Vec<(String, LineIndex)> =
+        files.iter().map(|(p, b)| (p.clone(), LineIndex::build(b))).collect();
+    let cheap_fp =
+        cheap_fingerprint_with_extent(lines[win..win + span as usize].join("\n").as_bytes(), &AnchorExtent::WholeFile);
+    assert_eq!(
+        scan_indexed_prefiltered(&indexed, &want, cheap_fp, extent, Some(old_start)),
+        full,
+    );
+
     let mut group = c.benchmark_group("single_stale_anchor_2500_lines");
     group
         .bench_function("reference_full_scan", |b| {
@@ -121,6 +134,17 @@ fn bench_scan(c: &mut Criterion) {
                     black_box(extent),
                     black_box(old_start),
                     black_box(radius),
+                )
+            })
+        })
+        .bench_function("prefiltered_full_scan", |b| {
+            b.iter(|| {
+                scan_indexed_prefiltered(
+                    black_box(&indexed),
+                    black_box(&want),
+                    black_box(cheap_fp),
+                    black_box(extent),
+                    black_box(Some(old_start)),
                 )
             })
         });

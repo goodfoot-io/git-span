@@ -160,17 +160,24 @@ fn region_is_lf_clean(slice: &[u8]) -> bool {
     !slice.contains(&b'\r') && std::str::from_utf8(slice).is_ok()
 }
 
-/// The reference canonicalization: `from_utf8_lossy` the whole buffer,
-/// split with `str::lines`, take the inclusive 1-based `[start, end]` slice
-/// (clamped to EOF), `join("\n")`, and hash. Used as the digest-preserving
-/// fallback whenever the fast path's preconditions do not hold.
-fn canonical_join_hash(bytes: &[u8], start: u32, end: u32) -> String {
+/// The reference canonicalization, materialized: `from_utf8_lossy` the whole
+/// buffer, split with `str::lines`, take the inclusive 1-based `[start, end]`
+/// slice (clamped to EOF), and `join("\n")`. These are the exact bytes the
+/// digest is taken over on the fallback path; both the hash and the cheap
+/// fingerprint canonicalize through here so they never disagree.
+fn canonical_join_bytes(bytes: &[u8], start: u32, end: u32) -> Vec<u8> {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
     let hi = (end as usize).min(lines.len());
     let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-    sha256_hex(slice.join("\n").as_bytes())
+    slice.join("\n").into_bytes()
+}
+
+/// The reference canonicalization, hashed. Used as the digest-preserving
+/// fallback whenever the fast path's preconditions do not hold.
+fn canonical_join_hash(bytes: &[u8], start: u32, end: u32) -> String {
+    sha256_hex(&canonical_join_bytes(bytes, start, end))
 }
 
 /// One place a stored content hash was found in the caller-supplied
@@ -313,6 +320,228 @@ pub fn hash_extent_indexed(idx: &LineIndex, extent: &AnchorExtent) -> String {
             None => sha256_hex(b""),
         },
     }
+}
+
+// --- Cheap-fingerprint prefilter for the fail-closed uniqueness check ---
+//
+// A polynomial (Rabin–Karp) rolling hash over the *same canonical content* as
+// the SHA-256 digest. It is a non-cryptographic prefilter only: a window's
+// SHA is evaluated solely when its fingerprint equals the caller-stored
+// `cheap_fp`, so a fingerprint collision costs one extra SHA and never a wrong
+// answer. The SHA remains the single source of truth, which keeps the
+// whole-file occurrence count — and therefore the caller's fail-closed
+// ambiguity guarantee — exact while paying the per-window SHA only at genuine
+// candidates.
+
+/// Polynomial base for the cheap fingerprint (the FNV-64 prime — odd, so the
+/// rolling subtraction below is exact over wrapping `u64` arithmetic).
+const FP_BASE: u64 = 0x0000_0100_0000_01b3;
+
+/// Per-byte value mapped into the polynomial. Adding one keeps a leading `\0`
+/// from vanishing (a zero byte would otherwise contribute nothing and shift
+/// silently), so distinct content is less likely to collide.
+#[inline]
+fn fp_byte(b: u8) -> u64 {
+    (b as u64).wrapping_add(1)
+}
+
+/// Horner polynomial hash of `bytes`: `Σ fp_byte(bytes[i]) · BASE^(len-1-i)`,
+/// over wrapping `u64`. `horner(b"") == 0`. This is the canonical fingerprint
+/// of an already-canonicalized content slice; the rolling scan reproduces it
+/// per window via prefix hashes.
+fn horner(bytes: &[u8]) -> u64 {
+    let mut h = 0u64;
+    for &b in bytes {
+        h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(b));
+    }
+    h
+}
+
+/// Fingerprint the canonical content of buffer region `[rs, re)`. On the
+/// LF-and-UTF-8 fast path the region is byte-identical to the canonical
+/// `lines[lo..hi].join("\n")`, so it is hashed directly; otherwise it defers
+/// to the same lossy-join bytes the SHA fallback uses, so the fingerprint is
+/// taken over exactly the canonical content behind the digest.
+fn fingerprint_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> u64 {
+    let slice = &bytes[rs..re];
+    if region_is_lf_clean(slice) {
+        horner(slice)
+    } else {
+        horner(&canonical_join_bytes(bytes, start, end))
+    }
+}
+
+/// Cheap (non-cryptographic) fingerprint of an extent's canonical content,
+/// over the **same** canonicalization as [`hash_bytes_with_extent`]
+/// (LF-normalized `lines().join("\n")`; whole-file extents fingerprint the
+/// full buffer). The caller stores this `u64` alongside the SHA-256 so later
+/// scans can prefilter windows in O(1) each via [`scan_indexed_prefiltered`].
+///
+/// It is a prefilter only — never a substitute for the SHA. Equal fingerprints
+/// do not prove equal content; the scan still confirms each candidate with
+/// SHA-256. Empty extents (a range selecting no line) fingerprint to `0`,
+/// matching the empty canonical content their digest is taken over.
+pub fn cheap_fingerprint_with_extent(bytes: &[u8], extent: &AnchorExtent) -> u64 {
+    match extent {
+        AnchorExtent::WholeFile => horner(bytes),
+        AnchorExtent::LineRange { start, end } => match line_range_region(bytes, *start, *end) {
+            Some((rs, re)) => fingerprint_region(bytes, rs, re, *start, *end),
+            None => 0,
+        },
+    }
+}
+
+/// [`cheap_fingerprint_with_extent`] over a prebuilt [`LineIndex`]. Produces
+/// an identical `u64`; the only difference is that the newline scan is already
+/// paid for.
+pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 {
+    match extent {
+        AnchorExtent::WholeFile => horner(idx.bytes),
+        AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
+            Some((rs, re)) => fingerprint_region(idx.bytes, rs, re, *start, *end),
+            None => 0,
+        },
+    }
+}
+
+/// Exhaustive, fail-closed match set — the **same** return contract as
+/// [`scan_indexed`] (all matches, same `near` ordering, ≥2 ⇒ ambiguous) —
+/// reached cheaply via a fingerprint prefilter.
+///
+/// A rolling polynomial fingerprint is computed per window in O(N·L) total
+/// (one prefix-hash pass over each file's bytes, then O(1) per window), and
+/// the source-of-truth SHA-256 is evaluated **only** for windows whose
+/// fingerprint equals `cheap_fp`. With unique content this is ~1 SHA (plus
+/// rare fingerprint collisions) instead of N, while the returned set stays
+/// byte-for-byte equal to [`scan_indexed`].
+///
+/// `cheap_fp` must be the caller-stored [`cheap_fingerprint_with_extent`] of
+/// the same canonical content behind `content_hash`. **Correctness does not
+/// depend on the fingerprint, only performance:** because every returned
+/// location is confirmed by SHA-256, a wrong or stale `cheap_fp` can only
+/// *reduce* the set of windows that reach the SHA check — it can never admit a
+/// false match. (It can, however, drop true matches, which is why the caller
+/// must store the fingerprint of the actual anchored content.) A whole-file
+/// extent has no per-window prefilter and defers to [`scan_indexed`].
+pub fn scan_indexed_prefiltered(
+    files: &[(String, LineIndex)],
+    content_hash: &str,
+    cheap_fp: u64,
+    extent: AnchorExtent,
+    near: Option<u32>,
+) -> Vec<Location> {
+    let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
+
+    let AnchorExtent::LineRange { start, end } = extent else {
+        // A whole-file extent hashes one buffer per file; there is nothing to
+        // prefilter, so the exhaustive whole-file matcher is already optimal.
+        return scan_indexed(files, content_hash, extent, near);
+    };
+
+    let span = (end.saturating_sub(start) + 1) as usize;
+    if span == 0 {
+        return Vec::new();
+    }
+    let target = decode_lower_hex32(want);
+    let mut out: Vec<Location> = Vec::new();
+    for (path, idx) in files {
+        let n = idx.line_count();
+        if n < span {
+            continue;
+        }
+        scan_one_file_prefiltered(path, idx, span, (0, n - span), &target, want, cheap_fp, &mut out);
+    }
+    if let Some(near) = near {
+        let near0 = near.saturating_sub(1);
+        out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+    }
+    out
+}
+
+/// [`scan_one_file`] with a cheap-fingerprint prefilter: the per-window SHA-256
+/// fires only when the window's rolling polynomial fingerprint equals
+/// `cheap_fp`. On the LF-and-UTF-8 fast path a single prefix-hash pass over the
+/// buffer makes each window's fingerprint an O(1) subtraction; the
+/// `\r`/non-UTF-8 fallback fingerprints the canonical lossy join per window so
+/// results stay byte-identical to the reference matcher.
+#[allow(clippy::too_many_arguments)]
+fn scan_one_file_prefiltered(
+    path: &str,
+    idx: &LineIndex,
+    span: usize,
+    wins: (usize, usize),
+    target: &Option<[u8; 32]>,
+    want: &str,
+    cheap_fp: u64,
+    out: &mut Vec<Location>,
+) {
+    let (win_lo, win_hi) = wins;
+    let bytes = idx.bytes;
+    let simple = !bytes.contains(&b'\r') && std::str::from_utf8(bytes).is_ok();
+
+    if simple {
+        // Prefix hashes `ph[k] = horner(bytes[0..k])` and powers `pow[i] =
+        // BASE^i` give every window's fingerprint as `ph[re] - ph[rs]·pow[re-rs]`
+        // in O(1) — the rolling reduction of recomputing `horner` per window.
+        let (ph, pow) = prefix_hashes_and_powers(bytes);
+        for win in win_lo..=win_hi {
+            let rs = idx.starts[win] as usize;
+            let re = idx.ends[win + span - 1] as usize;
+            let fp = ph[re].wrapping_sub(ph[rs].wrapping_mul(pow[re - rs]));
+            if fp != cheap_fp {
+                continue;
+            }
+            let slice = &bytes[rs..re];
+            let matched = match target {
+                Some(t) => {
+                    let mut h = Sha256::new();
+                    h.update(slice);
+                    h.finalize().as_slice() == t.as_slice()
+                }
+                None => sha256_hex(slice) == want,
+            };
+            if matched {
+                out.push(Location {
+                    path: path.to_string(),
+                    start_line: (win as u32) + 1,
+                    end_line: (win as u32) + span as u32,
+                });
+            }
+        }
+    } else {
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<&str> = text.lines().collect();
+        for win in win_lo..=win_hi {
+            let joined = lines[win..win + span].join("\n");
+            if horner(joined.as_bytes()) != cheap_fp {
+                continue;
+            }
+            if sha256_hex(joined.as_bytes()) == want {
+                out.push(Location {
+                    path: path.to_string(),
+                    start_line: (win as u32) + 1,
+                    end_line: (win as u32) + span as u32,
+                });
+            }
+        }
+    }
+}
+
+/// Build the prefix-hash and power tables for `bytes` in one pass. `ph` has
+/// length `bytes.len() + 1` with `ph[0] = 0` and `ph[k+1] = ph[k]·BASE +
+/// fp_byte(bytes[k])`; `pow[i] = BASE^i` for `i in 0..=bytes.len()`. Then
+/// `horner(bytes[a..b]) == ph[b] - ph[a]·pow[b-a]` over wrapping `u64`.
+fn prefix_hashes_and_powers(bytes: &[u8]) -> (Vec<u64>, Vec<u64>) {
+    let n = bytes.len();
+    let mut ph = Vec::with_capacity(n + 1);
+    let mut pow = Vec::with_capacity(n + 1);
+    ph.push(0u64);
+    pow.push(1u64);
+    for (i, &b) in bytes.iter().enumerate() {
+        ph.push(ph[i].wrapping_mul(FP_BASE).wrapping_add(fp_byte(b)));
+        pow.push(pow[i].wrapping_mul(FP_BASE));
+    }
+    (ph, pow)
 }
 
 /// [`scan_for_content_hash`] over prebuilt [`LineIndex`] values. Identical
@@ -924,5 +1153,200 @@ mod tests {
                 scan_for_content_hash(&files, &want, extent, near),
             );
         }
+    }
+
+    // --- Cheap-fingerprint prefilter ---
+
+    fn index_all(files: &[(String, Vec<u8>)]) -> Vec<(String, LineIndex<'_>)> {
+        files
+            .iter()
+            .map(|(p, b)| (p.clone(), LineIndex::build(b)))
+            .collect()
+    }
+
+    #[test]
+    fn fingerprint_byte_slice_and_indexed_agree_across_vectors() {
+        // The two entry points must produce identical fingerprints for every
+        // endings/UTF-8 case and range, exactly as the hash entry points do.
+        for &bytes in VECTORS {
+            let idx = LineIndex::build(bytes);
+            assert_eq!(
+                cheap_fingerprint_with_extent(bytes, &AnchorExtent::WholeFile),
+                cheap_fingerprint_indexed(&idx, &AnchorExtent::WholeFile),
+                "whole-file fingerprint disagreed for {bytes:?}"
+            );
+            for start in 0u32..=8 {
+                for end in 0u32..=10 {
+                    let extent = AnchorExtent::LineRange { start, end };
+                    assert_eq!(
+                        cheap_fingerprint_with_extent(bytes, &extent),
+                        cheap_fingerprint_indexed(&idx, &extent),
+                        "fingerprint disagreed for {bytes:?} range {start}..={end}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fingerprint_canonicalizes_like_the_hash() {
+        // A CRLF file and its LF-normalized twin share canonical content, so
+        // both their digest *and* their fingerprint must coincide.
+        let crlf = b"a\r\nb\r\nc\r\n".to_vec();
+        let lf = b"a\nb\nc\n".to_vec();
+        for extent in [
+            AnchorExtent::WholeFile,
+            AnchorExtent::LineRange { start: 1, end: 2 },
+            AnchorExtent::LineRange { start: 2, end: 3 },
+        ] {
+            if let AnchorExtent::LineRange { .. } = extent {
+                // Whole-file hashes raw bytes (CRLF differs); only line ranges
+                // canonicalize, so compare those.
+                assert_eq!(
+                    hash_bytes_with_extent(&crlf, &extent),
+                    hash_bytes_with_extent(&lf, &extent),
+                    "canonical digest drifted between CRLF and LF for {extent:?}"
+                );
+                assert_eq!(
+                    cheap_fingerprint_with_extent(&crlf, &extent),
+                    cheap_fingerprint_with_extent(&lf, &extent),
+                    "canonical fingerprint drifted between CRLF and LF for {extent:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prefiltered_scan_equals_scan_indexed_with_correct_fingerprint() {
+        // With the fingerprint of the actual anchored content, the prefiltered
+        // scan must return byte-for-byte the same set as the exhaustive scan,
+        // including the fail-closed ≥2 duplicate case.
+        let files = vec![
+            // Two byte-identical blocks in one file: the fail-closed ambiguity.
+            ("dup.txt".to_string(), b"x\ny\nz\nq\nx\ny\nz\n".to_vec()),
+            ("other.txt".to_string(), b"x\ny\nz\n".to_vec()),
+        ];
+        let indexed = index_all(&files);
+        let want = sha256_hex(b"x\ny\nz");
+        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
+        let fp = cheap_fingerprint_with_extent(b"x\ny\nz", &AnchorExtent::WholeFile);
+        for near in [None, Some(1), Some(5)] {
+            let got = scan_indexed_prefiltered(&indexed, &want, fp, extent, near);
+            let expected = scan_indexed(&indexed, &want, extent, near);
+            assert_eq!(got, expected, "prefiltered drift near={near:?}");
+            // The duplicate makes the whole-file count ≥2 — the guarantee the
+            // caller relies on to refuse an ambiguous auto-rewrite.
+            let in_dup = got.iter().filter(|l| l.path == "dup.txt").count();
+            assert_eq!(in_dup, 2, "fail-closed duplicate count lost");
+        }
+    }
+
+    #[test]
+    fn prefiltered_scan_property_matches_scan_indexed() {
+        let mut state = 0xabad1deac0ffee11u64;
+        for _ in 0..3000 {
+            let files: Vec<(String, Vec<u8>)> = (0..3)
+                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
+                .collect();
+            let indexed = index_all(&files);
+            let start = 1 + (lcg(&mut state) % 6) as u32;
+            let end = start + (lcg(&mut state) % 4) as u32;
+            let extent = AnchorExtent::LineRange { start, end };
+            let span = (end - start + 1) as usize;
+
+            // Pick a real window so genuine (and possibly duplicated) matches
+            // occur, and store the fingerprint of that exact content.
+            let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
+            let text = String::from_utf8_lossy(pick);
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() < span {
+                continue;
+            }
+            let w = (lcg(&mut state) as usize) % (lines.len() - span + 1);
+            let content = lines[w..w + span].join("\n");
+            let want = sha256_hex(content.as_bytes());
+            let fp = cheap_fingerprint_with_extent(content.as_bytes(), &AnchorExtent::WholeFile);
+
+            let near = if lcg(&mut state).is_multiple_of(2) {
+                None
+            } else {
+                Some((lcg(&mut state) % 12) as u32)
+            };
+
+            let expected = scan_indexed(&indexed, &want, extent, near);
+            let got = scan_indexed_prefiltered(&indexed, &want, fp, extent, near);
+            assert_eq!(
+                got, expected,
+                "prefiltered drift: files={files:?} {extent:?} near={near:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_fingerprint_only_drops_matches_never_invents_them() {
+        // Soundness: a wrong/stale fingerprint can only *reduce* the set that
+        // reaches the SHA check. The result is always a subset of the
+        // exhaustive scan, and every returned location is a real SHA match —
+        // a fingerprint collision can never produce a false positive.
+        let mut state = 0x0123456789abcdefu64;
+        for _ in 0..3000 {
+            let files: Vec<(String, Vec<u8>)> = (0..3)
+                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
+                .collect();
+            let indexed = index_all(&files);
+            let start = 1 + (lcg(&mut state) % 6) as u32;
+            let end = start + (lcg(&mut state) % 4) as u32;
+            let extent = AnchorExtent::LineRange { start, end };
+            let span = (end - start + 1) as usize;
+
+            let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
+            let text = String::from_utf8_lossy(pick);
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() < span {
+                continue;
+            }
+            let w = (lcg(&mut state) as usize) % (lines.len() - span + 1);
+            let want = sha256_hex(lines[w..w + span].join("\n").as_bytes());
+            // Deliberately arbitrary fingerprint, unrelated to the content.
+            let bogus_fp = lcg(&mut state);
+
+            let truth = scan_indexed(&indexed, &want, extent, None);
+            let got = scan_indexed_prefiltered(&indexed, &want, bogus_fp, extent, None);
+
+            for loc in &got {
+                assert!(
+                    truth.contains(loc),
+                    "prefilter invented a non-match {loc:?} (collision must not produce a false positive)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prefiltered_scan_handles_crlf_and_non_utf8_files() {
+        // The fallback path must prefilter and match identically to the
+        // canonical reference on `\r`/non-UTF-8 files.
+        let files = vec![("crlf.txt".to_string(), b"a\r\nb\r\nc\r\nd\r\n".to_vec())];
+        let indexed = index_all(&files);
+        let extent = AnchorExtent::LineRange { start: 1, end: 2 };
+        let want = sha256_hex(b"a\nb");
+        let fp = cheap_fingerprint_with_extent(b"a\nb", &AnchorExtent::WholeFile);
+        assert_eq!(
+            scan_indexed_prefiltered(&indexed, &want, fp, extent, None),
+            scan_indexed(&indexed, &want, extent, None),
+        );
+
+        let bytes = b"x\xffy\nz\n".to_vec();
+        let files2 = vec![("bad.txt".to_string(), bytes.clone())];
+        let indexed2 = index_all(&files2);
+        let lossy = String::from_utf8_lossy(&bytes);
+        let first: Vec<&str> = lossy.lines().take(1).collect();
+        let want2 = sha256_hex(first[0].as_bytes());
+        let extent2 = AnchorExtent::LineRange { start: 1, end: 1 };
+        let fp2 = cheap_fingerprint_indexed(&indexed2[0].1, &extent2);
+        assert_eq!(
+            scan_indexed_prefiltered(&indexed2, &want2, fp2, extent2, None),
+            scan_indexed(&indexed2, &want2, extent2, None),
+        );
     }
 }
