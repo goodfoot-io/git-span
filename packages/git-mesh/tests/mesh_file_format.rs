@@ -8,9 +8,9 @@ use git_mesh::mesh_file::{AnchorRecord, MeshFile};
 #[test]
 fn parse_valid_file() {
     let input = "\
-packages/extension/src/foo.ts#L10-L35 sha256:0123456789abcdef
-packages/extension/src/bar.ts sha256:abcdef0123456789
-packages/extension/src/baz.ts#L80-L80 sha256:fedcba9876543210
+packages/extension/src/foo.ts#L10-L35 rk64:0123456789abcdef
+packages/extension/src/bar.ts rk64:abcdef0123456789
+packages/extension/src/baz.ts#L80-L80 rk64:fedcba9876543210
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -21,7 +21,7 @@ Stripe-backed server.
     assert_eq!(mesh.anchors[0].path, "packages/extension/src/foo.ts");
     assert_eq!(mesh.anchors[0].start_line, 10);
     assert_eq!(mesh.anchors[0].end_line, 35);
-    assert_eq!(mesh.anchors[0].algorithm, "sha256");
+    assert_eq!(mesh.anchors[0].algorithm, "rk64");
     assert_eq!(mesh.anchors[0].content_hash, "0123456789abcdef");
 
     assert_eq!(mesh.anchors[1].path, "packages/extension/src/bar.ts");
@@ -46,7 +46,7 @@ fn parse_empty_anchors_no_why() {
 
 #[test]
 fn parse_anchors_without_why() {
-    let input = "a.txt sha256:111\nb.txt sha256:222\n";
+    let input = "a.txt rk64:111\nb.txt rk64:222\n";
     let mesh = MeshFile::parse(input).unwrap();
     assert_eq!(mesh.anchors.len(), 2);
     assert_eq!(mesh.why, "");
@@ -70,7 +70,7 @@ fn reject_missing_space_in_anchor_line() {
 
 #[test]
 fn reject_missing_colon_in_hash_part() {
-    let result = MeshFile::parse("file.txt sha256badhash\n");
+    let result = MeshFile::parse("file.txt rk64badhash\n");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -81,7 +81,7 @@ fn reject_missing_colon_in_hash_part() {
 
 #[test]
 fn reject_invalid_start_line() {
-    let result = MeshFile::parse("file.txt#L0-L10 sha256:abc\n");
+    let result = MeshFile::parse("file.txt#L0-L10 rk64:abc\n");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("start line"), "got: {err}");
@@ -89,13 +89,13 @@ fn reject_invalid_start_line() {
 
 #[test]
 fn reject_end_before_start() {
-    let result = MeshFile::parse("file.txt#L10-L5 sha256:abc\n");
+    let result = MeshFile::parse("file.txt#L10-L5 rk64:abc\n");
     assert!(result.is_err());
 }
 
 #[test]
 fn reject_missing_line_range_separator() {
-    let result = MeshFile::parse("file.txt#L10 sha256:abc\n");
+    let result = MeshFile::parse("file.txt#L10 rk64:abc\n");
     assert!(result.is_err());
 }
 
@@ -105,10 +105,10 @@ fn anchor_record_display_whole_file() {
         path: "src/main.rs".into(),
         start_line: 0,
         end_line: 0,
-        algorithm: "sha256".into(),
+        algorithm: "rk64".into(),
         content_hash: "deadbeef".into(),
     };
-    assert_eq!(r.to_string(), "src/main.rs sha256:deadbeef");
+    assert_eq!(r.to_string(), "src/main.rs rk64:deadbeef");
 }
 
 #[test]
@@ -117,17 +117,17 @@ fn anchor_record_display_line_range() {
         path: "src/lib.rs".into(),
         start_line: 42,
         end_line: 99,
-        algorithm: "sha256".into(),
+        algorithm: "rk64".into(),
         content_hash: "cafebabe".into(),
     };
-    assert_eq!(r.to_string(), "src/lib.rs#L42-L99 sha256:cafebabe");
+    assert_eq!(r.to_string(), "src/lib.rs#L42-L99 rk64:cafebabe");
 }
 
 #[test]
 fn serialize_roundtrip() {
     let input = "\
-a.txt sha256:111
-b.rs#L1-L5 sha256:222
+a.txt rk64:111
+b.rs#L1-L5 rk64:222
 
 Some why text.
 ";
@@ -139,12 +139,12 @@ Some why text.
 
 #[test]
 fn serialize_no_why() {
-    let input = "a.txt sha256:111\nb.rs#L1-L5 sha256:222\n";
+    let input = "a.txt rk64:111\nb.rs#L1-L5 rk64:222\n";
     let mesh = MeshFile::parse(input).unwrap();
     let output = mesh.serialize();
     // Should contain anchors and a trailing blank line
-    assert!(output.contains("a.txt sha256:111"));
-    assert!(output.contains("b.rs#L1-L5 sha256:222"));
+    assert!(output.contains("a.txt rk64:111"));
+    assert!(output.contains("b.rs#L1-L5 rk64:222"));
     // Can re-parse
     let reparsed = MeshFile::parse(&output).unwrap();
     assert_eq!(mesh, reparsed);
@@ -152,7 +152,7 @@ fn serialize_no_why() {
 
 #[test]
 fn reject_empty_anchor_address() {
-    let result = MeshFile::parse(" sha256:abc\n");
+    let result = MeshFile::parse(" rk64:abc\n");
     assert!(result.is_err());
 }
 
@@ -166,18 +166,18 @@ fn reject_empty_hash() {
 fn multiple_blank_lines_in_anchor_section() {
     // The first blank line separates anchors from why.
     // Content after the first blank line is part of the why block.
-    let input = "a.txt sha256:111\n\n\nb.txt sha256:222\n\nwhy\n";
+    let input = "a.txt rk64:111\n\n\nb.txt rk64:222\n\nwhy\n";
     let mesh = MeshFile::parse(input).unwrap();
     assert_eq!(mesh.anchors.len(), 1);
     assert_eq!(mesh.anchors[0].path, "a.txt");
     // The why contains the remaining content after the first blank line.
-    assert!(mesh.why.contains("b.txt sha256:222"));
+    assert!(mesh.why.contains("b.txt rk64:222"));
     assert!(mesh.why.contains("why"));
 }
 
 #[test]
 fn why_multiple_lines() {
-    let input = "a.txt sha256:111\n\nLine 1\nLine 2\nLine 3\n";
+    let input = "a.txt rk64:111\n\nLine 1\nLine 2\nLine 3\n";
     let mesh = MeshFile::parse(input).unwrap();
     assert_eq!(mesh.anchors.len(), 1);
     assert_eq!(mesh.why, "Line 1\nLine 2\nLine 3");

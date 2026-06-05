@@ -1,4 +1,4 @@
-packages/git-mesh/tests/stale_worktree_reanchor_line_shift_fresh.rs sha256:db2cb9bfebe41ee2670ac3b5aaae7b024b83a5f727e4af2b607f238be7e7d907
-packages/git-mesh/src/resolver/engine/anchor.rs#L607-L621 sha256:800a5ff91a6995ebaf5f57a15038733228781a430edc7fd4a24ff41eabea2abb
+packages/git-mesh/tests/stale_worktree_reanchor_line_shift_fresh.rs rk64:f6a4926f7f8877ff
+packages/git-mesh/src/resolver/engine/anchor.rs#L612-L626 rk64:dd75575d6f375ba2
 
 Test suite gates the worktree-fresh terminal verdict: when a mesh anchor is re-anchored to a new line range with the source edit unstaged, the worktree slice must hash-match to suppress Moved classification, regardless of deeper-layer drift.

@@ -1,6 +1,4 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L22-L32 sha256:d31d949a88fe17564ee477759e8148368d28710096ae6077c92bd5e875d01295
-README.md#L18-L55 sha256:d4310eb5d6c1cc62f04226f139c77b285c71468f91d5171052b89fc771ebc087
-CLAUDE.md#L88-L109 sha256:187c6bd36126f27004a004db35a6f32db03cfb8b8edde44a25431c6fdaacb3c6
-CLAUDE.md#L76-L97 sha256:44e9f5d5a8a8ec056c5d3fe6b76c319ce7a3cd355f2b31f917134419bd226487
+wiki/meta/git-mesh-documentation-touchpoints.md#L22-L32 rk64:12195a525010036c
+README.md#L18-L55 rk64:6827cd27b4db8370
+CLAUDE.md#L76-L97 rk64:ce80e56599ca7121
 
-The operator-facing documentation section of the touchpoints page names README CLI section and CLAUDE.md git-mesh block as the primary guidance surfaces most likely to drift.

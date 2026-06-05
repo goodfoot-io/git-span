@@ -223,7 +223,7 @@ fn moved_scan_negative_result_is_a_hit() {
     let key = MovedScanKey {
         source_tree_key: "src1".into(),
         filter_config_hash_hex: "ff".into(),
-        hash_algorithm: "sha256".into(),
+        hash_algorithm: git_mesh_core::RK64_ALGORITHM.into(),
         content_hash: "deadbeef".into(),
         extent_kind: "line-range".into(),
         line_count: 10,
@@ -245,7 +245,7 @@ fn moved_scan_round_trip_and_key_isolation() {
     let key = MovedScanKey {
         source_tree_key: "src1".into(),
         filter_config_hash_hex: "ab".into(),
-        hash_algorithm: "sha256".into(),
+        hash_algorithm: git_mesh_core::RK64_ALGORITHM.into(),
         content_hash: "cafe".into(),
         extent_kind: "line-range".into(),
         line_count: 5,

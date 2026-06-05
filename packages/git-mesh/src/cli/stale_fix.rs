@@ -8,11 +8,12 @@
 //! `notes/current-blob-unreliable-for-fix.md`), so we read content per
 //! surfacing layer rather than via `current.blob`.
 
-use crate::cli::commit::{hash_anchor_content, hash_bytes_with_extent, read_worktree_mesh,
+use crate::cli::commit::{hash_anchor_content, read_worktree_mesh,
     write_worktree_mesh};
 use crate::mesh_file::{AnchorRecord, MeshFile};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, MeshResolved};
 use anyhow::Result;
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Re-anchor every `Moved`/`Changed` anchor in `meshes` by rewriting the
@@ -144,7 +145,7 @@ pub(crate) fn apply_fix(
                             continue;
                         }
                     }
-                    hash_bytes_with_extent(&bytes, &cur_extent)
+                    rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
                 }
             };
 
@@ -168,7 +169,7 @@ pub(crate) fn apply_fix(
             record.path = cur_path_str;
             record.start_line = new_start;
             record.end_line = new_end;
-            record.algorithm = "sha256".to_string();
+            record.algorithm = RK64_ALGORITHM.to_string();
             record.content_hash = hash_hex;
             rewritten.insert(resolved.anchor_id.clone());
             any_rewritten = true;
@@ -261,7 +262,7 @@ pub(crate) fn apply_fix(
 /// Two line-range anchors on one `path` merge when their `[start, end]`
 /// intervals overlap or are contiguous (`a.end + 1 >= b.start` after
 /// sorting by `start`); the merged anchor spans `min(start)..max(end)` and
-/// carries one freshly recomputed `sha256` hash over that combined extent.
+/// carries one freshly recomputed rk64 fingerprint over that combined extent.
 /// A pair merges only when both contributing anchors are eligible — i.e.
 /// each record's key is in `mergeable_keys`, the set of anchors that are
 /// worktree-fresh after the rewrite pass (`Fresh` anchors, or `Moved`/
@@ -343,7 +344,7 @@ fn coalesce_line_ranges(
                     path: path.clone(),
                     start_line: start,
                     end_line: end,
-                    algorithm: "sha256".to_string(),
+                    algorithm: RK64_ALGORITHM.to_string(),
                     content_hash,
                 },
             );

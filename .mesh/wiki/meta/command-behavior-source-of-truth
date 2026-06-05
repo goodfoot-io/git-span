@@ -1,11 +1,8 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L14-L20 sha256:e24b4ad19f649e74a0de33cc0199cbc90e0fc45d7d5be28201320ba327634e9f
-packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069cbca06f3087198e71d585d2a4b7eff
-packages/git-mesh/src/validation.rs#L7-L28 sha256:981074a1bc0da741fc3bd40155db1fb0bb08134eae6528b3107e368418b7519a
-packages/git-mesh/src/cli/mod.rs#L35-L105 sha256:5588271ecbd40a2ba9d220d93b256d4fc299bf9fbad767419628e5b75228b22d
-packages/git-mesh/src/cli/mod.rs#L383-L439 sha256:f775de268cdda14ba3f8c87736eab8c1e6ae6258c60f380fd0a7acf0ef0d787c
-packages/git-mesh/src/cli/mod.rs#L35-L108 sha256:64f88bfcf291e5cbe7e185e0271e36d43d7b3d5d4ac083f65efe3584e5b777db
-packages/git-mesh/src/cli/mod.rs#L365-L417 sha256:bed59b3d3c741a9768cf790d5189e61db7e95885df620c91428e47787ffe56df
-packages/git-mesh/src/cli/mod.rs#L34-L107 sha256:d7edbff464df0e839e56341ef1a2372fd628610047dd50456112050195fdda0f
-packages/git-mesh/src/cli/mod.rs#L364-L416 sha256:37b4f12e8f769b3e68bded0847c1efa656e18fb9e54571dfc407daf8fe5972f3
+wiki/meta/git-mesh-documentation-touchpoints.md#L14-L20 rk64:3331b68d44cb2b78
+packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
+packages/git-mesh/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
+packages/git-mesh/src/cli/mod.rs#L34-L104 rk64:8297e95eae077973
+packages/git-mesh/src/cli/mod.rs#L382-L438 rk64:5161d2935bd5c47b
+packages/git-mesh/src/cli/mod.rs#L34-L107 rk64:1d8aab84fc095d18
+packages/git-mesh/src/cli/mod.rs#L364-L416 rk64:7c3a17eb2aca301a
 
-The touchpoints page names cli/mod.rs Clap config + dispatch, main.rs pre-classifier, and validation.rs reserved names as the implementation sources of truth for CLI behavior.

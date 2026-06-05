@@ -1,6 +1,6 @@
-packages/git-mesh/src/cli/interior_anchor.rs sha256:419ba6e39ccf166520e13db1ad12b7ac596a12686828f4b2e3f1c78bf37796f7
-packages/git-mesh/src/cli/doctor.rs#L78-L90 sha256:da5df3ad25e9aade067ef9b745dc47e845c904019143e67eb41658dc1388b388
-packages/git-mesh/src/cli/stale_fix.rs#L43-L60 sha256:c11cfb3637a6a866489b5bf212c978b849b38d7e884d79f21e661c83420c8f83
-packages/git-mesh/src/cli/stale_output.rs#L777-L879 sha256:0a39c269fec7aa4de4381803ee91d60e80d5fabf1fcf339e20745237fbd655e9
+packages/git-mesh/src/cli/interior_anchor.rs rk64:e615c750c540f7ab
+packages/git-mesh/src/cli/doctor.rs#L78-L90 rk64:25f173b2874fea68
+packages/git-mesh/src/cli/stale_fix.rs#L43-L60 rk64:39637d973ccbc076
+packages/git-mesh/src/cli/stale_output.rs#L777-L879 rk64:06c093a6b180f943
 
 Read-time interior-anchor handling, designed so MeshFile::parse stays a pure text->struct transform and a poisoned mesh remains loadable/repairable. interior_anchor.rs scans every visible mesh per-mesh (one poison never blanks the corpus) and formats the loud actionable report. doctor (run_doctor) and stale (run_stale) both call scan_interior_anchors and emit report_block; stale additionally drives a fail-closed non-zero exit that --no-exit-code cannot mask. stale --fix repairs in place by retaining only anchors classify_interior_anchor accepts. These four sites must move together: changing the surfacing contract, the report shape, or the classify rule in any one breaks the others.

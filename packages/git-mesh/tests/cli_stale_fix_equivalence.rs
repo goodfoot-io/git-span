@@ -9,7 +9,7 @@
 mod support;
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex};
 use support::TestRepo;
 
 fn read_mesh(repo: &TestRepo, name: &str) -> Result<String> {
@@ -17,18 +17,15 @@ fn read_mesh(repo: &TestRepo, name: &str) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
     let hi = (end as usize).min(lines.len());
     let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-    sha256_hex(slice.join("\n").as_bytes())
+    rk64_to_hex(cheap_fingerprint_with_extent(
+        slice.join("\n").as_bytes(),
+        &git_mesh_core::AnchorExtent::WholeFile,
+    ))
 }
 
 fn seed_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
@@ -63,7 +60,7 @@ fn fix_leaves_meaning_changed_worktree_anchor_drifting() -> Result<()> {
     let mesh = read_mesh(&repo, "m")?;
     let changed_hash = line_slice_hash(changed, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original_hash}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original_hash}")),
         "meaning-changed anchor must keep its original recorded hash; got:\n{mesh}"
     );
     assert!(
@@ -100,7 +97,7 @@ fn fix_reanchors_whitespace_only_worktree_change() -> Result<()> {
     let mesh = read_mesh(&repo, "m")?;
     let new_hash = line_slice_hash(reindented, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{new_hash}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{new_hash}")),
         "whitespace-only change must be re-anchored to the current content; got:\n{mesh}"
     );
 

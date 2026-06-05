@@ -904,8 +904,8 @@ mod tests {
                 path: path.to_string(),
                 start_line: start,
                 end_line: end,
-                algorithm: "sha256".to_string(),
-                content_hash: "0".repeat(64),
+                algorithm: git_mesh_core::RK64_ALGORITHM.to_string(),
+                content_hash: "0".repeat(16),
             }],
             why: format!("mesh {mesh_name}"),
         };

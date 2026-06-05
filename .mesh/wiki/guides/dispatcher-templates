@@ -1,4 +1,3 @@
-wiki/guides/git-hook-router-pattern.md#L59-L114 sha256:bf6ff02b1ac0480de6ab995f87072da4468687d6f06f39db6d9c7781bae644bf
-.githooks/pre-commit#L1-L19 sha256:e1cb219da967384bb7a031e3a930c3abdbc4c5c74c659ea950102c1fb317b604
+wiki/guides/git-hook-router-pattern.md#L59-L114 rk64:859079a09b26d17e
+.githooks/pre-commit#L1-L19 rk64:1ee38c93e6f6629b
 
-Git hook dispatcher templates: the wiki guide documents the fail-closed pattern, and this repo's pre-commit hook is the working example.

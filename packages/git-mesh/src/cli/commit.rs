@@ -17,10 +17,7 @@ use crate::mesh_file::parse_address;
 use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{AnchorExtent, validate_add_target};
 use anyhow::{Context, Result};
-// The hashing contract lives in the gix-free kernel. Re-export it on the
-// original `crate::cli::commit::hash_bytes_with_extent` path so existing
-// callers (e.g. `cli::stale_fix`) are unchanged.
-pub use git_mesh_core::hash_bytes_with_extent;
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
@@ -69,8 +66,8 @@ fn count_lines(bytes: &[u8]) -> u32 {
         .unwrap_or(0)
 }
 
-/// Compute a SHA-256 content hash for the file at `path` with the given
-/// `extent`.
+/// Compute an rk64 content fingerprint for the file at `path` with the
+/// given `extent`.
 ///
 /// When `anchor_oid` is `Some(commit_oid)`, the content is read from that
 /// commit's tree. When `None`, the content is read from the worktree.
@@ -78,7 +75,7 @@ fn count_lines(bytes: &[u8]) -> u32 {
 /// For line-range extents, validates that the range is within the file's
 /// line count.
 ///
-/// Returns `(algorithm, hex_hash)` where algorithm is `"sha256"`.
+/// Returns `(algorithm, hex_hash)` where algorithm is `"rk64"`.
 pub(crate) fn hash_anchor_content(
     repo: &gix::Repository,
     path: &str,
@@ -160,7 +157,8 @@ pub(crate) fn hash_anchor_content(
         }
     }
 
-    Ok(("sha256".to_string(), hash_bytes_with_extent(&bytes, extent)))
+    let fp = cheap_fingerprint_with_extent(&bytes, extent);
+    Ok((RK64_ALGORITHM.to_string(), rk64_to_hex(fp)))
 }
 
 /// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.

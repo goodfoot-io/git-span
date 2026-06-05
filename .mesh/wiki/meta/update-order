@@ -1,10 +1,7 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 sha256:a8f9fe66243df684447141dc3384dccf47340dfa8c3759c0385b71c318216d81
-packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069cbca06f3087198e71d585d2a4b7eff
-README.md#L18-L55 sha256:d4310eb5d6c1cc62f04226f139c77b285c71468f91d5171052b89fc771ebc087
-CLAUDE.md#L88-L109 sha256:187c6bd36126f27004a004db35a6f32db03cfb8b8edde44a25431c6fdaacb3c6
-packages/git-mesh/src/cli/mod.rs#L35-L105 sha256:5588271ecbd40a2ba9d220d93b256d4fc299bf9fbad767419628e5b75228b22d
-packages/git-mesh/src/cli/mod.rs#L36-L109 sha256:69c120524b6f1da42bac5cb96d7437e3e0be4edec22902063d6380dda08cd236
-packages/git-mesh/src/cli/mod.rs#L35-L108 sha256:64f88bfcf291e5cbe7e185e0271e36d43d7b3d5d4ac083f65efe3584e5b777db
-CLAUDE.md#L76-L97 sha256:44e9f5d5a8a8ec056c5d3fe6b76c319ce7a3cd355f2b31f917134419bd226487
+wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:0e86f9ffde55891d
+packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
+README.md#L18-L55 rk64:6827cd27b4db8370
+CLAUDE.md#L76-L97 rk64:ce80e56599ca7121
+packages/git-mesh/src/cli/mod.rs#L34-L104 rk64:8297e95eae077973
+packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:62a03e5493708e81
 
-When git-mesh documentation changes, walk implementation sources, operator docs, agent skills, and secondary references in this order, then run wiki check.

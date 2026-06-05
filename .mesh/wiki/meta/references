@@ -1,6 +1,5 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L44-L48 sha256:26baa8eb9a52f7ef172b4a0103a02ac8bb4a1f056404d5e9a3051be8f80c0a1a
-packages/git-mesh/src/cli/mod.rs#L1-L32 sha256:b3079f98c93773c08f4044a72e6a814c92598a6fbfbd2101f2636db3373ea819
-packages/git-mesh/src/main.rs#L50-L113 sha256:920922e614f90f5079278d4bbab7e8d069cbca06f3087198e71d585d2a4b7eff
-packages/git-mesh/src/validation.rs#L7-L28 sha256:981074a1bc0da741fc3bd40155db1fb0bb08134eae6528b3107e368418b7519a
+wiki/meta/git-mesh-documentation-touchpoints.md#L44-L48 rk64:73bc08bcee2564da
+packages/git-mesh/src/cli/mod.rs#L1-L32 rk64:0117dd50f8735828
+packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
+packages/git-mesh/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
 
-The References section of the touchpoints page links to cli/mod.rs imports, main.rs dispatch, and validation.rs reserved names as canonical implementation references.

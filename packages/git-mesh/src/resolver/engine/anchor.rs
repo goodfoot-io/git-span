@@ -7,12 +7,12 @@ use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
-use crate::types::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
     UnavailableReason,
 };
 use crate::{Error, Result};
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_from_hex, rk64_to_hex, RK64_ALGORITHM};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -75,11 +75,11 @@ fn slice_differs(
 /// File-backed `Moved` relocation scan for line anchors.
 ///
 /// The anchor's canonical content is identified by `stored_hash`
-/// (`sha256:<hex>` of the `\n`-joined slice at add time). When the
+/// (`rk64:<hex>` of the `\n`-joined slice at add time). When the
 /// content at the tracked range no longer matches, the same content may
 /// have relocated elsewhere in `text` (lines shifted up/down, block
 /// moved). Scan every window of `span` lines and return the 1-based
-/// `(start, end)` whose canonical hash equals `stored_hash`, preferring
+/// `(start, end)` whose rk64 fingerprint equals `stored_hash`, preferring
 /// the window closest to `near_start` so a small shift maps to the
 /// nearest occurrence.
 fn find_relocated_range(
@@ -91,19 +91,24 @@ fn find_relocated_range(
     if span == 0 {
         return None;
     }
-    // Single shared matcher: the pure window scan lives in `git-mesh-core`.
-    // Feed it the one candidate file and take the window nearest
-    // `near_start` (the kernel returns nearest-first, ties toward the lower
-    // start line — the preference this scan has always had).
+    let fp = parse_stored_fingerprint(stored_hash)?;
     let extent = AnchorExtent::LineRange {
         start: 1,
         end: span as u32,
     };
     let files = [(String::new(), text.as_bytes().to_vec())];
-    git_mesh_core::scan_for_content_hash(&files, stored_hash, extent, Some(near_start))
+    git_mesh_core::scan_for_content_hash_rk64(&files, fp, extent, Some(near_start))
         .into_iter()
         .next()
         .map(|loc| (loc.start_line, loc.end_line))
+}
+
+/// Parse the rk64 fingerprint from a `"rk64:<16-hex>"` stored hash string.
+/// Returns `None` for non-rk64 or malformed tokens so a caller silently
+/// falls through to the no-relocation-found path.
+fn parse_stored_fingerprint(stored_hash: &str) -> Option<u64> {
+    let hex = stored_hash.strip_prefix("rk64:")?;
+    rk64_from_hex(hex)
 }
 
 /// Cross-file `Moved` relocation scan for line anchors whose anchored
@@ -583,7 +588,11 @@ pub(crate) fn resolve_anchor_inner(
             };
             let equal = if !r.stored_hash.is_empty() && r.blob.is_empty() {
                 let c_slice_text: String = c_slice.join("\n");
-                let computed_hash = format!("sha256:{}", sha256_hex(c_slice_text.as_bytes()));
+                let computed_hash =
+                    format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
+                        c_slice_text.as_bytes(),
+                        &AnchorExtent::WholeFile,
+                    )));
                 computed_hash == r.stored_hash
             } else {
                 lines_equal(a_slice, c_slice, cfg.ignore_whitespace)
@@ -617,7 +626,10 @@ pub(crate) fn resolve_anchor_inner(
                         &[][..]
                     };
                     let w_text: String = w_slice.join("\n");
-                    format!("sha256:{}", sha256_hex(w_text.as_bytes())) == r.stored_hash
+                    format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
+                        w_text.as_bytes(),
+                        &AnchorExtent::WholeFile,
+                    ))) == r.stored_hash
                 };
 
             // Compute per-layer drift: compare each enabled layer's content
@@ -788,7 +800,12 @@ pub(crate) fn resolve_anchor_inner(
                 // anchors read `a_slice` from the anchored blob, so it is the
                 // original by construction.
                 let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty() {
-                    format!("sha256:{}", sha256_hex(a_slice.join("\n").as_bytes()))
+                    let a_joined = a_slice.join("\n");
+                    format!("{RK64_ALGORITHM}:{}",
+                        rk64_to_hex(cheap_fingerprint_with_extent(
+                            a_joined.as_bytes(),
+                            &AnchorExtent::WholeFile,
+                        )))
                         == r.stored_hash
                 } else {
                     !r.blob.is_empty()
@@ -1059,7 +1076,10 @@ fn compute_layer_sources(
                 } else {
                     String::new()
                 };
-                let head_hash = format!("sha256:{}", sha256_hex(head_slice_text.as_bytes()));
+                let head_hash = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
+                    head_slice_text.as_bytes(),
+                    &AnchorExtent::WholeFile,
+                )));
                 head_hash != r.stored_hash
             }
         }

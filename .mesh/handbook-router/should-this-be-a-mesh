@@ -1,4 +1,4 @@
-plugins/git-mesh/skills/handbook/SKILL.md#L9-L9 sha256:c011c0490c60331836df987973839e508456eb4bd6f9276b55b8c516228a43dc
-plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L3-L5 sha256:37aaec8790fd127c3120b450c1b30108878c00d4154e1548fb2f5c84c5abb6cc
+plugins/git-mesh/skills/handbook/SKILL.md#L9-L9 rk64:5fa84925968e07ae
+plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L3-L5 rk64:e656bdf119f25521
 
 SKILL.md router entry sends a reader to the "Should this be a mesh?" section by title; the section heading in creating-a-mesh.md must keep that title or the pointer dangles silently.

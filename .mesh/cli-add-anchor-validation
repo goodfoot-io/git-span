@@ -1,3 +1,3 @@
-packages/git-mesh/src/cli/commit.rs#L204-L732 sha256:747f4c5a490d6970160fbb1309c506b0ad8badfb53f63c170bb5cedf2cf9653d
+packages/git-mesh/src/cli/commit.rs#L204-L732 rk64:a8ccf43239a845b1
 
 run_add() invokes reject_anchor_inside_mesh_root immediately after validate_repo_relative_path to reject mesh-directory anchors at CLI argument time, providing immediate UX feedback before any I/O.

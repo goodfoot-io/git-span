@@ -5,11 +5,11 @@
 use super::super::session::follow_path_to_head_shared;
 use super::EngineState;
 use crate::git;
-use crate::types::sha256_hex;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
 };
 use crate::{Error, Result};
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -110,7 +110,7 @@ fn find_relocated_whole_file(
                 canonical_layer_bytes(repo, &en.oid.to_string(), gitlink)
             }
         };
-        let computed = format!("sha256:{}", sha256_hex(&bytes));
+        let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
         if computed == stored_hash {
             return Some(en.path);
         }
@@ -283,12 +283,12 @@ pub(crate) fn resolve_whole_file(
     let layer_sources: Vec<DriftSource>;
 
     // Determine which layers independently show drift (blob OID != anchor blob,
-    // or SHA-256 of current content != stored_hash).
+    // or rk64 of current content != stored_hash).
     let head_drifts = if !r.stored_hash.is_empty() {
         match &head_blob {
             Some(oid) => {
                 let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
-                let computed = format!("sha256:{}", sha256_hex(&bytes));
+                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
                 computed != r.stored_hash
             }
             None => true,
@@ -301,7 +301,7 @@ pub(crate) fn resolve_whole_file(
             && match &index_blob {
                 Some(oid) => {
                     let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
-                    let computed = format!("sha256:{}", sha256_hex(&bytes));
+                    let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
                     computed != r.stored_hash
                 }
                 None => true,
@@ -315,7 +315,7 @@ pub(crate) fn resolve_whole_file(
                 Some(Some(oid)) => {
                     if is_gitlink {
                         // Gitlink: identity is the recorded commit OID hex.
-                        let computed = format!("sha256:{}", sha256_hex(oid.as_bytes()));
+                        let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(oid.as_bytes(), &AnchorExtent::WholeFile)));
                         computed != r.stored_hash
                     } else {
                         // Worktree blob OID may not exist in repo (computed
@@ -323,7 +323,7 @@ pub(crate) fn resolve_whole_file(
                         let abs = workdir.join(&current_path);
                         match std::fs::read(&abs) {
                             Ok(bytes) => {
-                                let computed = format!("sha256:{}", sha256_hex(&bytes));
+                                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
                                 computed != r.stored_hash
                             }
                             Err(_) => true,
@@ -479,7 +479,7 @@ pub(crate) fn resolve_whole_file(
                         }
                     }
                 };
-                let computed = format!("sha256:{}", sha256_hex(&text));
+                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&text, &AnchorExtent::WholeFile)));
                 computed == r.stored_hash
             } else {
                 cur == r.blob

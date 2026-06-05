@@ -4,7 +4,7 @@
 mod support;
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
+use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex};
 use support::TestRepo;
 
 // ---------------------------------------------------------------------------
@@ -16,18 +16,15 @@ fn read_mesh(repo: &TestRepo, name: &str) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
     let hi = (end as usize).min(lines.len());
     let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-    sha256_hex(slice.join("\n").as_bytes())
+    rk64_to_hex(cheap_fingerprint_with_extent(
+        slice.join("\n").as_bytes(),
+        &git_mesh_core::AnchorExtent::WholeFile,
+    ))
 }
 
 fn seed_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
@@ -159,7 +156,7 @@ fn fix_leaves_changed_anchor_at_worktree_layer() -> Result<()> {
     let original = line_slice_hash(ORIGINAL, 1, 5);
     let broken = line_slice_hash(new_content, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
         "meaning-changed anchor must keep its original hash; got:\n{mesh}"
     );
     assert!(
@@ -186,7 +183,7 @@ fn fix_leaves_changed_at_index_layer() -> Result<()> {
     let original = line_slice_hash(ORIGINAL, 1, 5);
     let broken = line_slice_hash(staged, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
         "meaning-changed anchor must keep its original hash; got:\n{mesh}"
     );
     assert!(
@@ -214,7 +211,7 @@ fn fix_leaves_changed_at_head_layer() -> Result<()> {
     let original = line_slice_hash(ORIGINAL, 1, 5);
     let broken = line_slice_hash(new_content, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
         "meaning-changed anchor must keep its original hash; got:\n{mesh}"
     );
     assert!(
@@ -242,7 +239,7 @@ fn fix_reanchors_whitespace_only_changed_at_worktree_layer() -> Result<()> {
     let mesh = read_mesh(&repo, "m")?;
     let expected = line_slice_hash(reindented, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{expected}")),
         "whitespace-only change must be re-anchored to current content; got:\n{mesh}"
     );
     Ok(())
@@ -264,7 +261,7 @@ fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
     let mesh = read_mesh(&repo, "m")?;
     let expected = line_slice_hash(reindented, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{expected}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{expected}")),
         "whitespace-only staged change must be re-anchored; got:\n{mesh}"
     );
     Ok(())
@@ -294,7 +291,7 @@ fn fix_leaves_whitespace_only_changed_at_head_layer() -> Result<()> {
     let original = line_slice_hash(ORIGINAL, 1, 5);
     let reanchored = line_slice_hash(reindented, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{original}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
         "HEAD-layer whitespace change is fail-closed: original hash retained; got:\n{mesh}"
     );
     assert!(
@@ -321,7 +318,7 @@ fn fix_rewrites_moved_anchor_at_worktree_layer() -> Result<()> {
 
     let mesh = read_mesh(&repo, "m")?;
     assert!(
-        mesh.contains("renamed.txt#L1-L5 sha256:"),
+        mesh.contains("renamed.txt#L1-L5 rk64:"),
         "mesh must reference renamed path; got:\n{mesh}"
     );
     assert!(
@@ -517,7 +514,7 @@ fn fix_coalesces_contiguous_authored_ranges() -> Result<()> {
         "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     let expected = line_slice_hash(file1, 1, 10);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L10 sha256:{expected}")),
+        mesh.contains(&format!("file1.txt#L1-L10 rk64:{expected}")),
         "ranges must collapse into L1-L10 with recomputed hash; mesh:\n{mesh}"
     );
     assert!(
@@ -605,7 +602,7 @@ fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
 
     let mesh = read_mesh(&repo, "m")?;
     assert!(
-        mesh.lines().any(|l| l.starts_with("file1.txt sha256:")),
+        mesh.lines().any(|l| l.starts_with("file1.txt rk64:")),
         "whole-file anchor stays inert; mesh:\n{mesh}"
     );
     assert!(
@@ -668,11 +665,11 @@ fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
     let orig1 = line_slice_hash(ORIGINAL, 1, 5);
     let orig2 = line_slice_hash(ORIGINAL, 6, 10);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 sha256:{orig1}")),
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{orig1}")),
         "first range left drifting with its original hash; mesh:\n{mesh}"
     );
     assert!(
-        mesh.contains(&format!("file1.txt#L6-L10 sha256:{orig2}")),
+        mesh.contains(&format!("file1.txt#L6-L10 rk64:{orig2}")),
         "second range left drifting with its original hash; mesh:\n{mesh}"
     );
     assert!(

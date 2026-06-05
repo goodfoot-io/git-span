@@ -1844,6 +1844,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::process::Command;
+    use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 
     // -----------------------------------------------------------------------
     // Repo fixtures for F1 batch-porcelain staleness-filter tests
@@ -1894,7 +1895,7 @@ mod tests {
                 path: anchor_path.to_string(),
                 start_line: start,
                 end_line: end,
-                algorithm: "sha256".to_string(),
+                algorithm: RK64_ALGORITHM.to_string(),
                 content_hash: hash.to_string(),
             }],
             why: format!("mesh {name}"),
@@ -1904,9 +1905,9 @@ mod tests {
         run_git(&workdir, &["commit", "-m", &format!("add mesh {name}")]);
     }
 
-    /// Compute the sha256 of lines [start..=end] of a string (1-based),
-    /// using the same joining convention as the stale engine (`join("\n")`
-    /// with no trailing newline).
+    /// Compute the rk64 fingerprint of lines [start..=end] of a string
+    /// (1-based), using the same joining convention as the stale engine
+    /// (`join("\n")` with no trailing newline).
     fn hash_lines(content: &str, start: u32, end: u32) -> String {
         let start_idx = (start - 1) as usize;
         let count = (end - start + 1) as usize;
@@ -1916,7 +1917,10 @@ mod tests {
             .take(count)
             .collect::<Vec<_>>()
             .join("\n");
-        crate::types::sha256_hex(excerpt.as_bytes())
+        rk64_to_hex(cheap_fingerprint_with_extent(
+            excerpt.as_bytes(),
+            &crate::types::AnchorExtent::WholeFile,
+        ))
     }
 
     fn default_stale_args() -> crate::cli::StaleArgs {

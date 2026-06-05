@@ -337,7 +337,7 @@ pub fn create_and_commit_mesh(
             path: path.to_string(),
             start_line: *start,
             end_line: *end,
-            algorithm: "sha256".into(),
+            algorithm: "rk64".into(),
             content_hash: hash,
         });
     }
