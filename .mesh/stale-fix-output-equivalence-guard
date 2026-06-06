@@ -3,5 +3,6 @@ packages/git-mesh/src/resolver/engine/mod.rs#L677-L677 rk64:336e9ed2f1151abb
 packages/git-mesh/tests/cli_stale_fix_perf_equivalence.rs#L40-L301 rk64:26e335a8af120d50
 packages/git-mesh/src/resolver/engine/mod.rs#L1145-L1150 rk64:7286db5a1c4f5622
 packages/git-mesh/tests/cli_stale_fix_perf_equivalence.rs#L562-L651 rk64:ef4a8a86ea88cc99
+packages/git-mesh/src/resolver/engine/mod.rs#L645-L727 rk64:b86bd50252620af1
 
 Output-equivalence subsystem keeping consecutive stale --fix runs byte-identical to a baseline full re-resolve. The test suite guards stdout/stderr/exit identity and rendered mesh ordering; the splice depends on two invariants it cannot type-enforce: mesh_is_reportable_in_stale_discovery (which fully-freshened meshes render) and sort_meshes_by_anchor_path returning Equal on a true tie so the stable sort preserves caller input (argument) order across both the read-only and --fix paths.
