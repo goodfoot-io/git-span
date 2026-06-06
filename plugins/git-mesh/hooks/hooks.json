@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-start.1bf02431.mjs"
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-start.5a56a684.mjs"
           }
         ],
         "matcher": "git-mesh:expert"
@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-start.f6069a2b.mjs"
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-start.c1223f71.mjs"
           }
         ]
       }
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-stop.d5679a01.mjs"
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-stop.235bcade.mjs"
           }
         ]
       }
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.9b45df2c.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.6d404356.mjs",
             "timeout": 30000
           }
         ]
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.29881aaf.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.489dbe6e.mjs",
             "timeout": 10000
           }
         ],
@@ -55,12 +55,12 @@
   },
   "__generated": {
     "files": [
-      "subagent-start.1bf02431.mjs",
-      "subagent-count-stop.d5679a01.mjs",
-      "subagent-count-start.f6069a2b.mjs",
-      "stop.9b45df2c.mjs",
-      "pre-tool-use.29881aaf.mjs"
+      "subagent-start.5a56a684.mjs",
+      "subagent-count-stop.235bcade.mjs",
+      "subagent-count-start.c1223f71.mjs",
+      "stop.6d404356.mjs",
+      "pre-tool-use.489dbe6e.mjs"
     ],
-    "timestamp": "2026-06-05T05:30:07.218Z"
+    "timestamp": "2026-06-06T04:49:49.542Z"
   }
 }
