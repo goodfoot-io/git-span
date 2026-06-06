@@ -15,9 +15,51 @@ use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::cache::Cache;
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
-use crate::types::{Anchor, CopyDetection};
+use crate::types::{Anchor, CopyDetection, DriftSource};
+use git_mesh_core::LineIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// A line index that owns its backing bytes, cacheable in the resolver session.
+///
+/// Must be stored behind a `Box` (or other heap allocation) so the byte buffer
+/// never moves after the index is built — the [`LineIndex`] borrows from it.
+/// Rebuilding the index per anchor on the same file is the central cost Tier 2
+/// amortizes away.
+pub(crate) struct CachedLineIndex {
+    bytes: Vec<u8>,
+    /// Lazily built; `None` until the first `get()` call.  The inner
+    /// `LineIndex<'static>` borrows from `self.bytes` and is sound only
+    /// because `CachedLineIndex` lives in a `Box` (pinned).
+    idx: Option<LineIndex<'static>>,
+}
+
+impl CachedLineIndex {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes, idx: None }
+    }
+
+    /// Return a [`LineIndex`] borrowing from the cached bytes, building it
+    /// on first call.  Subsequent calls return the pre-built index.
+    pub(crate) fn get(&mut self) -> &LineIndex<'_> {
+        if self.idx.is_none() {
+            let idx = LineIndex::build(&self.bytes);
+            // SAFETY: CachedLineIndex is always stored in a `Box`, so
+            // `self.bytes` never moves.  The transmute extends the borrow
+            // lifetime to `'static`; all returned references are bounded
+            // by `&mut self`.
+            let idx: LineIndex<'static> = unsafe { std::mem::transmute(idx) };
+            self.idx = Some(idx);
+        }
+        self.idx.as_ref().unwrap()
+    }
+
+    /// Number of bytes in the backing buffer.
+    #[allow(dead_code)]
+    pub(crate) fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+}
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Produced by the reverse-indexed walk once per
@@ -317,6 +359,18 @@ pub(crate) struct ResolveSession {
     /// `fs::read` error); subsequent lookups for that key short-circuit without
     /// retrying. Only counts toward `relocation_candidate_reads` on memo miss.
     pub(crate) relocation_text_memo: HashMap<(String, crate::types::DriftSource), Option<String>>,
+    /// Session-scoped line-index cache keyed by `(path, layer)`.  Each
+    /// distinct `(path, layer)` pair is read once and indexed once
+    /// regardless of how many anchors touch that file.  Values are `Box`ed
+    /// so the byte buffer is pinned — the inner [`LineIndex`] borrows from
+    /// it (see [`CachedLineIndex`]).
+    pub(crate) line_index_cache: HashMap<(String, DriftSource), Box<CachedLineIndex>>,
+    /// Counter: line-index cache hits (subsequent anchors on a previously
+    /// indexed path+layer).
+    pub(crate) line_index_hits: u64,
+    /// Counter: line-index cache misses (first anchor on a path+layer,
+    /// i.e. the file read + index build).
+    pub(crate) line_index_misses: u64,
 }
 
 impl ResolveSession {
@@ -357,6 +411,9 @@ impl ResolveSession {
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
             relocation_text_memo: HashMap::new(),
+            line_index_cache: HashMap::new(),
+            line_index_hits: 0,
+            line_index_misses: 0,
         }
     }
 
@@ -386,6 +443,39 @@ impl ResolveSession {
         };
         self.blob_oid_memo.insert(key, blob.clone());
         Ok(blob)
+    }
+
+    /// Get or build a [`CachedLineIndex`] for `(path, layer)`, building it
+    /// from `bytes` on first access (the miss path).  Subsequent calls for
+    /// the same key return the pre-built index directly (hit path; `bytes`
+    /// is dropped unused).
+    pub(crate) fn get_or_build_line_index(
+        &mut self,
+        bytes: Vec<u8>,
+        path: &str,
+        layer: DriftSource,
+    ) -> &mut CachedLineIndex {
+        let key = (path.to_string(), layer);
+        if self.line_index_cache.contains_key(&key) {
+            self.line_index_hits += 1;
+        } else {
+            self.line_index_misses += 1;
+            self.line_index_cache
+                .insert(key.clone(), Box::new(CachedLineIndex::new(bytes)));
+        }
+        self.line_index_cache.get_mut(&key).unwrap()
+    }
+
+    /// Retrieve an already-built [`CachedLineIndex`] for `(path, layer)`.
+    /// Returns `None` when no entry exists — the caller should fall back to
+    /// [`get_or_build_line_index`].
+    pub(crate) fn get_line_index(
+        &mut self,
+        path: &str,
+        layer: DriftSource,
+    ) -> Option<&mut CachedLineIndex> {
+        let key = (path.to_string(), layer);
+        self.line_index_cache.get_mut(&key).map(|b| &mut **b)
     }
 
     pub(crate) fn anchors_total(&self) -> u64 {
@@ -871,6 +961,9 @@ mod tests {
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
             relocation_text_memo: HashMap::new(),
+            line_index_cache: HashMap::new(),
+            line_index_hits: 0,
+            line_index_misses: 0,
         };
 
         let total = session.anchors_total();
@@ -925,6 +1018,9 @@ mod tests {
             timeline_paths: PathInterner::new(),
             relocation_candidate_reads: 0,
             relocation_text_memo: HashMap::new(),
+            line_index_cache: HashMap::new(),
+            line_index_hits: 0,
+            line_index_misses: 0,
         };
 
         let total = session.anchors_total();

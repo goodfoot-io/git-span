@@ -12,7 +12,11 @@ use crate::types::{
     UnavailableReason,
 };
 use crate::{Error, Result};
-use git_mesh_core::{cheap_fingerprint_with_extent, rk64_from_hex, rk64_to_hex, RK64_ALGORITHM};
+use git_mesh_core::{
+    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, rk64_from_hex, rk64_to_hex,
+    RK64_ALGORITHM,
+};
+use git_mesh_core::{LineIndex, scan_indexed_rk64};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -98,6 +102,30 @@ fn find_relocated_range(
     };
     let files = [(String::new(), text.as_bytes().to_vec())];
     git_mesh_core::scan_for_content_hash_rk64(&files, fp, extent, Some(near_start))
+        .into_iter()
+        .next()
+        .map(|loc| (loc.start_line, loc.end_line))
+}
+
+/// [`find_relocated_range`] over a prebuilt [`LineIndex`].  Uses
+/// [`scan_indexed_rk64`] to avoid rebuilding the index and re-reading
+/// the file per anchor — the central amortization Tier 2 enables.
+fn find_relocated_range_indexed(
+    idx: &LineIndex,
+    span: usize,
+    stored_hash: &str,
+    near_start: u32,
+) -> Option<(u32, u32)> {
+    if span == 0 {
+        return None;
+    }
+    let fp = parse_stored_fingerprint(stored_hash)?;
+    let extent = AnchorExtent::LineRange {
+        start: 1,
+        end: span as u32,
+    };
+    let files = [(String::new(), idx.clone())];
+    scan_indexed_rk64(&files, fp, extent, Some(near_start))
         .into_iter()
         .next()
         .map(|loc| (loc.start_line, loc.end_line))
@@ -586,51 +614,62 @@ pub(crate) fn resolve_anchor_inner(
             } else {
                 &[][..]
             };
-            let equal = if !r.stored_hash.is_empty() && r.blob.is_empty() {
-                let c_slice_text: String = c_slice.join("\n");
-                let computed_hash =
-                    format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
-                        c_slice_text.as_bytes(),
-                        &AnchorExtent::WholeFile,
-                    )));
-                computed_hash == r.stored_hash
-            } else {
-                lines_equal(a_slice, c_slice, cfg.ignore_whitespace)
-            };
+            // Tier 2: amortize one LineIndex per file across anchors.
+            // Build or retrieve the index for this (path, layer) and compute
+            // rk64 freshness hashes against it. The borrow is scoped so it is
+            // released before compute_layer_sources takes &mut state.
+            let (equal, worktree_recorded_fresh) = {
+                let cached_idx = state.session.get_or_build_line_index(
+                    cur_text.clone().into_bytes(),
+                    &t.path,
+                    deepest_layer,
+                );
+                let file_idx: &LineIndex = cached_idx.get();
 
-            // Worktree-fresh terminal verdict — extends the
-            // worktree-is-authority principle (in-place case, main-93) to
-            // the relocation case. When the worktree layer is enabled and
-            // the worktree slice at the anchor's *recorded* range hashes
-            // to `stored_hash`, the anchor accurately represents the
-            // working tree and is `Fresh`, regardless of where the layered
-            // hunk walk placed `current` by shifting the recorded range
-            // through a deeper layer's diff. The shift is double-counting:
-            // the anchor was re-anchored to the worktree range, so applying
-            // the worktree diff on top of it moves `current` off the
-            // content even though the content sits exactly where the anchor
-            // records it. A genuine relocation (the recorded-range slice
-            // does *not* match) falls through to the layered classification
-            // below and may still be `Moved`; `--head`/`--staged` views do
-            // not enable the worktree layer, so they are unaffected.
-            let worktree_recorded_fresh = state.layers.worktree
-                && !r.stored_hash.is_empty()
-                && r.blob.is_empty()
-                && t.path == r.path
-                && {
-                    let w_lo = (anchored_start as usize).saturating_sub(1);
-                    let w_hi = (anchored_end as usize).min(current_lines.len());
-                    let w_slice = if w_lo <= w_hi {
-                        &current_lines[w_lo..w_hi]
-                    } else {
-                        &[][..]
-                    };
-                    let w_text: String = w_slice.join("\n");
-                    format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
-                        w_text.as_bytes(),
-                        &AnchorExtent::WholeFile,
-                    ))) == r.stored_hash
+                let equal = if !r.stored_hash.is_empty() && r.blob.is_empty() {
+                    let computed_hash = format!(
+                        "{RK64_ALGORITHM}:{}",
+                        rk64_to_hex(cheap_fingerprint_indexed(
+                            file_idx,
+                            &AnchorExtent::LineRange { start: t.start, end: t.end },
+                        ))
+                    );
+                    computed_hash == r.stored_hash
+                } else {
+                    lines_equal(a_slice, c_slice, cfg.ignore_whitespace)
                 };
+
+                // Worktree-fresh terminal verdict — extends the
+                // worktree-is-authority principle (in-place case, main-93) to
+                // the relocation case. When the worktree layer is enabled and
+                // the worktree slice at the anchor's *recorded* range hashes
+                // to `stored_hash`, the anchor accurately represents the
+                // working tree and is `Fresh`, regardless of where the layered
+                // hunk walk placed `current` by shifting the recorded range
+                // through a deeper layer's diff. The shift is double-counting:
+                // the anchor was re-anchored to the worktree range, so applying
+                // the worktree diff on top of it moves `current` off the
+                // content even though the content sits exactly where the anchor
+                // records it. A genuine relocation (the recorded-range slice
+                // does *not* match) falls through to the layered classification
+                // below and may still be `Moved`; `--head`/`--staged` views do
+                // not enable the worktree layer, so they are unaffected.
+                let worktree_recorded_fresh = state.layers.worktree
+                    && !r.stored_hash.is_empty()
+                    && r.blob.is_empty()
+                    && t.path == r.path
+                    && {
+                        format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_indexed(
+                            file_idx,
+                            &AnchorExtent::LineRange {
+                                start: anchored_start,
+                                end: anchored_end,
+                            },
+                        ))) == r.stored_hash
+                    };
+
+                (equal, worktree_recorded_fresh)
+            }; // cached_idx / file_idx borrow released
 
             // Compute per-layer drift: compare each enabled layer's content
             // independently against the anchor. Emit a Finding per drifting
@@ -666,7 +705,23 @@ pub(crate) fn resolve_anchor_inner(
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
             let span = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
             let relocated: Option<(u32, u32)> = if !equal && file_backed {
-                find_relocated_range(&cur_text, span, &r.stored_hash, anchored_start)
+                // Re-acquire the cached line index (built during the
+                // freshness block above — always a hit).
+                match state.session.get_line_index(&t.path, deepest_layer) {
+                    Some(cached_idx) => {
+                        find_relocated_range_indexed(
+                            cached_idx.get(),
+                            span,
+                            &r.stored_hash,
+                            anchored_start,
+                        )
+                    }
+                    None => {
+                        // Defensive: if the cache entry is somehow absent,
+                        // fall back to the un-indexed scan.
+                        find_relocated_range(&cur_text, span, &r.stored_hash, anchored_start)
+                    }
+                }
             } else {
                 None
             };

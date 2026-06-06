@@ -252,6 +252,7 @@ pub fn scan_for_content_hash(
 /// per anchor and once per window scan. The byte-slice entry points
 /// ([`hash_bytes_with_extent`], [`scan_for_content_hash`]) are thin wrappers
 /// that build a fresh index, so no existing caller has to change.
+#[derive(Clone)]
 pub struct LineIndex<'a> {
     bytes: &'a [u8],
     /// Start offset of each line.
