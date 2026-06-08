@@ -480,6 +480,13 @@ fn uncommitted_mesh_paths(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
 
 /// Full HEAD-only resolution of every mesh committed at `HEAD` — the
 /// cold-build input for the committed baseline.
+///
+/// When more than one mesh exists and multiple CPUs are available, meshes
+/// are partitioned across threads. Each thread builds an independent
+/// [`EngineState`](super::engine::EngineState) with
+/// [`LayerSet::committed_only()`] and resolves its subset in parallel.
+/// Results are merged in the original enumeration order, so output is
+/// deterministic and identical to the serial path.
 fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<MeshResolved>> {
     let _perf = crate::perf::span("resolver.cache_v2.build-baseline");
     // The committed baseline is keyed by the HEAD mesh tree and resolved
@@ -495,23 +502,124 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
     if names.is_empty() {
         return Ok(Vec::new());
     }
-    let resolved = super::engine::resolve_named_meshes(
-        repo,
-        mesh_root,
-        &names,
-        EngineOptions {
-            layers: LayerSet::committed_only(),
-            ignore_unavailable: false,
-            since: None,
-            needs_all_layers: true,
-        },
-    )?;
-    let mut out = Vec::with_capacity(resolved.len());
-    for (name, r) in resolved {
+
+    // Single-mesh or single-CPU: resolve serially.
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if names.len() <= 1 || cpus <= 1 {
+        let resolved = super::engine::resolve_named_meshes(
+            repo,
+            mesh_root,
+            &names,
+            EngineOptions {
+                layers: LayerSet::committed_only(),
+                ignore_unavailable: false,
+                since: None,
+                needs_all_layers: true,
+            },
+        )?;
+        let mut out = Vec::with_capacity(resolved.len());
+        for (name, r) in resolved {
+            match r {
+                Ok(m) => out.push(m),
+                Err(Error::MeshNotFound(_)) => {}
+                Err(e) => return Err(Error::Git(format!("cache_v2 baseline `{name}`: {e}"))),
+            }
+        }
+        return Ok(out);
+    }
+
+    // Parallel: partition mesh names across threads. Each thread builds
+    // an independent EngineState (no shared mutable state) and resolves
+    // its chunk. Results are collected by original index so output order
+    // is deterministic.
+    let thread_count = cpus.min(names.len());
+    let chunk_size = (names.len() + thread_count - 1) / thread_count;
+    let options = EngineOptions {
+        layers: LayerSet::committed_only(),
+        ignore_unavailable: false,
+        since: None,
+        needs_all_layers: true,
+    };
+
+    // Wrap in Mutex for the merge step; each thread writes its own
+    // private Vec, so contention is zero.
+    let merged: std::sync::Mutex<Vec<(usize, crate::Result<MeshResolved>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let first_error: std::sync::Mutex<Option<crate::Error>> =
+        std::sync::Mutex::new(None);
+
+    std::thread::scope(|s| {
+        for (chunk_idx, chunk) in names.chunks(chunk_size).enumerate() {
+            let repo = repo.clone();
+            let mesh_root = mesh_root.to_string();
+            let chunk_names: Vec<String> = chunk.to_vec();
+            let start_idx = chunk_idx * chunk_size;
+            let options = options;
+            let merged = &merged;
+            let first_error = &first_error;
+            s.spawn(move || {
+                // Check for early exit from another thread.
+                if first_error.lock().unwrap().is_some() {
+                    return;
+                }
+                let state = match super::engine::EngineState::new(
+                    &repo,
+                    options.layers,
+                    options.needs_all_layers,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        *first_error.lock().unwrap() = Some(e);
+                        return;
+                    }
+                };
+                let resolved = match super::engine::resolve_named_meshes_with_state(
+                    &repo,
+                    &mesh_root,
+                    &chunk_names,
+                    options,
+                    state,
+                    false,
+                ) {
+                    Ok((r, _)) => r,
+                    Err(e) => {
+                        *first_error.lock().unwrap() = Some(e);
+                        return;
+                    }
+                };
+                let mut chunk_results: Vec<(usize, crate::Result<MeshResolved>)> =
+                    Vec::with_capacity(resolved.len());
+                for (i, (name, r)) in resolved.into_iter().enumerate() {
+                    chunk_results.push((
+                        start_idx + i,
+                        match r {
+                            Ok(m) => Ok(m),
+                            Err(Error::MeshNotFound(_)) => continue,
+                            Err(e) => Err(Error::Git(format!(
+                                "cache_v2 baseline `{name}`: {e}"
+                            ))),
+                        },
+                    ));
+                }
+                merged.lock().unwrap().extend(chunk_results);
+            });
+        }
+    });
+
+    let err = first_error.into_inner().unwrap();
+    if let Some(e) = err {
+        return Err(e);
+    }
+
+    let mut all: Vec<(usize, crate::Result<MeshResolved>)> = merged.into_inner().unwrap();
+    all.sort_by_key(|(idx, _)| *idx);
+    let mut out = Vec::with_capacity(all.len());
+    for (_idx, r) in all {
         match r {
             Ok(m) => out.push(m),
-            Err(Error::MeshNotFound(_)) => {}
-            Err(e) => return Err(Error::Git(format!("cache_v2 baseline `{name}`: {e}"))),
+            Err(e) => return Err(e),
         }
     }
     Ok(out)

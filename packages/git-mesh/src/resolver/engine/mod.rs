@@ -75,7 +75,7 @@ pub(crate) struct SourceLayers {
 }
 
 impl EngineState {
-    fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
+    pub(crate) fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
         let _perf = crate::perf::span("resolver.init-layers");
         let head_sha = crate::git::head_oid(repo)?;
         let layer_status = if layers.index || layers.worktree {
@@ -730,7 +730,7 @@ pub(crate) fn resolve_named_meshes_retaining_source_layers(
     Ok((out, layers.expect("retain_layers=true yields Some(SourceLayers)")))
 }
 
-fn resolve_named_meshes_with_state(
+pub(crate) fn resolve_named_meshes_with_state(
     repo: &gix::Repository,
     mesh_root: &str,
     names: &[String],
