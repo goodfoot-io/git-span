@@ -535,7 +535,7 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
     // its chunk. Results are collected by original index so output order
     // is deterministic.
     let thread_count = cpus.min(names.len());
-    let chunk_size = (names.len() + thread_count - 1) / thread_count;
+    let chunk_size = names.len().div_ceil(thread_count);
     let options = EngineOptions {
         layers: LayerSet::committed_only(),
         ignore_unavailable: false,
@@ -556,7 +556,6 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
             let mesh_root = mesh_root.to_string();
             let chunk_names: Vec<String> = chunk.to_vec();
             let start_idx = chunk_idx * chunk_size;
-            let options = options;
             let merged = &merged;
             let first_error = &first_error;
             s.spawn(move || {
