@@ -476,7 +476,14 @@ export function createStopHandler(deps: StopHandlerDeps) {
     // Step 6: Assemble status doc
     const sections: string[] = [];
     const hasStale = staleSection.length > 0;
-    const hasUncovered = uncoveredLines.length > 0;
+    // A lone uncovered write with no related mesh to absorb it is noise: a single
+    // file forms no coherent subsystem on its own and there is no existing mesh to
+    // extend, so waking the resolver for it has nothing to act on. Count distinct
+    // file paths (ranges stripped) — multiple ranged anchors on one file are still
+    // one file — and suppress the section when exactly one file is uncovered and no
+    // related mesh was found.
+    const uncoveredPaths = new Set(uncoveredLines.map((l) => parseFilterLine(l).path));
+    const hasUncovered = uncoveredLines.length > 0 && !(uncoveredPaths.size === 1 && relatedRenders.length === 0);
     // Related meshes are surfaced only as supporting context for absorbing an
     // uncovered write — the one task they drive (see buildSystemMessage). With no
     // uncovered write there is nothing to absorb, so surfacing them would block

@@ -165,50 +165,63 @@ pub(crate) fn stale_meshes_cached(
                 // Store the whole-result cache entry: backfill fresh
                 // anchors from mesh-file records so warm-clean repeats can
                 // skip every per-invocation phase in run_stale.
-                if let Ok(file_pairs) =
-                    crate::mesh::read::load_all_meshes_in(repo, &mesh_root)
-                {
+                if let Ok(file_pairs) = crate::mesh::read::load_all_meshes_in(repo, &mesh_root) {
                     let file_records: std::collections::HashMap<String, crate::types::Mesh> =
                         file_pairs.into_iter().collect();
-                    let mesh_anchor_totals: Vec<(String, usize)> = file_records
-                        .iter()
-                        .map(|(n, m)| (n.clone(), m.anchors.len()))
-                        .collect();
-                    // Backfill fresh anchors: each resolved mesh gets
-                    // every file-record anchor — keep the resolved
-                    // finding when present, synthesize Fresh when absent.
-                    let mut backfilled: Vec<MeshResolved> = Vec::new();
-                    for m in &meshes {
-                        let mut full = m.clone();
-                        if let Some(record) = file_records.get(&m.name) {
-                            let mut rebuilt: Vec<crate::types::AnchorResolved> =
-                                Vec::with_capacity(record.anchors.len());
-                            for (anchor_id, a) in &record.anchors {
-                                match full.anchors.iter().find(|r| &r.anchor_id == anchor_id) {
-                                    Some(existing) => rebuilt.push(existing.clone()),
-                                    None => rebuilt.push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
+                    // Fail-closed: never store a whole result for a corpus that
+                    // carries an interior anchor. A whole-result hit lets
+                    // run_stale skip its per-invocation interior-anchor scan
+                    // (the cached result is presumed clean), but the whole
+                    // result persists no violation record — so caching a
+                    // poisoned corpus would silently drop the loud, actionable
+                    // interior-anchor report on every subsequent run. Skipping
+                    // the store keeps such corpora on the scanning path.
+                    let has_interior_anchor = file_records.values().any(|m| {
+                        m.anchors.iter().any(|(_, a)| {
+                            crate::mesh_root::classify_interior_anchor(&mesh_root, &a.path)
+                                .is_some()
+                        })
+                    });
+                    if !has_interior_anchor {
+                        let mesh_anchor_totals: Vec<(String, usize)> = file_records
+                            .iter()
+                            .map(|(n, m)| (n.clone(), m.anchors.len()))
+                            .collect();
+                        // Backfill fresh anchors: each resolved mesh gets
+                        // every file-record anchor — keep the resolved
+                        // finding when present, synthesize Fresh when absent.
+                        let mut backfilled: Vec<MeshResolved> = Vec::new();
+                        for m in &meshes {
+                            let mut full = m.clone();
+                            if let Some(record) = file_records.get(&m.name) {
+                                let mut rebuilt: Vec<crate::types::AnchorResolved> =
+                                    Vec::with_capacity(record.anchors.len());
+                                for (anchor_id, a) in &record.anchors {
+                                    match full.anchors.iter().find(|r| &r.anchor_id == anchor_id) {
+                                        Some(existing) => rebuilt.push(existing.clone()),
+                                        None => rebuilt
+                                            .push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
+                                    }
                                 }
-                            }
-                            // Preserve resolved anchors not in the file record
-                            // (e.g. injected MergeConflict anchors).
-                            for r in &full.anchors {
-                                if !record.anchors.iter().any(|(id, _)| id == &r.anchor_id) {
-                                    rebuilt.push(r.clone());
+                                // Preserve resolved anchors not in the file record
+                                // (e.g. injected MergeConflict anchors).
+                                for r in &full.anchors {
+                                    if !record.anchors.iter().any(|(id, _)| id == &r.anchor_id) {
+                                        rebuilt.push(r.clone());
+                                    }
                                 }
+                                full.anchors = rebuilt;
                             }
-                            full.anchors = rebuilt;
+                            backfilled.push(full);
                         }
-                        backfilled.push(full);
-                    }
-                    if let Err(e) = baseline::store_whole_result(
-                        &db,
-                        &committed,
-                        &backfilled,
-                        &mesh_anchor_totals,
-                    ) {
-                        crate::perf::note(&format!(
-                            "cache_v2.store-whole-result-failed: {e}"
-                        ));
+                        if let Err(e) = baseline::store_whole_result(
+                            &db,
+                            &committed,
+                            &backfilled,
+                            &mesh_anchor_totals,
+                        ) {
+                            crate::perf::note(&format!("cache_v2.store-whole-result-failed: {e}"));
+                        }
                     }
                 }
                 // Reload so the in-memory shape matches the cached one

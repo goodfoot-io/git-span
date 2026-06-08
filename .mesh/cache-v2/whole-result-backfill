@@ -1,0 +1,3 @@
+packages/git-mesh/src/resolver/cache_v2/mod.rs#L171-L226 rk64:2ba99f94a6f53ad3
+
+Cache_v2 cold-build path stores a whole-result entry only when no mesh carries an interior anchor (fail-closed guard); when safe, backfills fresh anchors from mesh-file records so warm-clean repeats skip every per-invocation phase.

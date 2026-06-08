@@ -281,7 +281,12 @@ describe('Stop hook: uncovered write entry', () => {
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-uncov-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+    // Two distinct uncovered files: a lone uncovered file with no related mesh is
+    // suppressed as noise, so the section needs ≥2 files to surface.
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/qux.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -307,6 +312,58 @@ describe('Stop hook: uncovered write entry', () => {
     expect(doc).toContain('# Uncovered writes');
     expect(doc).toContain('src/bar.ts#L1-L10');
   });
+
+  it('suppresses a lone uncovered file with no related mesh (nothing to do)', async () => {
+    // A single uncovered file forms no coherent subsystem on its own and there is
+    // no related mesh to extend, so there is nothing for the resolver to act on.
+    // The hook must not block. Multiple ranged anchors on the *same* file are still
+    // one file, so they must also be suppressed.
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/solo.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/solo.ts', kind: 'write', seen: false, start: 50, end: 60 }
+    ]);
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: noopListBatch,
+      listRenderExecutor: noopListRender
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).not.toBe('block');
+    expect(result.stdout.reason).toBeUndefined();
+    // The entries are left unseen (a non-dispatching run never marks seen), so a
+    // later write to a *second* file combines with this one and surfaces both —
+    // rather than this lone file being permanently dropped.
+    expect(readJournalRaw(sid).every((e) => !e.seen)).toBe(true);
+  });
+
+  it('surfaces a lone uncovered file when a related mesh exists', async () => {
+    // One uncovered file is suppressed only when there is also no related mesh.
+    // A related mesh (covering some other write) gives the resolver something to
+    // extend, so the lone uncovered file is surfaced alongside it.
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/lone.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/covered.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
+    // covered.ts is covered by a mesh (→ related); lone.ts is not (→ uncovered).
+    const listBatch: ListBatchExecutor = () => 'my-mesh\tsrc/covered.ts\t1-10\n';
+    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/covered.ts#L1-L10\n\nDesc.\n`;
+    const handler = createStopHandler({
+      staleExecutor: noopStale,
+      listBatchExecutor: listBatch,
+      listRenderExecutor: render
+    });
+
+    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    expect(result.stdout.decision).toBe('block');
+    const docPath = nodePath.join(
+      os.tmpdir(),
+      (result.stdout.reason as string).match(/git-mesh-status-[^\s]+\.md/)![0]
+    );
+    const doc = fs.readFileSync(docPath, 'utf8');
+    expect(doc).toContain('# Uncovered writes');
+    expect(doc).toContain('src/lone.ts#L1-L10');
+  });
 });
 
 describe('Stop hook: create entry → path-only filter line', () => {
@@ -325,6 +382,12 @@ describe('Stop hook: create entry → path-only filter line', () => {
   });
 
   it('classifies create as uncovered when no mesh returns a row', async () => {
+    // A second uncovered create so the section surfaces (a lone uncovered file is
+    // suppressed); both are path-only, preserving the no-`#L` assertions below.
+    writeJournalRaw(sid, [
+      { tool: 'Write', path: 'src/new.ts', kind: 'create', seen: false },
+      { tool: 'Write', path: 'src/new2.ts', kind: 'create', seen: false }
+    ]);
     const filtersSeen: string[] = [];
     const listBatch: ListBatchExecutor = (filterText) => {
       filtersSeen.push(filterText);
@@ -380,7 +443,10 @@ describe('Stop hook: idempotence', () => {
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-idem-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
+      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 10, end: 20 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -461,7 +527,10 @@ describe('Stop hook: blocks to surface the review, but breaks the stop loop', ()
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-block-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/x.ts', kind: 'write', seen: false, start: 1, end: 5 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/x.ts', kind: 'write', seen: false, start: 1, end: 5 },
+      { tool: 'Edit', path: 'src/y.ts', kind: 'write', seen: false, start: 1, end: 5 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -687,8 +756,11 @@ describe('Stop hook F3: cwd-absent input falls back to process.cwd()', () => {
   const sid = `stop-test-f3-${Date.now()}`;
 
   beforeEach(() => {
-    // Write journal with a relative path entry
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 5, end: 15 }]);
+    // Write journal with relative path entries
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 5, end: 15 },
+      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 5, end: 15 }
+    ]);
   });
   afterEach(() => {
     const jPath = journalPath(sid);
@@ -735,8 +807,12 @@ describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncov
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-f5-'));
     initGitRepo(tmpRepo);
-    // A write at lines 10-20 in src/drift.ts
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/drift.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    // A write at lines 10-20 in src/drift.ts, plus a second uncovered file so the
+    // Uncovered writes section surfaces (a lone uncovered file is suppressed).
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/drift.ts', kind: 'write', seen: false, start: 10, end: 20 },
+      { tool: 'Edit', path: 'src/drift2.ts', kind: 'write', seen: false, start: 10, end: 20 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -849,7 +925,10 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
   });
 
   it('does not mention stale meshes when only uncovered writes exist', async () => {
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/baz.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
     const handler = createStopHandler({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
@@ -901,7 +980,10 @@ describe('Stop hook: dispatch targets a prior git-mesh:expert when recorded', ()
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-wake-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/baz.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -947,7 +1029,10 @@ describe('Stop hook: status doc carries the transcript pointer', () => {
   beforeEach(() => {
     tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-transcript-'));
     initGitRepo(tmpRepo);
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
+      { tool: 'Edit', path: 'src/baz.ts', kind: 'write', seen: false, start: 1, end: 10 }
+    ]);
   });
   afterEach(() => {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
@@ -998,9 +1083,16 @@ describe('Stop hook: status doc filename is unique per call', () => {
     });
 
     // Each run needs a fresh unreported entry, so rewrite the journal between runs.
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    // Two distinct files so the Uncovered writes section surfaces each run.
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
+      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 10, end: 20 }
+    ]);
     const m1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
-    writeJournalRaw(sid, [{ tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 }]);
+    writeJournalRaw(sid, [
+      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
+      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 10, end: 20 }
+    ]);
     const m2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
 
     const f1 = m1.match(/git-mesh-status-[^\s]+\.md/)![0];

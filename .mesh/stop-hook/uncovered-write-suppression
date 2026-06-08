@@ -1,0 +1,4 @@
+packages/agent-hooks/src/stop.ts#L479-L490 rk64:a77e7792812382ff
+packages/agent-hooks/test/stop.test.ts#L316-L338 rk64:6beca09d58e070e1
+
+Stop hook suppresses a lone uncovered write (no related mesh) as noise because a single file forms no coherent subsystem and the resolver has nothing to act on; the test verifies this behavior holds when multiple ranged anchors touch the same file.
