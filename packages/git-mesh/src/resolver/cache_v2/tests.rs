@@ -278,7 +278,6 @@ fn default_loaded_baseline_is_empty() {
 // ── Whole-result cache tests ──────────────────────────────────────────
 
 #[test]
-#[ignore]
 fn whole_result_roundtrip() {
     let (_td, db) = tmp_db();
     let key = ck();
@@ -308,7 +307,6 @@ fn whole_result_roundtrip() {
 }
 
 #[test]
-#[ignore]
 fn whole_result_key_mismatch_returns_none() {
     let (_td, db) = tmp_db();
     let key = ck();
@@ -335,7 +333,6 @@ fn whole_result_key_mismatch_returns_none() {
 }
 
 #[test]
-#[ignore]
 fn whole_result_empty_mesh_root() {
     let (_td, db) = tmp_db();
     let key = ck();
@@ -350,7 +347,6 @@ fn whole_result_empty_mesh_root() {
 }
 
 #[test]
-#[ignore]
 fn whole_result_key_salt_mismatch_returns_none() {
     let (_td, db) = tmp_db();
     let key = ck();

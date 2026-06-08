@@ -256,23 +256,99 @@ const WHOLE_RESULT_FORMAT_VERSION: u8 = 1;
 /// baseline. On a warm-clean repeat the whole result is loaded directly,
 /// skipping every per-invocation phase in `run_stale`.
 pub(crate) fn store_whole_result(
-    _db: &CacheDb,
-    _key: &CommittedKey,
-    _meshes: &[MeshResolved],
-    _mesh_anchor_totals: &[(String, usize)],
+    db: &CacheDb,
+    key: &CommittedKey,
+    meshes: &[MeshResolved],
+    mesh_anchor_totals: &[(String, usize)],
 ) -> Result<()> {
-    // Stub: implemented in Phase 3 (tdd-bootstrap Phase 3).
+    let filter_hex = key.filter_hex();
+    let payload = WholeResultPayload {
+        format_version: WHOLE_RESULT_FORMAT_VERSION,
+        meshes: meshes.iter().map(MeshResolvedDto::from).collect(),
+        mesh_anchor_totals: mesh_anchor_totals.to_vec(),
+    };
+    let bytes = bincode::serialize(&payload)
+        .map_err(|e| Error::Git(format!("cache_v2 whole_result serialize: {e}")))?;
+
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .map_err(|e| Error::Git(format!("cache_v2 whole_result tx: {e}")))?;
+
+    tx.execute(
+        "DELETE FROM committed_stale_whole_result \
+         WHERE source_tree_key=?1 AND mesh_tree_key=?2 AND mesh_root=?3 \
+           AND filter_config_hash=?4 AND key_salt=?5",
+        rusqlite::params![
+            key.source_tree_key,
+            key.mesh_tree_key,
+            key.mesh_root,
+            filter_hex,
+            key.key_salt
+        ],
+    )
+    .map_err(|e| Error::Git(format!("cache_v2 whole_result delete: {e}")))?;
+
+    tx.execute(
+        "INSERT INTO committed_stale_whole_result \
+         (source_tree_key, mesh_tree_key, mesh_root, filter_config_hash, \
+          key_salt, payload, created_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![
+            key.source_tree_key,
+            key.mesh_tree_key,
+            key.mesh_root,
+            filter_hex,
+            key.key_salt,
+            bytes,
+            now_secs()
+        ],
+    )
+    .map_err(|e| Error::Git(format!("cache_v2 whole_result insert: {e}")))?;
+
+    tx.commit()
+        .map_err(|e| Error::Git(format!("cache_v2 whole_result commit: {e}")))?;
     Ok(())
 }
 
 /// Load a previously-stored whole result for this committed key.
 /// Returns `Ok(None)` on any miss — never an error.
 pub(crate) fn load_whole_result(
-    _db: &CacheDb,
-    _key: &CommittedKey,
+    db: &CacheDb,
+    key: &CommittedKey,
 ) -> Result<Option<WholeResult>> {
-    // Stub: implemented in Phase 3 (tdd-bootstrap Phase 3).
-    Ok(None)
+    let filter_hex = key.filter_hex();
+    let row: Option<Vec<u8>> = db
+        .conn
+        .query_row(
+            "SELECT payload FROM committed_stale_whole_result \
+             WHERE source_tree_key=?1 AND mesh_tree_key=?2 AND mesh_root=?3 \
+               AND filter_config_hash=?4 AND key_salt=?5",
+            rusqlite::params![
+                key.source_tree_key,
+                key.mesh_tree_key,
+                key.mesh_root,
+                filter_hex,
+                key.key_salt
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::Git(format!("cache_v2 whole_result select: {e}")))?;
+
+    let Some(bytes) = row else {
+        return Ok(None);
+    };
+
+    let payload: WholeResultPayload = match bincode::deserialize(&bytes) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+
+    match payload.into_whole_result() {
+        Ok(wr) => Ok(Some(wr)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Load the committed baseline for `key` + `availability_hex`. Returns

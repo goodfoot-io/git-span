@@ -162,6 +162,55 @@ pub(crate) fn stale_meshes_cached(
                 if let Err(e) = store_baseline(&db, &committed, &availability_hex, &meshes) {
                     crate::perf::note(&format!("cache_v2.store-baseline-failed: {e}"));
                 }
+                // Store the whole-result cache entry: backfill fresh
+                // anchors from mesh-file records so warm-clean repeats can
+                // skip every per-invocation phase in run_stale.
+                if let Ok(file_pairs) =
+                    crate::mesh::read::load_all_meshes_in(repo, &mesh_root)
+                {
+                    let file_records: std::collections::HashMap<String, crate::types::Mesh> =
+                        file_pairs.into_iter().collect();
+                    let mesh_anchor_totals: Vec<(String, usize)> = file_records
+                        .iter()
+                        .map(|(n, m)| (n.clone(), m.anchors.len()))
+                        .collect();
+                    // Backfill fresh anchors: each resolved mesh gets
+                    // every file-record anchor — keep the resolved
+                    // finding when present, synthesize Fresh when absent.
+                    let mut backfilled: Vec<MeshResolved> = Vec::new();
+                    for m in &meshes {
+                        let mut full = m.clone();
+                        if let Some(record) = file_records.get(&m.name) {
+                            let mut rebuilt: Vec<crate::types::AnchorResolved> =
+                                Vec::with_capacity(record.anchors.len());
+                            for (anchor_id, a) in &record.anchors {
+                                match full.anchors.iter().find(|r| &r.anchor_id == anchor_id) {
+                                    Some(existing) => rebuilt.push(existing.clone()),
+                                    None => rebuilt.push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
+                                }
+                            }
+                            // Preserve resolved anchors not in the file record
+                            // (e.g. injected MergeConflict anchors).
+                            for r in &full.anchors {
+                                if !record.anchors.iter().any(|(id, _)| id == &r.anchor_id) {
+                                    rebuilt.push(r.clone());
+                                }
+                            }
+                            full.anchors = rebuilt;
+                        }
+                        backfilled.push(full);
+                    }
+                    if let Err(e) = baseline::store_whole_result(
+                        &db,
+                        &committed,
+                        &backfilled,
+                        &mesh_anchor_totals,
+                    ) {
+                        crate::perf::note(&format!(
+                            "cache_v2.store-whole-result-failed: {e}"
+                        ));
+                    }
+                }
                 // Reload so the in-memory shape matches the cached one
                 // exactly (regrouped reportable form).
                 match load_baseline(&db, &committed, &availability_hex) {
@@ -371,6 +420,30 @@ pub(crate) fn stale_meshes_cached(
         meshes: reportable(merged),
         whole_result: None,
     })
+}
+
+/// Synthesize a `Fresh` `AnchorResolved` from a mesh-file anchor record,
+/// matching the shape produced by [`fresh_anchor_resolved`] in the CLI layer.
+fn fresh_anchor_resolved_from_mesh(
+    anchor_id: &str,
+    a: &crate::types::Anchor,
+) -> crate::types::AnchorResolved {
+    crate::types::AnchorResolved {
+        anchor_id: anchor_id.to_string(),
+        anchor_sha: a.anchor_sha.clone(),
+        anchored: crate::types::AnchorLocation {
+            path: std::path::PathBuf::from(&a.path),
+            extent: a.extent,
+            blob: None,
+        },
+        current: None,
+        status: crate::types::AnchorStatus::Fresh,
+        content_equivalent: false,
+        source: None,
+        layer_sources: Vec::new(),
+        acknowledged_by: None,
+        locus: None,
+    }
 }
 
 /// Keep only meshes that have a non-`Fresh` anchor or a pending op —
