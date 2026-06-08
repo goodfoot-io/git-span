@@ -2,7 +2,9 @@
 //! load↔store, key-based invalidation, and warm-clean vs warm-dirty
 //! behavior at the storage layer.
 
-use super::baseline::{LoadedBaseline, load_baseline, store_baseline};
+use super::baseline::{
+    LoadedBaseline, load_baseline, load_whole_result, store_baseline, store_whole_result,
+};
 use super::keys::{CommittedKey, OverlayKeyInputs, availability_hash};
 use super::moved::{MovedLocation, MovedScanKey, load_scan, store_scan};
 use super::overlay::{DirtyOverlay, apply_overlay, load_overlay, store_overlay};
@@ -271,4 +273,97 @@ fn default_loaded_baseline_is_empty() {
     let b = LoadedBaseline::default();
     assert!(b.meshes.is_empty());
     assert_eq!(b.non_fresh_count, 0);
+}
+
+// ── Whole-result cache tests ──────────────────────────────────────────
+
+#[test]
+#[ignore]
+fn whole_result_roundtrip() {
+    let (_td, db) = tmp_db();
+    let key = ck();
+    let meshes = vec![
+        mesh(
+            "alpha",
+            vec![
+                anchor("a1", AnchorStatus::Changed),
+                anchor("a2", AnchorStatus::Fresh),
+            ],
+        ),
+        mesh("beta", vec![anchor("b1", AnchorStatus::Fresh)]),
+    ];
+    let totals: Vec<(String, usize)> = vec![("alpha".into(), 2), ("beta".into(), 1)];
+
+    store_whole_result(&db, &key, &meshes, &totals).expect("store");
+    let loaded = load_whole_result(&db, &key).expect("load").expect("hit");
+
+    assert_eq!(loaded.meshes.len(), 2, "both meshes stored");
+    assert_eq!(loaded.meshes[0].name, "alpha");
+    assert_eq!(loaded.meshes[0].anchors.len(), 2, "alpha: both anchors backfilled");
+    assert_eq!(loaded.meshes[1].name, "beta");
+    assert_eq!(loaded.meshes[1].anchors.len(), 1, "beta: fresh anchor backfilled");
+    assert_eq!(loaded.mesh_anchor_totals.len(), 2);
+    assert_eq!(loaded.mesh_anchor_totals[0], ("alpha".to_string(), 2));
+    assert_eq!(loaded.mesh_anchor_totals[1], ("beta".to_string(), 1));
+}
+
+#[test]
+#[ignore]
+fn whole_result_key_mismatch_returns_none() {
+    let (_td, db) = tmp_db();
+    let key = ck();
+    let meshes = vec![mesh("m", vec![anchor("a", AnchorStatus::Fresh)])];
+    let totals: Vec<(String, usize)> = vec![("m".into(), 1)];
+
+    store_whole_result(&db, &key, &meshes, &totals).expect("store");
+
+    // Different source_tree_key → miss
+    let mut other = ck();
+    other.source_tree_key = "different-source-tree".into();
+    assert!(
+        load_whole_result(&db, &other).expect("load").is_none(),
+        "different source_tree_key ⇒ miss"
+    );
+
+    // Different mesh_tree_key → miss
+    let mut other2 = ck();
+    other2.mesh_tree_key = "different-mesh-tree".into();
+    assert!(
+        load_whole_result(&db, &other2).expect("load").is_none(),
+        "different mesh_tree_key ⇒ miss"
+    );
+}
+
+#[test]
+#[ignore]
+fn whole_result_empty_mesh_root() {
+    let (_td, db) = tmp_db();
+    let key = ck();
+    let meshes: Vec<MeshResolved> = Vec::new();
+    let totals: Vec<(String, usize)> = Vec::new();
+
+    store_whole_result(&db, &key, &meshes, &totals).expect("store");
+    let loaded = load_whole_result(&db, &key).expect("load").expect("hit");
+
+    assert!(loaded.meshes.is_empty(), "no meshes");
+    assert!(loaded.mesh_anchor_totals.is_empty(), "no totals");
+}
+
+#[test]
+#[ignore]
+fn whole_result_key_salt_mismatch_returns_none() {
+    let (_td, db) = tmp_db();
+    let key = ck();
+    let meshes = vec![mesh("m", vec![anchor("a", AnchorStatus::Fresh)])];
+    let totals: Vec<(String, usize)> = vec![("m".into(), 1)];
+
+    store_whole_result(&db, &key, &meshes, &totals).expect("store");
+
+    // Different key_salt → miss
+    let mut other = ck();
+    other.key_salt = KEY_SALT + 1;
+    assert!(
+        load_whole_result(&db, &other).expect("load").is_none(),
+        "different key_salt ⇒ miss"
+    );
 }
