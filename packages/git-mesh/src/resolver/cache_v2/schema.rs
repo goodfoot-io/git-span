@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const DB_BASENAME: &str = "stale-cache.db";
 
 /// `cache_v2` cache namespace. Increment on any on-disk shape change.
-pub(crate) const KEY_SALT: i64 = 1;
+pub(crate) const KEY_SALT: i64 = 2;
 
 /// Parser format version baked into the anchor-row manifest key so a
 /// mesh-file parser change invalidates `mesh_anchor_rows`.
@@ -210,6 +210,17 @@ CREATE TABLE IF NOT EXISTS dirty_overlay_manifest (
   non_fresh_count       INTEGER NOT NULL,
   created_at            INTEGER NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS committed_stale_whole_result (
+  source_tree_key    TEXT NOT NULL,
+  mesh_tree_key      TEXT NOT NULL,
+  mesh_root          TEXT NOT NULL,
+  filter_config_hash TEXT NOT NULL,
+  key_salt           INTEGER NOT NULL,
+  payload            BLOB NOT NULL,
+  created_at         INTEGER NOT NULL,
+  PRIMARY KEY (source_tree_key, mesh_tree_key, mesh_root, filter_config_hash, key_salt)
+) STRICT;
 "#;
 
 /// Open `cache_v2` database handle.
@@ -232,6 +243,7 @@ impl CacheDb {
             "committed_stale_finding_rows",
             "committed_stale_summary",
             "committed_baseline_manifest",
+            "committed_stale_whole_result",
         ] {
             self.conn
                 .execute(

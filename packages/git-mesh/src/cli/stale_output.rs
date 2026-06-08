@@ -12,7 +12,7 @@ use crate::cli::format;
 use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    SourceLayers, build_pending_findings, mesh_is_reportable_in_stale_discovery,
+    SourceLayers, WholeResult, build_pending_findings, mesh_is_reportable_in_stale_discovery,
     resolve_named_meshes, resolve_named_meshes_retaining_source_layers,
     resolve_named_meshes_with_source_layers, sort_meshes_by_anchor_path, stale_meshes,
     stale_meshes_retaining_source_layers, stale_meshes_with_trace,
@@ -286,31 +286,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         needs_all_layers,
     };
 
-    // Count total committed meshes and anchors before stale_meshes filtering,
-    // so the summary can report "0 stale across N meshes (A anchors checked)"
-    // even when all are clean.
-    // `mesh_anchor_totals` records each mesh's *full* anchor count (Fresh
-    // included). The resolver — and especially the cache_v2 path, which
-    // persists only non-`Fresh` finding rows — returns `MeshResolved`
-    // values whose `anchors` hold only the stale subset, so the renderer
-    // cannot derive a mesh's true anchor total from `m.anchors`. The
-    // `--stat` heading ("N of M anchors …") needs M = the real total.
-    let (total_committed_mesh_count, total_committed_anchor_count, mesh_anchor_totals): (
-        usize,
-        usize,
-        std::collections::HashMap<String, usize>,
-    ) = {
-        let _perf = crate::perf::span("stale.count-totals");
-        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
-        let mesh_count = pairs.len();
-        let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
-        let totals = pairs
-            .iter()
-            .map(|(n, m)| (n.clone(), m.anchors.len()))
-            .collect();
-        (mesh_count, anchor_count, totals)
-    };
-
     // --perf-trace conflicts with positional paths (requires a full scan).
     if args.perf_trace.is_some() && !args.paths.is_empty() {
         return Err(CliError {
@@ -342,6 +317,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // running `--fix`.
     let mut pre_fix_source_layers: Option<SourceLayers> = None;
 
+    // Whole-result cache: on a warm-clean hit the cache returns the full
+    // backfilled anchor set + anchor totals, allowing run_stale to skip its
+    // per-invocation phases (count-totals, detect-conflicts, backfill).
+    let mut whole_result: Option<WholeResult> = None;
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
@@ -356,12 +336,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         } else if args.fix {
             // Retain source layers for the post-fix re-resolve. `--fix` is
             // incompatible with `--perf-trace` discovery above.
-            let (resolved, layers) =
+            let (resolved, layers, wr) =
                 stale_meshes_retaining_source_layers(repo, mesh_root, options)?;
             pre_fix_source_layers = layers;
+            whole_result = wr;
             resolved
         } else {
-            stale_meshes(repo, mesh_root, options)?
+            let (resolved, _, wr) =
+                stale_meshes_retaining_source_layers(repo, mesh_root, options)?;
+            whole_result = wr;
+            resolved
         }
     } else {
         // Resolve each positional arg through mesh-name → path-index dispatch.
@@ -516,12 +500,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // `MergeConflict` anchor, so they are unaffected.
         // `m.anchors` may hold only the stale subset (the cache_v2 resolver
         // persists non-Fresh rows only), so derive the true anchor total from
-        // `mesh_anchor_totals`, which records each mesh's full anchor count.
+        // the mesh-file records. For scoped queries (positional args), the
+        // cache path is not used, so load totals fresh.
+        let scoped_anchor_totals: std::collections::HashMap<String, usize> = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+            .iter()
+            .map(|(n, m)| (n.clone(), m.anchors.len()))
+            .collect();
         scoped_totals = Some((
             meshes.len(),
             meshes
                 .iter()
-                .map(|m| mesh_anchor_totals.get(&m.name).copied().unwrap_or(m.anchors.len()))
+                .map(|m| scoped_anchor_totals.get(&m.name).copied().unwrap_or(m.anchors.len()))
                 .sum(),
         ));
         // Capture the resolved mesh-name set for downstream scoping (conflict
@@ -536,12 +525,47 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         meshes
     };
 
+    // ── Count totals (moved after resolution so whole_result can short-circuit) ──
+    //
+    // Whole-result warm-clean short-circuit: when the cache returns a
+    // whole result, skip count-totals (load_all_meshes_in), conflict
+    // detection, interior-anchor scan, and backfill — the cached data
+    // carries the already-computed results.
+    let use_whole_result = whole_result.is_some();
+
+    let (total_committed_mesh_count, total_committed_anchor_count, mesh_anchor_totals): (
+        usize,
+        usize,
+        std::collections::HashMap<String, usize>,
+    ) = if let Some(ref wr) = whole_result {
+        let totals: std::collections::HashMap<String, usize> = wr
+            .mesh_anchor_totals
+            .iter()
+            .cloned()
+            .collect();
+        let mesh_count = totals.len();
+        let anchor_count: usize = totals.values().sum();
+        crate::perf::counter("cache_v2.whole-result-hit", 1);
+        (mesh_count, anchor_count, totals)
+    } else {
+        let _perf = crate::perf::span("stale.count-totals");
+        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
+        let mesh_count = pairs.len();
+        let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
+        let totals = pairs
+            .iter()
+            .map(|(n, m)| (n.clone(), m.anchors.len()))
+            .collect();
+        (mesh_count, anchor_count, totals)
+    };
+
     // Fail-closed Conflict reporting: a mesh whose file (or anchored
     // source) is in a Git conflict state cannot be read reliably. Such
     // meshes are skipped by the normal resolution batch; surface each
     // one here as a `Conflict` finding so it renders and forces a
     // non-zero exit (an unreliable read must never report "clean").
-    {
+    // Skipped on whole-result hit — a clean tree has no conflicts.
+    if !use_whole_result {
         let _perf = crate::perf::span("stale.detect-conflicts");
         let conflicted = crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
         // When positional args were given, only report conflicts for the
@@ -715,7 +739,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // preserved as-is. Fully-Fresh meshes are not re-added: a scan is a
     // drift report. This is Human-only; other formats stream drifted
     // findings.
-    if matches!(args.format, StaleFormat::Human) && args.paths.is_empty() {
+    // Skipped on whole-result hit — the cached meshes already include all
+    // anchors (Fresh + non-Fresh) backfilled in stored order.
+    if matches!(args.format, StaleFormat::Human)
+        && args.paths.is_empty()
+        && !use_whole_result
+    {
         let _perf = crate::perf::span("stale.backfill-fresh-anchors");
         // Drift-report contract: a scan shows a mesh iff it has a non-Fresh
         // anchor or a drifting pending entry. The all-layers discovery path
@@ -860,17 +889,25 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // as a loud, actionable report to stderr (keeping stdout's machine
     // formats clean) and counted into the exit code so the violation cannot
     // report "clean". For a scoped query, only surface meshes in scope.
-    let interior_violations: Vec<crate::cli::interior_anchor::InteriorAnchorViolation> = {
-        let _perf = crate::perf::span("stale.scan-interior-anchors");
-        let all = crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)?;
-        match &scoped_mesh_names {
-            None => all,
-            Some(names) => all
-                .into_iter()
-                .filter(|v| names.contains(&v.mesh_name))
-                .collect(),
-        }
-    };
+    // Interior-anchor surfacing: skipped on whole-result hit because the
+    // CommittedKey gating guarantees mesh files haven't changed since the
+    // cache was stored (fail-closed: any mesh-file change would change
+    // mesh_tree_key → miss). The cached result has no violations (they
+    // were checked at store time).
+    let interior_violations: Vec<crate::cli::interior_anchor::InteriorAnchorViolation> =
+        if use_whole_result {
+            Vec::new()
+        } else {
+            let _perf = crate::perf::span("stale.scan-interior-anchors");
+            let all = crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)?;
+            match &scoped_mesh_names {
+                None => all,
+                Some(names) => all
+                    .into_iter()
+                    .filter(|v| names.contains(&v.mesh_name))
+                    .collect(),
+            }
+        };
     if !interior_violations.is_empty() {
         eprintln!();
         eprintln!(

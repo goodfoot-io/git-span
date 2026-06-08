@@ -39,6 +39,8 @@ pub(crate) mod moved;
 pub(crate) mod overlay;
 pub(crate) mod schema;
 
+pub(crate) use baseline::WholeResult;
+
 #[cfg(test)]
 mod tests;
 
@@ -94,7 +96,10 @@ fn is_gitattributes_path(path: &str) -> bool {
 /// Outcome of a cache attempt: a resolved render set, or a reason the
 /// caller must fall back to the uncached resolver.
 pub(crate) enum CacheAttempt {
-    Resolved(Vec<MeshResolved>),
+    Resolved {
+        meshes: Vec<MeshResolved>,
+        whole_result: Option<WholeResult>,
+    },
     Fallback(String),
 }
 
@@ -239,7 +244,10 @@ pub(crate) fn stale_meshes_cached(
         for w in index_warnings {
             eprintln!("{w}");
         }
-        return Ok(CacheAttempt::Resolved(reportable(baseline.meshes)));
+        return Ok(CacheAttempt::Resolved {
+            meshes: reportable(baseline.meshes),
+            whole_result: baseline.whole_result,
+        });
     }
 
     // ── Warm dirty path ───────────────────────────────────────────────
@@ -359,7 +367,10 @@ pub(crate) fn stale_meshes_cached(
     }
     let merged = apply_overlay(&baseline.meshes, &overlay);
     crate::perf::counter("cache_v2.fallback", 0);
-    Ok(CacheAttempt::Resolved(reportable(merged)))
+    Ok(CacheAttempt::Resolved {
+        meshes: reportable(merged),
+        whole_result: None,
+    })
 }
 
 /// Keep only meshes that have a non-`Fresh` anchor or a pending op —

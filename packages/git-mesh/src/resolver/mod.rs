@@ -32,6 +32,7 @@ pub use engine::pending::build_pending_findings;
 pub use engine::{
     resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace,
 };
+pub(crate) use cache_v2::WholeResult;
 pub(crate) use engine::{
     SourceLayers, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
     resolve_named_meshes_retaining_source_layers, resolve_named_meshes_with_source_layers,

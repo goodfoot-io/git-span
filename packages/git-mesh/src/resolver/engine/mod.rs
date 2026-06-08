@@ -1000,7 +1000,10 @@ pub fn stale_meshes(
 ) -> Result<Vec<MeshResolved>> {
     use crate::resolver::cache_v2::{CacheAttempt, stale_meshes_cached};
     match stale_meshes_cached(repo, mesh_root, options)? {
-        CacheAttempt::Resolved(mut meshes) => {
+        CacheAttempt::Resolved {
+            mut meshes,
+            whole_result: _,
+        } => {
             if meshes.len() > 1 {
                 sort_meshes_by_anchor_path(&mut meshes);
             }
@@ -1019,22 +1022,26 @@ pub fn stale_meshes(
 /// `EngineState` is built) it retains the source-layer state so the post-fix
 /// re-resolve in `stale --fix` can skip a second `read-worktree-layer`.
 ///
-/// Returns `(meshes, Some(source_layers))` on the cold path and
-/// `(meshes, None)` on a warm cache_v2 hit (where there is no `EngineState`
-/// to retain — the post-fix pass then builds one fresh `EngineState`, which is
-/// already optimal).
+/// Returns `(meshes, Some(source_layers), Option<whole_result>)` on the cold
+/// path and `(meshes, None, Option<whole_result>)` on a warm cache_v2 hit.
+/// `whole_result` is `Some` on a warm-clean hit with a stored whole-result
+/// entry; it carries the full backfilled anchor set and anchor totals so
+/// `run_stale` can skip its per-invocation phases.
 pub(crate) fn stale_meshes_retaining_source_layers(
     repo: &gix::Repository,
     mesh_root: &str,
     options: EngineOptions,
-) -> Result<(Vec<MeshResolved>, Option<SourceLayers>)> {
+) -> Result<(Vec<MeshResolved>, Option<SourceLayers>, Option<crate::resolver::cache_v2::baseline::WholeResult>)> {
     use crate::resolver::cache_v2::{CacheAttempt, stale_meshes_cached};
     match stale_meshes_cached(repo, mesh_root, options)? {
-        CacheAttempt::Resolved(mut meshes) => {
+        CacheAttempt::Resolved {
+            mut meshes,
+            whole_result,
+        } => {
             if meshes.len() > 1 {
                 sort_meshes_by_anchor_path(&mut meshes);
             }
-            return Ok((meshes, None));
+            return Ok((meshes, None, whole_result));
         }
         CacheAttempt::Fallback(reason) => {
             crate::perf::counter("cache_v2.fallback", 1);
@@ -1042,7 +1049,7 @@ pub(crate) fn stale_meshes_retaining_source_layers(
         }
     }
     let (meshes, _, source_layers) = stale_meshes_inner(repo, mesh_root, options, false, true)?;
-    Ok((meshes, source_layers))
+    Ok((meshes, source_layers, None))
 }
 
 pub fn stale_meshes_with_trace(

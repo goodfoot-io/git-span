@@ -10,7 +10,7 @@
 //! yet", so a fully-clean repository is a cache hit, not a perpetual
 //! rebuild.
 
-use super::dto::AnchorResolvedDto;
+use super::dto::{AnchorResolvedDto, MeshResolvedDto};
 use super::keys::CommittedKey;
 use super::schema::{CacheDb, KEY_SALT, now_secs};
 use crate::types::{AnchorStatus, MeshResolved};
@@ -209,6 +209,70 @@ pub(crate) struct LoadedBaseline {
     pub(crate) meshes: Vec<MeshResolved>,
     pub(crate) counts: BaselineCounts,
     pub(crate) non_fresh_count: u64,
+    pub(crate) whole_result: Option<WholeResult>,
+}
+
+/// The complete command-level result for a warm-clean cache hit: the full
+/// anchor set (Fresh + non-Fresh) backfilled in stored order, plus
+/// per-mesh anchor counts. Stored as a single blob in
+/// `committed_stale_whole_result`.
+#[derive(Clone, Debug)]
+pub(crate) struct WholeResult {
+    pub(crate) meshes: Vec<MeshResolved>,
+    pub(crate) mesh_anchor_totals: Vec<(String, usize)>,
+}
+
+/// Serialized form of [`WholeResult`] persisted in
+/// `committed_stale_whole_result`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct WholeResultPayload {
+    format_version: u8,
+    meshes: Vec<MeshResolvedDto>,
+    mesh_anchor_totals: Vec<(String, usize)>,
+}
+
+impl WholeResultPayload {
+    fn into_whole_result(self) -> Result<WholeResult> {
+        if self.format_version != WHOLE_RESULT_FORMAT_VERSION {
+            return Err(Error::Git(format!(
+                "cache_v2 whole_result: format_version {} != expected {}",
+                self.format_version, WHOLE_RESULT_FORMAT_VERSION
+            )));
+        }
+        let mut meshes = Vec::with_capacity(self.meshes.len());
+        for dto in self.meshes {
+            meshes.push(dto.try_into()?);
+        }
+        Ok(WholeResult {
+            meshes,
+            mesh_anchor_totals: self.mesh_anchor_totals,
+        })
+    }
+}
+
+const WHOLE_RESULT_FORMAT_VERSION: u8 = 1;
+
+/// Persist the complete command-level result alongside the committed
+/// baseline. On a warm-clean repeat the whole result is loaded directly,
+/// skipping every per-invocation phase in `run_stale`.
+pub(crate) fn store_whole_result(
+    _db: &CacheDb,
+    _key: &CommittedKey,
+    _meshes: &[MeshResolved],
+    _mesh_anchor_totals: &[(String, usize)],
+) -> Result<()> {
+    // Stub: implemented in Phase 3 (tdd-bootstrap Phase 3).
+    Ok(())
+}
+
+/// Load a previously-stored whole result for this committed key.
+/// Returns `Ok(None)` on any miss — never an error.
+pub(crate) fn load_whole_result(
+    _db: &CacheDb,
+    _key: &CommittedKey,
+) -> Result<Option<WholeResult>> {
+    // Stub: implemented in Phase 3 (tdd-bootstrap Phase 3).
+    Ok(None)
 }
 
 /// Load the committed baseline for `key` + `availability_hex`. Returns
@@ -323,10 +387,13 @@ pub(crate) fn load_baseline(
         None => return Ok(None),
     };
 
+    let whole_result = load_whole_result(db, key).unwrap_or(None);
+
     Ok(Some(LoadedBaseline {
         meshes,
         counts,
         non_fresh_count: non_fresh_count as u64,
+        whole_result,
     }))
 }
 
