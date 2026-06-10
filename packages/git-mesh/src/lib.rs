@@ -23,6 +23,7 @@ pub mod types;
 pub mod validation;
 
 pub use git::read_git_text;
+pub use git::{index_entries_call_count, reset_index_entries_call_count};
 pub use mesh::{
     delete_mesh, list_mesh_names, read_mesh, read_mesh_at, rename_mesh, show_mesh, show_mesh_at,
 };

@@ -725,12 +725,33 @@ pub struct IndexEntrySnapshot {
     pub path: String,
 }
 
+// ---------------------------------------------------------------------------
+// Call counter for index_entries — used by the reproduction test for card
+// main-105 (run_add re-reads git index per anchor). Always compiled; the
+// atomic increment on a hot path has negligible cost.
+// ---------------------------------------------------------------------------
+
+static INDEX_ENTRIES_CALL_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Reset the call counter.
+pub fn reset_index_entries_call_count() {
+    INDEX_ENTRIES_CALL_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Read the call counter.
+pub fn index_entries_call_count() -> usize {
+    INDEX_ENTRIES_CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Load the worktree index (or synthesize it from `HEAD^{tree}` if there
 /// is no on-disk index yet) and return one snapshot per entry.
 ///
 /// Returning owned snapshots keeps the borrow shape simple at call sites
 /// that want to filter / collect without keeping the index file alive.
 pub fn index_entries(repo: &gix::Repository) -> Result<Vec<IndexEntrySnapshot>> {
+    INDEX_ENTRIES_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     let idx = repo
         .index_or_load_from_head()
         .map_err(|e| Error::Git(format!("load index: {e}")))?;
