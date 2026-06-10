@@ -684,7 +684,46 @@ fn run_why_reader(
         match tree_result {
             Some((_mode, oid)) => {
                 let text = crate::git::read_git_text(repo, &oid.to_string())?;
-                MeshFile::parse(&text).ok()
+                let mf = MeshFile::parse(&text).map_err(|e| {
+                    if matches!(e, git_mesh_core::Error::MeshConflict(_)) {
+                        CliError {
+                            subcommand: "why",
+                            summary: format!(
+                                "mesh `{name}` at `{at_commit}` is in a Git conflict state."
+                            ),
+                            what_happened: format!(
+                                "The mesh file for `{name}` at commit `{at_commit}` has \
+                                 an unresolved merge (conflict markers). git-mesh refuses \
+                                 to present conflict-marker content as valid mesh data."
+                            ),
+                            next_steps: vec![
+                                NextStep::Prose(
+                                    "The mesh file was corrupted during a merge. \
+                                     Use a commit before the merge to recover the why text."
+                                        .into(),
+                                ),
+                            ],
+                        }
+                    } else {
+                        CliError {
+                            subcommand: "why",
+                            summary: format!(
+                                "mesh `{name}` at `{at_commit}` could not be parsed."
+                            ),
+                            what_happened: e.to_string(),
+                            next_steps: vec![
+                                NextStep::Prose(
+                                    "The historical mesh file is malformed. \
+                                     Use a different commit to read the why text, \
+                                     or inspect the mesh file directly with \
+                                     `git show <commit>:.mesh/{name}`."
+                                        .into(),
+                                ),
+                            ],
+                        }
+                    }
+                })?;
+                Some(mf)
             }
             None => None,
         }
