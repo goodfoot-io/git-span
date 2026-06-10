@@ -107,11 +107,20 @@ RUN npm install -g dotenv-cli
 # Install tools for code analysis
 RUN npm install -g @ast-grep/cli jsdoczoom
 
-# Install sccache for cross-worktree Rust compilation cache
+# Install sccache for cross-worktree Rust compilation cache. The release
+# triple must match the build platform, and the trailing --version run makes a
+# wrong-arch or corrupt download fail the image build instead of surfacing
+# later as an opaque "could not exec sccache" Cargo error.
 ARG SCCACHE_VERSION=0.10.0
-RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    | tar xz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
-  && chmod +x /usr/local/bin/sccache
+RUN case "$(uname -m)" in \
+      aarch64) SCCACHE_TRIPLE=aarch64-unknown-linux-musl ;; \
+      x86_64) SCCACHE_TRIPLE=x86_64-unknown-linux-musl ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${SCCACHE_TRIPLE}.tar.gz" \
+    | tar xz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-${SCCACHE_TRIPLE}/sccache" \
+  && chmod +x /usr/local/bin/sccache \
+  && /usr/local/bin/sccache --version
 
 USER root
 

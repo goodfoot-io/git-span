@@ -43,6 +43,7 @@
     "VSCODE_RECONNECTION_GRACE_TIME": "60000",
     "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities",
     "SCCACHE_DIR": "/home/node/.cache/sccache",
+    "SCCACHE_IDLE_TIMEOUT": "0",
     "RUSTC_WRAPPER": "sccache"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
