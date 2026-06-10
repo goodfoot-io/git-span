@@ -880,6 +880,22 @@ mod tests {
         assert!(!h.starts_with("sha256:"));
     }
 
+    /// A buffer whose byte offsets exceed `u32::MAX` cannot be represented in
+    /// the `u32` offset store, so `LineIndex::build` must refuse it (fail
+    /// closed) rather than silently truncate offsets and produce wrong line
+    /// boundaries. Regression for the offset-truncation defect (card
+    /// main-113). Requires ~4 GiB of RAM.
+    #[test]
+    #[should_panic(expected = "exceeds the supported size")]
+    fn build_refuses_buffer_larger_than_u32_offsets() {
+        // One byte past `u32::MAX` so the final newline's offset cannot be
+        // represented as a `u32`; pre-guard, `i as u32` wraps to a small value.
+        let len = u32::MAX as usize + 2;
+        let mut bytes = vec![b'a'; len];
+        *bytes.last_mut().unwrap() = b'\n';
+        let _ = LineIndex::build(&bytes);
+    }
+
     #[test]
     fn whole_file_hash_is_full_buffer() {
         let text = b"a\nb\nc\n";
