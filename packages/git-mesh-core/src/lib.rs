@@ -102,6 +102,11 @@ fn line_range_span(start: u32, end: u32) -> usize {
 ///
 /// Allocation-free: a single forward pass that stops as soon as the
 /// `end`-terminating newline is seen.
+///
+/// `LineIndex::region` is the indexed equivalent; the test
+/// `line_range_region_and_lineindex_region_agree` cross-checks the two
+/// implementations against every test vector and range so they cannot drift
+/// independently.
 fn line_range_region(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(usize, usize)> {
     if start_line == 0 {
         // `start == 0` has no 1-based line; a degenerate extent selects no
@@ -383,6 +388,11 @@ impl<'a> LineIndex<'a> {
     /// Byte offsets `[start, end)` of the canonical region for the inclusive
     /// 1-based line range, clamped to the line count. `None` for an empty
     /// range.
+    ///
+    /// `line_range_region` is the allocation-free equivalent; the test
+    /// `line_range_region_and_lineindex_region_agree` cross-checks the two
+    /// implementations against every test vector and range so they cannot drift
+    /// independently.
     fn region(&self, start: u32, end: u32) -> Option<(usize, usize)> {
         if start == 0 || start > end {
             // Degenerate extent (`start == 0` or `end < start`): no content,
@@ -1144,6 +1154,22 @@ mod tests {
                         hash_extent_indexed(&idx, &extent),
                         expected,
                         "hash_extent_indexed drifted for {bytes:?} range {start}..={end}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_range_region_and_lineindex_region_agree() {
+        for &bytes in VECTORS {
+            let idx = LineIndex::build(bytes);
+            for start in 0u32..=8 {
+                for end in 0u32..=10 {
+                    assert_eq!(
+                        line_range_region(bytes, start, end),
+                        idx.region(start, end),
+                        "region mismatch for {bytes:?} range {start}..={end}"
                     );
                 }
             }
