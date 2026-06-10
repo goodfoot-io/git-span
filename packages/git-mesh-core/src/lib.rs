@@ -22,6 +22,7 @@
 //! callers, not part of the digest.
 
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, OnceLock};
 
 pub mod error;
 pub mod mesh_file;
@@ -317,6 +318,20 @@ pub fn scan_for_content_hash(
     scan_indexed(&indexed, content_hash, extent, near)
 }
 
+/// Cached rolling-fingerprint prefix hashes and powers for the file bytes.
+/// These are a pure function of the bytes and are computed at most once per
+/// `LineIndex` lifetime.
+struct PrefixTables {
+    ph: Vec<u64>,
+    pow: Vec<u64>,
+}
+
+/// Files larger than this threshold skip precomputed prefix-hash tables
+/// and fall back to per-window `horner` (O(N.S) time, O(1) extra memory).
+/// Bounds peak table memory to ~512 MiB (2 × 8 B × 32M).  Source-code
+/// files (the common anchor target) are virtually always under this limit.
+pub const PREFILTER_TABLES_MAX_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
+
 /// A reusable, allocation-cheap line index over a byte buffer: the start
 /// and content-end (terminator-excluded) offset of every line, derived once
 /// with a single newline scan. Line counting matches `str::lines` exactly —
@@ -336,6 +351,14 @@ pub struct LineIndex<'a> {
     starts: Vec<u32>,
     /// Content end (exclusive of the `\n`/`\r\n` terminator) of each line.
     ends: Vec<u32>,
+    /// Lazily-computed prefix-hash and power tables for the rolling
+    /// fingerprint prefilter.  Populated on first prefiltered scan of an
+    /// LF-clean file within the size threshold.  Shared across clones via
+    /// `Arc` — at most one set of tables per file per `LineIndex` lifetime.
+    ///
+    /// Files exceeding [`PREFILTER_TABLES_MAX_BYTES`] never allocate these
+    /// tables; the scan falls back to per-window `horner`.
+    fp_tables: Arc<OnceLock<PrefixTables>>,
 }
 
 impl<'a> LineIndex<'a> {
@@ -372,7 +395,7 @@ impl<'a> LineIndex<'a> {
             starts.push(seg as u32);
             ends.push(bytes.len() as u32);
         }
-        LineIndex { bytes, starts, ends }
+        LineIndex { bytes, starts, ends, fp_tables: Arc::new(OnceLock::new()) }
     }
 
     /// The underlying buffer.
@@ -405,6 +428,20 @@ impl<'a> LineIndex<'a> {
             return None;
         }
         Some((self.starts[lo] as usize, self.ends[hi - 1] as usize))
+    }
+
+    /// Returns cached fingerprint tables if the file is within the size
+    /// threshold, computing them lazily on first call.  Returns `None`
+    /// for files exceeding [`PREFILTER_TABLES_MAX_BYTES`], so the caller
+    /// falls back to per-window `horner` (O(N.S) time, O(1) memory).
+    fn prefilter_tables(&self) -> Option<&PrefixTables> {
+        if self.bytes.len() > PREFILTER_TABLES_MAX_BYTES {
+            return None;
+        }
+        Some(self.fp_tables.get_or_init(|| {
+            let (ph, pow) = prefix_hashes_and_powers(self.bytes);
+            PrefixTables { ph, pow }
+        }))
     }
 }
 
@@ -667,11 +704,16 @@ fn scan_one_file_fp_filtered(
         // Prefix hashes `ph[k] = horner(bytes[0..k])` and powers `pow[i] =
         // BASE^i` give every window's fingerprint as `ph[re] - ph[rs]·pow[re-rs]`
         // in O(1) — the rolling reduction of recomputing `horner` per window.
-        let (ph, pow) = prefix_hashes_and_powers(bytes);
+        // For files under the size threshold the tables are cached on the
+        // `LineIndex`; larger files fall back to per-window `horner`.
+        let tables = idx.prefilter_tables();
         for win in win_lo..=win_hi {
             let rs = idx.starts[win] as usize;
             let re = idx.ends[win + span - 1] as usize;
-            let fp = ph[re].wrapping_sub(ph[rs].wrapping_mul(pow[re - rs]));
+            let fp = match tables {
+                Some(t) => t.ph[re].wrapping_sub(t.ph[rs].wrapping_mul(t.pow[re - rs])),
+                None => horner(&bytes[rs..re]),
+            };
             if fp == cheap_fp && confirm(&bytes[rs..re]) {
                 out.push(Location {
                     path: path.to_string(),
