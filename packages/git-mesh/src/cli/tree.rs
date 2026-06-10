@@ -7,8 +7,15 @@
 //! changes versus the prototype is the glob/resolution layer: roots are
 //! anchor paths matched by the args against the loaded corpus, not the
 //! prototype's CWD-relative prefix/`**/*` glob layer.
+//!
+//! ## Tie-break ordering
+//!
+//! Tree STRUCTURE and MEMBERSHIP match the prototype exactly. The
+//! tie-break for equal-weight siblings uses a deterministic,
+//! locale-independent raw byte ordering of path strings. This is
+//! intentionally NOT a replication of the prototype's `localeCompare`,
+//! which is locale-dependent and non-reproducible across environments.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{TreeArgs, TreeFormat};
@@ -26,24 +33,6 @@ use crate::cli::{CliError, NextStep};
 /// organically). 1,000,000 cliques is orders of magnitude beyond any real
 /// corpus while still bounding a runaway enumeration to a fraction of a second.
 const MAX_CLIQUES: usize = 1_000_000;
-
-/// Tie-break comparator reproducing JavaScript `String.localeCompare`'s
-/// collation for the ASCII paths that dominate real corpora, matching the
-/// authoritative prototype oracle (`scripts/git-mesh-tree-demo.mjs`).
-///
-/// `localeCompare` collates case-insensitively at its primary level (so
-/// `b.rs` precedes `Z.rs`, unlike Rust byte order). We reproduce that by
-/// comparing lowercased forms first, then fall back to raw `str` order as a
-/// deterministic stable secondary when the case-insensitive forms are equal.
-///
-/// This matches `localeCompare` exactly for ASCII (the high-occurrence case)
-/// and is fully deterministic otherwise. Full ICU non-ASCII collation is out
-/// of scope, and `localeCompare` is itself locale-dependent there.
-fn locale_cmp(left: &str, right: &str) -> Ordering {
-    left.to_lowercase()
-        .cmp(&right.to_lowercase())
-        .then_with(|| left.cmp(right))
-}
 
 // ---------------------------------------------------------------------------
 // Public data types
@@ -165,7 +154,7 @@ fn build_forest(
     root_cliques.sort_by(|left, right| {
         clique_internal_weight(graph, right)
             .cmp(&clique_internal_weight(graph, left))
-            .then_with(|| locale_cmp(&left[0], &right[0]))
+            .then_with(|| left[0].cmp(&right[0]))
     });
 
     root_cliques
@@ -400,7 +389,7 @@ fn order_members(
     members.sort_by(|left, right| {
         internal_weight(right)
             .cmp(&internal_weight(left))
-            .then_with(|| locale_cmp(left, right))
+            .then_with(|| left.cmp(right))
     });
     members
 }
@@ -464,7 +453,7 @@ fn expand_clique(
     child_cliques.sort_by(|left, right| {
         link_weight(right)
             .cmp(&link_weight(left))
-            .then_with(|| locale_cmp(&left[0], &right[0]))
+            .then_with(|| left[0].cmp(&right[0]))
     });
 
     child_cliques

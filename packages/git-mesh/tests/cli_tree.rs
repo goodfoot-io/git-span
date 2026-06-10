@@ -410,13 +410,13 @@ fn unmatched_arg_error_backtick_quotes_arg() -> Result<()> {
     Ok(())
 }
 
-/// Mixed-case sibling paths must order by the oracle's `localeCompare`
-/// collation (case-insensitive primary level), not Rust byte order. The oracle
-/// orders `b.rs` before `Z.rs`; Rust byte order would put `Z.rs` first
-/// (uppercase `Z` = 0x5A precedes lowercase `b` = 0x62). The two equal-weight
-/// siblings here exercise the tie-break comparator (finding 2).
+/// Mixed-case sibling paths use deterministic raw byte ordering, not
+/// `localeCompare`. Under raw byte order, uppercase `Z` (0x5A) precedes
+/// lowercase `b` (0x62), so `Z.rs` sorts before `b.rs`. The two equal-weight
+/// siblings here exercise the tie-break comparator — this test pins the
+/// intended contract: deterministic, locale-independent byte ordering.
 #[test]
-fn mixed_case_siblings_match_oracle_locale_order() -> Result<()> {
+fn mixed_case_siblings_use_deterministic_byte_order() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["root.rs", "Z.rs", "b.rs"])?;
     // root.rs links to both Z.rs and b.rs with equal weight; Z.rs and b.rs are
@@ -429,8 +429,8 @@ fn mixed_case_siblings_match_oracle_locale_order() -> Result<()> {
     let z_pos = out.find("Z.rs").expect("Z.rs must appear");
     let b_pos = out.find("b.rs").expect("b.rs must appear");
     assert!(
-        b_pos < z_pos,
-        "b.rs must precede Z.rs (localeCompare order), got:\n{out}"
+        z_pos < b_pos,
+        "Z.rs (0x5A) must precede b.rs (0x62) in raw byte order, got:\n{out}"
     );
     Ok(())
 }
