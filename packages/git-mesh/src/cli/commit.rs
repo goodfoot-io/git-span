@@ -11,6 +11,7 @@
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
 use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, WhyArgs};
+use crate::git::IndexEntrySnapshot;
 use crate::mesh_file::AnchorRecord;
 use crate::mesh_file::MeshFile;
 use crate::mesh_file::parse_address;
@@ -81,6 +82,7 @@ pub(crate) fn hash_anchor_content(
     path: &str,
     extent: &AnchorExtent,
     anchor_oid: Option<&str>,
+    index_snapshot: &[IndexEntrySnapshot],
 ) -> Result<(String, String)> {
     // Worktree reads must use the *same* canonicalization the resolver
     // compares against, or a freshly-added anchor reads `Changed`/`Moved`
@@ -98,13 +100,9 @@ pub(crate) fn hash_anchor_content(
     // (D2); hash the gitlink OID hex so drift = the submodule pointer
     // changing. This matches the resolver's gitlink canonicalization.
     let gitlink_oid = || -> Option<Vec<u8>> {
-        crate::git::index_entries(repo)
-            .ok()
-            .and_then(|entries| {
-                entries
-                    .into_iter()
-                    .find(|en| en.path == path && en.mode.is_commit())
-            })
+        index_snapshot
+            .iter()
+            .find(|en| en.path == path && en.mode.is_commit())
             .map(|en| en.oid.to_string().into_bytes())
     };
 
@@ -306,6 +304,19 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         None => None,
     };
 
+    // Materialize the index snapshot once — every anchor-processing site
+    // below (existence probe, validate_add_target, hash_anchor_content)
+    // shares this single snapshot instead of re-reading the index per
+    // anchor.
+    let index_snapshot = crate::git::index_entries(repo).map_err(|e| {
+        CliError {
+            subcommand: "add",
+            summary: "failed to read the git index.".into(),
+            what_happened: e.to_string(),
+            next_steps: vec![NextStep::Bash("git status".into())],
+        }
+    })?;
+
     // Anchor source-path safety (fail-closed, per `<fail-closed>` and the
     // File Format / Storage Layout path rules). Every anchor address path
     // must be a safe repo-relative path — the same rule enforced for the
@@ -353,9 +364,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
             let exists = if let Some(oid) = anchor_oid.as_deref() {
                 crate::git::path_blob_at(repo, oid, path).is_ok()
             } else {
-                let tracked = crate::git::index_entries(repo)
-                    .map(|entries| entries.iter().any(|en| en.path == *path))
-                    .unwrap_or(false);
+                let tracked = index_snapshot.iter().any(|en| en.path == *path);
                 tracked || workdir.join(path).exists()
             };
             if !exists {
@@ -398,7 +407,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     {
         let _perf = crate::perf::span("add.validate-targets");
         for (path, extent) in &parsed {
-            validate_add_target(repo, std::path::Path::new(path), extent).map_err(|err| {
+            validate_add_target(repo, std::path::Path::new(path), extent, &index_snapshot).map_err(|err| {
                 let next_steps = match &err {
                     crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
                         NextStep::Prose(
@@ -470,7 +479,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         let _perf = crate::perf::span("add.process-anchors");
         for (path, extent) in &parsed {
             let (algorithm, content_hash) =
-                hash_anchor_content(repo, path, extent, anchor_oid.as_deref())?;
+                hash_anchor_content(repo, path, extent, anchor_oid.as_deref(), &index_snapshot)?;
             let addr = addr_from_extent(path, extent);
 
             let (start_line, end_line) = match extent {

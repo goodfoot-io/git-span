@@ -10,6 +10,7 @@
 
 use crate::cli::commit::{hash_anchor_content, read_worktree_mesh,
     write_worktree_mesh};
+use crate::git::IndexEntrySnapshot;
 use crate::mesh_file::{AnchorRecord, MeshFile};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, MeshResolved};
 use anyhow::Result;
@@ -51,6 +52,11 @@ pub(crate) fn apply_fix(
         .rev_parse_single("HEAD")
         .ok()
         .map(|id| id.detach().to_string());
+
+    // Materialize the index snapshot once — shared by every
+    // hash_anchor_content call and the Index-layer hash path below.
+    let index_snapshot: Option<Vec<IndexEntrySnapshot>> =
+        crate::git::index_entries(repo).ok();
 
     for m in meshes {
         // Read the on-disk mesh file. If it cannot be parsed (e.g. textual
@@ -112,9 +118,10 @@ pub(crate) fn apply_fix(
             let cur_extent = current.extent;
 
             // Compute the canonical hash from the surfacing layer.
+            let idx = index_snapshot.as_deref().unwrap_or(&[]);
             let hash_hex: String = match layer {
                 DriftSource::Worktree => {
-                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, None) {
+                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, None, idx) {
                         Ok((_alg, h)) => h,
                         Err(_) => continue,
                     }
@@ -124,19 +131,17 @@ pub(crate) fn apply_fix(
                         Some(o) => o,
                         None => continue,
                     };
-                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid)) {
+                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx) {
                         Ok((_alg, h)) => h,
                         Err(_) => continue,
                     }
                 }
                 DriftSource::Index => {
                     // Read the index entry's blob bytes, then hash per extent.
-                    let entries = match crate::git::index_entries(repo) {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
-                    let entry = match entries
-                        .into_iter()
+                    let entry = match index_snapshot
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
                         .find(|en| en.path == cur_path_str && en.stage == gix::index::entry::Stage::Unconflicted)
                     {
                         Some(e) => e,
@@ -260,6 +265,7 @@ pub(crate) fn apply_fix(
             &mut mesh_file,
             &mergeable_keys,
             &mut rewritten,
+            index_snapshot.as_deref().unwrap_or(&[]),
         );
 
         if any_rewritten || coalesced {
@@ -315,6 +321,7 @@ fn coalesce_line_ranges(
     mesh_file: &mut MeshFile,
     mergeable_keys: &HashSet<(String, u32, u32)>,
     merged_ids: &mut HashSet<String>,
+    index_snapshot: &[IndexEntrySnapshot],
 ) -> bool {
     // Group line-range record indices by path; whole-file anchors (0/0) are
     // inert and never enter a group. BTreeMap keeps path iteration order
@@ -399,7 +406,7 @@ fn coalesce_line_ranges(
                             start,
                             end: new_end,
                         };
-                        match hash_anchor_content(repo, &path, &extent, None) {
+                        match hash_anchor_content(repo, &path, &extent, None, index_snapshot) {
                             Ok((_alg, h)) => {
                                 members.push(i);
                                 run = Some((members, start, new_end, Some(h)));

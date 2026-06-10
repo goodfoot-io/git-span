@@ -870,6 +870,7 @@ pub fn validate_add_target(
     repo: &gix::Repository,
     path: &std::path::Path,
     extent: &AnchorExtent,
+    index_snapshot: &[crate::git::IndexEntrySnapshot],
 ) -> std::result::Result<(), AddPrecheckError> {
     let workdir = repo
         .workdir()
@@ -877,8 +878,8 @@ pub fn validate_add_target(
     let path_str = path.to_string_lossy().into_owned();
     let abs = workdir.join(path);
 
-    // Submodule detection via `git ls-files --stage`.
-    let submodule_kind = submodule_classify(workdir, &path_str)?;
+    // Submodule detection from the pre-built index snapshot.
+    let submodule_kind = submodule_classify(index_snapshot, &path_str);
 
     // Gitignored target: git never tracks this path, so the resolver can
     // never see it and `stale` would report it `deleted` forever. Reject
@@ -887,7 +888,7 @@ pub fn validate_add_target(
     // an untracked-but-not-ignored path is a legitimate anchor that
     // resolves on commit (so it must still be allowed).
     if crate::git::path_is_ignored(repo, path).unwrap_or(false)
-        && !is_tracked_path(workdir, &path_str)
+        && !is_tracked_path(index_snapshot, &path_str)
     {
         return Err(AddPrecheckError::GitignoredPath { path: path_str });
     }
@@ -977,46 +978,32 @@ enum SubmoduleKind {
 
 /// Whether `path` (mesh-root-relative POSIX string) has an index entry —
 /// i.e. git tracks it. Used to spare force-added paths from the
-/// gitignore reject. Any open/read failure is treated as "not tracked"
-/// so the ignore check stays fail-closed.
-fn is_tracked_path(workdir: &std::path::Path, path: &str) -> bool {
-    let Ok(repo) = gix::open(workdir) else {
-        return false;
-    };
-    let Ok(entries) = crate::git::index_entries(&repo) else {
-        return false;
-    };
-    entries.iter().any(|e| e.path == path)
+/// gitignore reject.
+fn is_tracked_path(index_snapshot: &[crate::git::IndexEntrySnapshot], path: &str) -> bool {
+    index_snapshot.iter().any(|e| e.path == path)
 }
 
 fn submodule_classify(
-    workdir: &std::path::Path,
+    index_snapshot: &[crate::git::IndexEntrySnapshot],
     path: &str,
-) -> std::result::Result<SubmoduleKind, AddPrecheckError> {
-    // Read all gitlinks once.
-    let repo = gix::open(workdir)
-        .map_err(|e| AddPrecheckError::Io(std::io::Error::other(format!("open repo: {e}"))))?;
-    let entries = match crate::git::index_entries(&repo) {
-        Ok(e) => e,
-        Err(_) => return Ok(SubmoduleKind::None),
-    };
-    let mut gitlinks: Vec<String> = Vec::new();
-    for entry in entries {
+) -> SubmoduleKind {
+    let mut gitlinks: Vec<&str> = Vec::new();
+    for entry in index_snapshot {
         // Submodule gitlinks are mode 0o160000 (Commit).
         if entry.mode.is_commit() {
-            gitlinks.push(entry.path);
+            gitlinks.push(&entry.path);
         }
     }
     for g in &gitlinks {
-        if g == path {
-            return Ok(SubmoduleKind::Gitlink);
+        if *g == path {
+            return SubmoduleKind::Gitlink;
         }
         let prefix = format!("{g}/");
         if path.starts_with(&prefix) {
-            return Ok(SubmoduleKind::Inside);
+            return SubmoduleKind::Inside;
         }
     }
-    Ok(SubmoduleKind::None)
+    SubmoduleKind::None
 }
 
 fn check_binary_attribute(
