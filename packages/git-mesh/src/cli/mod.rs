@@ -25,6 +25,7 @@ pub mod interior_anchor;
 pub mod show;
 pub mod stale_fix;
 pub mod stale_output;
+pub mod tree;
 
 pub use drift_label::format_drift_label;
 
@@ -102,6 +103,9 @@ pub enum Commands {
 
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
+
+    /// Render a clique-grouped impact tree rooted at the matched anchor paths.
+    Tree(TreeArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -360,6 +364,27 @@ pub struct DoctorArgs {
     pub strict: bool,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum TreeFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TreeArgs {
+    /// File paths or globs to use as tree roots (repo-relative, required).
+    pub globs: Vec<String>,
+
+    /// Maximum expansion depth (0 = roots only).
+    #[arg(short = 'd', long, default_value_t = 3)]
+    pub depth: usize,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = TreeFormat::Human)]
+    pub format: TreeFormat,
+}
+
 /// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -440,6 +465,10 @@ pub fn dispatch(
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");
             doctor::run_doctor(repo, args, mesh_root)
+        }
+        Commands::Tree(args) => {
+            let _perf = crate::perf::span("command.tree");
+            tree::run_tree(repo, args, mesh_root)
         }
     }
 }
