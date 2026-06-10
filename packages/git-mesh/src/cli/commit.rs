@@ -188,7 +188,17 @@ pub(crate) fn read_worktree_mesh(repo: &gix::Repository, mesh_root: &str, name: 
     }
 }
 
-/// Write a mesh file to the worktree, creating parent directories as needed.
+/// Write a mesh file to the worktree atomically, creating parent directories
+/// as needed.
+///
+/// Writes to a dot-prefixed temp file in the same directory, then
+/// [`std::fs::rename`]s it to the target path.  Rename is atomic on the
+/// same filesystem, so a crash or interruption never leaves a truncated
+/// mesh file on disk — either the old content or the new content is
+/// always visible.
+///
+/// The dot prefix (`.mesh.tmp`) is already hidden from all three
+/// enumeration paths by [`crate::mesh_file_reader::is_mesh_name_segment`].
 pub(crate) fn write_worktree_mesh(
     repo: &gix::Repository,
     mesh_root: &str,
@@ -199,7 +209,17 @@ pub(crate) fn write_worktree_mesh(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, mesh.serialize())?;
+    let tmp_name = format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("mesh")
+    );
+    let tmp_path = path.parent().map(|p| p.join(&tmp_name)).unwrap_or_else(|| {
+        std::path::PathBuf::from(&tmp_name)
+    });
+    std::fs::write(&tmp_path, mesh.serialize())?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
@@ -898,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_mesh_file_loses_all_anchors() {
+    fn write_worktree_mesh_leaves_no_temp_file_after_rename() {
         let (_dir, repo) = temp_repo();
 
         let mesh = MeshFile {
@@ -918,33 +938,36 @@ mod tests {
                     content_hash: "2222".into(),
                 },
             ],
-            why: "vulnerability demo".into(),
+            why: "atomic write verification".into(),
         };
 
-        write_worktree_mesh(&repo, ".mesh", "test/vuln", &mesh).unwrap();
-        let path = mesh_file_path(&repo, ".mesh", "test/vuln").unwrap();
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh).unwrap();
+        let path = mesh_file_path(&repo, ".mesh", "test/atomic").unwrap();
 
-        // Verify written correctly.
-        let original = std::fs::read_to_string(&path).unwrap();
-        assert!(original.contains("src/a.rs"));
-        assert!(original.contains("src/b.rs"));
-        assert!(original.contains("vulnerability demo"));
+        // The mesh file must exist and be complete.
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("src/a.rs"));
+        assert!(content.contains("src/b.rs"));
+        assert!(content.contains("atomic write verification"));
 
-        // Simulate a crash during write: truncate the mesh file to 0 bytes.
-        std::fs::write(&path, "").unwrap();
-
-        // Read back — anchors are silently lost.
-        let after = read_worktree_mesh(&repo, ".mesh", "test/vuln").unwrap();
-
-        // DESIRED behavior: data should survive crash-like scenarios.
-        // CURRENT reality: non-atomic write leaves a truncated file —
-        // anchors are gone and the why text is empty.
+        // No temp file should remain — rename consumed it.
+        let parent = path.parent().unwrap();
+        let mut tmp_exists = false;
+        for entry in std::fs::read_dir(parent).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            if name.starts_with('.') && name.ends_with(".tmp") {
+                tmp_exists = true;
+            }
+        }
         assert!(
-            !after.anchors.is_empty(),
-            "BUG: truncated mesh file returns empty anchors — \
-             {n} anchors permanently lost. \
-             Atomic writes (temp + rename) prevent this.",
-            n = mesh.anchors.len()
+            !tmp_exists,
+            "temp file remained after write_worktree_mesh — rename must consume it"
         );
+
+        // Read back through read_worktree_mesh to confirm round-trip.
+        let read_back = read_worktree_mesh(&repo, ".mesh", "test/atomic").unwrap();
+        assert_eq!(read_back.anchors.len(), 2);
+        assert_eq!(read_back.why, "atomic write verification");
     }
 }
