@@ -359,6 +359,10 @@ pub struct LineIndex<'a> {
     /// Files exceeding [`PREFILTER_TABLES_MAX_BYTES`] never allocate these
     /// tables; the scan falls back to per-window `horner`.
     fp_tables: Arc<OnceLock<PrefixTables>>,
+    /// `true` when the buffer contains no `\r` bytes and is valid UTF-8.
+    /// Computed once at build time so that both scan inner loops avoid
+    /// re-scanning the whole buffer per call.
+    lf_clean: bool,
 }
 
 impl<'a> LineIndex<'a> {
@@ -395,7 +399,8 @@ impl<'a> LineIndex<'a> {
             starts.push(seg as u32);
             ends.push(bytes.len() as u32);
         }
-        LineIndex { bytes, starts, ends, fp_tables: Arc::new(OnceLock::new()) }
+        let lf_clean = !bytes.contains(&b'\r') && std::str::from_utf8(bytes).is_ok();
+        LineIndex { bytes, starts, ends, fp_tables: Arc::new(OnceLock::new()), lf_clean }
     }
 
     /// The underlying buffer.
@@ -698,7 +703,7 @@ fn scan_one_file_fp_filtered(
 ) {
     let (win_lo, win_hi) = wins;
     let bytes = idx.bytes;
-    let simple = is_lf_and_utf8_clean(bytes);
+    let simple = idx.lf_clean;
 
     if simple {
         // Prefix hashes `ph[k] = horner(bytes[0..k])` and powers `pow[i] =
@@ -896,7 +901,7 @@ fn scan_one_file(
 ) {
     let (win_lo, win_hi) = wins;
     let bytes = idx.bytes;
-    let simple = is_lf_and_utf8_clean(bytes);
+    let simple = idx.lf_clean;
 
     if simple {
         for win in win_lo..=win_hi {
