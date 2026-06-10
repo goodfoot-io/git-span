@@ -422,6 +422,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_crlf_matches_lf_twin() {
+        let lf = MeshFile::parse("a.txt sha256:111\n\nwhy text\n").unwrap();
+        let crlf = MeshFile::parse("a.txt sha256:111\r\n\r\nwhy text\r\n").unwrap();
+        assert_eq!(crlf, lf);
+        assert_eq!(crlf.anchors.len(), 1);
+        assert_eq!(crlf.anchors[0].path, "a.txt");
+        assert_eq!(crlf.anchors[0].algorithm, "sha256");
+        assert_eq!(crlf.anchors[0].content_hash, "111");
+        assert_eq!(crlf.why, "why text");
+    }
+
+    #[test]
+    fn parse_leading_newline_preserves_why_indentation() {
+        let mesh = MeshFile::parse("\n  indented why").unwrap();
+        assert_eq!(mesh.why, "  indented why");
+        // The blank-line-separator sibling path must agree.
+        let sibling = MeshFile::parse("\n\n  indented why").unwrap();
+        assert_eq!(mesh.why, sibling.why);
+    }
+
+    #[test]
     fn parse_rejects_missing_space() {
         let result = MeshFile::parse("badline\n");
         assert!(result.is_err());
