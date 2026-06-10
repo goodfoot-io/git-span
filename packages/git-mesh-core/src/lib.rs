@@ -44,10 +44,15 @@ pub enum AnchorExtent {
 
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
+    SHA256_HEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
 }
+
+/// Test instrumentation: count every [`sha256_hex`] call so tests can
+/// assert that non-canonical wants short-circuit before any hashing.
+pub static SHA256_HEX_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Hash `bytes` per the anchor's `extent`. Whole-file extents hash the
 /// full byte buffer; line ranges hash the `\n`-joined slice of lines
