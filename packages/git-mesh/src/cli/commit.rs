@@ -832,3 +832,119 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
     run_why_writer(repo, name, &body, mesh_root)?;
     print_why_written(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh_file::AnchorRecord;
+
+    /// Build a minimal gix repo in a tempdir for unit tests.
+    fn temp_repo() -> (tempfile::TempDir, gix::Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        gix::init(dir.path()).unwrap();
+        let opts = gix::open::Options::default();
+        let repo = gix::open_opts(dir.path(), opts).unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_worktree_mesh_is_atomic() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_dir, repo) = temp_repo();
+
+        let mesh = MeshFile {
+            anchors: vec![AnchorRecord {
+                path: "src/lib.rs".into(),
+                start_line: 1,
+                end_line: 10,
+                algorithm: "rk64".into(),
+                content_hash: "aaaa".into(),
+            }],
+            why: "first write".into(),
+        };
+
+        // First write: creates the file.
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh).unwrap();
+        let path = mesh_file_path(&repo, ".mesh", "test/atomic").unwrap();
+        assert!(path.exists(), "mesh file should exist after first write");
+
+        let ino_before = std::fs::metadata(&path).unwrap().ino();
+
+        // Second write: updates the same mesh with different content.
+        let mesh2 = MeshFile {
+            anchors: vec![AnchorRecord {
+                path: "src/main.rs".into(),
+                start_line: 5,
+                end_line: 15,
+                algorithm: "rk64".into(),
+                content_hash: "bbbb".into(),
+            }],
+            why: "second write".into(),
+        };
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh2).unwrap();
+
+        let ino_after = std::fs::metadata(&path).unwrap().ino();
+
+        // Atomic writes (temp + rename) replace the directory entry, giving
+        // the file a new inode.  Non-atomic writes (std::fs::write) truncate
+        // and overwrite in place, keeping the same inode.
+        assert_ne!(
+            ino_before, ino_after,
+            "write_worktree_mesh must use atomic rename (inode changed), \
+             but inode stayed the same — direct write detected"
+        );
+    }
+
+    #[test]
+    fn truncated_mesh_file_loses_all_anchors() {
+        let (_dir, repo) = temp_repo();
+
+        let mesh = MeshFile {
+            anchors: vec![
+                AnchorRecord {
+                    path: "src/a.rs".into(),
+                    start_line: 1,
+                    end_line: 5,
+                    algorithm: "rk64".into(),
+                    content_hash: "1111".into(),
+                },
+                AnchorRecord {
+                    path: "src/b.rs".into(),
+                    start_line: 10,
+                    end_line: 20,
+                    algorithm: "rk64".into(),
+                    content_hash: "2222".into(),
+                },
+            ],
+            why: "vulnerability demo".into(),
+        };
+
+        write_worktree_mesh(&repo, ".mesh", "test/vuln", &mesh).unwrap();
+        let path = mesh_file_path(&repo, ".mesh", "test/vuln").unwrap();
+
+        // Verify written correctly.
+        let original = std::fs::read_to_string(&path).unwrap();
+        assert!(original.contains("src/a.rs"));
+        assert!(original.contains("src/b.rs"));
+        assert!(original.contains("vulnerability demo"));
+
+        // Simulate a crash during write: truncate the mesh file to 0 bytes.
+        std::fs::write(&path, "").unwrap();
+
+        // Read back — anchors are silently lost.
+        let after = read_worktree_mesh(&repo, ".mesh", "test/vuln").unwrap();
+
+        // DESIRED behavior: data should survive crash-like scenarios.
+        // CURRENT reality: non-atomic write leaves a truncated file —
+        // anchors are gone and the why text is empty.
+        assert!(
+            !after.anchors.is_empty(),
+            "BUG: truncated mesh file returns empty anchors — \
+             {n} anchors permanently lost. \
+             Atomic writes (temp + rename) prevent this.",
+            n = mesh.anchors.len()
+        );
+    }
+}
