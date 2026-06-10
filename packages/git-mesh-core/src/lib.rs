@@ -302,7 +302,14 @@ pub fn scan_for_content_hash(
     // line index for every file would be pure waste — match directly.
     if let AnchorExtent::WholeFile = extent {
         let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-        return whole_file_matches(files, |b| b.as_slice(), |b| sha256_hex(b) == want);
+        // A non-canonical `want` can never match a lowercase-hex digest, so
+        // short-circuit before any SHA-256 work.
+        let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
+        return whole_file_matches(files, |b| b.as_slice(), |b| {
+            let mut h = Sha256::new();
+            h.update(b);
+            h.finalize().as_slice() == target.as_slice()
+        });
     }
     let indexed = build_indexed(files);
     scan_indexed(&indexed, content_hash, extent, near)
@@ -553,7 +560,7 @@ pub fn scan_indexed_prefiltered(
     if span == 0 {
         return Vec::new();
     }
-    let target = decode_lower_hex32(want);
+    let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
     let mut out: Vec<Location> = Vec::new();
     scan_files(
         files,
@@ -561,13 +568,10 @@ pub fn scan_indexed_prefiltered(
         |n| Some((0, n - span)),
         |path, idx, w, out| {
             // Confirm each fingerprint candidate with the authoritative SHA-256.
-            let confirm = |slice: &[u8]| match &target {
-                Some(t) => {
-                    let mut h = Sha256::new();
-                    h.update(slice);
-                    h.finalize().as_slice() == t.as_slice()
-                }
-                None => sha256_hex(slice) == want,
+            let confirm = |slice: &[u8]| {
+                let mut h = Sha256::new();
+                h.update(slice);
+                h.finalize().as_slice() == target.as_slice()
             };
             scan_one_file_fp_filtered(path, idx, span, w, cheap_fp, confirm, out);
         },
@@ -728,7 +732,12 @@ pub fn scan_indexed(
 
     match extent {
         AnchorExtent::WholeFile => {
-            whole_file_matches(files, |idx| idx.bytes, |b| sha256_hex(b) == want)
+            let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
+            whole_file_matches(files, |idx| idx.bytes, |b| {
+                let mut h = Sha256::new();
+                h.update(b);
+                h.finalize().as_slice() == target.as_slice()
+            })
         }
         AnchorExtent::LineRange { start, end } => {
             let span = line_range_span(start, end);
@@ -736,17 +745,17 @@ pub fn scan_indexed(
                 return Vec::new();
             }
             // Decode the wanted digest once so each window compares 32 bytes
-            // instead of formatting a fresh 64-char hex string. A malformed
-            // or non-lowercase `want` can never equal a real lowercase-hex
-            // digest, so it falls to the string-compare path (no match).
-            let target = decode_lower_hex32(want);
+            // instead of formatting a fresh 64-char hex string. A non-canonical
+            // `want` can never equal a real lowercase-hex digest, so
+            // short-circuit before any window iteration.
+            let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
             let mut out: Vec<Location> = Vec::new();
             scan_files(
                 files,
                 span,
                 |n| Some((0, n - span)),
                 |path, idx, w, out| {
-                    scan_one_file(path, idx, span, w, &target, want, out);
+                    scan_one_file(path, idx, span, w, &target, out);
                 },
                 &mut out,
             );
@@ -809,7 +818,7 @@ pub fn scan_indexed_near_radius(
     if span == 0 {
         return Vec::new();
     }
-    let target = decode_lower_hex32(want);
+    let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
     // The window whose 1-based start line is `s` has window index `s - 1`.
     // Bound the band to `[near - radius, near + radius]` in start-line space.
     let near0 = near.saturating_sub(1) as usize; // 0-based center window index
@@ -825,7 +834,7 @@ pub fn scan_indexed_near_radius(
             (win_lo <= win_hi).then_some((win_lo, win_hi))
         },
         |path, idx, w, out| {
-            scan_one_file(path, idx, span, w, &target, want, out);
+            scan_one_file(path, idx, span, w, &target, out);
         },
         &mut out,
     );
@@ -846,8 +855,7 @@ fn scan_one_file(
     idx: &LineIndex,
     span: usize,
     wins: (usize, usize),
-    target: &Option<[u8; 32]>,
-    want: &str,
+    target: &[u8; 32],
     out: &mut Vec<Location>,
 ) {
     let (win_lo, win_hi) = wins;
@@ -859,15 +867,9 @@ fn scan_one_file(
             let rs = idx.starts[win] as usize;
             let re = idx.ends[win + span - 1] as usize;
             let slice = &bytes[rs..re];
-            let matched = match target {
-                Some(t) => {
-                    let mut h = Sha256::new();
-                    h.update(slice);
-                    h.finalize().as_slice() == t.as_slice()
-                }
-                None => sha256_hex(slice) == want,
-            };
-            if matched {
+            let mut h = Sha256::new();
+            h.update(slice);
+            if h.finalize().as_slice() == target.as_slice() {
                 out.push(Location {
                     path: path.to_string(),
                     start_line: (win as u32) + 1,
@@ -880,7 +882,9 @@ fn scan_one_file(
         let lines: Vec<&str> = text.lines().collect();
         for win in win_lo..=win_hi {
             let slice_text = lines[win..win + span].join("\n");
-            if sha256_hex(slice_text.as_bytes()) == want {
+            let mut h = Sha256::new();
+            h.update(slice_text.as_bytes());
+            if h.finalize().as_slice() == target.as_slice() {
                 out.push(Location {
                     path: path.to_string(),
                     start_line: (win as u32) + 1,
