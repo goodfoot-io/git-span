@@ -219,16 +219,15 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
         )));
     }
 
-    // Delegate address parsing to `parse_address`, the single authority on
-    // the anchor-address grammar and path normalization. Re-implementing the
-    // grammar here is what let the two surfaces drift: backslash paths went
-    // un-normalized and a bare `#` (e.g. `file.ts#88`) was silently accepted
-    // as a whole-file path. Mapping `None` to `InvalidMeshFile` preserves the
-    // mesh-file surface's richer error type while sharing one grammar.
-    let (path, extent) = parse_address(address).ok_or_else(|| {
-        Error::InvalidMeshFile(format!(
-            "malformed anchor address `{address}`: expected `<path>` or `<path>#L<start>-L<end>`"
-        ))
+    // Delegate the address grammar and path normalization to the single
+    // authority, `parse_anchor_address`. Re-implementing the grammar here is
+    // what let the two surfaces drift: backslash paths went un-normalized and
+    // a bare `#` (e.g. `file.ts#88`) was silently accepted as a whole-file
+    // path. The mesh-file surface keeps its richer error type by rendering the
+    // typed `AddressError` into an `InvalidMeshFile` message — the one
+    // legitimate difference between this surface and the CLI's `Option`.
+    let (path, extent) = parse_anchor_address(address).map_err(|e| {
+        Error::InvalidMeshFile(format!("malformed anchor address `{address}`: {e}"))
     })?;
 
     let (start_line, end_line) = match extent {
@@ -254,37 +253,98 @@ fn normalize_anchor_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// Parse a `<path>#L<start>-L<end>` line-anchor address, or a bare
-/// `<path>` whole-file address. Returns `None` on malformed line-anchor
-/// fragments — callers should reject those at the CLI boundary.
+/// Why an anchor address failed to parse. Naming each failure mode lets the
+/// two reading surfaces share one grammar while keeping their own error
+/// presentation: [`parse_address`] (the CLI boundary) collapses every variant
+/// to `None`, while [`parse_anchor_line`] renders each into a specific
+/// `InvalidMeshFile` message.
+#[derive(Debug, PartialEq, Eq)]
+enum AddressError {
+    /// The path component before `#L` (or the whole address) is empty.
+    EmptyPath,
+    /// A `#` without a following `L` (e.g. `file.ts#88`) — invalid syntax.
+    BareHash,
+    /// `#L` was present but the `-L<end>` separator was missing.
+    MissingRangeSeparator,
+    /// The `<start>` between `#L` and `-L` was not a `u32`.
+    InvalidStartLine,
+    /// The `<end>` after `-L` was not a `u32`.
+    InvalidEndLine,
+    /// `<start>` parsed to 0; line numbers are 1-based.
+    StartLineZero,
+    /// `<end>` is below `<start>`, so the range is empty.
+    EndBeforeStart { start: u32, end: u32 },
+}
+
+impl fmt::Display for AddressError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AddressError::EmptyPath => write!(f, "empty file path"),
+            AddressError::BareHash => {
+                write!(f, "`#` without `L` is invalid anchor syntax (e.g. `file.ts#88`)")
+            }
+            AddressError::MissingRangeSeparator => {
+                write!(f, "expected `<path>#L<start>-L<end>`")
+            }
+            AddressError::InvalidStartLine => write!(f, "invalid start line"),
+            AddressError::InvalidEndLine => write!(f, "invalid end line"),
+            AddressError::StartLineZero => write!(f, "start line must be >= 1"),
+            AddressError::EndBeforeStart { start, end } => {
+                write!(f, "end line {end} < start line {start}")
+            }
+        }
+    }
+}
+
+/// The single anchor-address grammar and path-normalization authority.
 ///
-/// The path component is normalized to the canonical forward-slash form
-/// (see [`normalize_anchor_path`]) so a backslash-spelled path authored on
-/// Windows resolves against the forward-slash git tree everywhere.
-pub fn parse_address(text: &str) -> Option<(String, AnchorExtent)> {
+/// `<path>#L<start>-L<end>` yields a line range; a bare `<path>` yields a
+/// whole-file extent. A `#` without a following `L` (e.g. `file.ts#88`) is
+/// invalid. The path is normalized to the canonical forward-slash form (see
+/// [`normalize_anchor_path`]) so a backslash-spelled path authored on Windows
+/// resolves against the forward-slash git tree everywhere.
+///
+/// Returns a typed [`AddressError`] so each caller can choose its own error
+/// presentation.
+fn parse_anchor_address(text: &str) -> std::result::Result<(String, AnchorExtent), AddressError> {
     if let Some((path, fragment)) = text.split_once("#L") {
-        let (start, end) = fragment.split_once("-L")?;
         if path.is_empty() {
-            return None;
+            return Err(AddressError::EmptyPath);
         }
-        let start: u32 = start.parse().ok()?;
-        let end: u32 = end.parse().ok()?;
-        if start < 1 || end < start {
-            return None;
+        let (start, end) = fragment
+            .split_once("-L")
+            .ok_or(AddressError::MissingRangeSeparator)?;
+        let start: u32 = start.parse().map_err(|_| AddressError::InvalidStartLine)?;
+        let end: u32 = end.parse().map_err(|_| AddressError::InvalidEndLine)?;
+        if start < 1 {
+            return Err(AddressError::StartLineZero);
         }
-        return Some((
+        if end < start {
+            return Err(AddressError::EndBeforeStart { start, end });
+        }
+        return Ok((
             normalize_anchor_path(path),
             AnchorExtent::LineRange { start, end },
         ));
     }
     // A `#` without a following `L` is invalid anchor syntax (e.g., `file.ts#88`).
     if text.contains('#') {
-        return None;
+        return Err(AddressError::BareHash);
     }
     if text.is_empty() {
-        return None;
+        return Err(AddressError::EmptyPath);
     }
-    Some((normalize_anchor_path(text), AnchorExtent::WholeFile))
+    Ok((normalize_anchor_path(text), AnchorExtent::WholeFile))
+}
+
+/// Parse a `<path>#L<start>-L<end>` line-anchor address, or a bare
+/// `<path>` whole-file address. Returns `None` on any malformed address —
+/// the CLI boundary rejects those silently.
+///
+/// Thin `Option`-returning facade over [`parse_anchor_address`], the shared
+/// grammar/normalization authority.
+pub fn parse_address(text: &str) -> Option<(String, AnchorExtent)> {
+    parse_anchor_address(text).ok()
 }
 
 #[cfg(test)]
