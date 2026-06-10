@@ -1,4 +1,4 @@
-FROM node:24
+FROM node:24.16.0-trixie
 
 ARG TZ
 ENV TZ="$TZ"
@@ -111,6 +111,7 @@ RUN npm install -g @ast-grep/cli jsdoczoom
 # triple must match the build platform, and the trailing --version run makes a
 # wrong-arch or corrupt download fail the image build instead of surfacing
 # later as an opaque "could not exec sccache" Cargo error.
+USER root
 ARG SCCACHE_VERSION=0.10.0
 RUN case "$(uname -m)" in \
       aarch64) SCCACHE_TRIPLE=aarch64-unknown-linux-musl ;; \
