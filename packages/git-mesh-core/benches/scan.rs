@@ -151,5 +151,149 @@ fn bench_scan(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_scan);
-criterion_main!(benches);
+/// Benchmark the per-anchor cost of [`scan_indexed_prefiltered`] when a single
+/// shared [`LineIndex`] — with its cached prefix tables — is used for all
+/// anchors (warm path), versus building a fresh [`LineIndex`] per anchor (cold
+/// baseline). The ratio between these two is the K·O(N) table-construction
+/// overhead that cached prefix tables eliminate.
+fn bench_many_anchors_one_index(c: &mut Criterion) {
+    let bytes = big_file();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let span = 40u32;
+
+    // A single shared index for the warm-path benchmarks.  The first prefiltered
+    // scan lazily populates `fp_tables`; subsequent scans reuse the same tables.
+    let idx = LineIndex::build(&bytes);
+    let indexed_shared = vec![("scaffold.rs".to_string(), idx)];
+
+    /// Precomputed data for one anchor, assembled by [`make_anchors`].
+    struct AnchorBench {
+        content_hash: String,
+        cheap_fp: u64,
+        extent: AnchorExtent,
+        near: u32,
+    }
+
+    /// Produce `count` anchors spread evenly across the file, each targeting a
+    /// distinct line range.  The content hash and fingerprint match the lines at
+    /// the anchor's own position (no edit-shift, so the scan finds a single
+    /// result per anchor).
+    fn make_anchors(lines: &[&str], count: usize, span: u32) -> Vec<AnchorBench> {
+        let n = lines.len();
+        let step = (n - span as usize) / count;
+        let mut anchors = Vec::with_capacity(count);
+        for i in 0..count {
+            let start = (i * step + 1) as u32; // 1-based
+            let end = start + span - 1;
+            if end as usize > n {
+                break;
+            }
+            let win = start as usize - 1;
+            let content = lines[win..win + span as usize].join("\n");
+            let content_hash = sha256_hex(content.as_bytes());
+            let cheap_fp =
+                cheap_fingerprint_with_extent(content.as_bytes(), &AnchorExtent::WholeFile);
+            anchors.push(AnchorBench {
+                content_hash,
+                cheap_fp,
+                extent: AnchorExtent::LineRange { start, end },
+                near: start,
+            });
+        }
+        anchors
+    }
+
+    let k10_anchors = make_anchors(&lines, 10, span);
+    let k50_anchors = make_anchors(&lines, 50, span);
+
+    // Prime the shared index's prefix tables before any measurement, so warm
+    // benchmarks do not pay the lazy-init cost even on the first iteration.
+    // The `OnceLock` guarantees this populates exactly once for the index's
+    // lifetime.
+    {
+        let a = &k10_anchors[0];
+        scan_indexed_prefiltered(
+            &indexed_shared,
+            &a.content_hash,
+            a.cheap_fp,
+            a.extent,
+            Some(a.near),
+        );
+    }
+
+    let mut group = c.benchmark_group("many_anchors_one_index");
+
+    // --- K=10: warm path (shared index, cached prefix tables) ---
+    for (i, a) in k10_anchors.iter().enumerate() {
+        group.bench_function(format!("k10/a{i}/warm"), |b| {
+            b.iter(|| {
+                scan_indexed_prefiltered(
+                    black_box(&indexed_shared),
+                    black_box(&a.content_hash),
+                    black_box(a.cheap_fp),
+                    black_box(a.extent),
+                    black_box(Some(a.near)),
+                )
+            })
+        });
+    }
+
+    // --- K=10: cold baseline (fresh index per anchor) ---
+    //
+    // Each iteration builds a new LineIndex from scratch, which reproduces the
+    // pre-cache K·O(N) table-construction overhead for every anchor.
+    for (i, a) in k10_anchors.iter().enumerate() {
+        group.bench_function(format!("k10/a{i}/cold"), |b| {
+            b.iter(|| {
+                let fresh_idx = LineIndex::build(black_box(&bytes));
+                let indexed = vec![("scaffold.rs".to_string(), fresh_idx)];
+                scan_indexed_prefiltered(
+                    black_box(&indexed),
+                    black_box(&a.content_hash),
+                    black_box(a.cheap_fp),
+                    black_box(a.extent),
+                    black_box(Some(a.near)),
+                )
+            })
+        });
+    }
+
+    // --- K=50: warm path (shared index, cached prefix tables) ---
+    for (i, a) in k50_anchors.iter().enumerate() {
+        group.bench_function(format!("k50/a{i}/warm"), |b| {
+            b.iter(|| {
+                scan_indexed_prefiltered(
+                    black_box(&indexed_shared),
+                    black_box(&a.content_hash),
+                    black_box(a.cheap_fp),
+                    black_box(a.extent),
+                    black_box(Some(a.near)),
+                )
+            })
+        });
+    }
+
+    // --- K=50: cold baseline (fresh index per anchor) ---
+    for (i, a) in k50_anchors.iter().enumerate() {
+        group.bench_function(format!("k50/a{i}/cold"), |b| {
+            b.iter(|| {
+                let fresh_idx = LineIndex::build(black_box(&bytes));
+                let indexed = vec![("scaffold.rs".to_string(), fresh_idx)];
+                scan_indexed_prefiltered(
+                    black_box(&indexed),
+                    black_box(&a.content_hash),
+                    black_box(a.cheap_fp),
+                    black_box(a.extent),
+                    black_box(Some(a.near)),
+                )
+            })
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(single_stale_anchor_2500_lines, bench_scan);
+criterion_group!(many_anchors_one_index, bench_many_anchors_one_index);
+criterion_main!(single_stale_anchor_2500_lines, many_anchors_one_index);

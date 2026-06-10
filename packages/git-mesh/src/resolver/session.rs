@@ -26,6 +26,12 @@ use std::sync::Arc;
 /// never moves after the index is built — the [`LineIndex`] borrows from it.
 /// Rebuilding the index per anchor on the same file is the central cost Tier 2
 /// amortizes away.
+///
+/// The inner [`LineIndex`] lazily allocates prefix-hash and power tables
+/// (~16 bytes per file byte) on the first prefiltered scan.  Files exceeding
+/// [`git_mesh_core::PREFILTER_TABLES_MAX_BYTES`] (32 MiB) skip this allocation
+/// and fall back to per-window hashing.  Tables live for the [`ResolveSession`]
+/// lifetime and are evicted with the line-index cache.
 pub(crate) struct CachedLineIndex {
     bytes: Vec<u8>,
     /// Lazily built; `None` until the first `get()` call.  The inner
