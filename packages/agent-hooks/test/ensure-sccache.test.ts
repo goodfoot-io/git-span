@@ -126,8 +126,18 @@ describe.skipIf(!hasSccache())('ensure-sccache.sh', () => {
     expect(serverReachable(env)).toBe(true);
   });
 
-  it('is a no-op when the server is already healthy', () => {
-    // Free port: any client command auto-starts a healthy server.
+  it('is a no-op when the server is already healthy', async () => {
+    // With SCCACHE_SERVER_PORT set to a TCP port, the sccache client
+    // does not auto-start a server (auto-start only works for UDS
+    // connections). Start one explicitly so the preflight can verify
+    // it no-ops against a reachable server.
+    const server = spawn('sccache', [], {
+      env: { ...env, SCCACHE_START_SERVER: '1' },
+      stdio: 'ignore',
+      detached: true
+    });
+    server.unref();
+    await new Promise((r) => setTimeout(r, 500));
     expect(serverReachable(env)).toBe(true);
     expect(runHelper(env)).toBe(0);
     expect(serverReachable(env)).toBe(true);
