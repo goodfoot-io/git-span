@@ -75,7 +75,7 @@ pub fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
     match extent {
         AnchorExtent::WholeFile => sha256_hex(bytes),
         AnchorExtent::LineRange { start, end } => match line_range_region(bytes, *start, *end) {
-            Some((rs, re)) => hash_region(bytes, rs, re, *start, *end),
+            Some((rs, re)) => canonical_region(bytes, rs, re, *start, *end, sha256_hex),
             None => sha256_hex(b""),
         },
     }
@@ -160,18 +160,21 @@ fn line_range_region(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(us
     Some((rs, re))
 }
 
-/// Hash the canonical content of buffer region `[rs, re)`. On the LF-and-
-/// UTF-8 fast path the region is byte-identical to the canonical
-/// `lines[lo..hi].join("\n")`, so it is hashed directly with no allocation.
-/// Otherwise (`\r` present, or invalid UTF-8 that `from_utf8_lossy` would
-/// rewrite) it defers to the canonical join path keyed by the original
-/// 1-based `[start, end]` so the digest is preserved exactly.
-fn hash_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> String {
+/// Apply `digest` to the canonical content of buffer region `[rs, re)`.
+/// On the LF-and-UTF-8 fast path the region is byte-identical to the
+/// canonical `lines[lo..hi].join("\n")`, so `digest` runs directly on the
+/// slice with no allocation. Otherwise (`\r` present, or invalid UTF-8
+/// that `from_utf8_lossy` would rewrite) `digest` receives the
+/// `canonical_join_bytes` fallback so the output is byte-identical.
+fn canonical_region<T>(
+    bytes: &[u8], rs: usize, re: usize, start: u32, end: u32,
+    digest: impl FnOnce(&[u8]) -> T,
+) -> T {
     let slice = &bytes[rs..re];
     if is_lf_and_utf8_clean(slice) {
-        sha256_hex(slice)
+        digest(slice)
     } else {
-        canonical_join_hash(bytes, start, end)
+        digest(&canonical_join_bytes(bytes, start, end))
     }
 }
 
@@ -196,12 +199,6 @@ fn canonical_join_bytes(bytes: &[u8], start: u32, end: u32) -> Vec<u8> {
     let hi = (end as usize).min(lines.len());
     let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
     slice.join("\n").into_bytes()
-}
-
-/// The reference canonicalization, hashed. Used as the digest-preserving
-/// fallback whenever the fast path's preconditions do not hold.
-fn canonical_join_hash(bytes: &[u8], start: u32, end: u32) -> String {
-    sha256_hex(&canonical_join_bytes(bytes, start, end))
 }
 
 /// One place a stored content hash was found in the caller-supplied
@@ -408,7 +405,7 @@ pub fn hash_extent_indexed(idx: &LineIndex, extent: &AnchorExtent) -> String {
     match extent {
         AnchorExtent::WholeFile => sha256_hex(idx.bytes),
         AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
-            Some((rs, re)) => hash_region(idx.bytes, rs, re, *start, *end),
+            Some((rs, re)) => canonical_region(idx.bytes, rs, re, *start, *end, sha256_hex),
             None => sha256_hex(b""),
         },
     }
@@ -475,19 +472,6 @@ fn horner(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Fingerprint the canonical content of buffer region `[rs, re)`. On the
-/// LF-and-UTF-8 fast path the region is byte-identical to the canonical
-/// `lines[lo..hi].join("\n")`, so it is hashed directly; otherwise it defers
-/// to the same lossy-join bytes the SHA fallback uses, so the fingerprint is
-/// taken over exactly the canonical content behind the digest.
-fn fingerprint_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> u64 {
-    let slice = &bytes[rs..re];
-    if is_lf_and_utf8_clean(slice) {
-        horner(slice)
-    } else {
-        horner(&canonical_join_bytes(bytes, start, end))
-    }
-}
 
 /// Cheap (non-cryptographic) fingerprint of an extent's canonical content,
 /// over the **same** canonicalization as [`hash_bytes_with_extent`]
@@ -503,7 +487,7 @@ pub fn cheap_fingerprint_with_extent(bytes: &[u8], extent: &AnchorExtent) -> u64
     match extent {
         AnchorExtent::WholeFile => horner(bytes),
         AnchorExtent::LineRange { start, end } => match line_range_region(bytes, *start, *end) {
-            Some((rs, re)) => fingerprint_region(bytes, rs, re, *start, *end),
+            Some((rs, re)) => canonical_region(bytes, rs, re, *start, *end, horner),
             None => 0,
         },
     }
@@ -516,7 +500,7 @@ pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 
     match extent {
         AnchorExtent::WholeFile => horner(idx.bytes),
         AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
-            Some((rs, re)) => fingerprint_region(idx.bytes, rs, re, *start, *end),
+            Some((rs, re)) => canonical_region(idx.bytes, rs, re, *start, *end, horner),
             None => 0,
         },
     }
