@@ -2,7 +2,7 @@ scripts/ensure-sccache.sh rk64:6a3d2cf82db2dfc3
 packages/agent-hooks/test/ensure-sccache.test.ts rk64:47ce2e8798c68d23
 scripts/validate.sh#L26-L28 rk64:a1e307274374ffa8
 scripts/bump.sh#L49-L51 rk64:ed3d79d5479422e5
-.devcontainer/devcontainer.json#L50-L51 rk64:88c62e14c1b7a8fc
-CLAUDE.md#L38-L50 rk64:a393a36f33789253
+.devcontainer/devcontainer.json#L51-L52 rk64:88c62e14c1b7a8fc
+CLAUDE.md#L48-L56 rk64:cca97f7200335cda
 
 Sccache server recovery preflight ensures a reachable server before Rust builds at devcontainer start, validate, and bump stages, protecting against stale/wedged servers that manifest as opaque compile failures.
