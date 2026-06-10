@@ -925,6 +925,24 @@ mod tests {
     }
 
     #[test]
+    fn near_window_at_exact_old_start_wins_over_line_above() {
+        // Two identical 1-line blocks at start lines 2 and 3. With
+        // `near = 3` (the anchor's 1-based old start), the window sitting at
+        // the exact old start (line 3, distance 0) must outrank the window
+        // one line above (line 2, distance 1). A 0-based sort center would
+        // skew every distance toward the line above and flip this order.
+        let hash = sha256_hex(b"d");
+        let file = ("a.txt".to_string(), b"x\nd\nd\nx\n".to_vec());
+        let hits = scan_for_content_hash(
+            std::slice::from_ref(&file),
+            &hash,
+            AnchorExtent::LineRange { start: 3, end: 3 },
+            Some(3),
+        );
+        assert_eq!(hits[0].start_line, 3);
+    }
+
+    #[test]
     fn whole_file_scan_matches_whole_files() {
         let hash = sha256_hex(b"whole\ncontent\n");
         let files = vec![
