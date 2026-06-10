@@ -437,3 +437,37 @@ pub fn dispatch(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_address_tail_anchored_hash_l() {
+        // A filename like `notes/issue#L42.md` contains `#L` as part of its
+        // name, not as a line-range delimiter. When #L appears in both the
+        // filename and as a real line-range delimiter, the tail-anchored
+        // parse must use the LAST #L.
+        //
+        // notes/issue#L42.md#L10-L20 → path=notes/issue#L42.md, start=10, end=20
+        //
+        // The current implementation uses `split_once("#L")` which splits on
+        // the FIRST occurrence, misparsing:
+        //   path=notes/issue  fragment=42.md#L10-L20
+        // The tail `42.md#L10` is not a valid u32 → error.
+        let result = parse_range_address("notes/issue#L42.md#L10-L20");
+        assert!(
+            result.is_ok(),
+            "BUG: parse_range_address should accept tail-anchored #L10-L20 \
+             even when #L appears earlier in the filename"
+        );
+        let (path, start, end) = result.unwrap();
+        assert_eq!(path, "notes/issue#L42.md");
+        assert_eq!(start, 10);
+        assert_eq!(end, 20);
+    }
+}

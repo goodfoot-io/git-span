@@ -1281,4 +1281,103 @@ mod tests {
         assert!("   ".trim_end().is_empty());
         assert!("\t  ".trim_end().is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Reproduction: hull collapse produces false positives
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_batch_filters_disjoint_ranges_no_false_positive_between() {
+        // Two disjoint range filters on the same path:
+        //   src/lib.rs#L1-L10
+        //   src/lib.rs#L20-L30
+        //
+        // An anchor spanning [12, 18] overlaps NEITHER range, so it should
+        // NOT match. The current implementation collapses these into a hull
+        // [1, 30], which falsely matches the in-between anchor.
+        let filters = vec![
+            BatchFilter::parse("src/lib.rs#L1-L10").unwrap(),
+            BatchFilter::parse("src/lib.rs#L20-L30").unwrap(),
+        ];
+        let (path, merged_range) = merge_batch_filters(&filters);
+        assert_eq!(path, "src/lib.rs");
+
+        // The merged range is the hull [1, 30], but an anchor at [12, 18]
+        // should NOT match — it overlaps neither of the original filters.
+        // Correct behavior: each filter must be checked individually.
+        let anchor = AnchorExtent::LineRange {
+            start: 12,
+            end: 18,
+        };
+
+        // Check against each individual filter — neither matches.
+        let matches_any = filters.iter().any(|f| f.matches_anchor("src/lib.rs", anchor));
+        assert!(
+            !matches_any,
+            "anchor [12,18] should not match either filter [1,10] or [20,30]"
+        );
+
+        // The merged hull filter DOES match (current buggy behavior).
+        if let Some((ms, me)) = merged_range {
+            let hull_filter = BatchFilter::Ranged {
+                path: path.clone(),
+                start: ms,
+                end: me,
+            };
+            // This assertion demonstrates the bug: the hull filter matches
+            // [12,18] even though neither original filter does.
+            assert!(
+                !hull_filter.matches_anchor("src/lib.rs", anchor),
+                "BUG: hull [1,30] falsely matches anchor [12,18] — should require individual filter check"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Reproduction: WholeFile anchor suppression strips unrelated paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn whole_file_suppression_respects_filter_path() {
+        // A mesh has a WholeFile anchor on a.rs and a LineRange anchor on c.rs.
+        // When the query is a ranged filter on b.rs, the WholeFile anchor on
+        // a.rs should NOT be suppressed — suppression should be scoped to
+        // anchors whose path matches the filter path.
+        let mut listing = MeshListing {
+            name: "test-mesh".to_string(),
+            why: "test mesh".to_string(),
+            anchors: vec![
+                AnchorEntry {
+                    path: "a.rs".to_string(),
+                    extent: AnchorExtent::WholeFile,
+                },
+                AnchorEntry {
+                    path: "c.rs".to_string(),
+                    extent: AnchorExtent::LineRange {
+                        start: 1,
+                        end: 10,
+                    },
+                },
+            ],
+        };
+
+        // The filter matched on b.rs (a different path from the WholeFile anchor on a.rs).
+
+        // Simulate the current retain logic from run_list_batch_porcelain
+        // (lines 419-429): unconditionally strips ALL WholeFile anchors.
+        listing.anchors.retain(|a| match a.extent {
+            AnchorExtent::WholeFile => false,
+            AnchorExtent::LineRange { .. } => true,
+        });
+
+        // Correct behavior: the WholeFile anchor on a.rs should be KEPT
+        // because its path (a.rs) does not match the filter path (b.rs).
+        let whole_file_on_a = listing.anchors.iter().any(|a| {
+            matches!(a.extent, AnchorExtent::WholeFile) && a.path == "a.rs"
+        });
+        assert!(
+            whole_file_on_a,
+            "BUG: WholeFile anchor on a.rs was stripped even though the filter was on b.rs"
+        );
+    }
 }
