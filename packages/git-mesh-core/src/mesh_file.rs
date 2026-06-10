@@ -499,6 +499,32 @@ mod tests {
     }
 
     #[test]
+    fn mesh_file_line_normalizes_backslash_path() {
+        // A backslash-spelled path reaching a mesh file (hand edit, external
+        // writer) must be normalized to the forward-slash form, exactly as
+        // `parse_address` does at the CLI boundary, so it resolves against the
+        // forward-slash git tree on every platform.
+        let mesh = MeshFile::parse("sub\\dir\\file.txt#L1-L3 sha256:abc\n").unwrap();
+        assert_eq!(mesh.anchors[0].path, "sub/dir/file.txt");
+        assert_eq!(
+            parse_address("sub\\dir\\file.txt#L1-L3").unwrap().0,
+            mesh.anchors[0].path,
+        );
+
+        let whole = MeshFile::parse("sub\\dir\\file.txt sha256:abc\n").unwrap();
+        assert_eq!(whole.anchors[0].path, "sub/dir/file.txt");
+    }
+
+    #[test]
+    fn mesh_file_line_rejects_bare_hash() {
+        // `file.ts#88` is documented as invalid anchor syntax and rejected by
+        // `parse_address`; the mesh-file line parser must reject it too rather
+        // than silently storing `file.ts#88` as an unresolvable whole-file path.
+        assert!(parse_address("file.ts#88").is_none());
+        assert!(MeshFile::parse("file.ts#88 sha256:abc\n").is_err());
+    }
+
+    #[test]
     fn serialize_roundtrip() {
         let input = "a.txt sha256:111\nb.rs#L1-L5 sha256:222\n\nSome why text.\n";
         let mesh = MeshFile::parse(input).unwrap();
