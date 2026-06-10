@@ -422,6 +422,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_lone_open_marker() {
+        // A half-resolved file where `>>>>>>>` was deleted but `<<<<<<<`
+        // survives is still merge residue. Fail closed.
+        let input = "<<<<<<< HEAD\n\nsome why text";
+        assert!(matches!(
+            MeshFile::parse(input),
+            Err(Error::MeshConflict(_))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_lone_close_marker() {
+        let input = "a.txt sha256:111\n\n>>>>>>> branch";
+        assert!(matches!(
+            MeshFile::parse(input),
+            Err(Error::MeshConflict(_))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_lone_separator_marker() {
+        let input = "a.txt sha256:111\n=======\nb.txt sha256:222\n";
+        assert!(matches!(
+            MeshFile::parse(input),
+            Err(Error::MeshConflict(_))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_diff3_base_marker() {
+        let input = "<<<<<<< HEAD\na.txt sha256:111\n||||||| base\nb.txt sha256:222\n";
+        assert!(matches!(
+            MeshFile::parse(input),
+            Err(Error::MeshConflict(_))
+        ));
+    }
+
+    #[test]
+    fn parse_allows_equals_underline_in_why() {
+        // A Markdown setext underline (a run of `=` longer than the
+        // 7-char separator) in why prose must not be over-matched.
+        let input = "a.txt sha256:111\n\nHeading\n==========\nbody text";
+        let mesh = MeshFile::parse(input).unwrap();
+        assert_eq!(mesh.why, "Heading\n==========\nbody text");
+    }
+
+    #[test]
     fn display_whole_file() {
         let r = AnchorRecord {
             path: "foo.rs".into(),
