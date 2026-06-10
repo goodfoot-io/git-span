@@ -210,6 +210,61 @@ pub struct Location {
     pub end_line: u32,
 }
 
+/// Nearest-window ordering: stable sort by distance from the 1-based `near`
+/// line, ties toward the lower start line. `start_line` and `near` are both
+/// 1-based, so the window that starts on the `near` line is distance 0.
+fn sort_near(out: &mut [Location], near: u32) {
+    out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
+}
+
+/// Build a fresh [`LineIndex`] for each (path, bytes) file — the byte-slice
+/// entry points' shared front door.
+fn build_indexed(files: &[(String, Vec<u8>)]) -> Vec<(String, LineIndex<'_>)> {
+    files
+        .iter()
+        .map(|(path, bytes)| (path.clone(), LineIndex::build(bytes)))
+        .collect()
+}
+
+/// Emit a whole-file `Location { 0, 0 }` for every file whose bytes satisfy
+/// `keep`. `bytes_of` projects each file element to its buffer.
+fn whole_file_matches<T>(
+    files: &[(String, T)],
+    bytes_of: impl Fn(&T) -> &[u8],
+    keep: impl Fn(&[u8]) -> bool,
+) -> Vec<Location> {
+    files
+        .iter()
+        .filter(|(_, t)| keep(bytes_of(t)))
+        .map(|(path, _)| Location {
+            path: path.clone(),
+            start_line: 0,
+            end_line: 0,
+        })
+        .collect()
+}
+
+/// Drive a per-file windowed scan: for each file with enough lines, compute its
+/// window bounds and run `scan_one`, accumulating into `out`. `wins` maps a
+/// file's line count to its `(win_lo, win_hi)` window range, returning `None`
+/// to skip the file.
+fn scan_files(
+    files: &[(String, LineIndex)],
+    span: usize,
+    wins: impl Fn(usize) -> Option<(usize, usize)>,
+    mut scan_one: impl FnMut(&str, &LineIndex, (usize, usize), &mut Vec<Location>),
+    out: &mut Vec<Location>,
+) {
+    for (path, idx) in files {
+        let n = idx.line_count();
+        if n < span {
+            continue;
+        }
+        let Some(w) = wins(n) else { continue };
+        scan_one(path, idx, w, out);
+    }
+}
+
 /// Find every place `content_hash` (under `extent`'s shape) occurs in the
 /// caller-supplied file contents.
 ///
@@ -242,20 +297,9 @@ pub fn scan_for_content_hash(
     // line index for every file would be pure waste — match directly.
     if let AnchorExtent::WholeFile = extent {
         let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-        return files
-            .iter()
-            .filter(|(_, bytes)| sha256_hex(bytes) == want)
-            .map(|(path, _)| Location {
-                path: path.clone(),
-                start_line: 0,
-                end_line: 0,
-            })
-            .collect();
+        return whole_file_matches(files, |b| b.as_slice(), |b| sha256_hex(b) == want);
     }
-    let indexed: Vec<(String, LineIndex)> = files
-        .iter()
-        .map(|(path, bytes)| (path.clone(), LineIndex::build(bytes)))
-        .collect();
+    let indexed = build_indexed(files);
     scan_indexed(&indexed, content_hash, extent, near)
 }
 
@@ -506,24 +550,26 @@ pub fn scan_indexed_prefiltered(
     }
     let target = decode_lower_hex32(want);
     let mut out: Vec<Location> = Vec::new();
-    for (path, idx) in files {
-        let n = idx.line_count();
-        if n < span {
-            continue;
-        }
-        // Confirm each fingerprint candidate with the authoritative SHA-256.
-        let confirm = |slice: &[u8]| match &target {
-            Some(t) => {
-                let mut h = Sha256::new();
-                h.update(slice);
-                h.finalize().as_slice() == t.as_slice()
-            }
-            None => sha256_hex(slice) == want,
-        };
-        scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, confirm, &mut out);
-    }
+    scan_files(
+        files,
+        span,
+        |n| Some((0, n - span)),
+        |path, idx, w, out| {
+            // Confirm each fingerprint candidate with the authoritative SHA-256.
+            let confirm = |slice: &[u8]| match &target {
+                Some(t) => {
+                    let mut h = Sha256::new();
+                    h.update(slice);
+                    h.finalize().as_slice() == t.as_slice()
+                }
+                None => sha256_hex(slice) == want,
+            };
+            scan_one_file_fp_filtered(path, idx, span, w, cheap_fp, confirm, out);
+        },
+        &mut out,
+    );
     if let Some(near) = near {
-        out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
+        sort_near(&mut out, near);
     }
     out
 }
@@ -553,31 +599,27 @@ pub fn scan_indexed_rk64(
     near: Option<u32>,
 ) -> Vec<Location> {
     match extent {
-        AnchorExtent::WholeFile => files
-            .iter()
-            .filter(|(_, idx)| horner(idx.bytes) == cheap_fp)
-            .map(|(path, _)| Location {
-                path: path.clone(),
-                start_line: 0,
-                end_line: 0,
-            })
-            .collect(),
+        AnchorExtent::WholeFile => {
+            whole_file_matches(files, |idx| idx.bytes, |b| horner(b) == cheap_fp)
+        }
         AnchorExtent::LineRange { start, end } => {
             let span = line_range_span(start, end);
             if span == 0 {
                 return Vec::new();
             }
             let mut out: Vec<Location> = Vec::new();
-            for (path, idx) in files {
-                let n = idx.line_count();
-                if n < span {
-                    continue;
-                }
-                // No SHA verify: a matching fingerprint is the match.
-                scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, |_| true, &mut out);
-            }
+            scan_files(
+                files,
+                span,
+                |n| Some((0, n - span)),
+                |path, idx, w, out| {
+                    // No SHA verify: a matching fingerprint is the match.
+                    scan_one_file_fp_filtered(path, idx, span, w, cheap_fp, |_| true, out);
+                },
+                &mut out,
+            );
             if let Some(near) = near {
-                out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
+                sort_near(&mut out, near);
             }
             out
         }
@@ -593,10 +635,7 @@ pub fn scan_for_content_hash_rk64(
     extent: AnchorExtent,
     near: Option<u32>,
 ) -> Vec<Location> {
-    let indexed: Vec<(String, LineIndex)> = files
-        .iter()
-        .map(|(path, bytes)| (path.clone(), LineIndex::build(bytes)))
-        .collect();
+    let indexed = build_indexed(files);
     scan_indexed_rk64(&indexed, cheap_fp, extent, near)
 }
 
@@ -683,15 +722,9 @@ pub fn scan_indexed(
     let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
 
     match extent {
-        AnchorExtent::WholeFile => files
-            .iter()
-            .filter(|(_, idx)| sha256_hex(idx.bytes) == want)
-            .map(|(path, _)| Location {
-                path: path.clone(),
-                start_line: 0,
-                end_line: 0,
-            })
-            .collect(),
+        AnchorExtent::WholeFile => {
+            whole_file_matches(files, |idx| idx.bytes, |b| sha256_hex(b) == want)
+        }
         AnchorExtent::LineRange { start, end } => {
             let span = line_range_span(start, end);
             if span == 0 {
@@ -703,20 +736,21 @@ pub fn scan_indexed(
             // digest, so it falls to the string-compare path (no match).
             let target = decode_lower_hex32(want);
             let mut out: Vec<Location> = Vec::new();
-            for (path, idx) in files {
-                let n = idx.line_count();
-                if n < span {
-                    continue;
-                }
-                scan_one_file(path, idx, span, (0, n - span), &target, want, &mut out);
-            }
+            scan_files(
+                files,
+                span,
+                |n| Some((0, n - span)),
+                |path, idx, w, out| {
+                    scan_one_file(path, idx, span, w, &target, want, out);
+                },
+                &mut out,
+            );
             if let Some(near) = near {
                 // Stable sort over windows already collected in ascending
                 // (path, start) order, so equal distances keep the lower
                 // start line first — matching git-mesh's nearest-window
-                // preference. Both `start_line` and `near` are 1-based, so
-                // the exact old-start window is distance 0.
-                out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
+                // preference.
+                sort_near(&mut out, near);
             }
             out
         }
@@ -747,10 +781,7 @@ pub fn scan_for_content_hash_near_radius(
     near: u32,
     radius: u32,
 ) -> Vec<Location> {
-    let indexed: Vec<(String, LineIndex)> = files
-        .iter()
-        .map(|(path, bytes)| (path.clone(), LineIndex::build(bytes)))
-        .collect();
+    let indexed = build_indexed(files);
     scan_indexed_near_radius(&indexed, content_hash, extent, near, radius)
 }
 
@@ -779,20 +810,21 @@ pub fn scan_indexed_near_radius(
     let near0 = near.saturating_sub(1) as usize; // 0-based center window index
     let band = radius as usize;
     let mut out: Vec<Location> = Vec::new();
-    for (path, idx) in files {
-        let n = idx.line_count();
-        if n < span {
-            continue;
-        }
-        let last_win = n - span;
-        let win_lo = near0.saturating_sub(band);
-        let win_hi = (near0 + band).min(last_win);
-        if win_lo > win_hi {
-            continue;
-        }
-        scan_one_file(path, idx, span, (win_lo, win_hi), &target, want, &mut out);
-    }
-    out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
+    scan_files(
+        files,
+        span,
+        |n| {
+            let last_win = n - span;
+            let win_lo = near0.saturating_sub(band);
+            let win_hi = (near0 + band).min(last_win);
+            (win_lo <= win_hi).then_some((win_lo, win_hi))
+        },
+        |path, idx, w, out| {
+            scan_one_file(path, idx, span, w, &target, want, out);
+        },
+        &mut out,
+    );
+    sort_near(&mut out, near);
     out
 }
 
