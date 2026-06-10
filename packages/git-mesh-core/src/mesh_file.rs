@@ -156,16 +156,22 @@ impl MeshFile {
 /// followed by whitespace) so a legitimate `=======` inside why prose is
 /// not over-matched alongside the open/close markers.
 fn has_conflict_markers(input: &str) -> bool {
-    let mut saw_open = false;
-    let mut saw_close = false;
-    for line in input.lines() {
-        if line.starts_with("<<<<<<<") {
-            saw_open = true;
-        } else if line.starts_with(">>>>>>>") {
-            saw_close = true;
-        }
+    input.lines().any(is_conflict_marker_line)
+}
+
+/// True when `line` is a single Git conflict-marker line. The open
+/// (`<<<<<<<`), close (`>>>>>>>`), and diff3 base (`|||||||`) sentinels
+/// match on prefix. The `=======` separator must be the marker line
+/// exactly or be followed by whitespace, so a longer run of `=` (e.g. a
+/// Markdown setext underline) in legitimate why prose is not over-matched.
+fn is_conflict_marker_line(line: &str) -> bool {
+    if line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>") || line.starts_with("|||||||") {
+        return true;
     }
-    saw_open && saw_close
+    match line.strip_prefix("=======") {
+        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
+        None => false,
+    }
 }
 
 /// Parse a single anchor line of the form:
