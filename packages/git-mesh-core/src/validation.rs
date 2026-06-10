@@ -16,6 +16,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "delete",
     "move",
     "stale",
+    "tree",
     "fetch",
     "push",
     "doctor",

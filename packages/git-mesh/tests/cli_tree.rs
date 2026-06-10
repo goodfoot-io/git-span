@@ -1,25 +1,20 @@
-//! Phase 2 acceptance tests for `git mesh tree`.
+//! Acceptance tests for `git mesh tree`.
 //!
-//! Every test is `#[ignore]` — they are the executable specification written
-//! against the Phase 1 stubs and will be unskipped in Phase 3 once the
-//! algorithm is implemented.
+//! These are the executable specification for the subcommand. Expected values
+//! are derived from the authoritative prototype `scripts/git-mesh-tree-demo.mjs`,
+//! whose output is the contract.
 //!
-//! ## Mesh topology used across tests
+//! ## Root semantics (the load-bearing fact these tests encode)
 //!
-//! Files seeded in the repo (all whole-file anchors):
-//!   a.rs, b.rs, c.rs, d.rs, e.rs, f.rs
+//! Roots SEED the tree; they are NOT collapsed with their neighbors. The root
+//! cliques are the maximal cliques over the MATCHED-ROOT set only — never over
+//! the full graph. A single matched root is therefore a singleton root clique
+//! and renders ALONE on the first line, with its neighbors appearing as
+//! children below it. Multiple matched roots that are mutually connected DO
+//! collapse together — that is the only root-collapsing case.
 //!
-//! Meshes that create co-occurrence edges:
-//!   mesh-ab  : a.rs + b.rs          → edge A–B
-//!   mesh-bc  : b.rs + c.rs          → edge B–C
-//!   mesh-abcd: a.rs + b.rs + c.rs + d.rs → edges A–B, A–C, A–D, B–C, B–D, C–D
-//!   mesh-ef  : e.rs + f.rs          → edge E–F
-//!
-//! Resulting maximal cliques in the full graph:
-//!   {a.rs, b.rs, c.rs, d.rs}   (fully connected via mesh-abcd)
-//!   {e.rs, f.rs}
-//!
-//! For chain-overlap tests a separate sparse topology is used (see individual tests).
+//! Depth is expansion levels: roots at depth 0, children at depth 1, etc.;
+//! expansion stops when `depth >= max_depth`.
 
 mod support;
 
@@ -57,10 +52,11 @@ fn add_mesh(repo: &TestRepo, slug: &str, paths: &[&str]) -> Result<()> {
 // Clique grouping
 // ---------------------------------------------------------------------------
 
-/// Fully connected files (a.rs, b.rs, c.rs, d.rs) are grouped on a single
-/// comma-separated line in human output.
+/// A set of mutually connected files renders as a single comma-separated
+/// clique line. With a single matched root (`a.rs`), the root is a singleton
+/// root clique on the first line, and its three mutually-connected neighbors
+/// (b.rs, c.rs, d.rs) collapse to ONE child clique line below it.
 #[test]
-#[ignore = "Phase 3: implement clique grouping in run_tree"]
 fn clique_grouping_fully_connected_renders_one_line() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs", "d.rs"])?;
@@ -68,21 +64,28 @@ fn clique_grouping_fully_connected_renders_one_line() -> Result<()> {
     add_mesh(&repo, "mesh-abcd", &["a.rs", "b.rs", "c.rs", "d.rs"])?;
 
     let out = repo.mesh_stdout(["tree", "a.rs"])?;
-    // All four files should appear together on the first (root) line
-    let first_line = out.lines().next().expect("output has a line");
-    assert!(
-        first_line.contains("a.rs")
-            && first_line.contains("b.rs")
-            && first_line.contains("c.rs")
-            && first_line.contains("d.rs"),
-        "expected all four files on one line, got: {first_line:?}\nfull output:\n{out}"
-    );
-    // Should be only the one root line (no children since they are all in the clique)
     let non_empty: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         non_empty.len(),
-        1,
-        "fully connected clique yields one line, got {non_empty:?}"
+        2,
+        "single root + one collapsed neighbor clique = two lines:\n{out}"
+    );
+    // Root line is a.rs alone (roots are not collapsed with neighbors).
+    assert_eq!(
+        non_empty[0], "- a.rs",
+        "root line must be a.rs alone: {:?}",
+        non_empty[0]
+    );
+    // The three neighbors b,c,d are fully connected, so they collapse to one
+    // comma-separated child clique line.
+    let child = non_empty[1];
+    assert!(
+        child.contains("b.rs") && child.contains("c.rs") && child.contains("d.rs"),
+        "neighbors b,c,d must collapse on one child clique line, got: {child:?}"
+    );
+    assert!(
+        !child.contains("a.rs"),
+        "root a.rs must not be re-listed as a child: {child:?}"
     );
     Ok(())
 }
@@ -91,53 +94,63 @@ fn clique_grouping_fully_connected_renders_one_line() -> Result<()> {
 // Non-greedy overlap
 // ---------------------------------------------------------------------------
 
-/// Chain A–B–C (no A–C edge) yields two overlapping cliques: {a.rs, b.rs}
-/// and {b.rs, c.rs}. b.rs appears in both. A fully connected set {a,b,c,d}
-/// still collapses to one line (covered separately above).
+/// Non-greedy overlap manifests among SIBLINGS. With a root `x.rs` whose three
+/// neighbors form a chain a–b–c (edges a–b and b–c, no a–c), the children of
+/// `x.rs` are the two overlapping maximal cliques {a.rs, b.rs} and {b.rs, c.rs}.
+/// b.rs appears in both — dropping it from one would hide a real path.
 #[test]
-#[ignore = "Phase 3: implement non-greedy clique overlap in maximal_cliques"]
 fn chain_topology_yields_two_overlapping_cliques() -> Result<()> {
     let repo = TestRepo::new()?;
-    seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
-    // mesh-ab: edge A–B; mesh-bc: edge B–C; no A–C edge
+    seed_files(&repo, &["x.rs", "a.rs", "b.rs", "c.rs"])?;
+    // x connects to each of a, b, c; among the neighbors only a–b and b–c exist.
+    add_mesh(&repo, "mesh-xa", &["x.rs", "a.rs"])?;
+    add_mesh(&repo, "mesh-xb", &["x.rs", "b.rs"])?;
+    add_mesh(&repo, "mesh-xc", &["x.rs", "c.rs"])?;
     add_mesh(&repo, "mesh-ab", &["a.rs", "b.rs"])?;
     add_mesh(&repo, "mesh-bc", &["b.rs", "c.rs"])?;
 
-    // Rooted at a.rs: expect {a.rs, b.rs} as root, {b.rs, c.rs} as child
-    let out = repo.mesh_stdout(["tree", "a.rs"])?;
+    let out = repo.mesh_stdout(["tree", "x.rs"])?;
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "expected root + one child line:\n{out}");
 
-    let root = lines[0];
-    assert!(
-        root.contains("a.rs") && root.contains("b.rs"),
-        "root should be {{a.rs, b.rs}}, got: {root:?}"
-    );
-    assert!(
-        !root.contains("c.rs"),
-        "c.rs must not appear on root line: {root:?}"
-    );
+    // Root is x.rs alone.
+    assert_eq!(lines[0], "- x.rs", "root must be x.rs alone: {:?}", lines[0]);
 
-    let child = lines[1];
+    // Among the depth-1 children there must be both a {a,b} clique line and a
+    // {b,c} clique line (the two overlapping maximal cliques of the neighbors).
+    let depth1: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("  - ") && !l.starts_with("    "))
+        .collect();
+    let has_ab = depth1
+        .iter()
+        .any(|l| l.contains("a.rs") && l.contains("b.rs") && !l.contains("c.rs"));
+    let has_bc = depth1
+        .iter()
+        .any(|l| l.contains("b.rs") && l.contains("c.rs") && !l.contains("a.rs"));
     assert!(
-        child.contains("b.rs") && child.contains("c.rs"),
-        "child should be {{b.rs, c.rs}}, got: {child:?}"
+        has_ab && has_bc,
+        "expected overlapping child cliques {{a,b}} and {{b,c}}:\n{out}"
     );
     Ok(())
 }
 
-/// In the chain A–B–C, b.rs appears in both cliques (non-greedy), not just
-/// the first one encountered.
+/// In the overlapping-neighbor topology, b.rs is shared between the {a,b} and
+/// {b,c} child cliques (non-greedy), so it appears in more than one clique line.
 #[test]
-#[ignore = "Phase 3: confirm non-greedy overlap — shared member in each clique"]
 fn shared_member_appears_in_both_cliques() -> Result<()> {
     let repo = TestRepo::new()?;
-    seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
+    seed_files(&repo, &["x.rs", "a.rs", "b.rs", "c.rs"])?;
+    add_mesh(&repo, "mesh-xa", &["x.rs", "a.rs"])?;
+    add_mesh(&repo, "mesh-xb", &["x.rs", "b.rs"])?;
+    add_mesh(&repo, "mesh-xc", &["x.rs", "c.rs"])?;
     add_mesh(&repo, "mesh-ab", &["a.rs", "b.rs"])?;
     add_mesh(&repo, "mesh-bc", &["b.rs", "c.rs"])?;
 
-    // b.rs is in both {a,b} and {b,c}
-    let out = repo.mesh_stdout(["tree", "b.rs"])?;
+    // b.rs is in both {a,b} and {b,c} child cliques. (It also reappears one
+    // level deeper as each clique expands into the other's tail, so we assert
+    // a lower bound.)
+    let out = repo.mesh_stdout(["tree", "x.rs"])?;
     let occurrences = out.matches("b.rs").count();
     assert!(
         occurrences >= 2,
@@ -151,10 +164,12 @@ fn shared_member_appears_in_both_cliques() -> Result<()> {
 // Clique-as-unit expansion
 // ---------------------------------------------------------------------------
 
-/// When expanding {a.rs, b.rs, c.rs, d.rs} as the root, its children are the
-/// external neighbors of the unit — not the members themselves re-listed.
+/// A mutually-connected set expands as a unit: its interconnected members
+/// collapse to one clique line and are not re-listed under one another. Root
+/// `a.rs` has neighbors {b,c,d} (fully connected) and e (isolated). The
+/// children are therefore one clique line {b,c,d} plus a singleton {e} — the
+/// {b,c,d} unit is listed once, not recursively under each of b, c, d.
 #[test]
-#[ignore = "Phase 3: implement clique-as-unit expansion in expand_clique"]
 fn clique_as_unit_expansion_no_mutual_relisting() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"])?;
@@ -164,21 +179,32 @@ fn clique_as_unit_expansion_no_mutual_relisting() -> Result<()> {
 
     let out = repo.mesh_stdout(["tree", "a.rs"])?;
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-    // Root line is the 4-way clique; child line is e.rs (singleton)
+    // Root a.rs alone, then exactly two children: the {b,c,d} clique and {e}.
     assert_eq!(
         lines.len(),
-        2,
-        "expected root clique + one external child:\n{out}"
+        3,
+        "expected root + collapsed {{b,c,d}} clique + singleton {{e}}:\n{out}"
     );
-    // Neither b.rs, c.rs, nor d.rs should appear in the child line
-    let child = lines[1];
+    assert_eq!(lines[0], "- a.rs", "root must be a.rs alone: {:?}", lines[0]);
+
+    // The interconnected {b,c,d} collapse onto a single child line.
+    let bcd = lines
+        .iter()
+        .find(|l| l.contains("b.rs") && l.contains("c.rs") && l.contains("d.rs"))
+        .unwrap_or_else(|| panic!("b,c,d must collapse to one line:\n{out}"));
     assert!(
-        !child.contains("b.rs") && !child.contains("c.rs") && !child.contains("d.rs"),
-        "clique members must not be re-listed as children: {child:?}"
+        !bcd.contains("a.rs") && !bcd.contains("e.rs"),
+        "the {{b,c,d}} clique line must not include a or e: {bcd:?}"
     );
+
+    // e.rs is its own singleton child clique.
+    let e_line = lines
+        .iter()
+        .find(|l| l.contains("e.rs"))
+        .unwrap_or_else(|| panic!("external neighbor e.rs must appear:\n{out}"));
     assert!(
-        child.contains("e.rs"),
-        "external neighbor e.rs must appear as child: {child:?}"
+        !e_line.contains("b.rs") && !e_line.contains("c.rs") && !e_line.contains("d.rs"),
+        "e.rs must be a singleton clique, not grouped with b/c/d: {e_line:?}"
     );
     Ok(())
 }
@@ -187,29 +213,21 @@ fn clique_as_unit_expansion_no_mutual_relisting() -> Result<()> {
 // Per-branch loop guard
 // ---------------------------------------------------------------------------
 
-/// A file is not expanded as its own ancestor on the same branch. Topology:
-/// a.rs–b.rs–a.rs would create a cycle; the loop guard must prevent a.rs
-/// from appearing below itself.
+/// A file is not expanded as its own ancestor on the same branch. With a
+/// triangle a–b, b–c, c–a and root `a.rs`, a.rs seeds the root (singleton),
+/// its neighbors {b,c} collapse to one child clique, and a.rs must NOT
+/// reappear below itself even though both b and c link back to it. a.rs
+/// appears exactly once.
 #[test]
-#[ignore = "Phase 3: implement per-branch loop guard in expand_clique"]
 fn loop_guard_prevents_ancestor_reexpansion() -> Result<()> {
     let repo = TestRepo::new()?;
-    seed_files(&repo, &["a.rs", "b.rs"])?;
-    // Single mesh containing both — they form a clique, so expansion is a unit.
-    // We need a topology where an ancestor would appear as a descendant without the guard.
-    // Use three files: a–b, b–c, c–a (triangle → single clique {a,b,c}).
-    // After rooting at a.rs, the clique is {a,b,c}. External neighbors: none.
-    // No loop risk in a triangle. Use a linear chain with back-edge instead:
-    // mesh-ab (a,b), mesh-bc (b,c), mesh-ca (c,a) — triangle.
-    // The triangle forms one clique {a,b,c}; a.rs only appears once.
-    repo.write_file("c.rs", "// c\n")?;
-    repo.commit_all("add c.rs")?;
+    seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
     add_mesh(&repo, "mesh-ab", &["a.rs", "b.rs"])?;
     add_mesh(&repo, "mesh-bc", &["b.rs", "c.rs"])?;
     add_mesh(&repo, "mesh-ca", &["c.rs", "a.rs"])?;
 
     let out = repo.mesh_stdout(["tree", "a.rs"])?;
-    // Count occurrences of a.rs — must appear exactly once (in the root clique only)
+    // Count occurrences of a.rs — must appear exactly once (in the root only).
     let count = out.matches("a.rs").count();
     assert_eq!(
         count, 1,
@@ -224,7 +242,6 @@ fn loop_guard_prevents_ancestor_reexpansion() -> Result<()> {
 
 /// `--depth 0` outputs the root clique(s) only, with no children.
 #[test]
-#[ignore = "Phase 3: implement depth bound in expand_clique"]
 fn depth_zero_yields_roots_only() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
@@ -248,7 +265,6 @@ fn depth_zero_yields_roots_only() -> Result<()> {
 
 /// Default depth is 3; a chain deeper than 3 is truncated at level 3.
 #[test]
-#[ignore = "Phase 3: confirm default depth=3 truncation"]
 fn default_depth_three_truncates_deeper_chains() -> Result<()> {
     let repo = TestRepo::new()?;
     // Chain: a–b–c–d–e (4 hops from a to e)
@@ -273,7 +289,6 @@ fn default_depth_three_truncates_deeper_chains() -> Result<()> {
 
 /// Explicit `--depth N` is honoured.
 #[test]
-#[ignore = "Phase 3: confirm explicit depth flag is honoured"]
 fn explicit_depth_flag_respected() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"])?;
@@ -305,7 +320,6 @@ fn explicit_depth_flag_respected() -> Result<()> {
 /// A glob pattern and an exact path reaching the same anchor file produce
 /// identical output (repo-relative matching, no CWD semantics).
 #[test]
-#[ignore = "Phase 3: implement glob and exact-path resolution in run_tree"]
 fn glob_and_exact_path_produce_identical_output() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs"])?;
@@ -323,7 +337,6 @@ fn glob_and_exact_path_produce_identical_output() -> Result<()> {
 /// Repo-relative matching: running from a subdirectory must not change which
 /// root is matched (no CWD-relative prefix expansion).
 #[test]
-#[ignore = "Phase 3: confirm repo-relative glob matching with no CWD prefix"]
 fn glob_resolution_is_repo_relative_not_cwd_relative() -> Result<()> {
     let repo = TestRepo::new()?;
     // Files under a subdirectory
@@ -347,7 +360,6 @@ fn glob_resolution_is_repo_relative_not_cwd_relative() -> Result<()> {
 
 /// A pattern matching no anchored file must exit non-zero.
 #[test]
-#[ignore = "Phase 3: implement fail-closed error in run_tree"]
 fn unknown_arg_exits_nonzero() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs"])?;
@@ -363,7 +375,6 @@ fn unknown_arg_exits_nonzero() -> Result<()> {
 
 /// A glob matching no anchored file must exit non-zero.
 #[test]
-#[ignore = "Phase 3: implement fail-closed error for unmatched glob in run_tree"]
 fn unmatched_glob_exits_nonzero() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs"])?;
@@ -383,7 +394,6 @@ fn unmatched_glob_exits_nonzero() -> Result<()> {
 
 /// `--format json` outputs a JSON array of `{ "members": [...], "children": [...] }`.
 #[test]
-#[ignore = "Phase 3: implement JSON renderer in run_tree"]
 fn json_format_top_level_is_array() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs"])?;
@@ -403,7 +413,6 @@ fn json_format_top_level_is_array() -> Result<()> {
 /// Each node in the JSON array has `members` (array of strings) and `children`
 /// (array of nodes).
 #[test]
-#[ignore = "Phase 3: implement JSON node shape in run_tree"]
 fn json_format_node_has_members_and_children() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
@@ -440,7 +449,6 @@ fn json_format_node_has_members_and_children() -> Result<()> {
 
 /// Children nest recursively: a child node also has `members` and `children`.
 #[test]
-#[ignore = "Phase 3: confirm recursive JSON nesting in run_tree"]
 fn json_format_children_nest_recursively() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs"])?;
@@ -472,7 +480,6 @@ fn json_format_children_nest_recursively() -> Result<()> {
 
 /// Repeated invocations produce identical output (stable ordering).
 #[test]
-#[ignore = "Phase 3: confirm deterministic output via BTreeMap/BTreeSet in run_tree"]
 fn output_is_deterministic_across_runs() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs", "d.rs"])?;
@@ -493,19 +500,26 @@ fn output_is_deterministic_across_runs() -> Result<()> {
 /// Multiple roots produce a forest with consistent ordering (members sorted,
 /// cliques ordered by weight then first member).
 #[test]
-#[ignore = "Phase 3: confirm deterministic forest ordering for multiple roots"]
 fn deterministic_ordering_for_multiple_roots() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_files(&repo, &["a.rs", "b.rs", "c.rs", "d.rs"])?;
     add_mesh(&repo, "mesh-ab", &["a.rs", "b.rs"])?;
     add_mesh(&repo, "mesh-cd", &["c.rs", "d.rs"])?;
 
-    // Two disjoint cliques; passing both roots yields a two-entry forest
+    // Two disjoint roots (no edge between them) yield a two-entry forest:
+    // two top-level (non-indented) root lines, each its own singleton clique.
     let out1 = repo.mesh_stdout(["tree", "a.rs", "c.rs"])?;
     let out2 = repo.mesh_stdout(["tree", "a.rs", "c.rs"])?;
     assert_eq!(out1, out2, "forest ordering must be stable across runs");
 
-    let lines: Vec<&str> = out1.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "two disjoint roots yield two root lines:\n{out1}");
+    let roots: Vec<&str> = out1
+        .lines()
+        .filter(|l| l.starts_with("- "))
+        .collect();
+    assert_eq!(
+        roots,
+        vec!["- a.rs", "- c.rs"],
+        "two disjoint roots yield two ordered top-level root lines:\n{out1}"
+    );
     Ok(())
 }
