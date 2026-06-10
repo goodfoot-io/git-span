@@ -74,6 +74,21 @@ impl MeshFile {
     ///
     /// Returns `InvalidMeshFile` on malformed input.
     pub fn parse(input: &str) -> Result<Self> {
+        // Canonicalize CRLF → LF up front so every downstream step — the
+        // blank-line separator split, the anchor `lines()` scan, and the why
+        // text — sees the same shape regardless of how the file's line
+        // endings were stored. A CRLF mesh file (Windows checkout with
+        // `core.autocrlf`, or a CRLF editor) thus parses to the same
+        // `MeshFile` as its LF twin, matching the crate's CRLF-canonicalizing
+        // hashing kernel. Without this, `\r\n\r\n` would defeat the
+        // `split_once("\n\n")` separator search below.
+        let normalized;
+        let input = if input.contains('\r') {
+            normalized = input.replace("\r\n", "\n");
+            normalized.as_str()
+        } else {
+            input
+        };
         // Fail-closed backstop: a mesh file carrying Git textual conflict
         // markers is the product of an unresolved merge. Refuse to parse
         // it as valid mesh data so `show`/`list`/`stale` never present
@@ -91,7 +106,12 @@ impl MeshFile {
                 // starts with a newline — that signals an empty anchor
                 // block with only a why text.
                 if input.starts_with('\n') {
-                    ("", input.trim_start().to_string())
+                    // Strip only the leading newline(s) that stand in for the
+                    // absent anchor block — not arbitrary whitespace — so the
+                    // why text's own leading indentation survives, matching the
+                    // `split_once` sibling path which consumes just the
+                    // separator.
+                    ("", input.trim_start_matches('\n').to_string())
                 } else {
                     // All text is anchors, why is empty.
                     (input, String::new())
