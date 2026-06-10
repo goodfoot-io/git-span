@@ -282,7 +282,21 @@ pub struct LineIndex<'a> {
 
 impl<'a> LineIndex<'a> {
     /// Build the line index for `bytes` with one forward newline scan.
+    ///
+    /// Line offsets are stored as `u32`, so the buffer must be at most
+    /// `u32::MAX` (just under 4 GiB) bytes. A larger buffer is **refused**
+    /// (panic) rather than indexed with silently truncated offsets: the crate's
+    /// contract is fail-closed, and a wrapped offset would produce a
+    /// syntactically valid but semantically wrong digest. Supporting ≥ 4 GiB
+    /// files is out of scope; detecting them is required.
     pub fn build(bytes: &'a [u8]) -> LineIndex<'a> {
+        assert!(
+            bytes.len() <= u32::MAX as usize,
+            "git-mesh-core: buffer of {} bytes exceeds the supported size of {} bytes \
+             (LineIndex stores u32 line offsets); files of 4 GiB or larger are not indexable",
+            bytes.len(),
+            u32::MAX,
+        );
         let mut starts = Vec::new();
         let mut ends = Vec::new();
         let mut seg = 0usize;
