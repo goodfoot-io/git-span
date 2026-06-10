@@ -168,7 +168,7 @@ fn line_range_region(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(us
 /// 1-based `[start, end]` so the digest is preserved exactly.
 fn hash_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> String {
     let slice = &bytes[rs..re];
-    if region_is_lf_clean(slice) {
+    if is_lf_and_utf8_clean(slice) {
         sha256_hex(slice)
     } else {
         canonical_join_hash(bytes, start, end)
@@ -180,7 +180,7 @@ fn hash_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> Stri
 /// (CRLF would otherwise leak `\r` bytes that `str::lines` strips) and is
 /// valid UTF-8 (otherwise `from_utf8_lossy` would rewrite bytes to U+FFFD
 /// before hashing).
-fn region_is_lf_clean(slice: &[u8]) -> bool {
+fn is_lf_and_utf8_clean(slice: &[u8]) -> bool {
     !slice.contains(&b'\r') && std::str::from_utf8(slice).is_ok()
 }
 
@@ -482,7 +482,7 @@ fn horner(bytes: &[u8]) -> u64 {
 /// taken over exactly the canonical content behind the digest.
 fn fingerprint_region(bytes: &[u8], rs: usize, re: usize, start: u32, end: u32) -> u64 {
     let slice = &bytes[rs..re];
-    if region_is_lf_clean(slice) {
+    if is_lf_and_utf8_clean(slice) {
         horner(slice)
     } else {
         horner(&canonical_join_bytes(bytes, start, end))
@@ -667,7 +667,7 @@ fn scan_one_file_fp_filtered(
 ) {
     let (win_lo, win_hi) = wins;
     let bytes = idx.bytes;
-    let simple = !bytes.contains(&b'\r') && std::str::from_utf8(bytes).is_ok();
+    let simple = is_lf_and_utf8_clean(bytes);
 
     if simple {
         // Prefix hashes `ph[k] = horner(bytes[0..k])` and powers `pow[i] =
@@ -860,7 +860,7 @@ fn scan_one_file(
 ) {
     let (win_lo, win_hi) = wins;
     let bytes = idx.bytes;
-    let simple = !bytes.contains(&b'\r') && std::str::from_utf8(bytes).is_ok();
+    let simple = is_lf_and_utf8_clean(bytes);
 
     if simple {
         for win in win_lo..=win_hi {
