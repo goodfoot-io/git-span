@@ -1,11 +1,12 @@
 //! `git mesh tree` — render a clique-grouped impact tree rooted at the
 //! matched anchor paths.
 //!
-//! The graph construction, clique grouping, expansion, ordering, depth
-//! semantics, and rendering are a faithful port of the authoritative
-//! prototype `scripts/git-mesh-tree-demo.mjs`. The only thing the CLI
-//! changes versus the prototype is the glob/resolution layer: roots are
-//! anchor paths matched by the args against the loaded corpus, not the
+//! The graph construction, clique grouping, expansion, weight-based
+//! ordering, depth semantics, and rendering are a faithful port of the
+//! authoritative prototype `scripts/git-mesh-tree-demo.mjs` — except the
+//! equal-weight tie-break, see "Tie-break ordering" below. The other thing
+//! the CLI changes versus the prototype is the glob/resolution layer: roots
+//! are anchor paths matched by the args against the loaded corpus, not the
 //! prototype's CWD-relative prefix/`**/*` glob layer.
 //!
 //! ## Tie-break ordering
