@@ -648,9 +648,12 @@ function joinClauses(items: string[]): string {
  */
 function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAgentId: string | null): string {
   const tasks: string[] = [];
-  if (summary.hasStale) tasks.push('re-anchor or retire the stale meshes');
+  if (summary.hasStale) tasks.push('repair, retire, or reshape the stale meshes as each one warrants');
   if (summary.hasUncovered) tasks.push('create meshes for the uncovered writes that form coherent subsystems');
-  if (summary.hasRelated) tasks.push('expand related meshes that should absorb an uncovered write');
+  if (summary.hasRelated)
+    tasks.push(
+      'expand, prune, or refactor the related meshes — absorb an uncovered write, or retire one that no longer holds'
+    );
 
   if (priorExpertAgentId) {
     return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
