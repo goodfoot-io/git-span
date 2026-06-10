@@ -1,7 +1,7 @@
 //! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
-use super::super::layers::{is_lfs_path, read_worktree_normalized, resolve_lfs_anchor};
+use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::resolve_at_head_shared;
 use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
@@ -164,6 +164,12 @@ fn find_relocated_range_in_paths(
 ) -> Option<(String, u32, u32)> {
     let entries = git::index_entries(repo).ok()?;
     let workdir = git::work_dir(repo).ok()?;
+    // One breadth-first HEAD-tree enumeration replaces a per-index-entry
+    // root-to-leaf traversal in the `head_blob_at` probe below — the scan
+    // visits every tracked path, so warming the memo up front is strictly
+    // cheaper than letting each path miss individually.
+    let head_sha = state.head_sha.clone();
+    state.session.warm_head_blob_memo(repo, &head_sha);
     // When the anchored path is gone from HEAD (committed `git mv` /
     // deletion), a HEAD-present path is a valid relocation target only
     // if it is new as of the rename commit — see
@@ -400,8 +406,10 @@ pub(crate) fn resolve_anchor_inner(
     };
 
     // LFS short-circuit: if the deepest tracked path is LFS-managed, delegate.
+    // Memoized per path on the engine state — an unmemoized check builds a
+    // fresh gitattributes stack on every anchor.
     if let Some(t) = tracked
-        && is_lfs_path(repo, &t.path)
+        && state.is_lfs_path_memo(repo, &t.path)
     {
         return Ok(resolve_lfs_anchor(
             repo,

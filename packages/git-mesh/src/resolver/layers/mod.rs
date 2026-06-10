@@ -13,5 +13,5 @@ pub(crate) use diff::{
     read_worktree_layer, read_worktree_layer_for_paths,
 };
 pub(crate) use filter_process::{CustomFilters, is_custom_filter_configured};
-pub(crate) use lfs::{LfsState, is_lfs_path, resolve_lfs_anchor};
+pub(crate) use lfs::{LfsState, resolve_lfs_anchor};
 pub(crate) use worktree::read_worktree_normalized;

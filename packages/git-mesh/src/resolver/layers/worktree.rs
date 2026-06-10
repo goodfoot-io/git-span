@@ -8,7 +8,8 @@ use crate::types;
 use crate::{Error, Result};
 
 /// Read a worktree file, applying git's clean filter where possible.
-/// LFS is *not* handled here; callers branch on `is_lfs_path` first.
+/// LFS is *not* handled here; callers branch on the engine state's
+/// memoized LFS check (`EngineState::is_lfs_path_memo`) first.
 pub(crate) fn read_worktree_normalized(
     repo: &gix::Repository,
     custom_filters: &mut CustomFilters,

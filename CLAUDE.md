@@ -35,8 +35,15 @@ Each card worktree keeps a private `packages/git-mesh/target-cache/` for Cargo
 artifacts; `sccache` (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/home/node/.cache/sccache`)
 deduplicates dependency compilation across worktrees. Run `yarn validate` from any
 worktree; concurrent runs are safe. Direct `cargo` invocations also use `target-cache/`
-via `packages/git-mesh/.cargo/config.toml`. If you see `error: could not exec sccache`,
-rebuild the devcontainer.
+via `packages/git-mesh/.cargo/config.toml`.
+
+The one true `sccache` binary is `/usr/local/bin/sccache`, installed by the
+Dockerfile for the build platform's architecture and verified at image build
+time. Do not install another copy (e.g. `cargo install sccache` into
+`~/.cargo/bin`, which is bind-mounted and outlives rebuilds): a second binary
+shadowing the managed one is how client/server version skew — and the wedged
+servers it causes — happened in the first place. If you see `error: could not
+exec sccache`, rebuild the devcontainer.
 
 `yarn validate` and `yarn bump` run `scripts/ensure-sccache.sh` first, and the
 devcontainer runs it at every container start (`postStartCommand`), so a stale or

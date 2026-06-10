@@ -263,6 +263,12 @@ impl PathIndex {
 /// `stale` run.
 pub(crate) struct ResolveSession {
     pub(crate) reverse_walk_output: Option<ReverseWalkOutput>,
+    /// Session-scoped memo for the changed-path Bloom filter handle. The
+    /// commit-graph file is constant for the life of a session, but
+    /// `build_reverse_walk` runs once per resolve batch — under chunked
+    /// parallel resolution that is many times per session. `None` = not yet
+    /// probed; `Some(None)` = probed, no commit-graph Bloom data available.
+    bloom_memo: Option<Option<CommitGraphBloom>>,
     /// Counter: drift-locus cache hits.
     pub(crate) drift_locus_hits: u64,
     /// Counter: drift-locus cache misses.
@@ -291,6 +297,10 @@ pub(crate) struct ResolveSession {
     /// anchors. This memo eliminates the redundant traversals within a
     /// single `stale` run; it does not persist across invocations.
     pub(crate) blob_oid_memo: HashMap<(String, String), Option<String>>,
+    /// HEAD sha whose tree has been bulk-enumerated into `blob_oid_memo`
+    /// by [`warm_head_blob_memo`](Self::warm_head_blob_memo). `None`
+    /// until the first relocation scan asks for it.
+    head_blob_memo_warmed_for: Option<String>,
     /// Counters: anchors classified by terminal status. Updated from the
     /// per-anchor loop in `engine::resolve_loaded_mesh_with_state` after each
     /// `resolve_anchor_inner` call.
@@ -381,6 +391,7 @@ impl ResolveSession {
         });
         Self {
             reverse_walk_output: None,
+            bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
             filter_attr_hits: 0,
@@ -388,6 +399,7 @@ impl ResolveSession {
             cache,
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
+            head_blob_memo_warmed_for: None,
             anchors_fresh: 0,
             anchors_moved: 0,
             anchors_changed: 0,
@@ -443,6 +455,43 @@ impl ResolveSession {
         };
         self.blob_oid_memo.insert(key, blob.clone());
         Ok(blob)
+    }
+
+    /// Bulk-fill `blob_oid_memo` with every blob path at `head_sha` via one
+    /// breadth-first tree enumeration. The cross-file relocation scan probes
+    /// HEAD presence for every index entry; without warming, each first
+    /// probe is a root-to-leaf tree traversal (`O(paths × depth)` tree
+    /// lookups per session). One enumeration visits each tree object once
+    /// and turns every present-path probe into a memo hit; absent paths
+    /// still fall through to `head_blob_oid`'s authoritative per-path
+    /// lookup, so results are identical with or without warming.
+    ///
+    /// Idempotent per `head_sha`; enumeration failure is silently skipped
+    /// (the per-path traversal path remains correct).
+    pub(crate) fn warm_head_blob_memo(&mut self, repo: &gix::Repository, head_sha: &str) {
+        if self.head_blob_memo_warmed_for.as_deref() == Some(head_sha) {
+            return;
+        }
+        let pairs = (|| -> Result<Vec<(String, String)>> {
+            let oid = gix::ObjectId::from_hex(head_sha.as_bytes())
+                .map_err(|e| crate::Error::Git(format!("parse HEAD {head_sha}: {e}")))?;
+            let commit = repo
+                .find_commit(oid)
+                .map_err(|e| crate::Error::Git(format!("find HEAD commit: {e}")))?;
+            let tree = commit
+                .tree()
+                .map_err(|e| crate::Error::Git(format!("HEAD tree: {e}")))?;
+            walker::tree_blob_paths(&tree)
+        })();
+        let Ok(pairs) = pairs else {
+            return;
+        };
+        for (path, oid) in pairs {
+            self.blob_oid_memo
+                .entry((head_sha.to_string(), path))
+                .or_insert(Some(oid));
+        }
+        self.head_blob_memo_warmed_for = Some(head_sha.to_string());
     }
 
     /// Get or build a [`CachedLineIndex`] for `(path, layer)`, building it
@@ -570,9 +619,12 @@ impl ResolveSession {
         // normal state — not an error. When absent we walk without it,
         // tree-diffing every commit (the loop below already treats a
         // missing per-commit Bloom position as "maybe changed").
-        let bloom: Option<CommitGraphBloom> = {
-            let _span_bloom = perf::span("resolver.build-walk.bloom-open");
-            CommitGraphBloom::open(repo).ok()
+        let bloom: Option<CommitGraphBloom> = match self.bloom_memo.take() {
+            Some(b) => b,
+            None => {
+                let _span_bloom = perf::span("resolver.build-walk.bloom-open");
+                CommitGraphBloom::open(repo).ok()
+            }
         };
 
         // 3. Walk from HEAD reverse-chronologically.
@@ -759,6 +811,17 @@ impl ResolveSession {
             );
         }
 
+        // Park the Bloom handle for the next walk in this session.
+        //
+        // Multiple walks per session (one per stolen chunk in the parallel
+        // baseline build) also means `self.timelines` outlives a single walk.
+        // That is sound only while every mesh shares one `copy_detection`
+        // (`mesh_from_file` hard-codes the default), because
+        // `PathTimelineKey` does not key on the walk's `max_copy`. If
+        // per-mesh `copy_detection` ever becomes configurable, clear or
+        // re-key `self.timelines` here.
+        self.bloom_memo = Some(bloom);
+
         self.reverse_walk_output = Some(ReverseWalkOutput {
             head_sha,
             per_anchor_deltas,
@@ -931,6 +994,7 @@ mod tests {
     fn anchors_total_includes_skipped_clean_head() {
         let session = ResolveSession {
             reverse_walk_output: None,
+            bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
             filter_attr_hits: 0,
@@ -938,6 +1002,7 @@ mod tests {
             cache: crate::resolver::cache::Cache::open_disabled(),
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
+            head_blob_memo_warmed_for: None,
             anchors_fresh: 0,
             anchors_moved: 0,
             anchors_changed: 0,
@@ -988,6 +1053,7 @@ mod tests {
     fn decomposition_identity_mixed_buckets() {
         let session = ResolveSession {
             reverse_walk_output: None,
+            bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
             filter_attr_hits: 0,
@@ -995,6 +1061,7 @@ mod tests {
             cache: crate::resolver::cache::Cache::open_disabled(),
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
+            head_blob_memo_warmed_for: None,
             anchors_fresh: 0,
             anchors_moved: 3,
             anchors_changed: 2,

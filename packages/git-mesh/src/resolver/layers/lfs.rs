@@ -4,7 +4,7 @@
 use super::filter_process::{FilterProcess, FilterSpawnError, filter_smudge, spawn_lfs_process};
 use crate::git;
 use crate::types::{
-    self, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
     UnavailableReason,
 };
 use std::path::PathBuf;
@@ -13,16 +13,6 @@ use std::str::FromStr;
 use super::super::walker::Tracked;
 
 pub(crate) type LfsState = Option<std::result::Result<FilterProcess, FilterSpawnError>>;
-
-pub(crate) fn is_lfs_path(repo: &gix::Repository, path: &str) -> bool {
-    if git::work_dir(repo).is_err() {
-        return false;
-    }
-    matches!(
-        types::path_filter_attribute_with_repo(repo, std::path::Path::new(path)),
-        Ok(Some(ref n)) if n == "lfs"
-    )
-}
 
 pub(crate) fn lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(bytes).ok()?;

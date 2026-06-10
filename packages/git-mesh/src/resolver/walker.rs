@@ -447,7 +447,7 @@ enum WidenResult {
 }
 
 /// Collect all blob paths from `tree` into a `Vec<(path, blob_oid_string)>`.
-fn tree_blob_paths(tree: &gix::Tree<'_>) -> Result<Vec<(String, String)>> {
+pub(crate) fn tree_blob_paths(tree: &gix::Tree<'_>) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     tree.traverse()
         .breadthfirst

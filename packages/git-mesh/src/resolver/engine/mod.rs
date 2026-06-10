@@ -200,6 +200,21 @@ impl EngineState {
         Ok(Some(name))
     }
 
+    /// LFS check routed through the per-state `filter_attrs` memo. The
+    /// deepest-layer LFS short-circuit in `resolve_anchor_inner` runs once
+    /// per anchor, but the `filter` attribute is a per-path fact — each
+    /// distinct path pays one attribute-stack probe per state instead of
+    /// one per anchor. Bare repo or any attribute-read failure → `false`.
+    pub(crate) fn is_lfs_path_memo(&mut self, repo: &gix::Repository, path: &str) -> bool {
+        if crate::git::work_dir(repo).is_err() {
+            return false;
+        }
+        matches!(
+            self.filter_attribute_value(repo, path),
+            Ok(Some(ref n)) if n == "lfs"
+        )
+    }
+
     fn filter_attribute_value(
         &mut self,
         repo: &gix::Repository,
@@ -767,29 +782,7 @@ pub(crate) fn resolve_named_meshes_with_state(
     }
     // Emit walk perf counters matching stale_meshes_inner so named-mesh
     // resolution is observable through the same perf counter interface.
-    crate::perf::counter("session.walk-bloom-skips", state.session.walk_bloom_skips);
-    crate::perf::counter(
-        "session.walk-bloom-false-positives",
-        state.session.walk_bloom_false_positives,
-    );
-    crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
-    crate::perf::counter(
-        "session.walk-commits-visited",
-        state.session.walk_commits_visited,
-    );
-    crate::perf::counter(
-        "session.reverse-index-build-ms",
-        state.session.reverse_index_build_ms,
-    );
-    crate::perf::counter(
-        "session.relocation-candidate-reads",
-        state.session.relocation_candidate_reads,
-    );
-    crate::perf::counter("session.line-index-hits", state.session.line_index_hits);
-    crate::perf::counter("session.line-index-misses", state.session.line_index_misses);
-    crate::resolver::timeline::emit_counters();
-    emit_timeline_cache_counters(&state.session);
-    crate::resolver::linemap::emit_counters();
+    emit_session_walk_counters(&state.session);
     let source_layers = if retain_layers {
         Some(state.finish_retaining_layers(repo))
     } else {
@@ -797,6 +790,188 @@ pub(crate) fn resolve_named_meshes_with_state(
         None
     };
     Ok((out, source_layers))
+}
+
+/// Emit the per-session walk/cache perf counters shared by every batch
+/// resolution surface (`stale_meshes_inner`, named-mesh resolution, and
+/// each parallel baseline worker).
+fn emit_session_walk_counters(session: &super::session::ResolveSession) {
+    crate::perf::counter("session.walk-bloom-skips", session.walk_bloom_skips);
+    crate::perf::counter(
+        "session.walk-bloom-false-positives",
+        session.walk_bloom_false_positives,
+    );
+    crate::perf::counter("session.walk-tree-diffs", session.walk_tree_diffs);
+    crate::perf::counter("session.walk-commits-visited", session.walk_commits_visited);
+    crate::perf::counter(
+        "session.reverse-index-build-ms",
+        session.reverse_index_build_ms,
+    );
+    crate::perf::counter(
+        "session.relocation-candidate-reads",
+        session.relocation_candidate_reads,
+    );
+    crate::perf::counter("session.line-index-hits", session.line_index_hits);
+    crate::perf::counter("session.line-index-misses", session.line_index_misses);
+    crate::resolver::timeline::emit_counters();
+    emit_timeline_cache_counters(session);
+    crate::resolver::linemap::emit_counters();
+}
+
+/// A unit of work for the parallel baseline build: either a pre-parsed mesh
+/// a worker must resolve, or a result already decided on the main thread
+/// (read error / missing mesh file).
+enum ParallelSlot {
+    Resolve(Mesh),
+    Done(std::result::Result<MeshResolved, Error>),
+}
+
+/// Resolve `names` in parallel across up to `thread_count` workers using a
+/// work-stealing chunk queue. Returns per-name results in input order,
+/// matching `resolve_named_meshes` semantics (a missing mesh file yields
+/// `Err(MeshNotFound)` for that name).
+///
+/// Mesh files are read and parsed once on the calling thread; workers share
+/// the parsed corpus. Each worker owns one `EngineState` for its lifetime,
+/// so session caches (blob OIDs, line indexes, relocation texts) amortize
+/// across every chunk that worker steals. Chunks are deliberately smaller
+/// than `names.len() / thread_count`: static contiguous partitioning lets
+/// one expensive run of meshes (e.g. a cluster of relocation-scanning
+/// anchors) serialize behind a single straggler thread while its siblings
+/// exit early.
+pub(crate) fn resolve_named_meshes_parallel(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+    options: EngineOptions,
+    thread_count: usize,
+) -> Result<NamedMeshResults> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let _perf = crate::perf::span("resolver.resolve-named-meshes-parallel");
+
+    // Read every mesh file once on the calling thread.
+    let slots: Vec<(String, ParallelSlot)> = {
+        let _perf = crate::perf::span("resolver.read-mesh-pairs");
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
+        names
+            .iter()
+            .map(|name| {
+                let slot = match reader.read_effective(name) {
+                    Ok(Some(file)) => ParallelSlot::Resolve(mesh_from_file(name, &file)),
+                    Ok(None) => {
+                        ParallelSlot::Done(Err(Error::MeshNotFound(name.to_string())))
+                    }
+                    Err(e) => ParallelSlot::Done(Err(e)),
+                };
+                (name.clone(), slot)
+            })
+            .collect()
+    };
+
+    // Chunk granularity: a few chunks per worker balances stealing overhead
+    // (one reverse walk per chunk) against straggler smoothing.
+    let thread_count = thread_count.max(1);
+    let chunk_size = names.len().div_ceil(thread_count * 4).max(1);
+    let chunk_count = names.len().div_ceil(chunk_size);
+    let workers = thread_count.min(chunk_count);
+
+    let next_chunk = AtomicUsize::new(0);
+    let resolved: Mutex<Vec<(usize, std::result::Result<MeshResolved, Error>)>> =
+        Mutex::new(Vec::new());
+    let fatal: Mutex<Option<Error>> = Mutex::new(None);
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let repo = repo.clone();
+            let slots = &slots;
+            let next_chunk = &next_chunk;
+            let resolved = &resolved;
+            let fatal = &fatal;
+            s.spawn(move || {
+                let _perf = crate::perf::span("resolver.resolve-named-meshes");
+                let mut state = match EngineState::new(
+                    &repo,
+                    options.layers,
+                    options.needs_all_layers,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        fatal.lock().unwrap().get_or_insert(e);
+                        return;
+                    }
+                };
+                let mut out: Vec<(usize, std::result::Result<MeshResolved, Error>)> =
+                    Vec::new();
+                loop {
+                    if fatal.lock().unwrap().is_some() {
+                        break;
+                    }
+                    let chunk_idx = next_chunk.fetch_add(1, Ordering::Relaxed);
+                    let start = chunk_idx * chunk_size;
+                    if start >= slots.len() {
+                        break;
+                    }
+                    let end = (start + chunk_size).min(slots.len());
+                    let chunk = &slots[start..end];
+
+                    // Chunk-scoped reverse walk over the pre-parsed meshes,
+                    // mirroring the per-batch walk in
+                    // `resolve_named_meshes_with_state`.
+                    let walk_pairs: Vec<(String, Mesh)> = chunk
+                        .iter()
+                        .filter_map(|(name, slot)| match slot {
+                            ParallelSlot::Resolve(m) => Some((name.clone(), m.clone())),
+                            ParallelSlot::Done(_) => None,
+                        })
+                        .collect();
+                    if !walk_pairs.is_empty()
+                        && let Err(e) = state.session.build_reverse_walk(&repo, &walk_pairs)
+                    {
+                        fatal.lock().unwrap().get_or_insert(e);
+                        break;
+                    }
+
+                    for (offset, (_name, slot)) in chunk.iter().enumerate() {
+                        let ParallelSlot::Resolve(mesh) = slot else {
+                            continue;
+                        };
+                        let r = resolve_loaded_mesh_with_state(
+                            &repo,
+                            &mut state,
+                            mesh.clone(),
+                            options,
+                        );
+                        out.push((start + offset, r));
+                    }
+                }
+                emit_session_walk_counters(&state.session);
+                state.finish(&repo);
+                resolved.lock().unwrap().extend(out);
+            });
+        }
+    });
+
+    if let Some(e) = fatal.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    let mut by_index: std::collections::HashMap<usize, std::result::Result<MeshResolved, Error>> =
+        resolved.into_inner().unwrap().into_iter().collect();
+    let mut out: NamedMeshResults = Vec::with_capacity(slots.len());
+    for (i, (name, slot)) in slots.into_iter().enumerate() {
+        match slot {
+            ParallelSlot::Done(r) => out.push((name, r)),
+            ParallelSlot::Resolve(_) => {
+                let r = by_index.remove(&i).expect(
+                    "every Resolve slot is processed when no fatal error is recorded",
+                );
+                out.push((name, r));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn stale_meshes_inner(
