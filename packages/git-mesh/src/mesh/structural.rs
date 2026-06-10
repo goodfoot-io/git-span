@@ -25,6 +25,7 @@ pub fn delete_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
 }
 
 pub fn delete_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result<()> {
+    validate_mesh_name(name)?;
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     if reader.read_effective(name)?.is_none() {
         return Err(Error::MeshNotFound(name.into()));
@@ -44,6 +45,7 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
 
 pub fn rename_mesh_in(repo: &gix::Repository, old: &str, new: &str, mesh_root: &str) -> Result<()> {
     validate_mesh_name(new)?;
+    validate_mesh_name(old)?;
 
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let Some(file) = reader.read_effective(old)? else {

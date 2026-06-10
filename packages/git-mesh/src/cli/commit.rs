@@ -659,6 +659,10 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, mesh_root: &str) -> Result
         let _perf = crate::perf::span("why.read");
         return run_why_reader(repo, &args.name, args.at.as_deref(), mesh_root);
     }
+    // Writer paths (--edit, -m, -F) must validate the name before touching
+    // the filesystem.  The --edit branch validates internally; -m and -F
+    // go through run_why_writer, which trusts callers to have validated.
+    crate::validation::validate_mesh_name(&args.name)?;
     if let Some(m) = args.m {
         let _perf = crate::perf::span("why.write-message");
         run_why_writer(repo, &args.name, &m, mesh_root)?;
@@ -814,6 +818,8 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
         .status()
         .with_context(|| format!("failed to spawn editor `{editor}`"))?;
     if !status.success() {
+        // Clean up the scratch file before returning on editor error.
+        let _ = std::fs::remove_file(&edit_path);
         return Err(CliError {
             subcommand: "why",
             summary: format!("editor `{editor}` exited with {status}."),
@@ -827,14 +833,16 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
     }
 
     let raw = std::fs::read_to_string(&edit_path)?;
+    // Scratch file consumed; delete it immediately so no early return
+    // (empty-body check below) can leave an orphan behind.
+    let _ = std::fs::remove_file(&edit_path);
+
     let stripped = raw
         .lines()
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
     let body = stripped.trim_end().to_string();
-
-    let _ = std::fs::remove_file(&edit_path);
 
     if body.is_empty() {
         return Err(CliError {

@@ -303,7 +303,16 @@ impl<'repo> MeshFileReader<'repo> {
 /// enumeration path — filesystem walk, HEAD-tree walk, and index scan.
 /// This is the single choke-point predicate shared by all three.
 fn is_mesh_name_segment(basename: &str) -> bool {
-    !basename.starts_with('.')
+    // Dot-prefixed names are config artifacts (e.g. .hookignore).
+    if basename.starts_with('.') {
+        return false;
+    }
+    // Editor scratch files (e.g. myflow.EDITMSG) left behind after a
+    // failed run_why_editor must never be enumerated as meshes.
+    if basename.ends_with(".EDITMSG") {
+        return false;
+    }
+    true
 }
 
 /// Recursively collect file names from a directory tree.
