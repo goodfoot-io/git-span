@@ -10,8 +10,6 @@
   "permissions": {
     "allow": [],
     "deny": [
-      "NotebookRead",
-      "NotebookEdit",
       "EnterPlanMode",
       "ExitPlanMode",
       "EnterWorktree",
