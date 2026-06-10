@@ -2,7 +2,9 @@ scripts/ensure-sccache.sh rk64:6a3d2cf82db2dfc3
 packages/agent-hooks/test/ensure-sccache.test.ts rk64:47ce2e8798c68d23
 scripts/validate.sh#L26-L28 rk64:a1e307274374ffa8
 scripts/bump.sh#L49-L51 rk64:ed3d79d5479422e5
+.devcontainer/devcontainer.json#L45-L46 rk64:e8e0219397492274
 .devcontainer/devcontainer.json#L51-L52 rk64:88c62e14c1b7a8fc
+CLAUDE.md#L34-L39 rk64:941d131952d6352e
 CLAUDE.md#L40-L56 rk64:479a98d207961a5e
 .devcontainer/Dockerfile#L110-L123 rk64:ac7349db2b0096d5
 
