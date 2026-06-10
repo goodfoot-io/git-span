@@ -37,16 +37,19 @@ pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Resu
     Ok(mesh_from_file(name, &file))
 }
 
+/// Result of loading all meshes: `(loaded_meshes, conflicted_names)`.
+pub type LoadedMeshes = (Vec<(String, Mesh)>, Vec<String>);
+
 /// Load every visible mesh under a specific mesh root.
 ///
-/// Returns `(loaded_meshes, conflicted_names)`. Conflicted meshes (those
-/// in a Git conflict state — unmerged index entry or textual conflict
-/// markers) are excluded from the loaded set and returned separately so
-/// callers can surface them without a second corpus scan.
+/// Returns [`LoadedMeshes`]. Conflicted meshes (those in a Git conflict
+/// state — unmerged index entry or textual conflict markers) are excluded
+/// from the loaded set and returned separately so callers can surface them
+/// without a second corpus scan.
 pub fn load_all_meshes_in(
     repo: &gix::Repository,
     mesh_root: &str,
-) -> Result<(Vec<(String, Mesh)>, Vec<String>)> {
+) -> Result<LoadedMeshes> {
     let _perf = crate::perf::span("mesh.load-all-corpus");
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let mut names = reader.list_mesh_names()?;
