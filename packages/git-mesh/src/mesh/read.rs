@@ -39,6 +39,7 @@ pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Resu
 
 /// Load every visible mesh under a specific mesh root.
 pub fn load_all_meshes_in(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<(String, Mesh)>> {
+    let _perf = crate::perf::span("mesh.load-all-corpus");
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let mut names = reader.list_mesh_names()?;
     names.sort();
