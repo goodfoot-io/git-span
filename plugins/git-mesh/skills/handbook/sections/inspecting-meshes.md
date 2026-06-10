@@ -38,6 +38,41 @@ Bare `git mesh list` with no targets and no `--search` enumerates every mesh in 
 
 Bare `git mesh` (no arguments) prints short help.
 
+## Trace blast radius
+
+`git mesh list` answers "which meshes touch this file?". `git mesh tree`
+answers the follow-on: "if I change this file, what could ripple outward?" It
+renders a nested impact tree rooted at the matched files, expanding through
+mesh co-occurrence to the files each could affect — without opening individual
+mesh files.
+
+```bash
+git mesh tree src/auth/session.ts                 # blast radius from one file
+git mesh tree 'src/billing/**/*.ts'               # roots = every matched anchor path
+git mesh tree src/auth/session.ts --depth 1       # immediate neighbors only
+git mesh tree src/auth/session.ts --depth 0       # the matched roots themselves, nothing expanded
+git mesh tree src/auth/session.ts --format json   # nested {members, children} for tooling
+```
+
+Files that all anchor the same mesh are mutually connected, so they collapse
+onto a single comma-separated line and expand once as a unit — a cluster that
+moves together reads as one line, and you reach the files beyond it through
+that line. Expansion is bounded by `-d`/`--depth` (default `3`), because the
+graph is dense and otherwise grows quickly.
+
+Resolution matches `list`/`stale` exactly — repo-relative `globset` matching,
+exact-path lookup, results unioned and deduped — with two differences worth
+remembering:
+
+- **At least one argument is required.** There is no bare `git mesh tree`.
+- **It fails closed.** A pattern matching no anchored file is an error, not a
+  silent empty result. (`list`/`stale` exit 0 on an empty match; `tree` does
+  not.)
+
+`tree` only reads — it never authors or edits meshes, and it is not a
+replacement for `list`/`show`/`stale`. See `./command-reference.md` for the
+full flag list.
+
 ## Show a single mesh
 
 ```bash

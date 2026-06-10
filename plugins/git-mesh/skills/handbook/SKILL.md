@@ -14,7 +14,7 @@ description: Use with `git mesh` or meshes.
 - **The anchor omits `#L…`, or the path is binary, image, symlink, submodule root, or LFS-tracked**: Read `./sections/whole-file-and-lfs.md`
 - **A `git mesh` command errored or behaved unexpectedly (first why on a new mesh, an unparseable `.mesh` file, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
 - **The job is CI wiring, PR gating, `--since <merge-base>`, syncing meshes across remotes, fresh-clone tolerance, or advisory reports**: Read `./sections/ci-and-sync.md`
-- **A question asks what meshes exist, what a mesh currently says, its history, or which meshes touch a given path/anchor**: Read `./sections/inspecting-meshes.md`
+- **A question asks what meshes exist, what a mesh currently says, its history, which meshes touch a given path/anchor, or how to trace the blast radius / impact tree of a change (`git mesh tree`)**: Read `./sections/inspecting-meshes.md`
 - **A `<git-mesh>` block appeared in `systemMessage`; or a question is about when the hook fires, why a block appeared or did not appear, or the once-per-session deduplication**: Read `./sections/understanding-hook-output.md`
 - **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
 - **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for meshes**: Read `./sections/git-hook-setup.md`

@@ -104,7 +104,23 @@ pub enum Commands {
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
 
-    /// Render a clique-grouped impact tree rooted at the matched anchor paths.
+    /// Trace blast radius: render a clique-grouped impact tree rooted at
+    /// the files matched by the given paths/globs.
+    ///
+    /// Starting from the matched anchor paths, the tree expands outward
+    /// through mesh co-occurrence to the files each could affect. Files
+    /// that all anchor the same mesh — and are therefore mutually
+    /// connected — collapse onto a single comma-separated line and expand
+    /// once as a unit, so a cluster that moves together reads as one line.
+    ///
+    /// Paths/globs resolve exactly as in `list`/`stale` (repo-relative
+    /// `globset` matching, exact-path lookup; no CWD-relative joining).
+    /// At least one argument is required, and a pattern matching no
+    /// anchored file is an error. `-d`/`--depth` bounds the expansion
+    /// (default 3; `--depth 0` prints roots only). `--format human` (the
+    /// default) prints the nested markdown list; `--format json` emits the
+    /// same structure as nested `{ "members": [...], "children": [...] }`
+    /// nodes for tooling.
     Tree(TreeArgs),
 }
 

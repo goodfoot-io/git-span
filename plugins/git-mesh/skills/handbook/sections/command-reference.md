@@ -36,6 +36,7 @@ git mesh stale [<target>...] [--oneline|--stat|--patch] [--since <commit-ish>]
 git mesh stale [<target>...] [--head|--staged|--worktree]
 git mesh stale [<target>...] [--no-worktree] [--no-index]
 git mesh stale [<target>...] [--ignore-unavailable] [--no-exit-code]
+git mesh tree <glob>... [-d|--depth <n>] [--format human|json]
 ```
 
 Each `<target>` is one of: a mesh name, a file path, or — for `list` only — a
@@ -62,6 +63,21 @@ tree at a past commit — ordinary git history, because the mesh is a tracked fi
 from: `--head` (HEAD only), `--staged` (index over HEAD), `--worktree`
 (the default — worktree over index over HEAD). `--no-worktree` / `--no-index`
 drop a layer.
+
+`git mesh tree <glob>...` traces blast radius: it renders a clique-grouped
+impact tree rooted at the matched anchor paths, expanding outward through mesh
+co-occurrence to the files each could affect. Files that all anchor the same
+mesh — and are therefore mutually connected — collapse onto one
+comma-separated line and expand once as a unit. Unlike `list`/`stale`, `tree`
+requires at least one argument and **fails closed**: a pattern matching no
+anchored file is an error (there is no silent exit-0). Argument resolution is
+otherwise identical to `list`/`stale` (repo-relative `globset` matching and
+exact-path lookup; no CWD-relative joining or bare-prefix expansion).
+`-d`/`--depth` bounds the expansion (default `3`; `--depth 0` prints the roots
+only). `--format human` (default) prints the nested markdown list; `--format
+json` emits the same structure as nested
+`{ "members": [...], "children": [...] }` nodes. See
+`./inspecting-meshes.md` § "Trace blast radius".
 
 ## Editing a mesh
 
@@ -131,4 +147,4 @@ A mesh name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a mesh name (so the bare `git mesh <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
 `delete`, `move`, `stale`, `fetch`, `push`, `doctor`, `log`, `config`, `list`,
-`help`, `pre-commit`, `rewrite`, `hooks`.
+`tree`, `help`, `pre-commit`, `rewrite`, `hooks`.
