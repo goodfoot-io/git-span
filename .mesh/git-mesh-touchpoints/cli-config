@@ -1,4 +1,4 @@
-packages/git-mesh/src/cli/mod.rs#L34-L124 rk64:4e65108c242b4b08
-packages/git-mesh/src/cli/mod.rs#L434-L490 rk64:bdb16e4c2ba1bfce
+packages/git-mesh/src/cli/mod.rs#L34-L126 rk64:411d499216c0c28d
+packages/git-mesh/src/cli/mod.rs#L437-L493 rk64:bdb16e4c2ba1bfce
 
 Clap configuration and dispatch in cli/mod.rs that the touchpoints page names as the primary source of truth for top-level git-mesh command behavior.
