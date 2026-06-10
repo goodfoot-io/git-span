@@ -8,10 +8,42 @@
 //! anchor paths matched by the args against the loaded corpus, not the
 //! prototype's CWD-relative prefix/`**/*` glob layer.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{TreeArgs, TreeFormat};
 use crate::cli::{CliError, NextStep};
+
+/// Generous ceiling on the number of maximal cliques enumerated in a single
+/// Bron–Kerbosch run. Clique enumeration is worst-case exponential, so a
+/// pathologically multipartite corpus matched by a wide glob (`'**'`) could
+/// hang or OOM. This bound fails closed with a clear error long before that.
+///
+/// The constant is chosen high enough that it NEVER triggers on organic input:
+/// real mesh graphs over a repository have at most a few thousand anchored
+/// paths and far fewer maximal cliques (cliques only multiply when many files
+/// form dense, overlapping co-occurrence groups, which does not happen
+/// organically). 1,000,000 cliques is orders of magnitude beyond any real
+/// corpus while still bounding a runaway enumeration to a fraction of a second.
+const MAX_CLIQUES: usize = 1_000_000;
+
+/// Tie-break comparator reproducing JavaScript `String.localeCompare`'s
+/// collation for the ASCII paths that dominate real corpora, matching the
+/// authoritative prototype oracle (`scripts/git-mesh-tree-demo.mjs`).
+///
+/// `localeCompare` collates case-insensitively at its primary level (so
+/// `b.rs` precedes `Z.rs`, unlike Rust byte order). We reproduce that by
+/// comparing lowercased forms first, then fall back to raw `str` order as a
+/// deterministic stable secondary when the case-insensitive forms are equal.
+///
+/// This matches `localeCompare` exactly for ASCII (the high-occurrence case)
+/// and is fully deterministic otherwise. Full ICU non-ASCII collation is out
+/// of scope, and `localeCompare` is itself locale-dependent there.
+fn locale_cmp(left: &str, right: &str) -> Ordering {
+    left.to_lowercase()
+        .cmp(&right.to_lowercase())
+        .then_with(|| left.cmp(right))
+}
 
 // ---------------------------------------------------------------------------
 // Public data types
@@ -40,7 +72,7 @@ pub fn run_tree(repo: &gix::Repository, args: TreeArgs, mesh_root: &str) -> anyh
     // Resolve args → root anchor paths (graph node keys).
     let roots = resolve_roots(&args.globs, &graph)?;
 
-    let forest = build_forest(&graph, &roots, args.depth);
+    let forest = build_forest(&graph, &roots, args.depth)?;
 
     match args.format {
         TreeFormat::Human => {
@@ -101,8 +133,8 @@ fn resolve_roots(
             subcommand: "tree",
             summary: "no anchored files matched.".into(),
             what_happened: format!(
-                "These arguments matched no anchored path in any mesh: {}.",
-                unmatched.join(", ")
+                "These arguments matched no anchored path in any mesh: `{}`.",
+                unmatched.join("`, `")
             ),
             next_steps: vec![NextStep::Bash("git mesh list".into())],
         }
@@ -123,8 +155,8 @@ fn build_forest(
     graph: &BTreeMap<String, BTreeMap<String, u64>>,
     roots: &BTreeSet<String>,
     max_depth: usize,
-) -> Vec<TreeNode> {
-    let mut root_cliques: Vec<Vec<String>> = maximal_cliques(graph, roots)
+) -> anyhow::Result<Vec<TreeNode>> {
+    let mut root_cliques: Vec<Vec<String>> = maximal_cliques(graph, roots)?
         .into_iter()
         .map(|clique| order_members(graph, &clique))
         .collect();
@@ -133,18 +165,18 @@ fn build_forest(
     root_cliques.sort_by(|left, right| {
         clique_internal_weight(graph, right)
             .cmp(&clique_internal_weight(graph, left))
-            .then_with(|| left[0].cmp(&right[0]))
+            .then_with(|| locale_cmp(&left[0], &right[0]))
     });
 
     root_cliques
         .into_iter()
         .map(|clique| {
             let members_set: BTreeSet<String> = clique.iter().cloned().collect();
-            let children = expand_clique(&members_set, graph, &BTreeSet::new(), 0, max_depth);
-            TreeNode {
+            let children = expand_clique(&members_set, graph, &BTreeSet::new(), 0, max_depth)?;
+            Ok(TreeNode {
                 members: clique,
                 children,
-            }
+            })
         })
         .collect()
 }
@@ -230,7 +262,15 @@ fn add_edge(
 fn maximal_cliques(
     graph: &BTreeMap<String, BTreeMap<String, u64>>,
     candidates: &BTreeSet<String>,
-) -> Vec<BTreeSet<String>> {
+) -> anyhow::Result<Vec<BTreeSet<String>>> {
+    // Defensive guard (belt-and-suspenders with the clap `required` arity on
+    // `globs`): an empty candidate set would otherwise let Bron–Kerbosch push
+    // the empty `included` set as a spurious `members: []` clique. Fail closed
+    // by returning no cliques so no empty-member node can ever be synthesized.
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let in_scope = candidates;
 
     let neighbors_in_scope = |path: &str| -> BTreeSet<String> {
@@ -252,8 +292,8 @@ fn maximal_cliques(
         candidates.clone(),
         BTreeSet::new(),
         &mut cliques,
-    );
-    cliques
+    )?;
+    Ok(cliques)
 }
 
 fn search<F>(
@@ -262,12 +302,33 @@ fn search<F>(
     mut remaining: BTreeSet<String>,
     mut excluded: BTreeSet<String>,
     cliques: &mut Vec<BTreeSet<String>>,
-) where
+) -> anyhow::Result<()>
+where
     F: Fn(&str) -> BTreeSet<String>,
 {
+    if cliques.len() >= MAX_CLIQUES {
+        return Err(CliError {
+            subcommand: "tree",
+            summary: "too many cliques to enumerate.".into(),
+            what_happened: format!(
+                "Clique enumeration exceeded the safety ceiling of {MAX_CLIQUES} \
+                 maximal cliques. The matched corpus is too densely \
+                 interconnected to expand without risking a runaway."
+            ),
+            next_steps: vec![
+                NextStep::Prose(
+                    "Narrow the path/glob arguments to a smaller root set, or \
+                     lower `-d`/`--depth`, then retry."
+                        .into(),
+                ),
+            ],
+        }
+        .into());
+    }
+
     if remaining.is_empty() && excluded.is_empty() {
         cliques.push(included);
-        return;
+        return Ok(());
     }
 
     // Choose a pivot maximizing reach into `remaining`.
@@ -308,10 +369,11 @@ fn search<F>(
             next_remaining,
             next_excluded,
             cliques,
-        );
+        )?;
         remaining.remove(&vertex);
         excluded.insert(vertex);
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +400,7 @@ fn order_members(
     members.sort_by(|left, right| {
         internal_weight(right)
             .cmp(&internal_weight(left))
-            .then_with(|| left.cmp(right))
+            .then_with(|| locale_cmp(left, right))
     });
     members
 }
@@ -358,9 +420,9 @@ fn expand_clique(
     ancestors: &BTreeSet<String>,
     depth: usize,
     max_depth: usize,
-) -> Vec<TreeNode> {
+) -> anyhow::Result<Vec<TreeNode>> {
     if depth >= max_depth {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut next_ancestors = ancestors.clone();
@@ -379,10 +441,10 @@ fn expand_clique(
         }
     }
     if candidates.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    let mut child_cliques: Vec<Vec<String>> = maximal_cliques(graph, &candidates)
+    let mut child_cliques: Vec<Vec<String>> = maximal_cliques(graph, &candidates)?
         .into_iter()
         .map(|clique| order_members(graph, &clique))
         .collect();
@@ -402,7 +464,7 @@ fn expand_clique(
     child_cliques.sort_by(|left, right| {
         link_weight(right)
             .cmp(&link_weight(left))
-            .then_with(|| left[0].cmp(&right[0]))
+            .then_with(|| locale_cmp(&left[0], &right[0]))
     });
 
     child_cliques
@@ -410,11 +472,11 @@ fn expand_clique(
         .map(|clique| {
             let clique_set: BTreeSet<String> = clique.iter().cloned().collect();
             let children =
-                expand_clique(&clique_set, graph, &next_ancestors, depth + 1, max_depth);
-            TreeNode {
+                expand_clique(&clique_set, graph, &next_ancestors, depth + 1, max_depth)?;
+            Ok(TreeNode {
                 members: clique,
                 children,
-            }
+            })
         })
         .collect()
 }

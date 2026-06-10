@@ -113,8 +113,10 @@ pub enum Commands {
     /// connected — collapse onto a single comma-separated line and expand
     /// once as a unit, so a cluster that moves together reads as one line.
     ///
-    /// Paths/globs resolve exactly as in `list`/`stale` (repo-relative
-    /// `globset` matching, exact-path lookup; no CWD-relative joining).
+    /// Roots are file paths and globs only, resolved repo-relative with
+    /// the same `globset` matching and exact-path lookup as `list`/`stale`
+    /// (no CWD-relative joining). Unlike `list`/`stale`, `tree` does NOT
+    /// accept `#L<start>-L<end>` line-range addresses or bare mesh names.
     /// At least one argument is required, and a pattern matching no
     /// anchored file is an error. `-d`/`--depth` bounds the expansion
     /// (default 3; `--depth 0` prints roots only). `--format human` (the
@@ -390,6 +392,7 @@ pub enum TreeFormat {
 #[derive(Debug, clap::Args)]
 pub struct TreeArgs {
     /// File paths or globs to use as tree roots (repo-relative, required).
+    #[arg(required = true, num_args = 1..)]
     pub globs: Vec<String>,
 
     /// Maximum expansion depth (0 = roots only).

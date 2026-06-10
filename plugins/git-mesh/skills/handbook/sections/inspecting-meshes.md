@@ -60,10 +60,13 @@ moves together reads as one line, and you reach the files beyond it through
 that line. Expansion is bounded by `-d`/`--depth` (default `3`), because the
 graph is dense and otherwise grows quickly.
 
-Resolution matches `list`/`stale` exactly — repo-relative `globset` matching,
-exact-path lookup, results unioned and deduped — with two differences worth
-remembering:
+Arguments are file **paths and globs only**, resolved repo-relative with the
+same `globset` matching and exact-path lookup as `list`/`stale` (results
+unioned and deduped), with these differences worth remembering:
 
+- **Paths and globs only.** Unlike `list`/`stale`, `tree` does NOT accept
+  `#L<start>-L<end>` line-range addresses or bare mesh names — only file paths
+  and globs that match anchored paths.
 - **At least one argument is required.** There is no bare `git mesh tree`.
 - **It fails closed.** A pattern matching no anchored file is an error, not a
   silent empty result. (`list`/`stale` exit 0 on an empty match; `tree` does

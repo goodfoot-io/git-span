@@ -70,9 +70,11 @@ co-occurrence to the files each could affect. Files that all anchor the same
 mesh — and are therefore mutually connected — collapse onto one
 comma-separated line and expand once as a unit. Unlike `list`/`stale`, `tree`
 requires at least one argument and **fails closed**: a pattern matching no
-anchored file is an error (there is no silent exit-0). Argument resolution is
-otherwise identical to `list`/`stale` (repo-relative `globset` matching and
-exact-path lookup; no CWD-relative joining or bare-prefix expansion).
+anchored file is an error (there is no silent exit-0). Arguments are file
+**paths and globs only**, resolved repo-relative with the same `globset`
+matching and exact-path lookup as `list`/`stale` (no CWD-relative joining or
+bare-prefix expansion). Unlike `list`/`stale`, `tree` does NOT accept
+`#L<start>-L<end>` line-range addresses or bare mesh names.
 `-d`/`--depth` bounds the expansion (default `3`; `--depth 0` prints the roots
 only). `--format human` (default) prints the nested markdown list; `--format
 json` emits the same structure as nested

@@ -373,6 +373,68 @@ fn unknown_arg_exits_nonzero() -> Result<()> {
     Ok(())
 }
 
+/// A bare `git mesh tree` with zero positional args must fail closed
+/// (non-zero exit) at the clap layer — the required-arg arity guards against
+/// the previous fail-open behavior of printing a spurious empty-member line.
+#[test]
+fn no_args_exits_nonzero() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_files(&repo, &["a.rs"])?;
+    add_mesh(&repo, "mesh-a", &["a.rs"])?;
+
+    let out = repo.run_mesh(["tree"])?;
+    assert!(
+        !out.status.success(),
+        "bare `git mesh tree` (no args) must exit non-zero:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// The fail-closed unmatched-args error backtick-quotes each offending arg,
+/// mirroring the sibling `list`/`stale` error style (finding 5).
+#[test]
+fn unmatched_arg_error_backtick_quotes_arg() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_files(&repo, &["a.rs"])?;
+    add_mesh(&repo, "mesh-a", &["a.rs"])?;
+
+    let out = repo.run_mesh(["tree", "nonexistent.rs"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`nonexistent.rs`"),
+        "unmatched arg must be backtick-quoted in the error:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// Mixed-case sibling paths must order by the oracle's `localeCompare`
+/// collation (case-insensitive primary level), not Rust byte order. The oracle
+/// orders `b.rs` before `Z.rs`; Rust byte order would put `Z.rs` first
+/// (uppercase `Z` = 0x5A precedes lowercase `b` = 0x62). The two equal-weight
+/// siblings here exercise the tie-break comparator (finding 2).
+#[test]
+fn mixed_case_siblings_match_oracle_locale_order() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_files(&repo, &["root.rs", "Z.rs", "b.rs"])?;
+    // root.rs links to both Z.rs and b.rs with equal weight; Z.rs and b.rs are
+    // NOT connected to each other, so they are two singleton sibling cliques
+    // whose order is decided purely by the tie-break comparator.
+    add_mesh(&repo, "mesh-rz", &["root.rs", "Z.rs"])?;
+    add_mesh(&repo, "mesh-rb", &["root.rs", "b.rs"])?;
+
+    let out = repo.mesh_stdout(["tree", "root.rs"])?;
+    let z_pos = out.find("Z.rs").expect("Z.rs must appear");
+    let b_pos = out.find("b.rs").expect("b.rs must appear");
+    assert!(
+        b_pos < z_pos,
+        "b.rs must precede Z.rs (localeCompare order), got:\n{out}"
+    );
+    Ok(())
+}
+
 /// A glob matching no anchored file must exit non-zero.
 #[test]
 fn unmatched_glob_exits_nonzero() -> Result<()> {
