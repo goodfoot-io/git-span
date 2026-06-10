@@ -1,0 +1,6 @@
+packages/git-mesh/src/cli/tree.rs#L1-L100 rk64:df7ad69b803754f2
+plugins/git-mesh/skills/handbook/SKILL.md#L17-L17 rk64:052ac0d45a5ed810
+plugins/git-mesh/skills/handbook/sections/command-reference.md#L38-L80 rk64:408ce0ad938ed6eb
+plugins/git-mesh/skills/handbook/sections/inspecting-meshes.md#L41-L74 rk64:ad06a245c451c875
+
+Handbook documentation of the git mesh tree subcommand behavior, which renders clique-grouped impact trees showing blast radius and ripple effects through mesh co-occurrence.

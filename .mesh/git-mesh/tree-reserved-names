@@ -1,0 +1,4 @@
+packages/git-mesh-core/src/validation.rs#L18-L19 rk64:7a88c92de3f35f25
+packages/git-mesh/src/cli/mod.rs#L107-L124 rk64:06044d7492025d06
+
+The 'tree' subcommand must be added to the reserved names list so pre-classification logic routes it correctly instead of treating 'git mesh tree' as a mesh name.
