@@ -2,8 +2,8 @@
 
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
 use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep};
-use crate::mesh::read::list_mesh_names_in;
 use crate::mesh::structural::{delete_mesh_in, rename_mesh_in};
+use crate::mesh_file_reader::MeshFileReader;
 use anyhow::Result;
 
 /// Prune now-empty parent directories of a removed mesh file, walking up
@@ -72,12 +72,15 @@ pub fn run_move(repo: &gix::Repository, args: MoveArgs, mesh_root: &str) -> Resu
 pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs, mesh_root: &str) -> Result<i32> {
     // File-backed model: meshes are ordinary tracked files. The only
     // health check that remains is that every visible mesh parses.
-    let names = list_mesh_names_in(repo, mesh_root).unwrap_or_default();
+    let reader = MeshFileReader::new(repo, mesh_root.to_string());
+    let names = reader.list_mesh_names()?;
     let n_meshes = names.len();
     let mut findings: Vec<String> = Vec::new();
     for name in &names {
-        if let Err(e) = crate::mesh::read::read_mesh_in(repo, name, mesh_root) {
-            findings.push(format!("mesh `{name}` failed to parse: {e}"));
+        match reader.read_effective(name) {
+            Ok(Some(_file)) => {}
+            Ok(None) => {} // deletion tombstone — skip silently
+            Err(e) => findings.push(format!("mesh `{name}` failed to parse: {e}")),
         }
     }
 
