@@ -488,8 +488,7 @@ pub fn scan_indexed_prefiltered(
         scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, confirm, &mut out);
     }
     if let Some(near) = near {
-        let near0 = near.saturating_sub(1);
-        out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+        out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
     }
     out
 }
@@ -543,8 +542,7 @@ pub fn scan_indexed_rk64(
                 scan_one_file_fp_filtered(path, idx, span, (0, n - span), cheap_fp, |_| true, &mut out);
             }
             if let Some(near) = near {
-                let near0 = near.saturating_sub(1);
-                out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+                out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
             }
             out
         }
@@ -678,12 +676,12 @@ pub fn scan_indexed(
                 scan_one_file(path, idx, span, (0, n - span), &target, want, &mut out);
             }
             if let Some(near) = near {
-                let near0 = near.saturating_sub(1);
                 // Stable sort over windows already collected in ascending
                 // (path, start) order, so equal distances keep the lower
                 // start line first — matching git-mesh's nearest-window
-                // preference.
-                out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+                // preference. Both `start_line` and `near` are 1-based, so
+                // the exact old-start window is distance 0.
+                out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
             }
             out
         }
@@ -759,8 +757,7 @@ pub fn scan_indexed_near_radius(
         }
         scan_one_file(path, idx, span, (win_lo, win_hi), &target, want, &mut out);
     }
-    let near0u = near.saturating_sub(1);
-    out.sort_by_key(|l| (l.start_line.abs_diff(near0u), l.start_line));
+    out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
     out
 }
 
@@ -1021,8 +1018,7 @@ mod tests {
                     }
                 }
                 if let Some(near) = near {
-                    let near0 = near.saturating_sub(1);
-                    out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+                    out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
                 }
                 out
             }
@@ -1243,7 +1239,7 @@ mod tests {
                 .into_iter()
                 .filter(|l| l.start_line.saturating_sub(1).abs_diff(near0) <= radius)
                 .collect();
-            expected.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+            expected.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
 
             assert_eq!(got, expected, "radius drift: bytes={bytes:?} {extent:?} near={near} r={radius}");
         }
@@ -1500,8 +1496,7 @@ mod tests {
             }
         }
         if let Some(near) = near {
-            let near0 = near.saturating_sub(1);
-            out.sort_by_key(|l| (l.start_line.abs_diff(near0), l.start_line));
+            out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
         }
         out
     }
