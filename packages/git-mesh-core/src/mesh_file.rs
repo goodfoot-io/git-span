@@ -219,61 +219,30 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
         )));
     }
 
-    // Parse address for optional line range.
-    if let Some(hash_pos) = address.find("#L") {
-        let file_path = &address[..hash_pos];
-        let range_part = &address[hash_pos + 2..];
+    // Delegate address parsing to `parse_address`, the single authority on
+    // the anchor-address grammar and path normalization. Re-implementing the
+    // grammar here is what let the two surfaces drift: backslash paths went
+    // un-normalized and a bare `#` (e.g. `file.ts#88`) was silently accepted
+    // as a whole-file path. Mapping `None` to `InvalidMeshFile` preserves the
+    // mesh-file surface's richer error type while sharing one grammar.
+    let (path, extent) = parse_address(address).ok_or_else(|| {
+        Error::InvalidMeshFile(format!(
+            "malformed anchor address `{address}`: expected `<path>` or `<path>#L<start>-L<end>`"
+        ))
+    })?;
 
-        if file_path.is_empty() {
-            return Err(Error::InvalidMeshFile(format!(
-                "empty file path in line-anchor address `{address}`"
-            )));
-        }
+    let (start_line, end_line) = match extent {
+        AnchorExtent::WholeFile => (0, 0),
+        AnchorExtent::LineRange { start, end } => (start, end),
+    };
 
-        let dash_pos = range_part.find("-L").ok_or_else(|| {
-            Error::InvalidMeshFile(format!(
-                "malformed line anchor address `{address}`: expected `<path>#L<start>-L<end>`"
-            ))
-        })?;
-
-        let start_str = &range_part[..dash_pos];
-        let end_str = &range_part[dash_pos + 2..];
-
-        let start_line = start_str.parse::<u32>().map_err(|e| {
-            Error::InvalidMeshFile(format!("invalid start line in `{address}`: {e}"))
-        })?;
-        let end_line = end_str
-            .parse::<u32>()
-            .map_err(|e| Error::InvalidMeshFile(format!("invalid end line in `{address}`: {e}")))?;
-
-        if start_line == 0 {
-            return Err(Error::InvalidMeshFile(format!(
-                "start line must be >= 1 in `{address}`"
-            )));
-        }
-        if end_line < start_line {
-            return Err(Error::InvalidMeshFile(format!(
-                "end line {end_line} < start line {start_line} in `{address}`"
-            )));
-        }
-
-        Ok(AnchorRecord {
-            path: file_path.to_string(),
-            start_line,
-            end_line,
-            algorithm,
-            content_hash,
-        })
-    } else {
-        // Whole-file anchor.
-        Ok(AnchorRecord {
-            path: address.to_string(),
-            start_line: 0,
-            end_line: 0,
-            algorithm,
-            content_hash,
-        })
-    }
+    Ok(AnchorRecord {
+        path,
+        start_line,
+        end_line,
+        algorithm,
+        content_hash,
+    })
 }
 
 /// Canonicalize an anchor path to the POSIX, forward-slash, repo-relative
