@@ -199,33 +199,23 @@ impl BatchFilter {
     }
 }
 
-/// Union a set of `BatchFilter` lines for the same path into a single
-/// merged range (for Ranged filters). Returns the path and an optional
-/// merged range; `None` means path-only (match everything on the path).
-pub fn merge_batch_filters(filters: &[BatchFilter]) -> (String, Option<(u32, u32)>) {
+/// Collect individual range pairs from a set of `BatchFilter` lines for the
+/// same path. Returns the path and an optional vec of `(start, end)` pairs;
+/// `None` means at least one filter is path-only (match everything on the
+/// path). Individual ranges are preserved rather than collapsed into a
+/// bounding hull so that an anchor between two disjoint ranges is not
+/// falsely reported as matching.
+pub fn merge_batch_filters(filters: &[BatchFilter]) -> (String, Option<Vec<(u32, u32)>>) {
     debug_assert!(!filters.is_empty());
     let path = filters[0].path().to_string();
-    let mut all_ranged = true;
-    let mut merged: Option<(u32, u32)> = None;
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
     for f in filters {
         match f {
-            BatchFilter::Path(_) => {
-                all_ranged = false;
-                break;
-            }
-            BatchFilter::Ranged { start, end, .. } => {
-                merged = Some(match merged {
-                    None => (*start, *end),
-                    Some((ms, me)) => (ms.min(*start), me.max(*end)),
-                });
-            }
+            BatchFilter::Path(_) => return (path, None),
+            BatchFilter::Ranged { start, end, .. } => ranges.push((*start, *end)),
         }
     }
-    if all_ranged {
-        (path, merged)
-    } else {
-        (path, None)
-    }
+    (path, Some(ranges))
 }
 
 fn collect_filtered_porcelain_listings_from_catalog(
@@ -403,26 +393,44 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
         let filters = filters_by_path.get(path).unwrap();
         let (merged_path, merged_range) = merge_batch_filters(filters);
 
-        // Build a synthetic target string for the existing catalog function.
-        let target = match merged_range {
-            None => merged_path.clone(),
-            Some((s, e)) => format!("{merged_path}#L{s}-L{e}"),
+        let mut listings: Vec<MeshListing> = match merged_range {
+            None => {
+                // Path-only: one catalog scan matches every anchor on the path.
+                collect_filtered_porcelain_listings_from_catalog(
+                    &mesh_pairs,
+                    &merged_path,
+                    Some(&staged_listings),
+                )?
+            }
+            Some(ref ranges) => {
+                // Individual ranged filters: scan once per range so disjoint
+                // ranges on the same path are not collapsed into a hull.
+                let mut all = Vec::new();
+                let mut seen_mesh: HashSet<String> = HashSet::new();
+                for (s, e) in ranges {
+                    let target = format!("{merged_path}#L{s}-L{e}");
+                    let batch = collect_filtered_porcelain_listings_from_catalog(
+                        &mesh_pairs,
+                        &target,
+                        Some(&staged_listings),
+                    )?;
+                    for listing in batch {
+                        if seen_mesh.insert(listing.name.clone()) {
+                            all.push(listing);
+                        }
+                    }
+                }
+                all
+            }
         };
 
-        let mut listings = collect_filtered_porcelain_listings_from_catalog(
-            &mesh_pairs,
-            &target,
-            Some(&staged_listings),
-        )?;
-
-        // For ranged filters, suppress whole-file anchors in the output.
+        // For ranged filters, suppress whole-file anchors only on the
+        // filtered path — not on unrelated paths in matched meshes.
         if merged_range.is_some() {
             for listing in &mut listings {
-                listing.anchors.retain(|a| {
-                    match a.extent {
-                        AnchorExtent::WholeFile => false,
-                        AnchorExtent::LineRange { .. } => true,
-                    }
+                listing.anchors.retain(|a| match a.extent {
+                    AnchorExtent::WholeFile => a.path != merged_path,
+                    AnchorExtent::LineRange { .. } => true,
                 });
             }
             // Drop listings that became empty after suppressing whole-file anchors.
@@ -757,12 +765,23 @@ pub(crate) fn resolve_targets(
     for arg in args {
         if arg.contains("#L") {
             // Range address: parse path and range, scan mesh files.
-            let (path, start, end) = parse_range_address(arg)?;
-            let names = path_index.matching_names(&path, Some((start, end)));
-            if !names.is_empty() {
-                result.extend(names);
-            } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
-                missing_args.push(arg);
+            // When `#L` is part of a filename (not a valid line-range
+            // delimiter), fall through to path resolution.
+            if let Ok((path, start, end)) = parse_range_address(arg) {
+                let names = path_index.matching_names(&path, Some((start, end)));
+                if !names.is_empty() {
+                    result.extend(names);
+                } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
+                    missing_args.push(arg);
+                }
+            } else {
+                // `#L` in filename, not a range address — resolve as path.
+                let names = path_index.matching_names(arg, None);
+                if !names.is_empty() {
+                    result.extend(names);
+                } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                    missing_args.push(arg);
+                }
             }
         } else if validate_mesh_name_shape(arg).is_ok() {
             // Mesh-name shape (bare slug or hierarchical): try the
@@ -1164,33 +1183,39 @@ mod tests {
     }
 
     #[test]
-    fn batch_filter_merge_two_ranged_lines_union() {
-        // Case 5: union of two ranged lines on the same path
+    fn batch_filter_merge_preserves_individual_ranges() {
+        // Two ranged lines on the same path are kept as individual ranges,
+        // not collapsed into a hull, so anchors between disjoint ranges are
+        // not falsely reported as matching.
         let filters = vec![
             BatchFilter::parse("src/lib.rs#L1-L10").unwrap(),
             BatchFilter::parse("src/lib.rs#L20-L30").unwrap(),
         ];
-        let (path, range) = merge_batch_filters(&filters);
+        let (path, ranges) = merge_batch_filters(&filters);
         assert_eq!(path, "src/lib.rs");
-        // Merged range should span [1, 30]
-        assert_eq!(range, Some((1, 30)));
+        // Individual ranges preserved, not merged into a hull [1,30].
+        assert_eq!(ranges, Some(vec![(1, 10), (20, 30)]));
 
-        // An anchor entirely within the union should match.
-        let merged_filter = BatchFilter::Ranged {
-            path: "src/lib.rs".to_string(),
-            start: 1,
-            end: 30,
-        };
-        assert!(merged_filter.matches_anchor(
+        // Anchors within individual ranges should match their respective filters.
+        let (s1, e1) = ranges.as_ref().unwrap()[0];
+        let f1 = BatchFilter::Ranged { path: path.clone(), start: s1, end: e1 };
+        assert!(f1.matches_anchor(
             "src/lib.rs",
             AnchorExtent::LineRange { start: 5, end: 8 }
         ));
-        assert!(merged_filter.matches_anchor(
+        let (s2, e2) = ranges.as_ref().unwrap()[1];
+        let f2 = BatchFilter::Ranged { path: path.clone(), start: s2, end: e2 };
+        assert!(f2.matches_anchor(
             "src/lib.rs",
             AnchorExtent::LineRange { start: 22, end: 25 }
         ));
-        // An anchor between the two original ranges but within the union should match.
-        assert!(merged_filter.matches_anchor(
+
+        // Anchor between the two ranges should not match either.
+        assert!(!f1.matches_anchor(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 12, end: 18 }
+        ));
+        assert!(!f2.matches_anchor(
             "src/lib.rs",
             AnchorExtent::LineRange { start: 12, end: 18 }
         ));
@@ -1293,44 +1318,33 @@ mod tests {
         //   src/lib.rs#L20-L30
         //
         // An anchor spanning [12, 18] overlaps NEITHER range, so it should
-        // NOT match. The current implementation collapses these into a hull
-        // [1, 30], which falsely matches the in-between anchor.
+        // NOT match. Individual ranges are preserved rather than collapsed
+        // into a hull.
         let filters = vec![
             BatchFilter::parse("src/lib.rs#L1-L10").unwrap(),
             BatchFilter::parse("src/lib.rs#L20-L30").unwrap(),
         ];
-        let (path, merged_range) = merge_batch_filters(&filters);
+        let (path, ranges) = merge_batch_filters(&filters);
         assert_eq!(path, "src/lib.rs");
 
-        // The merged range is the hull [1, 30], but an anchor at [12, 18]
-        // should NOT match — it overlaps neither of the original filters.
-        // Correct behavior: each filter must be checked individually.
+        // Individual ranges preserved, not a hull [1,30].
+        let ranges = ranges.unwrap();
+        assert_eq!(ranges.len(), 2);
+
         let anchor = AnchorExtent::LineRange {
             start: 12,
             end: 18,
         };
 
         // Check against each individual filter — neither matches.
-        let matches_any = filters.iter().any(|f| f.matches_anchor("src/lib.rs", anchor));
+        let matches_any = ranges.iter().any(|(s, e)| {
+            let f = BatchFilter::Ranged { path: path.clone(), start: *s, end: *e };
+            f.matches_anchor("src/lib.rs", anchor)
+        });
         assert!(
             !matches_any,
             "anchor [12,18] should not match either filter [1,10] or [20,30]"
         );
-
-        // The merged hull filter DOES match (current buggy behavior).
-        if let Some((ms, me)) = merged_range {
-            let hull_filter = BatchFilter::Ranged {
-                path: path.clone(),
-                start: ms,
-                end: me,
-            };
-            // This assertion demonstrates the bug: the hull filter matches
-            // [12,18] even though neither original filter does.
-            assert!(
-                !hull_filter.matches_anchor("src/lib.rs", anchor),
-                "BUG: hull [1,30] falsely matches anchor [12,18] — should require individual filter check"
-            );
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1339,16 +1353,23 @@ mod tests {
 
     #[test]
     fn whole_file_suppression_respects_filter_path() {
-        // A mesh has a WholeFile anchor on a.rs and a LineRange anchor on c.rs.
+        // A mesh has a WholeFile anchor on a.rs and a LineRange anchor on b.rs.
         // When the query is a ranged filter on b.rs, the WholeFile anchor on
-        // a.rs should NOT be suppressed — suppression should be scoped to
-        // anchors whose path matches the filter path.
+        // a.rs should NOT be suppressed — suppression is scoped to anchors
+        // whose path matches the filter path. The WholeFile on b.rs IS
+        // suppressed because it shares the filter path.
+        let filter_path = "b.rs";
+
         let mut listing = MeshListing {
             name: "test-mesh".to_string(),
             why: "test mesh".to_string(),
             anchors: vec![
                 AnchorEntry {
                     path: "a.rs".to_string(),
+                    extent: AnchorExtent::WholeFile,
+                },
+                AnchorEntry {
+                    path: filter_path.to_string(),
                     extent: AnchorExtent::WholeFile,
                 },
                 AnchorEntry {
@@ -1361,23 +1382,33 @@ mod tests {
             ],
         };
 
-        // The filter matched on b.rs (a different path from the WholeFile anchor on a.rs).
-
-        // Simulate the current retain logic from run_list_batch_porcelain
-        // (lines 419-429): unconditionally strips ALL WholeFile anchors.
+        // Correct retain logic: only suppress WholeFile anchors whose path
+        // matches the filter path.
         listing.anchors.retain(|a| match a.extent {
-            AnchorExtent::WholeFile => false,
+            AnchorExtent::WholeFile => a.path != filter_path,
             AnchorExtent::LineRange { .. } => true,
         });
 
-        // Correct behavior: the WholeFile anchor on a.rs should be KEPT
-        // because its path (a.rs) does not match the filter path (b.rs).
+        // WholeFile anchor on a.rs (different path) should be KEPT.
         let whole_file_on_a = listing.anchors.iter().any(|a| {
             matches!(a.extent, AnchorExtent::WholeFile) && a.path == "a.rs"
         });
         assert!(
             whole_file_on_a,
-            "BUG: WholeFile anchor on a.rs was stripped even though the filter was on b.rs"
+            "WholeFile anchor on a.rs should be kept when filter is on b.rs"
         );
+
+        // WholeFile anchor on b.rs (same path as filter) should be SUPPRESSED.
+        let whole_file_on_b = listing.anchors.iter().any(|a| {
+            matches!(a.extent, AnchorExtent::WholeFile) && a.path == filter_path
+        });
+        assert!(
+            !whole_file_on_b,
+            "WholeFile anchor on b.rs should be suppressed when filter is on b.rs"
+        );
+
+        // LineRange anchor on c.rs should be KEPT.
+        assert!(listing.anchors.iter().any(|a| matches!(a.extent, AnchorExtent::LineRange { .. })),
+            "LineRange anchor on c.rs should be kept");
     }
 }

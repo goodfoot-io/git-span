@@ -365,10 +365,16 @@ pub struct DoctorArgs {
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
 /// concern — the library side takes already-split `(path, start, end)`
 /// arguments.
+///
+/// Uses tail-anchored `#L` matching (last occurrence) so filenames
+/// containing `#L` (e.g. `notes/issue#L42.md`) are not misparsed.
+/// This grammar agrees with [`BatchFilter::parse`].
 pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
-    let (path, fragment) = text.split_once("#L").ok_or_else(|| {
+    let hash_pos = text.rfind("#L").ok_or_else(|| {
         anyhow::anyhow!("invalid anchor `{text}`; expected <path>#L<start>-L<end>")
     })?;
+    let path = &text[..hash_pos];
+    let fragment = &text[hash_pos + 2..];
     let (start, end) = fragment.split_once("-L").ok_or_else(|| {
         anyhow::anyhow!("invalid anchor `{text}`; expected <path>#L<start>-L<end>")
     })?;

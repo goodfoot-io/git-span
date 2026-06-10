@@ -162,16 +162,9 @@ fn run_stale_batch_porcelain(
     // For each path filter, scan only drifted anchors that overlap the filter.
     for path in &path_order {
         let filters = filters_by_path.get(path).unwrap();
-        // Build merged filter for overlap checking.
-        let (merged_path, merged_range) = crate::cli::show::merge_batch_filters(filters);
-        let merged_filter = match merged_range {
-            None => BatchFilter::Path(merged_path),
-            Some((s, e)) => BatchFilter::Ranged {
-                path: path.clone(),
-                start: s,
-                end: e,
-            },
-        };
+        // Collect individual filter ranges — preserve disjoint ranges
+        // instead of collapsing into a hull.
+        let (merged_path, ranges) = crate::cli::show::merge_batch_filters(filters);
 
         for mesh in &stale_resolved {
             for anchor in &mesh.anchors {
@@ -180,7 +173,22 @@ fn run_stale_batch_porcelain(
                     continue;
                 }
                 let anchor_path = anchor.anchored.path.to_string_lossy();
-                if !merged_filter.matches_anchor(&anchor_path, anchor.anchored.extent) {
+                let matched = match &ranges {
+                    None => anchor_path == merged_path,
+                    Some(ranges) => {
+                        anchor_path == merged_path
+                            && ranges.iter().any(|(s, e)| {
+                                match anchor.anchored.extent {
+                                    AnchorExtent::WholeFile => false,
+                                    AnchorExtent::LineRange {
+                                        start: a_start,
+                                        end: a_end,
+                                    } => a_start <= *e && a_end >= *s,
+                                }
+                            })
+                    }
+                };
+                if !matched {
                     continue;
                 }
                 let extent_str = match anchor.anchored.extent {
@@ -2254,15 +2262,7 @@ mod tests {
         let mut rows = Vec::new();
         for path in &path_order {
             let filters = filters_by_path.get(path).unwrap();
-            let (merged_path, merged_range) = merge_batch_filters(filters);
-            let merged_filter = match merged_range {
-                None => BatchFilter::Path(merged_path),
-                Some((s, e)) => BatchFilter::Ranged {
-                    path: path.clone(),
-                    start: s,
-                    end: e,
-                },
-            };
+            let (merged_path, ranges) = merge_batch_filters(filters);
 
             for mesh in &stale_resolved {
                 for anchor in &mesh.anchors {
@@ -2270,7 +2270,22 @@ mod tests {
                         continue;
                     }
                     let anchor_path = anchor.anchored.path.to_string_lossy().to_string();
-                    if !merged_filter.matches_anchor(&anchor_path, anchor.anchored.extent) {
+                    let matched = match &ranges {
+                        None => anchor_path == merged_path,
+                        Some(ranges) => {
+                            anchor_path == merged_path
+                                && ranges.iter().any(|(s, e)| {
+                                    match anchor.anchored.extent {
+                                        AnchorExtent::WholeFile => false,
+                                        AnchorExtent::LineRange {
+                                            start: a_start,
+                                            end: a_end,
+                                        } => a_start <= *e && a_end >= *s,
+                                    }
+                                })
+                        }
+                    };
+                    if !matched {
                         continue;
                     }
                     let extent_str = match anchor.anchored.extent {
