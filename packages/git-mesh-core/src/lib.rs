@@ -1616,4 +1616,82 @@ mod tests {
         assert_eq!(rk64_from_hex("000000000000000g"), None, "non-hex");
         assert_eq!(RK64_ALGORITHM, "rk64");
     }
+
+    // --- Degenerate line-range extents: hashing and scanning must agree that
+    // a degenerate extent (`end < start`, `start == 0`, or extreme bounds)
+    // selects no content, so a scan for it locates nothing and no input panics.
+
+    #[test]
+    fn degenerate_end_before_start_hashes_empty_and_scans_nothing() {
+        // `end < start` selects no line, so the digest falls back to the empty
+        // string. A scan for that "empty content" must never locate the empty
+        // line that happens to hash to the same digest.
+        let bytes = b"a\n\nb\n".to_vec();
+        let extent = AnchorExtent::LineRange { start: 5, end: 3 };
+
+        let hash = hash_bytes_with_extent(&bytes, &extent);
+        assert_eq!(hash, sha256_hex(b""), "end < start must hash as empty content");
+        assert_eq!(
+            cheap_fingerprint_with_extent(&bytes, &extent),
+            0,
+            "end < start must fingerprint as empty content",
+        );
+
+        let files = vec![("f.txt".to_string(), bytes.clone())];
+        let indexed = index_all(&files);
+        let fp = cheap_fingerprint_with_extent(&bytes, &extent);
+
+        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
+        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
+        assert!(scan_indexed_prefiltered(&indexed, &hash, fp, extent, None).is_empty());
+        assert!(scan_indexed_rk64(&indexed, fp, extent, None).is_empty());
+        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
+    }
+
+    #[test]
+    fn degenerate_start_zero_hashes_empty_and_scans_nothing() {
+        // `start == 0` is a degenerate extent: it selects no content on the
+        // hashing side, and the scan family must agree.
+        let bytes = b"a\nb\nc\n".to_vec();
+        let extent = AnchorExtent::LineRange { start: 0, end: 3 };
+
+        assert_eq!(
+            hash_bytes_with_extent(&bytes, &extent),
+            sha256_hex(b""),
+            "start == 0 must hash as empty content",
+        );
+        assert_eq!(
+            cheap_fingerprint_with_extent(&bytes, &extent),
+            0,
+            "start == 0 must fingerprint as empty content",
+        );
+
+        let hash = sha256_hex(b"");
+        let files = vec![("f.txt".to_string(), bytes.clone())];
+        let indexed = index_all(&files);
+
+        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
+        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
+        assert!(scan_indexed_prefiltered(&indexed, &hash, 0, extent, None).is_empty());
+        assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
+        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
+    }
+
+    #[test]
+    fn degenerate_extreme_bounds_do_not_overflow() {
+        // `start == 0, end == u32::MAX` makes `end - start + 1` overflow a
+        // `u32`: a panic in debug builds, a wrap to `0` in release. An absurd
+        // extent is still just an extent — every scan must return cleanly.
+        let bytes = b"a\nb\nc\n".to_vec();
+        let files = vec![("f.txt".to_string(), bytes.clone())];
+        let indexed = index_all(&files);
+        let extent = AnchorExtent::LineRange { start: 0, end: u32::MAX };
+        let hash = sha256_hex(b"");
+
+        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
+        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
+        assert!(scan_indexed_prefiltered(&indexed, &hash, 0, extent, None).is_empty());
+        assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
+        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
+    }
 }
