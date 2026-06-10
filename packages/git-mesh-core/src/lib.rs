@@ -76,6 +76,20 @@ pub fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
     }
 }
 
+/// Window height (line count) of an inclusive 1-based `LineRange`, or `0` for a
+/// degenerate extent that selects no content. An extent is degenerate when
+/// `start == 0` (no 1-based line) or `end < start` (empty range); both hash as
+/// the empty string on the [`hash_bytes_with_extent`] side, so the scan family
+/// must agree by treating them as a zero-height window (the reachable
+/// `span == 0` guard). Computed before any arithmetic, so `start == 0,
+/// end == u32::MAX` can never overflow.
+fn line_range_span(start: u32, end: u32) -> usize {
+    if start == 0 || end < start {
+        return 0;
+    }
+    (end - start + 1) as usize
+}
+
 /// Byte offsets `[start, end)` of the canonical hash region for the
 /// inclusive 1-based line range `[start_line, end_line]`, clamped to EOF
 /// per `str::lines` line counting. `None` when the range selects no line
@@ -84,6 +98,11 @@ pub fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
 /// Allocation-free: a single forward pass that stops as soon as the
 /// `end`-terminating newline is seen.
 fn line_range_region(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(usize, usize)> {
+    if start_line == 0 {
+        // `start == 0` has no 1-based line; a degenerate extent selects no
+        // content, matching `line_range_span` and the scan family.
+        return None;
+    }
     let lo = start_line.saturating_sub(1) as usize; // 0-based first wanted line
     let hi = end_line as usize; // exclusive last wanted line (pre-clamp)
     if lo >= hi {
@@ -298,7 +317,9 @@ impl<'a> LineIndex<'a> {
     /// 1-based line range, clamped to the line count. `None` for an empty
     /// range.
     fn region(&self, start: u32, end: u32) -> Option<(usize, usize)> {
-        if start > end {
+        if start == 0 || start > end {
+            // Degenerate extent (`start == 0` or `end < start`): no content,
+            // matching `line_range_span` and `line_range_region`.
             return None;
         }
         let lo = start.saturating_sub(1) as usize;
@@ -465,7 +486,7 @@ pub fn scan_indexed_prefiltered(
         return scan_indexed(files, content_hash, extent, near);
     };
 
-    let span = (end.saturating_sub(start) + 1) as usize;
+    let span = line_range_span(start, end);
     if span == 0 {
         return Vec::new();
     }
@@ -528,7 +549,7 @@ pub fn scan_indexed_rk64(
             })
             .collect(),
         AnchorExtent::LineRange { start, end } => {
-            let span = (end.saturating_sub(start) + 1) as usize;
+            let span = line_range_span(start, end);
             if span == 0 {
                 return Vec::new();
             }
@@ -658,7 +679,7 @@ pub fn scan_indexed(
             })
             .collect(),
         AnchorExtent::LineRange { start, end } => {
-            let span = (end.saturating_sub(start) + 1) as usize;
+            let span = line_range_span(start, end);
             if span == 0 {
                 return Vec::new();
             }
@@ -734,7 +755,7 @@ pub fn scan_indexed_near_radius(
         return scan_indexed(files, content_hash, extent, None);
     };
 
-    let span = (end.saturating_sub(start) + 1) as usize;
+    let span = line_range_span(start, end);
     if span == 0 {
         return Vec::new();
     }
@@ -970,7 +991,9 @@ mod tests {
                 let lines: Vec<&str> = text.lines().collect();
                 let lo = (*start as usize).saturating_sub(1);
                 let hi = (*end as usize).min(lines.len());
-                let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
+                // A degenerate extent (`start == 0` or `end < start`) selects
+                // no content, matching `line_range_region`.
+                let slice = if *start != 0 && lo < hi { &lines[lo..hi] } else { &[][..] };
                 slice.join("\n").into_bytes()
             }
         };
@@ -995,7 +1018,7 @@ mod tests {
                 })
                 .collect(),
             AnchorExtent::LineRange { start, end } => {
-                let span = (end.saturating_sub(start) + 1) as usize;
+                let span = line_range_span(start, end);
                 if span == 0 {
                     return Vec::new();
                 }
@@ -1475,7 +1498,7 @@ mod tests {
                 .map(|(p, _)| Location { path: p.clone(), start_line: 0, end_line: 0 })
                 .collect();
         };
-        let span = (end.saturating_sub(start) + 1) as usize;
+        let span = line_range_span(start, end);
         if span == 0 {
             return Vec::new();
         }
