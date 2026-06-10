@@ -510,7 +510,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // persists non-Fresh rows only), so derive the true anchor total from
         // the mesh-file records. For scoped queries (positional args), the
         // cache path is not used, so load totals fresh.
-        let scoped_anchor_totals: std::collections::HashMap<String, usize> = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+        let scoped_anchor_totals: std::collections::HashMap<String, usize> = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
             .iter()
             .map(|(n, m)| (n.clone(), m.anchors.len()))
             .collect();
@@ -557,7 +557,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         (mesh_count, anchor_count, totals)
     } else {
         let _perf = crate::perf::span("stale.count-totals");
-        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
+        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0;
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         let totals = pairs
@@ -665,7 +665,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         let fix_input: Vec<MeshResolved> = if args.paths.is_empty() {
             let mut full = meshes.clone();
             let known: HashSet<String> = full.iter().map(|m| m.name.clone()).collect();
-            for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
+            for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
                 if known.contains(&name) {
                     continue;
                 }
@@ -767,7 +767,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 || !m.pending.is_empty()
         });
         let file_records: std::collections::HashMap<String, crate::types::Mesh> =
-            crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+            crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
                 .into_iter()
                 .collect();
         for m in meshes.iter_mut() {

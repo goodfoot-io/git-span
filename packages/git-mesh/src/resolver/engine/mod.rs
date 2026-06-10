@@ -986,7 +986,7 @@ fn stale_meshes_inner(
     crate::resolver::linemap::reset_counters();
     let mesh_pairs: Vec<(String, Mesh)> = {
         let _perf = crate::perf::span("resolver.read-mesh-files");
-        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
     };
     let mut out = Vec::new();
     let mut state = {

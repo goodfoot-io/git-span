@@ -66,7 +66,7 @@ pub fn scan_interior_anchors(
     mesh_root: &str,
 ) -> crate::Result<Vec<InteriorAnchorViolation>> {
     let mut violations = Vec::new();
-    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
+    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
         for (_anchor_id, anchor) in &mesh.anchors {
             if let Some(detail) = classify_interior_anchor(mesh_root, &anchor.path) {
                 violations.push(InteriorAnchorViolation {
@@ -100,7 +100,7 @@ pub(crate) fn scope_has_interior_anchor(
     mesh_root: &str,
     scope: Option<&std::collections::HashSet<String>>,
 ) -> crate::Result<bool> {
-    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
+    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
         if let Some(names) = scope
             && !names.contains(&name)
         {

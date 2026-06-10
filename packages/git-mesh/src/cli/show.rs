@@ -28,74 +28,66 @@ struct MeshListing {
     anchors: Vec<AnchorEntry>,
 }
 
-fn collect_listings(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<MeshListing>> {
-    collect_listings_with_options(repo, mesh_root, true, true)
+/// Build [`MeshListing`]s from already-loaded meshes so callers who hold a
+/// single corpus load can derive listings without a second parse.
+fn build_listings(meshes: &[(String, crate::types::Mesh)], include_why: bool) -> Vec<MeshListing> {
+    meshes
+        .iter()
+        .map(|(name, mesh)| {
+            let message = if include_why {
+                mesh.message.clone()
+            } else {
+                String::new()
+            };
+            let anchors: Vec<AnchorEntry> = mesh
+                .anchors
+                .iter()
+                .map(|(_id, r)| AnchorEntry {
+                    path: r.path.clone(),
+                    extent: r.extent,
+                })
+                .collect();
+            MeshListing {
+                name: name.clone(),
+                why: message.trim_end_matches('\n').to_string(),
+                anchors,
+            }
+        })
+        .collect()
 }
 
-fn collect_listings_with_options(
-    repo: &gix::Repository,
-    mesh_root: &str,
-    include_why: bool,
-    _include_state: bool,
-) -> Result<Vec<MeshListing>> {
-    let mesh_pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
-    let mut listings: Vec<MeshListing> = Vec::new();
-    for (name, mesh) in mesh_pairs {
-        let message = if include_why {
-            mesh.message
-        } else {
-            String::new()
-        };
-        let anchors: Vec<AnchorEntry> = mesh
-            .anchors
-            .into_iter()
-            .map(|(_id, r)| AnchorEntry {
-                path: r.path,
-                extent: r.extent,
-            })
-            .collect();
-        listings.push(MeshListing {
-            name,
-            why: message.trim_end_matches('\n').to_string(),
-            anchors,
-        });
-    }
-    Ok(listings)
-}
-
-fn collect_listings_for_names(
-    repo: &gix::Repository,
-    mesh_root: &str,
+/// Build [`MeshListing`]s for a specific set of names from already-loaded
+/// meshes.
+fn build_listings_for_names(
+    meshes: &[(String, crate::types::Mesh)],
     names: &[String],
     include_why: bool,
-    _include_state: bool,
-) -> Result<Vec<MeshListing>> {
+) -> Vec<MeshListing> {
     let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
-    let mut listings = Vec::with_capacity(names.len());
-    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
-        if !name_set.contains(name.as_str()) {
-            continue;
-        }
-        let message = if include_why {
-            mesh.message
-        } else {
-            String::new()
-        };
-        let anchors: Vec<AnchorEntry> = mesh
-            .anchors
-            .into_iter()
-            .map(|(_id, r)| AnchorEntry {
-                path: r.path,
-                extent: r.extent,
-            })
-            .collect();
-        listings.push(MeshListing {
-            name,
-            why: message.trim_end_matches('\n').to_string(),
-            anchors,
-        });
-    }
-    Ok(listings)
+    meshes
+        .iter()
+        .filter(|(name, _)| name_set.contains(name.as_str()))
+        .map(|(name, mesh)| {
+            let message = if include_why {
+                mesh.message.clone()
+            } else {
+                String::new()
+            };
+            let anchors: Vec<AnchorEntry> = mesh
+                .anchors
+                .iter()
+                .map(|(_id, r)| AnchorEntry {
+                    path: r.path.clone(),
+                    extent: r.extent,
+                })
+                .collect();
+            MeshListing {
+                name: name.clone(),
+                why: message.trim_end_matches('\n').to_string(),
+                anchors,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +350,7 @@ fn run_list_batch_porcelain(repo: &gix::Repository, mesh_root: &str) -> Result<i
     // O(meshes + paths) rather than O(meshes × paths).
     let mesh_pairs = {
         let _perf = crate::perf::span("list.path-filter-scan");
-        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
     };
     // File-backed model: every query line scans the same mesh files, so
     // a mesh can match more than one query. Render each matched mesh's
@@ -603,20 +595,41 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
         return run_list_batch_porcelain(repo, mesh_root);
     }
 
+    // Load the full mesh corpus exactly once. Every downstream consumer
+    // — target resolution, conflict detection, listing collection —
+    // derives its answer from this single in-memory copy.
+    let (meshes, conflicted) =
+        crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
+
+    // Build the path index from the already-loaded meshes so target
+    // resolution doesn't trigger a second corpus parse.
+    let path_index = crate::mesh::read::MeshPathIndex::from_loaded_meshes(&meshes)?;
+
+    // Collect loaded mesh names into a set so bare-name lookups can
+    // check membership without a per-arg `read_effective` call.
+    let loaded_names: std::collections::HashSet<String> =
+        meshes.iter().map(|(n, _)| n.clone()).collect();
+
     // Resolve targets to mesh names (or list all if no args).
     let resolved_names: Option<Vec<String>> = if args.targets.is_empty() {
         None
     } else {
-        Some(resolve_targets(repo, mesh_root, &args.targets)?)
+        Some(resolve_targets_from_index(
+            repo,
+            mesh_root,
+            &args.targets,
+            &path_index,
+            &loaded_names,
+        )?)
     };
 
     // Fail-closed: a mesh in a Git conflict state cannot be listed
     // reliably (`load_all_meshes_in` skips it rather than rendering
     // conflict-marker text). Refuse explicitly instead of silently
     // dropping it, so an unresolved merge is never reported as a clean
-    // empty list.
+    // empty list. Conflict names were collected during the single
+    // corpus load above — no second scan needed.
     {
-        let conflicted = crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
         let in_scope: Vec<String> = match &resolved_names {
             Some(names) => conflicted
                 .into_iter()
@@ -647,15 +660,12 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
     }
 
     let include_why = !args.porcelain || args.search.is_some();
-    let include_state = !args.porcelain;
     let mut listings = {
         let _perf = crate::perf::span("list.collect");
         if let Some(ref names) = resolved_names {
-            collect_listings_for_names(repo, mesh_root, names, include_why, include_state)?
-        } else if include_why && include_state {
-            collect_listings(repo, mesh_root)?
+            build_listings_for_names(&meshes, names, include_why)
         } else {
-            collect_listings_with_options(repo, mesh_root, include_why, include_state)?
+            build_listings(&meshes, include_why)
         }
     };
 
@@ -739,6 +749,7 @@ fn render_range_address(path: &str, extent: AnchorExtent) -> String {
 ///
 /// Zero-match args produce stderr diagnostics and an error.  Empty args return
 /// an empty vector immediately.
+#[allow(dead_code)]
 pub(crate) fn resolve_targets(
     repo: &gix::Repository,
     mesh_root: &str,
@@ -807,6 +818,83 @@ pub(crate) fn resolve_targets(
         } else {
             // Not mesh-name shape (path with extension): scan mesh files
             // for an anchor on this path.
+            let names = path_index.matching_names(arg, None);
+            if !names.is_empty() {
+                result.extend(names);
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                missing_args.push(arg);
+            }
+        }
+    }
+
+    if !missing_args.is_empty() {
+        let all = missing_args.join("`, `");
+        return Err(CliError {
+            subcommand: "list",
+            summary: format!("`{all}` did not match any mesh, file, or path."),
+            what_happened: format!(
+                "The following arguments did not match a mesh name, a file path, \
+                 or a path-index entry: `{all}`. Git-mesh resolves positional \
+                 arguments as mesh names, file paths, or globs."
+            ),
+            next_steps: vec![
+                NextStep::Prose("Check the spelling or list available meshes.".into()),
+                NextStep::Bash("git mesh list".into()),
+            ],
+        }
+        .into());
+    }
+
+    Ok(result.into_iter().collect())
+}
+
+/// Variant of [`resolve_targets`] that accepts a pre-built
+/// [`MeshPathIndex`] and a set of loaded mesh names so callers who already
+/// hold a single corpus load can resolve targets without a second parse.
+fn resolve_targets_from_index(
+    repo: &gix::Repository,
+    _mesh_root: &str,
+    args: &[String],
+    path_index: &crate::mesh::read::MeshPathIndex,
+    loaded_names: &std::collections::HashSet<String>,
+) -> Result<Vec<String>> {
+    if args.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut result: HashSet<String> = HashSet::new();
+    let mut missing_args: Vec<&str> = Vec::new();
+
+    for arg in args {
+        if arg.contains("#L") {
+            let (path, start, end) = parse_range_address(arg)?;
+            let names = path_index.matching_names(&path, Some((start, end)));
+            if !names.is_empty() {
+                result.extend(names);
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
+                missing_args.push(arg);
+            }
+        } else if validate_mesh_name_shape(arg).is_ok() {
+            // Check the pre-loaded name set before falling through to the
+            // path index — avoids a per-arg `read_effective` call.
+            if loaded_names.contains(arg) {
+                result.insert(arg.clone());
+            } else {
+                let names = path_index.matching_names(arg, None);
+                if !names.is_empty() {
+                    result.extend(names);
+                } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                    missing_args.push(arg);
+                }
+            }
+        } else if crate::mesh::read::is_glob_pattern(arg) {
+            let names = path_index.matching_names_glob(arg, None)?;
+            if !names.is_empty() {
+                result.extend(names);
+            } else {
+                missing_args.push(arg);
+            }
+        } else {
             let names = path_index.matching_names(arg, None);
             if !names.is_empty() {
                 result.extend(names);

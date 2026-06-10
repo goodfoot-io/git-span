@@ -165,7 +165,7 @@ pub(crate) fn stale_meshes_cached(
                 // Store the whole-result cache entry: backfill fresh
                 // anchors from mesh-file records so warm-clean repeats can
                 // skip every per-invocation phase in run_stale.
-                if let Ok(file_pairs) = crate::mesh::read::load_all_meshes_in(repo, &mesh_root) {
+                if let Ok((file_pairs, _conflicted)) = crate::mesh::read::load_all_meshes_in(repo, &mesh_root) {
                     let file_records: std::collections::HashMap<String, crate::types::Mesh> =
                         file_pairs.into_iter().collect();
                     // Fail-closed: never store a whole result for a corpus that
@@ -586,7 +586,7 @@ fn meshes_affected_by(
         }
     }
     if !dirty_paths.is_empty() {
-        for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)? {
+        for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
             if mesh
                 .anchors
                 .iter()

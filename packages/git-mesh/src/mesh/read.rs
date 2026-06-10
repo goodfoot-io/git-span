@@ -38,30 +38,39 @@ pub fn read_mesh_in(repo: &gix::Repository, name: &str, mesh_root: &str) -> Resu
 }
 
 /// Load every visible mesh under a specific mesh root.
-pub fn load_all_meshes_in(repo: &gix::Repository, mesh_root: &str) -> Result<Vec<(String, Mesh)>> {
+///
+/// Returns `(loaded_meshes, conflicted_names)`. Conflicted meshes (those
+/// in a Git conflict state — unmerged index entry or textual conflict
+/// markers) are excluded from the loaded set and returned separately so
+/// callers can surface them without a second corpus scan.
+pub fn load_all_meshes_in(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<(Vec<(String, Mesh)>, Vec<String>)> {
     let _perf = crate::perf::span("mesh.load-all-corpus");
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
     let mut names = reader.list_mesh_names()?;
     names.sort();
     let mut out = Vec::with_capacity(names.len());
+    let mut conflicted = Vec::new();
     for name in names {
         // A name can appear in `list_mesh_names` (e.g. present in HEAD)
         // yet be tombstoned in the effective view; skip those rather
         // than erroring so the batch resolves the live set.
         //
         // A mesh in a Git conflict state cannot be read reliably. It is
-        // surfaced separately as a `Conflict` finding by the stale path
-        // (see [`conflicted_mesh_names_in`]); skipping it here keeps the
-        // rest of the batch resolvable instead of aborting the whole run
-        // (still fail-closed: the conflict is reported, exit is non-zero).
+        // surfaced separately as a `Conflict` finding by the stale path;
+        // collecting it here lets callers avoid a separate
+        // `conflicted_mesh_names_in` scan (still fail-closed: the conflict
+        // is reported, exit is non-zero).
         match reader.read_effective(&name) {
             Ok(Some(file)) => out.push((name.clone(), mesh_from_file(&name, &file))),
             Ok(None) => {}
-            Err(Error::MeshConflict(_)) => {}
+            Err(Error::MeshConflict(_)) => conflicted.push(name.clone()),
             Err(e) => return Err(e),
         }
     }
-    Ok(out)
+    Ok((out, conflicted))
 }
 
 /// Names of all visible meshes that are currently in a Git conflict
@@ -110,12 +119,20 @@ pub struct MeshPathIndex {
 impl MeshPathIndex {
     /// Load the full mesh corpus once and build the index.
     pub fn load_in(repo: &gix::Repository, mesh_root: &str) -> Result<Self> {
+        let (meshes, _conflicted) = load_all_meshes_in(repo, mesh_root)?;
+        Self::from_loaded_meshes(&meshes)
+    }
+
+    /// Build the index from already-loaded meshes so callers that hold a
+    /// single [`load_all_meshes_in`] result can reuse it without a second
+    /// corpus parse.
+    pub fn from_loaded_meshes(meshes: &[(String, Mesh)]) -> Result<Self> {
         let mut by_path: std::collections::HashMap<
             String,
             Vec<(String, crate::types::AnchorExtent)>,
         > = std::collections::HashMap::new();
         let mut all = Vec::new();
-        for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
+        for (name, mesh) in meshes {
             for (_id, a) in &mesh.anchors {
                 by_path
                     .entry(a.path.clone())
@@ -187,7 +204,7 @@ pub fn meshes_matching_path_in(
     mesh_root: &str,
 ) -> Result<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
-    for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
+    for (name, mesh) in load_all_meshes_in(repo, mesh_root)?.0 {
         let hit = mesh
             .anchors
             .iter()
@@ -245,7 +262,7 @@ pub fn matching_mesh_names_glob_in(
         .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
         .compile_matcher();
     let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (name, mesh) in load_all_meshes_in(repo, mesh_root)? {
+    for (name, mesh) in load_all_meshes_in(repo, mesh_root)?.0 {
         for (_id, a) in &mesh.anchors {
             if glob.is_match(&a.path) && extent_in_range(a.extent, range) {
                 matched.insert(name.clone());
