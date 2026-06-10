@@ -121,29 +121,115 @@ function findRoots(paths, patterns) {
   return roots;
 }
 
-// Expand a file into a subtree. A file may surface under many parents and at
-// many depths, so loops are guarded per-branch: `ancestors` holds every file
-// on the path from a root to here, and a neighbor already on that path is not
-// re-expanded. Children are ordered by edge weight (closeness) then by path.
-function expand(graph, path, ancestors, depth, maxDepth) {
-  const node = { path, children: [] };
+// Enumerate every maximal clique among `candidates` (Bron–Kerbosch with a
+// pivot), using the mesh graph for adjacency. A clique is a set in which every
+// pair is directly connected; a candidate with no edge to another candidate
+// comes back as a one-element clique. Cliques may overlap — a file shared by
+// two cliques appears in both, since dropping the edge would hide a real
+// propagation path.
+function maximalCliques(graph, candidates) {
+  const inScope = new Set(candidates);
+  const neighborsInScope = (path) => {
+    const result = new Set();
+    for (const neighbor of graph.get(path).keys()) {
+      if (inScope.has(neighbor)) result.add(neighbor);
+    }
+    return result;
+  };
+
+  const cliques = [];
+  const search = (included, remaining, excluded) => {
+    if (remaining.size === 0 && excluded.size === 0) {
+      cliques.push([...included]);
+      return;
+    }
+
+    let pivot = null;
+    let pivotReach = -1;
+    for (const candidate of [...remaining, ...excluded]) {
+      const reach = [...neighborsInScope(candidate)].filter((n) => remaining.has(n)).length;
+      if (reach > pivotReach) {
+        pivotReach = reach;
+        pivot = candidate;
+      }
+    }
+    const pivotNeighbors = pivot === null ? new Set() : neighborsInScope(pivot);
+
+    for (const vertex of [...remaining]) {
+      if (pivotNeighbors.has(vertex)) continue;
+      const adjacency = neighborsInScope(vertex);
+      search(
+        new Set(included).add(vertex),
+        new Set([...remaining].filter((n) => adjacency.has(n))),
+        new Set([...excluded].filter((n) => adjacency.has(n))),
+      );
+      remaining.delete(vertex);
+      excluded.add(vertex);
+    }
+  };
+
+  search(new Set(), new Set(candidates), new Set());
+  return cliques;
+}
+
+// Order a clique's members most-connected-within-the-clique first, then by path.
+function orderMembers(graph, clique) {
+  const internalWeight = (path) => {
+    let sum = 0;
+    const edges = graph.get(path);
+    for (const other of clique) if (other !== path) sum += edges.get(other) ?? 0;
+    return sum;
+  };
+  return [...clique].sort(
+    (left, right) => internalWeight(right) - internalWeight(left) || left.localeCompare(right),
+  );
+}
+
+// Expand a clique into a subtree. The clique's children are the maximal cliques
+// formed among the union of its members' external neighbors. A clique expands
+// once, as a unit, so interconnected siblings are not re-listed under one
+// another. Loops are guarded per-branch: `ancestors` holds every file on the
+// path from a root to here, so none is re-expanded as its own descendant.
+function expandClique(graph, members, ancestors, depth, maxDepth) {
+  const node = { members, children: [] };
   if (depth >= maxDepth) return node;
 
-  const neighbors = [...graph.get(path)]
-    .filter(([neighbor]) => !ancestors.has(neighbor))
-    .sort(([leftPath, leftWeight], [rightPath, rightWeight]) => {
-      return rightWeight - leftWeight || leftPath.localeCompare(rightPath);
-    });
+  const nextAncestors = new Set(ancestors);
+  for (const member of members) nextAncestors.add(member);
 
-  const nextAncestors = new Set(ancestors).add(path);
-  for (const [neighbor] of neighbors) {
-    node.children.push(expand(graph, neighbor, nextAncestors, depth + 1, maxDepth));
+  const candidates = new Set();
+  for (const member of members) {
+    for (const neighbor of graph.get(member).keys()) {
+      if (!nextAncestors.has(neighbor)) candidates.add(neighbor);
+    }
+  }
+  if (candidates.size === 0) return node;
+
+  const childCliques = maximalCliques(graph, [...candidates].sort()).map((clique) =>
+    orderMembers(graph, clique),
+  );
+
+  // Order child cliques by the strongest edge linking them back to this clique.
+  const linkWeight = (clique) => {
+    let best = 0;
+    for (const member of members) {
+      const edges = graph.get(member);
+      for (const child of clique) best = Math.max(best, edges.get(child) ?? 0);
+    }
+    return best;
+  };
+  childCliques.sort(
+    (left, right) => linkWeight(right) - linkWeight(left) || left[0].localeCompare(right[0]),
+  );
+
+  for (const clique of childCliques) {
+    node.children.push(expandClique(graph, clique, nextAncestors, depth + 1, maxDepth));
   }
   return node;
 }
 
 function renderNode(node, indent = '') {
-  const lines = [`${indent}- ${node.path}`];
+  const lines = [`${indent}- ${node.members.join(', ')}`];
   for (const child of node.children) {
     lines.push(...renderNode(child, `${indent}  `));
   }
@@ -193,6 +279,22 @@ if (!existsSync(meshRoot) || !statSync(meshRoot).isDirectory()) {
 
 const graph = buildGraph(listMeshFiles(meshRoot));
 const roots = findRoots([...graph.keys()].sort(), repoRelativePatterns(repoRoot, patterns));
-const forest = [...roots].sort().map((root) => expand(graph, root, new Set(), 0, maxDepth));
+
+// The matched roots are themselves grouped into cliques before expansion.
+const rootCliques = maximalCliques(graph, [...roots].sort()).map((clique) =>
+  orderMembers(graph, clique),
+);
+const internalWeight = (clique) => {
+  let sum = 0;
+  for (const left of clique) {
+    const edges = graph.get(left);
+    for (const right of clique) if (left < right) sum += edges.get(right) ?? 0;
+  }
+  return sum;
+};
+rootCliques.sort(
+  (left, right) => internalWeight(right) - internalWeight(left) || left[0].localeCompare(right[0]),
+);
+const forest = rootCliques.map((clique) => expandClique(graph, clique, new Set(), 0, maxDepth));
 
 console.log(forest.flatMap((node) => renderNode(node)).join('\n'));
