@@ -367,6 +367,46 @@ pub fn parse_address(text: &str) -> Option<(String, AnchorExtent)> {
     parse_anchor_address(text).ok()
 }
 
+// ---------------------------------------------------------------------------
+// Structural mesh merge
+// ---------------------------------------------------------------------------
+
+/// Outcome of a structural mesh merge. Anchors in `merged` are in
+/// canonical (path, start_line, end_line) order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeshMergeResult {
+    pub merged: MeshFile,
+    pub unresolved: Vec<UnresolvedAnchor>,
+}
+
+/// Same path + extent on both sides, divergent content_hash, with no
+/// source available to re-hash authoritatively.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnresolvedAnchor {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub ours: AnchorRecord,
+    pub theirs: AnchorRecord,
+}
+
+/// `base` is the merge-base mesh (merge-driver path); `None` when parsing
+/// textual conflict markers into ours/theirs (the `--fix` path), in which
+/// case any `--why` divergence fails closed. `source_files` supplies
+/// `(repo_relative_path, file_bytes)` for re-hashing.
+pub fn merge_mesh_files(
+    base: Option<&MeshFile>,
+    ours: &MeshFile,
+    theirs: &MeshFile,
+    source_files: &[(String, Vec<u8>)],
+) -> MeshMergeResult {
+    let _ = base;
+    let _ = ours;
+    let _ = theirs;
+    let _ = source_files;
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +641,229 @@ mod tests {
         let serialized = mesh.serialize();
         let reparsed = MeshFile::parse(&serialized).unwrap();
         assert_eq!(mesh, reparsed);
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_mesh_files — Phase 2 skipped tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore]
+    fn merge_union_distinct_anchors() {
+        let a = AnchorRecord {
+            path: "a.rs".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let b = AnchorRecord {
+            path: "b.rs".into(), start_line: 5, end_line: 10,
+            algorithm: "rk64".into(), content_hash: "2222".into(),
+        };
+        let ours = MeshFile { anchors: vec![a.clone()], why: String::new() };
+        let theirs = MeshFile { anchors: vec![b.clone()], why: String::new() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        // Both unique anchors appear in the merged output.
+        assert_eq!(result.merged.anchors.len(), 2);
+        assert!(result.merged.anchors.contains(&a));
+        assert!(result.merged.anchors.contains(&b));
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_identical_anchor_kept() {
+        let anchor = AnchorRecord {
+            path: "same.rs".into(), start_line: 1, end_line: 5,
+            algorithm: "rk64".into(), content_hash: "deadbeef".into(),
+        };
+        let ours = MeshFile { anchors: vec![anchor.clone()], why: String::new() };
+        let theirs = MeshFile { anchors: vec![anchor.clone()], why: String::new() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        // Identical anchor on both sides produces a single copy.
+        assert_eq!(result.merged.anchors.len(), 1);
+        assert_eq!(result.merged.anchors[0], anchor);
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_divergent_with_source() {
+        let ours_anchor = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 2,
+            algorithm: "rk64".into(), content_hash: "abc123".into(),
+        };
+        let theirs_anchor = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 2,
+            algorithm: "rk64".into(), content_hash: "def456".into(),
+        };
+        let ours = MeshFile { anchors: vec![ours_anchor], why: String::new() };
+        let theirs = MeshFile { anchors: vec![theirs_anchor], why: String::new() };
+        // Source file available for re-hashing — should resolve to one anchor.
+        let source = vec![("a.txt".into(), b"hello\nworld\n".to_vec())];
+        let result = merge_mesh_files(None, &ours, &theirs, &source);
+        assert_eq!(result.merged.anchors.len(), 1);
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_divergent_without_source() {
+        let ours_anchor = AnchorRecord {
+            path: "x.txt".into(), start_line: 2, end_line: 4,
+            algorithm: "rk64".into(), content_hash: "abc123".into(),
+        };
+        let theirs_anchor = AnchorRecord {
+            path: "x.txt".into(), start_line: 2, end_line: 4,
+            algorithm: "rk64".into(), content_hash: "def456".into(),
+        };
+        let ours = MeshFile { anchors: vec![ours_anchor.clone()], why: String::new() };
+        let theirs = MeshFile { anchors: vec![theirs_anchor.clone()], why: String::new() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        // No source to re-hash — anchor listed as unresolved.
+        assert_eq!(result.unresolved.len(), 1);
+        assert_eq!(result.unresolved[0].path, "x.txt");
+        assert_eq!(result.unresolved[0].start_line, 2);
+        assert_eq!(result.unresolved[0].end_line, 4);
+        assert_eq!(result.unresolved[0].ours, ours_anchor);
+        assert_eq!(result.unresolved[0].theirs, theirs_anchor);
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_ours_changed() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let base = MeshFile { anchors: vec![a.clone()], why: "common why".into() };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "ours why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "common why".into() };
+        let result = merge_mesh_files(Some(&base), &ours, &theirs, &[]);
+        // Only ours changed why → take ours.
+        assert_eq!(result.merged.why, "ours why");
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_theirs_changed() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let base = MeshFile { anchors: vec![a.clone()], why: "common why".into() };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "common why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let result = merge_mesh_files(Some(&base), &ours, &theirs, &[]);
+        // Only theirs changed why → take theirs.
+        assert_eq!(result.merged.why, "theirs why");
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_both_identical() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let base = MeshFile { anchors: vec![a.clone()], why: "original why".into() };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "new why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "new why".into() };
+        let result = merge_mesh_files(Some(&base), &ours, &theirs, &[]);
+        // Both changed why identically → accept the new common why.
+        assert_eq!(result.merged.why, "new why");
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_both_divergent() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let base = MeshFile { anchors: vec![a.clone()], why: "base why".into() };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "ours why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let result = merge_mesh_files(Some(&base), &ours, &theirs, &[]);
+        // Both sides changed why differently from base — fail closed.
+        assert!(result.unresolved.len() > 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_neither_changed() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let base = MeshFile { anchors: vec![a.clone()], why: "stable why".into() };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "stable why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "stable why".into() };
+        let result = merge_mesh_files(Some(&base), &ours, &theirs, &[]);
+        // No side changed why → keep the common value.
+        assert_eq!(result.merged.why, "stable why");
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_why_no_base_divergence() {
+        let a = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "1111".into(),
+        };
+        let ours = MeshFile { anchors: vec![a.clone()], why: "ours why".into() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        // No base mesh and divergent why — fail closed.
+        assert!(result.unresolved.len() > 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_canonical_ordering() {
+        let z = AnchorRecord {
+            path: "z.rs".into(), start_line: 1, end_line: 5,
+            algorithm: "rk64".into(), content_hash: "aaa".into(),
+        };
+        let a = AnchorRecord {
+            path: "a.rs".into(), start_line: 1, end_line: 5,
+            algorithm: "rk64".into(), content_hash: "bbb".into(),
+        };
+        let a_later = AnchorRecord {
+            path: "a.rs".into(), start_line: 10, end_line: 15,
+            algorithm: "rk64".into(), content_hash: "ccc".into(),
+        };
+        let ours = MeshFile { anchors: vec![z, a_later], why: String::new() };
+        let theirs = MeshFile { anchors: vec![a.clone()], why: String::new() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        assert_eq!(result.merged.anchors.len(), 3);
+        // Canonical: (path, start_line, end_line) ascending.
+        assert_eq!(result.merged.anchors[0], a);
+        assert_eq!(result.merged.anchors[1].path, "a.rs");
+        assert_eq!(result.merged.anchors[1].start_line, 10);
+        assert_eq!(result.merged.anchors[2].path, "z.rs");
+    }
+
+    #[test]
+    #[ignore]
+    fn merge_whole_file_anchors() {
+        let whole = AnchorRecord {
+            path: "f.txt".into(), start_line: 0, end_line: 0,
+            algorithm: "rk64".into(), content_hash: "whole_file_hash".into(),
+        };
+        let line = AnchorRecord {
+            path: "f.txt".into(), start_line: 1, end_line: 3,
+            algorithm: "rk64".into(), content_hash: "line_hash".into(),
+        };
+        let ours = MeshFile { anchors: vec![whole.clone()], why: String::new() };
+        let theirs = MeshFile { anchors: vec![line.clone()], why: String::new() };
+        let result = merge_mesh_files(None, &ours, &theirs, &[]);
+        // Whole-file and line-range anchors both preserved.
+        assert_eq!(result.merged.anchors.len(), 2);
+        assert!(result.merged.anchors.contains(&whole));
+        assert!(result.merged.anchors.contains(&line));
+        assert!(result.unresolved.is_empty());
     }
 }

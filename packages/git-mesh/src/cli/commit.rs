@@ -201,8 +201,20 @@ pub(crate) fn write_worktree_mesh(
     repo: &gix::Repository,
     mesh_root: &str,
     name: &str,
-    mesh: &MeshFile,
+    mesh: &mut MeshFile,
 ) -> Result<()> {
+    // Sort anchors in canonical (path, start_line, end_line) order so that
+    // the on-disk representation is independent of insertion order. Two
+    // branches that add anchors to the same mesh in different orders produce
+    // identical serialized output, eliminating ordering-only diffs and
+    // conflicts.
+    mesh.anchors.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.start_line.cmp(&b.start_line))
+            .then(a.end_line.cmp(&b.end_line))
+    });
+
     let path = mesh_file_path(repo, mesh_root, name)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -522,7 +534,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     // Write the updated mesh file.
     {
         let _perf = crate::perf::span("add.write-mesh-file");
-        write_worktree_mesh(repo, mesh_root, &args.name, &mesh_file)?;
+        write_worktree_mesh(repo, mesh_root, &args.name, &mut mesh_file)?;
     }
 
     // --- Output -----------------------------------------------------------
@@ -637,7 +649,7 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_root: &str) -> 
     // Write the updated mesh file.
     {
         let _perf = crate::perf::span("remove.write-mesh-file");
-        write_worktree_mesh(repo, mesh_root, &args.name, &mesh_file)?;
+        write_worktree_mesh(repo, mesh_root, &args.name, &mut mesh_file)?;
     }
 
     // --- Output -----------------------------------------------------------
@@ -698,7 +710,7 @@ fn print_why_written(name: &str) -> Result<i32> {
 fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, mesh_root: &str) -> Result<()> {
     let mut mesh_file = read_worktree_mesh(repo, mesh_root, name)?;
     mesh_file.why = body.to_string();
-    write_worktree_mesh(repo, mesh_root, name, &mesh_file)?;
+    write_worktree_mesh(repo, mesh_root, name, &mut mesh_file)?;
     Ok(())
 }
 
@@ -891,7 +903,7 @@ mod tests {
 
         let (_dir, repo) = temp_repo();
 
-        let mesh = MeshFile {
+        let mut mesh = MeshFile {
             anchors: vec![AnchorRecord {
                 path: "src/lib.rs".into(),
                 start_line: 1,
@@ -903,14 +915,14 @@ mod tests {
         };
 
         // First write: creates the file.
-        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh).unwrap();
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mut mesh).unwrap();
         let path = mesh_file_path(&repo, ".mesh", "test/atomic").unwrap();
         assert!(path.exists(), "mesh file should exist after first write");
 
         let ino_before = std::fs::metadata(&path).unwrap().ino();
 
         // Second write: updates the same mesh with different content.
-        let mesh2 = MeshFile {
+        let mut mesh2 = MeshFile {
             anchors: vec![AnchorRecord {
                 path: "src/main.rs".into(),
                 start_line: 5,
@@ -920,7 +932,7 @@ mod tests {
             }],
             why: "second write".into(),
         };
-        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh2).unwrap();
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mut mesh2).unwrap();
 
         let ino_after = std::fs::metadata(&path).unwrap().ino();
 
@@ -938,7 +950,7 @@ mod tests {
     fn write_worktree_mesh_leaves_no_temp_file_after_rename() {
         let (_dir, repo) = temp_repo();
 
-        let mesh = MeshFile {
+        let mut mesh = MeshFile {
             anchors: vec![
                 AnchorRecord {
                     path: "src/a.rs".into(),
@@ -958,7 +970,7 @@ mod tests {
             why: "atomic write verification".into(),
         };
 
-        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mesh).unwrap();
+        write_worktree_mesh(&repo, ".mesh", "test/atomic", &mut mesh).unwrap();
         let path = mesh_file_path(&repo, ".mesh", "test/atomic").unwrap();
 
         // The mesh file must exist and be complete.
@@ -986,5 +998,86 @@ mod tests {
         let read_back = read_worktree_mesh(&repo, ".mesh", "test/atomic").unwrap();
         assert_eq!(read_back.anchors.len(), 2);
         assert_eq!(read_back.why, "atomic write verification");
+    }
+
+    #[test]
+    fn write_worktree_mesh_sorts_anchors_in_canonical_order() {
+        let (_dir, repo) = temp_repo();
+
+        // Anchors inserted in reverse (path) order.
+        let mut mesh = MeshFile {
+            anchors: vec![
+                AnchorRecord {
+                    path: "z.rs".into(),
+                    start_line: 1,
+                    end_line: 5,
+                    algorithm: "rk64".into(),
+                    content_hash: "1111".into(),
+                },
+                AnchorRecord {
+                    path: "a.rs".into(),
+                    start_line: 10,
+                    end_line: 20,
+                    algorithm: "rk64".into(),
+                    content_hash: "2222".into(),
+                },
+            ],
+            why: String::new(),
+        };
+
+        write_worktree_mesh(&repo, ".mesh", "test/sorted", &mut mesh).unwrap();
+        let path = mesh_file_path(&repo, ".mesh", "test/sorted").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // "a.rs" line must appear before "z.rs" line.
+        let a_pos = content.find("a.rs").unwrap();
+        let z_pos = content.find("z.rs").unwrap();
+        assert!(
+            a_pos < z_pos,
+            "anchors must be sorted by path: a.rs should precede z.rs"
+        );
+
+        // Second write: anchors with same path sorted by (start_line, end_line).
+        let mut mesh2 = MeshFile {
+            anchors: vec![
+                AnchorRecord {
+                    path: "lib.rs".into(),
+                    start_line: 20,
+                    end_line: 30,
+                    algorithm: "rk64".into(),
+                    content_hash: "3333".into(),
+                },
+                AnchorRecord {
+                    path: "lib.rs".into(),
+                    start_line: 1,
+                    end_line: 10,
+                    algorithm: "rk64".into(),
+                    content_hash: "4444".into(),
+                },
+                // Whole-file anchor (0,0) for same path.
+                AnchorRecord {
+                    path: "lib.rs".into(),
+                    start_line: 0,
+                    end_line: 0,
+                    algorithm: "rk64".into(),
+                    content_hash: "5555".into(),
+                },
+            ],
+            why: String::new(),
+        };
+
+        write_worktree_mesh(&repo, ".mesh", "test/sorted", &mut mesh2).unwrap();
+        let content2 = std::fs::read_to_string(&path).unwrap();
+
+        // Parsed ordering must match (path, start_line, end_line).
+        let reparsed = MeshFile::parse(&content2).unwrap();
+        assert_eq!(reparsed.anchors.len(), 3);
+        // Whole-file (0,0) first, then (1,10), then (20,30).
+        assert_eq!(reparsed.anchors[0].start_line, 0);
+        assert_eq!(reparsed.anchors[0].end_line, 0);
+        assert_eq!(reparsed.anchors[1].start_line, 1);
+        assert_eq!(reparsed.anchors[1].end_line, 10);
+        assert_eq!(reparsed.anchors[2].start_line, 20);
+        assert_eq!(reparsed.anchors[2].end_line, 30);
     }
 }

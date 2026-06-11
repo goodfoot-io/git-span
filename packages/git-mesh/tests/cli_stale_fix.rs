@@ -89,12 +89,12 @@ fn lists_all_anchors_in_mixed_mesh_in_stored_order() -> Result<()> {
     let out = repo.run_mesh(["stale", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // All four addresses appear, in stored order.
+    // All four addresses appear, in canonical (path, start_line, end_line) order.
     let a = stdout.find("file1.txt#L1-L5").expect("first");
-    let b = stdout.find("file2.txt#L1-L5").expect("second");
-    let c = stdout.find("file1.txt#L6-L10").expect("third");
+    let b = stdout.find("file1.txt#L6-L10").expect("second");
+    let c = stdout.find("file2.txt#L1-L5").expect("third");
     let d = stdout.find("file2.txt#L11-L15").expect("fourth");
-    assert!(a < b && b < c && c < d, "stored order: stdout=\n{stdout}");
+    assert!(a < b && b < c && c < d, "canonical order: stdout=\n{stdout}");
     // The drifted ones carry status prose.
     assert!(
         stdout.contains("file1.txt#L1-L5 — changed")
@@ -439,10 +439,11 @@ fn fix_preserves_mesh_file_anchor_order() -> Result<()> {
     repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
 
     let mesh = read_mesh(&repo, "m")?;
-    let a = mesh.find("file2.txt#L1-L5").expect("first");
-    let b = mesh.find("file1.txt#L1-L5").expect("second");
+    // Canonical order: (path, start_line, end_line) ascending.
+    let a = mesh.find("file1.txt#L1-L5").expect("first");
+    let b = mesh.find("file2.txt#L1-L5").expect("second");
     let c = mesh.find("file2.txt#L11-L15").expect("third");
-    assert!(a < b && b < c, "anchor order preserved; mesh:\n{mesh}");
+    assert!(a < b && b < c, "canonical order expected; mesh:\n{mesh}");
     Ok(())
 }
 

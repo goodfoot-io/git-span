@@ -29,6 +29,7 @@ pub mod mesh_file;
 pub mod validation;
 
 pub use error::{Error, Result};
+pub use mesh_file::{MeshMergeResult, UnresolvedAnchor, merge_mesh_files};
 pub use validation::{
     MESH_NAME_RULE, RESERVED_MESH_NAMES, validate_anchor_id, validate_mesh_name,
     validate_mesh_name_shape, validate_repo_relative_path,

@@ -269,7 +269,7 @@ pub(crate) fn apply_fix(
         );
 
         if any_rewritten || coalesced {
-            write_worktree_mesh(repo, mesh_root, &m.name, &mesh_file)?;
+            write_worktree_mesh(repo, mesh_root, &m.name, &mut mesh_file)?;
             rewritten_mesh_names.insert(m.name.clone());
         }
     }
