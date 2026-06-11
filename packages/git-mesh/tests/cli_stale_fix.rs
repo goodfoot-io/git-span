@@ -679,3 +679,303 @@ fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// --fix conflict resolution
+// ---------------------------------------------------------------------------
+
+/// Original 16-line `file2.txt` content seeded by `TestRepo::seeded`.
+const FILE2: &str =
+    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+     line11\nline12\nline13\nline14\nline15\nline16\n";
+
+#[test]
+fn fix_resolves_conflict_markers_cleanly() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Mesh with standard conflict markers.  Ours has file1.txt#L1-L5,
+    // theirs has file2.txt#L1-L5.  Both source files exist and are clean
+    // => each anchor is only on one side, merge resolves via re-hash.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("resolved conflict") && stdout.contains("all anchors merged clean"),
+        "expected clean resolution message; stdout=\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "clean resolution must exit 0");
+
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{h1}")),
+        "file1 anchor; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains(&format!("file2.txt#L1-L5 rk64:{h2}")),
+        "file2 anchor; mesh:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains("<<<<<<<"),
+        "conflict markers must be removed; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_clean_source_precondition() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Mesh conflict referencing file1.txt.  Overwrite file1.txt itself
+    // with conflict markers so read_clean_source_files fails closed.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+file1.txt#L1-L5 rk64:{h1}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    // Make the referenced source file carry conflict markers.
+    repo.write_file(
+        "file1.txt",
+        "<<<<<<< HEAD\nline1\n=======\nline1 changed\n>>>>>>> branch\n",
+    )?;
+
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("source file") && stderr.contains("conflict markers"),
+        "stderr must warn about the conflicted source file; stderr=\n{stderr}"
+    );
+    // The mesh file must still carry markers (not resolved).
+    let raw = read_mesh(&repo, "m")?;
+    assert!(
+        raw.contains("<<<<<<<"),
+        "mesh must remain conflicted; raw:\n{raw}"
+    );
+    // Without --no-exit-code, the unresolved conflict drives exit 1.
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "unresolved conflict must give non-zero exit; got {:?}",
+        out.status.code()
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_why_divergence_fails_closed() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Both sides have the same anchor but different why text, and no base
+    // (textual markers).  resolve_why_text fails closed => partial residue.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+
+our rationale
+=======
+file1.txt#L1-L5 rk64:{h1}
+
+their rationale
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("partial resolution"),
+        "expected partial resolution; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("why text diverged"),
+        "expected why-divergence mention; stdout=\n{stdout}"
+    );
+
+    // The anchor line should be written cleanly; the why block wrapped in
+    // conflict markers.
+    let mesh = read_mesh(&repo, "m")?;
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{h1}")),
+        "anchor must appear clean; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains("<<<<<<<"),
+        "why conflict markers must remain; mesh:\n{mesh}"
+    );
+    assert!(mesh.contains("our rationale"), "our why; mesh:\n{mesh}");
+    assert!(mesh.contains("their rationale"), "their why; mesh:\n{mesh}");
+    Ok(())
+}
+
+#[test]
+fn fix_union_of_divergent_anchors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Ours has file1.txt#L1-L3, theirs has file1.txt#L5-L7.
+    // Different ranges on the same path -- no hash conflict => clean union.
+    let h_a = line_slice_hash(ORIGINAL, 1, 3);
+    let h_b = line_slice_hash(ORIGINAL, 5, 7);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L3 rk64:{h_a}
+=======
+file1.txt#L5-L7 rk64:{h_b}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("resolved conflict"),
+        "expected clean resolution; stdout=\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "clean union must exit 0");
+
+    // Both anchors appear, in canonical (path, start, end) order.
+    let mesh = read_mesh(&repo, "m")?;
+    let pos_a = mesh.find(&format!("file1.txt#L1-L3 rk64:{h_a}"));
+    let pos_b = mesh.find(&format!("file1.txt#L5-L7 rk64:{h_b}"));
+    assert!(pos_a.is_some() && pos_b.is_some(), "both anchors present");
+    assert!(
+        pos_a.unwrap() < pos_b.unwrap(),
+        "canonical order L1-L3 before L5-L7; mesh:\n{mesh}"
+    );
+    assert!(
+        !mesh.contains("<<<<<<<"),
+        "no conflict markers; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_partial_residue_with_mixed_resolved_and_why_conflict() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // One anchor outside markers (common to both sides), plus a narrower
+    // anchor inside markers (both sides have the same hash).  The why text
+    // inside markers diverges => partial residue (resolved anchors written
+    // clean, why block remains as minimal conflict).
+    let h_out = line_slice_hash(ORIGINAL, 1, 5);
+    let h_in = line_slice_hash(FILE2, 1, 3);
+    let mesh_content = format!(
+        "\
+file1.txt#L1-L5 rk64:{h_out}
+<<<<<<< ours
+file2.txt#L1-L3 rk64:{h_in}
+
+our refined purpose
+=======
+file2.txt#L1-L3 rk64:{h_in}
+
+their refined purpose
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("partial resolution"),
+        "expected partial resolution; stdout=\n{stdout}"
+    );
+
+    let mesh = read_mesh(&repo, "m")?;
+    // Both anchors appear clean (outside marker lines go to both sides,
+    // inside anchor is identical on both sides).
+    assert!(
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{h_out}")),
+        "outside anchor appears; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains(&format!("file2.txt#L1-L3 rk64:{h_in}")),
+        "inside anchor appears; mesh:\n{mesh}"
+    );
+    // Why conflict block remains.
+    assert!(
+        mesh.contains("<<<<<<<"),
+        "why conflict block present; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains("our refined purpose"),
+        "our why preserved; mesh:\n{mesh}"
+    );
+    assert!(
+        mesh.contains("their refined purpose"),
+        "their why preserved; mesh:\n{mesh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_no_restage_for_residue() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Commit a clean mesh first so we have a HEAD/index baseline.
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "original why")?;
+
+    // Overwrite with conflict markers where anchors match but why
+    // diverges => partial resolution (residue).  The resolved anchors
+    // must NOT be staged by --fix.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+
+our new why
+=======
+file1.txt#L1-L5 rk64:{h1}
+
+their new why
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("partial resolution"),
+        "expected partial resolution; stdout=\n{stdout}"
+    );
+
+    // The mesh file must NOT be staged (cached diff).
+    let cached = repo.git_stdout(["diff", "--cached", "--name-only"])?;
+    assert!(
+        !cached.contains(".mesh/m"),
+        "mesh must not be staged; cached=[{cached}]"
+    );
+
+    // The worktree diff SHOULD show the mesh was modified.
+    let wt_diff = repo.git_stdout(["diff", "--name-only"])?;
+    assert!(
+        wt_diff.contains(".mesh/m"),
+        "mesh must appear in worktree diff; diff=[{wt_diff}]"
+    );
+    Ok(())
+}
