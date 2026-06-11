@@ -1,5 +1,5 @@
-plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L22-L24 rk64:c4a163323f0e86c7
-plugins/git-mesh/agents/expert.md#L17-L17 rk64:38062a5a84057d67
+plugins/git-mesh/agents/expert.md#L17-L17 rk64:3f802d742bd811a9
 packages/agent-hooks/src/stop.ts#L651-L656 rk64:6525838c2c5d802c
+plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L22-L26 rk64:938482fb95fe56b7
 
 Defines load-bearing prose (by content: someone reads and acts; by corpus: kept in sync) to distinguish when prose warrants a mesh; dispatch task block operationalizes this distinction by naming the concrete actions (repair/retire/reshape stale, create for uncovered coherent subsystems, expand/prune related) the expert agent performs when prose or prose-linked code drifts.
