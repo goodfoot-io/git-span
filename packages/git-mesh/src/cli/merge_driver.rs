@@ -21,8 +21,9 @@
 //!     driver = git mesh merge-driver %O %A %B %L
 //! ```
 
+use crate::cli::stale_fix::format_residue_markers;
 use crate::cli::MergeDriverArgs;
-use crate::mesh_file::MeshFile;
+use crate::mesh_file::{AnchorRecord, MeshFile};
 use anyhow::Result;
 use git_mesh_core::merge_mesh_files;
 use std::io::Write;
@@ -90,67 +91,30 @@ fn serialize_with_driver_markers(
     theirs_why: &str,
     marker_len: u32,
 ) -> String {
-    let open = format!("{:<width$}", "<<<<<<<", width = marker_len as usize);
-    let sep = format!("{:<width$}", "=======", width = marker_len as usize);
-    let close = format!("{:<width$}", ">>>>>>>", width = marker_len as usize);
+    // Build marker strings by repeating the marker character marker_len times.
+    let open_marker = format!("{} ours\n", "<".repeat(marker_len as usize));
+    let sep_marker = format!("{}\n", "=".repeat(marker_len as usize));
+    let close_marker = format!("{} theirs\n", ">".repeat(marker_len as usize));
 
-    let mut output = String::new();
+    // Defensive sort by canonical (path, start_line, end_line) ordering,
+    // consistent with write_residue_mesh in stale_fix.rs.
+    let mut sorted = merged.anchors.clone();
+    sorted.sort_by(|a: &AnchorRecord, b: &AnchorRecord| {
+        a.path
+            .cmp(&b.path)
+            .then(a.start_line.cmp(&b.start_line))
+            .then(a.end_line.cmp(&b.end_line))
+    });
 
-    // Resolved anchors in canonical order (already sorted by merge_mesh_files).
-    for anchor in &merged.anchors {
-        output.push_str(&anchor.to_string());
-        output.push('\n');
-    }
-
-    // Separate why divergence (empty-path entry) from anchor residue.
-    let why_conflict = unresolved.iter().any(|u| u.path.is_empty());
-    let anchor_residue: Vec<&git_mesh_core::UnresolvedAnchor> =
-        unresolved.iter().filter(|u| !u.path.is_empty()).collect();
-
-    if !merged.anchors.is_empty()
-        || !anchor_residue.is_empty()
-        || why_conflict
-        || !ours_why.is_empty()
-    {
-        output.push('\n');
-    }
-
-    if !anchor_residue.is_empty() || why_conflict {
-        // Wrap residue in minimal conflict markers.
-        output.push_str(&open);
-        output.push_str(" ours\n");
-        for u in &anchor_residue {
-            output.push_str(&u.ours.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(ours_why);
-            if !ours_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        output.push_str(&sep);
-        output.push('\n');
-        for u in &anchor_residue {
-            output.push_str(&u.theirs.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(theirs_why);
-            if !theirs_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        output.push_str(&close);
-        output.push_str(" theirs\n");
-    } else if !ours_why.is_empty() {
-        output.push_str(ours_why);
-        if !ours_why.ends_with('\n') {
-            output.push('\n');
-        }
-    }
-
-    output
+    format_residue_markers(
+        &sorted,
+        unresolved,
+        ours_why,
+        theirs_why,
+        &open_marker,
+        &sep_marker,
+        &close_marker,
+    )
 }
 
 /// Write content to a file atomically (write to temp, rename).

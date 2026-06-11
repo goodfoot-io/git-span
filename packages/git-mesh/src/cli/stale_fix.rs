@@ -209,6 +209,84 @@ fn read_clean_source_files(
     Ok(files)
 }
 
+/// Format the residue marker text for a partially-resolved merge.
+///
+/// Produces the text portion of a residue mesh file: resolved anchors in
+/// canonical order, a blank-line separator, and optionally a conflict block
+/// wrapping unresolved anchor residue and/or divergent why text.
+///
+/// The caller supplies full marker strings (including labels and trailing
+/// newlines) so that different callers can customize marker length and label
+/// format. Callers must sort `resolved_anchors` in canonical
+/// `(path, start_line, end_line)` order before calling.
+pub(crate) fn format_residue_markers(
+    resolved_anchors: &[AnchorRecord],
+    unresolved: &[UnresolvedAnchor],
+    ours_why: &str,
+    theirs_why: &str,
+    open_marker: &str,  // e.g. "<<<<<<< ours\n"
+    sep_marker: &str,   // e.g. "=======\n"
+    close_marker: &str, // e.g. ">>>>>>> theirs\n"
+) -> String {
+    let mut output = String::new();
+
+    // Resolved anchors in canonical (path, start_line, end_line) order.
+    // Caller is responsible for sorting.
+    for anchor in resolved_anchors {
+        output.push_str(&anchor.to_string());
+        output.push('\n');
+    }
+
+    // Separate why divergence (empty-path entry) from anchor residue.
+    let why_conflict = unresolved.iter().any(|u| u.path.is_empty());
+    let anchor_residue: Vec<&UnresolvedAnchor> =
+        unresolved.iter().filter(|u| !u.path.is_empty()).collect();
+
+    // Always insert the blank-line separator before any residue or why.
+    if !resolved_anchors.is_empty()
+        || !anchor_residue.is_empty()
+        || why_conflict
+        || !ours_why.is_empty()
+    {
+        output.push('\n');
+    }
+
+    if !anchor_residue.is_empty() || why_conflict {
+        // Minimal conflict block wrapping only the residue.
+        output.push_str(open_marker);
+        for u in &anchor_residue {
+            output.push_str(&u.ours.to_string());
+            output.push('\n');
+        }
+        if why_conflict {
+            output.push_str(ours_why);
+            if !ours_why.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+        output.push_str(sep_marker);
+        for u in &anchor_residue {
+            output.push_str(&u.theirs.to_string());
+            output.push('\n');
+        }
+        if why_conflict {
+            output.push_str(theirs_why);
+            if !theirs_why.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+        output.push_str(close_marker);
+    } else if !ours_why.is_empty() {
+        // No residue, just write the why text.
+        output.push_str(ours_why);
+        if !ours_why.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
 /// Write a mesh file with partial resolution: resolved anchors in canonical
 /// order followed by minimal conflict markers wrapping only the unresolved
 /// residue (unresolved anchors and/or divergent why text).
@@ -225,9 +303,7 @@ fn write_residue_mesh(
     ours_why: &str,
     theirs_why: &str,
 ) -> Result<()> {
-    let mut output = String::new();
-
-    // Resolved anchors in canonical (path, start_line, end_line) order.
+    // Sort resolved anchors in canonical (path, start_line, end_line) order.
     let mut sorted = resolved_anchors.to_vec();
     sorted.sort_by(|a, b| {
         a.path
@@ -235,53 +311,16 @@ fn write_residue_mesh(
             .then(a.start_line.cmp(&b.start_line))
             .then(a.end_line.cmp(&b.end_line))
     });
-    for anchor in &sorted {
-        output.push_str(&anchor.to_string());
-        output.push('\n');
-    }
 
-    // Separate why divergence (empty-path entry) from anchor residue.
-    let why_conflict = unresolved.iter().any(|u| u.path.is_empty());
-    let anchor_residue: Vec<&UnresolvedAnchor> =
-        unresolved.iter().filter(|u| !u.path.is_empty()).collect();
-
-    // Always insert the blank-line separator before any residue or why.
-    if !sorted.is_empty() || !anchor_residue.is_empty() || why_conflict || !ours_why.is_empty() {
-        output.push('\n');
-    }
-
-    if !anchor_residue.is_empty() || why_conflict {
-        // Minimal conflict block wrapping only the residue.
-        output.push_str("<<<<<<< ours\n");
-        for u in &anchor_residue {
-            output.push_str(&u.ours.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(ours_why);
-            if !ours_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        output.push_str("=======\n");
-        for u in &anchor_residue {
-            output.push_str(&u.theirs.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(theirs_why);
-            if !theirs_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        output.push_str(">>>>>>> theirs\n");
-    } else if !ours_why.is_empty() {
-        // No residue, just write the why text.
-        output.push_str(ours_why);
-        if !ours_why.ends_with('\n') {
-            output.push('\n');
-        }
-    }
+    let output = format_residue_markers(
+        &sorted,
+        unresolved,
+        ours_why,
+        theirs_why,
+        "<<<<<<< ours\n",
+        "=======\n",
+        ">>>>>>> theirs\n",
+    );
 
     // Write atomically (same approach as write_worktree_mesh).
     let path = mesh_file_path(repo, mesh_root, name)?;
