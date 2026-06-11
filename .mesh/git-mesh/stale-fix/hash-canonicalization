@@ -1,5 +1,5 @@
 packages/git-mesh/src/cli/commit.rs#L82-L164 rk64:2e6933b99dab51e8
-packages/git-mesh/src/cli/stale_fix.rs#L117-L148 rk64:8f7e4875777494b2
+packages/git-mesh/src/cli/stale_fix.rs#L117-L148 rk64:b04f8e6e02fe5788
 packages/git-mesh/src/cli/commit.rs#L164-L180 rk64:dfca09ff4db60e70
 
 Anchor-content hashing canonicalization that stale --fix must reproduce when it hashes the index layer by hand, so re-anchored hashes stay comparable with the resolver's add-time and resolve-time hashes.
