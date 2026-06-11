@@ -1,0 +1,7 @@
+packages/git-mesh-core/src/mesh_file.rs#L16-L998 rk64:16ed3a44193a6544
+packages/git-mesh-core/src/lib.rs#L31-L32 rk64:ceca7d30e9155f5b
+packages/git-mesh/src/mesh_file.rs#L10-L10 rk64:47bf85b2aad51371
+packages/git-mesh/src/cli/merge_driver.rs rk64:595ca3a701ea841a
+packages/git-mesh-core/src/validation.rs#L27-L31 rk64:2796333a43593e93
+
+Structural merge kernel and the merge-driver CLI that delegates to it, sharing a protocol (no-worktree source resolution, zero/one exit code convention, structural conflict fallthrough) that no type or test enforces across both sides.

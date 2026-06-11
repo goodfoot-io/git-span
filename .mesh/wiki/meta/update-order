@@ -1,8 +1,7 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:0e86f9ffde55891d
+wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:d74c67738b7679df
 packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
 README.md#L18-L55 rk64:6827cd27b4db8370
-CLAUDE.md#L76-L97 rk64:ce80e56599ca7121
-packages/git-mesh/src/cli/mod.rs#L34-L104 rk64:8297e95eae077973
-packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:62a03e5493708e81
+packages/git-mesh/src/cli/mod.rs#L34-L104 rk64:e1fc1143593adb55
+packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:cd4618cede7dce80
 CLAUDE.md#L83-L104 rk64:ce80e56599ca7121
 
