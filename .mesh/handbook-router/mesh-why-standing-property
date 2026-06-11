@@ -1,0 +1,4 @@
+plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L50-L65 rk64:f77f92cff457982d
+plugins/git-mesh/agents/expert.md#L15-L15 rk64:093b06a5d9fb98c3
+
+Mesh why clauses must name standing properties in present tense, not metrics or achievements — the handbook section and expert agent system prompt teach and operationalize this rule together.
