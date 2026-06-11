@@ -176,7 +176,7 @@ impl MeshFile {
 /// (`|||||||`). The `=======` form must be the marker line exactly (or
 /// followed by whitespace) so a legitimate `=======` inside why prose is
 /// not over-matched alongside the open/close markers.
-fn has_conflict_markers(input: &str) -> bool {
+pub fn has_conflict_markers(input: &str) -> bool {
     input.lines().any(is_conflict_marker_line)
 }
 

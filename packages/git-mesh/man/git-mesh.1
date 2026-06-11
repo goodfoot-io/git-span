@@ -118,6 +118,9 @@ Audit the local mesh setup
 git\-mesh\-tree(1)
 Trace blast radius: render a clique\-grouped impact tree rooted at the files matched by the given paths/globs
 .TP
+git\-mesh\-merge\-driver(1)
+Resolve `.mesh/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files and the marker length from git. Resolves only what is structurally derivable without trusting the worktree (which may be mid\-merge); defers same\-anchor range/hash divergence by writing minimal conflict markers and exiting non\-zero so `git mesh stale \-\-fix` can finish authoritatively
+.TP
 git\-mesh\-help(1)
 Print this message or the help of the given subcommand(s)
 .ie \n(.g .ds Aq \(aq

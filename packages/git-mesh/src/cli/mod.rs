@@ -22,6 +22,7 @@ pub mod drift_label;
 pub mod error;
 pub mod format;
 pub mod interior_anchor;
+pub mod merge_driver;
 pub mod show;
 pub mod stale_fix;
 pub mod stale_output;
@@ -68,6 +69,23 @@ pub enum Commands {
     List(ListArgs),
 
     /// Report anchors whose content has drifted from their anchored state.
+    ///
+    /// With `--fix`, also re-anchors `Moved` and `Changed` anchors in
+    /// place and resolves `.mesh/` merge conflicts structurally. Conflict
+    /// resolution splits Git textual conflict markers into ours/theirs,
+    /// enforces a clean-source precondition (all referenced source files
+    /// must be conflict-free), and calls the structural merge kernel.
+    ///
+    /// Fail-closed cases:
+    ///   - A referenced source file itself contains conflict markers.
+    ///   - The `--why` text diverged between ours and theirs with no
+    ///     merge base (textual marker split — no base available).
+    ///
+    /// Fully resolved conflicts are written clean and re-anchored in the
+    /// worktree; meshes with residual divergence (same anchor, different
+    /// range/hash with no clean source) or a divergent `--why` write the
+    /// resolved anchors cleanly with minimal residue markers and are not
+    /// re-staged.
     Stale(StaleArgs),
 
     /// Add anchors to a mesh, writing the mesh file under the mesh root.
@@ -124,6 +142,28 @@ pub enum Commands {
     /// same structure as nested `{ "members": [...], "children": [...] }`
     /// nodes for tooling.
     Tree(TreeArgs),
+
+    /// Resolve `.mesh/` merge conflicts structurally when invoked by git
+    /// as a merge driver. Receives three clean blob temp files and the
+    /// marker length from git. Resolves only what is structurally
+    /// derivable without trusting the worktree (which may be mid-merge);
+    /// defers same-anchor range/hash divergence by writing minimal
+    /// conflict markers and exiting non-zero so `git mesh stale --fix`
+    /// can finish authoritatively.
+    ///
+    /// Register in `.gitattributes`:
+    /// ```gitattributes
+    /// .mesh/** merge=mesh
+    /// ```
+    ///
+    /// Register in `.git/config`:
+    /// ```ini
+    /// [merge "mesh"]
+    ///     name = git-mesh structural mesh merge
+    ///     driver = git mesh merge-driver %O %A %B %L
+    /// ```
+    #[command(name = "merge-driver")]
+    MergeDriver(MergeDriverArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -273,8 +313,15 @@ pub struct StaleArgs {
 
     /// Re-anchor `Moved` and `Changed` anchors in place by rewriting the
     /// mesh worktree files. Each surfacing anchor is re-hashed against the
-    /// deepest drifting layer (Worktree > Index > HEAD). No commit is
-    /// produced. Only supported with `--format human`.
+    /// deepest drifting layer (Worktree > Index > HEAD). Also resolves
+    /// `.mesh/` merge conflicts structurally: splits conflict markers into
+    /// ours/theirs, enforces a clean-source precondition (all referenced
+    /// source files must be conflict-free), and calls the structural merge
+    /// kernel. Fully resolved meshes are written clean; meshes with
+    /// residual unresolvable anchors or divergent `--why` text (no merge
+    /// base) write resolved anchors cleanly with minimal residue markers
+    /// and are not re-staged. No commit is produced. Only supported with
+    /// `--format human`.
     #[arg(long, conflicts_with = "batch")]
     pub fix: bool,
 
@@ -404,6 +451,23 @@ pub struct TreeArgs {
     pub format: TreeFormat,
 }
 
+/// Arguments for `git mesh merge-driver`, matching git's merge driver
+/// protocol (%O %A %B %L).
+#[derive(Debug, clap::Args)]
+pub struct MergeDriverArgs {
+    /// Base version (%O from git) — the merge-base mesh temp file path.
+    pub base: String,
+
+    /// Ours version (%A from git) — this is also the output file path.
+    pub ours: String,
+
+    /// Theirs version (%B from git).
+    pub theirs: String,
+
+    /// Conflict marker length (%L from git).
+    pub marker_len: u32,
+}
+
 /// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -488,6 +552,10 @@ pub fn dispatch(
         Commands::Tree(args) => {
             let _perf = crate::perf::span("command.tree");
             tree::run_tree(repo, args, mesh_root)
+        }
+        Commands::MergeDriver(args) => {
+            let _perf = crate::perf::span("command.merge-driver");
+            merge_driver::run_merge_driver(args)
         }
     }
 }

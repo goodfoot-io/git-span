@@ -28,6 +28,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "advice",
     "rewrite",
     "hooks",
+    "merge-driver",
 ];
 
 /// Mesh-name shape: one or more kebab-case segments separated by `/`. The

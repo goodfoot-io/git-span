@@ -7,4 +7,4 @@
 //! `MeshFile::parse` returns the kernel's `Result`; call sites lift it into
 //! this crate's `Error` via the `?` operator / `From`.
 
-pub use git_mesh_core::mesh_file::{AnchorRecord, MeshFile, parse_address};
+pub use git_mesh_core::mesh_file::{AnchorRecord, MeshFile, has_conflict_markers, parse_address};
