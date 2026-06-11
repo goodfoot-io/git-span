@@ -49,17 +49,11 @@ Choosing segments:
 
 ## Writing the why
 
-Write the **why** as a definition: name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them. Leave invariants, caveats, ownership, and review triggers to source comments, commit messages, CODEOWNERS, and PR descriptions. The why is inherited across routine re-anchors; only stage a new one when the subsystem itself changes.
+Write the **why** as a **definition in the present tense of the current bytes** — *"X is a Y that does Z"*: name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them. The test for any why: *would this sentence still be true, and still verifiable from the anchored bytes alone, a year from now with no memory of this commit?* If it describes a transition (got faster, was added, now handles), an achievement (hit the target, passes), or anything only true *relative to a prior state*, it is not a definition — it's a changelog entry. A "5× speedup" is the change you just made dressed as a metric; the baseline it's measured against is deleted, so the anchored bytes can't show it and `stale` can't catch its decay. Reword to the standing property the anchors guard, or it belongs in the commit message, not the mesh. Leave invariants, caveats, ownership, and review triggers to source comments, commit messages, CODEOWNERS, and PR descriptions. The why is inherited across routine re-anchors; only stage a new one when the subsystem itself changes.
 
 ```bash
-# GOOD — names the subsystem; evergreen, readable out of context
+# GOOD — a standing property, present tense, readable out of context
 git mesh why billing/checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
-git mesh why experiments/tier-rollout      -m "Tier-rollout bucketing that steers both the live dashboard and the nightly recomputation onto one treatment per user."
-
-# BAD — restates the diff, scolds the reader, or bundles metadata
-git mesh why billing/checkout-request-flow -m "Checkout posts the shape api/charge.ts parses."              # describes the coupling, not the subsystem
-git mesh why billing/checkout-request-flow -m "Don't change amount without updating the server."            # caveat — belongs in a code comment
-git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing. Review on body changes."   # metadata — belongs in CODEOWNERS / PR
 ```
 
 Re-anchor after drift; do not rewrite the why. See `./responding-to-drift.md` § "Re-anchoring" for the grammar.
