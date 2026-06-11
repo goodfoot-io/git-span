@@ -120,11 +120,19 @@ For faster installation using prebuilt binaries, see the
 **Linker (Linux only):**
 
 ```bash
-sudo apt-get install mold clang   # Ubuntu/Debian
+sudo apt-get install mold        # Ubuntu/Debian — recommended
+# sudo apt-get install lld       # alternative for macOS cross-compilation (set RUSTFLAGS="-C link-arg=-fuse-ld=lld")
 ```
 
 On macOS no extra install is required — the mold linker config is gated to
-Linux GNU targets only.
+Linux GNU targets only. If you cross-compile to Linux from macOS, install `lld`
+(via Homebrew or Xcode) and override the linker:
+
+```bash
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" cargo build
+```
+
+(The per-target `CARGO_TARGET_*_LINKER` env var overrides `[target.*].linker` in config files.)
 
 **Per-user Cargo target directory + sccache:**
 
