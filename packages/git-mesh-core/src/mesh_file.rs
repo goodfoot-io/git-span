@@ -13,8 +13,9 @@
 //! This is the on-disk contract `.mesh`/`.wiki` consumers share: a pure
 //! text↔struct transform with no repository access.
 
-use crate::AnchorExtent;
+use crate::{cheap_fingerprint_with_extent, rk64_to_hex, AnchorExtent, RK64_ALGORITHM};
 use crate::error::{Error, Result};
+use std::collections::HashMap;
 use std::fmt;
 
 /// A single anchor record within a mesh file.
@@ -400,11 +401,168 @@ pub fn merge_mesh_files(
     theirs: &MeshFile,
     source_files: &[(String, Vec<u8>)],
 ) -> MeshMergeResult {
-    let _ = base;
-    let _ = ours;
-    let _ = theirs;
-    let _ = source_files;
-    todo!()
+    fn find_source<'a>(path: &str, files: &'a [(String, Vec<u8>)]) -> Option<&'a [u8]> {
+        files.iter().find(|(p, _)| p == path).map(|(_, b)| b.as_slice())
+    }
+
+    fn rehash(anchor: &AnchorRecord, source: &[u8]) -> AnchorRecord {
+        let extent = if anchor.start_line == 0 && anchor.end_line == 0 {
+            AnchorExtent::WholeFile
+        } else {
+            AnchorExtent::LineRange { start: anchor.start_line, end: anchor.end_line }
+        };
+        let fp = cheap_fingerprint_with_extent(source, &extent);
+        AnchorRecord {
+            path: anchor.path.clone(),
+            start_line: anchor.start_line,
+            end_line: anchor.end_line,
+            algorithm: RK64_ALGORITHM.to_string(),
+            content_hash: rk64_to_hex(fp),
+        }
+    }
+
+    // Build index maps keyed by (path, start_line, end_line).
+    let mut ours_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
+    let mut theirs_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
+
+    for a in &ours.anchors {
+        ours_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
+    }
+    for a in &theirs.anchors {
+        theirs_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
+    }
+
+    let mut merged_anchors: Vec<AnchorRecord> = Vec::new();
+    let mut unresolved: Vec<UnresolvedAnchor> = Vec::new();
+
+    // Process keys from ours map.
+    for (&(path, start_line, end_line), o_anchor) in &ours_map {
+        match theirs_map.get(&(path, start_line, end_line)) {
+            None => {
+                // Anchor only in ours.
+                let anchor = match find_source(path, source_files) {
+                    Some(src) => rehash(o_anchor, src),
+                    None => (*o_anchor).clone(),
+                };
+                merged_anchors.push(anchor);
+            }
+            Some(t_anchor) => {
+                if o_anchor.algorithm == t_anchor.algorithm
+                    && o_anchor.content_hash == t_anchor.content_hash
+                {
+                    // Identical in both — keep one copy.
+                    merged_anchors.push((*o_anchor).clone());
+                } else {
+                    // Same path + extent, divergent hash.
+                    match find_source(path, source_files) {
+                        Some(src) => {
+                            // Re-hash from source → one canonical anchor.
+                            merged_anchors.push(rehash(o_anchor, src));
+                        }
+                        None => {
+                            // No source available — return in unresolved.
+                            unresolved.push(UnresolvedAnchor {
+                                path: path.to_string(),
+                                start_line,
+                                end_line,
+                                ours: (*o_anchor).clone(),
+                                theirs: (*t_anchor).clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Process keys only in theirs map (not already handled above).
+    for (&(path, start_line, end_line), t_anchor) in &theirs_map {
+        if !ours_map.contains_key(&(path, start_line, end_line)) {
+            let anchor = match find_source(path, source_files) {
+                Some(src) => rehash(t_anchor, src),
+                None => (*t_anchor).clone(),
+            };
+            merged_anchors.push(anchor);
+        }
+    }
+
+    // Sort into canonical (path, start_line, end_line) order.
+    merged_anchors.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.start_line.cmp(&b.start_line))
+            .then(a.end_line.cmp(&b.end_line))
+    });
+
+    // Resolve why text.
+    let (why_text, why_conflict) = resolve_why_text(base, ours, theirs);
+    if why_conflict {
+        // Signal why conflict via a synthetic unresolved entry.
+        unresolved.push(UnresolvedAnchor {
+            path: String::new(),
+            start_line: 0,
+            end_line: 0,
+            ours: AnchorRecord {
+                path: String::new(),
+                start_line: 0,
+                end_line: 0,
+                algorithm: String::new(),
+                content_hash: String::new(),
+            },
+            theirs: AnchorRecord {
+                path: String::new(),
+                start_line: 0,
+                end_line: 0,
+                algorithm: String::new(),
+                content_hash: String::new(),
+            },
+        });
+    }
+
+    MeshMergeResult {
+        merged: MeshFile {
+            anchors: merged_anchors,
+            why: why_text,
+        },
+        unresolved,
+    }
+}
+
+/// Resolve the `why` text from three-way merge inputs.
+///
+/// Returns `(why_text, has_conflict)` where `has_conflict` is `true` when
+/// both sides changed the why differently from base (or diverged without
+/// a base), signaling the caller to fail closed.
+fn resolve_why_text(
+    base: Option<&MeshFile>,
+    ours: &MeshFile,
+    theirs: &MeshFile,
+) -> (String, bool) {
+    match base {
+        Some(base) => {
+            let o_changed = ours.why != base.why;
+            let t_changed = theirs.why != base.why;
+            match (o_changed, t_changed) {
+                (false, false) => (base.why.clone(), false),
+                (true, false) => (ours.why.clone(), false),
+                (false, true) => (theirs.why.clone(), false),
+                (true, true) => {
+                    if ours.why == theirs.why {
+                        (ours.why.clone(), false)
+                    } else {
+                        (ours.why.clone(), true)
+                    }
+                }
+            }
+        }
+        None => {
+            if ours.why == theirs.why {
+                (ours.why.clone(), false)
+            } else {
+                (ours.why.clone(), true)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -648,7 +806,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore]
     fn merge_union_distinct_anchors() {
         let a = AnchorRecord {
             path: "a.rs".into(), start_line: 1, end_line: 3,
@@ -669,7 +826,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_identical_anchor_kept() {
         let anchor = AnchorRecord {
             path: "same.rs".into(), start_line: 1, end_line: 5,
@@ -685,7 +841,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_divergent_with_source() {
         let ours_anchor = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 2,
@@ -705,7 +860,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_divergent_without_source() {
         let ours_anchor = AnchorRecord {
             path: "x.txt".into(), start_line: 2, end_line: 4,
@@ -728,7 +882,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_ours_changed() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -744,7 +897,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_theirs_changed() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -760,7 +912,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_both_identical() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -776,7 +927,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_both_divergent() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -791,7 +941,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_neither_changed() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -807,7 +956,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_why_no_base_divergence() {
         let a = AnchorRecord {
             path: "a.txt".into(), start_line: 1, end_line: 3,
@@ -821,7 +969,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_canonical_ordering() {
         let z = AnchorRecord {
             path: "z.rs".into(), start_line: 1, end_line: 5,
@@ -847,7 +994,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn merge_whole_file_anchors() {
         let whole = AnchorRecord {
             path: "f.txt".into(), start_line: 0, end_line: 0,
