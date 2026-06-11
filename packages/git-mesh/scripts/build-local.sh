@@ -8,7 +8,7 @@ built="$target_root/build/release/git-mesh"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/man/man1"
 
-env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="$target_root/build" cargo build --release
+env CARGO_TARGET_DIR="$target_root/build" cargo build --release
 install -m 0755 "$built" "$HOME/.local/bin/git-mesh"
 
 declare -A seen=()

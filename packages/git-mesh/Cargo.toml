@@ -61,10 +61,14 @@ bench = false
 # Codegen-only manpage generator: it has no unit tests, so building a test
 # harness for it is pointless. It also adds a `bin "gen-manpage" test`
 # target that needs full codegen (rlibs) of every dependency; when a
-# `cargo check`/clippy pass (rmeta-only) and `cargo test` share this
-# worktree's `target-cache/`, that target intermittently fails with
+# `cargo check`/clippy pass (rmeta-only) and `cargo test` share the
+# same target directory, that target intermittently fails with
 # "crate `…` required to be available in rlib format". Dropping the test
-# harness removes the spurious target.
+# harness removes the spurious target. Per-task `CARGO_TARGET_DIR`
+# directories (test/, lint/, typecheck/, build/ in package.json) provide
+# durable isolation between check and test builds; together with
+# `test = false` on the affected binaries this eliminates the rlib/rmeta
+# race without job serialization.
 [[bin]]
 name = "gen-manpage"
 path = "src/bin/gen-manpage.rs"

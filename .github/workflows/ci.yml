@@ -41,7 +41,7 @@ jobs:
         run: cd packages/git-mesh && cargo clippy --quiet -- -D warnings
 
       - name: Cargo test
-        run: cd packages/git-mesh && cargo nextest run --build-jobs 1
+        run: cd packages/git-mesh && cargo nextest run
 
       - name: Cargo build (release)
         run: cd packages/git-mesh && cargo build --release
