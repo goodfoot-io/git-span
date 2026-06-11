@@ -60,7 +60,7 @@ echo "Ensuring required Rust components are installed..."
 echo "Setting up VSCode MCP Bridge directories..."
 mkdir -p /home/node/.local/share/yutengjing-vscode-mcp
 chmod 755 /home/node/.local/share/yutengjing-vscode-mcp
-chown -R node:node /home/node/.local "$CARGO_HOME" "$RUSTUP_HOME"
+chown -R node:node /home/node/.local
 echo "VSCode MCP Bridge directories created"
 
 # Start system dbus daemon if not already running
