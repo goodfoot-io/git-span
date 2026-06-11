@@ -136,10 +136,11 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
     // text.  Insert a blank line before the first non-anchor-looking line.
     for lines in [&mut ours_lines, &mut theirs_lines] {
         let non_anchor_pos = lines.iter().position(|l| !looks_like_anchor_line(l));
-        if let Some(pos) = non_anchor_pos {
-            if pos > 0 && !lines[pos - 1].is_empty() {
-                lines.insert(pos, "");
-            }
+        if let Some(pos) = non_anchor_pos
+            && pos > 0
+            && !lines[pos - 1].is_empty()
+        {
+            lines.insert(pos, "");
         }
     }
 
