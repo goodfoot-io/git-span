@@ -1,4 +1,4 @@
-packages/git-mesh/src/cli/stale_fix.rs#L279-L415 rk64:0d8805f13b999db0
+packages/git-mesh/src/cli/stale_fix.rs#L279-L415 rk64:4cb64609bee5d6a6
 packages/git-mesh/tests/cli_stale_fix.rs#L513-L538 rk64:be833c7920353009
 packages/git-mesh/tests/cli_stale_fix.rs#L540-L560 rk64:1915a95126b8f717
 
