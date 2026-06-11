@@ -1,4 +1,4 @@
 packages/git-mesh-core/benches/scan.rs#L1-L155 rk64:8ec6076e59902582
-packages/git-mesh-core/src/lib.rs#L391-L697 rk64:b714ad02a014a3c5
+packages/git-mesh-core/src/lib.rs#L391-L697 rk64:ea6e778267657793
 
 Benchmark validation that the cheap-fingerprint prefilter and other scanning optimizations achieve their >=5× speedup target on the wiki CLI's hot path (single stale anchor in a 2500-line file).
