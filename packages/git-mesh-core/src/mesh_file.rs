@@ -494,6 +494,10 @@ pub fn merge_mesh_files(
             .then(a.end_line.cmp(&b.end_line))
     });
 
+    // Sort unresolved anchors deterministically by (path, start_line, end_line)
+    // so conflict-marker output order is stable across runs.
+    unresolved.sort_by_key(|u| (u.path.clone(), u.start_line, u.end_line));
+
     // Resolve why text.
     let (why_text, why_conflict) = resolve_why_text(base, ours, theirs);
     if why_conflict {

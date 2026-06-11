@@ -32,12 +32,6 @@ pub(crate) struct FixResult {
     /// meshes with residual conflicts are NOT (they remain in their
     /// pre-fix conflict state for re-resolve).
     pub(crate) rewritten_mesh_names: HashSet<String>,
-    /// Meshes that were fully resolved from a Git conflict state (all
-    /// anchors merged cleanly, why text resolved).
-    pub(crate) conflict_resolved: Vec<String>,
-    /// Meshes that were partially resolved from a Git conflict state
-    /// (some anchors merged cleanly but residue remains).
-    pub(crate) conflict_residue: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,9 +69,19 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
     let mut theirs_lines: Vec<&str> = Vec::new();
     let mut region = ConflictRegion::Outside;
     let mut found_conflict = false;
+    // Blank lines from the Outside section that have not yet been committed
+    // to the output.  They are flushed when a non-blank Outside line follows,
+    // or discarded when a conflict block starts — a blank line right before a
+    // conflict marker is the mesh-format anchor/why separator, and keeping it
+    // would create a spurious `\n\n` boundary between pre-conflict anchors and
+    // the conflict block's own anchor lines.
+    let mut pending_blanks: usize = 0;
 
     for line in input.lines() {
         if line.starts_with("<<<<<<<") {
+            // Discard pending blank lines — they were the anchor/why separator
+            // which must not separate pre-conflict anchors from inside anchors.
+            pending_blanks = 0;
             region = ConflictRegion::Ours;
             found_conflict = true;
             continue;
@@ -85,6 +89,7 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         if line.starts_with("|||||||") {
             // diff3 base marker: skip base content, stay in "base" until
             // we hit the `=======` separator or `>>>>>>>` close.
+            pending_blanks = 0;
             region = ConflictRegion::Base;
             continue;
         }
@@ -97,13 +102,24 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         // A run of `=` longer than 7 is not a conflict separator
         // (e.g. Markdown setext underline). Fall through to collect.
         if line.starts_with(">>>>>>>") {
+            pending_blanks = 0;
             region = ConflictRegion::Outside;
             continue;
         }
         match region {
             ConflictRegion::Outside => {
-                ours_lines.push(line);
-                theirs_lines.push(line);
+                if line.is_empty() {
+                    pending_blanks += 1;
+                } else {
+                    // Flush pending blanks before this non-blank line.
+                    for _ in 0..pending_blanks {
+                        ours_lines.push("");
+                        theirs_lines.push("");
+                    }
+                    pending_blanks = 0;
+                    ours_lines.push(line);
+                    theirs_lines.push(line);
+                }
             }
             ConflictRegion::Ours => ours_lines.push(line),
             ConflictRegion::Theirs => theirs_lines.push(line),
@@ -115,7 +131,37 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         return None;
     }
 
+    // Post-process: ensure there is a `\n\n` separator between the combined
+    // anchor block (Outside anchors + conflict-block anchors) and the why
+    // text.  Insert a blank line before the first non-anchor-looking line.
+    for lines in [&mut ours_lines, &mut theirs_lines] {
+        let non_anchor_pos = lines.iter().position(|l| !looks_like_anchor_line(l));
+        if let Some(pos) = non_anchor_pos {
+            if pos > 0 && !lines[pos - 1].is_empty() {
+                lines.insert(pos, "");
+            }
+        }
+    }
+
     Some((ours_lines.join("\n"), theirs_lines.join("\n")))
+}
+
+/// Heuristic: a line looks like a mesh anchor if it has the form
+/// `<path> <algorithm>:<content_hash>` where `algorithm` is ASCII alphanumeric
+/// and `content_hash` is non-empty.  Used to re-introduce the `\n\n` anchor/why
+/// separator inside `split_conflict_markers`.
+fn looks_like_anchor_line(line: &str) -> bool {
+    if let Some(space_pos) = line.rfind(' ') {
+        let hash_part = &line[space_pos + 1..];
+        if let Some(colon_pos) = hash_part.find(':') {
+            let algo = &hash_part[..colon_pos];
+            let hash = &hash_part[colon_pos + 1..];
+            return !algo.is_empty()
+                && !hash.is_empty()
+                && algo.chars().all(|c| c.is_ascii_alphanumeric());
+        }
+    }
+    false
 }
 
 /// Read every source file referenced by anchors in `ours` and `theirs`,
@@ -145,12 +191,16 @@ fn read_clean_source_files(
         })?;
 
         // Check for conflict markers in the source file.
-        let text = String::from_utf8_lossy(&bytes);
-        if has_conflict_markers(&text) {
-            anyhow::bail!(
-                "source file `{}` contains conflict markers; cannot resolve mesh conflict",
-                anchor.path
-            );
+        // Non-UTF-8 (binary) files cannot contain textual conflict markers,
+        // and line-range anchors already reject non-UTF-8 at hash time.
+        if std::str::from_utf8(&bytes).is_ok() {
+            let text = String::from_utf8_lossy(&bytes);
+            if has_conflict_markers(&text) {
+                anyhow::bail!(
+                    "source file `{}` contains conflict markers; cannot resolve mesh conflict",
+                    anchor.path
+                );
+            }
         }
 
         files.push((anchor.path.clone(), bytes));
@@ -251,14 +301,27 @@ fn write_residue_mesh(
     std::fs::write(&tmp_path, &output)?;
     std::fs::rename(&tmp_path, &path)?;
 
-    // Attempt to restore unmerged index stages. Best-effort: if the index
-    // has already been resolved (stages collapsed), this is a no-op.
-    let _ = std::process::Command::new("git")
-        .arg("update-index")
-        .arg("--unresolve")
-        .arg(path.to_string_lossy().as_ref())
-        .current_dir(repo.workdir().unwrap_or(std::path::Path::new(".")))
-        .status();
+    // Only attempt to restore unmerged index stages when the mesh file
+    // actually has unmerged index entries. Otherwise `git update-index
+    // --unresolve` prints "Not in the middle of a merge." to stderr, which
+    // confuses users.
+    let mesh_rel_path = format!("{mesh_root}/{name}");
+    let has_unmerged = crate::git::index_entries(repo)
+        .ok()
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|e| e.path == mesh_rel_path && e.stage != gix::index::entry::Stage::Unconflicted)
+        })
+        .unwrap_or(false);
+    if has_unmerged {
+        let _ = std::process::Command::new("git")
+            .arg("update-index")
+            .arg("--unresolve")
+            .arg(&mesh_rel_path)
+            .current_dir(repo.workdir().unwrap_or(std::path::Path::new(".")))
+            .status();
+    }
 
     Ok(())
 }
@@ -283,8 +346,19 @@ fn resolve_conflicted_mesh(
     })?;
 
     // Step 2: Parse each side as a clean mesh file (markers are removed).
-    let ours = MeshFile::parse(&ours_text)?;
-    let theirs = MeshFile::parse(&theirs_text)?;
+    // Wrap parse errors with context so the operator can diagnose a mesh
+    // whose conflict marker splitting produced malformed output (e.g. a
+    // `=======` inside why text).
+    let ours = MeshFile::parse(&ours_text).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to parse conflict-side content for mesh `{name}`: {e}"
+        )
+    })?;
+    let theirs = MeshFile::parse(&theirs_text).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to parse conflict-side content for mesh `{name}`: {e}"
+        )
+    })?;
 
     // Step 3: Enforce clean-source precondition.
     let source_files = read_clean_source_files(repo, &ours, &theirs)?;
@@ -300,8 +374,26 @@ fn resolve_conflicted_mesh(
         // Fully resolved — all anchors merged cleanly, why resolved.
         let mut merged = result.merged;
         write_worktree_mesh(repo, mesh_root, name, &mut merged)?;
+
+        // Stage the mesh file to clear unmerged index stages (1/2/3) so the
+        // user can commit directly without a manual `git add`.
+        let mesh_rel_path = format!("{mesh_root}/{name}");
+        let workdir = repo.workdir().unwrap_or(std::path::Path::new("."));
+        let add_status = std::process::Command::new("git")
+            .arg("add")
+            .arg(&mesh_rel_path)
+            .current_dir(workdir)
+            .status()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to run git add for `{name}` after conflict resolution: {e}"
+                )
+            })?;
+        if !add_status.success() {
+            anyhow::bail!("git add failed for `{name}` after conflict resolution");
+        }
+
         fix_result.rewritten_mesh_names.insert(name.to_string());
-        fix_result.conflict_resolved.push(name.to_string());
         println!("  resolved conflict: `{name}` — all anchors merged clean");
     } else {
         // Partial resolution — write resolved anchors + minimal residue.
@@ -314,7 +406,6 @@ fn resolve_conflicted_mesh(
             &ours.why,
             &theirs.why,
         )?;
-        fix_result.conflict_residue.push(name.to_string());
 
         // Build a human-readable reason for the residue report.
         let reasons: Vec<String> = {
@@ -363,8 +454,6 @@ pub(crate) fn apply_fix(
 ) -> Result<FixResult> {
     let mut rewritten: HashSet<String> = HashSet::new();
     let mut rewritten_mesh_names: HashSet<String> = HashSet::new();
-    let mut conflict_resolved: Vec<String> = Vec::new();
-    let mut conflict_residue: Vec<String> = Vec::new();
 
     // Resolve HEAD once for HEAD-layer rewrites. Some test scenarios may
     // have no HEAD yet (unborn branch); in that case we simply skip
@@ -403,14 +492,10 @@ pub(crate) fn apply_fix(
             let mut fix_result = FixResult {
                 rewritten_anchor_ids: HashSet::new(),
                 rewritten_mesh_names: HashSet::new(),
-                conflict_resolved: Vec::new(),
-                conflict_residue: Vec::new(),
             };
             match resolve_conflicted_mesh(repo, mesh_root, &m.name, &raw, &mut fix_result) {
                 Ok(()) => {
                     rewritten_mesh_names.extend(fix_result.rewritten_mesh_names);
-                    conflict_resolved.extend(fix_result.conflict_resolved);
-                    conflict_residue.extend(fix_result.conflict_residue);
                 }
                 Err(e) => {
                     // Resolution failed (e.g. conflicted source file).
@@ -643,8 +728,6 @@ pub(crate) fn apply_fix(
     Ok(FixResult {
         rewritten_anchor_ids: rewritten,
         rewritten_mesh_names,
-        conflict_resolved,
-        conflict_residue,
     })
 }
 
