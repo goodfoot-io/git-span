@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [ -z "${HOME:-}" ]; then echo "ERROR: \$HOME is unset — refusing to operate on an empty path" >&2; exit 1; fi
-# Safely clean the shared `build/` subdirectory. Uses flock to serialize
-# across worktrees so two concurrent `build:clean` invocations don't race
-# with each other's rm -rf. Note: the lock is released when this script
-# exits; the subsequent cargo build in the build:clean chain runs unlocked.
-LOCKDIR="$HOME/.cache/git-mesh/locks"
-mkdir -p "$LOCKDIR"
-exec 9>"$LOCKDIR/build-clean.lock"
-flock -x -w 60 9 || { echo "ERROR: Could not acquire build-clean lock (another build:clean may be in progress in a different worktree)" >&2; exit 1; }
+# Safely clean the shared `build/` subdirectory. Takes the *exclusive*
+# target-root lock (see with-target-lock.sh): cargo tasks hold the shared
+# lock for their full duration, so this rm -rf can never run while another
+# worktree's build is in flight, and concurrent clean invocations serialize
+# against each other.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}"
-rm -rf "$ROOT/build"
+exec bash "$script_dir/with-target-lock.sh" exclusive rm -rf "$ROOT/build"

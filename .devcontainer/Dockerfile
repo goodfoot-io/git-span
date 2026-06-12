@@ -116,7 +116,7 @@ RUN npm install -g @ast-grep/cli jsdoczoom
 # wrong-arch or corrupt download fail the image build instead of surfacing
 # later as an opaque "could not exec sccache" Cargo error.
 USER root
-ARG SCCACHE_VERSION=0.10.0
+ARG SCCACHE_VERSION=0.15.0
 RUN case "$(uname -m)" in \
       aarch64) SCCACHE_TRIPLE=aarch64-unknown-linux-musl ;; \
       x86_64) SCCACHE_TRIPLE=x86_64-unknown-linux-musl ;; \
