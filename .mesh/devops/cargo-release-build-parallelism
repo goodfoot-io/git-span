@@ -1,5 +1,7 @@
-packages/git-mesh/package.json#L12-L12 rk64:cef28fcd1786e97e
-packages/git-mesh/package.json#L14-L14 rk64:bb7d3fe987e8fccb
+packages/git-mesh/package.json#L12-L12 rk64:8d3bbdf06b8e30db
+packages/git-mesh/package.json#L14-L14 rk64:b8933925299b55e2
 packages/git-mesh/scripts/build-local.sh#L11-L11 rk64:6e8c938467101433
+packages/git-mesh/scripts/build-local.sh#L6-L6 rk64:8e894ec19a69324f
+packages/git-mesh/scripts/clean-shared-build.sh#L2-L10 rk64:d48ebf15683e5362
 
-Release build commands that produce the git-mesh binary with consistent cargo parallelism and output: yarn build, yarn build:clean, and the build-local.sh helper.
+Release build entry points (yarn build, yarn build:clean, and build-local.sh) that produce the git-mesh release binary with consistent cargo flags, shared target directory, and safe concurrent cleanup.
