@@ -46,9 +46,6 @@ echo ""
 # new version. The manpage embeds the version in its `.TH` header, so without
 # this the `generated_manpage_matches_checked_in_artifact` test fails on the
 # very next `yarn validate` after a bump.
-# Guarantee a reachable sccache server before the Rust build below so a stale or
-# wedged server can't surface as an opaque compile failure during the bump.
-bash "$REPO_ROOT/scripts/ensure-sccache.sh" || exit 1
 
 echo ""
 echo "Regenerating manpage for $NEW_VERSION"

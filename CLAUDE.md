@@ -41,9 +41,6 @@ variable to override this root (e.g., for CI isolation). The per-worktree fallba
 `packages/git-mesh/target-cache/` (via [.cargo/config.toml](./packages/git-mesh/.cargo/config.toml))
 is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
 
-`sccache` (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/home/node/.cache/sccache`) deduplicates
-`rustc` invocations across worktrees as a second caching layer, covering compilation but not linking.
-
 **Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
 sharing the same task subdirectory. Concurrent `yarn test` runs in different worktrees
 build serially (order of seconds) then test in parallel. This is normal — not a hang.
@@ -56,24 +53,6 @@ shared root (`clean-shared-build.sh`, the freshness-stamp wipe in
 worktree therefore waits for in-flight builds in sibling worktrees instead of deleting
 artifacts out from under them. Worktrees checked out at commits predating this lock do
 not participate in it — avoid running their `build:clean` while another worktree builds.
-
-The one true `sccache` binary is `/usr/local/bin/sccache`, installed by the
-Dockerfile for the build platform's architecture and verified at image build
-time. Do not install another copy (e.g. `cargo install sccache` into
-`~/.cargo/bin`, which is bind-mounted and outlives rebuilds): a second binary
-shadowing the managed one is how client/server version skew — and the wedged
-servers it causes — happened in the first place. If you see `error: could not
-exec sccache`, rebuild the devcontainer.
-
-`yarn validate` and `yarn bump` run `scripts/ensure-sccache.sh` first, and the
-devcontainer runs it at every container start (`postStartCommand`), so a stale or
-version-mismatched `sccache` server holding the server socket is reclaimed and a
-clean server started before any Rust compile. If a *direct* `cargo build` ever
-aborts with `sccache: error: Failed to read response header` / `failed to fill
-whole buffer` (a wedged server the client can't replace), run
-`bash scripts/ensure-sccache.sh` to recover. If automatic recovery fails it exits
-non-zero with the manual steps: `pkill -9 -f sccache`, then
-`SCCACHE_DIR=/home/node/.cache/sccache SCCACHE_START_SERVER=1 sccache`.
 </workspace-information>
 
 <jsdoczoom>

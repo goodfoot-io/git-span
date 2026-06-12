@@ -41,13 +41,9 @@
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
     "VSCODE_RECONNECTION_GRACE_TIME": "60000",
-    "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities",
-    "SCCACHE_DIR": "/home/node/.cache/sccache",
-    "SCCACHE_IDLE_TIMEOUT": "0",
-    "RUSTC_WRAPPER": "sccache"
+    "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "forwardPorts": [8080],
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
-  "postStartCommand": "bash scripts/ensure-sccache.sh"
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

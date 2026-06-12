@@ -1,13 +1,10 @@
 //! Structural invariants for the cargo configuration layout.
 //!
-//! The CI runner has no `sccache` on `PATH`. A workspace-root `.cargo/config.toml`
-//! that pins `rustc-wrapper = "sccache"` is picked up by every root-CWD cargo
-//! invocation (notably `Swatinem/rust-cache@v2`'s `cargo metadata`) and breaks
-//! the build with `could not execute process \`sccache rustc -vV\``. Cargo also
-//! cannot find a `Cargo.toml` from the repo root, which surfaces as
-//! `could not find \`Cargo.toml\``. Both failures are eliminated by keeping cargo
-//! configuration package-local and routing the wrapper through environment
-//! variables that only sccache-equipped environments set.
+//! A workspace-root `.cargo/config.toml` is picked up by every root-CWD cargo
+//! invocation (notably `Swatinem/rust-cache@v2`'s `cargo metadata`), and Cargo
+//! cannot find a `Cargo.toml` from the repo root. Both failures are eliminated by
+//! keeping cargo configuration package-local and keeping compiler wrappers out of
+//! version-controlled config — they belong in the environment.
 use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
@@ -24,7 +21,7 @@ fn no_cargo_config_at_workspace_root() {
     let path = workspace_root().join(".cargo").join("config.toml");
     assert!(
         !path.exists(),
-        "{} must not exist: rust-cache + non-sccache CI runners pick up its rustc-wrapper and fail",
+        "{} must not exist: Cargo config at the workspace root is picked up by root-CWD cargo invocations (e.g. CI cache actions) and can inject an unwanted rustc-wrapper",
         path.display()
     );
 }
@@ -42,19 +39,26 @@ fn package_local_cargo_config_has_no_rustc_wrapper() {
         .any(|l| l.starts_with("rustc-wrapper"));
     assert!(
         !has_wrapper_key,
-        "package-local cargo config must not pin rustc-wrapper; CI runners lack sccache. Set RUSTC_WRAPPER via the environment instead."
+        "package-local cargo config must not pin rustc-wrapper; compilers wrappers belong in the environment, not in version-controlled config."
     );
 }
 
 #[test]
-fn devcontainer_sets_rustc_wrapper_env() {
+fn devcontainer_has_no_rustc_wrapper() {
     let path = workspace_root()
         .join(".devcontainer")
         .join("devcontainer.json");
     let body = std::fs::read_to_string(&path).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&body).expect("devcontainer.json must be valid JSON");
+    let wrapper = json
+        .get("remoteEnv")
+        .and_then(|e| e.get("RUSTC_WRAPPER"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(
-        body.contains("RUSTC_WRAPPER"),
-        "{} must set RUSTC_WRAPPER in remoteEnv so the devcontainer keeps sccache wrapping after the root .cargo/config.toml is removed",
+        wrapper.is_empty(),
+        "{} must not set RUSTC_WRAPPER in remoteEnv — the project does not use a compiler cache wrapper",
         path.display()
     );
 }

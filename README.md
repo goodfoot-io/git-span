@@ -134,17 +134,12 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" car
 
 (The per-target `CARGO_TARGET_*_LINKER` env var overrides `[target.*].linker` in config files.)
 
-**Per-user Cargo target directory + sccache:**
+**Per-user Cargo target directory:**
 
 Build artifacts for the git-mesh CLI are stored in a shared per-user directory at
 `$HOME/.cache/git-mesh/cargo-target/<kind>/` (e.g., `test/`, `build/`, `lint/`).
 This directory is shared across all worktrees on the same machine — a worktree
 cloned from `main` will reuse dependency artifacts already built by another worktree.
-
-`sccache` deduplicates dependency compilation across worktrees; the cache lives at
-`~/.cache/sccache` (per-machine, safe for concurrent access). Together, sccache and
-the shared target directory ensure that the on-disk cost of N worktrees does not
-scale as N full copies of the multi-gigabyte target directory.
 
 Override the target root via `GIT_MESH_CARGO_TARGET_ROOT`:
 
