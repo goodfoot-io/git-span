@@ -1,9 +1,9 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:d74c67738b7679df
+wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:a7aec05f6cf53a2f
 packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
 README.md#L18-L55 rk64:6827cd27b4db8370
 packages/git-mesh/src/cli/mod.rs#L34-L104 rk64:e1fc1143593adb55
 packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:cd4618cede7dce80
-CLAUDE.md#L83-L104 rk64:ce80e56599ca7121
-CLAUDE.md#L99-L120 rk64:ce80e56599ca7121
 CLAUDE.md#L94-L115 rk64:dc66d24830d9ce67
+CLAUDE.md#L82-L103 rk64:ce80e56599ca7121
 
+The touchpoints page's update-order section tells maintainers the sequence to follow when CLI behavior or documentation changes; the anchors track the source-of-truth files that the section names for sequential updating.
