@@ -1,6 +1,6 @@
 .devcontainer/Dockerfile#L7-L39 rk64:31de1c081f9d53c0
-packages/git-mesh-core/.cargo/config.toml rk64:c42c7b22e246f73e
 README.md#L120-L127 rk64:c1462e5cceb63e63
+packages/git-mesh-core/.cargo/config.toml rk64:c42c7b22e246f73e
 packages/git-mesh/.cargo/config.toml#L12-L16 rk64:462e3cf78aa498e1
 packages/git-mesh/scripts/cc.mold-wrapper.sh#L2-L13 rk64:46a91d24e15050d1
 
