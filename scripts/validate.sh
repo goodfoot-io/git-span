@@ -8,8 +8,9 @@ guardrail_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/git-me
 if [ -d "$guardrail_root" ]; then
   offenders=""
   while IFS= read -r f; do
+    # Allow os::unix only in tests/support/ cross-platform helpers.
     case "$f" in
-      "$guardrail_root/support/mod.rs") continue ;;
+      "$guardrail_root/support/"*) continue ;;
     esac
     if grep -q 'os::unix' "$f"; then
       offenders="$offenders$f"$'\n'

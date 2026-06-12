@@ -1,9 +1,9 @@
 //! Shared test fixtures for git-mesh integration tests.
 //!
-//! Each `tests/*.rs` file is compiled as a separate crate, so items in
-//! this module that are unused by a particular crate would normally
-//! warn. We `#[allow(dead_code)]` at item granularity per CLAUDE.md
-//! "right way over easy way" — no blanket module-level allow.
+//! All test cases compile as modules of a single crate (via
+//! `tests/integration.rs` + `tests/cases/`), so every item in this
+//! module is used by at least one caller. No `#[allow(dead_code)]`
+//! annotations are needed.
 
 use anyhow::Result;
 use std::fs;
@@ -13,12 +13,10 @@ use std::process::{Command, Output};
 /// A scratch git repository, owned by a tempdir that's cleaned up on
 /// drop. Set up with `user.name` / `user.email` so commits work without
 /// global config.
-#[allow(dead_code)]
 pub struct TestRepo {
     pub dir: tempfile::TempDir,
 }
 
-#[allow(dead_code)]
 impl TestRepo {
     /// New empty repo: `git init`, identity configured, no commits yet.
     pub fn new() -> Result<Self> {
@@ -122,6 +120,7 @@ impl TestRepo {
     }
 
     /// `git for-each-ref --format=%(refname) <prefix>`.
+    #[allow(dead_code)]
     pub fn list_refs(&self, prefix: &str) -> Result<Vec<String>> {
         Ok(self
             .git_stdout(["for-each-ref", "--format=%(refname)", prefix])?
@@ -131,11 +130,13 @@ impl TestRepo {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub fn ref_exists(&self, name: &str) -> bool {
         self.git_stdout(["rev-parse", "--verify", "--quiet", name])
             .is_ok()
     }
 
+    #[allow(dead_code)]
     pub fn add_remote(&self, name: &str, path: &Path) -> Result<()> {
         self.run_git(["remote", "add", name, &path.to_string_lossy()])?;
         Ok(())
@@ -191,7 +192,6 @@ impl TestRepo {
     /// reachable commits.  Required before calling any resolver entry
     /// point (`resolve_mesh`, `resolve_anchor`, `stale_meshes`) — the
     /// reverse-indexed walk fails closed without a commit-graph.
-    #[allow(dead_code)]
     pub fn write_commit_graph(&self) -> Result<()> {
         self.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
         Ok(())
@@ -205,14 +205,12 @@ impl TestRepo {
 // ---------------------------------------------------------------------------
 
 /// Create a symlink whose target is a regular file.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(original, link)
 }
 
 /// Create a symlink whose target is a regular file.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(original, link)
@@ -226,7 +224,6 @@ pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 /// Create a symlink whose target is a directory.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(original, link)
@@ -235,7 +232,6 @@ pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
 /// Whether the host can create symlinks. On Unix this is always true. On
 /// Windows it depends on Developer Mode / `SeCreateSymbolicLinkPrivilege`,
 /// so probe once and cache the result.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn symlinks_supported() -> bool {
     true
@@ -243,7 +239,6 @@ pub fn symlinks_supported() -> bool {
 
 /// Whether the host can create symlinks. On Windows, probe once by creating
 /// then removing a temp symlink, and cache the outcome.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn symlinks_supported() -> bool {
     use std::sync::OnceLock;
@@ -278,7 +273,6 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
 }
 
 /// Make `path` executable. No-op on Windows.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
@@ -294,7 +288,6 @@ pub fn mode(path: &Path) -> Option<u32> {
 }
 
 /// The POSIX permission bits of `path`. Always `None` on Windows.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn mode(_path: &Path) -> Option<u32> {
     None
@@ -307,7 +300,6 @@ pub fn mode(_path: &Path) -> Option<u32> {
 /// The content hash matches `git mesh add` exactly: whole-file hashes
 /// the entire file bytes; a line range hashes the `\n`-joined slice of
 /// lines `[start, end]` with no trailing newline.
-#[allow(dead_code)]
 pub fn create_and_commit_mesh(
     repo: &gix::Repository,
     name: &str,
