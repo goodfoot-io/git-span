@@ -4,7 +4,7 @@ scripts/validate.sh#L26-L28 rk64:a1e307274374ffa8
 scripts/bump.sh#L49-L51 rk64:ed3d79d5479422e5
 .devcontainer/devcontainer.json#L45-L46 rk64:e8e0219397492274
 .devcontainer/devcontainer.json#L51-L52 rk64:88c62e14c1b7a8fc
-.devcontainer/Dockerfile#L114-L127 rk64:9b49b537f6a458d8
+.devcontainer/Dockerfile#L114-L127 rk64:fff6a3f6bc5d6117
 CLAUDE.md#L34-L39 rk64:b191e327445dcabe
 CLAUDE.md#L60-L76 rk64:479a98d207961a5e
 
