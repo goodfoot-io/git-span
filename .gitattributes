@@ -11,6 +11,9 @@
 *.yml text eol=lf
 .mesh/** text eol=lf
 
+# Collapse the easy majority of .mesh/ conflicts in place during git merge.
+.mesh/** merge=mesh
+
 # Resolve package version conflicts by picking the highest semver.
 package.json merge=json-version
 packages/extension/package.json merge=json-version
