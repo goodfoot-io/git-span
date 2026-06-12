@@ -1,7 +1,7 @@
-packages/git-mesh/scripts/build-local.sh#L6-L6 rk64:8e894ec19a69324f
-packages/git-mesh/scripts/build-local.sh#L11-L11 rk64:eec99937493dce09
-packages/git-mesh/scripts/clean-shared-build.sh#L2-L10 rk64:af527e2b889d5029
-packages/git-mesh/package.json#L11-L11 rk64:f736a66fab074f6d
+packages/git-mesh/package.json#L11-L11 rk64:806a0960fd35b1b0
 packages/git-mesh/package.json#L13-L13 rk64:d69c071b2deb5df1
+packages/git-mesh/scripts/build-local.sh#L6-L6 rk64:8e894ec19a69324f
+packages/git-mesh/scripts/build-local.sh#L11-L11 rk64:0c2019272eab39ca
+packages/git-mesh/scripts/clean-shared-build.sh#L2-L10 rk64:af527e2b889d5029
 
 Release build entry points (yarn build, yarn build:clean, and build-local.sh) that produce the git-mesh release binary with consistent cargo flags, shared target directory, and safe concurrent cleanup.

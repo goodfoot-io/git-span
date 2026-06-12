@@ -1,4 +1,4 @@
 .github/workflows/ci.yml#L71-L74 rk64:8de31a00075c444d
-packages/git-mesh-core/package.json#L6-L6 rk64:da75ab3985c83eb1
+packages/git-mesh-core/package.json#L6-L6 rk64:8fc07485810c2e0a
 
 CI-local test command consistency for git-mesh-core: CI hardcodes cd packages/git-mesh-core && cargo test and local yarn test picks up the same command from package.json's test script — both must stay in sync so developers and CI validate the crate identically.
