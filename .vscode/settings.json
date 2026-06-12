@@ -1,4 +1,17 @@
 {
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/target-cache/**": true,
+    "**/.npm/**": true,
+    "**/node_modules/**": true,
+    "**/.git/objects/**": true,
+    "**/.yarn/cache/**": true,
+    "**/dist/**": true,
+    "**/out/**": true,
+    "**/.vscode-test/**": true,
+    "**/.worktrees/**": true,
+    "**/*.log": true
+  },
   "rust-analyzer.linkedProjects": ["packages/git-mesh/Cargo.toml"],
   "cards.detectedAgents": [
     {
