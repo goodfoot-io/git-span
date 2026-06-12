@@ -13,10 +13,10 @@ EXIT=0
 if [ -f "$WORKSPACE_ROOT/packages/git-mesh/Cargo.toml" ]; then
   echo "Running cargo check for packages/git-mesh..."
   # Delegate to the package-level `typecheck` script so this entry point uses
-  # the exact same flags (RUSTFLAGS, --locked) and shared target lock. A second
-  # flag profile writing into the same typecheck/ target dir rebuilds crates in
-  # place with new SVHs and leaves E0460 "possibly newer version of crate"
-  # wreckage when runs interleave.
+  # the exact same flags (RUSTFLAGS, --locked), shared target lock, and target
+  # directory (git-mesh/check). A second flag profile writing into the same
+  # check/ target dir rebuilds crates in place with new SVHs and leaves E0460
+  # "possibly newer version of crate" wreckage when runs interleave.
   (cd "$WORKSPACE_ROOT/packages/git-mesh" && yarn typecheck) &
   PIDS+=($!)
 else

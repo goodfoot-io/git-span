@@ -9,12 +9,23 @@ jobs:
   build-cli:
     name: Build CLI (Rust)
     runs-on: ubuntu-latest
+    # The target directory layout mirrors the local yarn scripts exactly (see
+    # packages/git-mesh/scripts/cargo-build-system.md): non-codegen tasks
+    # (check, clippy) write rmeta into a `check` dir; codegen tasks (nextest,
+    # build) write rlib into a `build` dir, per crate. They MUST stay separate —
+    # sharing one dir leaves rmeta-only artifacts that fail downstream rlib
+    # links with E0463 "can't find crate". CARGO_INCREMENTAL=0 because cold CI
+    # builds never recoup the incremental metadata overhead. CARGO_BUILD_JOBS=1
+    # serializes the compile graph: with default parallelism, sibling rustc jobs
+    # intermittently fail to see each other's just-written rlib/rmeta and abort
+    # with E0463 on a different dependency each run (see card main-122 and
+    # scripts/cargo-build-system.md). Serial compilation is the durable fix.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set cargo target root
-        run: echo "GIT_MESH_CARGO_TARGET_ROOT=${RUNNER_TEMP}/git-mesh-target" >> "$GITHUB_ENV"
 
       - name: Install mold and clang
         run: sudo apt-get update && sudo apt-get install -y mold clang
@@ -34,29 +45,44 @@ jobs:
         with:
           workspaces: packages/git-mesh -> ${{ runner.temp }}/git-mesh-target
 
-      - name: Cargo check
-        run: cd packages/git-mesh && cargo check --quiet
+      - name: Cargo check (git-mesh)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/check
+          RUSTFLAGS: "-W unused -W dead-code"
+        run: cd packages/git-mesh && cargo check --quiet --locked
 
-      - name: Cargo clippy
-        run: cd packages/git-mesh && cargo clippy --quiet -- -D warnings
+      - name: Cargo clippy (git-mesh)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/check
+          RUSTFLAGS: "-W unused -W dead-code"
+        run: cd packages/git-mesh && cargo clippy --quiet --locked -- -D warnings
 
       - name: Cargo test (git-mesh)
-        run: cd packages/git-mesh && cargo nextest run
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/build
+        run: cd packages/git-mesh && cargo nextest run --build-jobs 1 --locked
 
       - name: Cargo clippy (git-mesh-core)
-        run: cd packages/git-mesh-core && cargo clippy --quiet -- -D warnings
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh-core/check
+          RUSTFLAGS: "-W unused -W dead-code"
+        run: cd packages/git-mesh-core && cargo clippy --quiet --locked -- -D warnings
 
       - name: Cargo test (git-mesh-core)
-        run: cd packages/git-mesh-core && cargo test
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh-core/build
+        run: cd packages/git-mesh-core && cargo test --locked
 
       - name: Cargo build (release)
-        run: cd packages/git-mesh && cargo build --release
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/build
+        run: cd packages/git-mesh && cargo build --release --locked
 
       - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
           name: git-mesh-cli
-          path: ${{ runner.temp }}/git-mesh-target/build/release/git-mesh
+          path: ${{ runner.temp }}/git-mesh-target/git-mesh/build/release/git-mesh
           retention-days: 1
 
   build-extension:

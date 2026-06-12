@@ -4,11 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 target_root="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}"
-built="$target_root/build/release/git-mesh"
+built="$target_root/git-mesh/build/release/git-mesh"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/man/man1"
 
-bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$target_root/build" cargo build --release
+bash scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="$target_root/git-mesh/build" cargo build --release --locked
 install -m 0755 "$built" "$HOME/.local/bin/git-mesh"
 
 declare -A seen=()

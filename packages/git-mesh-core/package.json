@@ -3,9 +3,9 @@
   "version": "1.0.116",
   "private": true,
   "scripts": {
-    "test": "cargo test",
-    "lint": "cargo clippy -- -D warnings",
-    "typecheck": "cargo check"
+    "test": "bash ../git-mesh/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh-core/build\" cargo test --locked",
+    "lint": "bash ../git-mesh/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh-core/check\" cargo clippy --quiet --locked -- -D warnings",
+    "typecheck": "bash ../git-mesh/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh-core/check\" cargo check --quiet --locked"
   },
   "repository": {
     "type": "git",

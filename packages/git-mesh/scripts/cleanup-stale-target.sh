@@ -7,22 +7,28 @@ node -e "try { if (require('fs').lstatSync('target').isSymbolicLink()) { require
 # Freshness stamp — invalidate the shared task target directories when
 # dependencies, toolchain, or cargo config change.  Without this, `cargo
 # clean` only touches the default target dir and leaves stale artifacts in
-# the `typecheck/`, `lint/`, `test/`, and `build/` subdirectories.
+# the per-package `check/` and `build/` subdirectories (see
+# scripts/cargo-build-system.md for the directory layout).
 #
 # The default root must match the root every cargo task actually uses
 # ($HOME/.cache/git-mesh/cargo-target) — stamping the per-worktree
 # target-cache/ fallback would guard a directory the scripted tasks never
-# write to.
+# write to. Both crates (git-mesh and git-mesh-core) share this root, so the
+# stamp folds in both lockfiles and both cargo configs: a change to either
+# crate's resolution or toolchain wipes the whole root in one consistent step.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pkg_dir="$(dirname "$script_dir")"
+core_dir="$(dirname "$pkg_dir")/git-mesh-core"
 target_root="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}"
 stamp_file="$target_root/.freshness-stamp"
 
 # Collect inputs that invalidate cached build artifacts.
 lock_hash=$(sha256sum "$pkg_dir/Cargo.lock" 2>/dev/null | cut -d' ' -f1)
+core_lock_hash=$(sha256sum "$core_dir/Cargo.lock" 2>/dev/null | cut -d' ' -f1)
 rustc_ver=$(rustc --version 2>/dev/null)
 config_hash=$(sha256sum "$pkg_dir/.cargo/config.toml" 2>/dev/null | cut -d' ' -f1)
-current_stamp="${lock_hash:-no-lock}${rustc_ver:-no-rustc}${config_hash:-no-config}"
+core_config_hash=$(sha256sum "$core_dir/.cargo/config.toml" 2>/dev/null | cut -d' ' -f1)
+current_stamp="${lock_hash:-no-lock}${core_lock_hash:-no-core-lock}${rustc_ver:-no-rustc}${config_hash:-no-config}${core_config_hash:-no-core-config}"
 
 if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$current_stamp" ]; then
   exit 0

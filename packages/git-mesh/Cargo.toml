@@ -64,11 +64,23 @@ bench = false
 # `cargo check`/clippy pass (rmeta-only) and `cargo test` share the
 # same target directory, that target intermittently fails with
 # "crate `…` required to be available in rlib format". Dropping the test
-# harness removes the spurious target. Per-task `CARGO_TARGET_DIR`
-# directories (test/, lint/, typecheck/, build/ in package.json) provide
-# durable isolation between check and test builds; together with
-# `test = false` on the affected binaries this eliminates the rlib/rmeta
-# race without job serialization.
+# harness removes the spurious target.
+#
+# Defense in depth: every entry point (local yarn scripts, CI, sync) routes
+# non-codegen tasks (check, clippy) and codegen tasks (test, build, run) into
+# *separate* CARGO_TARGET_DIR trees — `git-mesh/check` vs `git-mesh/build` —
+# so rmeta-only artifacts can never satisfy a fingerprint for a build that
+# needs rlibs. `test = false` here plus that directory split eliminate the
+# rlib/rmeta race.
+#
+# A SECOND, independent race also exists and needs its own mitigation: with
+# default job parallelism, sibling rustc jobs intermittently abort with E0463
+# "can't find crate for <dep>" (a different dep each run — bstr, serde, rustix,
+# …) because a just-written rlib/rmeta is not yet visible to a concurrent
+# reader job on the shared virtiofs target root. Every scripted cargo
+# invocation therefore pins compilation to one job (CARGO_BUILD_JOBS=1 /
+# nextest --build-jobs 1). Removing that serialization (card main-122) brought
+# the race back. See scripts/cargo-build-system.md for the full rationale.
 [[bin]]
 name = "gen-manpage"
 path = "src/bin/gen-manpage.rs"

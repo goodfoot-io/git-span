@@ -134,7 +134,7 @@ if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
     (
       cd "$REPO_ROOT/packages/git-mesh" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/sync" \
+        env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build" \
         cargo update --workspace --quiet
     )
     echo "Updated: $cargo_lock ($lock_version -> $VERSION)"
@@ -153,8 +153,8 @@ if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
     (
       cd "$REPO_ROOT/packages/git-mesh" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/sync" \
-        cargo run --quiet --bin gen-manpage -- man/git-mesh.1
+        env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build" \
+        cargo run --quiet --locked --bin gen-manpage -- man/git-mesh.1
     )
     echo "Updated: $manpage ($manpage_version -> $VERSION)"
     updated=$((updated + 1))
