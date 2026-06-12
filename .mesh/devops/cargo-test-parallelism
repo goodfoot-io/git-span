@@ -1,4 +1,4 @@
-packages/git-mesh/package.json#L15-L15 rk64:8f4d848223864789
+packages/git-mesh/package.json#L15-L15 rk64:854ded2144de0db8
 .github/workflows/ci.yml#L44-L44 rk64:cbdddbeefaf2c5ea
 
-Git-mesh test invocation points that run cargo nextest with consistent parallelism flags across local (yarn test) and CI environments.
+Cargo nextest test invocation across local (yarn test) and CI that uses consistent flags, shared target directory, and runner configuration.
