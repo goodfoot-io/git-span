@@ -121,7 +121,7 @@ For faster installation using prebuilt binaries, see the
 
 ```bash
 sudo apt-get install mold        # Ubuntu/Debian — recommended
-# sudo apt-get install lld       # alternative for macOS cross-compilation (set RUSTFLAGS="-C link-arg=-fuse-ld=lld")
+# sudo apt-get install lld       # alternative linker (override with CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER)
 ```
 
 On macOS no extra install is required — the mold linker config is gated to
