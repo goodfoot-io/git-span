@@ -1,4 +1,0 @@
-packages/git-mesh/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
-wiki/meta/git-mesh-documentation-touchpoints.md rk64:3a1ad17f23a2aa23
-
-Reserved subcommand list in validation.rs that the touchpoints page references as the set the main.rs pre-classifier checks against.

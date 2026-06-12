@@ -1,5 +1,5 @@
+packages/git-mesh/tests/cases/cli_stale_human.rs#L248-L271 rk64:da700a0ffce7200e
+packages/git-mesh/tests/cases/cli_stale_renderers.rs#L319-L380 rk64:726e617f874f3d43
 packages/git-mesh/tests/stale_positional_matches_full_scan.rs#L1-L159 rk64:34edd3f56f66cc1d
-packages/git-mesh/tests/cli_stale_human.rs#L248-L271 rk64:da700a0ffce7200e
-packages/git-mesh/tests/cli_stale_renderers.rs#L319-L380 rk64:726e617f874f3d43
 
 Test suite validating that positional path arguments in `git mesh stale` resolve correctly through the path-index and filter clean meshes from drift reports across all output formats (human, JSON, porcelain, stat, patch).

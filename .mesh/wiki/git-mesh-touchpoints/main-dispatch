@@ -1,4 +1,0 @@
-wiki/meta/git-mesh-documentation-touchpoints.md rk64:3a1ad17f23a2aa23
-packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
-
-Pre-classification logic in main.rs that resolves the bare git mesh <name> form before Clap parses, anchoring the touchpoints page's source-of-truth claim about subcommand routing.

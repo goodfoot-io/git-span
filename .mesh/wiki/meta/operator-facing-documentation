@@ -1,7 +1,0 @@
-wiki/meta/git-mesh-documentation-touchpoints.md#L22-L32 rk64:fb3ea21469adb8e4
-README.md#L18-L55 rk64:6827cd27b4db8370
-CLAUDE.md#L94-L115 rk64:dc66d24830d9ce67
-CLAUDE.md#L82-L103 rk64:ce80e56599ca7121
-CLAUDE.md#L101-L122 rk64:dc66d24830d9ce67
-
-The touchpoints page's operator-facing-documentation section lists the public documentation surfaces most likely to drift when the CLI contract changes; the anchors track those surfaces for cross-reference maintenance.
