@@ -8,9 +8,24 @@
 use crate::mesh_file_reader::MeshFileReader;
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_MESH_ROOT: &str = ".mesh";
+
+/// Ensure the mesh root directory exists and contains a `.gitattributes`
+/// that pins LF for all mesh files. Idempotent: writes `.gitattributes`
+/// only when missing or when content differs from the canonical form.
+pub(crate) fn ensure_mesh_dir(workdir: &Path, mesh_root: &str) -> Result<()> {
+    let mesh_dir = workdir.join(mesh_root);
+    std::fs::create_dir_all(&mesh_dir)?;
+    let ga_path = mesh_dir.join(".gitattributes");
+    let canonical = "* text eol=lf\n";
+    let current = std::fs::read_to_string(&ga_path).unwrap_or_default();
+    if current != canonical {
+        std::fs::write(&ga_path, canonical)?;
+    }
+    Ok(())
+}
 
 fn mesh_file_path(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<PathBuf> {
     let workdir = repo
@@ -71,6 +86,10 @@ pub fn rename_mesh_in(repo: &gix::Repository, old: &str, new: &str, mesh_root: &
     }
 
     if let Some(parent) = new_path.parent() {
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| Error::Git("bare repository is not supported".into()))?;
+        ensure_mesh_dir(workdir, mesh_root)?;
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::Git(format!("create `{}`: {e}", parent.display())))?;
     }

@@ -216,6 +216,10 @@ pub(crate) fn write_worktree_mesh(
     });
 
     let path = mesh_file_path(repo, mesh_root, name)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    crate::mesh::structural::ensure_mesh_dir(workdir, mesh_root)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -815,12 +819,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str, mesh_root: &str) -> Result
     };
 
     let mesh_dir_path = workdir.join(mesh_root);
-    std::fs::create_dir_all(&mesh_dir_path).with_context(|| {
-        format!(
-            "failed to create mesh directory `{}`",
-            mesh_dir_path.display()
-        )
-    })?;
+    crate::mesh::structural::ensure_mesh_dir(workdir, mesh_root)?;
 
     let edit_path = mesh_dir_path.join(format!("{name}.EDITMSG"));
     std::fs::write(&edit_path, &template)?;
