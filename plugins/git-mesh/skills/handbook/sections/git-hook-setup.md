@@ -24,5 +24,10 @@ from these hooks (version bumping, build steps, doc validation, etc.). Never
 remove or rewrite such a hook on the assumption it exists for meshes — it does
 not, and `git mesh` neither installs nor depends on it.
 
+Mesh files are LF-pinned on all platforms automatically — no `core.autocrlf`
+configuration is needed. The `.mesh/` directory contains a `.gitattributes`
+that enforces `* text eol=lf`, so Windows and Unix checkouts produce identical
+mesh content without any developer action.
+
 The only related automation is the Claude Code mesh-overlap hook (PreToolUse),
 which surfaces intersecting mesh anchors inline — see `./understanding-hook-output.md`.

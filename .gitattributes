@@ -9,6 +9,7 @@
 *.toml text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+.mesh/** text eol=lf
 
 # Resolve package version conflicts by picking the highest semver.
 package.json merge=json-version

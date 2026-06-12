@@ -10,6 +10,41 @@ use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests {
+    use super::ensure_mesh_dir;
+
+    /// `ensure_mesh_dir` must create `.mesh/.gitattributes` with exact
+    /// canonical content and must be idempotent.
+    #[test]
+    fn ensure_mesh_dir_writes_canonical_gitattributes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let mesh_root = ".mesh";
+
+        // First call: directory and file must be created.
+        ensure_mesh_dir(workdir, mesh_root).expect("first call");
+
+        let ga_path = workdir.join(mesh_root).join(".gitattributes");
+        assert!(ga_path.exists(), ".mesh/.gitattributes must exist after first call");
+
+        let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
+        assert_eq!(
+            content, "* text eol=lf\n",
+            ".mesh/.gitattributes content must be exactly `* text eol=lf\\n`"
+        );
+
+        // Second call: idempotent — no error, content unchanged.
+        ensure_mesh_dir(workdir, mesh_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&ga_path).expect("read .gitattributes again");
+        assert_eq!(
+            content2, "* text eol=lf\n",
+            "content must be unchanged after idempotent second call"
+        );
+    }
+}
+
 const DEFAULT_MESH_ROOT: &str = ".mesh";
 
 /// Ensure the mesh root directory exists and contains a `.gitattributes`

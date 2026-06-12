@@ -31,6 +31,12 @@ referenced source content directly from the index/worktree/HEAD.
 
 ## Sharing
 
+Mesh files are stored with LF line endings on every platform. The `.mesh/`
+directory contains a `.gitattributes` that pins `* text eol=lf`, and the
+repository root `.gitattributes` adds `.mesh/** text eol=lf` as a second
+guarantee. No `core.autocrlf` setting or manual configuration is required —
+the cross-platform behavior is automatic.
+
 Meshes are versioned, fetched, and pushed exactly like any other tracked file —
 `git pull`/`git push` move them with the surrounding code. There is no
 `git mesh fetch`/`push`/`sync`. All `git mesh` reads are local and never touch
