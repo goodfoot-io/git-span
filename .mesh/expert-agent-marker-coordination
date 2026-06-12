@@ -1,6 +1,6 @@
 packages/agent-hooks/src/subagent-start.ts rk64:425010c65edda1b5
 packages/agent-hooks/test/subagent-start.test.ts rk64:58c1ec7d797360f6
-packages/agent-hooks/src/stop.ts#L499-L503 rk64:7d0f4d9c23e69e42
 packages/agent-hooks/src/agent-hooks-common.ts#L143-L178 rk64:b300e06854941f96
+packages/agent-hooks/src/stop.ts#L506-L510 rk64:7d0f4d9c23e69e42
 
 SubagentStart hook writes the expert agent ID to a per-session marker; Stop hook reads it to wake the existing expert agent instead of spawning a duplicate.

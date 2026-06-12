@@ -1,0 +1,6 @@
+.devcontainer/Dockerfile#L7-L39 rk64:31de1c081f9d53c0
+packages/git-mesh/.cargo/config.toml#L14-L21 rk64:a21111cf9bd38fac
+packages/git-mesh-core/.cargo/config.toml rk64:0b54a754b95fecbc
+README.md#L120-L127 rk64:bfdba7d91d3a1420
+
+Mold linker configuration for Rust build acceleration: the devcontainer installs and verifies the mold binary at image build, each Rust package selects it via per-target -C link-arg=-fuse-ld=mold rustflags, and the README documents the install step for local non-devcontainer environments — all three sites must change together when the linker approach evolves.

@@ -1,4 +1,4 @@
-packages/git-mesh/src/cli/interior_anchor.rs#L83-L116 rk64:2f346a98bc3d939b
-packages/git-mesh/src/cli/stale_output.rs#L601-L677 rk64:a22342d04a392ff6
+packages/git-mesh/src/cli/interior_anchor.rs#L83-L116 rk64:b1bf5d3d5cc5559d
+packages/git-mesh/src/cli/stale_output.rs#L601-L677 rk64:f80d09d51ad07323
 
 Fail-closed gate that disables the stale --fix post-fix scoped splice and pre-fix source-layer reuse when any in-scope mesh carries an interior anchor, falling back to a baseline full re-resolve. The predicate and its run_stale consumer must agree on which optimizations the interior-anchor case bypasses.
