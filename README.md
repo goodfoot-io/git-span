@@ -126,22 +126,26 @@ sudo apt-get install mold clang   # Ubuntu/Debian
 On macOS no extra install is required — the mold linker config is gated to
 Linux GNU targets only.
 
-**Per-worktree Cargo target directory + sccache:**
+**Per-user Cargo target directory + sccache:**
 
-Each worktree keeps its own build artifacts in `packages/git-mesh/target-cache/<kind>/`.
-There is no shared target directory. `sccache` deduplicates dependency compilation
-across worktrees; the cache lives at `~/.cache/sccache` (per-machine, safe for concurrent
-access). Wiring is automatic via `packages/git-mesh/.cargo/config.toml` — no environment
-variable is required.
+Build artifacts for the git-mesh CLI are stored in a shared per-user directory at
+`$HOME/.cache/git-mesh/cargo-target/<kind>/` (e.g., `test/`, `build/`, `lint/`).
+This directory is shared across all worktrees on the same machine — a worktree
+cloned from `main` will reuse dependency artifacts already built by another worktree.
 
-Override the target root per-worktree via `GIT_MESH_CARGO_TARGET_ROOT`:
+`sccache` deduplicates dependency compilation across worktrees; the cache lives at
+`~/.cache/sccache` (per-machine, safe for concurrent access). Together, sccache and
+the shared target directory ensure that the on-disk cost of N worktrees does not
+scale as N full copies of the multi-gigabyte target directory.
+
+Override the target root via `GIT_MESH_CARGO_TARGET_ROOT`:
 
 ```bash
 GIT_MESH_CARGO_TARGET_ROOT=/tmp/my-target yarn test
 ```
 
-Note: `yarn build:clean` wipes only the *current* worktree's `target-cache/`.
-The sccache store and other worktrees are unaffected.
+Note: `yarn build:clean` cleans only the `build/` subdirectory of the shared target
+root. Running it while another worktree is building will interrupt that build.
 
 ## Contributing
 

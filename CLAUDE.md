@@ -31,11 +31,27 @@ This is a Yarn 4.x monorepo with packages in ./packages/ containing a Rust CLI (
 
 Use local rather than origin branches.
 
-Each card worktree keeps a private `packages/git-mesh/target-cache/` for Cargo
-artifacts; `sccache` (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/home/node/.cache/sccache`)
-deduplicates dependency compilation across worktrees. Run `yarn validate` from any
-worktree; concurrent runs are safe. Direct `cargo` invocations also use `target-cache/`
-via `packages/git-mesh/.cargo/config.toml`.
+Cargo build artifacts for the git-mesh CLI are written to a **shared per-user directory**
+at `$HOME/.cache/git-mesh/cargo-target/<task>/`, where `<task>` is one of `build`, `test`,
+`lint`, `typecheck`, `udeps`, or `sync`. This directory is shared across all card worktrees:
+a build started from any worktree reuses compilation work already done by sibling worktrees.
+
+All yarn scripts and tooling scripts honor the `GIT_MESH_CARGO_TARGET_ROOT` environment
+variable to override this root (e.g., for CI isolation). The per-worktree fallback
+`packages/git-mesh/target-cache/` (via [.cargo/config.toml](./packages/git-mesh/.cargo/config.toml))
+is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
+
+`sccache` (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/home/node/.cache/sccache`) deduplicates
+`rustc` invocations across worktrees as a second caching layer, covering compilation but not linking.
+
+**Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
+sharing the same task subdirectory. Concurrent `yarn test` runs in different worktrees
+build serially (order of seconds) then test in parallel. This is normal — not a hang.
+
+**`build:clean` safety:** Running `yarn build:clean` in one worktree while another
+worktree builds will interrupt the second build. Use `build:clean` only when no other
+worktree is actively building. The clean script uses flock to prevent concurrent
+`build:clean` races within the same lock domain.
 
 The one true `sccache` binary is `/usr/local/bin/sccache`, installed by the
 Dockerfile for the build platform's architecture and verified at image build

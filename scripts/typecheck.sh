@@ -12,7 +12,7 @@ EXIT=0
 # --- Rust CLI typecheck ---
 if [ -f "$WORKSPACE_ROOT/packages/git-mesh/Cargo.toml" ]; then
   echo "Running cargo check for packages/git-mesh..."
-  (cd "$WORKSPACE_ROOT/packages/git-mesh" && cargo check --quiet) &
+  (cd "$WORKSPACE_ROOT/packages/git-mesh" && env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/typecheck" cargo check --quiet) &
   PIDS+=($!)
 else
   echo "Warning: packages/git-mesh/Cargo.toml not found, skipping cargo check." >&2

@@ -67,17 +67,21 @@ strategy:
         binary: git-mesh.exe
 ```
 
-Each build copies from:
+The release workflow copies from:
 
 ```text
 packages/git-mesh/target-cache/<target>/release/<binary>
 ```
 
-to:
+to the npm package:
 
 ```text
 npm/<npm-pkg>/bin/
 ```
+
+(The developer shared default is `$HOME/.cache/git-mesh/cargo-target/build/` for
+scripted builds. The `target-cache/` path above is specific to the release workflow
+which runs bare `cargo` and uses the `.cargo/config.toml` fallback.)
 
 The publish job uploads the platform packages first, then publishes the
 `@goodfoot/git-mesh` meta-package.

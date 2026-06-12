@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-target_root="${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}"
+target_root="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}"
 built="$target_root/build/release/git-mesh"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/man/man1"
