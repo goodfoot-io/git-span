@@ -1,0 +1,14 @@
+{
+  "name": "@goodfoot/git-mesh-core",
+  "version": "1.0.116",
+  "private": true,
+  "scripts": {
+    "test": "cargo test",
+    "lint": "cargo clippy -- -D warnings",
+    "typecheck": "cargo check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-mesh.git"
+  }
+}

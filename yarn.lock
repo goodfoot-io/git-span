@@ -1042,6 +1042,12 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@goodfoot/git-mesh-core@workspace:packages/git-mesh-core":
+  version: 0.0.0-use.local
+  resolution: "@goodfoot/git-mesh-core@workspace:packages/git-mesh-core"
+  languageName: unknown
+  linkType: soft
+
 "@goodfoot/git-mesh-darwin-arm64@npm:1.0.116, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64"
