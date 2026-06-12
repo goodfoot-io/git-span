@@ -1,4 +1,4 @@
-.github/workflows/ci.yml#L44-L44 rk64:cbdddbeefaf2c5ea
 packages/git-mesh/package.json#L14-L14 rk64:b73845e2a464ff67
+.github/workflows/ci.yml#L55-L58 rk64:09cd5203e5d65625
 
 Cargo nextest test invocation across local (yarn test) and CI that uses consistent flags, shared target directory, and runner configuration.

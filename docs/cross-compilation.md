@@ -79,8 +79,8 @@ to the npm package:
 npm/<npm-pkg>/bin/
 ```
 
-(The developer shared default is `$HOME/.cache/git-mesh/cargo-target/build/` for
-scripted builds. The `target-cache/` path above is specific to the release workflow
+(The developer shared default is `$HOME/.cache/git-mesh/cargo-target/git-mesh/build/`
+for scripted builds. The `target-cache/` path above is specific to the release workflow
 which runs bare `cargo` and uses the `.cargo/config.toml` fallback.)
 
 The publish job uploads the platform packages first, then publishes the

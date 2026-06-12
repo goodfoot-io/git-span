@@ -24,7 +24,7 @@ When documentation changes are about subcommand behavior or exit-code semantics,
 These files are the public guidance surfaces most likely to drift when the CLI contract changes:
 
 - The [README CLI section](/README.md#L18-L55) is the reader-facing quick reference for common command shapes, exit code semantics, and `--format` placeholders.
-- The [repository `CLAUDE.md` git-mesh instructions](/CLAUDE.md#L94-L115) shape how agents in this workspace are told to stage and commit meshes.
+- The [repository `CLAUDE.md` git-mesh instructions](/CLAUDE.md#L101-L122) shape how agents in this workspace are told to stage and commit meshes.
 - The git-mesh handbook skill (bundled with the `git-mesh` plugin, not tracked in this repo) is the highest-leverage agent workflow contract for creating, updating, and querying meshes.
 - The git-mesh implicit-semantic-dependencies skill (bundled with the `git-mesh` plugin, not tracked in this repo) guides agents through identifying and recording coupling that has no schema or test enforcement.
 - The [man page](/packages/git-mesh/man/git-mesh.1) is the installed reference for the CLI. It is generated from the Clap config; changes to command signatures surface here automatically on the next build, but prose descriptions require manual attention.
@@ -36,7 +36,7 @@ If a documentation update changes the recommended operator workflow, all of thes
 When git-mesh CLI behavior or documentation changes, use this order:
 
 1. Confirm the implementation in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L35-L108) (Clap config and Commands enum) and [packages/git-mesh/src/main.rs](/packages/git-mesh/src/main.rs#L50-L113) (pre-classification and dispatch).
-2. Update the primary user docs in [README.md](/README.md#L18-L55) and [CLAUDE.md](/CLAUDE.md#L94-L115).
+2. Update the primary user docs in [README.md](/README.md#L18-L55) and [CLAUDE.md](/CLAUDE.md#L101-L122).
 3. Update the agent workflow contract in the git-mesh handbook skill (bundled with the `git-mesh` plugin, not tracked in this repo).
 4. Update secondary references such as the implicit-semantic-dependencies skill and the man page.
 5. Run `wiki check` on the touched pages so fragment links validate and the page participates in `wiki stale`.

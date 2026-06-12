@@ -136,10 +136,16 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" car
 
 **Per-user Cargo target directory:**
 
-Build artifacts for the git-mesh CLI are stored in a shared per-user directory at
-`$HOME/.cache/git-mesh/cargo-target/<kind>/` (e.g., `test/`, `build/`, `lint/`).
-This directory is shared across all worktrees on the same machine — a worktree
-cloned from `main` will reuse dependency artifacts already built by another worktree.
+Build artifacts are stored in a shared per-user directory at
+`$HOME/.cache/git-mesh/cargo-target/<crate>/<group>/` — `<group>` is `check`
+(non-codegen `cargo check`/`clippy`) or `build` (codegen `cargo test`/`build`).
+The two are kept separate on purpose: mixing rmeta-only (`check`) and rlib
+(`build`) artifacts in one directory causes spurious `can't find crate` link
+failures. See
+[packages/git-mesh/scripts/cargo-build-system.md](packages/git-mesh/scripts/cargo-build-system.md)
+for details. This directory is shared across all worktrees on the same machine —
+a worktree cloned from `main` will reuse dependency artifacts already built by
+another worktree.
 
 Override the target root via `GIT_MESH_CARGO_TARGET_ROOT`:
 
@@ -147,8 +153,9 @@ Override the target root via `GIT_MESH_CARGO_TARGET_ROOT`:
 GIT_MESH_CARGO_TARGET_ROOT=/tmp/my-target yarn test
 ```
 
-Note: `yarn build:clean` cleans only the `build/` subdirectory of the shared target
-root. Running it while another worktree is building will interrupt that build.
+Note: `yarn build:clean` cleans only the `git-mesh/build` subdirectory of the
+shared target root. Running it while another worktree is building waits for that
+build (it takes the exclusive target-root lock) rather than corrupting it.
 
 ## Contributing
 

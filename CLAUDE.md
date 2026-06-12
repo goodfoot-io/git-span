@@ -31,10 +31,17 @@ This is a Yarn 4.x monorepo with packages in ./packages/ containing a Rust CLI (
 
 Use local rather than origin branches.
 
-Cargo build artifacts for the git-mesh CLI are written to a **shared per-user directory**
-at `$HOME/.cache/git-mesh/cargo-target/<task>/`, where `<task>` is one of `build`, `test`,
-`lint`, `typecheck`, `udeps`, or `sync`. This directory is shared across all card worktrees:
-a build started from any worktree reuses compilation work already done by sibling worktrees.
+Cargo build artifacts are written to a **shared per-user directory** at
+`$HOME/.cache/git-mesh/cargo-target/<crate>/<group>/`, where `<crate>` is `git-mesh` or
+`git-mesh-core` and `<group>` is `check` (non-codegen tasks: `cargo check`, `cargo clippy`
+— rmeta) or `build` (codegen tasks: `cargo nextest`, `cargo build`, `cargo run` — rlib).
+`git-mesh/udeps/` is a third group for the nightly `cargo udeps`. **Non-codegen (rmeta) and
+codegen (rlib) artifacts must never share a directory** — doing so leaves rmeta-only crates
+that fail downstream rlib links with `E0463 "can't find crate"`. This was the root cause of
+the build failures; the full rationale and layout live in
+[packages/git-mesh/scripts/cargo-build-system.md](./packages/git-mesh/scripts/cargo-build-system.md).
+The directory is shared across all card worktrees: a build started from any worktree reuses
+compilation work already done by sibling worktrees.
 
 All yarn scripts and tooling scripts honor the `GIT_MESH_CARGO_TARGET_ROOT` environment
 variable to override this root (e.g., for CI isolation). The per-worktree fallback
@@ -42,7 +49,7 @@ variable to override this root (e.g., for CI isolation). The per-worktree fallba
 is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
 
 **Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
-sharing the same task subdirectory. Concurrent `yarn test` runs in different worktrees
+sharing the same group subdirectory. Concurrent `yarn test` runs in different worktrees
 build serially (order of seconds) then test in parallel. This is normal — not a hang.
 
 **Shared target-root lock:** Every scripted cargo task runs under a *shared* flock on
