@@ -48,10 +48,14 @@ is still present for ad-hoc `cargo` invocations but is not the default for any s
 sharing the same task subdirectory. Concurrent `yarn test` runs in different worktrees
 build serially (order of seconds) then test in parallel. This is normal — not a hang.
 
-**`build:clean` safety:** Running `yarn build:clean` in one worktree while another
-worktree builds will interrupt the second build. Use `build:clean` only when no other
-worktree is actively building. The clean script uses flock to prevent concurrent
-`build:clean` races within the same lock domain.
+**Shared target-root lock:** Every scripted cargo task runs under a *shared* flock on
+`$HOME/.cache/git-mesh/cargo-target/.target.lock` (via
+`packages/git-mesh/scripts/with-target-lock.sh`), and anything that deletes from the
+shared root (`clean-shared-build.sh`, the freshness-stamp wipe in
+`cleanup-stale-target.sh`) takes the *exclusive* lock. A `yarn build:clean` in one
+worktree therefore waits for in-flight builds in sibling worktrees instead of deleting
+artifacts out from under them. Worktrees checked out at commits predating this lock do
+not participate in it — avoid running their `build:clean` while another worktree builds.
 
 The one true `sccache` binary is `/usr/local/bin/sccache`, installed by the
 Dockerfile for the build platform's architecture and verified at image build
