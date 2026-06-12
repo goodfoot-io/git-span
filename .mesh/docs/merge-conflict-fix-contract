@@ -1,0 +1,4 @@
+plugins/git-mesh/skills/handbook/sections/terminal-statuses.md#L61-L77 rk64:9392d7f23e732779
+plugins/git-mesh/skills/handbook/sections/command-reference.md#L147-L187 rk64:dc4e3309ec012577
+
+Two handbook entry points stating the same git mesh stale --fix merge-conflict resolution contract: the terminal-status MERGE_CONFLICT remediation and the command-reference Merge conflict resolution section. Both assert the clean-source precondition, structural union/re-anchor against the resolved worktree, and the two fail-closed cases (source still markered, or --why diverged with no merge base); they must restate identical rules.

@@ -31,3 +31,30 @@ mesh content without any developer action.
 
 The only related automation is the Claude Code mesh-overlap hook (PreToolUse),
 which surfaces intersecting mesh anchors inline — see `./understanding-hook-output.md`.
+
+## Optional merge driver
+
+This is the one piece of git *config* meshes can use — and it is **optional**, not
+required. Registering a merge driver makes git collapse the easy majority of
+`.mesh/` conflicts in place during `git merge` so they never surface. Skipping it
+costs nothing: `.mesh/**` falls back to git's line merge, and
+`git mesh stale --fix` resolves the result afterward to the identical clean state
+(see `./command-reference.md` § "Merge conflict resolution"). Registration has two
+parts, because git distributes one and not the other:
+
+```gitattributes
+# committed and shared with the repo
+.mesh/** merge=mesh
+```
+
+```ini
+# .git/config — per-clone, NOT distributed by git; each clone adds it once
+[merge "mesh"]
+    name = git-mesh structural mesh merge
+    driver = git mesh merge-driver %O %A %B %L
+```
+
+There is **no auto-installer** — registration is manual by design, and
+`git mesh doctor` does not check for it. Never run `git mesh merge-driver` by
+hand; git invokes it with the temp-file arguments shown above. Until a clone adds
+the `.git/config` block, conflicts simply fall back to `--fix`.

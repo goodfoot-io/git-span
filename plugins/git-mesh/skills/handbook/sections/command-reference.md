@@ -36,6 +36,7 @@ git mesh stale [<target>...] [--oneline|--stat|--patch] [--since <commit-ish>]
 git mesh stale [<target>...] [--head|--staged|--worktree]
 git mesh stale [<target>...] [--no-worktree] [--no-index]
 git mesh stale [<target>...] [--ignore-unavailable] [--no-exit-code]
+git mesh stale [<target>...] [--fix]                 # re-anchor in place; resolve .mesh/ conflicts
 git mesh tree <glob>... [-d|--depth <n>] [--format human|json]
 ```
 
@@ -143,10 +144,52 @@ Meshes are tracked files: they fetch, push, and pull with ordinary
 git mesh doctor [--strict]        # audit the local mesh setup
 ```
 
+## Merge conflict resolution
+
+A `.mesh/` file is a derived, line-oriented artifact, so a merge (or rebase,
+cherry-pick, stash apply) that touched the same anchored region on both branches
+leaves git's textual conflict markers in the mesh file. A conflict-markered mesh
+is a hard error for every read-only command (`show`, `list`, `stale`) until it is
+resolved. Two commands resolve it — you never hand-edit an `rk64:` hash.
+
+```bash
+git mesh stale --fix              # authoritative resolver (also re-anchors drift)
+git mesh merge-driver <O> <A> <B> <L>   # git-invoked accelerator (never run by hand)
+```
+
+`git mesh stale --fix` is the authoritative finisher. Beyond re-anchoring
+`Moved`/`Changed` anchors in place (re-hashing each against the deepest drifting
+layer, Worktree > Index > HEAD), it rewrites conflict-markered `.mesh/` files
+into one clean version: it splits the markers into ours/theirs, **enforces a
+clean-source precondition** — every source file an affected mesh anchors must
+itself be conflict-free — reads the now-clean source, and merges structurally
+(anchors unioned, re-pointed, re-hashed against the worktree, written in
+canonical `(path, start, end)` order). It produces no commit and is only
+supported with `--format human`. It **fails closed** in two cases, leaving a
+minimal conflict around exactly the unresolvable lines, declining to re-stage
+that mesh, and reporting loudly:
+
+- a source file an affected mesh anchors still carries conflict markers, or
+- the `--why` prose diverged between ours and theirs (no merge base to resolve it).
+
+`git mesh merge-driver %O %A %B %L` is an **optional accelerator**, invoked by
+git itself during the merge — never run by hand. Register it so the easy majority
+of `.mesh/` conflicts collapse in place and never surface (see
+`./git-hook-setup.md` § "Optional merge driver"). It receives three clean blob
+temp files and the marker length, must **not** trust the worktree (which may be
+mid-merge), and so resolves only the structurally-derivable part — union of
+distinct anchors, three-way `--why` merge, identical anchors. Any same-anchor
+range/hash divergence is deferred: it writes a minimal conflict and exits
+non-zero (git's native partial-resolution signal), leaving `git mesh stale --fix`
+to finish authoritatively. It is a strict subset of `--fix`: a developer who
+never registers it reaches the identical clean end state through `--fix` alone;
+the driver changes only how many conflicts surface mid-merge, never whether a
+clean result is reachable.
+
 ## Reserved mesh names
 
 A mesh name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a mesh name (so the bare `git mesh <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
-`delete`, `move`, `stale`, `fetch`, `push`, `doctor`, `log`, `config`, `list`,
-`tree`, `help`, `pre-commit`, `rewrite`, `hooks`.
+`delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
+`list`, `help`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`.

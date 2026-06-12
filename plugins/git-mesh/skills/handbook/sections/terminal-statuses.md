@@ -63,8 +63,18 @@ confirming the line ranges still bound the right code.
 **Cause.** The path has no stage-0 index entry because a merge is in progress
 and this file is unresolved.
 
-**Fix.** Finish the merge (resolve conflicts, `git add`, `git commit`). Run
-`git mesh stale` again.
+**Fix.** Resolve the conflicts in your actual **source** files first (`git add`
+them). Then, for any `.mesh/` files git left marker-laden, run
+`git mesh stale --fix` — it rewrites them into one clean version structurally
+(anchors unioned, re-pointed, re-hashed against the now-resolved worktree); you
+never hand-edit an `rk64:` hash. `--fix` enforces a clean-source precondition, so
+resolve the source first. It **fails closed** — leaving a minimal conflict, not
+re-staging the mesh, and reporting — when an anchored source file still carries
+markers or the `--why` prose diverged on both sides (no merge base); fix that
+side and re-run. Finish the merge (`git add .mesh`, `git commit`) and run
+`git mesh stale` again to confirm clean. See `./command-reference.md` §
+"Merge conflict resolution" for the optional `merge-driver` accelerator that
+collapses the easy conflicts during `git merge` itself.
 
 ## `SUBMODULE`
 
