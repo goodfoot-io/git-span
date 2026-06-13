@@ -1,6 +1,7 @@
 CLAUDE.md#L101-L122 rk64:dc66d24830d9ce67
 README.md#L18-L55 rk64:6827cd27b4db8370
 packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:cd4618cede7dce80
+packages/git-mesh/src/cli/mod.rs#L36-L109 rk64:cd4618cede7dce80
 packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
 wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:ebd8b64e8e60e541
 

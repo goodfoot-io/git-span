@@ -21,6 +21,7 @@ pub mod doctor;
 pub mod drift_label;
 pub mod error;
 pub mod format;
+pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod show;
@@ -164,6 +165,14 @@ pub enum Commands {
     /// ```
     #[command(name = "merge-driver")]
     MergeDriver(MergeDriverArgs),
+
+    /// Show a chronological timeline of a mesh file's git history: each commit
+    /// where the mesh changed, rendered oldest→newest, with the content of any
+    /// anchor that was added, modified, or removed, and an optional `current`
+    /// entry describing how the working tree has drifted from HEAD.
+    ///
+    /// Outputs XML by default; use `--format json` for JSON.
+    History(HistoryArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -468,6 +477,34 @@ pub struct MergeDriverArgs {
     pub marker_len: u32,
 }
 
+/// Output format for `git mesh history`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum HistoryFormat {
+    Xml,
+    Json,
+}
+
+/// Arguments for `git mesh history <mesh>`.
+#[derive(Debug, clap::Args)]
+pub struct HistoryArgs {
+    /// Mesh name whose git history to walk.
+    pub mesh: String,
+
+    /// Output format (xml or json).
+    #[arg(long, value_enum, default_value_t = HistoryFormat::Xml)]
+    pub format: HistoryFormat,
+
+    /// Cap the walk at N commits (newest N are inspected).
+    #[arg(short = 'n', long)]
+    pub limit: Option<usize>,
+
+    /// Omit commits older than this date or commit-ish (passed to the git
+    /// log walk as a lower-bound cutoff).
+    #[arg(long)]
+    pub since: Option<String>,
+}
+
 /// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -556,6 +593,10 @@ pub fn dispatch(
         Commands::MergeDriver(args) => {
             let _perf = crate::perf::span("command.merge-driver");
             merge_driver::run_merge_driver(args)
+        }
+        Commands::History(args) => {
+            let _perf = crate::perf::span("command.history");
+            history::run_history(repo, args, mesh_root)
         }
     }
 }

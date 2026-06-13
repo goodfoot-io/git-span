@@ -29,6 +29,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "rewrite",
     "hooks",
     "merge-driver",
+    "history",
 ];
 
 /// Mesh-name shape: one or more kebab-case segments separated by `/`. The
@@ -199,6 +200,10 @@ mod tests {
     fn reserved_name_is_rejected() {
         assert!(matches!(
             validate_mesh_name("commit"),
+            Err(Error::ReservedName(_))
+        ));
+        assert!(matches!(
+            validate_mesh_name("history"),
             Err(Error::ReservedName(_))
         ));
     }
