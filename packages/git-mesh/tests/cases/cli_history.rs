@@ -70,16 +70,23 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     repo.run_git(["add", ".mesh"])?;
     repo.run_git(["commit", "-m", "C2: update why and re-anchor file2"])?;
 
-    // C3: pure re-hash of file1.txt (byte-identical content) — should produce
-    // a no-op mesh commit that the history walk omits entirely.
+    // C3: a re-anchor of file1.txt against byte-identical content. Re-running
+    // `git mesh add` recomputes the same content hash, so the mesh file's bytes
+    // do not change and there is nothing for git to stage. The commit therefore
+    // does not touch `.mesh/<mesh>` at all (`--allow-empty` keeps it in the
+    // history), so the path-scoped history walk omits it entirely — the
+    // "no-op commit must be omitted" invariant.
     repo.mesh_stdout(["add", mesh, "file1.txt#L1-L5"])?;
     repo.run_git(["add", ".mesh"])?;
-    repo.run_git(["commit", "-m", "C3: no-op re-anchor of file1 (byte-identical)"])?;
+    repo.run_git([
+        "commit",
+        "--allow-empty",
+        "-m",
+        "C3: no-op re-anchor of file1 (byte-identical)",
+    ])?;
 
-    // C4: remove file2.txt anchor, add whole-file anchor on file3.txt.
-    // git mesh has no explicit "remove anchor" command; overwrite the mesh
-    // by re-adding only the desired anchors.
-    repo.mesh_stdout(["add", mesh, "file1.txt#L1-L5"])?;
+    // C4: remove the file2.txt anchor and add a whole-file anchor on file3.txt.
+    repo.mesh_stdout(["remove", mesh, "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["add", mesh, "file3.txt"])?;
     repo.run_git(["add", ".mesh"])?;
     repo.run_git(["commit", "-m", "C4: remove file2 anchor, add file3 whole-file"])?;
@@ -99,7 +106,6 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn commits_ordered_oldest_to_newest() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let out = repo.run_mesh(["history", mesh])?;
@@ -123,7 +129,6 @@ fn commits_ordered_oldest_to_newest() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn noop_commit_omitted() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let out = repo.run_mesh(["history", mesh])?;
@@ -143,7 +148,6 @@ fn noop_commit_omitted() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn event_vocabulary_added_modified_removed() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let out = repo.run_mesh(["history", mesh])?;
@@ -171,7 +175,6 @@ fn event_vocabulary_added_modified_removed() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn first_appearance_is_added_not_modified() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let out = repo.run_mesh(["history", mesh])?;
@@ -201,7 +204,6 @@ fn first_appearance_is_added_not_modified() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn current_present_when_worktree_drifts() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     // Worktree has uncommitted edit to file3.txt (set up by the fixture).
@@ -217,7 +219,6 @@ fn current_present_when_worktree_drifts() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn current_absent_when_worktree_matches_head() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     // Stage and commit the worktree change so the tree is clean.
@@ -239,7 +240,6 @@ fn current_absent_when_worktree_matches_head() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn current_anchor_status_is_stale_phrase() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let out = repo.run_mesh(["history", mesh])?;
@@ -260,7 +260,6 @@ fn current_anchor_status_is_stale_phrase() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn degradation_note_file_absent_at_commit() -> Result<()> {
     // Build a scenario where an anchor references a file that does not exist
     // at an earlier commit in history.
@@ -276,17 +275,17 @@ fn degradation_note_file_absent_at_commit() -> Result<()> {
     repo.run_git(["add", ".mesh"])?;
     repo.run_git(["commit", "-m", "C1: create mesh with src.txt"])?;
 
-    // C2: delete src.txt from the working tree but keep the mesh anchor
-    // pointing at it — so at the HEAD commit the file is absent.
+    // C2: delete src.txt while keeping the mesh anchor pointing at it.
     repo.run_git(["rm", "src.txt"])?;
     repo.run_git(["commit", "-m", "C2: delete src.txt"])?;
-    // Now re-commit the mesh file unchanged so the mesh still has the anchor
-    // but the target file is gone.
+
+    // C3: a mesh-file commit (why edit) made *after* src.txt is gone. The
+    // history walk reads the anchor's content from this commit's tree, where
+    // src.txt is absent — so the timeline must degrade that anchor to a note
+    // rather than aborting the whole report.
+    repo.mesh_stdout(["why", mesh, "-m", "why after source deletion"])?;
     repo.run_git(["add", ".mesh"])?;
-    // The mesh file is unchanged so this is a no-op; force by touching it.
-    // Instead, just verify the anchor reference points to a now-absent file.
-    // The history walk reads content at C1 (file present) and at HEAD (file
-    // absent); the degradation note must appear at the HEAD read attempt.
+    repo.run_git(["commit", "-m", "C3: edit why after src.txt is gone"])?;
 
     let out = repo.run_mesh(["history", mesh])?;
     // Command must not abort even though the file is absent at one revision.
@@ -356,7 +355,6 @@ fn incomplete_walk_exits_nonzero_with_warning() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn xml_and_json_carry_same_data() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
 
@@ -395,7 +393,6 @@ fn xml_and_json_carry_same_data() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn json_removed_anchor_has_no_content_key() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let json_out = repo.run_mesh(["history", mesh, "--format=json"])?;
@@ -419,7 +416,6 @@ fn json_removed_anchor_has_no_content_key() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs"]
 fn json_why_omitted_when_unchanged() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
     let json_out = repo.run_mesh(["history", mesh, "--format=json"])?;

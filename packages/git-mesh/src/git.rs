@@ -390,7 +390,6 @@ pub(crate) struct CommitMeta {
     pub message: String,
 }
 
-#[allow(dead_code)]
 pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<CommitMeta> {
     let oid = parse_oid(commit_oid)?;
     let commit = repo
