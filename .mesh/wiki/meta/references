@@ -1,4 +1,4 @@
-packages/git-mesh/src/cli/mod.rs#L1-L32 rk64:0624eccae9b4a723
+packages/git-mesh/src/cli/mod.rs#L1-L32 rk64:0e0b7719a7615e65
 packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
 packages/git-mesh/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
 wiki/meta/git-mesh-documentation-touchpoints.md#L44-L48 rk64:73bc08bcee2564da
