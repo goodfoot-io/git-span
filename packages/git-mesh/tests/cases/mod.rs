@@ -10,6 +10,7 @@ pub mod cache_v2_untracked_mesh_invalidation;
 pub mod cache_warm_perf;
 pub mod cargo_config_layout;
 pub mod cli_exit_codes;
+pub mod cli_history;
 pub mod cli_ls;
 pub mod cli_merge_driver;
 pub mod cli_perf;
