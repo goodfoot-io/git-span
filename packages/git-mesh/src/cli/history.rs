@@ -519,7 +519,12 @@ fn location_address(loc: &crate::types::AnchorLocation) -> String {
 ///      anchor, an uncommitted edit, a deletion, …),
 ///   2. an uncommitted `--why` prose edit, or
 ///   3. a worktree anchor-set change (an anchor added to, or removed from, the
-///      mesh file in the working tree relative to HEAD).
+///      mesh file in the working tree relative to HEAD): a worktree-added
+///      anchor resolves as `Fresh` (its stored hash just matched) and is
+///      skipped by the resolver guard in trigger 1, so it is detected here by
+///      set-diffing the worktree and HEAD anchor addresses; a worktree-removed
+///      anchor is absent from the worktree mesh entirely so the resolver never
+///      sees it — likewise detected by set-diff.
 fn build_current(
     repo: &gix::Repository,
     mesh_name: &str,
@@ -557,6 +562,10 @@ fn build_current(
     // `CurrentAnchor`; its status is verbatim `format_drift_label` and its
     // content is the engine's resolved live location (the relocated block for a
     // `moved` anchor), never a slice of the stored line range.
+    //
+    // NOTE: a worktree-ADDED anchor resolves as `Fresh` (its stored hash was
+    // just computed from the live content) → the guard below skips it. Trigger
+    // 3 catches it separately by comparing the anchor-address sets.
     let options = crate::types::EngineOptions {
         layers: crate::types::LayerSet::full(),
         ignore_unavailable: false,
@@ -566,6 +575,10 @@ fn build_current(
     let names = [mesh_name.to_string()];
     let resolved = crate::resolver::resolve_named_meshes(repo, mesh_root, &names, options)?;
 
+    // Collect the addresses already emitted by the resolver pass (trigger 1)
+    // so trigger-3 anchors are not double-emitted.
+    let mut resolver_addresses: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut anchors: Vec<CurrentAnchor> = Vec::new();
     for (_name, result) in resolved {
         let mesh = match result {
@@ -589,6 +602,7 @@ fn build_current(
             // mesh's recorded anchor; the resolved `current` location carries
             // the live content (and the relocated path/range when `moved`).
             let address = location_address(&r.anchored);
+            resolver_addresses.insert(address.clone());
             let content = r.current.as_ref().map(|loc| {
                 let text = crate::cli::stale_output::read_location_text(repo, loc);
                 AnchorBody::Text(text)
@@ -598,6 +612,68 @@ fn build_current(
                 status,
                 content,
             });
+        }
+    }
+
+    // Trigger 3: detect anchors added to or removed from the worktree mesh
+    // relative to HEAD. These are not surfaced by the resolver pass above.
+    {
+        // Build address sets for both sides (empty when the mesh is absent).
+        let head_addrs: Vec<String> = head
+            .as_ref()
+            .map(|m| m.anchors.iter().map(|(_id, a)| anchor_address(a)).collect())
+            .unwrap_or_default();
+        let work_addrs: Vec<String> = work
+            .as_ref()
+            .map(|m| m.anchors.iter().map(|(_id, a)| anchor_address(a)).collect())
+            .unwrap_or_default();
+
+        let head_set: std::collections::HashSet<&str> =
+            head_addrs.iter().map(String::as_str).collect();
+        let work_set: std::collections::HashSet<&str> =
+            work_addrs.iter().map(String::as_str).collect();
+
+        // Worktree-added anchors: present in worktree but not in HEAD, and not
+        // already emitted by the resolver pass.
+        for addr in &work_addrs {
+            if !head_set.contains(addr.as_str()) && !resolver_addresses.contains(addr) {
+                // Read the live content from the worktree for this anchor.
+                let content = work.as_ref().and_then(|m| {
+                    m.anchors
+                        .iter()
+                        .find(|(_id, a)| &anchor_address(a) == addr)
+                        .map(|(_id, a)| {
+                            // Build an AnchorLocation pointing at the worktree
+                            // (no blob oid = read from filesystem) and reuse the
+                            // shared `read_location_text` helper.
+                            let loc = crate::types::AnchorLocation {
+                                path: std::path::PathBuf::from(&a.path),
+                                extent: a.extent,
+                                blob: None,
+                            };
+                            let text =
+                                crate::cli::stale_output::read_location_text(repo, &loc);
+                            AnchorBody::Text(text)
+                        })
+                });
+                anchors.push(CurrentAnchor {
+                    address: addr.clone(),
+                    status: "added in the working tree".to_string(),
+                    content,
+                });
+            }
+        }
+
+        // Worktree-removed anchors: present in HEAD but not in worktree (and
+        // not already emitted by the resolver pass).
+        for addr in &head_addrs {
+            if !work_set.contains(addr.as_str()) && !resolver_addresses.contains(addr) {
+                anchors.push(CurrentAnchor {
+                    address: addr.clone(),
+                    status: "removed in the working tree".to_string(),
+                    content: None,
+                });
+            }
         }
     }
 
@@ -644,6 +720,9 @@ fn render_body_xml(body: &AnchorBody) -> String {
 /// Render a `HistoryReport` as an XML string.
 pub fn render_xml(report: &HistoryReport) -> String {
     let mut out = String::new();
+    if report.scoped {
+        out.push_str("<scoped/>\n");
+    }
     for c in &report.commits {
         out.push_str(&format!(
             "<commit hash=\"{}\" date=\"{}\" summary=\"{}\">\n",
@@ -747,6 +826,9 @@ pub fn render_json(report: &HistoryReport) -> Value {
     let mut root = serde_json::Map::new();
     root.insert("schema_version".into(), json!(1));
     root.insert("mesh".into(), json!(report.mesh));
+    if report.scoped {
+        root.insert("scoped".into(), json!(true));
+    }
     root.insert("commits".into(), json!(commits));
 
     if let Some(cur) = &report.current {

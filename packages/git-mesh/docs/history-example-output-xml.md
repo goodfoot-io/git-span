@@ -16,6 +16,10 @@ anchor.
 - No XML declaration, no wrapping container element.
 - Tags are un-indented; content sits between open and close tags.
 - Attribute order within each element: elements are defined as shown below.
+- `<scoped/>` — self-closing, emitted as the very first line when the timeline is a
+  partial view of history (`--limit` or `--since` dropped older mesh-touching commits).
+  Absent when the timeline is the complete record. A scripted consumer reading stdout
+  must never treat a scoped output as the full history.
 - `<commit>` attributes: `hash` (full 40-hex OID), `date` (`YYYY-MM-DD`), `summary`
   (first commit message line, XML-attribute-escaped).
 - `<why>` is emitted only when the why prose changed at this commit, wrapped in CDATA.
@@ -28,6 +32,10 @@ anchor.
     `format_drift_label`, e.g. `changed in the working tree`).
   - Live content of drifted anchors is wrapped in CDATA.
   - Anchors deleted in the working tree are self-closing with no body.
+  - Anchors added to the working tree (uncommitted `git mesh add`) carry
+    `status="added in the working tree"` and their live content in CDATA.
+  - Anchors removed from the working tree (uncommitted `git mesh remove`) carry
+    `status="removed in the working tree"` and are self-closing with no body.
 - CDATA escaping: a literal `]]>` inside body text is split as `]]]]><![CDATA[>`.
 - Attribute values are XML-attribute-escaped: `&` → `&amp;`, `<` → `&lt;`,
   `"` → `&quot;`.

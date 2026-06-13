@@ -733,3 +733,156 @@ fn since_garbage_ref_errors_cleanly() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Test (trigger 3): worktree anchor-set add/remove surfaces in `current`
+// ---------------------------------------------------------------------------
+
+/// An uncommitted `git mesh add` (worktree-only anchor, not yet in HEAD) must
+/// appear in the `current` section, agreeing with `git mesh stale`.
+#[test]
+fn current_surfaces_worktree_added_anchor() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let mesh = "t3add";
+
+    // Seed: one committed anchor.
+    repo.write_file("a.txt", "alpha\nbeta\ngamma\n")?;
+    repo.write_file("b.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial files")?;
+    repo.mesh_stdout(["add", mesh, "a.txt#L1-L2"])?;
+    repo.mesh_stdout(["why", mesh, "-m", "tracks a.txt head"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "create mesh"])?;
+
+    // Worktree-only: add b.txt anchor without committing.
+    repo.mesh_stdout(["add", mesh, "b.txt#L1-L2"])?;
+    // Do NOT commit — the mesh file is dirty in the working tree.
+
+    // `git mesh history` must emit a <current> block containing the new anchor.
+    let out = repo.run_mesh(["history", mesh])?;
+    let xml = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        xml.contains("<current>"),
+        "expected <current> block for worktree-added anchor; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("b.txt#L1-L2"),
+        "expected the worktree-added anchor address in <current>; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("added in the working tree"),
+        "expected 'added in the working tree' status for the worktree-added anchor; got:\n{xml}"
+    );
+
+    Ok(())
+}
+
+/// An uncommitted `git mesh remove` (anchor removed from mesh in worktree but
+/// still at HEAD) must appear as a removed anchor in the `current` section.
+#[test]
+fn current_surfaces_worktree_removed_anchor() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let mesh = "t3rem";
+
+    // Seed: two committed anchors.
+    repo.write_file("a.txt", "alpha\nbeta\ngamma\n")?;
+    repo.write_file("b.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial files")?;
+    repo.mesh_stdout(["add", mesh, "a.txt#L1-L2"])?;
+    repo.mesh_stdout(["add", mesh, "b.txt#L1-L2"])?;
+    repo.mesh_stdout(["why", mesh, "-m", "tracks both files"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "create mesh with two anchors"])?;
+
+    // Worktree-only: remove b.txt anchor without committing.
+    repo.mesh_stdout(["remove", mesh, "b.txt#L1-L2"])?;
+    // Do NOT commit.
+
+    // `git mesh history` must emit a <current> block containing the removed anchor.
+    let out = repo.run_mesh(["history", mesh])?;
+    let xml = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        xml.contains("<current>"),
+        "expected <current> block for worktree-removed anchor; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("b.txt#L1-L2"),
+        "expected the worktree-removed anchor address in <current>; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("removed in the working tree"),
+        "expected 'removed in the working tree' status for the worktree-removed anchor; got:\n{xml}"
+    );
+    // The removed anchor in <current> must be self-closing (no body).
+    // Verify by checking the specific self-closing form for b.txt.
+    assert!(
+        xml.contains("path=\"b.txt#L1-L2\" status=\"removed in the working tree\"/>"),
+        "removed anchor in <current> must be self-closing (no body); got:\n{xml}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: `scoped` marker in JSON and XML payload
+// ---------------------------------------------------------------------------
+
+/// A `--limit`-scoped run must carry `scoped: true` in JSON and `<scoped/>` in
+/// XML; an unscoped run must not carry the marker.
+#[test]
+fn scoped_marker_present_in_limited_run_absent_in_full_run() -> Result<()> {
+    let (repo, mesh) = seed_history_scenario()?;
+
+    // Unscoped JSON: no `scoped` key.
+    let full_json_out = repo.run_mesh(["history", mesh, "--format=json"])?;
+    let full_json: Value = serde_json::from_slice(&full_json_out.stdout)?;
+    assert!(
+        full_json.get("scoped").is_none(),
+        "unscoped run must not carry 'scoped' key in JSON; got: {full_json}"
+    );
+
+    // Unscoped XML: no <scoped/>.
+    let full_xml_out = repo.run_mesh(["history", mesh])?;
+    let full_xml = String::from_utf8_lossy(&full_xml_out.stdout);
+    assert!(
+        !full_xml.contains("<scoped"),
+        "unscoped run must not carry <scoped/> in XML; got:\n{full_xml}"
+    );
+
+    // Scoped JSON (--limit 1): must carry `"scoped": true`.
+    let scoped_json_out = repo.run_mesh(["history", mesh, "--limit", "1", "--format=json"])?;
+    let scoped_json: Value = serde_json::from_slice(&scoped_json_out.stdout)?;
+    assert_eq!(
+        scoped_json["scoped"],
+        Value::Bool(true),
+        "scoped run must carry 'scoped': true in JSON; got: {scoped_json}"
+    );
+
+    // Scoped XML (--limit 1): must carry <scoped/>.
+    let scoped_xml_out = repo.run_mesh(["history", mesh, "--limit", "1"])?;
+    let scoped_xml = String::from_utf8_lossy(&scoped_xml_out.stdout);
+    assert!(
+        scoped_xml.contains("<scoped/>"),
+        "scoped run must carry <scoped/> in XML; got:\n{scoped_xml}"
+    );
+
+    Ok(())
+}
+
+/// A `--since`-scoped run also carries the payload-level `scoped` marker.
+#[test]
+fn scoped_marker_present_in_since_run() -> Result<()> {
+    let (repo, mesh) = seed_history_scenario()?;
+    let c4 = repo.head_sha()?;
+
+    let scoped_json_out =
+        repo.run_mesh(["history", mesh, "--since", &c4, "--format=json"])?;
+    let scoped_json: Value = serde_json::from_slice(&scoped_json_out.stdout)?;
+    assert_eq!(
+        scoped_json["scoped"],
+        Value::Bool(true),
+        "`--since`-scoped run must carry 'scoped': true in JSON; got: {scoped_json}"
+    );
+
+    Ok(())
+}
