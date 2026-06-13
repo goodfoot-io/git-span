@@ -1,8 +1,8 @@
 packages/git-mesh/docs/history-example-output-xml.md rk64:f99b5a2cb2630c7e
 packages/git-mesh/docs/history-example-output.md rk64:418f726303e05d20
-packages/git-mesh/src/cli/history.rs#L1-L385 rk64:e1f994a2b86fd491
+packages/git-mesh/src/cli/history.rs rk64:3b37269a0cb01ca0
 packages/git-mesh/src/cli/mod.rs#L480-L496 rk64:971effec6351d6b2
-packages/git-mesh/tests/cases/cli_history.rs rk64:36b89e0511cc9947
+packages/git-mesh/tests/cases/cli_history.rs rk64:6c8fa781b12b3190
 packages/git-mesh/tests/cases/mod.rs#L12-L13 rk64:9a8c9ce10afc19cf
 
 Git mesh history command: argument definitions, handler implementation, integration tests, and output contract documentation that must evolve together.
