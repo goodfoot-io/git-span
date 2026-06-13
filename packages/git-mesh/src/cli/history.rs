@@ -415,56 +415,28 @@ fn rfc2822_to_ymd(rfc2822: &str) -> String {
     }
 }
 
-/// Read live worktree content for an anchor, normalized exactly as the resolver
-/// compares it so EOL normalization never fabricates drift. Returns `None` when
-/// the file is absent in the worktree.
-fn read_anchor_worktree(repo: &gix::Repository, a: &Anchor) -> Option<AnchorBody> {
-    let mut custom_filters = crate::resolver::layers::CustomFilters::new();
-    let bytes = match crate::resolver::layers::read_worktree_normalized(
-        repo,
-        &mut custom_filters,
-        &a.path,
-    ) {
-        Ok(b) => b,
-        Err(_) => return None,
-    };
-    // `read_worktree_normalized` returns empty bytes for a missing file; treat
-    // a truly absent worktree path as deleted.
-    let abs = repo.workdir().map(|w| w.join(&a.path));
-    if let Some(abs) = abs
-        && !abs.exists()
-    {
-        return None;
-    }
-    body_from_bytes(&bytes, a.extent)
-}
-
-/// Slice `bytes` to an anchor extent and wrap in an [`AnchorBody`].
-fn body_from_bytes(bytes: &[u8], extent: AnchorExtent) -> Option<AnchorBody> {
-    let text = match std::str::from_utf8(bytes) {
-        Ok(t) => t,
-        Err(_) => return Some(AnchorBody::Note("(binary or non-UTF-8 content)".to_string())),
-    };
-    match extent {
-        AnchorExtent::WholeFile => Some(AnchorBody::Text(text.to_string())),
+/// Build the address string for a resolved anchor location.
+fn location_address(loc: &crate::types::AnchorLocation) -> String {
+    let path = loc.path.to_string_lossy();
+    match loc.extent {
         AnchorExtent::LineRange { start, end } => {
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (start.saturating_sub(1)) as usize;
-            let hi = (end as usize).min(lines.len());
-            if lo > hi || lo >= lines.len() {
-                return Some(AnchorBody::Note("(line range past end of file)".to_string()));
-            }
-            let mut out = String::new();
-            for line in &lines[lo..hi] {
-                out.push_str(line);
-                out.push('\n');
-            }
-            Some(AnchorBody::Text(out))
+            format_anchor_address(&path, Some(start), Some(end))
         }
+        AnchorExtent::WholeFile => format_anchor_address(&path, None, None),
     }
 }
 
-/// Build the optional `current` section: working-tree mesh vs HEAD mesh.
+/// Build the optional `current` section by running the same stale/resolver
+/// engine `git mesh stale` uses, so the two commands agree on which anchors
+/// drift, the human drift phrase, and the live content rendered.
+///
+/// The section is emitted when any of the card's three triggers fire:
+///   1. the engine reports a non-`Fresh` `AnchorStatus` for any HEAD anchor
+///      (committed-but-not-re-anchored source drift, a relocated `moved`
+///      anchor, an uncommitted edit, a deletion, …),
+///   2. an uncommitted `--why` prose edit, or
+///   3. a worktree anchor-set change (an anchor added to, or removed from, the
+///      mesh file in the working tree relative to HEAD).
 fn build_current(
     repo: &gix::Repository,
     mesh_name: &str,
@@ -481,9 +453,7 @@ fn build_current(
         Err(e) => return Err(e.into()),
     };
 
-    let head_oid = crate::git::resolve_commit(repo, "HEAD").ok();
-
-    // Uncommitted why change.
+    // Uncommitted why change (trigger 2).
     let head_why = head
         .as_ref()
         .map(|m| m.message.trim_end_matches('\n').to_string())
@@ -498,71 +468,53 @@ fn build_current(
         None
     };
 
+    // Resolve the live mesh through the same engine `git mesh stale` uses:
+    // worktree-over-index-over-HEAD, with the staged-mesh layer included so a
+    // worktree anchor-set change is visible. Each non-Fresh anchor becomes one
+    // `CurrentAnchor`; its status is verbatim `format_drift_label` and its
+    // content is the engine's resolved live location (the relocated block for a
+    // `moved` anchor), never a slice of the stored line range.
+    let options = crate::types::EngineOptions {
+        layers: crate::types::LayerSet::full(),
+        ignore_unavailable: false,
+        since: None,
+        needs_all_layers: true,
+    };
+    let names = [mesh_name.to_string()];
+    let resolved = crate::resolver::resolve_named_meshes(repo, mesh_root, &names, options)?;
+
     let mut anchors: Vec<CurrentAnchor> = Vec::new();
-
-    if let Some(work_mesh) = &work {
-        for (_id, a) in &work_mesh.anchors {
-            let addr = anchor_address(a);
-            // HEAD body for this anchor (None when the anchor or file is absent
-            // at HEAD).
-            let head_body = match (&head, &head_oid) {
-                (Some(head_mesh), Some(oid))
-                    if head_mesh.anchors.iter().any(|(_, h)| anchor_address(h) == addr) =>
-                {
-                    Some(read_anchor_at_commit(repo, oid, a))
-                }
-                _ => None,
-            };
-
-            let live = read_anchor_worktree(repo, a);
-
-            match (head_body, live) {
-                // Anchor present at HEAD; compare live vs HEAD content.
-                (Some(head_body), Some(live_body)) => {
-                    if live_body != head_body {
-                        anchors.push(CurrentAnchor {
-                            address: addr,
-                            status: "changed in the working tree".to_string(),
-                            content: Some(live_body),
-                        });
-                    }
-                }
-                // Anchor present at HEAD but its file is gone from the worktree.
-                (Some(_), None) => {
-                    anchors.push(CurrentAnchor {
-                        address: addr,
-                        status: "deleted in the working tree".to_string(),
-                        content: None,
-                    });
-                }
-                // Anchor newly added in the worktree (not at HEAD).
-                (None, Some(live_body)) => {
-                    anchors.push(CurrentAnchor {
-                        address: addr,
-                        status: "changed in the working tree".to_string(),
-                        content: Some(live_body),
-                    });
-                }
-                (None, None) => {}
+    for (_name, result) in resolved {
+        let mesh = match result {
+            Ok(m) => m,
+            // A worktree-only mesh (no committed ref) still resolves; a genuine
+            // not-found surfaces nothing for this anchor pass.
+            Err(crate::Error::MeshNotFound(_)) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        for r in &mesh.anchors {
+            if r.status == crate::types::AnchorStatus::Fresh {
+                continue;
             }
-        }
-    }
-
-    // Anchors removed in the worktree (present at HEAD, gone from worktree mesh).
-    if let (Some(head_mesh), Some(work_mesh)) = (&head, &work) {
-        for (_id, h) in &head_mesh.anchors {
-            let addr = anchor_address(h);
-            let still_present = work_mesh
-                .anchors
-                .iter()
-                .any(|(_, w)| anchor_address(w) == addr);
-            if !still_present {
-                anchors.push(CurrentAnchor {
-                    address: addr,
-                    status: "deleted in the working tree".to_string(),
-                    content: None,
-                });
-            }
+            let status = crate::cli::drift_label::format_drift_label(
+                &r.status,
+                r.source,
+                r.locus.as_ref(),
+                r.current.is_some(),
+            );
+            // Address keys off the anchored (stored) location so it matches the
+            // mesh's recorded anchor; the resolved `current` location carries
+            // the live content (and the relocated path/range when `moved`).
+            let address = location_address(&r.anchored);
+            let content = r.current.as_ref().map(|loc| {
+                let text = crate::cli::stale_output::read_location_text(repo, loc);
+                AnchorBody::Text(text)
+            });
+            anchors.push(CurrentAnchor {
+                address,
+                status,
+                content,
+            });
         }
     }
 

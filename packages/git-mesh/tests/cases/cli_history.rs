@@ -221,8 +221,24 @@ fn current_present_when_worktree_drifts() -> Result<()> {
 #[test]
 fn current_absent_when_worktree_matches_head() -> Result<()> {
     let (repo, mesh) = seed_history_scenario()?;
-    // Stage and commit the worktree change so the tree is clean.
-    repo.commit_all("make worktree clean")?;
+    // Re-anchor the drifted source so the mesh's stored fingerprint matches the
+    // live content, then commit. Committing the edit alone is not enough — the
+    // engine flags committed-but-not-re-anchored drift (the false-negative this
+    // command exists to surface), so the mesh must be re-anchored to be clean.
+    repo.commit_all("commit the source edit")?;
+    // Re-anchor every anchor against the now-committed content so each stored
+    // fingerprint matches the live bytes, then commit the mesh.
+    repo.mesh_stdout(["add", mesh, "file3.txt"])?;
+    repo.run_git(["add", "-A"])?;
+    repo.run_git(["commit", "--allow-empty", "-m", "re-anchor after source edit"])?;
+
+    // Confirm `git mesh stale` now reports the mesh clean.
+    let stale = repo.run_mesh(["stale", mesh])?;
+    assert!(
+        stale.status.success(),
+        "expected a clean `git mesh stale` after re-anchor; got:\n{}",
+        String::from_utf8_lossy(&stale.stdout)
+    );
 
     let out = repo.run_mesh(["history", mesh])?;
     let xml = String::from_utf8_lossy(&out.stdout);
@@ -250,6 +266,151 @@ fn current_anchor_status_is_stale_phrase() -> Result<()> {
     assert!(
         xml.contains("status=\"changed in the working tree\""),
         "expected status=\"changed in the working tree\" in <current> block; got:\n{xml}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: committed-but-not-re-anchored source drift surfaces in `current` and
+// agrees with `git mesh stale` (regression for the false-negative where
+// worktree == HEAD hid drift the stored fingerprint still flags).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let mesh = "c";
+
+    repo.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;
+    repo.commit_all("initial")?;
+
+    // Anchor lines 1-3 and commit the mesh.
+    repo.mesh_stdout(["add", mesh, "src.txt#L1-L3"])?;
+    repo.mesh_stdout(["why", mesh, "-m", "tracks the head of src.txt"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "create mesh"])?;
+
+    // Edit the source AND commit it, WITHOUT `stale --fix`. The worktree now
+    // equals HEAD, but the mesh's stored content fingerprint no longer matches
+    // the live bytes — `git mesh stale` flags this and so must `history`.
+    repo.write_file("src.txt", "ONE\nTWO\nthree\nfour\nfive\n")?;
+    repo.commit_all("edit source without re-anchoring")?;
+
+    // Sanity: `git mesh stale` reports the anchor as drifted.
+    let stale = repo.run_mesh(["stale", mesh])?;
+    let stale_out = String::from_utf8_lossy(&stale.stdout);
+    assert!(
+        !stale.status.success(),
+        "expected `git mesh stale` to exit non-zero on committed drift; got:\n{stale_out}"
+    );
+    assert!(
+        stale_out.contains("src.txt"),
+        "expected `git mesh stale` to mention the drifted anchor; got:\n{stale_out}"
+    );
+
+    // `history` must emit a <current> block for the same anchor even though the
+    // worktree matches HEAD.
+    let out = repo.run_mesh(["history", mesh])?;
+    let xml = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        xml.contains("<current>"),
+        "expected <current> block for committed-but-not-re-anchored drift; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("src.txt#L1-L3"),
+        "expected the drifted anchor in <current>; got:\n{xml}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: a moved anchor renders the `moved` phrase and the relocated block as
+// content — never a slice of the stale stored line range.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn current_moved_anchor_uses_moved_phrase_and_relocated_block() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let mesh = "mv";
+
+    // A distinctive block we can track through a relocation.
+    repo.write_file(
+        "src.txt",
+        "header-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
+    )?;
+    repo.commit_all("initial")?;
+
+    // Anchor the TARGET block (lines 3-5) and commit the mesh.
+    repo.mesh_stdout(["add", mesh, "src.txt#L3-L5"])?;
+    repo.mesh_stdout(["why", mesh, "-m", "tracks the TARGET block"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "create mesh"])?;
+
+    // Relocate the block: prepend lines so the identical TARGET bytes now live
+    // at a different line range. The stored range (3-5) no longer covers them.
+    repo.write_file(
+        "src.txt",
+        "new-1\nnew-2\nnew-3\nheader-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
+    )?;
+    repo.commit_all("relocate the TARGET block downward")?;
+
+    // `git mesh stale` classifies this as MOVED.
+    let stale = repo.run_mesh(["stale", mesh])?;
+    let stale_out = String::from_utf8_lossy(&stale.stdout);
+    assert!(
+        stale_out.to_lowercase().contains("moved"),
+        "expected `git mesh stale` to classify the anchor as moved; got:\n{stale_out}"
+    );
+
+    let out = repo.run_mesh(["history", mesh])?;
+    let xml = String::from_utf8_lossy(&out.stdout);
+
+    // Status is the verbatim `format_drift_label` phrase for Moved.
+    assert!(
+        xml.contains("status=\"moved\""),
+        "expected status=\"moved\" sourced from format_drift_label; got:\n{xml}"
+    );
+    // Content is the relocated block (the real TARGET lines), not a slice of the
+    // stale stored range 3-5 (which now covers new-3/header-a/header-b).
+    assert!(
+        xml.contains("TARGET-ONE\nTARGET-TWO\nTARGET-THREE"),
+        "expected the relocated block as <current> content; got:\n{xml}"
+    );
+    assert!(
+        !xml.contains("new-3\nheader-a\nheader-b"),
+        "did not expect a slice of the stale stored line range as content; got:\n{xml}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: a whole-file anchor with no edit does not emit `current` (the old
+// one-sided normalization could false-positive; the resolver normalizes both
+// sides consistently).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let mesh = "wf";
+
+    repo.write_file("whole.txt", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+
+    repo.mesh_stdout(["add", mesh, "whole.txt"])?;
+    repo.mesh_stdout(["why", mesh, "-m", "tracks the whole file"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "create whole-file mesh"])?;
+
+    // No edit at all — `current` must be omitted.
+    let out = repo.run_mesh(["history", mesh])?;
+    let xml = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !xml.contains("<current>"),
+        "expected no <current> block for an unedited whole-file anchor; got:\n{xml}"
     );
 
     Ok(())

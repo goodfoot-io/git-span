@@ -1708,7 +1708,12 @@ fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, Stri
     (old, new)
 }
 
-fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
+/// Extract the live text content for a resolved anchor location, slicing to its
+/// extent. Shared with `git mesh history`'s `current` section so the two
+/// commands render identical drifted-anchor content (including a relocated
+/// block for a `Moved` anchor, whose `current` location carries the new
+/// path/range).
+pub(crate) fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
     let bytes = if let Some(blob) = location.blob {
         read_blob_bytes(repo, blob).unwrap_or_default()
     } else {
