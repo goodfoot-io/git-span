@@ -25,6 +25,12 @@ pub struct HistoryReport {
     /// `true` when the git-log walk completed without hitting the time budget.
     /// `false` indicates a truncated timeline — the command exits non-zero.
     pub walk_complete: bool,
+    /// `true` when the rendered timeline is a scoped/partial view of history:
+    /// `--limit` or `--since` dropped older mesh-touching commits that exist
+    /// before the window. The first shown commit still diffs against the true
+    /// prior mesh state (so its events stay truthful), but a consumer must not
+    /// read the window as the complete record.
+    pub scoped: bool,
     /// Commit sections, ordered oldest → newest. No-op commits (nothing
     /// observable changed) are already dropped before this point.
     pub commits: Vec<CommitSection>,
@@ -167,7 +173,16 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, mesh_root: &str) -
         })?;
         let mut kept = Vec::with_capacity(commits.len());
         for c in commits.into_iter() {
-            if crate::git::is_ancestor(repo, &since_oid, &c.hash).unwrap_or(false) {
+            // Fail-closed: a plumbing error in the ancestry check must abort,
+            // not silently drop the commit from the timeline.
+            if crate::git::is_ancestor(repo, &since_oid, &c.hash).map_err(|e| CliError {
+                subcommand: "history",
+                summary: format!("could not test `--since {since}` ancestry for commit {}.", c.hash),
+                what_happened: format!("{e}"),
+                next_steps: vec![NextStep::Prose(
+                    "Pass a valid commit-ish or date (e.g. a SHA, tag, or `HEAD~5`).".into(),
+                )],
+            })? {
                 kept.push(c);
             }
         }
@@ -197,10 +212,32 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, mesh_root: &str) -
         }
     }
 
-    let report = {
+    let mut report = {
         let _perf = crate::perf::span("history.build-report");
         build_report(repo, &args.mesh, mesh_root, walk_complete, &commits)?
     };
+
+    // `--limit 0` (and `--since` cutting every commit) yields an empty window
+    // for a mesh that nonetheless exists in history — an empty timeline must
+    // not read as "this mesh has no history". `build_report` cannot see the
+    // window was non-empty before scoping, so flag it here.
+    if commits.is_empty() && (args.limit == Some(0) || args.since.is_some()) {
+        report.scoped = true;
+    }
+
+    // Fail-closed in spirit: a scoped/partial window must never read as the
+    // complete record. Unlike the walk-budget truncation (an internal limit,
+    // exit non-zero), `--limit`/`--since` are explicit user scopes, so we still
+    // render and exit 0 — but warn to stderr that older mesh history exists
+    // before the window. The first shown commit's events are already truthful
+    // (seeded from real prior state); this warning prevents a consumer reading
+    // stdout alone as the whole timeline.
+    if report.scoped {
+        eprintln!(
+            "warning: history is scoped — `--limit`/`--since` dropped older commits; \
+             this is a partial timeline, not the complete record"
+        );
+    }
 
     let _perf = crate::perf::span("history.render");
     match args.format {
@@ -358,7 +395,17 @@ fn build_report(
     commits: &[crate::git::CommitChanges],
 ) -> Result<HistoryReport> {
     let mut sections: Vec<CommitSection> = Vec::new();
-    let mut prev: Option<RenderedState> = None;
+
+    // Seed the diff baseline from the true mesh state at the commit immediately
+    // before the window. When `--limit`/`--since` dropped older commits, the
+    // oldest shown commit must diff against real prior state — otherwise every
+    // anchor already present there is mislabeled `added` and an earlier
+    // unchanged `why` is re-emitted. A non-empty seed also means the window is a
+    // strict prefix-truncation of history → `scoped`.
+    let (mut prev, scoped) = match commits.first() {
+        Some(oldest) => seed_prior_state(repo, mesh_name, mesh_root, &oldest.hash)?,
+        None => (None, false),
+    };
 
     for cc in commits {
         // Read the mesh as it existed at this commit. An absent mesh
@@ -401,9 +448,45 @@ fn build_report(
     Ok(HistoryReport {
         mesh: mesh_name.to_string(),
         walk_complete,
+        scoped,
         commits: sections,
         current,
     })
+}
+
+/// Compute the rendered mesh state at the commit immediately before the window
+/// (the first parent of `oldest_hash`), to seed the diff baseline truthfully.
+///
+/// Returns `(Some(state), true)` when a mesh-touching prior state exists — the
+/// window is a strict prefix-truncation of history, so the first shown commit
+/// diffs against real prior state and the report is flagged `scoped`. Returns
+/// `(None, false)` when `oldest_hash` is the true history root for this mesh
+/// (no parent, or the mesh did not exist at the parent), i.e. a genuine
+/// first-appearance window that is the complete record from the mesh's birth.
+fn seed_prior_state(
+    repo: &gix::Repository,
+    mesh_name: &str,
+    mesh_root: &str,
+    oldest_hash: &str,
+) -> Result<(Option<RenderedState>, bool)> {
+    // Resolve the parent to a bare OID: `read_mesh_at_in` accepts a revspec,
+    // but the per-anchor body reads (`path_blob_at`) require a 40-hex OID, so a
+    // raw `<hash>~1` would fail blob lookup and degrade every anchor to a note
+    // (spuriously diffing as `modified`). A root commit has no parent →
+    // `resolve_commit` errors → genuine first appearance.
+    let parent = match crate::git::resolve_commit(repo, &format!("{oldest_hash}~1")) {
+        Ok(oid) => oid,
+        Err(_) => return Ok((None, false)),
+    };
+    match read_mesh_at_in(repo, mesh_name, Some(&parent), mesh_root) {
+        Ok(mesh) => Ok((Some(rendered_state_at(repo, &parent, &mesh)), true)),
+        // `MeshNotFound` here covers both "no parent (root commit)" — an
+        // unresolvable `<hash>~1` makes `tree_entry_at` yield `Ok(None)` →
+        // `MeshNotFound` — and "the mesh file is absent at the parent". Either
+        // way the oldest shown commit is the mesh's true first appearance.
+        Err(crate::Error::MeshNotFound(_)) => Ok((None, false)),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Convert an RFC2822 date (`Thu, 3 Nov 2025 …`) to `YYYY-MM-DD`.

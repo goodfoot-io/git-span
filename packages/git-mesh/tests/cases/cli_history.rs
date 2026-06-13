@@ -608,3 +608,128 @@ fn json_why_omitted_when_unchanged() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Test: `--limit N` (N < total) does not fabricate `added`/`why` for the
+// oldest shown commit and warns the window is scoped/partial.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn limit_window_does_not_fabricate_added_and_warns_scoped() -> Result<()> {
+    let (repo, mesh) = seed_history_scenario()?;
+
+    // `--limit 1` keeps only the newest mesh-touching commit (C4). C4 adds the
+    // file3 whole-file anchor (genuine `added`) and removes the file2 anchor;
+    // the file1 anchor existed before the window and is UNCHANGED at C4, so it
+    // must not appear at all — and certainly not relabeled `added`.
+    let out = repo.run_mesh(["history", mesh, "--limit", "1"])?;
+    assert!(
+        out.status.success(),
+        "scoped history is an explicit user request and must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let xml = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // Only one commit section is shown.
+    assert_eq!(
+        xml.matches("<commit ").count(),
+        1,
+        "`--limit 1` must show exactly one commit; got:\n{xml}"
+    );
+    assert!(
+        xml.contains("C4: remove file2"),
+        "the single shown commit must be the newest (C4); got:\n{xml}"
+    );
+
+    // file1's anchor existed before the window and did not change at C4 — it
+    // must not be re-emitted, and must never carry event="added".
+    assert!(
+        !xml.contains("file1.txt#L1-L5"),
+        "pre-existing unchanged anchor must not be re-emitted in a scoped window; got:\n{xml}"
+    );
+
+    // file3 is genuinely first-introduced at C4 → its `added` is truthful.
+    assert!(
+        xml.contains("path=\"file3.txt\" event=\"added\""),
+        "file3 is genuinely added at C4 and must keep event=\"added\"; got:\n{xml}"
+    );
+
+    // The partial window must not read as the complete record.
+    assert!(
+        stderr.contains("scoped") || stderr.contains("partial"),
+        "a scoped/partial timeline must be signalled; stderr:\n{stderr}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: `--since <ref>` with older commits before the cutoff does not
+// fabricate `added` for pre-existing anchors.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn since_window_does_not_fabricate_added() -> Result<()> {
+    let (repo, mesh) = seed_history_scenario()?;
+
+    // Resolve C4 (HEAD is the last mesh commit) and scope `--since` to it, so
+    // only C4 survives and C1/C2 are dropped.
+    let c4 = repo.head_sha()?;
+    let out = repo.run_mesh(["history", mesh, "--since", &c4])?;
+    assert!(
+        out.status.success(),
+        "scoped `--since` history must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let xml = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        xml.contains("C4: remove file2"),
+        "C4 must be shown; got:\n{xml}"
+    );
+    assert!(
+        !xml.contains("C1: create mesh") && !xml.contains("C2: update why"),
+        "commits before the `--since` cutoff must be dropped; got:\n{xml}"
+    );
+
+    // file1 was anchored before the window and is unchanged at C4 → not
+    // re-emitted, never `added`.
+    assert!(
+        !xml.contains("file1.txt#L1-L5"),
+        "pre-existing unchanged anchor must not be relabeled added in a `--since` window; got:\n{xml}"
+    );
+
+    assert!(
+        stderr.contains("scoped") || stderr.contains("partial"),
+        "a `--since`-scoped timeline must be signalled as partial; stderr:\n{stderr}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: a garbage `--since` ref errors cleanly (exit 1), never silently
+// dropping commits.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn since_garbage_ref_errors_cleanly() -> Result<()> {
+    let (repo, mesh) = seed_history_scenario()?;
+
+    let out = repo.run_mesh(["history", mesh, "--since", "not-a-real-ref-xyz"])?;
+    assert!(
+        !out.status.success(),
+        "an unresolvable `--since` ref must exit non-zero; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // No partial timeline is presented when the scope flag itself is invalid.
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("<commit "),
+        "an unresolvable `--since` must not emit any timeline; got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    Ok(())
+}
