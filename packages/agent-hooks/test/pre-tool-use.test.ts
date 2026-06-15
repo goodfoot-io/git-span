@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { parseHookIgnore } from '../src/mesh-ignore.js';
+import { type HookIgnoreLoader, parseHookIgnore } from '../src/mesh-ignore.js';
 import hook, {
   createDefaultMeshExecutor,
   createDiskMemoStore,
@@ -12,7 +12,8 @@ import hook, {
   type MemoFactory,
   type MemoLogger,
   type MemoStore,
-  type MeshExecutor
+  type MeshExecutor,
+  type StaleExecutor
 } from '../src/pre-tool-use.js';
 import { journalPath, loadJournal } from '../src/stop.js';
 import { makeTempRepo } from './helpers.js';
@@ -69,6 +70,23 @@ function createMemoryMemoFactory(): { memoFactory: MemoFactory; store: Map<strin
     }
   });
   return { memoFactory, store };
+}
+
+// ---------------------------------------------------------------------------
+// Handler factory wrapper: inject a no-drift stale executor by default so the
+// bulk of tests never shell out to a real `git mesh stale`. Stale-hint tests
+// pass their own StaleExecutor as the 4th argument.
+// ---------------------------------------------------------------------------
+
+const noDrift: StaleExecutor = () => '';
+
+function makeHandler(
+  executor: MeshExecutor,
+  memoFactory: MemoFactory,
+  loadRules?: HookIgnoreLoader,
+  staleExecutor: StaleExecutor = noDrift
+) {
+  return createHandler(executor, memoFactory, loadRules, staleExecutor);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +157,7 @@ describe('Read tool', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'billing/checkout mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -158,7 +176,7 @@ describe('Read tool', () => {
   it('without offset/limit: no executor calls, empty output', async () => {
     const { executor, calls } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: '/tmp',
@@ -178,7 +196,7 @@ describe('Read tool', () => {
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -198,7 +216,7 @@ describe('Read tool', () => {
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -231,7 +249,7 @@ describe('Edit tool', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'bar-mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -245,7 +263,7 @@ describe('Edit tool', () => {
   it('old_string missing: empty output', async () => {
     const { executor, calls } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -268,7 +286,7 @@ describe('Write tool', () => {
   it('write to a new file: empty output (executor never called)', async () => {
     const { executor, calls } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -288,7 +306,7 @@ describe('Write tool', () => {
     writeFileSync(fp, 'old line 1\nold line 2\n');
     const { executor, calls } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -311,7 +329,7 @@ describe('Write tool', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'partial mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -339,7 +357,7 @@ describe('Session memo deduplication', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'dedup output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: 'dedup-session',
@@ -369,7 +387,7 @@ describe('Session memo deduplication', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'sess output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input1 = baseInput({
       session_id: 'session-A',
@@ -389,7 +407,7 @@ describe('Non-git cwd', () => {
   it('returns empty output when cwd is not inside a git repo', async () => {
     const { executor, calls } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: '/',
@@ -423,7 +441,7 @@ describe('Cross-repo touch', () => {
     setResponse('--porcelain foreign.ts', porcelainLine('foreign-mesh', 'foreign.ts', 1, 20));
     setResponse('foreign-mesh', 'foreign mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sessionId,
@@ -460,7 +478,7 @@ describe('Gitignored file touch', () => {
     setResponse('--porcelain dist/bundle.ts', porcelainLine('dist-mesh', 'dist/bundle.ts', 1, 20));
     setResponse('dist-mesh', 'dist mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sessionId,
@@ -486,7 +504,7 @@ describe('Gitignored file touch', () => {
     const { executor, setResponse } = createFakeExecutor();
     setResponse('--porcelain tracked.log.ts', '');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sessionId,
@@ -520,7 +538,7 @@ describe('Mesh names with special characters', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -546,7 +564,7 @@ describe('Executor failure handling', () => {
     const { executor, failOn } = createFakeExecutor();
     failOn(`--porcelain ${relPath}`);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -567,7 +585,7 @@ describe('Executor failure handling', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     failOn(meshName);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -609,7 +627,7 @@ describe('Edit tool - countLines trailing newline off-by-one (Finding 1)', () =>
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     // old_string = "match-line\n" which is exactly lines 3 (trailing newline
     // means it occupies only line 3, not line 4)
@@ -646,7 +664,7 @@ describe('Edit tool - empty old_string (Finding 2)', () => {
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -683,7 +701,7 @@ describe('Edit tool - replace_all unions ranges (Finding 3)', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(`${mesh1} ${mesh2}`, 'both meshes output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -726,7 +744,7 @@ describe('Symlinked workdir (Finding 4)', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'sym mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: symlinkDir,
@@ -785,7 +803,7 @@ describe('Mesh executor stderr (Finding 6)', () => {
     const { executor, failOn } = createFakeExecutor();
     failOn(`--porcelain ${relPath}`);
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -819,7 +837,7 @@ describe('PreToolUse output envelope (Finding 7)', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'envelope output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       cwd: repo.root,
@@ -864,7 +882,7 @@ describe('Touch kind emission', () => {
     writeFileSync(absFilePath, 'line1\nline2\n');
     const { executor } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sid,
@@ -885,7 +903,7 @@ describe('Touch kind emission', () => {
     writeFileSync(absFilePath, 'line1\nline2\n');
     const { executor } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sid,
@@ -906,7 +924,7 @@ describe('Touch kind emission', () => {
     writeFileSync(absFilePath, 'original\n');
     const { executor } = createFakeExecutor();
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sid,
@@ -942,7 +960,7 @@ describe('path-scoped mesh suppression', () => {
     setResponse(meshName, 'wiki mesh output');
     const { memoFactory } = createMemoryMemoFactory();
     // Inject a rule loader suppressing the `wiki` prefix under `src`.
-    const handler = createHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
+    const handler = makeHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
 
     const input = baseInput({
       cwd: repo.root,
@@ -967,7 +985,7 @@ describe('path-scoped mesh suppression', () => {
     setResponse(`--porcelain ${relPath}`, porcelain);
     setResponse(meshName, 'billing mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
+    const handler = makeHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
 
     const input = baseInput({
       cwd: repo.root,
@@ -997,7 +1015,7 @@ describe('Mesh document touch', () => {
     );
     setResponse('wiki', 'wiki mesh output');
     const { memoFactory } = createMemoryMemoFactory();
-    const handler = createHandler(executor, memoFactory);
+    const handler = makeHandler(executor, memoFactory);
 
     const input = baseInput({
       session_id: sessionId,
@@ -1014,5 +1032,116 @@ describe('Mesh document touch', () => {
     // And the mesh document touch is never journaled.
     const journalFile = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
     expect(fs.existsSync(journalFile)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale mesh history hint: a surfaced mesh that is already stale (the touched
+// lines have drifted) carries a `git mesh history <name>` pointer on BOTH
+// channels; a clean mesh does not; only the stale subset is hinted; and a
+// failing stale probe degrades to the plain block.
+// ---------------------------------------------------------------------------
+
+describe('Stale mesh history hint', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => repo.cleanup());
+
+  it('appends `git mesh history <name>` on both channels for a stale surfaced mesh', async () => {
+    const absFilePath = join(repo.root, 'stale.ts');
+    const relPath = 'stale.ts';
+    const meshName = 'billing/checkout';
+    const row = porcelainLine(meshName, relPath, 5, 20);
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, row);
+    setResponse(meshName, 'billing/checkout mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    // The stale probe reports this mesh as drifted (one porcelain row).
+    const handler = makeHandler(executor, memoFactory, undefined, () => row);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+    // Hint on both channels, alongside the underlying list block.
+    expect(ctx).toContain(`git mesh history ${meshName}`);
+    expect(ctx).toContain('billing/checkout mesh output');
+    expect(result.stdout.systemMessage).toContain(`git mesh history ${meshName}`);
+  });
+
+  it('does not append a hint when the surfaced mesh is clean', async () => {
+    const absFilePath = join(repo.root, 'clean.ts');
+    const relPath = 'clean.ts';
+    const meshName = 'billing/clean';
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelainLine(meshName, relPath, 5, 20));
+    setResponse(meshName, 'clean mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    // No drift rows → no hint.
+    const handler = makeHandler(executor, memoFactory, undefined, () => '');
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(result.stdout.systemMessage).toContain('clean mesh output');
+    expect(result.stdout.systemMessage).not.toContain('git mesh history');
+  });
+
+  it('hints only the stale subset when several meshes are surfaced', async () => {
+    const absFilePath = join(repo.root, 'mixed.ts');
+    const relPath = 'mixed.ts';
+    const staleMesh = 'billing/stale';
+    const cleanMesh = 'billing/fresh';
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(
+      `--porcelain ${relPath}`,
+      [porcelainLine(staleMesh, relPath, 5, 20), porcelainLine(cleanMesh, relPath, 5, 20)].join('\n')
+    );
+    // toSurface is sorted, so the render call key is "fresh stale".
+    setResponse(`${cleanMesh} ${staleMesh}`, 'both meshes output');
+    const { memoFactory } = createMemoryMemoFactory();
+    // Only staleMesh drifts.
+    const handler = makeHandler(executor, memoFactory, undefined, () => porcelainLine(staleMesh, relPath, 5, 20));
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+    expect(ctx).toContain(`git mesh history ${staleMesh}`);
+    expect(ctx).not.toContain(`git mesh history ${cleanMesh}`);
+  });
+
+  it('falls back to the plain block when the stale probe throws', async () => {
+    const absFilePath = join(repo.root, 'staleerr.ts');
+    const relPath = 'staleerr.ts';
+    const meshName = 'billing/err';
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse(`--porcelain ${relPath}`, porcelainLine(meshName, relPath, 5, 20));
+    setResponse(meshName, 'err mesh output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const throwingStale: StaleExecutor = () => {
+      throw new Error('git mesh stale failed');
+    };
+    const handler = makeHandler(executor, memoFactory, undefined, throwingStale);
+
+    const input = baseInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
+    });
+    const result = toHookResult(await handler(input as never, { logger }));
+    expect(result.stdout.systemMessage).toContain('err mesh output');
+    expect(result.stdout.systemMessage).not.toContain('git mesh history');
   });
 });

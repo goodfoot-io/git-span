@@ -11,6 +11,13 @@
  * channels: `hookSpecificOutput.additionalContext` (the channel that reaches
  * the model loop) and `systemMessage` (the user-facing UI line).
  *
+ * Any surfaced mesh that is already stale (the touched lines have drifted from
+ * its anchored state) additionally carries a `git mesh history <name>` pointer,
+ * so the agent can review how that subsystem evolved before working on it.
+ * Staleness is read as-of-now: PreToolUse fires before the edit applies, so the
+ * hint flags pre-existing drift; drift the session itself causes is handled by
+ * the Stop hook.
+ *
  * Additionally, every Read / Edit / Write call is appended to a per-session
  * JSONL journal at
  * ~/.cache/git-mesh/session/<sanitizedSessionId>/touches.jsonl.
@@ -180,6 +187,32 @@ export function createDefaultMeshExecutor(timeoutMs = 10_000): MeshExecutor {
   };
 }
 
+/**
+ * Runs `git mesh stale --porcelain <slugs>` and returns its porcelain stdout —
+ * one row per *drifted* anchor among the given meshes, empty when all are clean.
+ * `git mesh stale` exits 0 in porcelain mode whether or not drift exists, but we
+ * still capture stdout from a thrown error so a drift signal is never lost to a
+ * non-zero exit. Throws only when no stdout is available (genuine failure).
+ */
+export type StaleExecutor = (slugs: string[], cwd: string) => string;
+
+export function createDefaultStaleExecutor(timeoutMs = 10_000): StaleExecutor {
+  return (slugs, cwd) => {
+    try {
+      return execFileSync('git', ['mesh', 'stale', '--porcelain', ...slugs], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs
+      });
+    } catch (err) {
+      const out = (err as { stdout?: string }).stdout;
+      if (typeof out === 'string') return out;
+      throw err;
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Session memo abstraction
 // ---------------------------------------------------------------------------
@@ -330,7 +363,8 @@ export function diskMemoFactory(logger: MemoLogger): MemoStore {
 export function createHandler(
   executor: MeshExecutor,
   memoFactory: MemoFactory,
-  loadRules: HookIgnoreLoader = loadHookIgnore
+  loadRules: HookIgnoreLoader = loadHookIgnore,
+  staleExecutor: StaleExecutor = createDefaultStaleExecutor()
 ) {
   return (input: PreToolUseInput, ctx: HookContext) => {
     const memo = memoFactory(ctx.logger);
@@ -436,7 +470,26 @@ export function createHandler(
       return null;
     }
 
-    const wrapped = `\n<git-mesh>\n${renderStdout}\n</git-mesh>\n`;
+    // Of the meshes being surfaced, flag any already stale — the touched lines
+    // have drifted from their anchored state — with a `git mesh history <name>`
+    // pointer so the agent can see how the subsystem evolved before working on
+    // it. Detection is as-of-now (PreToolUse runs before the edit applies), so
+    // this catches pre-existing drift; drift this session causes is the Stop
+    // hook's job. Failure to compute staleness is non-fatal: fall back to the
+    // plain block rather than dropping it.
+    let staleHint = '';
+    try {
+      const staleNames = new Set(parsePorcelain(staleExecutor(toSurface, repoRoot)).map((r) => r.name));
+      const staleSurfaced = toSurface.filter((n) => staleNames.has(n));
+      if (staleSurfaced.length > 0) {
+        const lines = staleSurfaced.map((n) => `  git mesh history ${n}`).join('\n');
+        staleHint = `\nStale — the lines you're touching have drifted from these meshes' anchored state. Review how each subsystem evolved before changing it:\n${lines}`;
+      }
+    } catch (err) {
+      ctx.logger.warn('git mesh stale (history hint) failed', { err });
+    }
+
+    const wrapped = `\n<git-mesh>\n${renderStdout}${staleHint}\n</git-mesh>\n`;
 
     // Update memo
     memo.addSurfaced(sessionId, toSurface);
