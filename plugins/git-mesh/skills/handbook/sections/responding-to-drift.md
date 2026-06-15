@@ -57,6 +57,8 @@ The per-mesh confirmation step (§ "Confirming the relationship") still applies.
 
 ## When the relationship still holds: re-anchor
 
+Re-anchoring records the new hash against `HEAD`, so the anchored file must be committed first or in the same commit. If you re-anchored against an edit still in the working tree, commit the source with or before the mesh — committing the mesh against uncommitted bytes makes it born stale. See `./creating-a-mesh.md` § "Commit sequence alongside a code change" for the standard.
+
 **Same `(path, extent)`, bytes changed.** A second `git mesh add` over the identical span is a re-anchor (last-write-wins) — it rewrites that anchor's recorded hash in `.mesh/<name>` to current bytes. No `remove` required.
 
 ```bash

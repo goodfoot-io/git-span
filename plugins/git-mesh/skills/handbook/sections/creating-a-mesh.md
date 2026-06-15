@@ -80,6 +80,8 @@ git commit -m "Wire checkout to charge API"
 
 `git mesh add` / `why` write directly into the tracked file `.mesh/billing/checkout-request-flow`; `git add .mesh && git commit` persists the mesh in the same commit (or any commit) as the code change. `git mesh add` without `--at` hashes each anchor against the file content at `HEAD`.
 
+**Standard — commit a mesh only once every file it anchors is committed.** Because `git mesh add` hashes each anchor against `HEAD`, committing `.mesh/<name>` while an anchored file still has uncommitted changes records bytes that aren't at `HEAD`, and the mesh is born stale. The flow above satisfies this by landing the code and the mesh in one commit. When the anchored code is committed separately (or by someone else), hold the mesh: leave it staged and commit it with or after the source, never before. Confirm each anchor is clean first — `git status --short -- <anchor-path>` is empty — and treat a non-empty result as the blocking condition, not as "the source is safely unstaged." After committing, a quick `git show --stat HEAD` should list only `.mesh/` paths.
+
 ## Documenting existing code
 
 When the relationship already exists in history:
