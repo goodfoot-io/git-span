@@ -327,6 +327,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // per-invocation phases (count-totals, detect-conflicts, backfill).
     let mut whole_result: Option<WholeResult> = None;
 
+    // Single corpus parse for scoped queries: load the mesh corpus once and
+    // thread it through the path-index build (L369), the scoped anchor totals
+    // (L510), and the count-totals phase (L557). All three read the same
+    // worktree-effective source; reloading per-site was pure overhead.
+    // `None` on the non-scoped path — those sites reload unconditionally.
+    let mut scoped_corpus: Option<Vec<(String, crate::types::Mesh)>> = None;
+
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
         // included — workspace scans answer "what's stale?" only.
@@ -361,12 +368,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
 
         let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
 
-        // Build the path index once. The previous code resolved each
-        // positional arg through `matching_mesh_names_in`, which reloaded and
-        // reparsed the entire mesh corpus per arg — O(args × meshes). A
-        // shell-expanded glob like `public/**/*` (hundreds of args) against a
-        // large repo (thousands of meshes) made that effectively freeze.
-        let path_index = crate::mesh::read::MeshPathIndex::load_in(repo, mesh_root)?;
+        // Load the corpus once and build the path index from it. The previous
+        // code called `MeshPathIndex::load_in` here (which loads and discards
+        // the corpus internally), then reloaded at L510 for scoped anchor
+        // totals and again at L557 for count-totals — three parses of the
+        // same worktree-effective source. Now: one load, three consumers.
+        //
+        // The corpus is stored in `scoped_corpus` so the count-totals phase
+        // below can reuse it instead of reloading.
+        let corpus = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
+        let path_index =
+            crate::mesh::read::MeshPathIndex::from_loaded_meshes(&corpus.0)?;
+        scoped_corpus = Some(corpus.0);
 
         for arg in &args.paths {
             let mut found = false;
@@ -507,10 +520,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // persists non-Fresh rows only), so derive the true anchor total from
         // the mesh-file records. For scoped queries (positional args), the
         // cache path is not used, so load totals fresh.
-        let scoped_anchor_totals: std::collections::HashMap<String, usize> = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
-            .iter()
-            .map(|(n, m)| (n.clone(), m.anchors.len()))
-            .collect();
+        // `scoped_corpus` was loaded above (at the path-index build site) and
+        // is still live here; reuse it rather than reloading the corpus a
+        // second time for this scoped query.
+        let scoped_anchor_totals: std::collections::HashMap<String, usize> =
+            scoped_corpus
+                .as_ref()
+                .expect("scoped_corpus must be set before scoped_anchor_totals")
+                .iter()
+                .map(|(n, m)| (n.clone(), m.anchors.len()))
+                .collect();
         scoped_totals = Some((
             meshes.len(),
             meshes
@@ -554,7 +573,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         (mesh_count, anchor_count, totals)
     } else {
         let _perf = crate::perf::span("stale.count-totals");
-        let pairs = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0;
+        // On the scoped path `scoped_corpus` was already loaded; reuse it.
+        // On the non-scoped path `scoped_corpus` is None, so load here.
+        let pairs = match scoped_corpus.take() {
+            Some(c) => c,
+            None => crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0,
+        };
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         let totals = pairs
