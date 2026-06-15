@@ -169,9 +169,19 @@ pub(crate) fn stale_meshes_cached(
                 // Store the whole-result cache entry: backfill fresh
                 // anchors from mesh-file records so warm-clean repeats can
                 // skip every per-invocation phase in run_stale.
-                if let Ok((file_pairs, _conflicted)) = crate::mesh::read::load_all_meshes_in(repo, &mesh_root) {
-                    let file_records: std::collections::HashMap<String, crate::types::Mesh> =
-                        file_pairs.into_iter().collect();
+                //
+                // The entry is keyed by COMMITTED identity
+                // (`source_tree_key`/`mesh_tree_key`), which uncommitted
+                // worktree edits to a committed `.mesh/<name>` file do not
+                // change. Its content must therefore be committed-derived
+                // too: read each committed mesh from the HEAD layer, never
+                // the worktree-effective `load_all_meshes_in`. Otherwise a
+                // cold build performed while a committed mesh file has
+                // uncommitted worktree edits would freeze worktree-only
+                // anchors into a committed-keyed entry, and a later
+                // warm-clean read (after the worktree is reverted without an
+                // intervening commit) would render those phantom anchors.
+                if let Ok(file_records) = committed_mesh_records(repo, &mesh_root) {
                     // Fail-closed: never store a whole result for a corpus that
                     // carries an interior anchor. A whole-result hit lets
                     // run_stale skip its per-invocation interior-anchor scan
@@ -207,10 +217,17 @@ pub(crate) fn stale_meshes_cached(
                                             .push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
                                     }
                                 }
-                                // Preserve resolved anchors not in the file record
-                                // (e.g. injected MergeConflict anchors).
+                                // Preserve only SYNTHETIC injected anchors not
+                                // tied to a file record (e.g. MergeConflict
+                                // placeholders carry an empty `anchor_id`).
+                                // Resolved anchors with a real `anchor_id`
+                                // absent from the committed record are
+                                // worktree-only definitions (the committed key
+                                // does not change when they are added/removed);
+                                // dropping them keeps the committed-keyed entry
+                                // free of phantom worktree anchors.
                                 for r in &full.anchors {
-                                    if !record.anchors.iter().any(|(id, _)| id == &r.anchor_id) {
+                                    if r.anchor_id.is_empty() {
                                         rebuilt.push(r.clone());
                                     }
                                 }
@@ -583,6 +600,29 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
             Ok(m) => out.push(m),
             Err(Error::MeshNotFound(_)) => {}
             Err(e) => return Err(Error::Git(format!("cache_v2 baseline `{name}`: {e}"))),
+        }
+    }
+    Ok(out)
+}
+
+/// Committed mesh records (`name` → `Mesh`) read from the HEAD layer only.
+///
+/// Used to backfill the whole-result cache entry's per-mesh anchor sets and
+/// `mesh_anchor_totals` from committed content, so the stored entry matches
+/// its committed key. Reading the worktree-effective view here would freeze
+/// uncommitted worktree edits into a committed-keyed entry (phantom anchors
+/// on a later warm-clean read after the worktree is reverted without a
+/// commit).
+fn committed_mesh_records(
+    repo: &gix::Repository,
+    mesh_root: &str,
+) -> Result<std::collections::HashMap<String, crate::types::Mesh>> {
+    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
+    let names = reader.committed_mesh_names()?;
+    let mut out = std::collections::HashMap::with_capacity(names.len());
+    for name in names {
+        if let Some(file) = reader.read_head(&name)? {
+            out.insert(name.clone(), crate::types::mesh_from_file(&name, &file));
         }
     }
     Ok(out)
