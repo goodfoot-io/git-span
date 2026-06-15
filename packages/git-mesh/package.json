@@ -14,6 +14,7 @@
     "test": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build\" cargo nextest run --build-jobs 1 --locked",
     "lint": "bash scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/check\" cargo clippy --quiet --locked -- -D warnings",
     "typecheck": "bash scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/check\" cargo check --quiet --locked",
+    "bench:check": "bash scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build\" cargo bench --no-run --locked",
     "udeps": "bash scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/udeps\" cargo +nightly udeps"
   },
   "files": [

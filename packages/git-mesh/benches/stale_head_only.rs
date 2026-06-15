@@ -43,29 +43,32 @@ fn build_fixture() -> Fixture {
     git(&["add", "."]);
     git(&["commit", "-m", "seed"]);
 
-    // Pin a small mesh on each file. Use the binary directly.
-    let mesh_bin = env!("CARGO_BIN_EXE_git-mesh");
+    // Pin a mesh on each file using library API so renamed symbols fail at compile time.
+    std::fs::create_dir_all(p.join(".mesh")).expect("create .mesh");
     for i in 0..10u32 {
-        let addr = format!("file_{i}.txt#L1-L5");
-        let out = Command::new(mesh_bin)
-            .current_dir(&p)
-            .args(["add", "bench", &addr])
-            .output()
-            .expect("git-mesh add");
-        assert!(out.status.success(), "mesh add: {out:?}");
+        let filename = format!("file_{i}.txt");
+        let body = std::fs::read(p.join(&filename)).expect("read file");
+        // Hash lines 1-5 (indices 0-4): join with \n, no trailing newline.
+        let text = String::from_utf8_lossy(&body);
+        let lines: Vec<&str> = text.lines().collect();
+        let slice = &lines[0..5.min(lines.len())];
+        let hashed: Vec<u8> = slice.join("\n").into_bytes();
+        let hash = format!("sha256:{}", git_mesh::types::sha256_hex(&hashed));
+        let mf = git_mesh::mesh_file::MeshFile {
+            anchors: vec![git_mesh::mesh_file::AnchorRecord {
+                path: filename.clone(),
+                start_line: 1,
+                end_line: 5,
+                algorithm: "rk64".into(),
+                content_hash: hash,
+            }],
+            why: "bench".to_string(),
+        };
+        std::fs::write(p.join(".mesh").join(format!("bench-{i}")), mf.serialize())
+            .expect("write mesh file");
     }
-    let out = Command::new(mesh_bin)
-        .current_dir(&p)
-        .args(["message", "bench", "-m", "seed"])
-        .output()
-        .expect("git-mesh message");
-    assert!(out.status.success());
-    let out = Command::new(mesh_bin)
-        .current_dir(&p)
-        .args(["commit", "bench"])
-        .output()
-        .expect("git-mesh commit");
-    assert!(out.status.success(), "mesh commit: {out:?}");
+    git(&["add", ".mesh"]);
+    git(&["commit", "-m", "add meshes"]);
 
     Fixture {
         _dir: dir,

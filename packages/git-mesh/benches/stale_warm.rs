@@ -52,31 +52,42 @@ fn build_fixture() -> Fixture {
     git(&["add", "."]);
     git(&["commit", "-m", "seed"]);
 
-    let mesh_bin = env!("CARGO_BIN_EXE_git-mesh");
-    let mesh = |args: &[&str]| {
-        let out = Command::new(mesh_bin)
-            .current_dir(&p)
-            .args(args)
-            .output()
-            .expect("git-mesh");
-        assert!(out.status.success(), "git-mesh {args:?} failed: {out:?}");
-    };
-
     // 9 meshes, each with 3 anchors across different files (27 anchors total).
+    // Build all mesh files via library API so renamed symbols fail at compile time.
+    fs::create_dir_all(p.join(".mesh")).expect("create .mesh");
     for m in 0..9u32 {
         let slug = format!("mesh-{m}");
-        let f0 = format!("src-{}.txt#L1-L10", m % 12);
-        let f1 = format!("src-{}.txt#L11-L20", (m + 1) % 12);
-        let f2 = format!("src-{}.txt#L21-L30", (m + 2) % 12);
-        mesh(&["add", &slug, &f0, &f1, &f2]);
-        mesh(&[
-            "why",
-            &slug,
-            "-m",
-            &format!("mesh {m} covers files around {m}"),
-        ]);
-        mesh(&["commit", &slug]);
+        let file_indices = [m % 12, (m + 1) % 12, (m + 2) % 12];
+        let ranges: [(u32, u32); 3] = [(1, 10), (11, 20), (21, 30)];
+
+        let mut records = Vec::new();
+        for (fi, (start, end)) in file_indices.iter().zip(ranges.iter()) {
+            let filename = format!("src-{fi}.txt");
+            let body = fs::read(p.join(&filename)).expect("read file");
+            let text = String::from_utf8_lossy(&body);
+            let lines: Vec<&str> = text.lines().collect();
+            let lo = (*start as usize).saturating_sub(1);
+            let hi = (*end as usize).min(lines.len());
+            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
+            let hashed: Vec<u8> = slice.join("\n").into_bytes();
+            let hash = format!("sha256:{}", git_mesh::types::sha256_hex(&hashed));
+            records.push(git_mesh::mesh_file::AnchorRecord {
+                path: filename,
+                start_line: *start,
+                end_line: *end,
+                algorithm: "rk64".into(),
+                content_hash: hash,
+            });
+        }
+
+        let mf = git_mesh::mesh_file::MeshFile {
+            anchors: records,
+            why: format!("mesh {m} covers files around {m}"),
+        };
+        fs::write(p.join(".mesh").join(&slug), mf.serialize()).expect("write mesh file");
     }
+    git(&["add", ".mesh"]);
+    git(&["commit", "-m", "add meshes"]);
 
     // 10 mutations so caching has meaningful history to walk.
     for round in 0..10u32 {
@@ -119,7 +130,7 @@ fn bench_cold(c: &mut Criterion) {
         b.iter(|| {
             clear_cache(&f.repo_path);
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
             std::hint::black_box(out);
         });
     });
@@ -132,13 +143,13 @@ fn bench_warm(c: &mut Criterion) {
     {
         clear_cache(&f.repo_path);
         let repo = gix::open(&f.repo_path).expect("open repo");
-        stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("prime");
+        stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("prime");
     }
     let mut g = c.benchmark_group("stale");
     g.bench_function("warm", |b| {
         b.iter(|| {
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
             std::hint::black_box(out);
         });
     });
@@ -161,13 +172,13 @@ fn bench_warm_no_cache(c: &mut Criterion) {
             std::env::set_var("GIT_MESH_CACHE", "0");
         }
         let repo = gix::open(&f.repo_path).expect("open repo");
-        stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("prime");
+        stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("prime");
     }
     let mut g = c.benchmark_group("stale");
     g.bench_function("warm-no-cache", |b| {
         b.iter(|| {
             let repo = gix::open(&f.repo_path).expect("open repo");
-            let out = stale_meshes(&repo, ".mesh", EngineOptions::committed_only()).expect("stale");
+            let out = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
             std::hint::black_box(out);
         });
     });
