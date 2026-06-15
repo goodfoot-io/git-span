@@ -145,6 +145,37 @@ fn bench_warm(c: &mut Criterion) {
         let repo = gix::open(&f.repo_path).expect("open repo");
         stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("prime");
     }
+
+    // ---------------------------------------------------------------------------
+    // In-process warm-clean SLA gate (40 ms hard ceiling).
+    //
+    // This is NOT a process-level budget — it measures only the cache machinery
+    // (lazy LFS, single config snapshot, DDL-skip) with no process-spawn overhead.
+    // The gate runs 30 iterations outside Criterion's window so the mean is stable
+    // enough to distinguish a real breach from host noise.
+    // ---------------------------------------------------------------------------
+    {
+        const SLA_WARM_MS: f64 = 40.0;
+        const N: u32 = 30;
+        let total: std::time::Duration = (0..N)
+            .map(|_| {
+                let repo = gix::open(&f.repo_path).expect("open repo");
+                let t0 = std::time::Instant::now();
+                let out = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
+                let elapsed = t0.elapsed();
+                std::hint::black_box(out);
+                elapsed
+            })
+            .sum();
+        let mean_ms = total.as_secs_f64() * 1000.0 / N as f64;
+        if mean_ms > SLA_WARM_MS {
+            panic!(
+                "[stale_warm] warm-clean SLA breach: {mean_ms:.1} ms > {SLA_WARM_MS} ms \
+                 (in-process mean over {N} iterations; this is NOT process-level overhead)"
+            );
+        }
+    }
+
     let mut g = c.benchmark_group("stale");
     g.bench_function("warm", |b| {
         b.iter(|| {

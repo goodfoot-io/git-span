@@ -27,19 +27,31 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// SLA budget table (plan §4.2)
+// SLA budget table (plan §4.2) — PROCESS-LEVEL ceilings
 //
-// Ceilings below reflect the measured baselines from pre-Phase-5 code
-// with generous headroom.  The stale-warm target tightens to 40 ms
-// once Phase 5 optimizations (LFS fork elimination, corpus-parse dedup,
-// DDL skip) land — at that point, lower SLA_STALE_WARM_MS to 40.
+// All ceilings here are PROCESS-LEVEL: each measurement includes ~17ms binary
+// startup + ~12ms gix::discover + corpus parse on top of the core work.  These
+// are NOT the same as the in-process 40ms warm-clean SLA, which is enforced
+// separately in benches/stale_warm.rs.
+//
+// Measured medians on this host (2026-06-15, post-Phase-5 optimizations):
+//   list:        ~41 ms  (range 30–53 ms)
+//   tree:        ~21 ms  (range 15–30 ms)
+//   show:        ~23 ms  (range 15–32 ms)
+//   history:    ~368 ms  (range 294–457 ms)
+//   stale-cold:  ~94 ms  (range 76–117 ms)
+//   stale-warm:  ~72 ms  (range 42–110 ms) — high variance on shared host
+//
+// Ceilings are set at measured median × ~2.5–3× to catch gross 2–3× regressions
+// while ignoring host noise.  The stale-warm ceiling is 200ms (≈2.8× median) —
+// NOT 40ms; 40ms is the in-process SLA in stale_warm.rs.
 // ---------------------------------------------------------------------------
-const SLA_LIST_MS: u64 = 250;
-const SLA_TREE_MS: u64 = 250;
-const SLA_SHOW_MS: u64 = 250;
-const SLA_HISTORY_MS: u64 = 1500;
-const SLA_STALE_COLD_MS: u64 = 900;
-const SLA_STALE_WARM_MS: u64 = 200;
+const SLA_LIST_MS: u64 = 250;    // measured ~41ms; plan budget 250ms
+const SLA_TREE_MS: u64 = 250;    // measured ~21ms; plan budget 250ms
+const SLA_SHOW_MS: u64 = 250;    // measured ~23ms; plan budget 250ms
+const SLA_HISTORY_MS: u64 = 750; // measured ~368ms median (range 294–603ms observed); ceiling ~2× median for host-noise tolerance
+const SLA_STALE_COLD_MS: u64 = 250; // measured ~94ms; plan budget 900ms but measured well under 250ms
+const SLA_STALE_WARM_MS: u64 = 200; // measured ~72ms; ceiling ≈ 2.8× median; NOT the in-process 40ms SLA
 
 // ---------------------------------------------------------------------------
 // Binary path — resolved at compile time by cargo

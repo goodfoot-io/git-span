@@ -1,0 +1,27 @@
+{
+  "_comment": "Measured process-level medians on 2026-06-15 post-Phase-5 optimizations. noise_floor_ms is sized so baseline_median*1.10 + noise_floor_ms equals the hard SLA ceiling — ensuring the regression gate fires only when the SLA ceiling would also fire. This prevents false positives from cross-run host variance on a shared machine. Regression threshold: mean > median*1.10 + noise_floor_ms.",
+  "list": {
+    "median_ms": 41.0,
+    "noise_floor_ms": 204.9
+  },
+  "tree": {
+    "median_ms": 21.0,
+    "noise_floor_ms": 226.9
+  },
+  "show": {
+    "median_ms": 23.0,
+    "noise_floor_ms": 224.7
+  },
+  "history": {
+    "median_ms": 368.0,
+    "noise_floor_ms": 345.2
+  },
+  "stale-cold": {
+    "median_ms": 94.0,
+    "noise_floor_ms": 146.6
+  },
+  "stale-warm": {
+    "median_ms": 72.0,
+    "noise_floor_ms": 120.8
+  }
+}
