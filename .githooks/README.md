@@ -28,7 +28,7 @@ the run loop — no business logic. Order is behavior; preserve it.
 | Sub-script                    | Purpose                                                              | Blocks commit?                              |
 | ----------------------------- | -------------------------------------------------------------------- | ------------------------------------------- |
 | `pre-commit.version-lock.sh`  | Lock package/plugin/Cargo manifest versions to the highest semver    | Yes, if node/yarn fails                      |
-| `pre-commit.wiki.sh`          | Phase 1: `wiki check --fix` auto-fixes drifted links/anchors AND creates git-mesh coverage for uncovered fragment links, re-stages `*.md` and exactly the meshes touched (`--print-applied`). Phase 2: re-runs `wiki check` (no `--fix`) as a fail-closed gate | Yes, if `wiki check --fix` errors, or if phase 2 finds unresolved validation errors |
+| `pre-commit.wiki.sh`          | Phase 1: `wiki check --fix` auto-fixes drifted links/anchors AND creates git-mesh coverage for uncovered fragment links, re-stages the fixed `*.md` already staged for this commit (never unstaged pages) and exactly the meshes touched (`--print-applied`). Phase 2: re-runs `wiki check` (no `--fix`) as a fail-closed gate | Yes, if `wiki check --fix` errors, or if phase 2 finds unresolved validation errors |
 | `pre-commit.biome.sh`         | `biome check --fix` on staged TS/JS, re-stage fixes                  | Yes, on Biome errors it cannot autofix       |
 
 Each sub-script:
@@ -45,7 +45,10 @@ phases both run in `pre-commit`: phase 1 runs `wiki check --fix
 --print-applied --source=worktree`, which in this CLI version both
 auto-repairs fixable link/anchor drift AND creates git-mesh coverage for any
 uncovered fragment links in a single pass, then re-stages the fixed `*.md`
-pages and exactly the meshes the run created or extended. Phase 2 re-runs
+pages **that are already part of this commit** (a fix to a page the committer
+never staged is left in the worktree for its owner, so the commit cannot
+silently absorb an unstaged page) and exactly the meshes the run created or
+extended. Phase 2 re-runs
 `wiki check` (no `--fix`) as a fail-closed gate that aborts the commit on any
 residual validation error or unrepairable uncovered fragment link. Only a
 pre-commit hook can stage those freshly-created `.mesh/` files into the commit

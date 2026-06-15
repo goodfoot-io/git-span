@@ -1,8 +1,9 @@
 #!/bin/bash
 # Single wiki concern, two phases, reconciled with the installed `wiki` CLI:
 #   1. Auto-fix drifted links/anchors/frontmatter AND create git mesh coverage
-#      for uncovered fragment links on the working tree, then re-stage the
-#      fixed .md files and exactly the meshes this run created/extended.
+#      for uncovered fragment links on the working tree, then re-stage the fixed
+#      .md files THAT ARE ALREADY PART OF THIS COMMIT and exactly the meshes this
+#      run created/extended.
 #   2. Re-run `wiki check` (no --fix) as a fail-closed gate: any residual
 #      validation error or uncovered fragment link aborts the commit.
 #
@@ -13,7 +14,9 @@
 #
 # The whole corpus is checked (not just staged files): a staged edit can
 # break a wikilink on an unstaged page or collide a title — phase 1 sees and
-# repairs those cross-page failures.
+# repairs those cross-page failures in the worktree. Such repairs to pages that
+# are not already part of this commit are left for their owner to stage; the
+# commit never silently absorbs an unstaged page (see the re-staging note below).
 set -e
 
 command -v wiki >/dev/null 2>&1 || exit 0
@@ -30,12 +33,22 @@ APPLIED=$("$WIKI_BIN" check --fix --print-applied --source=worktree) || {
     exit 1
 }
 
-# mapfile + quoted array re-stages each path as one argument, so a page path
-# containing whitespace survives intact.
-mapfile -t WIKI_FIXED < <(git diff --name-only --diff-filter=d -- '*.md')
+# Re-stage ONLY .md files already part of this commit (staged vs HEAD) that the
+# fix pass left dirty in the worktree. Scoping to the staged set is deliberate
+# and load-bearing: `git diff --name-only -- '*.md'` lists EVERY worktree-modified
+# .md, so an unscoped `git add` sweeps in unstaged .md that was never part of this
+# commit — a sibling agent's in-flight work in a shared worktree, or a doc edit
+# the committer never staged. We re-add a file only when it is both already staged
+# for this commit AND left modified by the fix. mapfile + quoted array re-stages
+# each path as one argument, so a page path containing whitespace survives intact.
+mapfile -t STAGED_MD < <(git diff --cached --name-only --diff-filter=d -- '*.md')
+WIKI_FIXED=()
+for f in "${STAGED_MD[@]}"; do
+    git diff --quiet -- "$f" || WIKI_FIXED+=("$f")
+done
 if [ ${#WIKI_FIXED[@]} -gt 0 ]; then
     git add "${WIKI_FIXED[@]}"
-    echo "Re-staged wiki-fixed files:"
+    echo "Re-staged wiki-fixed files (scoped to this commit's staged .md):"
     printf '%s\n' "${WIKI_FIXED[@]}"
 fi
 
