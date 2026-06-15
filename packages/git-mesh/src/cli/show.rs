@@ -738,119 +738,19 @@ fn render_range_address(path: &str, extent: AnchorExtent) -> String {
 // Multi-target resolver
 // ---------------------------------------------------------------------------
 
-/// Resolve positional args to a deduplicated set of mesh names.
+/// Resolve positional args to a deduplicated set of mesh names, given a
+/// pre-built [`MeshPathIndex`] and a set of loaded mesh names so callers who
+/// already hold a single corpus load can resolve targets without a second
+/// parse.
 ///
 /// Two-step dispatch per arg:
-///   - `#L` range → `parse_range_address` + `matching_mesh_names` with range
-///   - `/` present → `matching_mesh_names` without range (skip mesh-name check)
-///   - bare arg → check the effective mesh file `<mesh-root>/<arg>`;
-///     if it exists, use as mesh name, else fall through to
-///     `matching_mesh_names` without range
+///   - `#L` range → `parse_range_address` + path-index match with range
+///   - mesh-name shape → check the pre-loaded name set, else fall through to
+///     a path-index scan
+///   - glob / path → path-index scan, then a worktree existence check
 ///
 /// Zero-match args produce stderr diagnostics and an error.  Empty args return
 /// an empty vector immediately.
-#[allow(dead_code)]
-pub(crate) fn resolve_targets(
-    repo: &gix::Repository,
-    mesh_root: &str,
-    args: &[String],
-) -> Result<Vec<String>> {
-    if args.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let reader = crate::mesh_file_reader::MeshFileReader::new(repo, mesh_root.to_string());
-    let mut result: HashSet<String> = HashSet::new();
-    let mut missing_args: Vec<&str> = Vec::new();
-
-    // Build the path index once. Resolving each arg through
-    // `meshes_matching_path_in` reloaded the whole mesh corpus per arg —
-    // O(args × meshes) — which freezes when a shell-expanded glob hands this
-    // resolver hundreds of paths against a large mesh set.
-    let path_index = crate::mesh::read::MeshPathIndex::load_in(repo, mesh_root)?;
-
-    // Resolve each arg. Rule: a zero-match against the mesh set is fine on
-    // its own — exit 0 silently. We only error when the arg names something
-    // that doesn't exist: a missing file, a missing mesh name, or a glob the
-    // shell left literal because it matched nothing.
-    for arg in args {
-        if arg.contains("#L") {
-            // Range address: parse path and range, scan mesh files.
-            // When `#L` is part of a filename (not a valid line-range
-            // delimiter), fall through to path resolution.
-            if let Ok((path, start, end)) = parse_range_address(arg) {
-                let names = path_index.matching_names(&path, Some((start, end)));
-                if !names.is_empty() {
-                    result.extend(names);
-                } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
-                    missing_args.push(arg);
-                }
-            } else {
-                // `#L` in filename, not a range address — resolve as path.
-                let names = path_index.matching_names(arg, None);
-                if !names.is_empty() {
-                    result.extend(names);
-                } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
-                    missing_args.push(arg);
-                }
-            }
-        } else if validate_mesh_name_shape(arg).is_ok() {
-            // Mesh-name shape (bare slug or hierarchical): try the
-            // file-backed effective view, then a path-index scan, then a
-            // worktree existence check.
-            if reader.read_effective(arg)?.is_some() {
-                result.insert(arg.clone());
-            } else {
-                let names = path_index.matching_names(arg, None);
-                if !names.is_empty() {
-                    result.extend(names);
-                } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
-                    missing_args.push(arg);
-                }
-            }
-        } else if crate::mesh::read::is_glob_pattern(arg) {
-            let names = path_index.matching_names_glob(arg, None)?;
-            if !names.is_empty() {
-                result.extend(names);
-            } else {
-                missing_args.push(arg);
-            }
-        } else {
-            // Not mesh-name shape (path with extension): scan mesh files
-            // for an anchor on this path.
-            let names = path_index.matching_names(arg, None);
-            if !names.is_empty() {
-                result.extend(names);
-            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
-                missing_args.push(arg);
-            }
-        }
-    }
-
-    if !missing_args.is_empty() {
-        let all = missing_args.join("`, `");
-        return Err(CliError {
-            subcommand: "list",
-            summary: format!("`{all}` did not match any mesh, file, or path."),
-            what_happened: format!(
-                "The following arguments did not match a mesh name, a file path, \
-                 or a path-index entry: `{all}`. Git-mesh resolves positional \
-                 arguments as mesh names, file paths, or globs."
-            ),
-            next_steps: vec![
-                NextStep::Prose("Check the spelling or list available meshes.".into()),
-                NextStep::Bash("git mesh list".into()),
-            ],
-        }
-        .into());
-    }
-
-    Ok(result.into_iter().collect())
-}
-
-/// Variant of [`resolve_targets`] that accepts a pre-built
-/// [`MeshPathIndex`] and a set of loaded mesh names so callers who already
-/// hold a single corpus load can resolve targets without a second parse.
 fn resolve_targets_from_index(
     repo: &gix::Repository,
     _mesh_root: &str,
@@ -939,7 +839,7 @@ fn file_exists_in_workdir(repo: &gix::Repository, rel: &std::path::Path) -> bool
 mod tests {
     use super::*;
     // -----------------------------------------------------------------------
-    // resolve_targets helpers and tests
+    // shared test helpers
     // -----------------------------------------------------------------------
 
     use std::path::Path;
@@ -991,126 +891,6 @@ mod tests {
             &workdir,
             &["commit", "-m", &format!("test: create mesh {name}")],
         );
-    }
-
-    /// File-backed model: a mesh that anchors `path#Lstart-Lend` is a
-    /// tracked file under `.mesh/`. Write and commit it so the
-    /// file-scanning path resolver (`meshes_matching_path`) finds it.
-    fn create_path_index_entry(
-        repo: &gix::Repository,
-        mesh_name: &str,
-        path: &str,
-        start: u32,
-        end: u32,
-    ) {
-        let workdir = repo.workdir().unwrap().to_path_buf();
-        let mesh_path = workdir.join(".mesh").join(mesh_name);
-        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
-        let mf = crate::mesh_file::MeshFile {
-            anchors: vec![crate::mesh_file::AnchorRecord {
-                path: path.to_string(),
-                start_line: start,
-                end_line: end,
-                algorithm: git_mesh_core::RK64_ALGORITHM.to_string(),
-                content_hash: "0".repeat(16),
-            }],
-            why: format!("mesh {mesh_name}"),
-        };
-        std::fs::write(&mesh_path, mf.serialize()).unwrap();
-        run_git(&workdir, &["add", "-A"]);
-        run_git(
-            &workdir,
-            &["commit", "-m", &format!("test: create mesh {mesh_name}")],
-        );
-    }
-
-    #[test]
-    fn resolve_targets_finds_mesh_by_name() {
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "my-mesh");
-        let result = resolve_targets(&repo, ".mesh", &["my-mesh".to_string()]).unwrap();
-        assert_eq!(result, vec!["my-mesh"]);
-    }
-
-    #[test]
-    fn resolve_targets_path_index_lookup() {
-        let (_td, repo) = seed_repo();
-        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 5);
-        let result = resolve_targets(&repo, ".mesh", &["a.txt".to_string()]).unwrap();
-        assert_eq!(result, vec!["mesh-a"]);
-    }
-
-    #[test]
-    fn resolve_targets_hash_l_range() {
-        let (_td, repo) = seed_repo();
-        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 10);
-        let result = resolve_targets(&repo, ".mesh", &["a.txt#L1-L5".to_string()]).unwrap();
-        assert_eq!(result, vec!["mesh-a"]);
-    }
-
-    #[test]
-    fn resolve_targets_non_mesh_name_shape_goes_to_path_index() {
-        // src/lib.rs contains `.rs` which fails mesh-name shape validation,
-        // so it must go straight to path index even though it contains `/`.
-        let (_td, repo) = seed_repo();
-        create_path_index_entry(&repo, "mesh-from-path", "src/lib.rs", 1, 10);
-        let result = resolve_targets(&repo, ".mesh", &["src/lib.rs".to_string()]).unwrap();
-        assert_eq!(result, vec!["mesh-from-path"]);
-    }
-
-    #[test]
-    fn resolve_targets_hierarchical_name_falls_through_when_no_mesh() {
-        let (_td, repo) = seed_repo();
-        // "category/slug" matches mesh-name shape but no mesh file
-        // exists. Must fall through to path index.
-        create_path_index_entry(&repo, "some-mesh", "category/slug", 1, 5);
-        let result = resolve_targets(&repo, ".mesh", &["category/slug".to_string()]).unwrap();
-        assert_eq!(result, vec!["some-mesh"]);
-    }
-
-    #[test]
-    fn resolve_targets_deduplicates_across_args() {
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "mesh-a");
-        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 5);
-        let result =
-            resolve_targets(&repo, ".mesh", &["mesh-a".to_string(), "a.txt".to_string()]).unwrap();
-        assert_eq!(result, vec!["mesh-a"]);
-    }
-
-    #[test]
-    fn resolve_targets_zero_match_errors() {
-        let (_td, repo) = seed_repo();
-        let err = resolve_targets(&repo, ".mesh", &["nonexistent".to_string()]).unwrap_err();
-        assert!(!err.to_string().is_empty());
-    }
-
-    #[test]
-    fn resolve_targets_empty_args_returns_empty_vec() {
-        let (_td, repo) = seed_repo();
-        let result: Vec<String> = resolve_targets(&repo, ".mesh", &[]).unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn resolve_targets_mixed_mesh_names_and_paths() {
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "mesh-a");
-        create_path_index_entry(&repo, "mesh-b", "a.txt", 1, 5);
-        let result =
-            resolve_targets(&repo, ".mesh", &["mesh-a".to_string(), "a.txt".to_string()]).unwrap();
-        let mut sorted = result.clone();
-        sorted.sort();
-        assert_eq!(sorted, vec!["mesh-a", "mesh-b"]);
-    }
-
-    #[test]
-    fn resolve_targets_committed_mesh_resolves_once() {
-        // A committed mesh resolves to its name exactly once.
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "dual-mesh");
-        let result = resolve_targets(&repo, ".mesh", &["dual-mesh".to_string()]).unwrap();
-        assert_eq!(result, vec!["dual-mesh"]);
     }
 
     // -----------------------------------------------------------------------
@@ -1169,24 +949,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_works_after_rename() {
-        // File-backed model: meshes are tracked files. Renaming a mesh
-        // is renaming its file under `.mesh/`; the file-scanning path
-        // resolver must then find the anchor under the new name.
-        let (_td, repo) = seed_repo();
-        create_path_index_entry(&repo, "alpha", "a.txt", 1, 5);
-
-        let workdir = repo.workdir().unwrap().to_path_buf();
-        let mesh_dir = workdir.join(".mesh");
-        std::fs::rename(mesh_dir.join("alpha"), mesh_dir.join("renamed")).unwrap();
-        run_git(&workdir, &["add", "-A"]);
-        run_git(&workdir, &["commit", "-m", "test: rename alpha -> renamed"]);
-
-        let result = resolve_targets(&repo, ".mesh", &["a.txt#L3-L4".to_string()]).unwrap();
-        assert_eq!(result, vec!["renamed"]);
-    }
-
-    #[test]
     fn run_list_multiple_mesh_names() {
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "mesh-a");
@@ -1202,17 +964,6 @@ mod tests {
         };
         let exit_code = run_list(&repo, args, ".mesh").unwrap();
         assert_eq!(exit_code, 0);
-    }
-
-    // --- hierarchical mesh name reproduction tests ---
-
-    #[test]
-    fn resolve_targets_hierarchical_name_resolves_to_mesh() {
-        let (_td, repo) = seed_repo();
-        create_mesh_ref(&repo, "billing/payments/checkout");
-        let result =
-            resolve_targets(&repo, ".mesh", &["billing/payments/checkout".to_string()]).unwrap();
-        assert_eq!(result, vec!["billing/payments/checkout"]);
     }
 
     // -----------------------------------------------------------------------

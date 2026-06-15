@@ -60,11 +60,6 @@ impl CachedLineIndex {
         self.idx.as_ref().unwrap()
     }
 
-    /// Number of bytes in the backing buffer.
-    #[allow(dead_code)]
-    pub(crate) fn byte_len(&self) -> usize {
-        self.bytes.len()
-    }
 }
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,

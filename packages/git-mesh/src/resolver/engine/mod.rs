@@ -461,73 +461,6 @@ fn resolve_mesh_with_state_at(
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
 
-/// Opaque handle that lets callers outside this module reuse a single
-/// `EngineState` across multiple mesh resolutions. Used by the
-/// all-mesh `stale --compact` batch path so anchor-history walks and
-/// HEAD blob lookups are cached for the whole run.
-pub(crate) struct EngineStateHandle(EngineState);
-
-pub(crate) fn new_engine_state(
-    repo: &gix::Repository,
-    options: EngineOptions,
-) -> Result<EngineStateHandle> {
-    Ok(EngineStateHandle(EngineState::new(
-        repo,
-        options.layers,
-        options.needs_all_layers,
-    )?))
-}
-
-impl EngineStateHandle {
-    pub(crate) fn head_sha(&self) -> &str {
-        &self.0.head_sha
-    }
-
-    pub(crate) fn head_blob_at(
-        &mut self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
-        self.0.head_blob_at(repo, path)
-    }
-
-    pub(crate) fn filter_short_circuit(
-        &mut self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
-        self.0.filter_short_circuit(repo, path)
-    }
-}
-
-pub(crate) fn resolve_loaded_mesh_with_engine_state(
-    repo: &gix::Repository,
-    handle: &mut EngineStateHandle,
-    mesh: crate::types::Mesh,
-    options: EngineOptions,
-) -> Result<MeshResolved> {
-    resolve_loaded_mesh_with_state(repo, &mut handle.0, mesh, options)
-}
-
-/// Resolve a mesh against the anchors stored at a specific mesh-ref
-/// commit, reusing the caller's shared `EngineStateHandle`.
-///
-/// Used by the batch compact CAS-conflict retry path so the per-mesh
-/// retry can keep the HEAD-blob cache warmed by the earlier batch
-/// classification, instead of throwing away that cache and rebuilding
-/// an `EngineState` from scratch.
-pub(crate) fn resolve_mesh_at_with_engine_state(
-    repo: &gix::Repository,
-    mesh_root: &str,
-    handle: &mut EngineStateHandle,
-    name: &str,
-    options: EngineOptions,
-    commit_oid: &str,
-) -> Result<MeshResolved> {
-    let _perf = crate::perf::span("resolver.resolve-mesh-at-with-engine-state");
-    resolve_mesh_with_state_at(repo, mesh_root, &mut handle.0, name, commit_oid, options)
-}
-
 fn resolve_loaded_mesh_with_state(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -1234,45 +1167,6 @@ pub fn stale_meshes_with_trace(
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
     let (meshes, trace_rows, _) = stale_meshes_inner(repo, mesh_root, options, true, false)?;
     Ok((meshes, trace_rows))
-}
-
-pub(crate) fn resolve_meshes_in_order(
-    repo: &gix::Repository,
-    mesh_root: &str,
-    names: &[String],
-    options: EngineOptions,
-) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
-    let mut out = Vec::with_capacity(names.len());
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
-
-    // Build the reverse-indexed walk once across all named meshes.
-    {
-        let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let reader = MeshFileReader::new(repo, mesh_root.to_string());
-        let mesh_pairs: Vec<(String, Mesh)> = names
-            .iter()
-            .filter_map(|name| {
-                reader
-                    .read_effective(name)
-                    .ok()
-                    .flatten()
-                    .map(|file| (name.clone(), mesh_from_file(name, &file)))
-            })
-            .collect();
-        if !mesh_pairs.is_empty() {
-            state.session.build_reverse_walk(repo, &mesh_pairs)?;
-        }
-    }
-
-    {
-        let _perf = crate::perf::span("resolver.resolve-meshes");
-        for name in names {
-            let resolved = resolve_mesh_with_state(repo, mesh_root, &mut state, name, options);
-            out.push((name.clone(), resolved));
-        }
-    }
-    state.finish(repo);
-    Ok(out)
 }
 
 pub(crate) fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {

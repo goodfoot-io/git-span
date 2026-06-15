@@ -24,10 +24,6 @@ pub(crate) const DB_BASENAME: &str = "stale-cache.db";
 /// `cache_v2` cache namespace. Increment on any on-disk shape change.
 pub(crate) const KEY_SALT: i64 = 2;
 
-/// Parser format version baked into the anchor-row manifest key so a
-/// mesh-file parser change invalidates `mesh_anchor_rows`.
-pub(crate) const PARSER_VERSION: i64 = 1;
-
 /// Resolve the cache database path for a repository. The parent
 /// directory is created lazily by [`open_cache`].
 pub(crate) fn db_path(repo: &gix::Repository) -> PathBuf {

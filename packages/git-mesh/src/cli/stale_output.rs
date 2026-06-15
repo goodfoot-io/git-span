@@ -6,9 +6,6 @@
 //! the engine's `AnchorResolved` + `MeshResolved.pending` into the
 //! plan's "Key types" shape.
 
-#![allow(dead_code)]
-
-use crate::cli::format;
 use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
@@ -944,7 +941,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     oneline: args.oneline,
                     stat: args.stat,
                     patch: args.patch,
-                    show_src: show_src_column,
                     named_lookup: !args.paths.is_empty(),
                 },
                 &mesh_anchor_totals,
@@ -1154,106 +1150,6 @@ fn splice_named_scope_post_fix(
 // Shared formatting helpers.
 // ---------------------------------------------------------------------------
 
-fn extent_lines(extent: AnchorExtent) -> (u32, u32) {
-    match extent {
-        AnchorExtent::LineRange { start, end } => (start, end),
-        AnchorExtent::WholeFile => (0, 0),
-    }
-}
-
-fn extent_to_options(extent: AnchorExtent) -> (Option<u32>, Option<u32>) {
-    match extent {
-        AnchorExtent::LineRange { start, end } => (Some(start), Some(end)),
-        AnchorExtent::WholeFile => (None, None),
-    }
-}
-
-/// Prose description of an anchor finding's status, source, and destination.
-///
-/// Delegates to `format_drift_label` for `Changed`/`Deleted`; renders the
-/// remaining statuses (Moved, MergeConflict, Submodule, ContentUnavailable)
-/// inline in the uppercase voice the human renderer's header column uses.
-fn describe_finding(f: &Finding) -> String {
-    let src_phrase = |src: Option<DriftSource>| -> &'static str {
-        match src {
-            Some(DriftSource::Head) => "in HEAD",
-            Some(DriftSource::Index) => "in the index",
-            Some(DriftSource::Worktree) => "in the working tree",
-            None => "",
-        }
-    };
-
-    match &f.status {
-        AnchorStatus::Changed => {
-            let label = super::drift_label::format_drift_label(
-                &f.status,
-                f.source,
-                f.locus.as_ref(),
-                f.current.is_some(),
-            );
-            uppercase_first(&label)
-        }
-        AnchorStatus::Moved => {
-            // A relocation's provenance is the relocation itself (the
-            // stored content hash found at a different path/range),
-            // not a per-layer edit — a committed `git mv` is no more
-            // "in the working tree" than a staged copy is. The card
-            // defines `Moved` as "stored content hash found at a
-            // different path or range"; the destination address is the
-            // only meaningful detail, so the layer phrase is omitted.
-            if let Some(cur) = &f.current {
-                let (s, e) = extent_to_options(cur.extent);
-                let dest = format::format_anchor_address(&cur.path.to_string_lossy(), s, e);
-                format!("Moved to `{dest}`")
-            } else {
-                "Moved".to_string()
-            }
-        }
-        AnchorStatus::Deleted => {
-            let label = super::drift_label::format_drift_label(
-                &f.status,
-                f.source,
-                f.locus.as_ref(),
-                f.current.is_some(),
-            );
-            uppercase_first(&label)
-        }
-        AnchorStatus::MergeConflict => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "Conflict".to_string()
-            } else {
-                format!("Conflict {src}")
-            }
-        }
-        AnchorStatus::Submodule => {
-            let src = src_phrase(f.source);
-            if src.is_empty() {
-                "Submodule".to_string()
-            } else {
-                format!("Submodule {src}")
-            }
-        }
-        AnchorStatus::ContentUnavailable(reason) => {
-            let src = src_phrase(f.source);
-            let detail = match reason {
-                UnavailableReason::LfsNotFetched => "LFS not fetched",
-                UnavailableReason::LfsNotInstalled => "LFS not installed",
-                UnavailableReason::PromisorMissing => "promisor missing",
-                UnavailableReason::SparseExcluded => "sparse excluded",
-                UnavailableReason::FilterFailed { .. } => "filter failed",
-                UnavailableReason::IoError { .. } => "I/O error",
-            };
-            if src.is_empty() {
-                format!("Content unavailable ({detail})")
-            } else {
-                format!("Content unavailable {src} ({detail})")
-            }
-        }
-        AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
-    }
-}
-
 /// Lowercase prose description for use in the unified block-shape suffix.
 ///
 /// Returns strings like:
@@ -1280,8 +1176,8 @@ fn describe_finding_lower(f: &Finding) -> String {
         ),
         AnchorStatus::Moved => {
             // Relocation provenance is the move itself, not a per-layer
-            // edit (see `describe_finding`); omit the layer phrase so a
-            // committed `git mv` is not mislabeled "in the working tree".
+            // edit; omit the layer phrase so a committed `git mv` is not
+            // mislabeled "in the working tree".
             if let Some(cur) = &f.current {
                 let dest = render_path_extent_plain(&cur.path, cur.extent);
                 format!("moved to {dest}")
@@ -1331,15 +1227,6 @@ fn describe_finding_lower(f: &Finding) -> String {
     }
 }
 
-/// Uppercase the first character of a lowercase label.
-fn uppercase_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
 fn status_str(s: &AnchorStatus) -> &'static str {
     match s {
         AnchorStatus::Fresh => "FRESH",
@@ -1356,26 +1243,6 @@ fn status_str(s: &AnchorStatus) -> &'static str {
             UnavailableReason::FilterFailed { .. } => "FILTER_FAILED",
             UnavailableReason::IoError { .. } => "IO_ERROR",
         },
-    }
-}
-
-fn status_word(s: &AnchorStatus) -> &'static str {
-    match s {
-        AnchorStatus::Fresh => "Fresh",
-        AnchorStatus::Moved => "Moved",
-        AnchorStatus::Changed => "Changed",
-        AnchorStatus::Deleted => "Deleted",
-        AnchorStatus::MergeConflict => "Conflict",
-        AnchorStatus::Submodule => "Submodule",
-        AnchorStatus::ContentUnavailable(_) => "Content unavailable",
-    }
-}
-
-fn source_word(src: DriftSource) -> &'static str {
-    match src {
-        DriftSource::Head => "HEAD",
-        DriftSource::Index => "index",
-        DriftSource::Worktree => "worktree",
     }
 }
 
@@ -1411,14 +1278,6 @@ fn render_path_extent_plain(path: &std::path::Path, extent: AnchorExtent) -> Str
     }
 }
 
-fn render_pending_range_id(anchor_id: &str) -> String {
-    if anchor_id.is_empty() {
-        String::new()
-    } else {
-        format!(" ({anchor_id})")
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Human renderer.
 // ---------------------------------------------------------------------------
@@ -1428,7 +1287,6 @@ struct HumanRenderOptions {
     oneline: bool,
     stat: bool,
     patch: bool,
-    show_src: bool,
     named_lookup: bool,
 }
 
@@ -1758,22 +1616,6 @@ fn pending_drift_suffix(drift: Option<&PendingDrift>) -> &'static str {
     }
 }
 
-fn drift_note(drift: Option<&PendingDrift>) -> String {
-    match drift {
-        Some(PendingDrift::SidecarMismatch) => "  (drift: sidecar mismatch)".into(),
-        Some(PendingDrift::SidecarTampered) => "  (drift: sidecar tampered)".into(),
-        None => String::new(),
-    }
-}
-
-fn config_str(c: &StagedConfig) -> String {
-    match c {
-        StagedConfig::CopyDetection(cd) => format!("copy-detection={cd:?}"),
-        StagedConfig::IgnoreWhitespace(b) => format!("ignore-whitespace={b}"),
-        StagedConfig::FollowMoves(b) => format!("follow-moves={b}"),
-    }
-}
-
 fn pending_mesh(p: &PendingFinding) -> &str {
     match p {
         PendingFinding::Add { mesh, .. }
@@ -2060,44 +1902,6 @@ fn render_github(findings: &[Finding]) {
             ack,
         );
     }
-}
-
-// ---------------------------------------------------------------------------
-// Kept for `cli/show.rs` — relative-time formatter.
-// ---------------------------------------------------------------------------
-
-pub(crate) fn format_relative(committer_time: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
-    let diff = now - committer_time;
-    if diff < 0 {
-        return "in the future".into();
-    }
-    let secs = diff;
-    let mins = secs / 60;
-    let hours = mins / 60;
-    let days = hours / 24;
-    let weeks = days / 7;
-    let months = days / 30;
-    let years = days / 365;
-    if years > 0 {
-        format!("{years} year{} ago", plural(years))
-    } else if months > 0 {
-        format!("{months} month{} ago", plural(months))
-    } else if weeks > 0 {
-        format!("{weeks} week{} ago", plural(weeks))
-    } else if days > 0 {
-        format!("{days} day{} ago", plural(days))
-    } else if hours > 0 {
-        format!("{hours} hour{} ago", plural(hours))
-    } else if mins > 0 {
-        format!("{mins} minute{} ago", plural(mins))
-    } else {
-        format!("{secs} second{} ago", plural(secs))
-    }
-}
-
-fn plural(n: i64) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }
 
 // ---------------------------------------------------------------------------

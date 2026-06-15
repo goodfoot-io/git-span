@@ -26,7 +26,6 @@
 //! No per-commit type byte; the filter data begins directly at the offset.
 
 use gix::ObjectId;
-use std::path::PathBuf;
 
 /// A reader for the changed-path Bloom filter (BIDX/BDAT chunks) of a
 /// single commit-graph file. Also provides OID-to-position lookup using
@@ -37,11 +36,7 @@ pub(crate) struct CommitGraphBloom {
     bidx_start: usize,
     bdat_start: usize,
     num_hashes: u32,
-    #[allow(dead_code)]
-    bits_per_entry: u32,
     num_commits: u32,
-    #[allow(dead_code)]
-    path: PathBuf,
     /// Offset of the OID fan-out table (OIDF chunk).
     oidf_offset: usize,
     /// Offset of the OID lookup table (OIDL chunk).
@@ -140,12 +135,6 @@ impl CommitGraphBloom {
                 .try_into()
                 .unwrap(),
         );
-        let bits_per_entry = u32::from_be_bytes(
-            data[bdat_range.start + 8..bdat_range.start + 12]
-                .try_into()
-                .unwrap(),
-        );
-
         // ----- OID fan table (OIDF) for position lookup -----
         let oidf_range = chunks
             .usize_offset_by_id(*b"OIDF")
@@ -178,9 +167,7 @@ impl CommitGraphBloom {
             bidx_start: bidx_range.start,
             bdat_start: bdat_range.start,
             num_hashes,
-            bits_per_entry,
             num_commits,
-            path,
             oidf_offset: oidf_range.start,
             oidl_offset: oidl_range.start,
             hash_len,

@@ -12,7 +12,7 @@
 
 use super::dto::{AnchorResolvedDto, MeshResolvedDto};
 use super::keys::CommittedKey;
-use super::schema::{CacheDb, KEY_SALT, now_secs};
+use super::schema::{CacheDb, now_secs};
 use crate::types::{AnchorStatus, MeshResolved};
 use crate::{Error, Result};
 use rusqlite::OptionalExtension;
@@ -471,32 +471,4 @@ pub(crate) fn load_baseline(
         non_fresh_count: non_fresh_count as u64,
         whole_result,
     }))
-}
-
-/// Delete the committed baseline for this exact key (tests only; the
-/// runtime invalidates by key, not by deletion). `_ = KEY_SALT` keeps
-/// the salt constant referenced from this module.
-pub(crate) fn delete_baseline(
-    db: &CacheDb,
-    key: &CommittedKey,
-    availability_hex: &str,
-) -> Result<()> {
-    let _ = KEY_SALT;
-    let filter_hex = key.filter_hex();
-    db.conn
-        .execute(
-            "DELETE FROM committed_baseline_manifest \
-             WHERE source_tree_key=?1 AND mesh_tree_key=?2 AND mesh_root=?3 \
-               AND filter_config_hash=?4 AND availability_hash=?5 AND key_salt=?6",
-            rusqlite::params![
-                key.source_tree_key,
-                key.mesh_tree_key,
-                key.mesh_root,
-                filter_hex,
-                availability_hex,
-                key.key_salt
-            ],
-        )
-        .map_err(|e| Error::Git(format!("cache_v2 manifest delete: {e}")))?;
-    Ok(())
 }

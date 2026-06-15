@@ -56,20 +56,6 @@ pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
     Ok(id.detach().to_string())
 }
 
-/// Return the tree OID of a commit.
-#[allow(dead_code)]
-pub(crate) fn commit_tree_oid(repo: &gix::Repository, commit_oid: &str) -> Result<String> {
-    let oid = parse_oid(commit_oid)?;
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
-    Ok(commit
-        .tree_id()
-        .map_err(|e| Error::Git(format!("commit tree: {e}")))?
-        .detach()
-        .to_string())
-}
-
 // ---------------------------------------------------------------------------
 // git_log_name_only — history channel helper for the suggest detector.
 // ---------------------------------------------------------------------------
@@ -379,15 +365,10 @@ pub fn git_log_name_only_for_paths(
 }
 
 /// Extracted commit metadata.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {
-    pub author_name: String,
-    pub author_email: String,
     pub author_date_rfc2822: String,
-    pub committer_time: i64,
     pub summary: String,
-    pub message: String,
 }
 
 pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<CommitMeta> {
@@ -401,28 +382,17 @@ pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<Co
     let author_sig = decoded
         .author()
         .map_err(|e| Error::Git(format!("author: {e}")))?;
-    let committer_sig = decoded
-        .committer()
-        .map_err(|e| Error::Git(format!("committer: {e}")))?;
     let author_time = author_sig
         .time()
         .map_err(|e| Error::Git(format!("author time: {e}")))?;
-    let committer_time = committer_sig
-        .time()
-        .map_err(|e| Error::Git(format!("committer time: {e}")))?;
     let message = decoded.message.to_string();
     let summary = message.lines().next().unwrap_or("").to_string();
     Ok(CommitMeta {
-        author_name: author_sig.name.to_string(),
-        author_email: author_sig.email.to_string(),
         author_date_rfc2822: format_rfc2822(author_time),
-        committer_time: committer_time.seconds,
         summary,
-        message,
     })
 }
 
-#[allow(dead_code)]
 fn format_rfc2822(t: gix::date::Time) -> String {
     // Produce `Thu, 1 Jan 1970 00:00:00 +0000` style matching `git show --format=%aD`.
     use chrono::{DateTime, FixedOffset};
@@ -458,52 +428,6 @@ pub(crate) fn commit_reachable_from_head(repo: &gix::Repository, anchor: &str) -
         Ok(base) => Ok(base.detach() == anchor_id),
         Err(_) => Ok(false),
     }
-}
-
-/// Is `anchor` reachable from any reference in the repository?
-// Unused while the resolver is stubbed in the Phase 1 types slice; the
-// engine slice re-wires it through the new `resolver::Engine`.
-#[allow(dead_code)]
-pub(crate) fn commit_reachable_from_any_ref(repo: &gix::Repository, anchor: &str) -> Result<bool> {
-    let anchor_id = match parse_oid(anchor) {
-        Ok(id) => id,
-        Err(_) => return Ok(false),
-    };
-    if let Ok(head_id) = repo.head_id().map(|id| id.detach()) {
-        if head_id == anchor_id {
-            return Ok(true);
-        }
-        if let Ok(base) = repo.merge_base(head_id, anchor_id)
-            && base.detach() == anchor_id
-        {
-            return Ok(true);
-        }
-    }
-    let refs = repo
-        .references()
-        .map_err(|e| Error::Git(format!("refs: {e}")))?;
-    let all = refs
-        .all()
-        .map_err(|e| Error::Git(format!("refs all: {e}")))?;
-    for r in all {
-        let mut r = match r {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        let tip = match r.peel_to_id() {
-            Ok(id) => id.detach(),
-            Err(_) => continue,
-        };
-        if tip == anchor_id {
-            return Ok(true);
-        }
-        // merge_base(tip, anchor) == anchor → anchor is ancestor of tip
-        match repo.merge_base(tip, anchor_id) {
-            Ok(base) if base.detach() == anchor_id => return Ok(true),
-            _ => continue,
-        }
-    }
-    Ok(false)
 }
 
 /// Create a commit object (without updating any ref) and return its hex OID.
