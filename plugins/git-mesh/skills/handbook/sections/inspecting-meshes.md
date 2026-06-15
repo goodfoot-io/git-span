@@ -105,13 +105,26 @@ git mesh why  <name> --at HEAD~5
 
 ## Walk mesh history
 
-The mesh is a tracked file; use plain git:
+`git mesh history <name>` walks every commit that changed the mesh file, oldest
+first, rendering each anchor's **source content** read from the tree at that
+commit (not the stored hash), plus a `current` block when the worktree has
+drifted. It omits no-op commits and reuses `stale`'s drift labels in `current`.
 
 ```bash
-git log --oneline -- .mesh/<name>
-git log -p -5 -- .mesh/<name>
-git show <commit>:.mesh/<name>
+git mesh history <name>                       # XML (default) — for reading
+git mesh history <name> --format json         # structured — for tooling
+git mesh history <name> [--since <commit-ish> | -n <count>]   # scope the walk
 ```
+
+- The XML is **not a parseable document** (no root, multiple top-level
+  `<commit>`). Read it, or use `--format json` to consume it.
+- The spine is mesh-*file* commits, not source history — edits between them fold
+  into the next snapshot, and `event="added"` means "entered the mesh," not
+  "written here." It is not blame: to *fix* drift, drive off `git mesh stale`
+  (`./responding-to-drift.md`), not this view.
+
+For the raw mesh-file diff (hashes, addresses) instead of anchor content, plain
+git still works: `git log -p -- .mesh/<name>`, `git show <commit>:.mesh/<name>`.
 
 ## Inspecting config
 

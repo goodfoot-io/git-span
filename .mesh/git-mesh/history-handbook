@@ -1,0 +1,4 @@
+packages/git-mesh/src/cli/history.rs#L1-L8 rk64:527d7e6aa7f5c064
+plugins/git-mesh/skills/handbook/sections/inspecting-meshes.md#L106-L127 rk64:499f7ce7b57d5f69
+
+Handbook documentation of the git mesh history subcommand behavior, which renders a chronological timeline of a mesh file's git history showing how anchors and the why prose evolved.

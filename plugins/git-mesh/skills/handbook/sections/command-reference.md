@@ -38,6 +38,7 @@ git mesh stale [<target>...] [--no-worktree] [--no-index]
 git mesh stale [<target>...] [--ignore-unavailable] [--no-exit-code]
 git mesh stale [<target>...] [--fix]                 # re-anchor in place; resolve .mesh/ conflicts
 git mesh tree <glob>... [-d|--depth <n>] [--format human|json]
+git mesh history <name> [--format xml|json] [--since <commit-ish>] [-n|--limit <count>]
 ```
 
 Each `<target>` is one of: a mesh name, a file path, or — for `list` only — a
@@ -192,4 +193,5 @@ A mesh name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a mesh name (so the bare `git mesh <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
 `delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
-`list`, `help`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`.
+`list`, `help`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`,
+`history`.
