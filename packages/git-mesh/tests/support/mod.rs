@@ -156,6 +156,24 @@ impl TestRepo {
         Ok(cmd.output()?)
     }
 
+    /// Run the `git-mesh` binary in this repo's directory with one extra
+    /// environment variable set. Used to drive the `GIT_MESH_CACHE_V2=0`
+    /// off-switch for cache vs cache-off parity assertions.
+    #[allow(dead_code)]
+    pub fn run_mesh_with_env<I, S>(&self, args: I, key: &str, val: &str) -> Result<Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-mesh"));
+        cmd.current_dir(self.dir.path());
+        cmd.env(key, val);
+        for a in args {
+            cmd.arg(a.as_ref());
+        }
+        Ok(cmd.output()?)
+    }
+
     /// Run the `git-mesh` binary from an explicit working directory.
     #[allow(dead_code)]
     pub fn run_mesh_from<I, S>(&self, args: I, cwd: &Path) -> Result<Output>

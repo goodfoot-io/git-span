@@ -310,8 +310,22 @@ pub(crate) fn stale_meshes_cached(
         for w in index_warnings {
             eprintln!("{w}");
         }
+        // Render input must carry the full anchor set (Fresh + non-Fresh)
+        // so the Human renderer shows fresh siblings of drifted meshes as
+        // bare bullets. The whole-result entry holds that backfilled set;
+        // the row-level baseline holds only non-Fresh findings. When a
+        // whole result is present, render from it (filtered to reportable
+        // meshes, matching the uncached backfill path); the totals it also
+        // carries let run_stale skip its per-invocation phases. Without a
+        // whole result (e.g. interior-anchor corpus), run_stale's own
+        // backfill reconstructs the fresh siblings from mesh-file records,
+        // so the non-Fresh baseline is the correct render input.
+        let meshes = match &baseline.whole_result {
+            Some(wr) => reportable(wr.meshes.clone()),
+            None => reportable(baseline.meshes),
+        };
         return Ok(CacheAttempt::Resolved {
-            meshes: reportable(baseline.meshes),
+            meshes,
             whole_result: baseline.whole_result,
         });
     }

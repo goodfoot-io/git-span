@@ -6,6 +6,7 @@ pub mod anchor_inside_mesh_root_reject;
 pub mod anchor_path_portability;
 pub mod batch_list_catalog_scan_amortized;
 pub mod cache_v2_dirty_source_content_key;
+pub mod cache_v2_partial_drift_parity;
 pub mod cache_v2_untracked_mesh_invalidation;
 pub mod cache_warm_perf;
 pub mod cargo_config_layout;
