@@ -11,6 +11,9 @@
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
 
+#[cfg(feature = "bench-corpus")]
+pub mod bench_corpus;
+
 pub mod cli;
 pub mod git;
 pub mod mesh;

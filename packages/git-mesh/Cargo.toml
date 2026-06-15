@@ -4,6 +4,9 @@ version = "1.0.117"
 edition = "2024"
 build = "build.rs"
 
+[features]
+bench-corpus = []
+
 [dependencies]
 anyhow = "1.0.102"
 bincode = "1.3"
@@ -98,3 +101,15 @@ harness = false
 [[bench]]
 name = "real_corpus"
 harness = false
+
+[[bench]]
+name = "size_sweep"
+harness = false
+required-features = ["bench-corpus"]
+
+[[bin]]
+name = "bench-corpus-gen"
+path = "src/bin/bench-corpus-gen.rs"
+test = false
+bench = false
+required-features = ["bench-corpus"]
