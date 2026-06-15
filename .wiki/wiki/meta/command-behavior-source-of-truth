@@ -1,0 +1,6 @@
+packages/git-mesh/src/cli/mod.rs#L35-L108 rk64:1ac9645752ff9856
+packages/git-mesh/src/cli/mod.rs#L373-L425 rk64:5f81ef54986189e0
+packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
+packages/git-mesh/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
+wiki/meta/git-mesh-documentation-touchpoints.md#L14-L20 rk64:93f7875bda7d33a4
+
