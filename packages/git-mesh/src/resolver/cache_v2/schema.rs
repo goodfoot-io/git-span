@@ -24,6 +24,12 @@ pub(crate) const DB_BASENAME: &str = "stale-cache.db";
 /// `cache_v2` cache namespace. Increment on any on-disk shape change.
 pub(crate) const KEY_SALT: i64 = 2;
 
+/// SQLite `user_version` schema discriminator.  Bump whenever `SCHEMA_SQL`
+/// changes shape (new table, column, or index).  Independent of `KEY_SALT`
+/// (the cache namespace / row discriminator): new tables can be added to
+/// `SCHEMA_SQL` without a `KEY_SALT` bump.
+const SCHEMA_VERSION: i64 = 1;
+
 /// Resolve the cache database path for a repository. The parent
 /// directory is created lazily by [`open_cache`].
 pub(crate) fn db_path(repo: &gix::Repository) -> PathBuf {
@@ -45,13 +51,24 @@ pub(crate) fn open_cache_at(path: &Path) -> Result<CacheDb> {
     }
     let conn = Connection::open(path)
         .map_err(|e| Error::Git(format!("open cache_v2 db `{}`: {e}", path.display())))?;
+    // Per-connection pragmas — must run on every open.
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| Error::Git(format!("set journal_mode=WAL: {e}")))?;
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(|e| Error::Git(format!("set synchronous=NORMAL: {e}")))?;
     conn.busy_timeout(std::time::Duration::from_millis(1_000))
         .map_err(|e| Error::Git(format!("set busy_timeout: {e}")))?;
-    apply_schema(&conn)?;
+    // Gate DDL on SCHEMA_VERSION — skip on warm opens when schema is current.
+    // user_version is set AFTER apply_schema succeeds (crash safety: a crash
+    // mid-schema leaves user_version at 0 and re-applies fully on next open).
+    let ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap_or(0);
+    if ver != SCHEMA_VERSION {
+        apply_schema(&conn)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| Error::Git(format!("set user_version: {e}")))?;
+    }
     Ok(CacheDb {
         conn,
         path: path.to_path_buf(),
@@ -299,11 +316,10 @@ pub(crate) fn write_prefixed(h: &mut Hasher, bytes: &[u8]) {
 /// or filter-driver change must therefore invalidate dependent rows.
 pub(crate) fn filter_config_hash(repo: &gix::Repository) -> [u8; 32] {
     let mut entries: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let cfg = repo.config_snapshot();
-    for key in ["core.autocrlf", "core.eol", "core.safecrlf"] {
-        entries.insert(key.to_string(), cfg.string(key).map(|v| v.to_string()));
-    }
     let snap = repo.config_snapshot();
+    for key in ["core.autocrlf", "core.eol", "core.safecrlf"] {
+        entries.insert(key.to_string(), snap.string(key).map(|v| v.to_string()));
+    }
     let file = snap.plumbing();
     let mut filter_pairs: Vec<(String, String, String)> = Vec::new();
     if let Some(sections) = file.sections_by_name("filter") {

@@ -115,6 +115,9 @@ pub(crate) fn stale_meshes_cached(
     options: EngineOptions,
 ) -> Result<CacheAttempt> {
     let _perf = crate::perf::span("resolver.cache_v2");
+    if std::env::var("GIT_MESH_CACHE_V2").as_deref() == Ok("0") {
+        return Ok(CacheAttempt::Fallback("disabled-by-env".into()));
+    }
     if let Some(reason) = ineligible_reason(options) {
         return Ok(CacheAttempt::Fallback(reason.to_string()));
     }
@@ -139,8 +142,9 @@ pub(crate) fn stale_meshes_cached(
     };
     // Availability inputs: LFS install + sparse/promisor activity. These
     // gate cached `ContentUnavailable` results.
+    let corpus_has_lfs = committed_gitattributes_has_lfs(repo);
     let availability =
-        availability_hash(lfs_installed(), sparse_active(repo), promisor_active(repo));
+        availability_hash(lfs_installed(corpus_has_lfs), sparse_active(repo), promisor_active(repo));
     let availability_hex = hex32(&availability);
 
     // ── Committed baseline (load or cold-build) ───────────────────────
@@ -609,11 +613,37 @@ fn file_content_identity(workdir: &std::path::Path, rel: &str) -> String {
     }
 }
 
-fn lfs_installed() -> bool {
+/// Check whether the committed `.gitattributes` at `HEAD` contains any
+/// `filter=lfs` pattern.  One blob read via `gix`; no subprocess.  Returns
+/// `false` when the file is absent, unreadable, or contains no LFS filter.
+fn committed_gitattributes_has_lfs(repo: &gix::Repository) -> bool {
+    let oid =
+        match crate::git::tree_entry_at(repo, "HEAD", std::path::Path::new(".gitattributes")) {
+            Ok(Some((mode, oid))) if mode.is_blob() => oid,
+            _ => return false,
+        };
+    match repo.find_object(oid) {
+        Ok(obj) => {
+            let data = obj.into_blob().detach().data;
+            // Look for `filter=lfs` anywhere in the attributes file.
+            data.windows(10).any(|w| w == b"filter=lfs")
+        }
+        Err(_) => false,
+    }
+}
+
+fn lfs_installed(corpus_has_lfs: bool) -> bool {
+    if !corpus_has_lfs {
+        // Common case: no LFS patterns in committed .gitattributes — skip fork.
+        return false;
+    }
+    // LFS content present — preserve exact git lfs version semantics.
     std::process::Command::new("git")
         .args(["lfs", "version"])
-        .output()
-        .map(|o| o.status.success())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
         .unwrap_or(false)
 }
 
