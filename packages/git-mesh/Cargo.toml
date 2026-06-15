@@ -94,3 +94,7 @@ harness = false
 [[bench]]
 name = "stale_warm"
 harness = false
+
+[[bench]]
+name = "real_corpus"
+harness = false
