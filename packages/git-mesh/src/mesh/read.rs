@@ -56,33 +56,163 @@ pub fn load_all_meshes_in(
     let mut names = crate::perf::time_list_discover(|| reader.list_mesh_names())?;
     names.sort();
     crate::perf::record_list_meshes_discovered(names.len() as u64);
+    // Phase 2: per-mesh read + parse, parallelized across worker threads.
+    crate::perf::time_list_parse(|| read_effective_parallel(repo, mesh_root, names))
+}
+
+/// Per-name outcome of a `read_effective` call, carried back from a worker
+/// thread tagged with the name's original (sorted) index so the caller can
+/// reassemble results deterministically regardless of completion order.
+enum LoadSlot {
+    /// `Ok(Some(file))` → a live mesh at this index.
+    Loaded(Mesh),
+    /// `Ok(None)` → name is tombstoned in the effective view; contributes
+    /// nothing to either output vector.
+    Tombstoned,
+    /// `Err(MeshConflict)` → name is in a Git conflict state; surfaced in the
+    /// separate `conflicted` list rather than the loaded set.
+    Conflicted,
+}
+
+/// Read and parse the effective view of each `name` concurrently, then
+/// reassemble the loaded meshes and conflicted names in the original sorted
+/// order. Output is byte-identical to a serial loop over `names`:
+///
+/// * `(loaded, conflicted)` are both ordered by the input (sorted) name order.
+/// * The first hard error in sorted order wins and is returned (matching the
+///   serial `?` early-exit; concurrency only changes which error is *observed*
+///   first, never which one is *reported*).
+///
+/// `gix::Repository` is `!Sync` (it holds a `RefCell` buffer free-list), so a
+/// single reader cannot be shared by reference across threads. Each worker
+/// instead owns a cheap `repo.clone()` (handles are designed for this — see
+/// `gix::Repository`'s `Clone` impl) and builds its own `MeshFileReader`.
+/// `Repository` is `Send` (the `parallel` gix feature, active here transitively
+/// via `max-performance-safe`), so moving an owned clone into a scoped thread
+/// is sound. This mirrors the established pattern in
+/// `resolver::engine::resolve_named_meshes_parallel`.
+fn read_effective_parallel(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: Vec<String>,
+) -> Result<LoadedMeshes> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    // Serial fast path for trivial corpora / single-core hosts: avoids thread
+    // spawn overhead and keeps the common small-repo case allocation-light.
+    if names.len() <= 1 || cpus <= 1 {
+        return read_effective_serial(repo, mesh_root, &names);
+    }
+    // Cap workers at the corpus size and a fixed ceiling: per-name reads are
+    // I/O-bound (fuse round-trips overlap), so a modest pool saturates the
+    // filesystem without spawning a thread per mesh.
+    let workers = cpus.min(names.len()).min(16);
+
+    let next_idx = AtomicUsize::new(0);
+    // Each worker drains a private buffer of (index, slot) into the shared
+    // vec once, under a single lock acquisition, to keep contention off the
+    // hot read path.
+    let slots: Mutex<Vec<(usize, LoadSlot)>> = Mutex::new(Vec::with_capacity(names.len()));
+    let fatal: Mutex<Option<Error>> = Mutex::new(None);
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            // Per-thread owned reader over a cheap repo handle clone: gix's
+            // RefCell buffer pool means the reader is not shareable by &ref.
+            let repo = repo.clone();
+            let names = &names;
+            let next_idx = &next_idx;
+            let slots = &slots;
+            let fatal = &fatal;
+            s.spawn(move || {
+                let reader = MeshFileReader::new(&repo, mesh_root.to_string());
+                let mut local: Vec<(usize, LoadSlot)> = Vec::new();
+                loop {
+                    if fatal.lock().unwrap().is_some() {
+                        break;
+                    }
+                    let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                    if i >= names.len() {
+                        break;
+                    }
+                    let name = &names[i];
+                    match reader.read_effective(name) {
+                        Ok(Some(file)) => {
+                            local.push((i, LoadSlot::Loaded(mesh_from_file(name, &file))));
+                        }
+                        Ok(None) => local.push((i, LoadSlot::Tombstoned)),
+                        Err(Error::MeshConflict(_)) => local.push((i, LoadSlot::Conflicted)),
+                        Err(e) => {
+                            fatal.lock().unwrap().get_or_insert(e);
+                            break;
+                        }
+                    }
+                }
+                slots.lock().unwrap().extend(local);
+            });
+        }
+    });
+
+    if let Some(e) = fatal.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    // Reassemble in the original sorted order: index the slots, then walk
+    // names by index so both output vectors match the serial loop exactly.
+    let mut by_index: Vec<Option<LoadSlot>> = (0..names.len()).map(|_| None).collect();
+    for (i, slot) in slots.into_inner().unwrap() {
+        by_index[i] = Some(slot);
+    }
     let mut out = Vec::with_capacity(names.len());
     let mut conflicted = Vec::new();
-    // Phase 2: per-mesh read + parse. The closure return is propagated so the
-    // timer wraps the full loop without changing the `?` early-exit semantics.
-    crate::perf::time_list_parse(|| -> Result<()> {
-        for name in names {
-            // A name can appear in `list_mesh_names` (e.g. present in HEAD)
-            // yet be tombstoned in the effective view; skip those rather
-            // than erroring so the batch resolves the live set.
-            //
-            // A mesh in a Git conflict state cannot be read reliably. It is
-            // surfaced separately as a `Conflict` finding by the stale path;
-            // collecting it here lets callers avoid a separate
-            // `conflicted_mesh_names_in` scan (still fail-closed: the conflict
-            // is reported, exit is non-zero).
-            match reader.read_effective(&name) {
-                Ok(Some(file)) => {
-                    crate::perf::record_list_mesh_parsed();
-                    out.push((name.clone(), mesh_from_file(&name, &file)));
-                }
-                Ok(None) => {}
-                Err(Error::MeshConflict(_)) => conflicted.push(name.clone()),
-                Err(e) => return Err(e),
+    for (name, slot) in names.into_iter().zip(by_index) {
+        match slot.expect("every index is filled when no fatal error is recorded") {
+            LoadSlot::Loaded(mesh) => {
+                crate::perf::record_list_mesh_parsed();
+                out.push((name, mesh));
             }
+            LoadSlot::Tombstoned => {}
+            LoadSlot::Conflicted => conflicted.push(name),
         }
-        Ok(())
-    })?;
+    }
+    Ok((out, conflicted))
+}
+
+/// Serial read+parse over `names`, used for trivial corpora and single-core
+/// hosts. Kept byte-identical to the parallel reassembly: same ordering, same
+/// conflict handling, same first-error-wins `?` semantics.
+fn read_effective_serial(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+) -> Result<LoadedMeshes> {
+    let reader = MeshFileReader::new(repo, mesh_root.to_string());
+    let mut out = Vec::with_capacity(names.len());
+    let mut conflicted = Vec::new();
+    for name in names {
+        // A name can appear in `list_mesh_names` (e.g. present in HEAD)
+        // yet be tombstoned in the effective view; skip those rather
+        // than erroring so the batch resolves the live set.
+        //
+        // A mesh in a Git conflict state cannot be read reliably. It is
+        // surfaced separately as a `Conflict` finding by the stale path;
+        // collecting it here lets callers avoid a separate
+        // `conflicted_mesh_names_in` scan (still fail-closed: the conflict
+        // is reported, exit is non-zero).
+        match reader.read_effective(name) {
+            Ok(Some(file)) => {
+                crate::perf::record_list_mesh_parsed();
+                out.push((name.clone(), mesh_from_file(name, &file)));
+            }
+            Ok(None) => {}
+            Err(Error::MeshConflict(_)) => conflicted.push(name.clone()),
+            Err(e) => return Err(e),
+        }
+    }
     Ok((out, conflicted))
 }
 
