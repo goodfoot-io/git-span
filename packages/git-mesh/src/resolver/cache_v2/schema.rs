@@ -83,8 +83,10 @@ fn apply_schema(conn: &Connection) -> Result<()> {
 
 /// Canonical schema, transcribed from the card's "Schema Sketch". Only
 /// the tables this implementation reads/writes are created; the full
-/// set is defined so the on-disk shape matches the spec and future
-/// slices can populate the remaining tables without a salt bump.
+/// set is defined so the on-disk shape matches the spec. Any change to
+/// the table set or DDL shape requires bumping `SCHEMA_VERSION` (distinct
+/// from `KEY_SALT`, the row/namespace discriminator) so that existing
+/// databases apply the new DDL on next open.
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS mesh_anchor_rows (
   mesh_tree_key  TEXT NOT NULL,
