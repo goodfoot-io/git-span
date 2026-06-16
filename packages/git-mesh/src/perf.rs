@@ -113,6 +113,25 @@ static LIST_MESHES_PARSED: AtomicU64 = AtomicU64::new(0);
 static LIST_BYTES_PARSED: AtomicU64 = AtomicU64::new(0);
 static LIST_LAYER_READS: AtomicU64 = AtomicU64::new(0);
 
+// ── `git mesh stale --fix` phase counters ────────────────────────────────────
+//
+// Attribution for the `--fix`-specific delta over plain `stale`. `--fix` does
+// three things on top of a read-only scan: (1) a PRE-fix resolve to find drift,
+// (2) `apply_fix` which rewrites `.mesh/` files (each rewritten anchor recomputes
+// a content hash), and (3) a POST-fix re-resolve/splice of the rewritten meshes
+// to render the final view. These wall-clock and count counters split the delta
+// across those phases. Unlike the resolver `session.*` counters (reset per
+// `stale_meshes_inner` run), these MUST survive across BOTH the pre- and post-fix
+// resolve passes within one `--fix` invocation, so they are reset once at the top
+// of `run_stale` and read back in the `fix.*` emit block at its end. Values are
+// meaningful for a single `stale --fix` invocation per process.
+static FIX_PRE_RESOLVE_NS: AtomicU64 = AtomicU64::new(0);
+static FIX_APPLY_NS: AtomicU64 = AtomicU64::new(0);
+static FIX_POST_RESOLVE_NS: AtomicU64 = AtomicU64::new(0);
+static FIX_REWRITABLE_ANCHORS: AtomicU64 = AtomicU64::new(0);
+static FIX_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
+static FIX_MESHES_REWRITTEN: AtomicU64 = AtomicU64::new(0);
+
 pub fn record_gix_open() {
     if !enabled() {
         return;
@@ -323,6 +342,99 @@ pub fn reset_list_counters() {
     LIST_MESHES_PARSED.store(0, Ordering::Relaxed);
     LIST_BYTES_PARSED.store(0, Ordering::Relaxed);
     LIST_LAYER_READS.store(0, Ordering::Relaxed);
+}
+
+// ── `git mesh stale --fix` phase timers / counters ───────────────────────────
+//
+// The three phase wall-clocks are recorded as raw nanosecond deltas rather than
+// via a closure-style `time_*` wrapper: each phase in `run_stale` is a large
+// block that propagates errors with `?`, which a `FnOnce` closure cannot do
+// cleanly. The caller takes one `Instant` (only when `args.fix && enabled()`,
+// keeping the off path zero-cost) and feeds the elapsed nanoseconds here.
+
+/// Record the PRE-fix stale resolve wall-clock (the pass that finds drift before
+/// any mesh file is rewritten), in nanoseconds.
+pub fn record_fix_pre_resolve_ns(ns: u64) {
+    if !enabled() {
+        return;
+    }
+    FIX_PRE_RESOLVE_NS.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Record the `apply_fix` wall-clock — the rewrite+hash+coalesce work that edits
+/// `.mesh/` files, EXCLUDING the post-fix re-resolve that follows it — in
+/// nanoseconds.
+pub fn record_fix_apply_ns(ns: u64) {
+    if !enabled() {
+        return;
+    }
+    FIX_APPLY_NS.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Record the POST-fix re-resolve/splice wall-clock (named scope or bare scan),
+/// which produces the final rendered view, in nanoseconds.
+pub fn record_fix_post_resolve_ns(ns: u64) {
+    if !enabled() {
+        return;
+    }
+    FIX_POST_RESOLVE_NS.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Record one anchor actually rewritten by `apply_fix`'s per-anchor loop.
+pub fn record_fix_rewritable_anchor() {
+    if !enabled() {
+        return;
+    }
+    FIX_REWRITABLE_ANCHORS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record one `hash_anchor_content` invocation made during `apply_fix`
+/// (per-anchor rewrite loop) or `coalesce_line_ranges`.
+pub fn record_fix_hash_call() {
+    if !enabled() {
+        return;
+    }
+    FIX_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record the count of mesh files rewritten to disk by `apply_fix` (the size of
+/// its `rewritten_mesh_names` set). Added once per `--fix` invocation.
+pub fn record_fix_meshes_rewritten_count(n: u64) {
+    if !enabled() {
+        return;
+    }
+    FIX_MESHES_REWRITTEN.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn fix_pre_resolve_us() -> u64 {
+    FIX_PRE_RESOLVE_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn fix_apply_us() -> u64 {
+    FIX_APPLY_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn fix_post_resolve_us() -> u64 {
+    FIX_POST_RESOLVE_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn fix_rewritable_anchors() -> u64 {
+    FIX_REWRITABLE_ANCHORS.load(Ordering::Relaxed)
+}
+pub fn fix_hash_calls() -> u64 {
+    FIX_HASH_CALLS.load(Ordering::Relaxed)
+}
+pub fn fix_meshes_rewritten() -> u64 {
+    FIX_MESHES_REWRITTEN.load(Ordering::Relaxed)
+}
+
+/// Reset the `git mesh stale --fix` phase counters. Called once at the top of
+/// `run_stale` so the `fix.*` emit block reports values from a single `--fix`
+/// invocation, accumulated across BOTH the pre- and post-fix resolve passes.
+pub fn reset_fix_counters() {
+    FIX_PRE_RESOLVE_NS.store(0, Ordering::Relaxed);
+    FIX_APPLY_NS.store(0, Ordering::Relaxed);
+    FIX_POST_RESOLVE_NS.store(0, Ordering::Relaxed);
+    FIX_REWRITABLE_ANCHORS.store(0, Ordering::Relaxed);
+    FIX_HASH_CALLS.store(0, Ordering::Relaxed);
+    FIX_MESHES_REWRITTEN.store(0, Ordering::Relaxed);
 }
 
 pub fn gix_open_calls() -> u64 {

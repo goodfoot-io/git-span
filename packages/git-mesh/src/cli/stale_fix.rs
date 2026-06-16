@@ -612,6 +612,7 @@ pub(crate) fn apply_fix(
             let idx = index_snapshot.as_deref().unwrap_or(&[]);
             let hash_hex: String = match layer {
                 DriftSource::Worktree => {
+                    crate::perf::record_fix_hash_call();
                     match hash_anchor_content(repo, &cur_path_str, &cur_extent, None, idx) {
                         Ok((_alg, h)) => h,
                         Err(_) => continue,
@@ -622,6 +623,7 @@ pub(crate) fn apply_fix(
                         Some(o) => o,
                         None => continue,
                     };
+                    crate::perf::record_fix_hash_call();
                     match hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx) {
                         Ok((_alg, h)) => h,
                         Err(_) => continue,
@@ -682,6 +684,7 @@ pub(crate) fn apply_fix(
             record.algorithm = RK64_ALGORITHM.to_string();
             record.content_hash = hash_hex;
             rewritten.insert(resolved.anchor_id.clone());
+            crate::perf::record_fix_rewritable_anchor();
             any_rewritten = true;
         }
 
@@ -897,6 +900,7 @@ fn coalesce_line_ranges(
                             start,
                             end: new_end,
                         };
+                        crate::perf::record_fix_hash_call();
                         match hash_anchor_content(repo, &path, &extent, None, index_snapshot) {
                             Ok((_alg, h)) => {
                                 members.push(i);

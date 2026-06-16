@@ -209,6 +209,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         return run_stale_batch_porcelain(repo, &args, mesh_root);
     }
 
+    // Reset the `--fix` phase counters once per invocation. The pre- and
+    // post-fix resolve passes both feed these process-global counters, so they
+    // are reset here (not inside the resolver, which resets per resolve session)
+    // and read back in the `fix.*` emit block at the end of `run_stale`.
+    crate::perf::reset_fix_counters();
+
     // `--fix` is only meaningful with the Human renderer (post-rewrite
     // view); machine formats stream drifted findings only.
     if args.fix && !matches!(args.format, StaleFormat::Human) {
@@ -333,6 +339,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // worktree-effective source; reloading per-site was pure overhead.
     // `None` on the non-scoped path — those sites reload unconditionally.
     let mut scoped_corpus: Option<Vec<(String, crate::types::Mesh)>> = None;
+
+    // PRE-fix resolve timer: only the `--fix` path attributes this pass, so the
+    // start instant is taken (under perf) only when `args.fix`. The elapsed is
+    // recorded into `fix.pre-resolve-us` just after the resolve block.
+    let pre_resolve_start =
+        (args.fix && crate::perf::enabled()).then(std::time::Instant::now);
 
     let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh. Pending-only meshes are NOT
@@ -549,6 +561,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         meshes
     };
 
+    // Record the PRE-fix resolve wall-clock (see `pre_resolve_start`). The
+    // post-fix re-resolve is attributed separately inside the `--fix` block.
+    if let Some(start) = pre_resolve_start {
+        crate::perf::record_fix_pre_resolve_ns(start.elapsed().as_nanos() as u64);
+    }
+
     // ── Count totals (moved after resolution so whole_result can short-circuit) ──
     //
     // Whole-result warm-clean short-circuit: when the cache returns a
@@ -708,7 +726,32 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             // A named scope already carries each mesh's full anchor set.
             meshes.clone()
         };
+        // Source-layer reuse on the warm cache path. The pre-fix resolve only
+        // retains `SourceLayers` on the cold (`stale_meshes_inner`) path; on a
+        // warm cache_v2 hit (the common case) `pre_fix_source_layers` is None,
+        // so the post-fix splice would rebuild the worktree/index `git status`
+        // source scan from scratch. Build it ONCE here — before `apply_fix`
+        // mutates `.mesh/`, so the scan reflects the pre-fix worktree exactly
+        // as the cold-path reuse does — and thread it into the post-fix
+        // re-resolve. Skipped when an interior anchor is present (the baseline
+        // full re-resolve below must not reuse layers — see the gate above) and
+        // when the pre-fix already retained layers (cold path; reuse those).
+        //
+        // Byte-identical: `from_source_layers` reconstructs the same
+        // `EngineState` fields a fresh `EngineState::new` would, and the
+        // pre-`apply_fix` worktree status is correct for every post-fix anchor
+        // (no anchor path is under `mesh_root`, gated above) — the same
+        // soundness argument the cold-path reuse already relies on.
+        if pre_fix_source_layers.is_none() && !has_interior_anchor {
+            let _perf = crate::perf::span("stale.fix-build-source-layers");
+            pre_fix_source_layers = Some(crate::resolver::build_source_layers(repo, options)?);
+        }
+        let apply_start = crate::perf::enabled().then(std::time::Instant::now);
         let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root)?;
+        if let Some(start) = apply_start {
+            crate::perf::record_fix_apply_ns(start.elapsed().as_nanos() as u64);
+        }
+        let post_resolve_start = crate::perf::enabled().then(std::time::Instant::now);
         if has_interior_anchor {
             // Baseline path: full re-resolve with no splice / no source-layer
             // reuse. Drop the retained source layers (their subprocess handles
@@ -750,6 +793,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             )?;
         }
         sort_meshes_by_anchor_path(&mut meshes);
+        if let Some(start) = post_resolve_start {
+            crate::perf::record_fix_post_resolve_ns(start.elapsed().as_nanos() as u64);
+        }
+        crate::perf::record_fix_meshes_rewritten_count(fix_result.rewritten_mesh_names.len() as u64);
         fix_result.rewritten_anchor_ids
     } else {
         // File-backed model: no mesh-commit rewrite, so no auto-follow.
@@ -1029,6 +1076,20 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
+
+    // `--fix` phase attribution (GIT_MESH_PERF). Emitted only for the `--fix`
+    // path and only when perf is enabled, alongside the resolver `session.*`
+    // counters already printed by each resolve pass. Splits the `--fix`-specific
+    // delta across the pre-fix resolve, `apply_fix`, and the post-fix re-resolve.
+    if args.fix && crate::perf::enabled() {
+        crate::perf::counter("fix.pre-resolve-us", crate::perf::fix_pre_resolve_us());
+        crate::perf::counter("fix.apply-us", crate::perf::fix_apply_us());
+        crate::perf::counter("fix.post-resolve-us", crate::perf::fix_post_resolve_us());
+        crate::perf::counter("fix.rewritable-anchors", crate::perf::fix_rewritable_anchors());
+        crate::perf::counter("fix.hash-calls", crate::perf::fix_hash_calls());
+        crate::perf::counter("fix.meshes-rewritten", crate::perf::fix_meshes_rewritten());
+    }
+
     Ok(exit)
 }
 

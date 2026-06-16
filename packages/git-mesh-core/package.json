@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-core",
-  "version": "1.0.117",
+  "version": "1.0.118",
   "private": true,
   "scripts": {
     "test": "bash ../git-mesh/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh-core/build\" cargo test --locked",

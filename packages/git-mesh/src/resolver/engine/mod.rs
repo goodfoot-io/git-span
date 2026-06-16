@@ -300,6 +300,47 @@ impl EngineState {
         }
     }
 
+    /// Build ONLY the reusable source-layer state — the worktree/index source
+    /// layer scan (`read_layer_status` + `read_worktree_layer*`) — without
+    /// resolving any mesh. Used by `stale --fix` to compute the source layers
+    /// once (before `apply_fix` mutates `.mesh/` files) and reuse them for the
+    /// post-fix re-resolve via `from_source_layers`, so the post-fix pass does
+    /// NOT re-run the `git status` source scan.
+    ///
+    /// Emits any source-layer init warnings (rare: index/worktree read
+    /// budget downgrades) exactly as the cold-path `finish_retaining_layers`
+    /// does, so they surface once — `from_source_layers` then starts clean and
+    /// cannot re-emit them. A freshly built state has no session warnings yet,
+    /// so only the `EngineState::new` init warnings are forwarded.
+    ///
+    /// Soundness (identical to `from_source_layers`): `apply_fix` writes only
+    /// under `mesh_root` and no anchor path is under `mesh_root` (interior
+    /// anchors are excised / gated), so the pre-`apply_fix` worktree status is
+    /// correct for every post-fix per-anchor source resolution. The rewritten
+    /// mesh files appear dirty in `git status` but the resolver never examines
+    /// a mesh-root path, so their absence from `worktree_diffs` is immaterial.
+    pub(crate) fn build_source_layers(
+        repo: &gix::Repository,
+        layers: LayerSet,
+        needs_all_layers: bool,
+    ) -> Result<SourceLayers> {
+        let mut state = EngineState::new(repo, layers, needs_all_layers)?;
+        for w in &state.warnings {
+            eprintln!("{w}");
+        }
+        state.warnings.clear();
+        Ok(SourceLayers {
+            layers: state.layers,
+            head_sha: state.head_sha,
+            clean_layers: state.clean_layers,
+            index_diffs: state.index_diffs,
+            worktree_diffs: state.worktree_diffs,
+            conflicted_paths: state.conflicted_paths,
+            lfs: state.lfs,
+            custom_filters: state.custom_filters,
+        })
+    }
+
     /// Reconstruct an `EngineState` from source-layer state captured by a
     /// pre-fix `finish_retaining_layers`, reusing the worktree/index source
     /// layer instead of re-reading it via `read_worktree_layer*`.
@@ -645,6 +686,17 @@ pub(crate) fn resolve_named_meshes(
     let state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     let (out, _) = resolve_named_meshes_with_state(repo, mesh_root, names, options, state, false)?;
     Ok(out)
+}
+
+/// Build the reusable source-layer state (worktree/index `git status` scan)
+/// without resolving any mesh. Used by `stale --fix` to compute the source
+/// layers once before `apply_fix` mutates `.mesh/`, then reuse them for the
+/// post-fix re-resolve so the post-fix pass skips its own source scan.
+pub(crate) fn build_source_layers(
+    repo: &gix::Repository,
+    options: EngineOptions,
+) -> Result<SourceLayers> {
+    EngineState::build_source_layers(repo, options.layers, options.needs_all_layers)
 }
 
 /// Like `resolve_named_meshes`, but reuses source-layer state captured by a

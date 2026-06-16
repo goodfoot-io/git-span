@@ -34,7 +34,7 @@ pub use engine::{
 };
 pub(crate) use cache_v2::WholeResult;
 pub(crate) use engine::{
-    SourceLayers, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
+    SourceLayers, build_source_layers, mesh_is_reportable_in_stale_discovery, resolve_named_meshes,
     resolve_named_meshes_retaining_source_layers, resolve_named_meshes_with_source_layers,
     sort_meshes_by_anchor_path, stale_meshes_retaining_source_layers,
 };
