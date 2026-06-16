@@ -13,7 +13,7 @@
     "noise_floor_ms": 40.0
   },
   "history": {
-    "median_ms": 175.0,
+    "median_ms": 45.0,
     "noise_floor_ms": 35.0
   },
   "stale-cold": {

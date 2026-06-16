@@ -211,7 +211,25 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
 /// caller receives at most `n` entries.
 ///
 /// Results are in git-log order (most recent first). Merge commits are excluded.
-/// Rename tracking is disabled (same as `git_log_name_only`).
+///
+/// # Why this is path-targeted, not a full tree diff
+///
+/// A given commit qualifies iff one of the (few) `seed_paths` changed between
+/// it and its first parent. Diffing the *whole* tree of each commit pair —
+/// reading every subtree object across the repo — to then keep only the seed
+/// paths is enormously wasteful: with `n = usize::MAX` (the `history` default)
+/// the walk must visit every reachable commit to confirm the rest do not
+/// qualify, so the per-commit cost is multiplied by the entire history. On a
+/// fuse filesystem that full-tree-diff scan dominated `git mesh history`
+/// (~97% of wall-clock). Instead we look up each seed path's blob OID in the
+/// commit's tree and its first parent's tree and compare: a path changed iff
+/// the OIDs differ, where "absent" (no entry, including the root commit's
+/// empty-tree parent) is its own distinct state. This reads at most a handful
+/// of tree objects along each seed path's directory chain per commit instead
+/// of the whole tree, and is byte-for-byte equivalent to `git log -- <paths>`
+/// for which commits qualify (rename tracking is off in both, so a rename is
+/// seen as the delete+add of its endpoints — matching the prior full-diff
+/// behavior with `track_rewrites(None)`).
 pub fn git_log_name_only_for_paths(
     repo: &gix::Repository,
     n: usize,
@@ -221,8 +239,7 @@ pub fn git_log_name_only_for_paths(
         return Ok((Vec::new(), true));
     }
 
-    let seed_set: std::collections::BTreeSet<&str> =
-        seed_paths.iter().map(|p| p.as_str()).collect();
+    let seed_paths: Vec<&str> = seed_paths.iter().map(|p| p.as_str()).collect();
 
     let head_id = repo
         .head_id()
@@ -244,11 +261,25 @@ pub fn git_log_name_only_for_paths(
     // the `n` cap long before this fires. The budget must stay well clear of
     // the worst-case cost of a *small* history so a complete walk is never
     // truncated to `walk_complete = false` merely because the host is busy:
-    // `gix` tree-diff on Windows under parallel test load is ~10-25x slower
+    // `gix` tree lookups on Windows under parallel test load are ~10-25x slower
     // than the Linux baseline this was originally tuned against, and a
     // spuriously incomplete walk silently disables the history cache and
     // degrades suggestions. 8s still bounds genuinely huge repos.
     let budget = std::time::Duration::from_secs(8);
+
+    /// Look up the blob OID at `path` in `tree`. Returns `None` when the path is
+    /// absent or does not resolve to a blob/symlink (a directory at that path is
+    /// treated as "no blob here", matching the prior diff's blob-only filter).
+    fn blob_oid_at(tree: &gix::Tree<'_>, path: &str) -> Option<ObjectId> {
+        // `lookup_entry_by_path` clones the tree's data internally; it is the
+        // same primitive `tree_entry_at`/`read_mesh_at_in` use.
+        let entry = tree.clone().lookup_entry_by_path(Path::new(path)).ok()??;
+        if entry.mode().is_blob_or_symlink() {
+            Some(entry.object_id())
+        } else {
+            None
+        }
+    }
 
     for info in walk {
         if out.len() >= n {
@@ -280,84 +311,26 @@ pub fn git_log_name_only_for_paths(
             None => repo.empty_tree(),
         };
 
-        let mut opts = gix::diff::Options::default();
-        opts.track_rewrites(None);
-
-        let changes = repo
-            .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts))
-            .map_err(|e| Error::Git(format!("diff tree {}: {e}", info.id)))?;
-
-        let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for change in &changes {
-            use gix::object::tree::diff::ChangeDetached;
-            match change {
-                ChangeDetached::Addition {
-                    location,
-                    entry_mode,
-                    ..
-                }
-                | ChangeDetached::Deletion {
-                    location,
-                    entry_mode,
-                    ..
-                } => {
-                    if !entry_mode.is_blob_or_symlink() {
-                        continue;
-                    }
-                    paths.insert(
-                        std::str::from_utf8(location.as_slice())
-                            .unwrap_or_default()
-                            .to_string(),
-                    );
-                }
-                ChangeDetached::Modification {
-                    location,
-                    entry_mode,
-                    ..
-                } => {
-                    if !entry_mode.is_blob_or_symlink() {
-                        continue;
-                    }
-                    paths.insert(
-                        std::str::from_utf8(location.as_slice())
-                            .unwrap_or_default()
-                            .to_string(),
-                    );
-                }
-                ChangeDetached::Rewrite {
-                    source_location,
-                    source_entry_mode,
-                    location,
-                    entry_mode,
-                    ..
-                } => {
-                    if source_entry_mode.is_blob_or_symlink() {
-                        paths.insert(
-                            std::str::from_utf8(source_location.as_slice())
-                                .unwrap_or_default()
-                                .to_string(),
-                        );
-                    }
-                    if entry_mode.is_blob_or_symlink() {
-                        paths.insert(
-                            std::str::from_utf8(location.as_slice())
-                                .unwrap_or_default()
-                                .to_string(),
-                        );
-                    }
-                }
+        // A seed path changed at this commit iff its blob OID differs between
+        // the commit's tree and its first parent's tree. Present↔absent and
+        // blob↔blob-with-different-content both register as a change; a path
+        // unchanged on both sides registers as no change. This is the per-path
+        // restriction of the old full-tree diff's Addition/Deletion/Modification
+        // verdict.
+        let mut changed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for &path in &seed_paths {
+            if blob_oid_at(&new_tree, path) != blob_oid_at(&old_tree, path) {
+                changed.insert(path.to_string());
             }
         }
 
-        // Qualify only if this commit's changed paths intersect the seed set.
-        let qualifies = paths.iter().any(|p| seed_set.contains(p.as_str()));
-        if !qualifies {
+        if changed.is_empty() {
             continue;
         }
 
         out.push(CommitChanges {
             hash: info.id.to_string(),
-            changed_paths: paths.into_iter().collect(),
+            changed_paths: changed.into_iter().collect(),
         });
     }
 
