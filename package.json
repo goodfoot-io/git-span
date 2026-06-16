@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-monorepo",
-  "version": "1.0.120",
+  "version": "1.0.121",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/goodfoot-io/git-mesh.git"
@@ -29,7 +29,7 @@
     "release": "bash scripts/release.sh"
   },
   "private": true,
-  "packageManager": "yarn@4.13.0",
+  "packageManager": "yarn@4.17.0",
   "devDependencies": {
     "@biomejs/biome": "^2.3.13",
     "@types/node": "24.x",
