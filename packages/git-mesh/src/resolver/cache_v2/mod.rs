@@ -141,8 +141,14 @@ pub(crate) fn stale_meshes_cached(
         key_salt: KEY_SALT,
     };
     // Availability inputs: LFS install + sparse/promisor activity. These
-    // gate cached `ContentUnavailable` results.
-    let corpus_has_lfs = committed_gitattributes_has_lfs(repo);
+    // gate cached `ContentUnavailable` results. LFS detection scans the
+    // actual anchored corpus (committed `.gitattributes` in any ancestor
+    // directory of an anchored path, plus any anchored file whose committed
+    // blob is itself an LFS pointer), not only the root `.gitattributes` —
+    // a subdirectory `.gitattributes` or a pointer blob committed without
+    // root attributes must still force the `git lfs version` probe so a
+    // cached `ContentUnavailable` cannot survive an LFS install.
+    let corpus_has_lfs = corpus_has_lfs(repo, &mesh_root);
     let availability =
         availability_hash(lfs_installed(corpus_has_lfs), sparse_active(repo), promisor_active(repo));
     let availability_hex = hex32(&availability);
@@ -166,85 +172,18 @@ pub(crate) fn stale_meshes_cached(
                 if let Err(e) = store_baseline(&db, &committed, &availability_hex, &meshes) {
                     crate::perf::note(&format!("cache_v2.store-baseline-failed: {e}"));
                 }
-                // Store the whole-result cache entry: backfill fresh
-                // anchors from mesh-file records so warm-clean repeats can
-                // skip every per-invocation phase in run_stale.
+                // The whole-result entry is NOT stored here. The cold
+                // baseline build can run on a DIRTY tree (any baseline miss
+                // builds it, regardless of worktree state), and the
+                // whole-result render must be byte-identical to the effective
+                // cache-off resolution — which reads source content from the
+                // worktree. Storing an effective render under the
+                // committed-only key while the tree is dirty would freeze
+                // worktree drift into a committed-keyed entry (an F1-class
+                // bug). The whole result is therefore built and stored only
+                // on the warm-CLEAN path below, where the effective and
+                // committed-key views coincide by construction.
                 //
-                // The entry is keyed by COMMITTED identity
-                // (`source_tree_key`/`mesh_tree_key`), which uncommitted
-                // worktree edits to a committed `.mesh/<name>` file do not
-                // change. Its content must therefore be committed-derived
-                // too: read each committed mesh from the HEAD layer, never
-                // the worktree-effective `load_all_meshes_in`. Otherwise a
-                // cold build performed while a committed mesh file has
-                // uncommitted worktree edits would freeze worktree-only
-                // anchors into a committed-keyed entry, and a later
-                // warm-clean read (after the worktree is reverted without an
-                // intervening commit) would render those phantom anchors.
-                if let Ok(file_records) = committed_mesh_records(repo, &mesh_root) {
-                    // Fail-closed: never store a whole result for a corpus that
-                    // carries an interior anchor. A whole-result hit lets
-                    // run_stale skip its per-invocation interior-anchor scan
-                    // (the cached result is presumed clean), but the whole
-                    // result persists no violation record — so caching a
-                    // poisoned corpus would silently drop the loud, actionable
-                    // interior-anchor report on every subsequent run. Skipping
-                    // the store keeps such corpora on the scanning path.
-                    let has_interior_anchor = file_records.values().any(|m| {
-                        m.anchors.iter().any(|(_, a)| {
-                            crate::mesh_root::classify_interior_anchor(&mesh_root, &a.path)
-                                .is_some()
-                        })
-                    });
-                    if !has_interior_anchor {
-                        let mesh_anchor_totals: Vec<(String, usize)> = file_records
-                            .iter()
-                            .map(|(n, m)| (n.clone(), m.anchors.len()))
-                            .collect();
-                        // Backfill fresh anchors: each resolved mesh gets
-                        // every file-record anchor — keep the resolved
-                        // finding when present, synthesize Fresh when absent.
-                        let mut backfilled: Vec<MeshResolved> = Vec::new();
-                        for m in &meshes {
-                            let mut full = m.clone();
-                            if let Some(record) = file_records.get(&m.name) {
-                                let mut rebuilt: Vec<crate::types::AnchorResolved> =
-                                    Vec::with_capacity(record.anchors.len());
-                                for (anchor_id, a) in &record.anchors {
-                                    match full.anchors.iter().find(|r| &r.anchor_id == anchor_id) {
-                                        Some(existing) => rebuilt.push(existing.clone()),
-                                        None => rebuilt
-                                            .push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
-                                    }
-                                }
-                                // Preserve only SYNTHETIC injected anchors not
-                                // tied to a file record (e.g. MergeConflict
-                                // placeholders carry an empty `anchor_id`).
-                                // Resolved anchors with a real `anchor_id`
-                                // absent from the committed record are
-                                // worktree-only definitions (the committed key
-                                // does not change when they are added/removed);
-                                // dropping them keeps the committed-keyed entry
-                                // free of phantom worktree anchors.
-                                for r in &full.anchors {
-                                    if r.anchor_id.is_empty() {
-                                        rebuilt.push(r.clone());
-                                    }
-                                }
-                                full.anchors = rebuilt;
-                            }
-                            backfilled.push(full);
-                        }
-                        if let Err(e) = baseline::store_whole_result(
-                            &db,
-                            &committed,
-                            &backfilled,
-                            &mesh_anchor_totals,
-                        ) {
-                            crate::perf::note(&format!("cache_v2.store-whole-result-failed: {e}"));
-                        }
-                    }
-                }
                 // Reload so the in-memory shape matches the cached one
                 // exactly (regrouped reportable form).
                 match load_baseline(&db, &committed, &availability_hex) {
@@ -327,23 +266,76 @@ pub(crate) fn stale_meshes_cached(
         for w in index_warnings {
             eprintln!("{w}");
         }
-        // Render input must carry the full anchor set (Fresh + non-Fresh)
-        // so the Human renderer shows fresh siblings of drifted meshes as
-        // bare bullets. The whole-result entry holds that backfilled set;
-        // the row-level baseline holds only non-Fresh findings. When a
-        // whole result is present, render from it (filtered to reportable
-        // meshes, matching the uncached backfill path); the totals it also
-        // carries let run_stale skip its per-invocation phases. Without a
-        // whole result (e.g. interior-anchor corpus), run_stale's own
-        // backfill reconstructs the fresh siblings from mesh-file records,
-        // so the non-Fresh baseline is the correct render input.
-        let meshes = match &baseline.whole_result {
+        // The render input must carry the full anchor set (Fresh +
+        // non-Fresh) and must be BYTE-IDENTICAL to the effective cache-off
+        // resolution (`stale_meshes_inner`), across Human, JSON, and
+        // porcelain. The row-level committed baseline (committed_only) is
+        // *not* sufficient: on a HEAD-committed CHANGED anchor it fills
+        // `current.blob` with the HEAD blob and labels interior-anchor drift
+        // "changed" rather than "changed in the working tree", both of which
+        // diverge from the effective resolver.
+        //
+        // The tree is clean here, so the effective and committed-key views
+        // coincide: an effective resolution over the committed mesh names
+        // produces exactly what cache-off produces, and is safe to store
+        // under the committed key. Reuse a stored whole result when present
+        // (a prior clean run built it); otherwise build it now from the
+        // effective resolution, store it (unless the corpus carries an
+        // interior anchor — see below), and render from it.
+        let whole_result = match baseline.whole_result {
+            Some(wr) => Some(wr),
+            None => {
+                match build_clean_whole_result(repo, &mesh_root, options) {
+                    Ok(Some((wr, has_interior_anchor))) => {
+                        // Fail-closed: never STORE a whole result for a
+                        // corpus that carries an interior anchor. A
+                        // whole-result hit lets run_stale skip its
+                        // per-invocation interior-anchor scan (the cached
+                        // result is presumed clean), but the whole result
+                        // persists no violation record — caching a poisoned
+                        // corpus would silently drop the loud interior-anchor
+                        // report on every subsequent run. We still RENDER from
+                        // the freshly-built effective result this run (so the
+                        // drift labels match cache-off); we just do not
+                        // persist it.
+                        if !has_interior_anchor {
+                            if let Err(e) = baseline::store_whole_result(
+                                &db,
+                                &committed,
+                                &wr.meshes,
+                                &wr.mesh_anchor_totals,
+                            ) {
+                                crate::perf::note(&format!(
+                                    "cache_v2.store-whole-result-failed: {e}"
+                                ));
+                            }
+                            Some(wr)
+                        } else {
+                            // Render from the effective result this run, but
+                            // return `whole_result: None` so run_stale keeps
+                            // its interior-anchor scan.
+                            return Ok(CacheAttempt::Resolved {
+                                meshes: reportable(wr.meshes),
+                                whole_result: None,
+                            });
+                        }
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        return Ok(CacheAttempt::Fallback(format!(
+                            "build-whole-result: {e}"
+                        )));
+                    }
+                }
+            }
+        };
+        let meshes = match &whole_result {
             Some(wr) => reportable(wr.meshes.clone()),
             None => reportable(baseline.meshes),
         };
         return Ok(CacheAttempt::Resolved {
             meshes,
-            whole_result: baseline.whole_result,
+            whole_result,
         });
     }
 
@@ -468,6 +460,111 @@ pub(crate) fn stale_meshes_cached(
         meshes: reportable(merged),
         whole_result: None,
     })
+}
+
+/// Build the warm-clean whole-result by resolving the committed meshes with
+/// the EFFECTIVE layer set, then re-shaping each mesh's anchor list to the
+/// committed record. Returns `Ok(None)` only when there are no committed
+/// meshes; otherwise `Ok(Some((whole_result, has_interior_anchor)))`.
+///
+/// The tree is clean when this runs (it is called only from the warm-clean
+/// path), so the effective resolution reads the same source content the
+/// committed view would — making the result byte-identical to the effective
+/// cache-off path (`stale_meshes_inner`) by construction. This is what makes
+/// the cached `current.blob` (F3) and interior-anchor drift label (F2) match
+/// cache-off, where a `committed_only` resolution diverges.
+///
+/// Anchor DEFINITIONS still come from the committed mesh records (F1): each
+/// resolved mesh's anchors are rebuilt from its committed record, keeping the
+/// effective finding when present and synthesizing `Fresh` when absent, so the
+/// committed-keyed entry never freezes a worktree-only anchor. (On a clean
+/// tree the committed and effective definitions coincide; the committed-record
+/// shape is retained as a defensive invariant the key depends on.)
+fn build_clean_whole_result(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    options: EngineOptions,
+) -> Result<Option<(WholeResult, bool)>> {
+    let file_records = committed_mesh_records(repo, mesh_root)?;
+    if file_records.is_empty() {
+        return Ok(None);
+    }
+
+    let has_interior_anchor = file_records.values().any(|m| {
+        m.anchors
+            .iter()
+            .any(|(_, a)| crate::mesh_root::classify_interior_anchor(mesh_root, &a.path).is_some())
+    });
+
+    let mesh_anchor_totals: Vec<(String, usize)> = file_records
+        .iter()
+        .map(|(n, m)| (n.clone(), m.anchors.len()))
+        .collect();
+
+    // Effective resolution over the committed mesh names. `options` is the
+    // full layer set (the cache-eligibility gate rejects any non-full set),
+    // so this mirrors `stale_meshes_inner`'s source resolution exactly.
+    let names: Vec<String> = file_records.keys().cloned().collect();
+    let resolved = super::engine::resolve_named_meshes(repo, mesh_root, &names, options)?;
+    let mut resolved_by_name: std::collections::HashMap<String, MeshResolved> =
+        std::collections::HashMap::with_capacity(resolved.len());
+    for (name, r) in resolved {
+        match r {
+            Ok(m) => {
+                resolved_by_name.insert(name, m);
+            }
+            Err(Error::MeshNotFound(_)) => {}
+            Err(e) => return Err(Error::Git(format!("cache_v2 whole-result `{name}`: {e}"))),
+        }
+    }
+
+    // Re-shape to the committed record (F1): one resolved mesh per committed
+    // record, in committed-name order, anchors driven by the committed record.
+    let mut backfilled: Vec<MeshResolved> = Vec::with_capacity(file_records.len());
+    for (name, record) in &file_records {
+        let resolved = resolved_by_name.get(name);
+        let message = resolved
+            .map(|m| m.message.clone())
+            .unwrap_or_else(|| record.message.clone());
+        let follow_moves = resolved
+            .map(|m| m.follow_moves)
+            .unwrap_or(record.config.follow_moves);
+        let mut rebuilt: Vec<crate::types::AnchorResolved> =
+            Vec::with_capacity(record.anchors.len());
+        for (anchor_id, a) in &record.anchors {
+            match resolved.and_then(|m| m.anchors.iter().find(|r| &r.anchor_id == anchor_id)) {
+                Some(existing) => rebuilt.push(existing.clone()),
+                None => rebuilt.push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
+            }
+        }
+        // Preserve only SYNTHETIC injected anchors not tied to a file record
+        // (e.g. MergeConflict placeholders carry an empty `anchor_id`).
+        // Resolved anchors with a real `anchor_id` absent from the committed
+        // record are worktree-only definitions and are dropped, keeping the
+        // committed-keyed entry free of phantom worktree anchors.
+        if let Some(m) = resolved {
+            for r in &m.anchors {
+                if r.anchor_id.is_empty() {
+                    rebuilt.push(r.clone());
+                }
+            }
+        }
+        backfilled.push(MeshResolved {
+            name: name.clone(),
+            message,
+            anchors: rebuilt,
+            pending: resolved.map(|m| m.pending.clone()).unwrap_or_default(),
+            follow_moves,
+        });
+    }
+
+    Ok(Some((
+        WholeResult {
+            meshes: backfilled,
+            mesh_anchor_totals,
+        },
+        has_interior_anchor,
+    )))
 }
 
 /// Synthesize a `Fresh` `AnchorResolved` from a mesh-file anchor record,
@@ -667,15 +764,13 @@ fn file_content_identity(workdir: &std::path::Path, rel: &str) -> String {
     }
 }
 
-/// Check whether the committed `.gitattributes` at `HEAD` contains any
-/// `filter=lfs` pattern.  One blob read via `gix`; no subprocess.  Returns
-/// `false` when the file is absent, unreadable, or contains no LFS filter.
-fn committed_gitattributes_has_lfs(repo: &gix::Repository) -> bool {
-    let oid =
-        match crate::git::tree_entry_at(repo, "HEAD", std::path::Path::new(".gitattributes")) {
-            Ok(Some((mode, oid))) if mode.is_blob() => oid,
-            _ => return false,
-        };
+/// Whether a committed `.gitattributes` blob at `path` contains a
+/// `filter=lfs` pattern. `false` when absent, unreadable, or no LFS filter.
+fn gitattributes_blob_has_lfs(repo: &gix::Repository, path: &std::path::Path) -> bool {
+    let oid = match crate::git::tree_entry_at(repo, "HEAD", path) {
+        Ok(Some((mode, oid))) if mode.is_blob() => oid,
+        _ => return false,
+    };
     match repo.find_object(oid) {
         Ok(obj) => {
             let data = obj.into_blob().detach().data;
@@ -684,6 +779,73 @@ fn committed_gitattributes_has_lfs(repo: &gix::Repository) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Whether the committed blob at `path` is itself a git-LFS pointer.
+fn committed_blob_is_lfs_pointer(repo: &gix::Repository, path: &std::path::Path) -> bool {
+    let oid = match crate::git::tree_entry_at(repo, "HEAD", path) {
+        Ok(Some((mode, oid))) if mode.is_blob() => oid,
+        _ => return false,
+    };
+    match repo.find_object(oid) {
+        Ok(obj) => {
+            let data = obj.into_blob().detach().data;
+            crate::resolver::layers::lfs::lfs_pointer_oid(&data).is_some()
+        }
+        Err(_) => false,
+    }
+}
+
+/// Conservative LFS detection over the actual anchored corpus.
+///
+/// Returns `true` (forcing the `git lfs version` availability probe) when
+/// LFS is configured anywhere that could affect an anchored file:
+///   * the root `HEAD:.gitattributes` declares `filter=lfs` (the common case
+///     the previous root-only check covered), or
+///   * a `.gitattributes` committed in any ancestor directory of an anchored
+///     path declares `filter=lfs`, or
+///   * an anchored file's committed blob is itself an LFS pointer (LFS in use
+///     even with no discoverable `.gitattributes`).
+///
+/// Returns `false` only when no anchored file has any LFS signal — preserving
+/// the no-fork win for the genuinely-no-LFS common case. Reads committed blobs
+/// via `gix`; no subprocess.
+fn corpus_has_lfs(repo: &gix::Repository, mesh_root: &str) -> bool {
+    if gitattributes_blob_has_lfs(repo, std::path::Path::new(".gitattributes")) {
+        return true;
+    }
+    let Ok(records) = committed_mesh_records(repo, mesh_root) else {
+        // Cannot enumerate the committed corpus — be conservative and fork,
+        // matching the fail-closed posture for availability gating.
+        return true;
+    };
+    // Distinct anchored source paths across all committed meshes.
+    let mut anchored_paths: BTreeSet<String> = BTreeSet::new();
+    for mesh in records.values() {
+        for (_, a) in &mesh.anchors {
+            anchored_paths.insert(a.path.clone());
+        }
+    }
+    // `.gitattributes` files already probed, to avoid re-reading the same blob.
+    let mut probed_attrs: HashSet<std::path::PathBuf> = HashSet::new();
+    probed_attrs.insert(std::path::PathBuf::from(".gitattributes"));
+    for rel in &anchored_paths {
+        let path = std::path::Path::new(rel);
+        // Each ancestor directory's `.gitattributes`.
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            let attrs = d.join(".gitattributes");
+            if probed_attrs.insert(attrs.clone()) && gitattributes_blob_has_lfs(repo, &attrs) {
+                return true;
+            }
+            dir = d.parent();
+        }
+        // The anchored blob itself.
+        if committed_blob_is_lfs_pointer(repo, path) {
+            return true;
+        }
+    }
+    false
 }
 
 fn lfs_installed(corpus_has_lfs: bool) -> bool {
