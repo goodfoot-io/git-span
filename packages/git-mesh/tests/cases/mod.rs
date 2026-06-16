@@ -7,6 +7,7 @@ pub mod anchor_path_portability;
 pub mod batch_list_catalog_scan_amortized;
 pub mod cache_v2_committed_changed_blob_parity;
 pub mod cache_v2_dirty_source_content_key;
+pub mod cache_v2_dirty_tree_effective_parity;
 pub mod cache_v2_dirty_store_clean_read_parity;
 pub mod cache_v2_interior_anchor_parity;
 pub mod cache_v2_lfs_shape_parity;

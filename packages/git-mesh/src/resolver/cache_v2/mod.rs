@@ -454,7 +454,37 @@ pub(crate) fn stale_meshes_cached(
     for w in index_warnings {
         eprintln!("{w}");
     }
-    let merged = apply_overlay(&baseline.meshes, &overlay);
+
+    // ── Effective render base (dirty-path parity) ─────────────────────
+    // The committed_only baseline (`baseline.meshes`) is NOT byte-identical
+    // to the cache-off effective resolution (`stale_meshes_inner`): for a
+    // CHANGED/MOVED anchor it fills `current.blob` with the HEAD blob and
+    // labels interior-anchor drift "changed" rather than "changed in the
+    // working tree", and it can order a mesh's anchors differently. On a
+    // CLEAN tree the warm-clean path already routes through
+    // `build_clean_whole_result` to erase that divergence; on a DIRTY tree
+    // the early-return is skipped, so we route the committed meshes through
+    // the same EFFECTIVE resolution here. The result reads worktree content
+    // — exactly what cache-off reads — so the rendered findings (including
+    // `current.blob` and anchor ordering) match cache-off by construction.
+    //
+    // We build but do NOT store this effective render: storing an effective
+    // result under the committed key while the tree is dirty would freeze
+    // worktree drift into a committed-keyed entry (an F1-class bug). The
+    // affected-mesh OVERLAY is still authoritative for meshes in the dirty
+    // set (its key folds in exact worktree content identities and the index
+    // checksum), so we overlay it on top — and worktree-only (uncommitted)
+    // meshes, which have no committed record, come solely from the overlay.
+    let effective_base = match build_clean_whole_result(repo, &mesh_root, options) {
+        Ok(Some((wr, _has_interior_anchor))) => wr.meshes,
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            return Ok(CacheAttempt::Fallback(format!(
+                "build-dirty-effective-base: {e}"
+            )));
+        }
+    };
+    let merged = apply_overlay(&effective_base, &overlay);
     crate::perf::counter("cache_v2.fallback", 0);
     Ok(CacheAttempt::Resolved {
         meshes: reportable(merged),

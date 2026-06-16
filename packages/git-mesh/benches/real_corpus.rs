@@ -233,6 +233,44 @@ fn setup_interior_anchor_repo() -> BenchRepo {
     BenchRepo { _tmp: tmp, path: p }
 }
 
+/// Make the clone's working tree DIRTY by modifying one tracked file that is
+/// NOT under `.mesh/` (so the change is an "unrelated source" edit, not a
+/// mesh-file edit). Returns `true` if a file was dirtied, `false` if no
+/// suitable tracked file exists (the cell then skips).
+///
+/// A dirty source edit forces `stale_meshes_cached` past the warm-clean
+/// early-return onto the warm-dirty / dirty-overlay path, where non-dirty-set
+/// meshes are rendered from the committed baseline. This is the path whose
+/// byte-for-byte parity with the cache-off effective resolution this cell
+/// guards. (Dirtying any tracked file is sufficient: even if the edited file
+/// happens to be anchored, the remaining committed meshes are non-affected and
+/// exercise the divergence.)
+fn dirty_one_tracked_file(repo: &Path) -> bool {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["ls-files", "--", ":!.mesh/"])
+        .output()
+        .expect("git ls-files");
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let target = listing
+        .lines()
+        .find(|p| !p.is_empty() && !p.starts_with(".mesh/"));
+    let Some(rel) = target else {
+        return false;
+    };
+    let path = repo.join(rel);
+    let mut bytes = match fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    // Append a byte the resolver will see as a worktree edit. A trailing
+    // newline keeps the file textually valid and changes its worktree blob,
+    // which is all the dirty-set detection needs.
+    bytes.push(b'\n');
+    fs::write(&path, &bytes).expect("write dirtied file");
+    true
+}
+
 // ---------------------------------------------------------------------------
 // Cache helpers
 // ---------------------------------------------------------------------------
@@ -714,6 +752,37 @@ fn bench_interior_anchor(c: &mut Criterion) {
     g.finish();
 }
 
+/// Dirty-tree oracle cell: clone the real corpus, DIRTY one unrelated tracked
+/// source file, then assert cache-on == cache-off across every stale format,
+/// both cold and warm. The clean clone the other cells use never reaches the
+/// warm-DIRTY / dirty-overlay path, so without this cell the committed_only
+/// baseline that the dirty path renders for non-affected meshes (a populated
+/// `current.blob` and a "changed" vs "changed in the working tree" drift label)
+/// could diverge from the effective cache-off ground truth unnoticed. Dirtying
+/// the clone forces every subsequent stale run onto the dirty path.
+fn bench_dirty_tree_oracle(c: &mut Criterion) {
+    let repo = match setup_bench_repo() {
+        Some(r) => r,
+        None => return,
+    };
+    if !dirty_one_tracked_file(&repo.path) {
+        eprintln!("[real_corpus] SKIP dirty-tree oracle: no non-.mesh tracked file to dirty");
+        return;
+    }
+
+    // Cold + warm oracle across all formats, now on a DIRTY working tree.
+    assert_oracle_stale_cold_all_formats(&repo.path);
+    assert_oracle_stale_warm(&repo.path);
+
+    let mut g = c.benchmark_group("real_corpus");
+    g.sample_size(10);
+    g.sampling_mode(SamplingMode::Flat);
+    g.bench_function("dirty-tree-stale-cold", |b| {
+        b.iter_custom(|iters| time_stale_cold(&repo.path, iters).iter().copied().sum());
+    });
+    g.finish();
+}
+
 /// Final step: print the full scoreboard and evaluate every gate at once.
 ///
 /// COLLECT-ALL-THEN-ASSERT: each cell above only RECORDED its robust median.
@@ -809,6 +878,7 @@ criterion_group!(
     bench_stale_cold,
     bench_stale_warm,
     bench_interior_anchor,
+    bench_dirty_tree_oracle,
     bench_report
 );
 criterion_main!(benches);
