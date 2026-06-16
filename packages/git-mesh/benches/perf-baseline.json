@@ -1,27 +1,27 @@
 {
-  "_comment": "Measured process-level medians on 2026-06-15 post-Phase-5 optimizations. noise_floor_ms is sized so baseline_median*1.10 + noise_floor_ms equals the hard SLA ceiling — ensuring the regression gate fires only when the SLA ceiling would also fire. This prevents false positives from cross-run host variance on a shared machine. Regression threshold: mean > median*1.10 + noise_floor_ms.",
+  "_comment": "Re-measured robust medians (median over ALL accumulated samples, warmup discarded) on 2026-06-15 AFTER F6 (synthetic + real anchors resolve via canonical rk64). The no-regression rule is median > median_ms*(1+0.35) + noise_floor_ms — a baseline-relative threshold MEANINGFULLY TIGHTER than the absolute per-op SLA coarse ceiling in real_corpus.rs (every threshold is >=2x below its ceiling: list/tree 56 vs 250, show 55 vs 250, history/stale-cold 271 vs 750/500, stale-warm 45 vs 200). The 35% multiplicative margin flags a structural regression (extra corpus parse, reintroduced per-run fork). noise_floor_ms is an ADDITIVE term that absorbs the floor of process-level variance the percentage margin alone cannot: each read op pays ~17ms binary startup + ~12ms gix::discover, and under the devcontainer's concurrent-build load these sub-15ms ops were observed to spike to ~49ms (≈4x) on pure contention — far more than a 35% band on a ~12ms median tolerates — so their floor is 40ms; history/stale-cold floors (35ms) cover their larger absolute jitter (history observed to ~245ms, stale-cold to ~238ms under load); stale-warm (10ms). Baselines (median_ms) are set near the central observation; the full-sample median absorbs lone stalls while the floors absorb the systematic process-spawn jitter, so the gate fails only on a sustained structural regression, never a transient. The size_sweep and stale_warm in-process gates use their own robust-median logic and do not read this file.",
   "list": {
-    "median_ms": 41.0,
-    "noise_floor_ms": 204.9
+    "median_ms": 12.0,
+    "noise_floor_ms": 40.0
   },
   "tree": {
-    "median_ms": 21.0,
-    "noise_floor_ms": 226.9
+    "median_ms": 12.0,
+    "noise_floor_ms": 40.0
   },
   "show": {
-    "median_ms": 23.0,
-    "noise_floor_ms": 224.7
+    "median_ms": 11.0,
+    "noise_floor_ms": 40.0
   },
   "history": {
-    "median_ms": 368.0,
-    "noise_floor_ms": 345.2
+    "median_ms": 175.0,
+    "noise_floor_ms": 35.0
   },
   "stale-cold": {
-    "median_ms": 94.0,
-    "noise_floor_ms": 146.6
+    "median_ms": 175.0,
+    "noise_floor_ms": 35.0
   },
   "stale-warm": {
-    "median_ms": 72.0,
-    "noise_floor_ms": 120.8
+    "median_ms": 26.0,
+    "noise_floor_ms": 10.0
   }
 }

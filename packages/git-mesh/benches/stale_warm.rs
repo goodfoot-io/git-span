@@ -21,8 +21,9 @@ struct Fixture {
 ///
 /// Layout:
 ///   - 12 source files, each with 30 lines
-///   - 9 meshes, each covering 3 files with ~3 anchors each (27 anchors total)
-///   - 10 commits that mutate the files so the resolver has real work to cache
+///   - 10 commits that mutate the files so the resolver has real history to walk
+///   - 9 meshes (27 anchors total) anchored AFTER the mutations, against the
+///     final committed content, so every anchor resolves FRESH
 fn build_fixture() -> Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let p = dir.path().to_path_buf();
@@ -52,6 +53,24 @@ fn build_fixture() -> Fixture {
     git(&["add", "."]);
     git(&["commit", "-m", "seed"]);
 
+    // 10 mutations so the warm cache has meaningful history to walk.
+    //
+    // These run BEFORE the meshes are anchored so the anchors hash the FINAL
+    // (post-mutation) committed content and resolve FRESH. Anchoring against
+    // the seed content and then mutating would leave every anchor `— changed`,
+    // i.e. the all-changed fiction F6 calls out — the warm path would then
+    // measure a changed workload, not the fresh corpus this fixture documents.
+    for round in 0..10u32 {
+        for i in 0..12u32 {
+            let body: String = (0..30)
+                .map(|n| format!("round{round}_line{i}_{n}\n"))
+                .collect();
+            fs::write(p.join(format!("src-{i}.txt")), body).expect("write");
+        }
+        git(&["add", "."]);
+        git(&["commit", "-m", &format!("mutate round {round}")]);
+    }
+
     // 9 meshes, each with 3 anchors across different files (27 anchors total).
     // Build all mesh files via library API so renamed symbols fail at compile time.
     fs::create_dir_all(p.join(".mesh")).expect("create .mesh");
@@ -64,18 +83,27 @@ fn build_fixture() -> Fixture {
         for (fi, (start, end)) in file_indices.iter().zip(ranges.iter()) {
             let filename = format!("src-{fi}.txt");
             let body = fs::read(p.join(&filename)).expect("read file");
-            let text = String::from_utf8_lossy(&body);
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (*start as usize).saturating_sub(1);
-            let hi = (*end as usize).min(lines.len());
-            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-            let hashed: Vec<u8> = slice.join("\n").into_bytes();
-            let hash = format!("sha256:{}", git_mesh::types::sha256_hex(&hashed));
+            // Canonical rk64 anchor over the SAME LineRange extent the anchor
+            // declares, fed the committed bytes. `content_hash` is the BARE
+            // 16-hex rk64 value; the `algorithm` field supplies the `rk64`
+            // token, so the serialized address line is the canonical
+            // `<path>#L<s>-L<e> rk64:<16hex>` and resolves fresh on this tree.
+            // The prior `format!("sha256:{}", sha256_hex(..))` with
+            // `algorithm: "rk64"` produced the malformed `rk64:sha256:<64hex>`,
+            // so every anchor resolved `— changed` and the warm fixture
+            // measured an all-changed fiction instead of the fresh corpus it
+            // documents.
+            let extent = git_mesh_core::AnchorExtent::LineRange {
+                start: *start,
+                end: *end,
+            };
+            let fp = git_mesh_core::cheap_fingerprint_with_extent(&body, &extent);
+            let hash = git_mesh_core::rk64_to_hex(fp);
             records.push(git_mesh::mesh_file::AnchorRecord {
                 path: filename,
                 start_line: *start,
                 end_line: *end,
-                algorithm: "rk64".into(),
+                algorithm: git_mesh_core::RK64_ALGORITHM.into(),
                 content_hash: hash,
             });
         }
@@ -88,18 +116,6 @@ fn build_fixture() -> Fixture {
     }
     git(&["add", ".mesh"]);
     git(&["commit", "-m", "add meshes"]);
-
-    // 10 mutations so caching has meaningful history to walk.
-    for round in 0..10u32 {
-        for i in 0..12u32 {
-            let body: String = (0..30)
-                .map(|n| format!("round{round}_line{i}_{n}\n"))
-                .collect();
-            fs::write(p.join(format!("src-{i}.txt")), body).expect("write");
-        }
-        git(&["add", "."]);
-        git(&["commit", "-m", &format!("mutate round {round}")]);
-    }
 
     Fixture {
         _dir: dir,
@@ -151,27 +167,41 @@ fn bench_warm(c: &mut Criterion) {
     //
     // This is NOT a process-level budget — it measures only the cache machinery
     // (lazy LFS, single config snapshot, DDL-skip) with no process-spawn overhead.
-    // The gate runs 30 iterations outside Criterion's window so the mean is stable
-    // enough to distinguish a real breach from host noise.
+    // The gate runs N iterations outside Criterion's window and evaluates the
+    // MEDIAN (warmup sample discarded), not the arithmetic mean. On a shared
+    // devcontainer host a single concurrent-build stall would pull a mean over
+    // 30 samples above the ceiling and false-trip; the median is unaffected by a
+    // minority of outlier stalls, so it distinguishes a real warm-clean
+    // regression from host noise.
     // ---------------------------------------------------------------------------
     {
         const SLA_WARM_MS: f64 = 40.0;
         const N: u32 = 30;
-        let total: std::time::Duration = (0..N)
+        let mut samples_ms: Vec<f64> = (0..N)
             .map(|_| {
                 let repo = gix::open(&f.repo_path).expect("open repo");
                 let t0 = std::time::Instant::now();
                 let out = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
                 let elapsed = t0.elapsed();
                 std::hint::black_box(out);
-                elapsed
+                elapsed.as_secs_f64() * 1000.0
             })
-            .sum();
-        let mean_ms = total.as_secs_f64() * 1000.0 / N as f64;
-        if mean_ms > SLA_WARM_MS {
+            .collect();
+        // Discard the first (warmup) sample, then take the median.
+        let body = &mut samples_ms[1..];
+        body.sort_by(|a, b| a.partial_cmp(b).expect("no NaN durations"));
+        let n = body.len();
+        let median_ms = if n % 2 == 1 {
+            body[n / 2]
+        } else {
+            (body[n / 2 - 1] + body[n / 2]) / 2.0
+        };
+        if median_ms > SLA_WARM_MS {
             panic!(
-                "[stale_warm] warm-clean SLA breach: {mean_ms:.1} ms > {SLA_WARM_MS} ms \
-                 (in-process mean over {N} iterations; this is NOT process-level overhead)"
+                "[stale_warm] warm-clean SLA breach: median {median_ms:.1} ms > {SLA_WARM_MS} ms \
+                 (in-process median over {} iterations, warmup discarded; \
+                 this is NOT process-level overhead)",
+                N - 1
             );
         }
     }

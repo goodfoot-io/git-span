@@ -48,18 +48,24 @@ fn build_fixture() -> Fixture {
     for i in 0..10u32 {
         let filename = format!("file_{i}.txt");
         let body = std::fs::read(p.join(&filename)).expect("read file");
-        // Hash lines 1-5 (indices 0-4): join with \n, no trailing newline.
-        let text = String::from_utf8_lossy(&body);
-        let lines: Vec<&str> = text.lines().collect();
-        let slice = &lines[0..5.min(lines.len())];
-        let hashed: Vec<u8> = slice.join("\n").into_bytes();
-        let hash = format!("sha256:{}", git_mesh::types::sha256_hex(&hashed));
+        // Canonical rk64 anchor over the SAME LineRange extent the anchor
+        // declares. `content_hash` is the BARE 16-hex rk64 value; the
+        // `algorithm` field supplies the `rk64` token, so the serialized
+        // address line `<path>#L1-L5 rk64:<16hex>` is canonical and resolves
+        // fresh on this unmutated tree. The prior
+        // `format!("sha256:{}", sha256_hex(..))` with `algorithm: "rk64"`
+        // produced the malformed `rk64:sha256:<64hex>`, so every anchor
+        // resolved `— changed` and the head-only fixture measured an
+        // all-changed fiction instead of the fresh corpus it documents.
+        let extent = git_mesh_core::AnchorExtent::LineRange { start: 1, end: 5 };
+        let fp = git_mesh_core::cheap_fingerprint_with_extent(&body, &extent);
+        let hash = git_mesh_core::rk64_to_hex(fp);
         let mf = git_mesh::mesh_file::MeshFile {
             anchors: vec![git_mesh::mesh_file::AnchorRecord {
                 path: filename.clone(),
                 start_line: 1,
                 end_line: 5,
-                algorithm: "rk64".into(),
+                algorithm: git_mesh_core::RK64_ALGORITHM.into(),
                 content_hash: hash,
             }],
             why: "bench".to_string(),

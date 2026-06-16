@@ -15,16 +15,22 @@
 //!
 //! ## Super-linearity gate
 //!
-//! After collecting latencies the bench computes the scaling exponent for
-//! each adjacent pair (25→150, 150→600, 600→2000):
+//! Each size is measured several times (`reps_for`) and reduced to a ROBUST
+//! MEDIAN with the warmup rep discarded — a per-size median, not a mean, so a
+//! transient slowdown on the smaller size cannot inflate `t_A` and deflate the
+//! exponent below threshold (the false-negative that would mask a real
+//! regression). The bench then computes the scaling exponent for each adjacent
+//! pair (25→150, 150→600, 600→2000):
 //!
 //! ```text
 //! exponent = log(t_B / t_A) / log(size_B / size_A)
 //! ```
 //!
-//! If any exponent exceeds **1.5** the bench panics with a message naming
-//! the offending pair.  All exponents and raw latencies are printed so
-//! margins are visible even when passing.
+//! A pair fails when its exponent exceeds `1.5 + EXPONENT_BAND` (the band
+//! absorbs residual jitter without swallowing a genuine super-linear signal).
+//! ALL breaching pairs are collected and the bench panics ONCE at the end
+//! (collect-all-then-evaluate) so one noisy pair never aborts the sweep. All
+//! medians and exponents are printed so margins are visible even when passing.
 //!
 //! ## Invocation
 //!
@@ -43,8 +49,50 @@ use std::time::{Duration, Instant};
 
 const SIZES: &[usize] = &[25, 150, 600, 2000];
 
-// Exponent threshold: log(t_B/t_A) / log(size_B/size_A) > 1.5 → super-linear
+// Exponent threshold: log(t_B/t_A) / log(size_B/size_A) > 1.5 → super-linear.
 const EXPONENT_THRESHOLD: f64 = 1.5;
+
+// Significance band on the exponent. An adjacent pair fails only when its
+// exponent exceeds EXPONENT_THRESHOLD + BAND. The band absorbs the residual
+// run-to-run jitter that survives the per-size median (a few hundredths of an
+// exponent on these sizes) so a clean linear sweep does not false-panic. It is
+// deliberately small — the dangerous direction is a FALSE NEGATIVE (a real
+// super-linear regression masked by noise), so the band must not be wide enough
+// to swallow a genuine >1.5 growth signal.
+const EXPONENT_BAND: f64 = 0.15;
+
+// Reps per size, MEDIAN-reduced with the first (warmup) rep discarded. The
+// warmup rep pays the cold page-cache / gix object-store open cost that would
+// otherwise skew a small-size measurement low and mask growth. Larger sizes use
+// fewer reps because each 2000-mesh cold resolve is expensive; the median over
+// the remaining reps is still robust to a single concurrent-build stall. The
+// per-size median (not a mean) is what kills the masking failure: a transient
+// slowdown on the SMALLER size would inflate t_A under a mean and silently
+// deflate the ratio below threshold; the median discards that outlier.
+fn reps_for(mesh_count: usize) -> usize {
+    if mesh_count >= 600 { 5 } else { 7 }
+}
+
+/// Median of measured millisecond samples after discarding the first (warmup)
+/// sample.
+fn robust_median_ms(samples: &[f64]) -> f64 {
+    let body = if samples.len() > 1 {
+        &samples[1..]
+    } else {
+        samples
+    };
+    let mut v: Vec<f64> = body.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).expect("no NaN durations"));
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
+}
 
 // -------------------------------------------------------------------------
 // Fixture
@@ -89,24 +137,36 @@ fn time_cold_stale(repo_path: &std::path::Path) -> Duration {
 // Scaling-exponent gate
 // -------------------------------------------------------------------------
 
-fn check_exponents(label: &str, sizes: &[usize], means_ms: &[f64]) {
-    assert_eq!(sizes.len(), means_ms.len());
+/// Evaluate the per-adjacent-pair scaling exponent on per-size ROBUST MEDIANS.
+///
+/// COLLECT-ALL-THEN-EVALUATE: every pair is computed and printed, ALL
+/// breaching pairs are collected, and the function panics ONCE at the end with
+/// the full list — a single noisy pair never aborts the sweep before the rest
+/// is reported. A pair fails only when its exponent exceeds
+/// `EXPONENT_THRESHOLD + EXPONENT_BAND` (the band tolerates residual jitter that
+/// survives the median without swallowing a genuine super-linear signal).
+fn check_exponents(label: &str, sizes: &[usize], medians_ms: &[f64]) {
+    assert_eq!(sizes.len(), medians_ms.len());
 
-    println!("\n=== Size sweep: {label} ===");
-    println!("{:<8} {:>12}", "size", "mean_ms");
-    for (s, m) in sizes.iter().zip(means_ms.iter()) {
+    println!("\n=== Size sweep: {label} (per-size robust median, warmup discarded) ===");
+    println!("{:<8} {:>12}", "size", "median_ms");
+    for (s, m) in sizes.iter().zip(medians_ms.iter()) {
         println!("{:<8} {:>12.2}", s, m);
     }
 
-    println!("\n{:<14} {:>10}", "pair", "exponent");
-    let mut max_exponent: f64 = 0.0;
-    let mut max_pair = String::new();
+    let fail_at = EXPONENT_THRESHOLD + EXPONENT_BAND;
+    println!(
+        "\n{:<14} {:>10}   (fail if exponent > {:.2} = {:.1} + band {:.2})",
+        "pair", "exponent", fail_at, EXPONENT_THRESHOLD, EXPONENT_BAND
+    );
+
+    let mut breaches: Vec<String> = Vec::new();
 
     for i in 0..sizes.len().saturating_sub(1) {
         let size_a = sizes[i] as f64;
         let size_b = sizes[i + 1] as f64;
-        let t_a = means_ms[i];
-        let t_b = means_ms[i + 1];
+        let t_a = medians_ms[i];
+        let t_b = medians_ms[i + 1];
 
         if t_a <= 0.0 || t_b <= 0.0 {
             println!("{}→{}: skipped (zero latency)", sizes[i], sizes[i + 1]);
@@ -117,17 +177,21 @@ fn check_exponents(label: &str, sizes: &[usize], means_ms: &[f64]) {
         let pair_label = format!("{}→{}", sizes[i], sizes[i + 1]);
         println!("{:<14} {:>10.4}", pair_label, exponent);
 
-        if exponent > max_exponent {
-            max_exponent = exponent;
-            max_pair = pair_label;
+        if exponent > fail_at {
+            breaches.push(format!(
+                "{pair_label} exponent = {exponent:.4} > {fail_at:.2} \
+                 (threshold {EXPONENT_THRESHOLD} + band {EXPONENT_BAND})"
+            ));
         }
     }
     println!();
 
-    if max_exponent > EXPONENT_THRESHOLD {
+    if !breaches.is_empty() {
         panic!(
-            "[size_sweep/{label}] super-linear growth detected: \
-             {max_pair} exponent = {max_exponent:.4} (threshold {EXPONENT_THRESHOLD})"
+            "[size_sweep/{label}] super-linear growth detected ({} pair(s); \
+             all pairs were still measured):\n  - {}",
+            breaches.len(),
+            breaches.join("\n  - ")
         );
     }
 }
@@ -155,24 +219,29 @@ fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
         .map(|&n| build_fixture(n, with_commit_graph))
         .collect();
 
-    // Collect one warm-up timing per size outside criterion to drive the
-    // exponent gate.  Criterion's own measurements provide the official
-    // latency numbers printed in the report; these pre-measurements are
-    // solely for the super-linearity check.
-    let pre_means_ms: Vec<f64> = fixtures
+    // Collect per-size ROBUST MEDIANS (warmup rep discarded) outside criterion
+    // to drive the exponent gate. Criterion's own measurements provide the
+    // official latency numbers printed in the report; these pre-measurements
+    // are solely for the super-linearity check. A median (not a mean) is what
+    // prevents a transient slowdown on a smaller size from inflating t_A and
+    // deflating the exponent below threshold — the false-negative direction the
+    // gate must guard against.
+    let pre_medians_ms: Vec<f64> = fixtures
         .iter()
         .zip(SIZES.iter())
         .map(|(f, &mesh_count)| {
-            // Take a few measurements and average them for the exponent gate.
-            let reps = if mesh_count >= 600 { 3 } else { 5 };
-            let total: Duration = (0..reps).map(|_| time_cold_stale(&f.repo_path)).sum();
-            total.as_secs_f64() * 1000.0 / reps as f64
+            let reps = reps_for(mesh_count);
+            let samples: Vec<f64> = (0..reps)
+                .map(|_| time_cold_stale(&f.repo_path).as_secs_f64() * 1000.0)
+                .collect();
+            robust_median_ms(&samples)
         })
         .collect();
 
-    // Check exponents before entering the criterion loop so a detected
-    // regression panics immediately (not after criterion's warmup phases).
-    check_exponents(label, SIZES, &pre_means_ms);
+    // All sizes are measured above; evaluate the full exponent gate here
+    // (collect-all-then-evaluate) before the criterion loop so a real
+    // regression fails fast without first paying criterion's warmup phases.
+    check_exponents(label, SIZES, &pre_medians_ms);
 
     // Now run the criterion measurement loop for official timing output.
     let mut group = c.benchmark_group(format!("size_sweep/{label}"));

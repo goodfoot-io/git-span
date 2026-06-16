@@ -14,9 +14,20 @@
 //!
 //! # Content hashes
 //!
-//! Hashes are computed via `git_mesh::types::sha256_hex` on the actual
-//! anchored bytes — the same approach used by `tests/support/mod.rs`'s
-//! `create_and_commit_mesh`.  No placeholder hashes.
+//! Hashes are the canonical **rk64** token (`rk64:<16hex>`) that `git mesh
+//! add`/`commit` writes — computed via
+//! [`git_mesh_core::cheap_fingerprint_with_extent`] +
+//! [`git_mesh_core::rk64_to_hex`] over the same `LineRange` extent the anchor
+//! covers, fed the *committed* file bytes.  Because the bytes hashed are
+//! exactly the bytes at HEAD, a freshly generated corpus resolves **fresh**
+//! (the resolver recomputes the same rk64 over the unchanged HEAD content and
+//! the tokens match).  An earlier version used
+//! `format!("sha256:{}", sha256_hex(...))` with `algorithm: "rk64"`, which
+//! serialized to the malformed double-prefixed `rk64:sha256:<64hex>` — every
+//! anchor then resolved `— changed`, so the size-sweep/warm fixtures measured
+//! an all-changed fiction instead of the fresh corpus they document.  The
+//! `freshly_generated_corpus_resolves_fresh` test below guards against that
+//! regression.
 
 #[cfg(feature = "bench-corpus")]
 use std::path::Path;
@@ -126,22 +137,23 @@ pub fn generate(
         let filename = format!("file_{i}.txt");
         let bytes = std::fs::read(dir.join(&filename))?;
 
-        // Hash lines 1-5 (indices 0-4): join with \n, no trailing newline.
-        // This matches the exact approach in tests/support/mod.rs::create_and_commit_mesh.
-        let text = String::from_utf8_lossy(&bytes);
-        let lines: Vec<&str> = text.lines().collect();
-        let lo = 0usize;
-        let hi = 5usize.min(lines.len());
-        let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-        let hashed: Vec<u8> = slice.join("\n").into_bytes();
-        let hash = format!("sha256:{}", crate::types::sha256_hex(&hashed));
+        // Anchor lines 1-5 with the canonical rk64 token the resolver verifies
+        // against.  Fingerprint the committed bytes over the SAME LineRange
+        // extent the anchor declares.  `content_hash` is the BARE 16-hex rk64
+        // value; the `algorithm` field supplies the `rk64` token, so the
+        // serialized address line `<path>#L1-L5 rk64:<16hex>` is canonical and
+        // a fresh resolve recomputes an identical token.  (Setting content_hash
+        // to `rk64:<hex>` here would double the prefix → `rk64:rk64:<hex>`.)
+        let extent = git_mesh_core::AnchorExtent::LineRange { start: 1, end: 5 };
+        let fp = git_mesh_core::cheap_fingerprint_with_extent(&bytes, &extent);
+        let hash = git_mesh_core::rk64_to_hex(fp);
 
         let mf = crate::mesh_file::MeshFile {
             anchors: vec![crate::mesh_file::AnchorRecord {
                 path: filename.clone(),
                 start_line: 1,
                 end_line: 5,
-                algorithm: "rk64".into(),
+                algorithm: git_mesh_core::RK64_ALGORITHM.into(),
                 content_hash: hash,
             }],
             why: format!("bench mesh {i}"),
@@ -164,4 +176,67 @@ pub fn generate(
     }
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "bench-corpus"))]
+mod tests {
+    use super::*;
+    use crate::types::AnchorStatus;
+    use crate::{EngineOptions, resolve_mesh, stale_meshes};
+
+    /// A freshly generated corpus must resolve with every anchor `Fresh`.
+    ///
+    /// This is the F6 guard: an anchor written with a malformed
+    /// `rk64:sha256:<64hex>` token (the prior bug) resolves `Changed`, so the
+    /// fixtures would silently measure an all-changed fiction.  Asserting the
+    /// intended fresh drift profile here fails loudly if the canonical-token
+    /// computation ever drifts from what the resolver verifies against.
+    ///
+    /// Two checks, complementary:
+    ///   1. `stale_meshes` (the staleness scan) returns NO stale meshes — i.e.
+    ///      the whole corpus is clean.
+    ///   2. `resolve_mesh` per mesh returns the full anchor set, every anchor
+    ///      `Fresh` — proving (1) is "no drift", not "no anchors".
+    #[test]
+    fn freshly_generated_corpus_resolves_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mesh_count = 8;
+        generate(dir.path(), 0x1234_5678_9abc_def0, mesh_count, false)
+            .expect("generate corpus");
+
+        let repo = gix::open(dir.path()).expect("open repo");
+
+        // 1. The staleness scan reports nothing stale on a fresh corpus.
+        let stale = stale_meshes(&repo, ".mesh", EngineOptions::full()).expect("stale");
+        assert!(
+            stale.is_empty(),
+            "fresh corpus should have no stale meshes, got {} stale: {:?}",
+            stale.len(),
+            stale.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+
+        // 2. Resolve each mesh fully and assert every anchor is Fresh.
+        let mut total_anchors = 0usize;
+        for i in 0..mesh_count {
+            let name = format!("mesh-{i}");
+            let resolved = resolve_mesh(&repo, ".mesh", &name, EngineOptions::full())
+                .unwrap_or_else(|e| panic!("resolve_mesh {name}: {e}"));
+            assert!(
+                !resolved.anchors.is_empty(),
+                "mesh {name} has no anchors to check"
+            );
+            for a in &resolved.anchors {
+                total_anchors += 1;
+                assert_eq!(
+                    a.status,
+                    AnchorStatus::Fresh,
+                    "anchor {} in mesh {name} resolved {:?}, expected Fresh \
+                     (canonical rk64 token must match committed HEAD content)",
+                    a.anchor_id,
+                    a.status
+                );
+            }
+        }
+        assert_eq!(total_anchors, mesh_count, "one anchor per mesh expected");
+    }
 }
