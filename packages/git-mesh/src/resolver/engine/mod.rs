@@ -744,17 +744,14 @@ pub(crate) fn resolve_named_meshes_with_state(
     // per-anchor commit deltas are available to every per-mesh resolver call.
     {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let reader = MeshFileReader::new(repo, mesh_root.to_string());
-        let mesh_pairs: Vec<(String, Mesh)> = names
-            .iter()
-            .filter_map(|name| {
-                reader
-                    .read_effective(name)
-                    .ok()
-                    .flatten()
-                    .map(|file| (name.clone(), mesh_from_file(name, &file)))
-            })
-            .collect();
+        let mesh_pairs: Vec<(String, Mesh)> =
+            crate::mesh::read::read_effective_each_parallel(repo, mesh_root, names)
+                .into_iter()
+                .zip(names)
+                .filter_map(|(outcome, name)| {
+                    outcome.ok().flatten().map(|mesh| (name.clone(), mesh))
+                })
+                .collect();
         if !mesh_pairs.is_empty() {
             state.session.build_reverse_walk(repo, &mesh_pairs)?;
         }
@@ -836,18 +833,16 @@ pub(crate) fn resolve_named_meshes_parallel(
 
     let _perf = crate::perf::span("resolver.resolve-named-meshes-parallel");
 
-    // Read every mesh file once on the calling thread.
+    // Read every mesh file concurrently, then map each raw outcome to a slot.
     let slots: Vec<(String, ParallelSlot)> = {
         let _perf = crate::perf::span("resolver.read-mesh-pairs");
-        let reader = MeshFileReader::new(repo, mesh_root.to_string());
-        names
-            .iter()
-            .map(|name| {
-                let slot = match reader.read_effective(name) {
-                    Ok(Some(file)) => ParallelSlot::Resolve(mesh_from_file(name, &file)),
-                    Ok(None) => {
-                        ParallelSlot::Done(Err(Error::MeshNotFound(name.to_string())))
-                    }
+        crate::mesh::read::read_effective_each_parallel(repo, mesh_root, names)
+            .into_iter()
+            .zip(names)
+            .map(|(outcome, name)| {
+                let slot = match outcome {
+                    Ok(Some(mesh)) => ParallelSlot::Resolve(mesh),
+                    Ok(None) => ParallelSlot::Done(Err(Error::MeshNotFound(name.clone()))),
                     Err(e) => ParallelSlot::Done(Err(e)),
                 };
                 (name.clone(), slot)

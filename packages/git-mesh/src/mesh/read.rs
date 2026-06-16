@@ -182,6 +182,92 @@ fn read_effective_parallel(
     Ok((out, conflicted))
 }
 
+/// Read and parse the effective view of each `name` concurrently, returning
+/// one raw `Result<Option<Mesh>>` per name in input order. Unlike
+/// `read_effective_parallel`, this does **not** fail-fast and does **not**
+/// collapse tombstones / conflicts — every name yields its own outcome so
+/// each caller applies its own slot mapping. Output is byte-identical to a
+/// serial `names.iter().map(|n| reader.read_effective(n).map(|o| o.map(…)))`.
+///
+/// The concurrency skeleton mirrors `read_effective_parallel` exactly:
+/// `std::thread::scope`, per-worker `repo.clone()` + owned `MeshFileReader`,
+/// `AtomicUsize` work cursor, `Mutex<Vec<(usize, _)>>` indexed slots, and a
+/// serial short-circuit for `names.len() <= 1 || cpus <= 1`.
+pub(crate) fn read_effective_each_parallel(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    names: &[String],
+) -> Vec<std::result::Result<Option<Mesh>, Error>> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    // Serial fast-path: avoids thread-spawn overhead for trivial corpora
+    // and single-core hosts.
+    if names.len() <= 1 || cpus <= 1 {
+        let reader = MeshFileReader::new(repo, mesh_root.to_string());
+        return names
+            .iter()
+            .map(|name| {
+                reader
+                    .read_effective(name)
+                    .map(|opt| opt.map(|file| mesh_from_file(name, &file)))
+            })
+            .collect();
+    }
+
+    let workers = cpus.min(names.len()).min(16);
+    let next_idx = AtomicUsize::new(0);
+    // Each slot starts as `None`; workers fill them by index. Collected into
+    // a `Vec<Option<…>>` after the scope so every index is exactly filled.
+    type RawOutcome = std::result::Result<Option<Mesh>, Error>;
+    let slots: Mutex<Vec<(usize, RawOutcome)>> = Mutex::new(Vec::with_capacity(names.len()));
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let repo = repo.clone();
+            let next_idx = &next_idx;
+            let slots = &slots;
+            s.spawn(move || {
+                let reader = MeshFileReader::new(&repo, mesh_root.to_string());
+                let mut local: Vec<(usize, RawOutcome)> = Vec::new();
+                loop {
+                    let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                    if i >= names.len() {
+                        break;
+                    }
+                    let name = &names[i];
+                    let outcome = reader
+                        .read_effective(name)
+                        .map(|opt| opt.map(|file| mesh_from_file(name, &file)));
+                    local.push((i, outcome));
+                }
+                slots.lock().unwrap().extend(local);
+            });
+        }
+    });
+
+    // Reassemble in input order. Every index is filled (no fail-fast means
+    // no early exit), so the `expect` here is sound.
+    let raw = slots.into_inner().unwrap();
+    let mut by_index: Vec<Option<RawOutcome>> = (0..names.len()).map(|_| None).collect();
+    for (i, outcome) in raw {
+        by_index[i] = Some(outcome);
+    }
+    by_index
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            slot.unwrap_or_else(|| {
+                panic!("index {i} not filled — read_effective_each_parallel has a bug")
+            })
+        })
+        .collect()
+}
+
 /// Serial read+parse over `names`, used for trivial corpora and single-core
 /// hosts. Kept byte-identical to the parallel reassembly: same ordering, same
 /// conflict handling, same first-error-wins `?` semantics.
@@ -455,4 +541,193 @@ pub fn show_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
 /// Show alias for read_mesh_at.
 pub fn show_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     read_mesh_at(repo, name, commit_ish)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    /// Run a git command in `dir` and assert success.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Write a file relative to `dir`, creating parent directories as needed.
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+
+    /// Minimal valid mesh file: one whole-file anchor + why line.
+    fn mesh_text(anchor_path: &str) -> String {
+        format!(
+            "{anchor_path} sha256:0000000000000000000000000000000000000000000000000000000000000000\n\ntest\n"
+        )
+    }
+
+    /// Build a repo with three mesh names for testing `read_effective_each_parallel`:
+    ///   "live"       → Ok(Some(mesh))
+    ///   "tombstoned" → Ok(None)  (worktree deletion tombstone)
+    ///   "conflicted" → Err(MeshConflict)  (unmerged index entry)
+    ///
+    /// Returns `(TempDir, gix::Repository, sorted_names)`.
+    fn build_corpus() -> (
+        tempfile::TempDir,
+        gix::Repository,
+        Vec<String>,
+    ) {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path();
+
+        // Init repo with identity.
+        git(dir, &["init", "--initial-branch=main"]);
+        git(dir, &["config", "user.email", "t@t"]);
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+
+        // Commit a seed file so HEAD exists.
+        write(dir, "file.txt", "content\n");
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", "init"]);
+
+        // "live": commit a mesh file that will be readable.
+        write(dir, ".mesh/live", &mesh_text("file.txt"));
+        // "tombstoned": commit a mesh file, then delete the worktree copy.
+        write(dir, ".mesh/tombstoned", &mesh_text("file.txt"));
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", "add live and tombstoned"]);
+        std::fs::remove_file(dir.join(".mesh/tombstoned")).unwrap();
+
+        // "conflicted": create an unmerged index entry (stages 2 and 3).
+        let content_ours = mesh_text("file.txt");
+        let content_theirs = format!("{}\n# alt\n", mesh_text("file.txt"));
+        write(dir, ".mesh/_tmp_ours", &content_ours);
+        let oid_ours = git(
+            dir,
+            &[
+                "hash-object",
+                "-w",
+                &dir.join(".mesh/_tmp_ours").to_string_lossy(),
+            ],
+        );
+        write(dir, ".mesh/_tmp_theirs", &content_theirs);
+        let oid_theirs = git(
+            dir,
+            &[
+                "hash-object",
+                "-w",
+                &dir.join(".mesh/_tmp_theirs").to_string_lossy(),
+            ],
+        );
+        // Stage 2 (ours) and stage 3 (theirs) — no stage 0 → unmerged.
+        // `--index-info` reads "mode SP sha1 SP stage TAB path" lines from stdin.
+        {
+            use std::io::Write;
+            let input = format!(
+                "100644 {oid_ours} 2\t.mesh/conflicted\n100644 {oid_theirs} 3\t.mesh/conflicted\n"
+            );
+            let mut cmd = std::process::Command::new("git");
+            cmd.current_dir(dir).args(["update-index", "--index-info"]);
+            cmd.stdin(std::process::Stdio::piped());
+            let mut child = cmd.spawn().expect("git update-index spawn");
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            let status = child.wait().expect("git update-index wait");
+            assert!(status.success(), "git update-index --index-info failed");
+        }
+        // Remove temp worktree files (they were never staged, so no index cleanup needed).
+        let _ = std::fs::remove_file(dir.join(".mesh/_tmp_ours"));
+        let _ = std::fs::remove_file(dir.join(".mesh/_tmp_theirs"));
+
+        let repo = gix::open(dir).expect("gix::open");
+
+        // Sorted names: three entries so names.len() > 1 forces the parallel branch.
+        let names = vec![
+            "conflicted".to_string(),
+            "live".to_string(),
+            "tombstoned".to_string(),
+        ];
+
+        (td, repo, names)
+    }
+
+    /// `read_effective_each_parallel` output must be index-aligned with `names`
+    /// and each outcome must match the serial `MeshFileReader::read_effective` baseline.
+    #[test]
+    fn each_parallel_outcomes_match_serial_and_are_index_aligned() {
+        let (_td, repo, names) = build_corpus();
+
+        // Serial baseline.
+        let reader = MeshFileReader::new(&repo, ".mesh".into());
+        let serial: Vec<std::result::Result<Option<Mesh>, Error>> = names
+            .iter()
+            .map(|name| {
+                reader
+                    .read_effective(name)
+                    .map(|opt| opt.map(|file| mesh_from_file(name, &file)))
+            })
+            .collect();
+
+        // Parallel result.
+        let parallel = read_effective_each_parallel(&repo, ".mesh", &names);
+
+        assert_eq!(parallel.len(), names.len(), "length must match names");
+
+        // Index 0 → "conflicted" → Err(MeshConflict).
+        assert!(
+            matches!(&parallel[0], Err(Error::MeshConflict(_))),
+            "index 0 (conflicted) must be Err(MeshConflict), got: {:?}",
+            parallel[0]
+        );
+        // Index 1 → "live" → Ok(Some(_)).
+        assert!(
+            matches!(&parallel[1], Ok(Some(_))),
+            "index 1 (live) must be Ok(Some(_)), got: {:?}",
+            parallel[1]
+        );
+        // Index 2 → "tombstoned" → Ok(None).
+        assert!(
+            matches!(&parallel[2], Ok(None)),
+            "index 2 (tombstoned) must be Ok(None), got: {:?}",
+            parallel[2]
+        );
+
+        // Cross-check against serial baseline by variant.
+        for (i, (s, p)) in serial.iter().zip(parallel.iter()).enumerate() {
+            let name = &names[i];
+            match (s, p) {
+                (Ok(Some(sm)), Ok(Some(pm))) => {
+                    assert_eq!(
+                        sm.name, pm.name,
+                        "slot {i} ({name}): mesh name mismatch"
+                    );
+                }
+                (Ok(None), Ok(None)) => {}
+                (Err(Error::MeshConflict(sn)), Err(Error::MeshConflict(pn))) => {
+                    assert_eq!(sn, pn, "slot {i} ({name}): conflict name mismatch");
+                }
+                _ => panic!(
+                    "slot {i} ({name}): serial and parallel outcomes differ\n  serial: {s:?}\n  parallel: {p:?}"
+                ),
+            }
+        }
+    }
 }
