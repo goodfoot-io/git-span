@@ -831,6 +831,28 @@ fn time_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
         .collect()
 }
 
+/// Time warm-DIRTY stale invocations: prime the cache ONCE on the
+/// already-dirtied tree, then measure repeated runs. Each run takes the
+/// warm-dirty path (a primed cache plus a dirty worktree), which renders the
+/// committed baseline for unaffected meshes and overlays the dirty set — the
+/// path this card optimizes to scale with dirty-mesh count, not corpus size.
+/// The caller dirties the tree BEFORE calling this.
+fn time_dirty_tree_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
+    delete_cache(repo);
+    prime_cache(repo);
+    (0..n)
+        .map(|_| {
+            let t0 = Instant::now();
+            let _out = Command::new(MESH_BIN)
+                .current_dir(repo)
+                .args(["stale", "--no-exit-code"])
+                .output()
+                .expect("spawn stale warm-dirty");
+            t0.elapsed()
+        })
+        .collect()
+}
+
 /// Time `stale --fix` invocations. State reset is OUTSIDE the timed region:
 /// before each sample the clone is restored to the dirtied baseline (so every
 /// invocation does the same rewrite work), and ONLY the `git mesh stale --fix`
@@ -1182,6 +1204,17 @@ fn bench_dirty_tree_oracle(c: &mut Criterion) {
     g.sampling_mode(SamplingMode::Flat);
     g.bench_function("dirty-tree-stale-cold", |b| {
         b.iter_custom(|iters| time_stale_cold(&repo.path, iters).iter().copied().sum());
+    });
+    // Warm-dirty timing cell: the path this card optimizes. Primed cache + dirty
+    // tree, recorded under `dirty-tree-stale-warm` against the same per-op SLA
+    // ceiling as warm-clean (`SLA_STALE_WARM_MS`) and gated by the
+    // `dirty-tree-stale-warm` perf-baseline no-regression rule.
+    g.bench_function("dirty-tree-stale-warm", |b| {
+        b.iter_custom(|iters| {
+            let samples = time_dirty_tree_stale_warm(&repo.path, iters);
+            record_samples("dirty-tree-stale-warm", &samples, SLA_STALE_WARM_MS);
+            samples.iter().copied().sum()
+        });
     });
     g.finish();
 }

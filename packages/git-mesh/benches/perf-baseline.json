@@ -24,6 +24,10 @@
     "median_ms": 26.0,
     "noise_floor_ms": 10.0
   },
+  "dirty-tree-stale-warm": {
+    "median_ms": 97.0,
+    "noise_floor_ms": 37.0
+  },
   "startup": {
     "median_ms": 6.0,
     "noise_floor_ms": 40.0

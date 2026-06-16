@@ -455,36 +455,37 @@ pub(crate) fn stale_meshes_cached(
         eprintln!("{w}");
     }
 
-    // ── Effective render base (dirty-path parity) ─────────────────────
-    // The committed_only baseline (`baseline.meshes`) is NOT byte-identical
-    // to the cache-off effective resolution (`stale_meshes_inner`): for a
-    // CHANGED/MOVED anchor it fills `current.blob` with the HEAD blob and
-    // labels interior-anchor drift "changed" rather than "changed in the
-    // working tree", and it can order a mesh's anchors differently. On a
-    // CLEAN tree the warm-clean path already routes through
-    // `build_clean_whole_result` to erase that divergence; on a DIRTY tree
-    // the early-return is skipped, so we route the committed meshes through
-    // the same EFFECTIVE resolution here. The result reads worktree content
-    // — exactly what cache-off reads — so the rendered findings (including
-    // `current.blob` and anchor ordering) match cache-off by construction.
+    // ── Committed render base (dirty-path parity, baseline-reuse) ─────
+    // The render base here covers the UNAFFECTED meshes — the ones whose
+    // anchors no dirty path touches. For such a mesh the worktree content
+    // equals the committed content, so the only way effective resolution
+    // diverges from the already-loaded `committed_only` baseline is the
+    // worktree LAYER FLAG, not file content: it sets `current.blob = None`
+    // ([anchor.rs L960]). Step 0's exhaustive field diff
+    // (`notes/spike-normalization-sufficiency.md`) confirmed `current.blob`
+    // is the ONLY divergent `AnchorResolved` field; `normalize_committed_anchor`
+    // closes it. The within-mesh ordering divergence the SQLite-regrouped
+    // baseline carries is fixed by `build_committed_render_base` reshaping to
+    // committed-record order. We therefore reuse the cheap baseline instead
+    // of re-resolving the whole committed corpus — warm-dirty cost now scales
+    // with the dirty-mesh count, not corpus size.
     //
-    // We build but do NOT store this effective render: storing an effective
-    // result under the committed key while the tree is dirty would freeze
-    // worktree drift into a committed-keyed entry (an F1-class bug). The
-    // affected-mesh OVERLAY is still authoritative for meshes in the dirty
-    // set (its key folds in exact worktree content identities and the index
-    // checksum), so we overlay it on top — and worktree-only (uncommitted)
-    // meshes, which have no committed record, come solely from the overlay.
-    let effective_base = match build_clean_whole_result(repo, &mesh_root, options) {
-        Ok(Some((wr, _has_interior_anchor))) => wr.meshes,
-        Ok(None) => Vec::new(),
+    // We do NOT store this render: it reflects the dirty-tree worktree-layer
+    // view, and storing it under the committed key would freeze worktree
+    // drift into a committed-keyed entry (an F1-class bug). The affected-mesh
+    // OVERLAY is still authoritative for meshes in the dirty set (its key
+    // folds in exact worktree content identities and the index checksum), so
+    // we overlay it on top — and worktree-only (uncommitted) meshes, which
+    // have no committed record, come solely from the overlay.
+    let committed_base = match build_committed_render_base(repo, &mesh_root, &baseline.meshes) {
+        Ok(meshes) => meshes,
         Err(e) => {
             return Ok(CacheAttempt::Fallback(format!(
-                "build-dirty-effective-base: {e}"
+                "build-dirty-committed-base: {e}"
             )));
         }
     };
-    let merged = apply_overlay(&effective_base, &overlay);
+    let merged = apply_overlay(&committed_base, &overlay);
     crate::perf::counter("cache_v2.fallback", 0);
     Ok(CacheAttempt::Resolved {
         meshes: reportable(merged),
@@ -595,6 +596,81 @@ fn build_clean_whole_result(
         },
         has_interior_anchor,
     )))
+}
+
+/// Normalize a `committed_only` baseline [`AnchorResolved`] to its EFFECTIVE
+/// (worktree-layer-on) equivalent for an UNAFFECTED mesh.
+///
+/// The Step 0 spike (`notes/spike-normalization-sufficiency.md`) diffed every
+/// `AnchorResolved` field for `committed_only` vs effective resolution on both
+/// parity corpora and found the ONLY divergent field is `current.blob`: the
+/// committed view fills it with the HEAD blob, while effective resolution sets
+/// it to `None` whenever the worktree layer is present
+/// ([`anchor.rs L960`](../engine/anchor.rs) — a layer-flag effect, independent
+/// of file content). For an unaffected anchor (no dirty path touches it) the
+/// two resolutions agree on everything else — `source`, `layer_sources`,
+/// `locus`, `status`, ordering — so this is a single-field, content-independent,
+/// repo-access-free transform. The byte-identity oracle remains the fail-closed
+/// backstop for any field a different corpus might surface.
+fn normalize_committed_anchor(mut a: crate::types::AnchorResolved) -> crate::types::AnchorResolved {
+    if let Some(current) = a.current.as_mut() {
+        current.blob = None;
+    }
+    a
+}
+
+/// Build the warm-DIRTY render base by REUSING the already-loaded
+/// `committed_only` baseline instead of paying a full effective
+/// [`resolve_named_meshes`]. Mirrors the SHAPE of [`build_clean_whole_result`]
+/// — one resolved mesh per committed record from [`committed_mesh_records`],
+/// anchors in committed-record order, `Fresh` synthesized via
+/// [`fresh_anchor_resolved_from_mesh`] — but draws each non-`Fresh` anchor from
+/// `baseline_meshes` (the loaded `committed_only` findings) normalized via
+/// [`normalize_committed_anchor`], paying NO resolution cost.
+///
+/// The baseline stores only non-`Fresh` findings, regrouped by `(mesh_order,
+/// name)` ([`baseline.rs L411`](./baseline.rs)); reconstructing the full anchor
+/// set from the committed records — and re-shaping to committed-record order —
+/// is what fixes the anchor-ordering divergence, so we never rely on the
+/// baseline's stored order. The unaffected meshes this produces are correct as
+/// rendered; the affected (dirty) meshes are replaced by `apply_overlay`, which
+/// supplies the authoritative effective re-resolution.
+fn build_committed_render_base(
+    repo: &gix::Repository,
+    mesh_root: &str,
+    baseline_meshes: &[MeshResolved],
+) -> Result<Vec<MeshResolved>> {
+    let file_records = committed_mesh_records(repo, mesh_root)?;
+    if file_records.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let baseline_by_name: std::collections::HashMap<&str, &MeshResolved> = baseline_meshes
+        .iter()
+        .map(|m| (m.name.as_str(), m))
+        .collect();
+
+    let mut backfilled: Vec<MeshResolved> = Vec::with_capacity(file_records.len());
+    for (name, record) in &file_records {
+        let baseline = baseline_by_name.get(name.as_str()).copied();
+        let mut rebuilt: Vec<crate::types::AnchorResolved> =
+            Vec::with_capacity(record.anchors.len());
+        for (anchor_id, a) in &record.anchors {
+            match baseline.and_then(|m| m.anchors.iter().find(|r| &r.anchor_id == anchor_id)) {
+                Some(existing) => rebuilt.push(normalize_committed_anchor(existing.clone())),
+                None => rebuilt.push(fresh_anchor_resolved_from_mesh(anchor_id, a)),
+            }
+        }
+        backfilled.push(MeshResolved {
+            name: name.clone(),
+            message: record.message.clone(),
+            anchors: rebuilt,
+            pending: Vec::new(),
+            follow_moves: record.config.follow_moves,
+        });
+    }
+
+    Ok(backfilled)
 }
 
 /// Synthesize a `Fresh` `AnchorResolved` from a mesh-file anchor record,
