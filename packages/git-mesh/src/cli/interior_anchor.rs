@@ -65,8 +65,20 @@ pub fn scan_interior_anchors(
     repo: &gix::Repository,
     mesh_root: &str,
 ) -> crate::Result<Vec<InteriorAnchorViolation>> {
+    let meshes = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0;
+    Ok(scan_interior_anchors_in(mesh_root, &meshes))
+}
+
+/// Same scan as [`scan_interior_anchors`] but over an already-loaded corpus,
+/// so the stale path can reuse a single corpus load for both the backfill and
+/// this scan. Byte-identical to the loading variant: it iterates the corpus in
+/// the same order and emits one violation per offending anchor identically.
+pub fn scan_interior_anchors_in(
+    mesh_root: &str,
+    meshes: &[(String, crate::types::Mesh)],
+) -> Vec<InteriorAnchorViolation> {
     let mut violations = Vec::new();
-    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
+    for (name, mesh) in meshes {
         for (_anchor_id, anchor) in &mesh.anchors {
             if let Some(detail) = classify_interior_anchor(mesh_root, &anchor.path) {
                 violations.push(InteriorAnchorViolation {
@@ -77,11 +89,13 @@ pub fn scan_interior_anchors(
             }
         }
     }
-    Ok(violations)
+    violations
 }
 
 /// Whether any mesh in scope carries an interior anchor (an anchor whose path
-/// is under `mesh_root`).
+/// is under `mesh_root`), classified over an already-loaded corpus so the
+/// `stale --fix` pre-scan can reuse the single pre-fix corpus load instead of
+/// re-reading every mesh file.
 ///
 /// `stale --fix` uses this as a fail-closed gate: when an interior anchor is
 /// present, the scoped post-fix splice and source-layer reuse are unsound (a
@@ -95,24 +109,24 @@ pub fn scan_interior_anchors(
 /// `scope` is `None` for a bare scan (check the whole corpus) or `Some(names)`
 /// for a named-scope query (check only the requested meshes), mirroring the
 /// scoping `run_stale` already applies to `scan_interior_anchors`.
-pub(crate) fn scope_has_interior_anchor(
-    repo: &gix::Repository,
+pub(crate) fn scope_has_interior_anchor_in(
     mesh_root: &str,
+    meshes: &[(String, crate::types::Mesh)],
     scope: Option<&std::collections::HashSet<String>>,
-) -> crate::Result<bool> {
-    for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
+) -> bool {
+    for (name, mesh) in meshes {
         if let Some(names) = scope
-            && !names.contains(&name)
+            && !names.contains(name)
         {
             continue;
         }
         for (_anchor_id, anchor) in &mesh.anchors {
             if classify_interior_anchor(mesh_root, &anchor.path).is_some() {
-                return Ok(true);
+                return true;
             }
         }
     }
-    Ok(false)
+    false
 }
 
 /// Format a stored anchor address (`path` or `path#L<start>-L<end>`) for

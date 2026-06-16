@@ -333,12 +333,22 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // per-invocation phases (count-totals, detect-conflicts, backfill).
     let mut whole_result: Option<WholeResult> = None;
 
-    // Single corpus parse for scoped queries: load the mesh corpus once and
-    // thread it through the path-index build (L369), the scoped anchor totals
-    // (L510), and the count-totals phase (L557). All three read the same
-    // worktree-effective source; reloading per-site was pure overhead.
-    // `None` on the non-scoped path — those sites reload unconditionally.
-    let mut scoped_corpus: Option<Vec<(String, crate::types::Mesh)>> = None;
+    // Single PRE-mutation corpus parse: load the `.mesh/` corpus (loaded
+    // meshes + conflicted names) once and thread it through every consumer
+    // that observes the *pre-fix* `.mesh/` state — the scoped path-index
+    // build, scoped anchor totals, count-totals, conflict detection, the
+    // `--fix` interior-anchor pre-scan, and the `--fix` `fix_input` supplement.
+    // All read the same worktree-effective source, so reloading per-site was
+    // pure fuse I/O overhead. `load_all_meshes_in` already returns the
+    // conflicted set alongside the loaded meshes, so the dedicated
+    // `conflicted_mesh_names_in` discovery scan is subsumed here too.
+    //
+    // This corpus is loaded lazily by `pre_fix_corpus` below and reused; it
+    // must NEVER be reused after `apply_fix` mutates `.mesh/` — the post-fix
+    // backfill and interior scan load their own fresh corpus (see the post-fix
+    // region). On the plain (non-`--fix`) path no mutation occurs, so the same
+    // pre-fix corpus also serves the backfill and interior-scan sites.
+    let mut pre_fix_corpus: Option<crate::mesh::read::LoadedMeshes> = None;
 
     // PRE-fix resolve timer: only the `--fix` path attributes this pass, so the
     // start instant is taken (under perf) only when `args.fix`. The elapsed is
@@ -382,16 +392,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
 
         // Load the corpus once and build the path index from it. The previous
         // code called `MeshPathIndex::load_in` here (which loads and discards
-        // the corpus internally), then reloaded at L510 for scoped anchor
-        // totals and again at L557 for count-totals — three parses of the
-        // same worktree-effective source. Now: one load, three consumers.
+        // the corpus internally), then reloaded for scoped anchor totals and
+        // again for count-totals — three parses of the same worktree-effective
+        // source. Now: one load, many consumers.
         //
-        // The corpus is stored in `scoped_corpus` so the count-totals phase
-        // below can reuse it instead of reloading.
+        // The corpus is stored in `pre_fix_corpus` so the scoped-anchor-totals,
+        // count-totals, conflict-detection, and `--fix` interior/fix_input
+        // sites below all reuse it instead of reloading.
         let corpus = crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
         let path_index =
             crate::mesh::read::MeshPathIndex::from_loaded_meshes(&corpus.0)?;
-        scoped_corpus = Some(corpus.0);
+        pre_fix_corpus = Some(corpus);
 
         for arg in &args.paths {
             let mut found = false;
@@ -532,13 +543,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // persists non-Fresh rows only), so derive the true anchor total from
         // the mesh-file records. For scoped queries (positional args), the
         // cache path is not used, so load totals fresh.
-        // `scoped_corpus` was loaded above (at the path-index build site) and
+        // `pre_fix_corpus` was loaded above (at the path-index build site) and
         // is still live here; reuse it rather than reloading the corpus a
         // second time for this scoped query.
         let scoped_anchor_totals: std::collections::HashMap<String, usize> =
-            scoped_corpus
+            pre_fix_corpus
                 .as_ref()
-                .expect("scoped_corpus must be set before scoped_anchor_totals")
+                .expect("pre_fix_corpus must be set before scoped_anchor_totals")
+                .0
                 .iter()
                 .map(|(n, m)| (n.clone(), m.anchors.len()))
                 .collect();
@@ -591,12 +603,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         (mesh_count, anchor_count, totals)
     } else {
         let _perf = crate::perf::span("stale.count-totals");
-        // On the scoped path `scoped_corpus` was already loaded; reuse it.
-        // On the non-scoped path `scoped_corpus` is None, so load here.
-        let pairs = match scoped_corpus.take() {
-            Some(c) => c,
-            None => crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0,
-        };
+        // On the scoped path `pre_fix_corpus` was already loaded; on the
+        // non-scoped path load it once here. Either way it stays live so the
+        // conflict-detection (and, on the plain path, the backfill /
+        // interior-scan) sites below reuse it instead of reloading.
+        if pre_fix_corpus.is_none() {
+            pre_fix_corpus = Some(crate::mesh::read::load_all_meshes_in(repo, mesh_root)?);
+        }
+        let pairs = &pre_fix_corpus
+            .as_ref()
+            .expect("pre_fix_corpus set immediately above")
+            .0;
         let mesh_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         let totals = pairs
@@ -614,7 +631,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // Skipped on whole-result hit — a clean tree has no conflicts.
     if !use_whole_result {
         let _perf = crate::perf::span("stale.detect-conflicts");
-        let conflicted = crate::mesh::read::conflicted_mesh_names_in(repo, mesh_root)?;
+        // The conflicted-mesh set is byte-identical to a dedicated
+        // `conflicted_mesh_names_in` scan: `load_all_meshes_in` discovers the
+        // same `list_mesh_names()` set, sorts it, and reassembles the
+        // conflicted names in that sorted order (parallel and serial paths
+        // both preserve it) — the exact contract `conflicted_mesh_names_in`
+        // upholds. Reuse the conflicted list captured by the single pre-fix
+        // corpus load instead of re-discovering + re-reading every mesh.
+        let conflicted: Vec<String> = pre_fix_corpus
+            .as_ref()
+            .expect("pre_fix_corpus set before detect-conflicts when !use_whole_result")
+            .1
+            .clone();
         // When positional args were given, only report conflicts for the
         // requested scope (a named mesh or a path/glob that resolves to
         // one); a full scan reports every conflicted mesh.
@@ -669,6 +697,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // "auto-updated" tag and the exit-code subtraction.
     let followed_ids: HashSet<String> = if args.fix {
         let _perf = crate::perf::span("stale.apply-fix");
+        // Ensure the single PRE-fix corpus is loaded for the `--fix` consumers
+        // (interior pre-scan + `fix_input` supplement). It is already `Some` on
+        // the `!use_whole_result` path (count-totals loaded it), but on a warm
+        // whole-result hit count-totals short-circuited without loading, so
+        // load it here. Still pre-`apply_fix`, so the state is correct.
+        if pre_fix_corpus.is_none() {
+            pre_fix_corpus = Some(crate::mesh::read::load_all_meshes_in(repo, mesh_root)?);
+        }
         // Fail-closed interior-anchor gate, evaluated on the PRE-fix corpus
         // (before `apply_fix` mutates mesh files — the fix can excise the
         // interior anchor line, which would hide it from a post-fix scan). The
@@ -688,11 +724,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // are a loud, rare error condition, so the perf hit is irrelevant.
         let has_interior_anchor = {
             let _perf = crate::perf::span("stale.scan-interior-anchors");
-            crate::cli::interior_anchor::scope_has_interior_anchor(
-                repo,
+            // Reuse the single pre-fix corpus load (still pre-`apply_fix`, so
+            // the interior-anchor classification reflects the pre-fix mesh
+            // files exactly as a fresh load would). `pre_fix_corpus` was
+            // ensured `Some` at the top of this `--fix` block.
+            crate::cli::interior_anchor::scope_has_interior_anchor_in(
                 mesh_root,
+                &pre_fix_corpus
+                    .as_ref()
+                    .expect("pre_fix_corpus set before --fix interior pre-scan")
+                    .0,
                 scoped_mesh_names.as_ref(),
-            )?
+            )
         };
         // `apply_fix`'s range coalescing is workspace-total: it collapses
         // contiguous/overlapping fresh ranges on a path regardless of
@@ -704,7 +747,15 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         let fix_input: Vec<MeshResolved> = if args.paths.is_empty() {
             let mut full = meshes.clone();
             let known: HashSet<String> = full.iter().map(|m| m.name.clone()).collect();
-            for (name, mesh) in crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0 {
+            // Reuse the single pre-fix corpus load. This is the LAST pre-fix
+            // consumer (the next thing to touch `.mesh/` is `apply_fix`, which
+            // mutates it), so `take` it: the post-fix backfill / interior scan
+            // must NOT reuse pre-fix state and load their own fresh corpus.
+            let corpus = pre_fix_corpus
+                .take()
+                .expect("pre_fix_corpus set before --fix fix_input supplement")
+                .0;
+            for (name, mesh) in corpus {
                 if known.contains(&name) {
                     continue;
                 }
@@ -803,6 +854,24 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         HashSet::new()
     };
 
+    // POST-region corpus: the corpus state observed by the backfill and the
+    // interior-anchor scan below. On the plain (non-`--fix`) path no mutation
+    // happened since the pre-fix load, so reuse `pre_fix_corpus` (still live;
+    // it is only `take`n inside the `--fix` bare-scan branch). On the `--fix`
+    // path `apply_fix` rewrote `.mesh/`, so the pre-fix corpus is stale — load
+    // a single FRESH post-fix corpus and share it between both consumers.
+    // `None` on a whole-result hit (both consumers are skipped) or when the
+    // scoped path leaves `pre_fix_corpus` consumed.
+    let post_region_corpus: Option<crate::mesh::read::LoadedMeshes> = if use_whole_result {
+        None
+    } else if args.fix {
+        Some(crate::mesh::read::load_all_meshes_in(repo, mesh_root)?)
+    } else {
+        // Plain path: same `.mesh/` state as the pre-fix load. `pre_fix_corpus`
+        // is `Some` here (only the `--fix` bare-scan branch takes it).
+        pre_fix_corpus.take()
+    };
+
     // Human format, workspace scan: each surfaced mesh lists its *complete*
     // anchor set in stored order — drifted anchors keep their resolved
     // finding, fresh siblings render as bare bullets. On the cache_v2 warm
@@ -834,12 +903,20 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 .any(|a| a.status != AnchorStatus::Fresh)
                 || !m.pending.is_empty()
         });
-        let file_records: std::collections::HashMap<String, crate::types::Mesh> =
-            crate::mesh::read::load_all_meshes_in(repo, mesh_root)?.0
-                .into_iter()
+        // Reuse the shared post-region corpus (fresh post-`apply_fix` on the
+        // `--fix` path; the unchanged pre-fix corpus on the plain path) instead
+        // of a dedicated reload. Borrow it so the interior scan below can reuse
+        // the same load.
+        let file_records: std::collections::HashMap<&str, &crate::types::Mesh> =
+            post_region_corpus
+                .as_ref()
+                .expect("post_region_corpus set before backfill when !use_whole_result")
+                .0
+                .iter()
+                .map(|(n, m)| (n.as_str(), m))
                 .collect();
         for m in meshes.iter_mut() {
-            let Some(record) = file_records.get(&m.name) else {
+            let Some(record) = file_records.get(m.name.as_str()) else {
                 continue;
             };
             // Rebuild in stored order: each file-record anchor keeps its
@@ -975,7 +1052,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             Vec::new()
         } else {
             let _perf = crate::perf::span("stale.scan-interior-anchors");
-            let all = crate::cli::interior_anchor::scan_interior_anchors(repo, mesh_root)?;
+            // Reuse the shared post-region corpus (same load the backfill used)
+            // instead of a dedicated reload — it observes the correct state
+            // (post-`apply_fix` on `--fix`, unchanged pre-fix on the plain
+            // path).
+            let all = crate::cli::interior_anchor::scan_interior_anchors_in(
+                mesh_root,
+                &post_region_corpus
+                    .as_ref()
+                    .expect("post_region_corpus set before interior scan when !use_whole_result")
+                    .0,
+            );
             match &scoped_mesh_names {
                 None => all,
                 Some(names) => all
