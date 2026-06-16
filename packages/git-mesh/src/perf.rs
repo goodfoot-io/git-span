@@ -97,6 +97,22 @@ static L2_WRITE_NS: AtomicU64 = AtomicU64::new(0);
 static L2_BYTES_READ: AtomicU64 = AtomicU64::new(0);
 static L2_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
+// ── `git mesh list` corpus-load counters ────────────────────────────────────
+//
+// Phases of `load_all_meshes_in` (3-layer name discovery + per-mesh
+// read/parse) and the per-layer byte volume parsed. These are incremented
+// from deep call sites that have no `run_list` handle. They are reset at the
+// top of `run_list` and read back in the list-path emit block, exactly like
+// the resolver subroutine counters above; values are meaningful for a single
+// list invocation per process.
+static LIST_DISCOVER_NS: AtomicU64 = AtomicU64::new(0);
+static LIST_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+static LIST_GLOB_SCAN_NS: AtomicU64 = AtomicU64::new(0);
+static LIST_MESHES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
+static LIST_MESHES_PARSED: AtomicU64 = AtomicU64::new(0);
+static LIST_BYTES_PARSED: AtomicU64 = AtomicU64::new(0);
+static LIST_LAYER_READS: AtomicU64 = AtomicU64::new(0);
+
 pub fn record_gix_open() {
     if !enabled() {
         return;
@@ -191,6 +207,122 @@ where
     let r = f();
     L2_WRITE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     r
+}
+
+/// Time the 3-layer mesh-name discovery phase of a corpus load and record
+/// how many names it found. No-ops when perf is disabled (returns `f()`
+/// without touching `Instant`).
+pub fn time_list_discover<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if !enabled() {
+        return f();
+    }
+    let t = Instant::now();
+    let r = f();
+    LIST_DISCOVER_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    r
+}
+
+/// Time the read+parse phase of a corpus load (one call wraps the whole
+/// per-mesh `read_effective` loop).
+pub fn time_list_parse<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if !enabled() {
+        return f();
+    }
+    let t = Instant::now();
+    let r = f();
+    LIST_PARSE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    r
+}
+
+/// Time a single glob scan over the flat path index. Called once per glob
+/// argument; the accumulated total is reported as `list.glob-scan-us`.
+pub fn time_list_glob_scan<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if !enabled() {
+        return f();
+    }
+    let t = Instant::now();
+    let r = f();
+    LIST_GLOB_SCAN_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    r
+}
+
+pub fn record_list_meshes_discovered(n: u64) {
+    if !enabled() {
+        return;
+    }
+    LIST_MESHES_DISCOVERED.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn record_list_mesh_parsed() {
+    if !enabled() {
+        return;
+    }
+    LIST_MESHES_PARSED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record the byte length of a single mesh file's content as it is read from
+/// its winning layer (worktree / index / HEAD) during a corpus load.
+pub fn record_list_bytes_parsed(bytes: u64) {
+    if !enabled() {
+        return;
+    }
+    LIST_BYTES_PARSED.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Record one actual mesh-file content read during a corpus load. Called once
+/// per real read in the `read_effective` layer chain (worktree / index / HEAD),
+/// so the total is the filesystem-independent proxy for `git mesh list` I/O
+/// cost. If `read_effective` reads exactly one (winning) layer per mesh this
+/// equals `list.meshes-parsed`; a higher count would reveal redundant layer
+/// reads per mesh.
+pub fn record_list_layer_read() {
+    if !enabled() {
+        return;
+    }
+    LIST_LAYER_READS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn list_discover_us() -> u64 {
+    LIST_DISCOVER_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn list_parse_us() -> u64 {
+    LIST_PARSE_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn list_glob_scan_us() -> u64 {
+    LIST_GLOB_SCAN_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn list_meshes_discovered() -> u64 {
+    LIST_MESHES_DISCOVERED.load(Ordering::Relaxed)
+}
+pub fn list_meshes_parsed() -> u64 {
+    LIST_MESHES_PARSED.load(Ordering::Relaxed)
+}
+pub fn list_bytes_parsed() -> u64 {
+    LIST_BYTES_PARSED.load(Ordering::Relaxed)
+}
+pub fn list_layer_reads() -> u64 {
+    LIST_LAYER_READS.load(Ordering::Relaxed)
+}
+
+/// Reset the `git mesh list` corpus-load counters. Called at the top of
+/// `run_list` so the emit block reports values from a single list invocation.
+pub fn reset_list_counters() {
+    LIST_DISCOVER_NS.store(0, Ordering::Relaxed);
+    LIST_PARSE_NS.store(0, Ordering::Relaxed);
+    LIST_GLOB_SCAN_NS.store(0, Ordering::Relaxed);
+    LIST_MESHES_DISCOVERED.store(0, Ordering::Relaxed);
+    LIST_MESHES_PARSED.store(0, Ordering::Relaxed);
+    LIST_BYTES_PARSED.store(0, Ordering::Relaxed);
+    LIST_LAYER_READS.store(0, Ordering::Relaxed);
 }
 
 pub fn gix_open_calls() -> u64 {

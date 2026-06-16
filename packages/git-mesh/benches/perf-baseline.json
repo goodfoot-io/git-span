@@ -23,5 +23,25 @@
   "stale-warm": {
     "median_ms": 26.0,
     "noise_floor_ms": 10.0
+  },
+  "startup": {
+    "median_ms": 6.0,
+    "noise_floor_ms": 40.0
+  },
+  "list-glob-selective": {
+    "median_ms": 15.0,
+    "noise_floor_ms": 40.0
+  },
+  "list-glob-broad": {
+    "median_ms": 14.0,
+    "noise_floor_ms": 40.0
+  },
+  "list-glob-nomatch": {
+    "median_ms": 14.0,
+    "noise_floor_ms": 40.0
+  },
+  "stale-fix": {
+    "median_ms": 260.0,
+    "noise_floor_ms": 35.0
   }
 }

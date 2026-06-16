@@ -52,27 +52,37 @@ pub fn load_all_meshes_in(
 ) -> Result<LoadedMeshes> {
     let _perf = crate::perf::span("mesh.load-all-corpus");
     let reader = MeshFileReader::new(repo, mesh_root.to_string());
-    let mut names = reader.list_mesh_names()?;
+    // Phase 1: 3-layer name discovery (worktree walk + HEAD tree + index).
+    let mut names = crate::perf::time_list_discover(|| reader.list_mesh_names())?;
     names.sort();
+    crate::perf::record_list_meshes_discovered(names.len() as u64);
     let mut out = Vec::with_capacity(names.len());
     let mut conflicted = Vec::new();
-    for name in names {
-        // A name can appear in `list_mesh_names` (e.g. present in HEAD)
-        // yet be tombstoned in the effective view; skip those rather
-        // than erroring so the batch resolves the live set.
-        //
-        // A mesh in a Git conflict state cannot be read reliably. It is
-        // surfaced separately as a `Conflict` finding by the stale path;
-        // collecting it here lets callers avoid a separate
-        // `conflicted_mesh_names_in` scan (still fail-closed: the conflict
-        // is reported, exit is non-zero).
-        match reader.read_effective(&name) {
-            Ok(Some(file)) => out.push((name.clone(), mesh_from_file(&name, &file))),
-            Ok(None) => {}
-            Err(Error::MeshConflict(_)) => conflicted.push(name.clone()),
-            Err(e) => return Err(e),
+    // Phase 2: per-mesh read + parse. The closure return is propagated so the
+    // timer wraps the full loop without changing the `?` early-exit semantics.
+    crate::perf::time_list_parse(|| -> Result<()> {
+        for name in names {
+            // A name can appear in `list_mesh_names` (e.g. present in HEAD)
+            // yet be tombstoned in the effective view; skip those rather
+            // than erroring so the batch resolves the live set.
+            //
+            // A mesh in a Git conflict state cannot be read reliably. It is
+            // surfaced separately as a `Conflict` finding by the stale path;
+            // collecting it here lets callers avoid a separate
+            // `conflicted_mesh_names_in` scan (still fail-closed: the conflict
+            // is reported, exit is non-zero).
+            match reader.read_effective(&name) {
+                Ok(Some(file)) => {
+                    crate::perf::record_list_mesh_parsed();
+                    out.push((name.clone(), mesh_from_file(&name, &file)));
+                }
+                Ok(None) => {}
+                Err(Error::MeshConflict(_)) => conflicted.push(name.clone()),
+                Err(e) => return Err(e),
+            }
         }
-    }
+        Ok(())
+    })?;
     Ok((out, conflicted))
 }
 
@@ -171,18 +181,21 @@ impl MeshPathIndex {
         pattern: &str,
         range: Option<(u32, u32)>,
     ) -> Result<Vec<String>> {
-        let glob = globset::GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()
-            .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
-            .compile_matcher();
-        let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (name, path, extent) in &self.all {
-            if glob.is_match(path) && extent_in_range(*extent, range) {
-                matched.insert(name.clone());
+        crate::perf::time_list_glob_scan(|| {
+            let glob = globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
+                .compile_matcher();
+            let mut matched: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for (name, path, extent) in &self.all {
+                if glob.is_match(path) && extent_in_range(*extent, range) {
+                    matched.insert(name.clone());
+                }
             }
-        }
-        Ok(matched.into_iter().collect())
+            Ok(matched.into_iter().collect())
+        })
     }
 }
 

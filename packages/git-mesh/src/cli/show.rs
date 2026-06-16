@@ -595,15 +595,25 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
         return run_list_batch_porcelain(repo, mesh_root);
     }
 
+    // Reset the corpus-load counters incremented from deep call sites
+    // (`load_all_meshes_in`, the glob scan) so the emit block at the end
+    // reports values from this single list invocation only.
+    crate::perf::reset_list_counters();
+
     // Load the full mesh corpus exactly once. Every downstream consumer
     // — target resolution, conflict detection, listing collection —
-    // derives its answer from this single in-memory copy.
+    // derives its answer from this single in-memory copy. Discovery and
+    // parse phases are timed inside `load_all_meshes_in`.
     let (meshes, conflicted) =
         crate::mesh::read::load_all_meshes_in(repo, mesh_root)?;
 
     // Build the path index from the already-loaded meshes so target
     // resolution doesn't trigger a second corpus parse.
+    let index_build_start = crate::perf::enabled().then(std::time::Instant::now);
     let path_index = crate::mesh::read::MeshPathIndex::from_loaded_meshes(&meshes)?;
+    let index_build_us = index_build_start
+        .map(|t| t.elapsed().as_micros() as u64)
+        .unwrap_or(0);
 
     // Collect loaded mesh names into a set so bare-name lookups can
     // check membership without a per-arg `read_effective` call.
@@ -659,6 +669,21 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
         }
     }
 
+    // Counts for the perf emit block (computed only when perf is enabled to
+    // keep the disabled path allocation- and loop-free). `meshes-matched` is
+    // the count surviving glob/target resolution; with no targets it is the
+    // whole loaded corpus. `anchors-indexed` is the flat path-index size.
+    let (anchors_indexed, meshes_matched) = if crate::perf::enabled() {
+        let anchors: u64 = meshes.iter().map(|(_, m)| m.anchors.len() as u64).sum();
+        let matched = match &resolved_names {
+            Some(names) => names.len() as u64,
+            None => meshes.len() as u64,
+        };
+        (anchors, matched)
+    } else {
+        (0, 0)
+    };
+
     let include_why = !args.porcelain || args.search.is_some();
     let mut listings = {
         let _perf = crate::perf::span("list.collect");
@@ -691,6 +716,27 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
         }
     }
 
+    // Emit the per-phase corpus-load counters for the list path. Phase
+    // timings recorded from deep call sites are read back here, mirroring the
+    // resolver's `stale_meshes` emit block; `render_us` is the only timing
+    // measured locally. No-ops when perf is disabled.
+    let emit_list_counters = |render_us: u64| {
+        crate::perf::counter("list.discover-us", crate::perf::list_discover_us());
+        crate::perf::counter("list.parse-us", crate::perf::list_parse_us());
+        crate::perf::counter("list.index-build-us", index_build_us);
+        crate::perf::counter("list.glob-scan-us", crate::perf::list_glob_scan_us());
+        crate::perf::counter("list.render-us", render_us);
+        crate::perf::counter(
+            "list.meshes-discovered",
+            crate::perf::list_meshes_discovered(),
+        );
+        crate::perf::counter("list.meshes-parsed", crate::perf::list_meshes_parsed());
+        crate::perf::counter("list.bytes-parsed", crate::perf::list_bytes_parsed());
+        crate::perf::counter("list.layer-reads", crate::perf::list_layer_reads());
+        crate::perf::counter("list.anchors-indexed", anchors_indexed);
+        crate::perf::counter("list.meshes-matched", meshes_matched);
+    };
+
     let _perf = crate::perf::span("list.sort-page-render");
     listings.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -702,9 +748,11 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
 
     if page.is_empty() {
         println!("No meshes match the filters.");
+        emit_list_counters(0);
         return Ok(0);
     }
 
+    let render_start = crate::perf::enabled().then(std::time::Instant::now);
     if args.oneline {
         let _perf = crate::perf::span("list.render-oneline");
         for listing in &page {
@@ -723,6 +771,10 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, mesh_root: &str) -> Resu
     } else {
         render_blocks(&page);
     }
+    let render_us = render_start
+        .map(|t| t.elapsed().as_micros() as u64)
+        .unwrap_or(0);
+    emit_list_counters(render_us);
 
     Ok(0)
 }

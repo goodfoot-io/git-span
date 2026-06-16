@@ -67,6 +67,22 @@ const SLA_SHOW_MS: u64 = 250;    // post-F6 ~7–10ms; coarse guard, plan budget
 const SLA_HISTORY_MS: u64 = 750; // post-F6 ~130–176ms; coarse guard ~4× median
 const SLA_STALE_COLD_MS: u64 = 500; // post-F6 ~150–216ms under load; coarse guard, below plan's 900ms budget
 const SLA_STALE_WARM_MS: u64 = 200; // post-F6 ~21–27ms; coarse guard; NOT the in-process 40ms SLA
+// `list <glob>` does the same corpus parse as bare `list` plus a glob filter, so
+// its operating point tracks `list`; the same 250ms coarse guard applies to all
+// three glob variants (selective subset, broad most-of-corpus, nomatch).
+const SLA_LIST_GLOB_MS: u64 = 250; // mirrors SLA_LIST_MS; glob filter is cheap on top of the parse
+// `stale --fix` does a full cold resolve AND rewrites every drifted mesh file on
+// disk; it is strictly heavier than read-only `stale-cold` (~150–216ms under
+// load). 1500ms is a generous coarse guard (~7–10× the read-only cold median)
+// pending an orchestrator measurement of the real operating point.
+const SLA_STALE_FIX_MS: u64 = 1500;
+// `startup` measures pure process spawn with NO repo work: `git-mesh --version`
+// parses args and exits before discovering a repo or loading the corpus. It
+// isolates the fixed process-spawn cost so the other ops can be read as
+// `work ≈ op_median − startup_median`. The ceiling is generous (100ms) — this
+// cell is a baseline reference, not a tight gate, and carries no perf-baseline
+// entry (the orchestrator owns baselines).
+const SLA_STARTUP_MS: u64 = 100;
 
 // ---------------------------------------------------------------------------
 // Binary path — resolved at compile time by cargo
@@ -272,6 +288,105 @@ fn dirty_one_tracked_file(repo: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// stale --fix drift fixture
+// ---------------------------------------------------------------------------
+
+/// Anchored source files the `stale-fix` cell perturbs to manufacture drift.
+/// Each is a real source file that several corpus anchors point at (verified
+/// against `git mesh list`), so a one-line shift at the top moves every anchor
+/// in those files past its committed line range — `--fix` then re-anchors them.
+/// All three live under `packages/git-mesh/src/` and are tracked in the corpus.
+const STALE_FIX_DRIFT_FILES: &[&str] = &[
+    "packages/git-mesh/src/cli/mod.rs",
+    "packages/git-mesh/src/main.rs",
+    "packages/git-mesh/src/validation.rs",
+];
+
+/// Insert a blank line at the TOP of each `STALE_FIX_DRIFT_FILES` entry in the
+/// clone, shifting every anchor in those files down one line so the resolver
+/// classifies them as `Moved`/`Changed`. Returns `false` (cell skips) if any
+/// target file is missing — the real corpus always has them, so this is a guard.
+fn drift_stale_fix_sources(repo: &Path) -> bool {
+    for rel in STALE_FIX_DRIFT_FILES {
+        let path = repo.join(rel);
+        let Ok(orig) = fs::read(&path) else {
+            return false;
+        };
+        // Prepend one newline: a deterministic, textually-valid edit that shifts
+        // every line (and thus every anchor's range) down by exactly one.
+        let mut perturbed = Vec::with_capacity(orig.len() + 1);
+        perturbed.push(b'\n');
+        perturbed.extend_from_slice(&orig);
+        fs::write(&path, &perturbed).unwrap_or_else(|e| panic!("perturb {rel}: {e}"));
+    }
+    true
+}
+
+/// Recursively copy `src` directory into `dst` (which is created fresh). A small
+/// `std::fs`-only deep copy used to snapshot/restore the dirtied baseline; the
+/// bench has no `fs_extra` dependency.
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap_or_else(|e| panic!("create_dir_all {}: {e}", dst.display()));
+    for entry in fs::read_dir(src).unwrap_or_else(|e| panic!("read_dir {}: {e}", src.display())) {
+        let entry = entry.expect("dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file_type").is_dir() {
+            copy_dir_recursive(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap_or_else(|e| panic!("copy {}: {e}", from.display()));
+        }
+    }
+}
+
+/// Snapshot of the dirtied-but-unfixed state the `stale-fix` cell restores
+/// before every timed `--fix` invocation: the whole `.mesh/` tree plus the
+/// perturbed source files, captured ONCE outside the timed region.
+struct FixBaseline {
+    _tmp: tempfile::TempDir,
+    mesh_snapshot: PathBuf,
+    source_snapshots: Vec<(PathBuf, PathBuf)>, // (live path in repo, snapshot path)
+}
+
+/// Capture the dirtied baseline (call after `drift_stale_fix_sources`): copies
+/// the clone's `.mesh/` tree and each perturbed source file into a temp dir.
+fn snapshot_fix_baseline(repo: &Path) -> FixBaseline {
+    let tmp = tempfile::TempDir::new().expect("fix-baseline tempdir");
+    let root = tmp.path();
+    let mesh_snapshot = root.join("mesh");
+    copy_dir_recursive(&repo.join(".mesh"), &mesh_snapshot);
+    let source_snapshots = STALE_FIX_DRIFT_FILES
+        .iter()
+        .enumerate()
+        .map(|(i, rel)| {
+            let live = repo.join(rel);
+            let snap = root.join(format!("src-{i}"));
+            fs::copy(&live, &snap).unwrap_or_else(|e| panic!("snapshot {rel}: {e}"));
+            (live, snap)
+        })
+        .collect();
+    FixBaseline {
+        _tmp: tmp,
+        mesh_snapshot,
+        source_snapshots,
+    }
+}
+
+/// Restore the clone to the dirtied baseline: replace `.mesh/` with the snapshot
+/// and rewrite every perturbed source file. Runs OUTSIDE the timed window so
+/// each timed `--fix` starts from the identical dirtied-but-unfixed state.
+fn restore_fix_baseline(repo: &Path, baseline: &FixBaseline) {
+    let mesh_dir = repo.join(".mesh");
+    if mesh_dir.exists() {
+        fs::remove_dir_all(&mesh_dir).unwrap_or_else(|e| panic!("remove .mesh: {e}"));
+    }
+    copy_dir_recursive(&baseline.mesh_snapshot, &mesh_dir);
+    for (live, snap) in &baseline.source_snapshots {
+        fs::copy(snap, live).unwrap_or_else(|e| panic!("restore {}: {e}", live.display()));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cache helpers
 // ---------------------------------------------------------------------------
 
@@ -333,6 +448,63 @@ fn assert_oracle(repo: &Path, op_name: &str, args: &[&str]) {
             "[real_corpus] ORACLE FAIL for '{op_name}':\n\
              --- ground_truth (cache off) ---\n{gt_str}\n\
              --- cached_output (cache on) ---\n{cached_str}"
+        );
+    }
+}
+
+/// Mesh names a `git mesh list [glob]` human run reported, parsed from the
+/// `## <name>` block headers in its stdout. Used by the list-glob subset oracle
+/// to assert a glob's matched meshes are a subset of the bare-`list` corpus
+/// WITHOUT depending on the exact human block layout.
+fn list_block_names(stdout: &[u8]) -> std::collections::BTreeSet<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("## ").map(|n| n.trim().to_string()))
+        .collect()
+}
+
+/// Oracle for a `git mesh list <glob>` cell.
+///
+/// 1. DETERMINISM (the required part, mirroring the bare-`list` oracle): the
+///    command's stdout is byte-identical with the cache live vs
+///    `GIT_MESH_CACHE_V2=0`. For `list` this is a determinism check, which is
+///    exactly what the existing `list` cell asserts.
+/// 2. SUBSET CONSISTENCY (cheap, mesh-name level): the meshes a glob reports are
+///    a subset of the bare-`list` corpus. `expect_proper_nonempty` additionally
+///    asserts the matched set is non-empty AND strictly smaller than the whole
+///    corpus (true for the selective and broad globs); the nomatch glob produces
+///    empty stdout, so its matched set is the empty subset.
+fn assert_oracle_list_glob(repo: &Path, op_name: &str, glob: &str, expect_proper_nonempty: bool) {
+    // 1. Determinism: cache-on vs cache-off stdout must be byte-identical.
+    let args = ["list", glob];
+    assert_oracle(repo, op_name, &args);
+
+    // 2. Subset consistency at the mesh-name level.
+    let glob_names = list_block_names(&capture_stdout(repo, &args, false));
+    let bare_names = list_block_names(&capture_stdout(repo, &["list"], false));
+    assert!(
+        glob_names.is_subset(&bare_names),
+        "[real_corpus] ORACLE FAIL for '{op_name}': globbed meshes are not a subset of bare `list`:\n\
+         glob-only meshes: {:?}",
+        glob_names.difference(&bare_names).collect::<Vec<_>>()
+    );
+    if expect_proper_nonempty {
+        assert!(
+            !glob_names.is_empty(),
+            "[real_corpus] ORACLE FAIL for '{op_name}': glob '{glob}' matched no meshes \
+             but was expected to match a non-empty subset"
+        );
+        assert!(
+            glob_names.len() < bare_names.len(),
+            "[real_corpus] ORACLE FAIL for '{op_name}': glob '{glob}' matched ALL {} meshes \
+             but was expected to match a PROPER subset",
+            bare_names.len()
+        );
+    } else {
+        assert!(
+            glob_names.is_empty(),
+            "[real_corpus] ORACLE FAIL for '{op_name}': nomatch glob '{glob}' matched meshes {:?}",
+            glob_names
         );
     }
 }
@@ -461,6 +633,43 @@ fn record_samples(op: &str, samples: &[Duration], ceiling_ms: u64) {
         .extend(samples.iter().map(|d| d.as_secs_f64() * 1000.0));
 }
 
+// ---------------------------------------------------------------------------
+// Layer-reads advisory board — ADVISORY ONLY (never a gate)
+// ---------------------------------------------------------------------------
+//
+// The deterministic, filesystem-independent I/O proxy for `git mesh list`:
+// the number of individual mesh-file content reads (`list.layer-reads`) and
+// the meshes parsed (`list.meshes-parsed`) for each list cell, captured by one
+// extra `GIT_MESH_PERF=1` invocation OUTSIDE the timed region. `bench_report`
+// prints one advisory line per op; absent counters render as `n/a`. This is a
+// regression-tracking signal, NOT a gated assertion.
+
+/// One list cell's captured layer-reads advisory: the op name and the two
+/// parsed counts (`None` when the corresponding perf line was absent).
+struct LayerReadsAdvisory {
+    op: String,
+    layer_reads: Option<u64>,
+    meshes_parsed: Option<u64>,
+}
+
+fn layer_reads_board() -> &'static std::sync::Mutex<Vec<LayerReadsAdvisory>> {
+    static BOARD: std::sync::OnceLock<std::sync::Mutex<Vec<LayerReadsAdvisory>>> =
+        std::sync::OnceLock::new();
+    BOARD.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Record one list cell's captured layer-reads advisory for `bench_report`.
+fn record_layer_reads(op: &str, layer_reads: Option<u64>, meshes_parsed: Option<u64>) {
+    layer_reads_board()
+        .lock()
+        .expect("layer-reads board mutex")
+        .push(LayerReadsAdvisory {
+            op: op.to_string(),
+            layer_reads,
+            meshes_parsed,
+        });
+}
+
 /// Baseline entry parsed from perf-baseline.json.
 struct Baseline {
     median_ms: f64,
@@ -532,6 +741,63 @@ fn time_invocations(repo: &Path, args: &[&str], n: u64) -> Vec<Duration> {
         .collect()
 }
 
+/// Time `n` pure process-spawn invocations: `git-mesh --version`. `--version`
+/// parses args and exits before discovering a repo or loading any corpus, so
+/// the working directory is irrelevant — the temp dir keeps the spawn shape
+/// identical to the other cells (`current_dir` set, output captured) while
+/// measuring ONLY fixed process-spawn cost.
+fn time_startup(dir: &Path, n: u64) -> Vec<Duration> {
+    (0..n)
+        .map(|_| {
+            let t0 = Instant::now();
+            let out = Command::new(MESH_BIN)
+                .current_dir(dir)
+                .arg("--version")
+                .output()
+                .expect("spawn git-mesh --version");
+            let elapsed = t0.elapsed();
+            assert!(
+                out.status.success(),
+                "git-mesh --version exited non-zero: {:?}",
+                out.status.code()
+            );
+            elapsed
+        })
+        .collect()
+}
+
+/// Run `git mesh list [glob]` ONCE against the clone with `GIT_MESH_PERF=1` and
+/// return the `(list.layer-reads, list.meshes-parsed)` counts parsed from the
+/// perf lines on stderr. Either value is `None` if its line is absent (the
+/// advisory printer renders `n/a` rather than panicking). Run OUTSIDE any timed
+/// region — it adds a perf-logging invocation that does not belong in a sample.
+fn capture_list_layer_reads(repo: &Path, glob: Option<&str>) -> (Option<u64>, Option<u64>) {
+    let mut cmd = Command::new(MESH_BIN);
+    cmd.current_dir(repo).env("GIT_MESH_PERF", "1").arg("list");
+    if let Some(g) = glob {
+        cmd.arg(g);
+    }
+    let out = cmd.output().expect("spawn git-mesh list (perf capture)");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let parse = |key: &str| -> Option<u64> {
+        // Perf lines look like: `git-mesh perf: list.layer-reads 49`. Find the
+        // line carrying the key, then parse the first integer that follows it.
+        stderr.lines().find_map(|line| {
+            let idx = line.find(key)?;
+            line[idx + key.len()..]
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<u64>().ok())
+        })
+    };
+    (parse("list.layer-reads"), parse("list.meshes-parsed"))
+}
+
+/// Format an `Option<u64>` count as a decimal or `n/a` for the advisory line.
+fn fmt_count(v: Option<u64>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_else(|| "n/a".to_string())
+}
+
 /// Time cold stale invocations (delete cache before each).
 fn time_stale_cold(repo: &Path, n: u64) -> Vec<Duration> {
     (0..n)
@@ -565,9 +831,139 @@ fn time_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
         .collect()
 }
 
+/// Time `stale --fix` invocations. State reset is OUTSIDE the timed region:
+/// before each sample the clone is restored to the dirtied baseline (so every
+/// invocation does the same rewrite work), and ONLY the `git mesh stale --fix`
+/// process is timed. `--fix` requires `--format human`; `--no-exit-code` keeps a
+/// drift exit from being treated as failure.
+fn time_stale_fix(repo: &Path, baseline: &FixBaseline, n: u64) -> Vec<Duration> {
+    (0..n)
+        .map(|_| {
+            restore_fix_baseline(repo, baseline);
+            delete_cache(repo); // each sample is a cold fix, matching stale-cold
+            let t0 = Instant::now();
+            let _out = Command::new(MESH_BIN)
+                .current_dir(repo)
+                .args(["stale", "--fix", "--no-exit-code"])
+                .output()
+                .expect("spawn stale --fix");
+            t0.elapsed()
+        })
+        .collect()
+}
+
+/// Idempotence oracle for `stale --fix` (the important correctness gate). On a
+/// SEPARATE throwaway clone — so it never perturbs the timing clone — manufacture
+/// drift, run `--fix` once, snapshot the rewritten `.mesh/` tree, run `--fix` a
+/// SECOND time, and assert the `.mesh/` tree is byte-identical: a second fix
+/// makes NO further changes. (The second run still REPORTS the anchors as
+/// moved-vs-committed-source — the source files stay perturbed — so a "zero
+/// fixed" stdout assertion would not hold; on-disk idempotence is the invariant
+/// that does, and is what we assert.)
+fn assert_oracle_stale_fix_idempotent() {
+    let repo = match setup_bench_repo() {
+        Some(r) => r,
+        None => return, // no .mesh/: nothing to check (cell also skips)
+    };
+    if !drift_stale_fix_sources(&repo.path) {
+        eprintln!("[real_corpus] SKIP stale-fix idempotence oracle: drift source files missing");
+        return;
+    }
+
+    let run_fix = || {
+        Command::new(MESH_BIN)
+            .current_dir(&repo.path)
+            .args(["stale", "--fix", "--no-exit-code"])
+            .output()
+            .expect("spawn stale --fix (oracle)");
+    };
+
+    // First fix: re-anchors the drifted meshes in place.
+    run_fix();
+    let snap_tmp = tempfile::TempDir::new().expect("idempotence snapshot tempdir");
+    let after_first = snap_tmp.path().join("mesh-after-fix1");
+    copy_dir_recursive(&repo.path.join(".mesh"), &after_first);
+
+    // Second fix on the now-fixed clone must change nothing on disk.
+    run_fix();
+
+    let mut diffs: Vec<String> = Vec::new();
+    assert_dirs_byte_identical(&after_first, &repo.path.join(".mesh"), Path::new(""), &mut diffs);
+    if !diffs.is_empty() {
+        panic!(
+            "[real_corpus] ORACLE FAIL for 'stale-fix' (idempotence): a second --fix changed \
+             {} mesh path(s):\n  - {}",
+            diffs.len(),
+            diffs.join("\n  - ")
+        );
+    }
+}
+
+/// Recursively assert two directory trees are byte-identical, collecting every
+/// divergent relative path into `diffs` (rather than panicking on the first).
+fn assert_dirs_byte_identical(a: &Path, b: &Path, rel: &Path, diffs: &mut Vec<String>) {
+    let mut a_entries: Vec<_> = fs::read_dir(a)
+        .unwrap_or_else(|e| panic!("read_dir {}: {e}", a.display()))
+        .map(|e| e.expect("dir entry").file_name())
+        .collect();
+    let mut b_entries: Vec<_> = fs::read_dir(b)
+        .unwrap_or_else(|e| panic!("read_dir {}: {e}", b.display()))
+        .map(|e| e.expect("dir entry").file_name())
+        .collect();
+    a_entries.sort();
+    b_entries.sort();
+    if a_entries != b_entries {
+        diffs.push(format!(
+            "{}: entry set differs ({:?} vs {:?})",
+            rel.display(),
+            a_entries,
+            b_entries
+        ));
+        return;
+    }
+    for name in a_entries {
+        let pa = a.join(&name);
+        let pb = b.join(&name);
+        let child_rel = rel.join(&name);
+        if pa.is_dir() {
+            assert_dirs_byte_identical(&pa, &pb, &child_rel, diffs);
+        } else {
+            let ba = fs::read(&pa).unwrap_or_else(|e| panic!("read {}: {e}", pa.display()));
+            let bb = fs::read(&pb).unwrap_or_else(|e| panic!("read {}: {e}", pb.display()));
+            if ba != bb {
+                diffs.push(child_rel.display().to_string());
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bench groups
 // ---------------------------------------------------------------------------
+
+/// `startup` cell: pure process-spawn cost via `git-mesh --version`, which
+/// parses args and exits without discovering a repo or loading the corpus. It
+/// needs no `.mesh/` corpus, so it runs against a throwaway temp dir and is
+/// never skipped. Recording its median lets the other ops be read as
+/// `work ≈ op_median − startup_median`. No perf-baseline entry — the
+/// orchestrator owns baselines — and the ceiling is a generous reference guard.
+fn bench_startup(c: &mut Criterion) {
+    let tmp = tempfile::TempDir::new().expect("startup tempdir");
+    let dir = tmp.path();
+
+    let mut g = c.benchmark_group("real_corpus");
+    g.sample_size(10);
+    g.sampling_mode(SamplingMode::Flat);
+
+    g.bench_function("startup", |b| {
+        b.iter_custom(|iters| {
+            let samples = time_startup(dir, iters);
+            record_samples("startup", &samples, SLA_STARTUP_MS);
+            samples.iter().copied().sum()
+        });
+    });
+    g.finish();
+}
 
 fn bench_list(c: &mut Criterion) {
     let repo = match setup_bench_repo() {
@@ -577,6 +973,13 @@ fn bench_list(c: &mut Criterion) {
 
     // Oracle
     assert_oracle(&repo.path, "list", &["list"]);
+
+    // Advisory: capture the deterministic `list.layer-reads` and
+    // `list.meshes-parsed` counts for bare `list` (one extra perf-enabled
+    // invocation, OUTSIDE the timed region). Printed near the scoreboard for
+    // regression tracking; not a gated assertion.
+    let (bare_reads, bare_meshes) = capture_list_layer_reads(&repo.path, None);
+    record_layer_reads("list", bare_reads, bare_meshes);
 
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
@@ -783,6 +1186,98 @@ fn bench_dirty_tree_oracle(c: &mut Criterion) {
     g.finish();
 }
 
+// ---------------------------------------------------------------------------
+// list <glob> cells
+// ---------------------------------------------------------------------------
+//
+// Globs chosen against the real corpus (verified via `git mesh list`):
+//   selective: `packages/git-mesh/src/resolver/**` — matches a small subset
+//              (~5 of 49 meshes), the resolver subsystem.
+//   broad:     `packages/**` — matches most meshes (~37 of 49); a handful of
+//              meshes anchor only top-level files (CLAUDE.md, README.md, wiki/…)
+//              and are correctly excluded, so even "broad" is a proper subset.
+//   nomatch:   `zzz-nonexistent/**` — matches nothing; the command prints a
+//              helpful message to STDERR, leaves stdout empty, and exits
+//              non-zero (fail-closed). Empty stdout is deterministic across
+//              cache-on/off, satisfying the determinism oracle.
+
+/// A `git mesh list <glob>` cell: oracle (determinism + mesh-name subset), then
+/// timed invocations recorded under `op` with `SLA_LIST_GLOB_MS`.
+fn bench_list_glob(c: &mut Criterion, op: &str, glob: &str, expect_proper_nonempty: bool) {
+    let repo = match setup_bench_repo() {
+        Some(r) => r,
+        None => return,
+    };
+
+    assert_oracle_list_glob(&repo.path, op, glob, expect_proper_nonempty);
+
+    // Advisory: capture the deterministic `list.layer-reads` /
+    // `list.meshes-parsed` counts for this glob (one extra perf-enabled
+    // invocation, OUTSIDE the timed region). Printed near the scoreboard.
+    let (reads, meshes) = capture_list_layer_reads(&repo.path, Some(glob));
+    record_layer_reads(op, reads, meshes);
+
+    let mut g = c.benchmark_group("real_corpus");
+    g.sample_size(10);
+    g.sampling_mode(SamplingMode::Flat);
+    g.bench_function(op, |b| {
+        b.iter_custom(|iters| {
+            let samples = time_invocations(&repo.path, &["list", glob], iters);
+            record_samples(op, &samples, SLA_LIST_GLOB_MS);
+            samples.iter().copied().sum()
+        });
+    });
+    g.finish();
+}
+
+fn bench_list_glob_selective(c: &mut Criterion) {
+    bench_list_glob(
+        c,
+        "list-glob-selective",
+        "packages/git-mesh/src/resolver/**",
+        true,
+    );
+}
+
+fn bench_list_glob_broad(c: &mut Criterion) {
+    bench_list_glob(c, "list-glob-broad", "packages/**", true);
+}
+
+fn bench_list_glob_nomatch(c: &mut Criterion) {
+    bench_list_glob(c, "list-glob-nomatch", "zzz-nonexistent/**", false);
+}
+
+/// `stale --fix` cell: a mutating command. The idempotence oracle runs first on
+/// a SEPARATE throwaway clone; then this cell manufactures drift on its own
+/// clone, snapshots the dirtied baseline ONCE, and times repeated cold `--fix`
+/// runs that each restore the baseline OUTSIDE the timed window.
+fn bench_stale_fix(c: &mut Criterion) {
+    // Idempotence oracle on its own throwaway clone (does not touch timing clone).
+    assert_oracle_stale_fix_idempotent();
+
+    let repo = match setup_bench_repo() {
+        Some(r) => r,
+        None => return,
+    };
+    if !drift_stale_fix_sources(&repo.path) {
+        eprintln!("[real_corpus] SKIP stale-fix: drift source files missing");
+        return;
+    }
+    let baseline = snapshot_fix_baseline(&repo.path);
+
+    let mut g = c.benchmark_group("real_corpus");
+    g.sample_size(10);
+    g.sampling_mode(SamplingMode::Flat);
+    g.bench_function("stale-fix", |b| {
+        b.iter_custom(|iters| {
+            let samples = time_stale_fix(&repo.path, &baseline, iters);
+            record_samples("stale-fix", &samples, SLA_STALE_FIX_MS);
+            samples.iter().copied().sum()
+        });
+    });
+    g.finish();
+}
+
 /// Final step: print the full scoreboard and evaluate every gate at once.
 ///
 /// COLLECT-ALL-THEN-ASSERT: each cell above only RECORDED its robust median.
@@ -860,6 +1355,29 @@ fn bench_report(_c: &mut Criterion) {
     }
     println!();
 
+    // Advisory layer-reads line (deterministic I/O proxy; NOT a gate). Renders
+    // each captured list cell as `op=<reads>(<meshes>)`, or `n/a` when a counter
+    // line was absent. Printed even when no cells captured (then it is empty).
+    let advisories = layer_reads_board().lock().expect("layer-reads board mutex");
+    if !advisories.is_empty() {
+        let cells: Vec<String> = advisories
+            .iter()
+            .map(|a| {
+                format!(
+                    "{}={}({})",
+                    a.op,
+                    fmt_count(a.layer_reads),
+                    fmt_count(a.meshes_parsed)
+                )
+            })
+            .collect();
+        println!(
+            "list-cell layer-reads (reads(meshes), advisory only): {}",
+            cells.join(" ")
+        );
+        println!();
+    }
+
     if !breaches.is_empty() {
         panic!(
             "[real_corpus] {} gate breach(es) detected (all cells were still measured):\n  - {}",
@@ -871,6 +1389,7 @@ fn bench_report(_c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_startup,
     bench_list,
     bench_tree,
     bench_show,
@@ -879,6 +1398,10 @@ criterion_group!(
     bench_stale_warm,
     bench_interior_anchor,
     bench_dirty_tree_oracle,
+    bench_list_glob_selective,
+    bench_list_glob_broad,
+    bench_list_glob_nomatch,
+    bench_stale_fix,
     bench_report
 );
 criterion_main!(benches);

@@ -73,6 +73,8 @@ impl<'repo> MeshFileReader<'repo> {
         match crate::git::tree_entry_at(self.repo, "HEAD", Path::new(&mesh_path))? {
             Some((_mode, oid)) => {
                 let text = crate::git::read_git_text(self.repo, &oid.to_string())?;
+                crate::perf::record_list_layer_read();
+                crate::perf::record_list_bytes_parsed(text.len() as u64);
                 MeshFile::parse(&text).map(Some).map_err(Into::into)
             }
             None => Ok(None),
@@ -94,6 +96,8 @@ impl<'repo> MeshFileReader<'repo> {
             let ep = entry.path(&index).to_string();
             if ep == mesh_path {
                 let text = self.read_index_blob_text(entry.id)?;
+                crate::perf::record_list_layer_read();
+                crate::perf::record_list_bytes_parsed(text.len() as u64);
                 return MeshFile::parse(&text).map(Some).map_err(Into::into);
             }
         }
@@ -112,6 +116,8 @@ impl<'repo> MeshFileReader<'repo> {
         // rather than letting `read_to_string` fail with "Is a directory".
         if abs.is_file() {
             let content = std::fs::read_to_string(&abs)?;
+            crate::perf::record_list_layer_read();
+            crate::perf::record_list_bytes_parsed(content.len() as u64);
             MeshFile::parse(&content).map(Some).map_err(Into::into)
         } else {
             Ok(None)
