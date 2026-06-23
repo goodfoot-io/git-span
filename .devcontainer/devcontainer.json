@@ -3,11 +3,13 @@
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
   "workspaceFolder": "/workspace",
+  // Build the shared local base image (devcontainer-base:node24.16-trixie) if it
+  // isn't already present, before the compose build references it as its FROM.
+  "initializeCommand": "bash ${localWorkspaceFolder}/../devcontainer-base/ensure-base.sh",
   "customizations": {
     "vscode": {
       "extensions": [
-        "biomejs.biome",
-        ".devcontainer/no-port-forwarding"
+        "biomejs.biome"
       ],
       "settings": {
         "git.path": "/usr/bin/git",

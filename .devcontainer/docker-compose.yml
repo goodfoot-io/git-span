@@ -9,14 +9,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
     volumes:
       - ..:/workspace:cached
       - ${HOME}/devcontainer/git-mesh:/home/node:cached
+    env_file:
+      - .env
     environment:
       - NODE_OPTIONS=--max-old-space-size=8192
       - CLAUDE_CONFIG_DIR=/home/node/.claude
-    network_mode: host
     dns:
       - 1.1.1.1
     command: sleep infinity

@@ -2,10 +2,6 @@
 
 set -e
 
-CARGO_BIN="/home/node/.cargo/bin/cargo"
-RUSTUP_HOME="/home/node/.rustup"
-CARGO_HOME="/home/node/.cargo"
-
 # Fail fast on a wrong container clock (Docker Desktop VM drift after host sleep
 # breaks TLS, npm, git tags, etc.). When SYS_TIME is granted by docker-compose,
 # step the clock in-place; otherwise print the host-side recovery command.
@@ -40,21 +36,6 @@ if [ -d "/workspace/.devcontainer/utilities" ]; then
     echo "Making scripts in /workspace/.devcontainer/utilities executable..."
     chmod +x /workspace/.devcontainer/utilities/*
 fi
-
-# /home/node is bind-mounted from the host in docker-compose, which hides any
-# Rust toolchain installed into the image at build time. Ensure the mounted
-# home directory has a working Rust install.
-if [ ! -x "$CARGO_BIN" ]; then
-    echo "Installing Rust toolchain into mounted /home/node..."
-    export RUSTUP_HOME
-    export CARGO_HOME
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-else
-    echo "Rust toolchain already available in mounted /home/node"
-fi
-
-echo "Ensuring required Rust components are installed..."
-"$CARGO_HOME/bin/rustup" component add clippy rustfmt
 
 # Create VSCode MCP Bridge directory with proper permissions
 echo "Setting up VSCode MCP Bridge directories..."
@@ -97,21 +78,66 @@ if ! git config --global --get-all safe.directory | grep -Fx /workspace > /dev/n
     git config --global --add safe.directory /workspace
 fi
 
-# Start a per-container rootless sshd and emit a paste-in script for peers
-echo "Setting up rootless sshd for inter-container access..."
-/workspace/.devcontainer/utilities/setup-ssh.sh
-echo "✓ sshd configured"
+# Bring up Tailscale in userspace-networking mode. This needs no /dev/net/tun,
+# NET_ADMIN, or root: the daemon runs as the node user with a user-writable
+# socket and state dir. The state dir lives under the volume-backed home
+# directory, so on rebuilds `tailscale status` succeeds against existing state
+# and we skip re-auth, only refreshing hostname/tags.
+echo "Setting up Tailscale..."
+TAILSCALE_STATE_DIR="${HOME}/.local/share/tailscale"
+TAILSCALE_SOCKET="${TAILSCALE_STATE_DIR}/tailscaled.sock"
+
+if ! command -v tailscaled >/dev/null 2>&1; then
+    echo "⚠ tailscaled not found — install the tailscale package in the Dockerfile"
+else
+    if ! pgrep -x tailscaled > /dev/null; then
+        echo "Starting tailscaled (userspace-networking mode)..."
+        mkdir -p "$TAILSCALE_STATE_DIR"
+        nohup tailscaled \
+            --tun=userspace-networking \
+            --statedir="$TAILSCALE_STATE_DIR" \
+            --socket="$TAILSCALE_SOCKET" >/dev/null 2>&1 &
+        disown
+        for _ in $(seq 1 10); do
+            if [ -S "$TAILSCALE_SOCKET" ]; then break; fi
+            sleep 0.5
+        done
+    fi
+
+    if tailscale --socket="$TAILSCALE_SOCKET" status >/dev/null 2>&1; then
+        echo "✓ Already joined tailnet"
+        tailscale --socket="$TAILSCALE_SOCKET" up \
+            --hostname="$TS_HOSTNAME" \
+            --advertise-tags=tag:devcontainer \
+            --accept-routes
+    else
+        echo "Joining tailnet as $TS_HOSTNAME..."
+        tailscale --socket="$TAILSCALE_SOCKET" up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="$TS_HOSTNAME" \
+            --advertise-tags=tag:devcontainer \
+            --accept-routes
+    fi
+fi
 
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
 echo "Git hooks path set to .githooks"
 
-# Update Rust toolchain to the latest stable
-echo "Updating Rust toolchain..."
-rustup update stable
-echo "Rust toolchain updated: $(rustc --version)"
-
 echo "Configuring package version merge driver..."
 git config merge.json-version.name "Resolve package version conflicts by highest semver"
 git config merge.json-version.driver ".githooks/merge-json-version %O %A %B %P"
 echo "Package version merge driver configured"
+
+# Shared runtime setup from the base image: Rust (latest stable) + clippy/rustfmt,
+# uv, Antigravity, the zsh theme, and a rootless sshd — all installed into the
+# persisted /home/node.
+/usr/local/share/devcontainer/post-create-common.sh
+
+# inferno for flame-graph generation (needs cargo, installed by the common
+# routine above; ensure the toolchain's bin dir is on PATH).
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v inferno-flamegraph >/dev/null 2>&1; then
+    echo "Installing inferno..."
+    cargo install inferno --locked
+fi
