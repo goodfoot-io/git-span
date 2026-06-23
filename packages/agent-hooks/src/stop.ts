@@ -298,7 +298,8 @@ export function createStopHandler(deps: StopHandlerDeps) {
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
     // The path to this session's transcript, surfaced in the status doc so the
-    // resolver can consult the conversation for the intent behind a change.
+    // resolver can consult the conversation to understand a coupling the anchored
+    // bytes alone don't reveal.
     const transcriptPath = (input as unknown as Record<string, unknown>).transcript_path;
 
     // Step 0: Break the stop loop. We surface the review by returning
@@ -502,11 +503,11 @@ export function createStopHandler(deps: StopHandlerDeps) {
     if (sections.length === 0) return null;
 
     // Append the transcript pointer only when there is work to dispatch — the
-    // resolver reads it for the intent behind a change, not as a section to act
-    // on. Selective consultation (grep the touched paths) over wholesale reading.
+    // resolver reads it to understand a coupling, not as a section to act on.
+    // Selective consultation (grep the touched paths) over wholesale reading.
     if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
       sections.push(
-        `# Transcript\n\nThe conversation that produced these changes: ${transcriptPath}\nConsult it for the intent behind a change when a mesh's why is unclear; read selectively (grep the touched paths), not wholesale.`
+        `# Transcript\n\nThe conversation that produced these changes: ${transcriptPath}\nConsult it to understand the coupling when the anchored bytes alone don't reveal why two sites move together; the why you write must still read as a standing definition of the current bytes, not the change's intent. Read selectively (grep the touched paths), not wholesale.`
       );
     }
 
