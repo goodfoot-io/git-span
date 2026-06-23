@@ -1,9 +1,9 @@
 # git-mesh
 
 `git-mesh` is a Rust CLI for recording durable relationships between exact
-anchors in a Git repository. It stores mesh metadata in Git refs so teams
-can review, fetch, push, and audit those relationships alongside the code they
-describe.
+anchors in a Git repository. It stores mesh metadata as ordinary tracked files
+so teams can review, fetch, push, and audit those relationships alongside the
+code they describe.
 
 The monorepo ships:
 
@@ -30,7 +30,7 @@ Common command shape:
 git mesh doctor
 git mesh add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
 git mesh why checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
-git mesh commit checkout-request-flow
+git add .mesh && git commit -m "Record checkout-request-flow mesh"
 git mesh stale checkout-request-flow
 ```
 
@@ -45,34 +45,13 @@ for the project model and workflow.
 - **1** — operational failure: the command was well-formed, but
   the environment or repository state prevents completion.
   Example: `git mesh fetch nope` when `nope` is not a configured
-  remote, or `git mesh commit foo` with nothing staged.
+  remote, or `git mesh show nope` when `nope` is not a known mesh.
 - **2** — usage error: the command itself is malformed (unknown
   flag, missing required argument). Example: `git mesh fetch --bogus`.
 
 `git mesh stale` overlays its own §10.4 contract on top of this:
 exit 1 when drift is found, exit 0 with `--no-exit-code`. The
 `pre-commit` subcommand likewise exits 1 on in-flight drift.
-
-### `git mesh show --format` placeholders
-
-| Placeholder | Expansion | Trigger |
-|---|---|---|
-| `%H` | Full mesh commit SHA | per commit |
-| `%h` | Abbreviated mesh commit SHA (7 chars) | per commit |
-| `%an` | Author name | per commit |
-| `%ae` | Author email | per commit |
-| `%ad` | Author date (RFC 2822) | per commit |
-| `%ar` | Author date, relative | per commit |
-| `%s` | Subject (first line of message) | per commit |
-| `%p` | Anchor path | per anchor |
-| `%r` | Anchor extent (`#L<s>-L<e>`, empty for whole-file) | per anchor |
-| `%P` | Path + extent (`path#L<s>-L<e>`, or just path for whole-file) | per anchor |
-| `%a` | Anchor SHA (full 40 chars) | per anchor |
-| `%A` | Anchor SHA (8-char abbrev; full with `--no-abbrev`) | per anchor |
-| `%%` | Literal `%` | — |
-| `%n` | Newline | — |
-
-When any per-anchor placeholder is present in the format string, one output line is emitted per anchor. Otherwise, one line is emitted per mesh commit. Unknown placeholders are rejected with exit code 2.
 
 ## VS Code Extension
 

@@ -41,10 +41,10 @@ These are *not* discussed further in the document. Treat as load-bearing.
 
 ## 3. Source of truth for naming and whys
 
-`plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md` is authoritative.
+`plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md` is authoritative.
 All training data, validator rules, and prompts in this project must cite it.
 The training rules in §6 of this document are a *reflection* of that file. If the
-two ever diverge, the handbook wins and §6 is updated.
+two ever diverge, the git-mesh skill wins and §6 is updated.
 
 ---
 
@@ -120,7 +120,7 @@ Rules:
 
 ---
 
-## 6. Naming and why rules (mirrors the handbook)
+## 6. Naming and why rules (mirrors the git-mesh skill)
 
 ### Name
 
@@ -256,7 +256,7 @@ starts. Stop and update this doc if a day's gate fails.
 
 1. Implement `serialize.py` and `serialize.rs`. Property-test that the Python
    and Rust serializers produce byte-identical output for 100 random packets.
-2. Hand-author 12 sample examples covering the handbook surface (see §11).
+2. Hand-author 12 sample examples covering the git-mesh skill surface (see §11).
 3. Implement `validate.py` (rules in §6). Run on the sample data; all 12 valid.
 
 **Day 4 — training loop on the sample data.**
@@ -281,7 +281,7 @@ starts. Stop and update this doc if a day's gate fails.
 1. Implement `git-mesh-recommend` end-to-end (assemble packet from live repo,
    serialize, encode, greedy-decode in tract, parse, validate).
 2. Run on three real meshes from this repo's `git mesh list` output.
-3. **Gate:** binary exits 0 and produces handbook-compliant output on at least
+3. **Gate:** binary exits 0 and produces git-mesh-compliant output on at least
    2 of 3.
 
 **Day 7 — mining + first realistic training run.**
@@ -337,7 +337,7 @@ Acceptance bar (after day 7):
 
 ## 11. Sample data (12 rows)
 
-Each row covers one of the handbook's named relationship shapes. All produced by
+Each row covers one of the git-mesh skill's named relationship shapes. All produced by
 the team on Day 3, validated by `validate.py`, and never used as eval data.
 
 1. Browser checkout flow ↔ server charge handler — `billing/checkout-request-flow`.
@@ -364,7 +364,7 @@ README sections that share a word) with `output.name = "__none__"` and
 `mine.py` walks every mesh in this repo and emits one training row per mesh-version
 that satisfies all of:
 
-- The mesh has had at least one clean `git mesh commit` cycle since creation.
+- The mesh has had at least one clean `git add .mesh && git commit` cycle since creation.
 - The mesh-version is at least 24 hours after the mesh's first creation.
 - The mesh has never been renamed (`git mesh rename` history is empty).
 - Anchor content is reachable at that mesh's commit (no `[ORPHANED]` /
@@ -392,7 +392,7 @@ No API calls are required. The four prompt files are paste-targets for Claude:
   anchors/symbols).
 - `prompts/repair.md` — converts validator-failing rows into corrected rows.
 
-Each prompt file includes the §6 rules verbatim and points the LLM at the handbook.
+Each prompt file includes the §6 rules verbatim and points the LLM at the git-mesh skill.
 
 ---
 
@@ -424,7 +424,7 @@ Runtime path inside the Rust binary:
 
 The project ships when:
 
-1. `git-mesh-recommend` runs end-to-end on this repo and produces handbook-valid
+1. `git-mesh-recommend` runs end-to-end on this repo and produces git-mesh-valid
    output on ≥ 80% of meshes mined in §12 (held out from training).
 2. `du -sh git-mesh-recommend/artifacts/onnx` is ≤ 250 MB.
 3. The Day-2 Python↔Rust tokenizer round-trip test passes in CI.
@@ -454,4 +454,4 @@ work proceeds.
 - Tokenizers crate + SentencePiece via `convert_slow_tokenizer` —
   https://github.com/huggingface/tokenizers and the `convert_slow_tokenizer.SpmConverter` source.
 - Handbook (authoritative naming/why rules) —
-  `plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md` in this repo.
+  `plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md` in this repo.

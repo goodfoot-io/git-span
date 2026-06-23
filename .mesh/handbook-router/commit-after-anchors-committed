@@ -1,5 +1,5 @@
 plugins/git-mesh/agents/expert.md#L29-L29 rk64:26390162be8cca94
-plugins/git-mesh/skills/handbook/sections/creating-a-mesh.md#L83-L83 rk64:89335581d08a29a4
-plugins/git-mesh/skills/handbook/sections/responding-to-drift.md#L60-L60 rk64:fe03fe7a707df6de
+plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md#L83-L83 rk64:89335581d08a29a4
+plugins/git-mesh/skills/git-mesh/sections/responding-to-drift.md#L60-L60 rk64:fe03fe7a707df6de
 
 The handbook and the mesh-expert agent both carry the born-stale-prevention rule: commit a mesh only once every file it anchors is committed (clean against HEAD, verified with a git status --short check), because git mesh add hashes each anchor against HEAD. The agent operationalizes it and the two handbook sections teach it; all three must state the same rule.

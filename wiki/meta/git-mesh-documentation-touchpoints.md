@@ -37,7 +37,7 @@ When git-mesh CLI behavior or documentation changes, use this order:
 
 1. Confirm the implementation in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L36-L109) (Clap config and Commands enum) and [packages/git-mesh/src/main.rs](/packages/git-mesh/src/main.rs#L50-L113) (pre-classification and dispatch).
 2. Update the primary user docs in [README.md](/README.md#L18-L55) and [CLAUDE.md](/CLAUDE.md#L101-L122).
-3. Update the agent workflow contract in the git-mesh handbook skill (bundled with the `git-mesh` plugin, not tracked in this repo).
+3. Update the agent workflow contract in the git-mesh skill (bundled with the `git-mesh` plugin, not tracked in this repo).
 4. Update secondary references such as the implicit-semantic-dependencies skill and the man page.
 5. Run `wiki check` on the touched pages so fragment links validate and the page participates in `wiki stale`.
 

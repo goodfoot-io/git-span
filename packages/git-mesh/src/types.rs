@@ -284,17 +284,6 @@ pub enum Error {
     #[error("invalid name: {0}")]
     InvalidName(String),
 
-    /// `git mesh commit` invoked with nothing meaningful staged (§6.2).
-    #[error("nothing staged for mesh: {0}")]
-    StagingEmpty(String),
-
-    /// `git mesh delete` refused while staging is non-empty (§6.8).
-    #[error(
-        "cannot delete `{name}`: {count} staged operation(s) remain.\n\
-         Run `git mesh restore {name}` to discard them, then retry the delete."
-    )]
-    StagingResidueOnDelete { name: String, count: usize },
-
     /// The staged why begins with a prefix reserved for internal mesh
     /// machinery (e.g. `"mesh: follow "`). Reject at the writer so the
     /// parent-walk in `why_walking_past_follows` cannot be confused.
@@ -311,11 +300,6 @@ pub enum Error {
     #[error("remote not found: {remote}")]
     RemoteNotFound { remote: String },
 
-    /// `git mesh commit` aborted because the staged config value matches
-    /// the committed value and no other meaningful change is staged (§6.2).
-    #[error("staged config is a no-op: {key}={value}")]
-    ConfigNoOp { key: String, value: String },
-
     /// Anchor address `<path>#L<start>-L<end>` could not be parsed (§10.3).
     #[error("invalid anchor address: {0}")]
     InvalidAnchorAddress(String),
@@ -323,11 +307,6 @@ pub enum Error {
     /// Path lookup in a tree failed (§6.1 step 2).
     #[error("path not in tree: {path} at {commit}")]
     PathNotInTree { path: String, commit: String },
-
-    /// Mesh staged operation references a `(path, start, end)` not
-    /// present in the current mesh (§6.2 step 3).
-    #[error("anchor not in mesh: {path}#L{start}-L{end}")]
-    AnchorNotInMesh { path: String, start: u32, end: u32 },
 
     /// A path's `.gitattributes` resolves to a `filter=<name>` driver
     /// outside the slice-2 core-filter allowlist. The engine surfaces
@@ -340,7 +319,7 @@ pub enum Error {
     /// this version of git-mesh expects (§4.1).
     #[error(
         "format version mismatch: expected {expected}, got {got}. \
-         Run `git mesh delete --all && git mesh commit` to regenerate all \
+         Run `git mesh delete --all && git add .mesh && git commit` to regenerate all \
          meshes from current anchors. Or downgrade git-mesh to a version \
          that supports format version {got}."
     )]

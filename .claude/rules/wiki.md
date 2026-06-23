@@ -15,7 +15,7 @@ End-to-end loop for creating or updating a wiki page:
 3. Run `wiki scaffold <page>` to propose covering meshes for line-ranged fragment links.
 4. Consolidate the scaffold output into meaningful per-source-file (or per-subsystem) meshes rather than the per-section split it suggests. Write meaningful `why` text — not `[why]`.
 5. `git mesh add` requires every anchored path to exist in HEAD. If the wiki page is one of the anchors (it usually is), the page must be committed before `git mesh add`. The wiki page itself does **not** need to be committed for `wiki check` wikilink resolution — `repo_inventory` unions tracked paths with untracked-Added items.
-6. `git mesh commit` each new mesh.
+6. Commit each new mesh with `git add .mesh && git commit`.
 7. Run `wiki check <page>` — should exit clean.
 
 ## `wiki check` failure modes

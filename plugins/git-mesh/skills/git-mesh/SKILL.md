@@ -1,5 +1,5 @@
 ---
-name: handbook
+name: git-mesh
 description: Use with `git mesh` or meshes.
 ---
 

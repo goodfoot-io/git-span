@@ -110,8 +110,8 @@ git mesh add billing/checkout-request-flow \
 git mesh why billing/checkout-request-flow \
   -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 
-# The post-commit hook runs `git mesh commit`
-git commit -m "Wire checkout to charge API"
+# Persist the mesh alongside the code in the same commit
+git add .mesh && git commit -m "Wire checkout to charge API"
 
 # Later ...
 

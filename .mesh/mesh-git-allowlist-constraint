@@ -1,4 +1,4 @@
 plugins/git-mesh/agents/expert.md#L31-L39 rk64:8385f8cb068e03fd
-plugins/git-mesh/skills/handbook/sections/responding-to-drift.md#L54-L54 rk64:d40013e4390aea90
+plugins/git-mesh/skills/git-mesh/sections/responding-to-drift.md#L54-L54 rk64:d40013e4390aea90
 
 Git command allowlist that prevents accidental erasure of shared uncommitted work when mesh agents run in worktrees with live implementation work.

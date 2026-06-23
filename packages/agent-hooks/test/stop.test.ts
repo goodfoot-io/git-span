@@ -935,8 +935,8 @@ describe('Stop hook: fork prompt is specific to the situation', () => {
     expect(msg).toContain('uncovered writes');
     expect(msg).not.toContain('stale mesh');
     expect(msg).not.toContain('related mesh');
-    // The fork loads the git-mesh handbook itself (no dedicated expert/haiku).
-    expect(msg).toContain('git-mesh handbook');
+    // The fork loads the git-mesh skill itself (no dedicated expert/haiku).
+    expect(msg).toContain('`git-mesh` skill');
   });
 
   it('mentions only stale meshes when the write is covered (no uncovered, no related-without-write)', async () => {
@@ -1001,8 +1001,9 @@ describe('Stop hook: fork dispatch parameters', () => {
     // routes through a subagent/expert/haiku.
     expect(d.prompt).toContain('# Uncovered writes');
     expect(d.prompt).toContain('src/bar.ts');
-    expect(d.prompt).toContain('git-mesh handbook');
-    expect(d.prompt).toContain('Never stage or commit source files');
+    expect(d.prompt).toContain('`git-mesh` skill');
+    expect(d.prompt).toContain('Stage only `.mesh` paths');
+    expect(d.prompt).toContain('survive if this worktree is torn down');
     expect(d.prompt).not.toMatch(/git-mesh-status-[^\s]+\.md/);
     expect(d.prompt).not.toContain('subagent');
     expect(d.prompt).not.toContain('SendMessage');

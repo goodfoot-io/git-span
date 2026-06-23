@@ -22,7 +22,7 @@ only see it after the commit lands on a shared branch.
 ## First why on a new mesh
 
 A new mesh has no prior why to inherit. A why is optional — `git mesh add`
-and `git mesh commit` succeed without one — but it is strongly recommended.
+succeeds without one — but it is strongly recommended.
 Write one before (or alongside) the commit that introduces the mesh:
 
 ```bash

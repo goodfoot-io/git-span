@@ -622,14 +622,15 @@ interface ReviewContent {
  * embedded inline (no temp file) and each present section carries the action to
  * take on it — reconcile the stale meshes, create meshes for the uncovered
  * writes, extend/prune the related ones. The fork runs as the (forked) main
- * agent, not a dedicated expert, so the prompt also points it at the git-mesh
- * handbook for command mechanics and echoes the commit boundary inline — never
- * touch source, and commit a mesh only once every file it anchors is already
- * committed — because mistaking it commits files the resolver must never touch.
+ * agent, not a dedicated expert, so the prompt names itself as a fork branched
+ * for git-mesh, points it at the `git-mesh` skill for command mechanics, and
+ * echoes the commit boundary inline — never touch source, and commit a mesh only
+ * once every file it anchors is already committed — because mistaking it commits
+ * files the resolver must never touch.
  */
 function buildForkPrompt(content: ReviewContent): string {
   const parts: string[] = [
-    'A working session just ended. Reconcile git-mesh coverage for the changes it made, acting directly rather than proposing. Use the git-mesh handbook for command mechanics.'
+    'This is a fork of the main session, branched only to reconcile git-mesh coverage for the changes that session just made. Act directly rather than proposing. Load the `git-mesh` skill for the command mechanics and conventions the instructions below assume.'
   ];
 
   if (content.staleSection) {
@@ -640,7 +641,7 @@ function buildForkPrompt(content: ReviewContent): string {
 
   if (content.uncoveredLines && content.uncoveredLines.length > 0) {
     parts.push(
-      `# Uncovered writes — create a mesh where they form a subsystem\nNo mesh covers these anchors. Where two or more form a coherent subsystem (a flow or concern that spans them), create one: \`git mesh add <slug> <anchors>\` then \`git mesh why <slug> -m "<what it does across the anchors>"\`. Leave a lone file that forms no subsystem alone.\n\n${content.uncoveredLines.map((l) => `- ${l}`).join('\n')}`
+      `# Uncovered writes — create a mesh where they form a subsystem\nNo mesh covers these anchors. Where two or more form a coherent subsystem — a flow or concern that spans them — create one: \`git mesh add <slug> <anchors>\` then \`git mesh why <slug> -m "<one sentence>"\`. Leave a lone file that forms no subsystem alone.\nThe why must name the relationship the anchors hold in one sentence that survives a rewrite of either side, in role-words. A good why: "the validator rejects every field the schema marks required, so the two must list the same keys." A bad why restates the slug ("charge flow"), describes this change ("added the charge() call"), or just lists the filenames — none of those survive a rewrite or tell the next reader why the sites move together.\n\n${content.uncoveredLines.map((l) => `- ${l}`).join('\n')}`
     );
   }
 
@@ -657,7 +658,7 @@ function buildForkPrompt(content: ReviewContent): string {
   }
 
   parts.push(
-    `# Commit boundary\nNever stage or commit source files. Commit a mesh's edit only once every file it anchors is already committed; if any anchor file is still uncommitted, leave that mesh staged and say so.`
+    `# Commit boundary\nStage only \`.mesh\` paths — never \`git add .\`, \`git commit -a\`, \`--amend\`, or \`reset\`/\`checkout\`/\`clean\` on source. Commit a mesh's edit only once every file it anchors is already committed (\`git status --short -- <anchor>\` is empty); if any anchor file is still uncommitted, leave that mesh staged and say so. Commit the meshes that are already ready in one early commit, before slower reconciliation, so they survive if this worktree is torn down. The mesh rides its source's branch automatically (both are tracked files) — you land it as a separate \`.mesh\`-only commit on that branch.`
   );
 
   parts.push('Work in the background and do not report unless something needs human intervention.');

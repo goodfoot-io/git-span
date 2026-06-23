@@ -147,7 +147,6 @@ A full 10,000-mesh benchmarking matrix was prepared using `scripts/bench-mesh-sc
 - It preserves `fail-closed` behavior, natively utilizes existing tree atomicity, and requires no daemon state or cross-mesh index maintenance contention.
 
 Implementation of the greenfield `anchors.v2` layout slice is complete:
-- `git mesh commit` now writes an `anchors.v2` blob containing fully serialized anchor records directly within the mesh commit tree.
 - `git mesh list` and `git mesh stale` prioritize the `anchors.v2` blob over individual legacy ref resolution.
 - 10,000-mesh benchmark artifacts have been recorded.
 
