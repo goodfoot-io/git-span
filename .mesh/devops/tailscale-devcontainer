@@ -1,0 +1,5 @@
+.devcontainer/Dockerfile#L41-L44 rk64:396b94db744cb5d8
+.devcontainer/docker-compose.yml#L9-L19 rk64:1f6ae68a05abfeb7
+.devcontainer/post-create.sh#L110-L145 rk64:ec18a3a2b72ab779
+
+Tailscale integration for devcontainer networking: the Dockerfile installs the tailscaled daemon, docker-compose.yml loads Tailscale credentials via .env, and post-create.sh starts tailscaled in userspace-networking mode to enable cross-container and host-to-container communication without privileged networking or CAP_NET_ADMIN.
