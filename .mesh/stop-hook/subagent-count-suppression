@@ -1,0 +1,4 @@
+packages/agent-hooks/src/agent-hooks-common.ts#L427-L440 rk64:ddd0ace1f8f8cf34
+packages/agent-hooks/src/stop.ts#L320-L329 rk64:0e616bad3acdded5
+
+Stop-hook dispatch suppression depends on the active-subagent count reading fail-closed: readSubagentCount throws on any ambiguous count state and Step 0.5 treats a throw as suppress, so the hook never dispatches a mesh review while subagents are still mutating the touch journal.

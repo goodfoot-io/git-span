@@ -3,9 +3,12 @@
  *
  * Uses real filesystem (tmp dir) and injected executor fakes — no vi.mock.
  *
- * The SDK wraps hook output: stopOutput({ decision, reason }) returns
- * { _type: 'Stop', stdout: { decision, reason } }. A `null` handler return means
- * "no output" and is normalised to an empty stdout. Tests access .stdout fields.
+ * The hook no longer returns block output. On a dispatch it calls the injected
+ * forkDispatcher and returns null (normalised to empty stdout). Tests inject a
+ * recording dispatcher via `handlerWith` so no real `claude` is resolved or
+ * spawned, and assert on what would have been dispatched through `dispatches` /
+ * `dispatchedPrompt()`. A run that does not dispatch leaves `dispatches` empty
+ * and the stdout `{}`.
  */
 
 import * as fs from 'node:fs';
@@ -13,12 +16,8 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  expertAgentMarkerPath,
-  incrementSubagentCount,
-  recordExpertAgent,
-  subagentCountPath
-} from '../src/agent-hooks-common.js';
+import { incrementSubagentCount, subagentCountPath } from '../src/agent-hooks-common.js';
+import type { ForkDispatchParams } from '../src/fork-dispatch.js';
 import { parseHookIgnore } from '../src/mesh-ignore.js';
 import {
   buildAnchorSpecs,
@@ -29,7 +28,8 @@ import {
   type ListRenderExecutor,
   loadJournal,
   type StaleExecutor,
-  type StaleRenderExecutor
+  type StaleRenderExecutor,
+  type StopHandlerDeps
 } from '../src/stop.js';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,31 @@ function asResult(raw: unknown): StopResult {
   // A `null` handler return means "no output"; normalise to empty stdout.
   if (raw === null || raw === undefined) return { _type: 'Stop', stdout: {} };
   return raw as StopResult;
+}
+
+// ---------------------------------------------------------------------------
+// Fork dispatch recorder
+// ---------------------------------------------------------------------------
+
+// The hook dispatches by calling forkDispatcher (instead of returning block
+// output). Tests inject this recorder so no real `claude` is resolved or spawned,
+// and assert on what would have been dispatched. Reset before every test.
+let dispatches: ForkDispatchParams[] = [];
+beforeEach(() => {
+  dispatches = [];
+});
+const recordingDispatcher = (params: ForkDispatchParams): void => {
+  dispatches.push(params);
+};
+
+/** Build a handler with the recording dispatcher injected. */
+function handlerWith(deps: StopHandlerDeps) {
+  return createStopHandler({ ...deps, forkDispatcher: recordingDispatcher });
+}
+
+/** The most recently dispatched prompt, or null if nothing was dispatched. */
+function dispatchedPrompt(): string | null {
+  return dispatches.length > 0 ? dispatches[dispatches.length - 1].prompt : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +140,8 @@ function initGitRepo(dir: string): void {
 describe('Stop hook: missing journal → silent exit', () => {
   const sid = `stop-test-missing-${Date.now()}`;
 
-  it('returns empty stdout with no systemMessage', async () => {
-    const handler = createStopHandler({
+  it('returns empty stdout and dispatches nothing', async () => {
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
@@ -127,7 +152,7 @@ describe('Stop hook: missing journal → silent exit', () => {
 
     const result = asResult(await handler(baseInput(sid) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.reason).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -144,15 +169,15 @@ describe('Stop hook: empty journal → silent exit', () => {
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('returns empty stdout with no systemMessage', async () => {
-    const handler = createStopHandler({
+  it('returns empty stdout and dispatches nothing', async () => {
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
     const result = asResult(await handler(baseInput(sid) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.reason).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -185,7 +210,7 @@ describe('loadJournal: unknown/legacy kind is rejected', () => {
   });
 });
 
-describe('Stop hook: empty status doc → silent exit, no systemMessage', () => {
+describe('Stop hook: empty status doc → silent exit, no dispatch', () => {
   const sid = `stop-test-empty-doc-${Date.now()}`;
   let tmpRepo: string;
 
@@ -201,14 +226,14 @@ describe('Stop hook: empty status doc → silent exit, no systemMessage', () => 
   });
 
   it('returns empty stdout when stale and list return nothing', async () => {
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.reason).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -237,25 +262,20 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     const staleRender: StaleRenderExecutor = (slugs) =>
       `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n- src/helper.ts#L1-L8\n\nFoo subsystem why.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
       staleRenderExecutor: staleRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    expect(result.stdout.reason).toBeDefined();
-    expect(typeof result.stdout.reason).toBe('string');
-    const msg = result.stdout.reason as string;
-    expect(msg).toContain('git-mesh-status-');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain('# Stale meshes');
 
     // Read the written doc
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    const doc = prompt!;
     expect(doc).toContain('# Stale meshes');
     // The whole mesh is rendered: the drifted anchor with its reason, the other
     // anchor, and the why — not just the touched/drifted file.
@@ -268,9 +288,6 @@ describe('Stop hook: stale pass finds one stale mesh', () => {
     // The reported entry is marked seen so it is not re-dispatched next run.
     const updated = readJournalRaw(sid);
     expect(updated[0].seen).toBe(true);
-
-    // Blocks to surface the review prompt
-    expect(result.stdout.decision).toBe('block');
   });
 });
 
@@ -295,20 +312,16 @@ describe('Stop hook: uncovered write entry', () => {
   });
 
   it('produces a # Uncovered writes section when no mesh covers the write', async () => {
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    expect(result.stdout.reason).toBeDefined();
-    const msg = result.stdout.reason as string;
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
     expect(doc).toContain('# Uncovered writes');
     expect(doc).toContain('src/bar.ts#L1-L10');
   });
@@ -316,21 +329,21 @@ describe('Stop hook: uncovered write entry', () => {
   it('suppresses a lone uncovered file with no related mesh (nothing to do)', async () => {
     // A single uncovered file forms no coherent subsystem on its own and there is
     // no related mesh to extend, so there is nothing for the resolver to act on.
-    // The hook must not block. Multiple ranged anchors on the *same* file are still
-    // one file, so they must also be suppressed.
+    // The hook must not dispatch. Multiple ranged anchors on the *same* file are
+    // still one file, so they must also be suppressed.
     writeJournalRaw(sid, [
       { tool: 'Edit', path: 'src/solo.ts', kind: 'write', seen: false, start: 1, end: 10 },
       { tool: 'Edit', path: 'src/solo.ts', kind: 'write', seen: false, start: 50, end: 60 }
     ]);
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).not.toBe('block');
-    expect(result.stdout.reason).toBeUndefined();
+    expect(result.stdout).toEqual({});
+    expect(dispatches).toHaveLength(0);
     // The entries are left unseen (a non-dispatching run never marks seen), so a
     // later write to a *second* file combines with this one and surfaces both —
     // rather than this lone file being permanently dropped.
@@ -348,19 +361,16 @@ describe('Stop hook: uncovered write entry', () => {
     // covered.ts is covered by a mesh (→ related); lone.ts is not (→ uncovered).
     const listBatch: ListBatchExecutor = () => 'my-mesh\tsrc/covered.ts\t1-10\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/covered.ts#L1-L10\n\nDesc.\n`;
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    const docPath = nodePath.join(
-      os.tmpdir(),
-      (result.stdout.reason as string).match(/git-mesh-status-[^\s]+\.md/)![0]
-    );
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
     expect(doc).toContain('# Uncovered writes');
     expect(doc).toContain('src/lone.ts#L1-L10');
   });
@@ -394,23 +404,21 @@ describe('Stop hook: create entry → path-only filter line', () => {
       return '';
     };
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: listBatch,
       listRenderExecutor: noopListRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
 
     // Filter text for the list batch should be path-only (no #L range)
     expect(filtersSeen[0]).toContain('src/new.ts');
     expect(filtersSeen[0]).not.toContain('#L');
 
-    const msg = result.stdout.reason as string;
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
     expect(doc).toContain('# Uncovered writes');
     expect(doc).toContain('- src/new.ts');
     expect(doc).not.toContain('#L');
@@ -420,19 +428,19 @@ describe('Stop hook: create entry → path-only filter line', () => {
     // The write is covered by an existing mesh and nothing is stale. Related
     // meshes only matter as context for absorbing an *uncovered* write; with no
     // uncovered write there is nothing for the resolver to do, so the hook must
-    // not block or dispatch.
+    // not dispatch.
     const listBatch: ListBatchExecutor = () => 'my-mesh\tsrc/new.ts\t0-0\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/new.ts\n\nDesc.\n`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).not.toBe('block');
-    expect(result.stdout.reason).toBeUndefined();
+    expect(result.stdout).toEqual({});
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -458,22 +466,21 @@ describe('Stop hook: idempotence', () => {
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render
     });
 
     // First run surfaces the review and marks the fed entries seen.
-    const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(r1.stdout.decision).toBe('block');
-    expect(r1.stdout.reason).toContain('git-mesh-status-');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].prompt).toContain('# Uncovered writes');
 
     // Second run, same journal and no new touches: every entry is now seen, so
     // no section is assembled and nothing is dispatched.
-    const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(r2.stdout.decision).not.toBe('block');
-    expect(r2.stdout.reason).toBeUndefined();
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(1);
   });
 });
 
@@ -495,32 +502,30 @@ describe('Stop hook: read-only session does not dispatch even when a touched fil
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('does not block on the first run and marks the read entry seen', async () => {
+  it('does not dispatch on the first run and marks the read entry seen', async () => {
     // The file the read touched has a stale ranged anchor — but reads don't feed
-    // the stale pass, so the handler must return null (no block) immediately.
+    // the stale pass, so the handler must dispatch nothing immediately.
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
     const staleRender: StaleRenderExecutor = (slugs) =>
       `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n\nWhy.`;
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender,
       staleRenderExecutor: staleRender
     });
 
-    const r1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(r1.stdout.decision).not.toBe('block');
-    expect(r1.stdout.reason).toBeUndefined();
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(0);
     expect(readJournalRaw(sid)[0].seen).toBe(true);
 
-    // Same journal, no new touches: still must not block.
-    const r2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(r2.stdout.decision).not.toBe('block');
-    expect(r2.stdout.reason).toBeUndefined();
+    // Same journal, no new touches: still must not dispatch.
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(0);
   });
 });
 
-describe('Stop hook: blocks to surface the review, but breaks the stop loop', () => {
+describe('Stop hook: dispatches to surface the review, but breaks the stop loop', () => {
   const sid = `stop-test-block-${Date.now()}`;
   let tmpRepo: string;
 
@@ -541,19 +546,18 @@ describe('Stop hook: blocks to surface the review, but breaks the stop loop', ()
   const stale: StaleExecutor = () => 'a-slug\tsrc/x.ts\t1-10\n';
   const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/x.ts#L1-L10\n\nDesc.\n`;
 
-  it('sets decision to block with the review prompt in reason when meshes are stale', async () => {
-    const handler = createStopHandler({
+  it('dispatches the review with the findings embedded in the prompt', async () => {
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render
     });
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    expect(result.stdout.reason).toContain('git-mesh-status-');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatchedPrompt()).toContain('# Uncovered writes');
   });
 
-  it('allows the stop (returns no output) when stop_hook_active is already true', async () => {
-    const handler = createStopHandler({
+  it('allows the stop (no dispatch, empty stdout) when stop_hook_active is already true', async () => {
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render
@@ -561,7 +565,7 @@ describe('Stop hook: blocks to surface the review, but breaks the stop loop', ()
     const input = { ...baseInput(sid, tmpRepo), stop_hook_active: true };
     const result = asResult(await handler(input as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.decision).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -633,11 +637,11 @@ describe('Stop hook: read-only session (ranged read + whole-read) produces no st
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('returns null (no block, no dispatch) even when stale would return rows', async () => {
+  it('dispatches nothing even when stale would return rows', async () => {
     // stale executor would return drift — but reads must never trigger dispatch.
     const stale: StaleExecutor = () => 'my-mesh\tsrc/foo.ts\t1-10\n';
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nWhy.`;
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender,
@@ -645,8 +649,8 @@ describe('Stop hook: read-only session (ranged read + whole-read) produces no st
     });
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).not.toBe('block');
-    expect(result.stdout.reason).toBeUndefined();
+    expect(result.stdout).toEqual({});
+    expect(dispatches).toHaveLength(0);
     // Both read entries are still marked seen (prevents re-examination on next Stop).
     const entries = readJournalRaw(sid);
     expect(entries.every((e) => e.seen)).toBe(true);
@@ -679,18 +683,18 @@ describe('Stop hook: write variants over drifted mesh each dispatch', () => {
         if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
       });
 
-      it(`dispatches (blocks) when the file has drifted mesh anchors`, async () => {
+      it(`dispatches when the file has drifted mesh anchors`, async () => {
         const stale: StaleExecutor = () => 'my-mesh\tsrc/f.ts\t5-15\n';
         const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/f.ts#L5-L15\n\nWhy.`;
-        const handler = createStopHandler({
+        const handler = handlerWith({
           staleExecutor: stale,
           listBatchExecutor: noopListBatch,
           listRenderExecutor: noopListRender,
           staleRenderExecutor: staleRender
         });
 
-        const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-        expect(result.stdout.decision).toBe('block');
+        await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+        expect(dispatchedPrompt()).not.toBeNull();
       });
     });
   }
@@ -725,19 +729,17 @@ describe('Stop hook F2: multi-mesh section has exactly one --- between blocks', 
     const staleRender: StaleRenderExecutor = (slugs) =>
       slugs.map((s) => `## ${s}\n- Details for ${s}.`).join('\n\n---\n\n');
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender,
       staleRenderExecutor: staleRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const msg = result.stdout.reason as string;
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
 
     // Between mesh-a and mesh-b sections there should be exactly one ---
     // A double separator would appear as "---\n\n---"
@@ -772,7 +774,7 @@ describe('Stop hook F3: cwd-absent input falls back to process.cwd()', () => {
     const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t1-20\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L20\n\nDesc.\n`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render
@@ -787,12 +789,9 @@ describe('Stop hook F3: cwd-absent input falls back to process.cwd()', () => {
       // no cwd
     };
 
-    const result = asResult(await handler(inputNoCwd as never, makeCtx() as never));
-    // process.cwd() should be a git repo, so we expect a blocking review prompt
-    expect(result.stdout.decision).toBe('block');
-    expect(result.stdout.reason).toBeDefined();
-    const msg = result.stdout.reason as string;
-    expect(msg).toContain('git-mesh-status-');
+    await handler(inputNoCwd as never, makeCtx() as never);
+    // process.cwd() should be a git repo, so we expect a dispatch to the fork.
+    expect(dispatchedPrompt()).toContain('# Uncovered writes');
   });
 });
 
@@ -828,20 +827,16 @@ describe('Stop hook F5: write overlapping drifted mesh anchor appears in # Uncov
     // Write-coverage pass: no current mesh covers src/drift.ts L10-L20
     const listBatch: ListBatchExecutor = () => '';
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: staleRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    expect(result.stdout.reason).toBeDefined();
-    const msg = result.stdout.reason as string;
-    const docMatch = msg.match(/git-mesh-status-[^\s]+\.md/);
-    expect(docMatch).not.toBeNull();
-    const docPath = nodePath.join(os.tmpdir(), docMatch![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
 
     // The write should appear in Uncovered writes, NOT be silently absorbed by the stale pass
     expect(doc).toContain('# Uncovered writes');
@@ -880,17 +875,17 @@ describe('Stop hook: stale section renders the whole mesh like `git mesh stale`'
       throw new Error('listRenderExecutor should not be called for the stale section');
     };
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: render,
       staleRenderExecutor: staleRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    const msg = result.stdout.reason as string;
-    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
 
     // Isolate the `# Stale meshes` section (up to the next top-level header).
     const staleSection = doc.split('# Stale meshes')[1].split(/\n# /)[0];
@@ -907,10 +902,10 @@ describe('Stop hook: stale section renders the whole mesh like `git mesh stale`'
 });
 
 // ---------------------------------------------------------------------------
-// Dispatch message names only the sections the doc contains
+// Fork prompt names only the sections the doc contains
 // ---------------------------------------------------------------------------
 
-describe('Stop hook: dispatch message is specific to the situation', () => {
+describe('Stop hook: fork prompt is specific to the situation', () => {
   const sid = `stop-test-msg-${Date.now()}`;
   let tmpRepo: string;
 
@@ -929,20 +924,19 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
       { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
       { tool: 'Edit', path: 'src/baz.ts', kind: 'write', seen: false, start: 1, end: 10 }
     ]);
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
 
-    const msg = (
-      asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string
-    ).toLowerCase();
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const msg = dispatchedPrompt()!.toLowerCase();
     expect(msg).toContain('uncovered writes');
     expect(msg).not.toContain('stale mesh');
     expect(msg).not.toContain('related mesh');
-    // The resolver subagent runs on the haiku model.
-    expect(msg).toContain('haiku model');
+    // The fork loads the git-mesh handbook itself (no dedicated expert/haiku).
+    expect(msg).toContain('git-mesh handbook');
   });
 
   it('mentions only stale meshes when the write is covered (no uncovered, no related-without-write)', async () => {
@@ -954,31 +948,30 @@ describe('Stop hook: dispatch message is specific to the situation', () => {
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) =>
       `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed in the working tree\n\nWhy.`;
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
       staleRenderExecutor: staleRender
     });
 
-    const msg = (
-      asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string
-    ).toLowerCase();
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const msg = dispatchedPrompt()!.toLowerCase();
     expect(msg).toContain('stale mesh');
     expect(msg).not.toContain('uncovered writes');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Dispatch wakes an existing git-mesh:expert via SendMessage when one is recorded
+// Fork dispatch carries the session, repo root, and a self-contained prompt
 // ---------------------------------------------------------------------------
 
-describe('Stop hook: dispatch targets a prior git-mesh:expert when recorded', () => {
-  const sid = `stop-test-wake-${Date.now()}`;
+describe('Stop hook: fork dispatch parameters', () => {
+  const sid = `stop-test-fork-${Date.now()}`;
   let tmpRepo: string;
 
   beforeEach(() => {
-    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-wake-'));
+    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-fork-'));
     initGitRepo(tmpRepo);
     writeJournalRaw(sid, [
       { tool: 'Edit', path: 'src/bar.ts', kind: 'write', seen: false, start: 1, end: 10 },
@@ -989,40 +982,35 @@ describe('Stop hook: dispatch targets a prior git-mesh:expert when recorded', ()
     fs.rmSync(tmpRepo, { recursive: true, force: true });
     const jPath = journalPath(sid);
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
-    const mPath = expertAgentMarkerPath(sid);
-    if (fs.existsSync(mPath)) fs.unlinkSync(mPath);
   });
 
-  it('spawns a fresh git-mesh:expert when no prior agent is recorded', async () => {
-    const handler = createStopHandler({
+  it('dispatches once with the forked sessionId, repoRoot, and a self-contained prompt', async () => {
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
-    const msg = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
-    expect(msg).toContain('Spawn a background git-mesh:expert subagent on the haiku model');
-    expect(msg).not.toContain('SendMessage');
-  });
-
-  it('wakes the recorded agent via SendMessage instead of spawning', async () => {
-    recordExpertAgent(sid, 'agent-abc123');
-    const handler = createStopHandler({
-      staleExecutor: noopStale,
-      listBatchExecutor: noopListBatch,
-      listRenderExecutor: noopListRender
-    });
-    const msg = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
-    expect(msg).toContain('Use SendMessage to wake the git-mesh:expert subagent (agent agent-abc123)');
-    expect(msg).not.toContain('Spawn a background');
-    // Still names the work present and the new status doc.
-    expect(msg).toContain('git-mesh-status-');
-    expect(msg.toLowerCase()).toContain('uncovered writes');
-    // The preamble was removed.
-    expect(msg).not.toContain('A new mesh status doc is ready');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(1);
+    const d = dispatches[0];
+    // The session to fork and the project dir to run it in.
+    expect(d.sessionId).toBe(sid);
+    expect(fs.realpathSync(d.repoRoot)).toBe(fs.realpathSync(tmpRepo));
+    // Self-contained: the findings are embedded inline (no temp-file path to
+    // read), it points at the handbook, echoes the commit boundary — and never
+    // routes through a subagent/expert/haiku.
+    expect(d.prompt).toContain('# Uncovered writes');
+    expect(d.prompt).toContain('src/bar.ts');
+    expect(d.prompt).toContain('git-mesh handbook');
+    expect(d.prompt).toContain('Never stage or commit source files');
+    expect(d.prompt).not.toMatch(/git-mesh-status-[^\s]+\.md/);
+    expect(d.prompt).not.toContain('subagent');
+    expect(d.prompt).not.toContain('SendMessage');
+    expect(d.prompt.toLowerCase()).not.toContain('haiku');
   });
 });
 
-describe('Stop hook: status doc carries the transcript pointer', () => {
+describe('Stop hook: prompt carries the transcript pointer', () => {
   const sid = `stop-test-transcript-${Date.now()}`;
   let tmpRepo: string;
 
@@ -1041,63 +1029,18 @@ describe('Stop hook: status doc carries the transcript pointer', () => {
   });
 
   it('includes a # Transcript section naming the transcript path from the input', async () => {
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: noopStale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
     const input = { ...baseInput(sid, tmpRepo), transcript_path: '/tmp/my-transcript.jsonl' };
-    const msg = asResult(await handler(input as never, makeCtx() as never)).stdout.reason as string;
-    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(input as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
     expect(doc).toContain('# Transcript');
     expect(doc).toContain('/tmp/my-transcript.jsonl');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Each Stop call writes a uniquely named status doc
-// ---------------------------------------------------------------------------
-
-describe('Stop hook: status doc filename is unique per call', () => {
-  const sid = `stop-test-unique-${Date.now()}`;
-  let tmpRepo: string;
-
-  beforeEach(() => {
-    tmpRepo = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'stop-test-unique-'));
-    initGitRepo(tmpRepo);
-  });
-  afterEach(() => {
-    fs.rmSync(tmpRepo, { recursive: true, force: true });
-    const jPath = journalPath(sid);
-    if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
-  });
-
-  it('two dispatching calls reference two different filenames', async () => {
-    const stale: StaleExecutor = () => 'my-slug\tsrc/foo.ts\t5-25\n';
-    const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
-    const handler = createStopHandler({
-      staleExecutor: stale,
-      listBatchExecutor: noopListBatch,
-      listRenderExecutor: render
-    });
-
-    // Each run needs a fresh unreported entry, so rewrite the journal between runs.
-    // Two distinct files so the Uncovered writes section surfaces each run.
-    writeJournalRaw(sid, [
-      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
-      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 10, end: 20 }
-    ]);
-    const m1 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
-    writeJournalRaw(sid, [
-      { tool: 'Edit', path: 'src/foo.ts', kind: 'write', seen: false, start: 10, end: 20 },
-      { tool: 'Edit', path: 'src/foo2.ts', kind: 'write', seen: false, start: 10, end: 20 }
-    ]);
-    const m2 = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never)).stdout.reason as string;
-
-    const f1 = m1.match(/git-mesh-status-[^\s]+\.md/)![0];
-    const f2 = m2.match(/git-mesh-status-[^\s]+\.md/)![0];
-    expect(f1).not.toBe(f2);
   });
 });
 
@@ -1146,9 +1089,9 @@ describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch',
   beforeEach(() => {
     tmpRepo = makePendingCommitRepo();
     // A fresh, unreported READ touch on the anchored file — the kind the
-    // resolver subagent generates every round when it re-reads the source to
-    // re-anchor. Reads do not feed the stale pass, so this session produces
-    // no dispatch regardless of whether the mesh has drifted.
+    // resolver generates every round when it re-reads the source to re-anchor.
+    // Reads do not feed the stale pass, so this session produces no dispatch
+    // regardless of whether the mesh has drifted.
     writeJournalRaw(sid, [{ tool: 'Read', path: 'app.js', kind: 'whole-read', seen: false }]);
   });
   afterEach(() => {
@@ -1157,10 +1100,10 @@ describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch',
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('does not block when the drift is an uncommitted source edit with a staged re-anchor', async () => {
+  it('does not dispatch when the drift is an uncommitted source edit with a staged re-anchor', async () => {
     // git mesh stale reports the drifted anchor — this is what wakes the hook.
     const stale: StaleExecutor = () => 'demo/h\tapp.js\t5-7\n';
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
@@ -1169,8 +1112,8 @@ describe('Stop hook: resolved-pending-commit stale anchor does not re-dispatch',
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     // The drift cannot be cleared until the source commits — an action the
     // resolver is forbidden to take — so the hook must NOT re-dispatch.
-    expect(result.stdout.decision).not.toBe('block');
-    expect(result.stdout.reason).toBeUndefined();
+    expect(result.stdout).toEqual({});
+    expect(dispatches).toHaveLength(0);
   });
 });
 
@@ -1204,16 +1147,16 @@ describe('Stop hook: uncommitted source with no staged re-anchor still dispatche
     if (fs.existsSync(jPath)) fs.unlinkSync(jPath);
   });
 
-  it('blocks so the resolver can perform the re-anchor (no staged .mesh yet)', async () => {
+  it('dispatches so the resolver can perform the re-anchor (no staged .mesh yet)', async () => {
     const stale: StaleExecutor = () => 'demo/h\tapp.js\t3-5\n';
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: noopListBatch,
       listRenderExecutor: noopListRender
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatchedPrompt()).not.toBeNull();
   });
 });
 
@@ -1252,13 +1195,13 @@ describe('Stop hook: path-scoped mesh suppression', () => {
 
   it('drops a stale row whose slug prefix is suppressed for its path', async () => {
     // The only stale/related mesh is `wiki/...` on a suppressed path, so the
-    // whole status doc collapses and the stop is allowed (no block).
+    // whole status doc collapses and the stop is allowed (no dispatch).
     const stale: StaleExecutor = () => 'wiki/onboarding\tsrc/foo.ts\t5-25\n';
     const listBatch: ListBatchExecutor = () => 'wiki/onboarding\tsrc/foo.ts\t5-25\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed\n\nWiki why.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1270,7 +1213,7 @@ describe('Stop hook: path-scoped mesh suppression', () => {
     // Write is still covered (coverage counts the suppressed mesh) → no uncovered
     // section; the stale row is suppressed → no stale section. Nothing to surface.
     expect(result.stdout).toEqual({});
-    expect(result.stdout.decision).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 
   it('still surfaces a non-suppressed stale mesh on a suppressed path', async () => {
@@ -1279,7 +1222,7 @@ describe('Stop hook: path-scoped mesh suppression', () => {
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L5-L25 — changed\n\nBilling why.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1287,11 +1230,10 @@ describe('Stop hook: path-scoped mesh suppression', () => {
       loadRules: () => parseHookIgnore('src wiki\n')
     });
 
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
-    const msg = result.stdout.reason as string;
-    const docPath = nodePath.join(os.tmpdir(), msg.match(/git-mesh-status-[^\s]+\.md/)![0]);
-    const doc = fs.readFileSync(docPath, 'utf8');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    const prompt = dispatchedPrompt();
+    expect(prompt).not.toBeNull();
+    const doc = prompt!;
     expect(doc).toContain('# Stale meshes');
     expect(doc).toContain('Billing why.');
   });
@@ -1321,13 +1263,13 @@ describe('Stop hook: subagent-count suppression', () => {
     if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
   });
 
-  it('returns null (no dispatch) when active-subagent count is > 0', async () => {
+  it('dispatches nothing when active-subagent count is > 0', async () => {
     const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
     const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1336,9 +1278,9 @@ describe('Stop hook: subagent-count suppression', () => {
 
     incrementSubagentCount(sid);
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    // Suppressed: returns null → empty stdout, no decision
+    // Suppressed: returns null → empty stdout, no dispatch
     expect(result.stdout).toEqual({});
-    expect(result.stdout.decision).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
   });
 
   it('leaves the journal unmarked when suppressed (same entries dispatch on next clean Stop)', async () => {
@@ -1347,7 +1289,7 @@ describe('Stop hook: subagent-count suppression', () => {
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1359,19 +1301,19 @@ describe('Stop hook: subagent-count suppression', () => {
     // First Stop: suppressed — count > 0
     const suppressedResult = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(suppressedResult.stdout).toEqual({});
+    expect(dispatches).toHaveLength(0);
 
     // Journal must still have the unseen entry
     const afterSuppressed = readJournalRaw(sid);
     expect(afterSuppressed.every((e) => !e.seen)).toBe(true);
 
     // Decrement to 0 so the next Stop is clean
-    // (Directly write 0 via readSubagentCount: decrement the count)
     const countPath = subagentCountPath(sid);
     fs.writeFileSync(countPath, '0', 'utf8');
 
     // Second Stop: count == 0 → should dispatch
-    const cleanResult = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(cleanResult.stdout.decision).toBe('block');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatches).toHaveLength(1);
   });
 
   it('count == 0 path is unchanged — still dispatches normally', async () => {
@@ -1380,7 +1322,7 @@ describe('Stop hook: subagent-count suppression', () => {
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1388,17 +1330,17 @@ describe('Stop hook: subagent-count suppression', () => {
     });
 
     // No active subagents — counter absent → reads as 0
-    const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
-    expect(result.stdout.decision).toBe('block');
+    await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never);
+    expect(dispatchedPrompt()).not.toBeNull();
   });
 
-  it('suppresses (returns null) when the count file is present but unparseable — fail closed', async () => {
+  it('suppresses (dispatches nothing) when the count file is present but unparseable — fail closed', async () => {
     const stale: StaleExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
     const listBatch: ListBatchExecutor = () => 'mesh/foo\tsrc/foo.ts\t1-10\n';
     const render: ListRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10\n\nDesc.\n`;
     const staleRender: StaleRenderExecutor = (slugs) => `## ${slugs[0]}\n- src/foo.ts#L1-L10 — changed\n\nWhy.`;
 
-    const handler = createStopHandler({
+    const handler = handlerWith({
       staleExecutor: stale,
       listBatchExecutor: listBatch,
       listRenderExecutor: render,
@@ -1414,7 +1356,7 @@ describe('Stop hook: subagent-count suppression', () => {
 
     const result = asResult(await handler(baseInput(sid, tmpRepo) as never, makeCtx() as never));
     expect(result.stdout).toEqual({});
-    expect(result.stdout.decision).toBeUndefined();
+    expect(dispatches).toHaveLength(0);
 
     // The journal must stay unmarked so the same entry dispatches on a later
     // clean Stop — suppression must not lose the withheld touches.

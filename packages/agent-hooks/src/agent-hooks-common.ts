@@ -206,50 +206,14 @@ export function sanitizeSessionId(sessionId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session expert-agent marker
+// Per-session base directory
 // ---------------------------------------------------------------------------
 
 // Base dir shared with the Stop hook's touch journal. Each session gets one
-// directory; the expert-agent marker lives alongside the journal so the
-// SubagentStart hook (writer) and the Stop hook (reader) agree on its location.
+// directory; the subagent counter lives alongside the journal so the
+// SubagentStart/SubagentStop hooks (writers) and the Stop hook (reader) agree on
+// its location.
 const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
-
-export function expertAgentMarkerPath(sessionId: string): string {
-  return nodePath.join(SESSION_BASE_DIR, sanitizeSessionId(sessionId), 'expert-agent.json');
-}
-
-/**
- * Record the most recently spawned git-mesh:expert subagent for a session.
- * Latest-write-wins: a later spawn overwrites the wake target. Best-effort —
- * a write failure leaves the Stop hook to dispatch a fresh spawn instead.
- */
-export function recordExpertAgent(
-  sessionId: string,
-  agentId: string,
-  logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void }
-): void {
-  const path = expertAgentMarkerPath(sessionId);
-  try {
-    fs.mkdirSync(nodePath.dirname(path), { recursive: true });
-    fs.writeFileSync(path, `${JSON.stringify({ agentId })}\n`, 'utf8');
-  } catch (err) {
-    logger?.warn('failed to record expert agent marker', { err });
-  }
-}
-
-/**
- * Read the recorded expert agent id for a session, or null if none has been
- * spawned this session (or the marker is missing/unreadable/malformed).
- */
-export function readExpertAgentId(sessionId: string): string | null {
-  try {
-    const raw = fs.readFileSync(expertAgentMarkerPath(sessionId), 'utf8');
-    const parsed = JSON.parse(raw) as { agentId?: unknown };
-    return typeof parsed.agentId === 'string' && parsed.agentId.length > 0 ? parsed.agentId : null;
-  } catch {
-    return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Per-session subagent counter

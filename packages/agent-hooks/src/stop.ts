@@ -1,32 +1,37 @@
 /**
  * Stop hook: reads the per-session touch journal, drives `git mesh stale
- * --porcelain --batch` and `git mesh list --porcelain --batch`, assembles a
- * status document, and returns `decision: 'block'` with a `reason` instructing
- * the main agent to dispatch a background subagent for mesh review.
+ * --porcelain --batch` and `git mesh list --porcelain --batch`, assembles the
+ * findings into a self-contained prompt, and dispatches the mesh review to a
+ * forked, headless `claude` carrying that prompt — then returns `null` so the
+ * stop proceeds.
  *
- * Stop hooks cannot return `additionalContext`, so `decision: 'block'` + `reason`
- * is the only channel that reaches the agent loop. The block keeps the session
- * alive long enough for the agent to act; the `stop_hook_active` guard at the top
- * of the handler allows the subsequent stop so the session can actually end.
+ * The fork is a configuration-identical copy of the current session
+ * (`--resume <id> --fork-session`, nothing else), so it starts from the parent's
+ * warm prompt cache and does the review itself. Dispatch is fire-and-forget: the
+ * forked process runs independently in the background; the session ends normally.
+ * See {@link ForkDispatcher} for the invocation and executable resolution.
+ *
+ * The `stop_hook_active` guard at the top of the handler short-circuits a
+ * re-fired stop (the run that dispatched already marked its entries seen, so a
+ * re-fire would assemble nothing anyway — this is the explicit guard).
  */
 
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
-import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/claude-code-hooks';
+import { type HookContext, type StopInput, stopHook } from '@goodfoot/claude-code-hooks';
 import {
   formatAnchor,
   type LineRange,
   parsePorcelain,
   rangesIntersect,
-  readExpertAgentId,
   readSubagentCount,
   resolveRepoRoot,
   sanitizeSessionId,
   type TouchKind
 } from './agent-hooks-common.js';
+import { createDefaultForkDispatcher, type ForkDispatcher } from './fork-dispatch.js';
 import { type HookIgnoreLoader, isMeshSuppressed, loadHookIgnore } from './mesh-ignore.js';
 
 // ---------------------------------------------------------------------------
@@ -287,6 +292,7 @@ export interface StopHandlerDeps {
   staleRenderExecutor?: StaleRenderExecutor;
   pendingCommitProbe?: PendingCommitProbe;
   loadRules?: HookIgnoreLoader;
+  forkDispatcher?: ForkDispatcher;
 }
 
 export function createStopHandler(deps: StopHandlerDeps) {
@@ -294,6 +300,7 @@ export function createStopHandler(deps: StopHandlerDeps) {
   const staleRenderExecutor = deps.staleRenderExecutor ?? createDefaultStaleRenderExecutor();
   const pendingCommitProbe = deps.pendingCommitProbe ?? createDefaultPendingCommitProbe();
   const loadRules = deps.loadRules ?? loadHookIgnore;
+  const forkDispatcher = deps.forkDispatcher ?? createDefaultForkDispatcher();
 
   return (input: StopInput, ctx: HookContext) => {
     const sessionId = input.session_id;
@@ -474,8 +481,7 @@ export function createStopHandler(deps: StopHandlerDeps) {
       }
     }
 
-    // Step 6: Assemble status doc
-    const sections: string[] = [];
+    // Step 6: Decide which sections to surface.
     const hasStale = staleSection.length > 0;
     // A lone uncovered write with no related mesh to absorb it is noise: a single
     // file forms no coherent subsystem on its own and there is no existing mesh to
@@ -486,67 +492,46 @@ export function createStopHandler(deps: StopHandlerDeps) {
     const uncoveredPaths = new Set(uncoveredLines.map((l) => parseFilterLine(l).path));
     const hasUncovered = uncoveredLines.length > 0 && !(uncoveredPaths.size === 1 && relatedRenders.length === 0);
     // Related meshes are surfaced only as supporting context for absorbing an
-    // uncovered write — the one task they drive (see buildSystemMessage). With no
-    // uncovered write there is nothing to absorb, so surfacing them would block
-    // the stop and dispatch a resolver with a vacuous task. Gate on hasUncovered.
+    // uncovered write — the one task they drive (see buildForkPrompt). With no
+    // uncovered write there is nothing to absorb, so surfacing them would dispatch
+    // a resolver with a vacuous task. Gate on hasUncovered.
     const hasRelated = hasUncovered && relatedRenders.length > 0;
-    if (hasStale) {
-      sections.push(`# Stale meshes\n\n${staleSection}`);
-    }
-    if (hasUncovered) {
-      sections.push(`# Uncovered writes\n\n${uncoveredLines.map((l) => `- ${l}`).join('\n')}`);
-    }
-    if (hasRelated) {
-      sections.push(`# Related meshes\n\n${relatedRenders.join('\n\n---\n\n')}`);
-    }
 
-    if (sections.length === 0) return null;
-
-    // Append the transcript pointer only when there is work to dispatch — the
-    // resolver reads it to understand a coupling, not as a section to act on.
-    // Selective consultation (grep the touched paths) over wholesale reading.
-    if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
-      sections.push(
-        `# Transcript\n\nThe conversation that produced these changes: ${transcriptPath}\nConsult it to understand the coupling when the anchored bytes alone don't reveal why two sites move together; the why you write must still read as a standing definition of the current bytes, not the change's intent. Read selectively (grep the touched paths), not wholesale.`
-      );
-    }
+    // Nothing actionable → allow the stop silently.
+    if (!hasStale && !hasUncovered) return null;
 
     // Mark every entry processed by this dispatching run seen, so a later Stop
     // with no new touches assembles no sections and dispatches nothing. We mark
     // the whole batch — not only the entries that fed a section — because a
     // touch can surface stale anchors on its file without itself being featured,
-    // and leaving it unmarked would re-fire the block indefinitely.
+    // and leaving it unmarked would re-dispatch indefinitely.
     for (const e of unreportedEntries) {
       e.seen = true;
     }
 
-    const doc = sections.join('\n\n');
-
-    // Step 7: Write doc to tmp. The name carries a fresh UUID so every Stop call
-    // produces a distinct file — concurrent or successive dispatches never read a
-    // doc that another call has since overwritten, and the subagent always reads
-    // the exact doc this call assembled.
-    const docPath = nodePath.join(os.tmpdir(), `git-mesh-status-${sanitizeSessionId(sessionId)}-${randomUUID()}.md`);
-    try {
-      fs.writeFileSync(docPath, doc, 'utf8');
-    } catch (err) {
-      ctx.logger.warn('failed to write status doc', { err });
-      return null;
-    }
-
-    // Step 8: Rewrite journal with updated seen flags
+    // Step 7: Rewrite journal with updated seen flags.
     writeJournal(sessionId, entries, ctx.logger);
 
-    // Step 9: Block the stop and surface the dispatch instructions in `reason`.
-    // Stop hooks cannot return `additionalContext`; the only channel that reaches
-    // the agent loop is `decision: 'block'` with a `reason`. The hook is otherwise
-    // idempotent, so re-running after the agent acts produces the same block.
-    // A git-mesh:expert spawned earlier this session is recorded by the
-    // SubagentStart hook. When present, instruct the agent to wake it via
-    // SendMessage rather than spawn a fresh subagent.
-    const priorExpertAgentId = readExpertAgentId(sessionId);
-    const reason = buildSystemMessage(docPath, { hasStale, hasUncovered, hasRelated }, priorExpertAgentId);
-    return stopOutput({ decision: 'block', reason });
+    // Step 8: Dispatch the review to a forked, headless `claude` and allow the
+    // stop. The findings are embedded directly in the prompt — no temp file — so
+    // the fork acts on them without an extra read. The fork is a
+    // configuration-identical copy of this session, so it resumes from the warm
+    // prompt cache and performs the work itself. Dispatch is fire-and-forget; a
+    // failure to launch is logged (fail-closed: no dispatch rather than a wrong
+    // one) and the stop still proceeds. Entries are already marked seen above, so
+    // a later stop assembles nothing and re-runs no dispatch.
+    const prompt = buildForkPrompt({
+      staleSection: hasStale ? staleSection : null,
+      uncoveredLines: hasUncovered ? uncoveredLines : null,
+      relatedRenders: hasRelated ? relatedRenders : null,
+      transcriptPath: typeof transcriptPath === 'string' && transcriptPath.length > 0 ? transcriptPath : null
+    });
+    try {
+      forkDispatcher({ sessionId, repoRoot: finalRepoRoot, prompt });
+    } catch (err) {
+      ctx.logger.warn('failed to dispatch git-mesh review fork', { err });
+    }
+    return null;
   };
 }
 
@@ -614,67 +599,70 @@ function splitMeshBlocks(rendered: string, expectedCount: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// System message
+// Fork prompt
 // ---------------------------------------------------------------------------
 
-interface DocSummary {
-  hasStale: boolean;
-  hasUncovered: boolean;
-  hasRelated: boolean;
-}
-
-/** Join clauses into a grammatical list: "a", "a and b", "a, b, and c". */
-function joinClauses(items: string[]): string {
-  if (items.length === 1) return items[0];
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+/**
+ * The findings to embed in the fork prompt. Each field is null/empty when its
+ * section is absent, so the prompt names only the work actually present.
+ */
+interface ReviewContent {
+  /** Rendered `git mesh stale <slugs>` output for the drifted meshes. */
+  staleSection: string | null;
+  /** Anchor filter lines for writes no mesh covers. */
+  uncoveredLines: string[] | null;
+  /** Rendered `git mesh list <slugs>` output for meshes near the uncovered writes. */
+  relatedRenders: string[] | null;
+  /** Path to this session's transcript, for consulting the coupling's intent. */
+  transcriptPath: string | null;
 }
 
 /**
- * Build the dispatch prompt, naming only the sections the doc actually contains.
- * A doc with no stale meshes never mentions stale meshes, and so on — so the
- * subagent is told to do exactly the work that is present.
- *
- * The prompt is deliberately lean: the git-mesh:expert agent auto-loads the
- * handbook skill and already carries its own operating rules (act don't propose,
- * commit only after the anchored source is committed, report briefly), so the
- * dispatch only names the doc and the work present — not how to do it. The one
- * exception is the commit boundary — never touch source, and commit a mesh only
- * once every file it anchors is committed — echoed inline because mistaking it
- * commits files the resolver must never touch.
- *
- * When a git-mesh:expert was spawned earlier this session (priorExpertAgentId),
- * wake it via SendMessage with its context intact instead of spawning a fresh
- * subagent.
+ * Build the self-contained prompt for the forked session. The findings are
+ * embedded inline (no temp file) and each present section carries the action to
+ * take on it — reconcile the stale meshes, create meshes for the uncovered
+ * writes, extend/prune the related ones. The fork runs as the (forked) main
+ * agent, not a dedicated expert, so the prompt also points it at the git-mesh
+ * handbook for command mechanics and echoes the commit boundary inline — never
+ * touch source, and commit a mesh only once every file it anchors is already
+ * committed — because mistaking it commits files the resolver must never touch.
  */
-function buildSystemMessage(docPath: string, summary: DocSummary, priorExpertAgentId: string | null): string {
-  const tasks: string[] = [];
-  if (summary.hasStale) tasks.push('repair, retire, or reshape the stale meshes as each one warrants');
-  if (summary.hasUncovered) tasks.push('create meshes for the uncovered writes that form coherent subsystems');
-  if (summary.hasRelated)
-    tasks.push(
-      'expand, prune, or refactor the related meshes — absorb an uncovered write, or retire one that no longer holds'
+function buildForkPrompt(content: ReviewContent): string {
+  const parts: string[] = [
+    'A working session just ended. Reconcile git-mesh coverage for the changes it made, acting directly rather than proposing. Use the git-mesh handbook for command mechanics.'
+  ];
+
+  if (content.staleSection) {
+    parts.push(
+      `# Stale meshes — reconcile each\nTheir anchored source changed this session. For each mesh below: re-anchor it to where the lines moved if the coupling still holds; reshape the slug or rewrite the why if the subsystem changed; or retire the mesh if the coupling no longer holds.\n\n${content.staleSection}`
     );
-
-  if (priorExpertAgentId) {
-    return `Use SendMessage to wake the git-mesh:expert subagent (agent ${priorExpertAgentId}) with this prompt:
-
-<prompt>
-Read ${docPath}, then ${joinClauses(tasks)}.
-Never stage or commit source files. Commit a mesh's edit only once every file it anchors is already committed; if any anchor file is still uncommitted, leave that mesh staged and say so.
-</prompt>
-
-Run in the background; do not block on its result. Do not discuss the git-mesh subagent or its results with the user unless it reports a problem that requires the user's intervention.`;
   }
 
-  return `Spawn a background git-mesh:expert subagent on the haiku model with this prompt:
+  if (content.uncoveredLines && content.uncoveredLines.length > 0) {
+    parts.push(
+      `# Uncovered writes — create a mesh where they form a subsystem\nNo mesh covers these anchors. Where two or more form a coherent subsystem (a flow or concern that spans them), create one: \`git mesh add <slug> <anchors>\` then \`git mesh why <slug> -m "<what it does across the anchors>"\`. Leave a lone file that forms no subsystem alone.\n\n${content.uncoveredLines.map((l) => `- ${l}`).join('\n')}`
+    );
+  }
 
-<prompt>
-Read ${docPath}, then ${joinClauses(tasks)}.
-Never stage or commit source files. Commit a mesh's edit only once every file it anchors is already committed; if any anchor file is still uncommitted, leave that mesh staged and say so.
-</prompt>
+  if (content.relatedRenders && content.relatedRenders.length > 0) {
+    parts.push(
+      `# Related meshes — extend or prune\nThese existing meshes sit near the uncovered writes. Absorb an uncovered write into one, prune an anchor that no longer holds, or refactor — whichever fits.\n\n${content.relatedRenders.join('\n\n---\n\n')}`
+    );
+  }
 
-Run it in the background; do not block on its result. Do not discuss the git-mesh subagent or its results with the user unless it reports a problem that requires the user's intervention.`;
+  if (content.transcriptPath) {
+    parts.push(
+      `# Transcript\nThe conversation that produced these changes: ${content.transcriptPath}\nConsult it (grep the touched paths, don't read it wholesale) only when the anchored bytes alone don't reveal why two sites move together. The why you write must read as a standing definition of the current bytes, not the change's intent.`
+    );
+  }
+
+  parts.push(
+    `# Commit boundary\nNever stage or commit source files. Commit a mesh's edit only once every file it anchors is already committed; if any anchor file is still uncommitted, leave that mesh staged and say so.`
+  );
+
+  parts.push('Work in the background and do not report unless something needs human intervention.');
+
+  return parts.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
