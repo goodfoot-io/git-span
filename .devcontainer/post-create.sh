@@ -78,9 +78,8 @@ if ! git config --global --get-all safe.directory | grep -Fx /workspace > /dev/n
     git config --global --add safe.directory /workspace
 fi
 
-# Bring up Tailscale in TUN mode (MagicDNS) — shared routine from the base image.
-# Reads $TS_HOSTNAME / $TS_AUTHKEY from .devcontainer/.env.
-/usr/local/share/devcontainer/tailscale-up.sh
+# Note: Tailscale and the rootless sshd are now started automatically by the base
+# image's entrypoint on every container start, so they are no longer invoked here.
 
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
@@ -92,8 +91,7 @@ git config merge.json-version.driver ".githooks/merge-json-version %O %A %B %P"
 echo "Package version merge driver configured"
 
 # Shared runtime setup from the base image: Rust (latest stable) + clippy/rustfmt,
-# uv, Antigravity, the zsh theme, and a rootless sshd — all installed into the
-# persisted /home/node.
+# uv, Antigravity, and the zsh theme — all installed into the persisted /home/node.
 /usr/local/share/devcontainer/post-create-common.sh
 
 # inferno for flame-graph generation (needs cargo, installed by the common
