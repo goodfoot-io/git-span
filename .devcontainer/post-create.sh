@@ -78,47 +78,9 @@ if ! git config --global --get-all safe.directory | grep -Fx /workspace > /dev/n
     git config --global --add safe.directory /workspace
 fi
 
-# Bring up Tailscale in userspace-networking mode. This needs no /dev/net/tun,
-# NET_ADMIN, or root: the daemon runs as the node user with a user-writable
-# socket and state dir. The state dir lives under the volume-backed home
-# directory, so on rebuilds `tailscale status` succeeds against existing state
-# and we skip re-auth, only refreshing hostname/tags.
-echo "Setting up Tailscale..."
-TAILSCALE_STATE_DIR="${HOME}/.local/share/tailscale"
-TAILSCALE_SOCKET="${TAILSCALE_STATE_DIR}/tailscaled.sock"
-
-if ! command -v tailscaled >/dev/null 2>&1; then
-    echo "⚠ tailscaled not found — install the tailscale package in the Dockerfile"
-else
-    if ! pgrep -x tailscaled > /dev/null; then
-        echo "Starting tailscaled (userspace-networking mode)..."
-        mkdir -p "$TAILSCALE_STATE_DIR"
-        nohup tailscaled \
-            --tun=userspace-networking \
-            --statedir="$TAILSCALE_STATE_DIR" \
-            --socket="$TAILSCALE_SOCKET" >/dev/null 2>&1 &
-        disown
-        for _ in $(seq 1 10); do
-            if [ -S "$TAILSCALE_SOCKET" ]; then break; fi
-            sleep 0.5
-        done
-    fi
-
-    if tailscale --socket="$TAILSCALE_SOCKET" status >/dev/null 2>&1; then
-        echo "✓ Already joined tailnet"
-        tailscale --socket="$TAILSCALE_SOCKET" up \
-            --hostname="$TS_HOSTNAME" \
-            --advertise-tags=tag:devcontainer \
-            --accept-routes
-    else
-        echo "Joining tailnet as $TS_HOSTNAME..."
-        tailscale --socket="$TAILSCALE_SOCKET" up \
-            --authkey="$TS_AUTHKEY" \
-            --hostname="$TS_HOSTNAME" \
-            --advertise-tags=tag:devcontainer \
-            --accept-routes
-    fi
-fi
+# Bring up Tailscale in TUN mode (MagicDNS) — shared routine from the base image.
+# Reads $TS_HOSTNAME / $TS_AUTHKEY from .devcontainer/.env.
+/usr/local/share/devcontainer/tailscale-up.sh
 
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
