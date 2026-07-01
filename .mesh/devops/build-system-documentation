@@ -1,6 +1,6 @@
 CLAUDE.md#L34-L46 rk64:ee88a6cdcb9ee3e9
-README.md#L139-L151 rk64:cbb33661c9c8cfb8
+README.md#L118-L130 rk64:cbb33661c9c8cfb8
 docs/cross-compilation.md#L82-L84 rk64:11cb41c832b60a03
-packages/git-mesh/Cargo.toml#L61-L74 rk64:8875489da0231e2a
+packages/git-mesh/Cargo.toml#L64-L77 rk64:8875489da0231e2a
 
 Build system documentation across Cargo.toml, CLAUDE.md, README, and cross-compilation docs that explains the shared per-user cargo target directory (git-mesh/check for rmeta, git-mesh/build for rlib), directory isolation to prevent E0463 link failures, and the GIT_MESH_CARGO_TARGET_ROOT override.

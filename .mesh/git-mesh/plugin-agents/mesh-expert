@@ -1,4 +1,4 @@
-plugins/git-mesh/agents/expert.md rk64:0745e8c1260a1314
-plugins/git-mesh/skills/git-mesh/SKILL.md rk64:98f3b7bff3900f39
+plugins/git-mesh/agents/expert.md rk64:071ae2f642b14aac
+plugins/git-mesh/skills/git-mesh/SKILL.md rk64:3e157b913f95dd19
 
 Mesh-expert agent guides authors to create meshes and relies on the handbook skill for mechanics; both change when the mesh authoring workflow evolves.

@@ -1,5 +1,5 @@
 packages/git-mesh/src/cli/stale_fix.rs#L280-L416 rk64:4cb64609bee5d6a6
-packages/git-mesh/tests/cases/cli_stale_fix.rs#L513-L538 rk64:be833c7920353009
-packages/git-mesh/tests/cases/cli_stale_fix.rs#L540-L560 rk64:1915a95126b8f717
+packages/git-mesh/tests/cases/cli_stale_fix.rs#L520-L545 rk64:be833c7920353009
+packages/git-mesh/tests/cases/cli_stale_fix.rs#L547-L567 rk64:1915a95126b8f717
 
 Line-range coalescing in stale --fix that collapses contiguous and overlapping worktree-fresh anchors on one path into a single anchor, gated by the worktree-fresh barrier so only provably-correct unions merge.

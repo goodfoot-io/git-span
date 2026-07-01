@@ -1,4 +1,4 @@
 packages/git-mesh/src/mesh_file_reader.rs#L146-L159 rk64:519cce10acb387fd
-packages/git-mesh/src/resolver/cache_v2/mod.rs#L665-L680 rk64:9a46e893fd84e950
+packages/git-mesh/src/resolver/cache_v2/mod.rs#L737-L752 rk64:9a46e893fd84e950
 
 The cache_v2 committed baseline is keyed by the HEAD mesh-tree OID and resolved committed_only, so it enumerates meshes via committed_mesh_names (HEAD tree only, excluding index and worktree); enumerating worktree or index meshes instead would bake untracked or uncommitted mesh files into a HEAD-keyed entry, making the warm-clean cache replay deleted or phantom meshes — a correctness contract the types do not enforce.

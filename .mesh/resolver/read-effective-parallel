@@ -1,4 +1,4 @@
 packages/git-mesh/src/mesh/read.rs#L196-L269 rk64:abfa91d096891e9b
-packages/git-mesh/src/resolver/engine/mod.rs#L743-L856 rk64:c043e2b00b44f5d0
+packages/git-mesh/src/resolver/engine/mod.rs#L713-L826 rk64:c043e2b00b44f5d0
 
 Parallel mesh file reader that feeds the resolver's named-mesh batch; returns outcomes in input order, byte-identical to serial reads, and tested for correctness over live/tombstoned/conflicted meshes.
