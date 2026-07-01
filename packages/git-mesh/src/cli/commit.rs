@@ -472,8 +472,24 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     let replaced_addr: Option<String> = match &args.replace {
         Some(old_addr) => {
             let _perf = crate::perf::span("add.remove-replaced");
-            let (path, extent) =
-                parse_address(old_addr).ok_or_else(|| invalid_anchor_error("add", old_addr))?;
+            let (path, extent) = parse_address(old_addr).ok_or_else(|| CliError {
+                subcommand: "add",
+                summary: format!("`{old_addr}` is not a valid anchor."),
+                what_happened: format!(
+                    "Anchor addresses are either a path on its own (whole file) or \
+                     `<path>#L<start>-L<end>` (line range). `{old_addr}` is missing the `L` \
+                     prefix and the `-L<end>` half."
+                ),
+                next_steps: vec![
+                    NextStep::Bash(
+                        "git mesh add --replace <old-addr> <name> <path>#L<start>-L<end>"
+                            .to_string(),
+                    ),
+                    NextStep::Bash(
+                        "git mesh add --replace <old-addr> <name> <path>".to_string(),
+                    ),
+                ],
+            })?;
             let (start_line, end_line) = match extent {
                 AnchorExtent::LineRange { start, end } => (start, end),
                 AnchorExtent::WholeFile => (0, 0),

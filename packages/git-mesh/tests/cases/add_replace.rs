@@ -165,6 +165,13 @@ fn add_replace_fails_on_invalid_old_address() -> Result<()> {
         stderr.contains("is not a valid anchor"),
         "stderr must mention invalid address; got:\n{stderr}"
     );
+    // The remediation steps must mention `--replace` so the user is
+    // guided back to the correct command — not a plain `add` that would
+    // silently append instead of replace.
+    assert!(
+        stderr.contains("--replace"),
+        "stderr next_steps must mention --replace; got:\n{stderr}"
+    );
 
     // Mesh unchanged.
     let content = std::fs::read_to_string(repo.path().join(".mesh/test-mesh"))?;
