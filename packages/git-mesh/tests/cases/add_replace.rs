@@ -27,7 +27,7 @@ fn add_replace_happy_path() -> Result<()> {
         "file1.txt#L2-L3",
     ])?;
 
-    // Output mentions both the removal and the addition.
+    // Output mentions the removal, the addition, and the per-anchor lines.
     assert!(
         stdout.contains("Replaced 1 anchor"),
         "output must mention replacement: {stdout}"
@@ -35,6 +35,10 @@ fn add_replace_happy_path() -> Result<()> {
     assert!(
         stdout.contains("Added 1 anchor"),
         "output must mention the addition: {stdout}"
+    );
+    assert!(
+        stdout.contains("- removed via replace:"),
+        "output must contain the removal line format; got:\n{stdout}"
     );
 
     // Verify: old anchor removed, new anchor present.
@@ -71,6 +75,74 @@ fn add_replace_with_whole_file_anchor() -> Result<()> {
     assert!(
         content.contains("file1.txt rk64:") || content.contains("file1.txt\n"),
         "whole-file anchor should be present; mesh:\n{content}"
+    );
+    Ok(())
+}
+
+/// Replace a whole-file anchor with another whole-file anchor on the
+/// same file. Exercises the `(path, 0, 0)` key comparison path.
+#[test]
+fn add_replace_whole_file_to_whole_file() -> Result<()> {
+    let repo = seeded_repo_with_mesh()?;
+
+    // First add a whole-file anchor.
+    repo.mesh_stdout(["add", "test-mesh", "file1.txt"])?;
+    repo.commit_all("add whole-file anchor")?;
+
+    // Replace the whole-file anchor with… itself (different hash if
+    // content changed, but here content is the same — exercises the
+    // remove path for whole-file keys).
+    repo.mesh_stdout([
+        "add",
+        "--replace",
+        "file1.txt",
+        "test-mesh",
+        "file1.txt",
+    ])?;
+
+    let content = std::fs::read_to_string(repo.path().join(".mesh/test-mesh"))?;
+    // The old whole-file anchor for file1.txt should be gone; the new
+    // whole-file anchor for file1.txt should be present. There should
+    // only be one entry for file1.txt.
+    let file1_count = content
+        .lines()
+        .filter(|l| l.starts_with("file1.txt") && !l.contains('#'))
+        .count();
+    assert_eq!(
+        file1_count, 1,
+        "exactly one whole-file anchor for file1.txt expected; mesh:\n{content}"
+    );
+    Ok(())
+}
+
+/// Replace a whole-file anchor with a line-range anchor on the same file.
+#[test]
+fn add_replace_whole_file_to_line_range() -> Result<()> {
+    let repo = seeded_repo_with_mesh()?;
+
+    // First add a whole-file anchor.
+    repo.mesh_stdout(["add", "test-mesh", "file1.txt"])?;
+    repo.commit_all("add whole-file anchor")?;
+
+    // Replace the whole-file anchor with a line-range anchor.
+    repo.mesh_stdout([
+        "add",
+        "--replace",
+        "file1.txt",
+        "test-mesh",
+        "file1.txt#L1-L3",
+    ])?;
+
+    let content = std::fs::read_to_string(repo.path().join(".mesh/test-mesh"))?;
+    // Old whole-file anchor removed.
+    assert!(
+        !content.contains("file1.txt rk64:"),
+        "old whole-file anchor should be removed; mesh:\n{content}"
+    );
+    // New line-range anchor present.
+    assert!(
+        content.contains("file1.txt#L1-L3"),
+        "new line-range anchor should be present; mesh:\n{content}"
     );
     Ok(())
 }
