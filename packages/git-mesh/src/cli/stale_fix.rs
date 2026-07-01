@@ -624,9 +624,52 @@ pub(crate) fn apply_fix(
                         None => continue,
                     };
                     crate::perf::record_fix_hash_call();
-                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx) {
+                    let head_result =
+                        hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx);
+                    // When the deepest drifting layer is HEAD and the
+                    // file has a different line count in HEAD than in the
+                    // current layer (e.g. mid-merge where the worktree /
+                    // index file grew), `hash_anchor_content` fails extent
+                    // validation ("end exceeds file line count"). Fall
+                    // back to the index layer so a `continue` does not
+                    // silently leave the anchor stuck stale while the
+                    // diagnostic reports it as fixed.
+                    match head_result {
                         Ok((_alg, h)) => h,
-                        Err(_) => continue,
+                        Err(_) => {
+                            let entry = match index_snapshot
+                                .as_deref()
+                                .unwrap_or(&[])
+                                .iter()
+                                .find(|en| {
+                                    en.path == cur_path_str
+                                        && en.stage
+                                            == gix::index::entry::Stage::Unconflicted
+                                }) {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            let blob_oid_hex = entry.oid.to_string();
+                            let bytes = match crate::git::read_blob_bytes(
+                                repo,
+                                &blob_oid_hex,
+                            ) {
+                                Ok(b) => b,
+                                Err(_) => continue,
+                            };
+                            if let AnchorExtent::LineRange { start, end } = cur_extent {
+                                let line_count = std::str::from_utf8(&bytes)
+                                    .map(|s| s.lines().count() as u32)
+                                    .unwrap_or(0);
+                                if start < 1 || end < start || end > line_count {
+                                    continue;
+                                }
+                                if std::str::from_utf8(&bytes).is_err() {
+                                    continue;
+                                }
+                            }
+                            rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
+                        }
                     }
                 }
                 DriftSource::Index => {
