@@ -1,0 +1,6 @@
+packages/git-mesh/src/resolver/engine/anchor.rs#L10-L635 rk64:6646aebc36d3f552
+packages/git-mesh/src/resolver/engine/whole_file.rs#L8-L418 rk64:cff89cd230860232
+packages/git-mesh/src/types.rs#L947-L965 rk64:363dbc0d53f76812
+packages/git-mesh/tests/cases/stale_mesh_integration.rs#L598-L605 rk64:e7fa41bd8da6562b
+
+The stale resolver consults submodule_classify before concluding Deleted for a path absent from HEAD, so an anchor orphaned by a directory-to-submodule promotion surfaces as Submodule; the acceptance test exercises the full classification pipeline.
