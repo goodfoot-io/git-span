@@ -42,7 +42,6 @@ fn reanchor_unstaged_source(repo: &TestRepo) -> Result<()> {
 
 /// `resolve_mesh` with worktree + index layers reports
 /// `ResolvedPendingCommit` for an uncommitted re-anchor.
-#[ignore]
 #[test]
 fn worktree_resolves_resolved_pending_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -59,7 +58,6 @@ fn worktree_resolves_resolved_pending_commit() -> Result<()> {
 
 /// `resolve_mesh` with index + HEAD (no worktree) layers reports
 /// `ResolvedPendingCommit`.
-#[ignore]
 #[test]
 fn staged_resolves_resolved_pending_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -84,7 +82,6 @@ fn staged_resolves_resolved_pending_commit() -> Result<()> {
 
 /// `resolve_mesh` with HEAD-only layers reports
 /// `ResolvedPendingCommit`.
-#[ignore]
 #[test]
 fn head_resolves_resolved_pending_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -106,7 +103,6 @@ fn head_resolves_resolved_pending_commit() -> Result<()> {
 
 /// `git mesh stale m` exits 0 and prints "resolved, pending commit" in
 /// human output.
-#[ignore]
 #[test]
 fn stale_command_exits_zero_with_resolved_pending_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -127,7 +123,6 @@ fn stale_command_exits_zero_with_resolved_pending_commit() -> Result<()> {
 
 /// Repeated `git mesh stale m` without state change is stable (no flip
 /// to a different status on re-invocation).
-#[ignore]
 #[test]
 fn repeated_invocation_is_stable() -> Result<()> {
     let repo = TestRepo::seeded()?;

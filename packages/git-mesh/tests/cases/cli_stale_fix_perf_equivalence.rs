@@ -39,6 +39,9 @@ fn read_mesh_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
 
 /// Run `git mesh stale --fix` (with optional extra args) and return
 /// `(stdout_bytes, stderr_bytes, exit_code)`.
+/// Disables the cache_v2 overlay so consecutive runs with a reverted
+/// index produce byte-identical output (apply_fix stages mesh files,
+/// and the cache_v2 overlay key does not capture the index change).
 fn run_fix<'a>(
     repo: &TestRepo,
     extra: impl IntoIterator<Item = &'a str>,
@@ -47,7 +50,7 @@ fn run_fix<'a>(
     for a in extra {
         args.push(a);
     }
-    let out = repo.run_mesh(args)?;
+    let out = repo.run_mesh_with_env(args, "GIT_MESH_CACHE_V2", "0")?;
     Ok((out.stdout, out.stderr, out.status.code()))
 }
 

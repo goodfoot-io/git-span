@@ -695,10 +695,69 @@ pub(crate) fn resolve_anchor_inner(
     let mut content_equivalent = false;
     let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
 
-    // Phase 3 will insert the real detection here: compare worktree hash
-    // against stored_hash (mesh is worktree-synced) and HEAD hash against
-    // stored_hash (source has uncommitted changes). Both true →
-    // ResolvedPendingCommit.
+    // Phase 3: Detect ResolvedPendingCommit — file-backed anchor whose
+    // stored_hash matches the worktree content but does NOT match HEAD
+    // (the source has uncommitted changes that re-anchor to the worktree).
+    // Returns early before the `match current` block so normal
+    // classification handles all other cases.
+    if !r.stored_hash.is_empty() && r.blob.is_empty()
+        && let Some((ref t, _, _)) = current
+    {
+        let wt_bytes =
+            read_worktree_normalized(repo, &mut state.custom_filters, &t.path)?;
+        let extent = AnchorExtent::LineRange {
+            start: anchored_start,
+            end: anchored_end,
+        };
+        let wt_hash = format!(
+            "{RK64_ALGORITHM}:{}",
+            rk64_to_hex(cheap_fingerprint_with_extent(&wt_bytes, &extent))
+        );
+        let wt_matches = wt_hash == r.stored_hash;
+
+        let head_matches = match state.head_blob_at(repo, &r.path)? {
+            Some(oid) => {
+                let head_txt = match git::read_git_text(repo, &oid) {
+                    Ok(t) => t,
+                    Err(_) if crate::git::promisor_active(repo) => String::new(),
+                    Err(e) => return Err(e),
+                };
+                if head_txt.is_empty() {
+                    false
+                } else {
+                    format!(
+                        "{RK64_ALGORITHM}:{}",
+                        rk64_to_hex(cheap_fingerprint_with_extent(
+                            head_txt.as_bytes(),
+                            &extent,
+                        ))
+                    ) == r.stored_hash
+                }
+            }
+            None => false,
+        };
+
+        if wt_matches && !head_matches {
+            return Ok(AnchorResolved {
+                anchor_id: anchor_id.into(),
+                anchor_sha: r.anchor_sha,
+                anchored,
+                current: Some(AnchorLocation {
+                    path: PathBuf::from(&r.path),
+                    extent: AnchorExtent::LineRange {
+                        start: anchored_start,
+                        end: anchored_end,
+                    },
+                    blob: None,
+                }),
+                status: AnchorStatus::ResolvedPendingCommit,
+                content_equivalent: false,
+                source: None,
+                layer_sources: vec![],
+                locus: None,
+            });
+        }
+    }
 
     match current {
         None => {

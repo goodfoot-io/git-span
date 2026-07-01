@@ -165,7 +165,10 @@ fn run_stale_batch_porcelain(
         for mesh in &stale_resolved {
             for anchor in &mesh.anchors {
                 // Only emit anchors that the engine classified as drifted.
-                if anchor.status == AnchorStatus::Fresh {
+                // ResolvedPendingCommit is a terminal resolved state (not stale).
+                if anchor.status == AnchorStatus::Fresh
+                    || anchor.status == AnchorStatus::ResolvedPendingCommit
+                {
                     continue;
                 }
                 let anchor_path = anchor.anchored.path.to_string_lossy();

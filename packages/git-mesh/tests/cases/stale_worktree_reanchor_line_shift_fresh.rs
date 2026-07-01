@@ -93,9 +93,10 @@ fn worktree_reanchored_line_shift_resolves_fresh() -> Result<()> {
     let r = &mr.anchors[0];
     assert_eq!(
         r.status,
-        AnchorStatus::Fresh,
+        AnchorStatus::ResolvedPendingCommit,
         "worktree slice at the recorded range matches the stored hash, \
-         so the anchor is Fresh regardless of the index/HEAD copy; got {:?}",
+         and HEAD differs (source has uncommitted changes), so the anchor \
+         is ResolvedPendingCommit; got {:?}",
         r.status
     );
     Ok(())
@@ -120,7 +121,8 @@ fn worktree_reanchored_line_shift_stale_exits_zero() -> Result<()> {
     Ok(())
 }
 
-/// The porcelain batch path must emit no row for the re-anchored mesh.
+/// The porcelain batch path must emit no row for the re-anchored mesh
+/// (ResolvedPendingCommit is a terminal resolved state, not stale).
 #[test]
 fn worktree_reanchored_line_shift_batch_porcelain_emits_no_row() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -128,7 +130,7 @@ fn worktree_reanchored_line_shift_batch_porcelain_emits_no_row() -> Result<()> {
     let (stdout, code) = run_stale_batch_porcelain(&repo, &["file1.txt"])?;
     assert!(
         !stdout.lines().any(|l| l.starts_with("m\t")),
-        "batch porcelain must emit no row for the fresh re-anchor; stdout={stdout}"
+        "batch porcelain must emit no row for the resolved-pending-commit re-anchor; stdout={stdout}"
     );
     assert_eq!(code, Some(0), "stdout={stdout}");
     Ok(())
