@@ -975,6 +975,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     let stale_findings: usize = findings
         .iter()
         .filter(|f| {
+            if matches!(f.status, AnchorStatus::ResolvedPendingCommit) {
+                return false;
+            }
             if args.ignore_unavailable && matches!(f.status, AnchorStatus::ContentUnavailable(_)) {
                 return false;
             }
@@ -1292,6 +1295,7 @@ fn describe_finding_lower(f: &Finding) -> String {
             f.locus.as_ref(),
             f.current.is_some(),
         ),
+        AnchorStatus::ResolvedPendingCommit => "resolved, pending commit".to_string(),
         AnchorStatus::Moved => {
             // Relocation provenance is the move itself, not a per-layer
             // edit; omit the layer phrase so a committed `git mv` is not
@@ -1375,6 +1379,7 @@ fn describe_finding_lower(f: &Finding) -> String {
 fn status_str(s: &AnchorStatus) -> &'static str {
     match s {
         AnchorStatus::Fresh => "FRESH",
+        AnchorStatus::ResolvedPendingCommit => "RESOLVED_PENDING_COMMIT",
         AnchorStatus::Moved => "MOVED",
         AnchorStatus::Changed => "CHANGED",
         AnchorStatus::Deleted => "DELETED",

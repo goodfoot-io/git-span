@@ -695,6 +695,11 @@ pub(crate) fn resolve_anchor_inner(
     let mut content_equivalent = false;
     let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
 
+    // Phase 3 will insert the real detection here: compare worktree hash
+    // against stored_hash (mesh is worktree-synced) and HEAD hash against
+    // stored_hash (source has uncommitted changes). Both true →
+    // ResolvedPendingCommit.
+
     match current {
         None => {
             let anchored_text = if !r.blob.is_empty() {

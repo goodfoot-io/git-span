@@ -591,6 +591,7 @@ pub(crate) fn apply_fix(
                     }
                 }
                 AnchorStatus::Changed => resolved.content_equivalent,
+                AnchorStatus::ResolvedPendingCommit => false,  // already synced with worktree
                 _ => false,
             };
             if !reanchor {

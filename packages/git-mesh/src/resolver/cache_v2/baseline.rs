@@ -58,7 +58,7 @@ impl BaselineCounts {
         for m in meshes {
             for a in &m.anchors {
                 match &a.status {
-                    Fresh => c.anchors_fresh += 1,
+                    Fresh | ResolvedPendingCommit => c.anchors_fresh += 1,
                     Moved => c.anchors_moved += 1,
                     Changed => c.anchors_changed += 1,
                     Deleted => c.anchors_deleted += 1,
@@ -74,7 +74,7 @@ impl BaselineCounts {
 fn status_tag(s: &AnchorStatus) -> &'static str {
     use AnchorStatus::*;
     match s {
-        Fresh => "fresh",
+        Fresh | ResolvedPendingCommit => "fresh",
         Moved => "moved",
         Changed => "changed",
         Deleted => "deleted",

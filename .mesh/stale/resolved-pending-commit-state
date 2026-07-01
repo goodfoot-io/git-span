@@ -1,0 +1,10 @@
+packages/git-mesh/src/cli/drift_label.rs#L79-L80 rk64:dc0da71f5ed4773e
+packages/git-mesh/src/cli/stale_fix.rs#L582-L586 rk64:7f467b16dc7d853c
+packages/git-mesh/src/resolver/cache_v2/baseline.rs#L60-L85 rk64:f4c5dcd0f639a360
+packages/git-mesh/src/resolver/cache_v2/dto.rs#L132-L163 rk64:8a039deeb78b5e10
+packages/git-mesh/src/resolver/engine/anchor.rs#L546-L582 rk64:184e261b8d4829d1
+packages/git-mesh/src/resolver/engine/mod.rs#L636-L658 rk64:b626cd30b3cb24a9
+packages/git-mesh/src/types.rs#L150-L154 rk64:645ab63b5e78bde7
+packages/git-mesh/tests/cases/stale_resolved_pending_commit.rs rk64:09719c73e460824b
+
+The ResolvedPendingCommit anchor status is a distinct non-drift state; every AnchorStatus consumer must classify it as resolved — grouped with Fresh for tally, excluded from the exit code, labeled consistently across renderers, and round-tripped through the cache DTO.

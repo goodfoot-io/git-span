@@ -132,6 +132,7 @@ impl From<UnavailableReasonDto> for UnavailableReason {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum AnchorStatusDto {
     Fresh,
+    ResolvedPendingCommit,
     Moved,
     Changed,
     Deleted,
@@ -144,6 +145,7 @@ impl From<&AnchorStatus> for AnchorStatusDto {
     fn from(s: &AnchorStatus) -> Self {
         match s {
             AnchorStatus::Fresh => AnchorStatusDto::Fresh,
+            AnchorStatus::ResolvedPendingCommit => AnchorStatusDto::ResolvedPendingCommit,
             AnchorStatus::Moved => AnchorStatusDto::Moved,
             AnchorStatus::Changed => AnchorStatusDto::Changed,
             AnchorStatus::Deleted => AnchorStatusDto::Deleted,
@@ -158,6 +160,7 @@ impl From<AnchorStatusDto> for AnchorStatus {
     fn from(s: AnchorStatusDto) -> Self {
         match s {
             AnchorStatusDto::Fresh => AnchorStatus::Fresh,
+            AnchorStatusDto::ResolvedPendingCommit => AnchorStatus::ResolvedPendingCommit,
             AnchorStatusDto::Moved => AnchorStatus::Moved,
             AnchorStatusDto::Changed => AnchorStatus::Changed,
             AnchorStatusDto::Deleted => AnchorStatus::Deleted,

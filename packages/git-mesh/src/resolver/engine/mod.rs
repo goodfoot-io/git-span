@@ -636,7 +636,7 @@ fn populate_drift_locus(
 
 fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &AnchorStatus) {
     match status {
-        AnchorStatus::Fresh => session.anchors_fresh += 1,
+        AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit => session.anchors_fresh += 1,
         AnchorStatus::Moved => session.anchors_moved += 1,
         AnchorStatus::Changed => session.anchors_changed += 1,
         AnchorStatus::Deleted => session.anchors_orphaned += 1,
@@ -649,6 +649,7 @@ fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &An
 fn status_label(s: &AnchorStatus) -> &'static str {
     match s {
         AnchorStatus::Fresh => "Fresh",
+        AnchorStatus::ResolvedPendingCommit => "ResolvedPendingCommit",
         AnchorStatus::Moved => "Moved",
         AnchorStatus::Changed => "Changed",
         AnchorStatus::Deleted => "Deleted",

@@ -149,6 +149,9 @@ pub enum UnavailableReason {
 pub enum AnchorStatus {
     /// Current bytes equal anchored bytes.
     Fresh,
+    /// Mesh matches the worktree content but the source has uncommitted
+    /// changes; the mesh is resolved pending the source commit.
+    ResolvedPendingCommit,
     /// Bytes equal; `(path, extent)` changed.
     Moved,
     /// Anchored bytes differ from current bytes, including complete deletion.

@@ -77,6 +77,7 @@ pub fn format_drift_label(
         // callers handle them directly (this formatter is the source of
         // truth only for the seven-row drift table).
         AnchorStatus::Moved => "moved".to_string(),
+        AnchorStatus::ResolvedPendingCommit => "resolved, pending commit".to_string(),
         AnchorStatus::MergeConflict => "merge conflict".to_string(),
         AnchorStatus::Submodule => "submodule".to_string(),
         AnchorStatus::ContentUnavailable(reason) => {

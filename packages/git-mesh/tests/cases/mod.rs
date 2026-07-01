@@ -61,6 +61,7 @@ pub mod stale_mesh_integration;
 pub mod stale_positional_matches_full_scan;
 pub mod stale_relocation_scan_amortized;
 pub mod stale_worktree_reanchor_line_shift_fresh;
+pub mod stale_resolved_pending_commit;
 pub mod why_at_corrupt_mesh_fail_closed;
 pub mod why_writer_name_validation;
 pub mod worktree_path_resolution;
