@@ -187,6 +187,24 @@ never registers it reaches the identical clean end state through `--fix` alone;
 the driver changes only how many conflicts surface mid-merge, never whether a
 clean result is reachable.
 
+**Known gap: multi-anchor meshes mid-merge, before the merge commit.** The
+paragraph above describes the conflict-markered `.mesh/` file case, which
+converges correctly. A narrower, currently-broken case: a mesh with two or
+more anchors on the *same file*, both drifting from the same merge, where the
+`.mesh/` file itself carries **no** conflict markers (neither branch touched
+it) — only the source conflicted. Running `git mesh stale --fix` while
+`.git/MERGE_HEAD` is still present (source resolved and staged, merge commit
+not yet made) rewrites the *first* drifted anchor correctly but silently
+leaves the second one pointing at its stale location — even though the
+human-readable diagnostic for that second anchor reports the correct new
+location. Repeating `--fix` with no other change reproduces the identical
+partial result every time; it does not converge until the merge commit is
+made. **Workaround:** finish the merge commit before relying on `--fix` to
+fully resolve a multi-anchor mesh — run `git mesh stale --format porcelain`
+after `git commit` to confirm it is actually clean, rather than trusting a
+mid-merge `--fix` run's exit code or diagnostic text at face value for meshes
+with 2+ anchors on one file.
+
 ## Reserved mesh names
 
 A mesh name must be kebab-case segments separated by `/`. The following tokens

@@ -76,6 +76,14 @@ side and re-run. Finish the merge (`git add .mesh`, `git commit`) and run
 "Merge conflict resolution" for the optional `merge-driver` accelerator that
 collapses the easy conflicts during `git merge` itself.
 
+**Known gap.** The contract above is for a `.mesh/` file git itself
+marker-laden. A mesh with 2+ anchors on the same file that both drift from a
+merge where the *source* conflicted but the `.mesh/` file did not (so this
+status never actually fires) can fail to fully converge if `--fix` is run
+before the merge commit is made — see `./command-reference.md` § "Merge
+conflict resolution" for the exact shape and the workaround (finish the merge
+commit first).
+
 ## `SUBMODULE`
 
 **Cause.** An anchor points *inside* a submodule. git-mesh does not open
@@ -92,3 +100,19 @@ git add .mesh && git commit -m "Re-anchor <name> off submodule internals"
 
 Whole-file anchors on a submodule *root* (the gitlink path) are supported — the
 resolver compares gitlink SHAs without opening the submodule.
+
+**Known gap.** The scenario above — a line-range anchor whose path already sits
+inside a submodule at anchor-creation time — is refused by `git mesh add`
+itself and never reaches `stale` at all, so it never surfaces as this status in
+practice. The status this section documents is only meant to cover the inverse:
+a directory gets *promoted* to a submodule after anchors already exist inside
+it. As of this writing, that case is **not yet classified as `SUBMODULE`** —
+the resolver never actually constructs this status from `stale`, so an anchor
+orphaned this way currently reports `DELETED` instead. `--fix` still fails
+closed on it (it does not corrupt the mesh), but the `DELETED` guidance you'll
+see ("confirm the relationship still holds, re-anchor or delete") is
+misleading here: the anchored content did not vanish, it moved into the new
+submodule. If a `DELETED` finding's path used to be a plain file/directory and
+`git ls-files -s <path>` now shows mode `160000` (a gitlink), treat it as this
+section's guidance, not the `DELETED` section's — pin at the submodule root or
+a witnessing parent-repo path, per "Fix" above.

@@ -1,0 +1,4 @@
+packages/git-mesh/src/types.rs#L131-L144 rk64:e0b161f3ca1d626e
+plugins/git-mesh/skills/git-mesh/sections/content-unavailable.md#L20-L30 rk64:b48f5b09e4b1f435
+
+The content-unavailable handbook's known-gap note names exactly the UnavailableReason variants the resolver never constructs, so its live/dead split must match the variants this enum declares.

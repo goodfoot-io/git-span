@@ -38,7 +38,7 @@ When `git mesh stale` surfaces dozens or hundreds of findings, process them in s
 
 **3. Edit all anchors for a mesh in one command.** `git mesh add <name> <anchor1> <anchor2> ...` accepts multiple anchors. One `add` per mesh, not one per anchor.
 
-**4. Run independent `git mesh add` calls in parallel.** Meshes that don't share a mesh file can be edited concurrently (up to ~6 at a time). A mesh that fails to write won't affect others.
+**4. Run independent `git mesh add` calls in parallel.** Meshes that don't share a mesh file can be edited concurrently (up to ~6 at a time). A mesh that fails to write won't affect others. **Never parallelize two `git mesh add` calls against the *same* mesh name** — `add` has no locking around its read-modify-write of the mesh file, so two concurrent calls on one mesh can silently lose one call's anchors to a last-write-wins race (exit 0, no error, no warning). If two anchors need adding to one mesh, put them in a single `git mesh add <name> <anchor1> <anchor2> ...` call, not two concurrent ones.
 
 **5. Commit in bulk.** After every mesh file is edited and confirmed, persist them all in one commit:
 ```bash
@@ -110,6 +110,22 @@ Defaults for prose meshes:
 - **`ignore_whitespace = true`** in the mesh's `[config]` block is usually right for prose — Markdown reflow is whitespace-shaped within a paragraph. It does not help when reflow moves lines across paragraphs.
 
 When a prose `CHANGED` finding fires, run the same decision tree above. Editorial-only changes that preserve meaning re-anchor unchanged; a doc that now says something different needs the related side fixed first; a wholesale rewrite is the moment to ask whether the relationship survives at all.
+
+## Automating reconciliation: avoid the uncommitted re-anchor loop
+
+A hook or agent that runs `git mesh stale` on every turn and reacts to drift
+must commit the anchored source together with (or before) the mesh re-anchor —
+never re-anchor-and-stage-only while deliberately deferring the source commit
+to a human. `stale` has no notion of "already re-anchored to match the current
+worktree, just waiting on a source commit": every read mode (`--worktree`,
+`--staged`, `--head`) reports the same drifted status for as long as the
+source stays uncommitted, because whichever layer the anchor is repointed to,
+some other layer still disagrees. An automation that is only allowed to
+re-anchor and stage — not commit the source — cannot reach `FRESH` by
+construction, and will re-fire indefinitely on the same drift every time it
+runs. If an orchestration layer must gate on a human approving the source
+change before it's committed, gate the *hook itself* (e.g. skip re-running
+`stale` until the source lands), not the mesh reconciliation step.
 
 ## Resolver config
 

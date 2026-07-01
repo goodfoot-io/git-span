@@ -17,6 +17,18 @@
 - **`IoError`** — Local read failed for reasons unrelated to the above (permissions, missing file, etc.).
   Fix: investigate the specific error the resolver printed.
 
+**Known gap.** Of the six reasons above, `PromisorMissing` and `SparseExcluded`
+are documented behavior the resolver does not yet actually construct — there
+is no code path that emits either variant today. A partial-clone missing blob
+or a sparse-checkout-excluded anchored path both currently surface as
+`DELETED` instead, with `--fix` failing closed on them (nothing is corrupted),
+but the `DELETED` guidance is misleading: the content is not gone, it's just
+not materialized locally. If a `DELETED` finding's path is excluded by your
+sparse-checkout cone (`git sparse-checkout list`) or missing only its blob in a
+partial clone, treat it as this section's guidance (adjust the cone / fetch
+unfiltered) rather than `DELETED`'s. `LfsNotFetched`, `LfsNotInstalled`,
+`FilterFailed`, and `IoError` are all live and behave as documented.
+
 ## `--ignore-unavailable`
 
 Downgrades only `CONTENT_UNAVAILABLE` findings so they print without failing exit code. Real drift findings (`CHANGED`, `MOVED`, terminal statuses other than `CONTENT_UNAVAILABLE`) still fail as usual.
