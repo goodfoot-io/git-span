@@ -18,8 +18,10 @@ use crate::mesh_file::parse_address;
 use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{AnchorExtent, validate_add_target};
 use anyhow::{Context, Result};
+use fs4::fs_std::FileExt;
 use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::fmt::Write as FmtWrite;
+use std::fs::File;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,69 @@ pub(crate) fn hash_anchor_content(
 
     let fp = cheap_fingerprint_with_extent(&bytes, extent);
     Ok((RK64_ALGORITHM.to_string(), rk64_to_hex(fp)))
+}
+
+/// RAII guard that releases an advisory file lock and removes the lock
+/// file on drop.
+struct MeshLock {
+    _file: File,
+    path: std::path::PathBuf,
+}
+
+impl Drop for MeshLock {
+    fn drop(&mut self) {
+        // Best-effort cleanup — a stale lock file is harmless (another
+        // process can still acquire the lock on a new inode), but leaving
+        // it behind confuses empty-directory pruning.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Acquire an exclusive advisory file lock (`flock`) for a mesh file,
+/// protecting the read-modify-write critical section against concurrent
+/// writers. The lock is released and the lock-file path is cleaned up
+/// when the returned [`MeshLock`] is dropped.
+///
+/// The lock file lives alongside the mesh file in `<mesh_root>/`, named
+/// `.<basename>.lock`. The dot prefix keeps it invisible to all three
+/// [`MeshFileReader`] enumeration paths — the same convention
+/// [`write_worktree_mesh`] uses for its temp file.
+///
+/// Blocks until the lock is acquired. A crashed or killed process
+/// releases its locks automatically, so this never blocks forever.
+fn lock_mesh_file(repo: &gix::Repository, mesh_root: &str, name: &str) -> Result<MeshLock> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    let lock_dir = workdir.join(mesh_root);
+
+    // Derive the lock-file path from the mesh path. For "foo/bar", the
+    // mesh file is `<mesh_root>/foo/bar` and the lock file is
+    // `<mesh_root>/foo/.bar.lock`.
+    let mesh_path = lock_dir.join(name);
+    let lock_name = format!(
+        ".{}.lock",
+        mesh_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("mesh")
+    );
+    let lock_path = mesh_path.parent().map(|p| p.join(&lock_name)).unwrap_or_else(|| {
+        lock_dir.join(&lock_name)
+    });
+
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file = File::create(&lock_path)
+        .with_context(|| format!("failed to create lock file `{}`", lock_path.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("failed to acquire exclusive lock on `{}`", lock_path.display()))?;
+    Ok(MeshLock {
+        _file: file,
+        path: lock_path,
+    })
 }
 
 /// Build the absolute worktree path for a mesh file: `<workdir>/<mesh_root>/<name>`.
@@ -460,6 +525,13 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         )],
     })?;
 
+    // Acquire an exclusive advisory lock on the mesh file before reading
+    // to prevent concurrent read-modify-write races (lost-update).
+    let _add_lock = {
+        let _perf = crate::perf::span("add.lock-mesh");
+        lock_mesh_file(repo, mesh_root, &args.name)?
+    };
+
     // Read the current worktree mesh file.
     let mut mesh_file = {
         let _perf = crate::perf::span("add.read-current");
@@ -670,6 +742,13 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, mesh_root: &str) -> 
         }
     }
 
+    // Acquire an exclusive advisory lock on the mesh file before reading
+    // to prevent concurrent read-modify-write races.
+    let _remove_lock = {
+        let _perf = crate::perf::span("remove.lock-mesh");
+        lock_mesh_file(repo, mesh_root, &args.name)?
+    };
+
     // Read the current worktree mesh file.
     let mut mesh_file = {
         let _perf = crate::perf::span("remove.read-current");
@@ -770,6 +849,10 @@ fn print_why_written(name: &str) -> Result<i32> {
 }
 
 fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, mesh_root: &str) -> Result<()> {
+    // Acquire an exclusive advisory lock on the mesh file before reading
+    // to prevent concurrent read-modify-write races.
+    let _why_lock = lock_mesh_file(repo, mesh_root, name)?;
+
     let mut mesh_file = read_worktree_mesh(repo, mesh_root, name)?;
     mesh_file.why = body.to_string();
     write_worktree_mesh(repo, mesh_root, name, &mut mesh_file)?;

@@ -32,6 +32,7 @@ pub mod cli_stale_machine;
 pub mod cli_stale_renderers;
 pub mod cli_stale_whole_render;
 pub mod cli_tree;
+pub mod concurrent_add_race;
 pub mod configured_mesh_root_integration;
 pub mod doctor_deletion_tombstone;
 pub mod drift_label;
