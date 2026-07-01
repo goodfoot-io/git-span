@@ -13,7 +13,7 @@ For the broader rules governing wiki pages, see [[Wiki Organization]].
 
 ## Command Behavior Source Of Truth
 
-The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L35-L108). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-mesh/src/cli/mod.rs#L373-L425) in the same file routes parsed commands to their handlers.
+The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-mesh/src/cli/mod.rs](/packages/git-mesh/src/cli/mod.rs#L35-L108). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-mesh/src/cli/mod.rs#L379-L431) in the same file routes parsed commands to their handlers.
 
 The pre-classification logic that makes `git mesh <name>` route to `Commands::Show` rather than failing as an unknown subcommand lives in [packages/git-mesh/src/main.rs](/packages/git-mesh/src/main.rs#L50-L113). That block is what resolves the ambiguity between a mesh name positional and a subcommand name before Clap parses the arguments. The reserved subcommand set it checks against is defined in [packages/git-mesh/src/validation.rs](/packages/git-mesh/src/validation.rs#L7-L28).
 

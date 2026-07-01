@@ -2,6 +2,7 @@
 // rather than 51 separate crates auto-discovered by Cargo.
 pub mod add_gitignored_anchor_reject;
 pub mod add_index_loaded_once;
+pub mod add_replace;
 pub mod anchor_inside_mesh_root_reject;
 pub mod anchor_path_portability;
 pub mod batch_list_catalog_scan_amortized;

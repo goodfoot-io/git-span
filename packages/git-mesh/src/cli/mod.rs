@@ -369,6 +369,12 @@ pub struct AddArgs {
     /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
+
+    /// Replace an existing anchor. Removes `<OLD_ADDR>` and inserts the
+    /// new anchor(s) in a single atomic write. The old anchor must exist
+    /// in the mesh or the command fails-closed with no changes.
+    #[arg(long, value_name = "OLD_ADDR")]
+    pub replace: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

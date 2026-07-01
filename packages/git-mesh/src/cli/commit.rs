@@ -466,6 +466,39 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         read_worktree_mesh(repo, mesh_root, &args.name)?
     };
 
+    // If `--replace <old-addr>` is given, remove the old anchor from the
+    // mesh before adding new ones.  Both operations share one atomic write
+    // below — no intermediate state is visible.
+    let replaced_addr: Option<String> = match &args.replace {
+        Some(old_addr) => {
+            let _perf = crate::perf::span("add.remove-replaced");
+            let (path, extent) =
+                parse_address(old_addr).ok_or_else(|| invalid_anchor_error("add", old_addr))?;
+            let (start_line, end_line) = match extent {
+                AnchorExtent::LineRange { start, end } => (start, end),
+                AnchorExtent::WholeFile => (0, 0),
+            };
+            let before = mesh_file.anchors.len();
+            mesh_file.anchors.retain(|a| {
+                !(a.path == path && a.start_line == start_line && a.end_line == end_line)
+            });
+            if mesh_file.anchors.len() == before {
+                return Err(CliError {
+                    subcommand: "add",
+                    summary: format!("`{old_addr}` is not an anchor on `{}`.", args.name),
+                    what_happened: format!(
+                        "`{}` does not currently track that anchor, so there is nothing to replace.",
+                        args.name,
+                    ),
+                    next_steps: vec![NextStep::Bash(format!("git mesh {}", args.name))],
+                }
+                .into());
+            }
+            Some(addr_from_extent(&path, &extent))
+        }
+        None => None,
+    };
+
     // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
     let existing: std::collections::HashMap<(String, u32, u32), String> = mesh_file
         .anchors
@@ -555,8 +588,13 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
         .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
         .count();
     // Summary line.
+    let replaced_prefix = if replaced_addr.is_some() {
+        "Replaced 1 anchor and "
+    } else {
+        ""
+    };
     let mut summary = format!(
-        "Added {} anchor{}",
+        "{replaced_prefix}Added {} anchor{}",
         added_count,
         if added_count == 1 { "" } else { "s" },
     );
@@ -570,7 +608,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, mesh_root: &str) -> Result
     println!("{summary}");
     println!();
 
-    // Per-anchor lines.
+    // Per-anchor lines.  When `--replace` was used, emit a removal line
+    // first, followed by the per-new-anchor lines.
+    if let Some(ref old_addr) = replaced_addr {
+        println!("- removed via replace: `{}` `{}`", args.name, old_addr);
+    }
     for o in &outcomes {
         let line = match o.kind {
             AddOutcomeKind::Added => {
