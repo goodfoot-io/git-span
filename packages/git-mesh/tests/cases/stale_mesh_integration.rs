@@ -598,6 +598,78 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
     Ok(())
 }
 
+/// Line-range anchor orphaned by a directory-to-submodule promotion must
+/// surface as `AnchorStatus::Submodule`, not `Deleted`. The content still
+/// exists inside the submodule; the status signals that the anchored path
+/// is unreachable because a parent directory is a gitlink.
+#[test]
+fn line_range_anchor_inside_submodule_promoted_directory_reports_submodule() -> Result<()> {
+    let repo = TestRepo::new()?;
+
+    // Create a plain directory with a file, anchoring a line range inside it.
+    std::fs::create_dir_all(repo.path().join("lib"))?;
+    repo.write_file(
+        "lib/util.ts",
+        "export function add(a: number, b: number) {\n  return a + b;\n}\nexport function sub(a: number, b: number) {\n  return a - b;\n}\n",
+    )?;
+    repo.commit_all("init lib/util.ts")?;
+    repo.run_mesh(["add", "util/add", "lib/util.ts#L1-L3"])?;
+    repo.run_mesh(["why", "util/add", "-m", "add function contract"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh util/add"])?;
+
+    // Verify the anchor is initially fresh.
+    let out = repo.run_mesh(["stale", "util/add", "--format=porcelain"])?;
+    assert_eq!(out.status.code(), Some(0), "fresh mesh: exit 0");
+
+    // Promote the `lib` directory into a submodule.
+    let inner = tempfile::tempdir()?;
+    let inner_path = inner.keep();
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(&inner_path)
+        .output()?;
+    std::fs::write(inner_path.join("util.ts"), "submodule content\n")?;
+    std::process::Command::new("git")
+        .current_dir(&inner_path)
+        .args(["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"])
+        .output()?;
+    std::process::Command::new("git")
+        .current_dir(&inner_path)
+        .args([
+            "-c", "user.email=t@e", "-c", "user.name=T",
+            "-c", "commit.gpgsign=false", "commit", "-m", "inner",
+        ])
+        .output()?;
+    repo.run_git(["rm", "-r", "lib"])?;
+    repo.run_git([
+        "-c", "protocol.file.allow=always", "submodule", "add",
+        &inner_path.to_string_lossy(), "lib",
+    ])?;
+    repo.commit_all("promote lib to submodule")?;
+
+    // Stale must report SUBMODULE, not DELETED.
+    let out = repo.run_mesh(["stale", "util/add", "--format=porcelain"])?;
+    assert_eq!(out.status.code(), Some(1), "SUBMODULE is a stale status → exit 1");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("SUBMODULE"),
+        "expected SUBMODULE, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("DELETED"),
+        "must not report DELETED for a submodule-orphaned anchor"
+    );
+
+    // --fix must leave the mesh untouched (fail-closed).
+    let before = std::fs::read_to_string(repo.path().join(".mesh").join("util").join("add"))?;
+    let _fix = repo.run_mesh(["stale", "--fix"])?;
+    let after = std::fs::read_to_string(repo.path().join(".mesh").join("util").join("add"))?;
+    assert_eq!(before, after, "--fix must not touch a SUBMODULE anchor");
+
+    Ok(())
+}
+
 /// Plan bullet: Whole-file pin on a symlink: retarget → Changed. Line-anchor pin
 /// on a symlink is rejected at `git mesh add`.
 #[test]
