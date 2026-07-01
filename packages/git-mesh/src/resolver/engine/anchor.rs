@@ -719,7 +719,17 @@ pub(crate) fn resolve_anchor_inner(
             Some(oid) => {
                 let head_txt = match git::read_git_text(repo, &oid) {
                     Ok(t) => t,
-                    Err(_) if crate::git::promisor_active(repo) => String::new(),
+                    Err(_) if crate::git::promisor_active(repo) => {
+                        if wt_matches {
+                            return Ok(unavailable(
+                                anchor_id,
+                                &r,
+                                anchored,
+                                UnavailableReason::PromisorMissing,
+                            ));
+                        }
+                        String::new()
+                    },
                     Err(e) => return Err(e),
                 };
                 if head_txt.is_empty() {
@@ -743,7 +753,7 @@ pub(crate) fn resolve_anchor_inner(
                 anchor_sha: r.anchor_sha,
                 anchored,
                 current: Some(AnchorLocation {
-                    path: PathBuf::from(&r.path),
+                    path: PathBuf::from(t.path.clone()),
                     extent: AnchorExtent::LineRange {
                         start: anchored_start,
                         end: anchored_end,
