@@ -163,6 +163,19 @@ pub enum AnchorStatus {
     ContentUnavailable(UnavailableReason),
 }
 
+/// One candidate successor found by fuzzy similarity scanning.
+/// Populated on `AnchorResolved` and `Finding` when the exact-match
+/// relocation scan found nothing and the fuzzy fallback found candidates
+/// above the noise floor (0.50).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FuzzySuccessor {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    /// Jaccard similarity 0.0–1.0 of the anchored content vs. candidate.
+    pub confidence: f64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorLocation {
     pub path: PathBuf,
@@ -173,7 +186,7 @@ pub struct AnchorLocation {
     pub blob: Option<gix::ObjectId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AnchorResolved {
     pub anchor_id: String,
     pub anchor_sha: String,
@@ -197,6 +210,11 @@ pub struct AnchorResolved {
     /// commit that removed or renamed the path (`OrphanedAt`), or marks
     /// the anchor commit as unreachable from HEAD.
     pub locus: Option<DriftLocus>,
+    /// Fuzzy-similarity successors found during resolution. Populated only
+    /// when the exact-match relocation scan fails and the fuzzy fallback
+    /// finds candidates above the noise floor (0.50). Empty for all statuses
+    /// except `Moved` that came from the fuzzy fallback.
+    pub fuzzy_successors: Vec<FuzzySuccessor>,
 }
 
 /// Locus emitted by the HEAD-history walk in `resolver::attribution`.
@@ -212,7 +230,7 @@ pub enum DriftLocus {
     OrphanedAt(gix::ObjectId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MeshResolved {
     pub name: String,
     pub message: String,
@@ -579,7 +597,7 @@ pub struct Hunk {
 }
 
 /// A single drift observation produced by the engine.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub mesh: String,
     pub anchor_id: String,
@@ -593,6 +611,11 @@ pub struct Finding {
     pub current: Option<AnchorLocation>,
     /// Only when `source == Some(Head)`.
     pub locus: Option<DriftLocus>,
+    /// Fuzzy-similarity successors, populated when the exact-match
+    /// relocation scan failed and the fuzzy fallback found candidates
+    /// above the noise floor. Corresponds to
+    /// `AnchorResolved.fuzzy_successors`.
+    pub fuzzy_successors: Vec<FuzzySuccessor>,
 }
 
 /// Engine invocation options. See plan §B3/§B4.
@@ -601,7 +624,7 @@ pub struct Finding {
 /// `ignore_unavailable` downgrades `ContentUnavailable` findings to
 /// non-exit-driving per §B3. `--no-exit-code` is an output-rendering
 /// concern and lives on the CLI, not in this struct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineOptions {
     pub layers: LayerSet,
     pub ignore_unavailable: bool,
@@ -618,6 +641,10 @@ pub struct EngineOptions {
     /// Defaults to `true` for safety; the `stale` CLI flips it to
     /// `false` for plain oneline / porcelain / json output.
     pub needs_all_layers: bool,
+    /// Confidence threshold for auto-fix: only fuzzy-successor matches at or
+    /// above this threshold are automatically re-anchored by `--fix`.
+    /// Default 0.95. Overridable via `--fuzzy-threshold`.
+    pub fuzzy_threshold: f64,
 }
 
 impl EngineOptions {
@@ -628,6 +655,7 @@ impl EngineOptions {
             ignore_unavailable: false,
             since: None,
             needs_all_layers: true,
+            fuzzy_threshold: 0.95,
         }
     }
 
@@ -638,6 +666,7 @@ impl EngineOptions {
             ignore_unavailable: false,
             since: None,
             needs_all_layers: true,
+            fuzzy_threshold: 0.95,
         }
     }
 }

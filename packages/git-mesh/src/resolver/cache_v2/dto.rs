@@ -279,6 +279,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             source: d.source.map(Into::into),
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
             locus,
+            fuzzy_successors: vec![],
         })
     }
 }

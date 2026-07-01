@@ -127,6 +127,7 @@ fn run_stale_batch_porcelain(
         ignore_unavailable: args.ignore_unavailable,
         since: None,
         needs_all_layers: false,
+        fuzzy_threshold: args.fuzzy_threshold,
     };
 
     // Run the stale engine to get only drifted meshes.
@@ -293,6 +294,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         ignore_unavailable: args.ignore_unavailable,
         since,
         needs_all_layers,
+        fuzzy_threshold: args.fuzzy_threshold,
     };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
@@ -648,6 +650,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     source: None,
                     layer_sources: vec![],
                     locus: None,
+                    fuzzy_successors: vec![],
                 }],
                 follow_moves: false,
             });
@@ -765,7 +768,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             pre_fix_source_layers = Some(crate::resolver::build_source_layers(repo, options)?);
         }
         let apply_start = crate::perf::enabled().then(std::time::Instant::now);
-        let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root)?;
+        let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root, options.fuzzy_threshold)?;
         if let Some(start) = apply_start {
             crate::perf::record_fix_apply_ns(start.elapsed().as_nanos() as u64);
         }
@@ -938,6 +941,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
                                 locus: r.locus,
+                                fuzzy_successors: r.fuzzy_successors.clone(),
                             }]
                         } else {
                             // Emit one Finding per drifting layer.
@@ -955,6 +959,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                                     } else {
                                         None
                                     },
+                                    fuzzy_successors: r.fuzzy_successors.clone(),
                                 })
                                 .collect()
                         }
@@ -1293,7 +1298,13 @@ fn describe_finding_lower(f: &Finding) -> String {
             // mislabeled "in the working tree".
             if let Some(cur) = &f.current {
                 let dest = render_path_extent_plain(&cur.path, cur.extent);
-                format!("moved to {dest}")
+                // If this was a fuzzy match, append the confidence.
+                if let Some(best) = f.fuzzy_successors.first() {
+                    let pct = (best.confidence * 100.0).round() as u32;
+                    format!("moved to {dest} ({pct}% match)")
+                } else {
+                    format!("moved to {dest}")
+                }
             } else {
                 "moved".to_string()
             }
@@ -1422,6 +1433,7 @@ fn fresh_anchor_resolved(anchor_id: &str, a: &crate::types::Anchor) -> crate::ty
         source: None,
         layer_sources: Vec::new(),
         locus: None,
+        fuzzy_successors: vec![],
     }
 }
 
@@ -1454,6 +1466,7 @@ fn render_human(
                         anchored: r.anchored.clone(),
                         current: r.current.clone(),
                         locus: None,
+                        fuzzy_successors: vec![],
                     }]
                 } else {
                     // Collapse per-layer expansions to a single row per
@@ -1712,6 +1725,11 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
                 end_col,
             );
         }
+        // Fuzzy comment line: confidence of the best fuzzy successor.
+        if let Some(best) = f.fuzzy_successors.first() {
+            let pct = (best.confidence * 100.0).round() as u32;
+            println!("# fuzzy {pct}");
+        }
     }
 }
 
@@ -1773,10 +1791,15 @@ fn status_json(s: &AnchorStatus) -> Value {
 fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
     let moved_to = if f.status == AnchorStatus::Moved {
         f.current.as_ref().map(|loc| {
-            json!({
+            let mut obj = json!({
                 "path": loc.path.display().to_string(),
                 "extent": extent_json(loc.extent),
-            })
+            });
+            // Add confidence field for fuzzy matches.
+            if let Some(best) = f.fuzzy_successors.first() {
+                obj["confidence"] = json!(best.confidence);
+            }
+            obj
         })
     } else {
         None
@@ -1960,6 +1983,7 @@ mod tests {
             fix: false,
             batch: true,
             porcelain: true,
+            fuzzy_threshold: 0.95,
         }
     }
 
@@ -1995,6 +2019,7 @@ mod tests {
             ignore_unavailable: args.ignore_unavailable,
             since: None,
             needs_all_layers: false,
+            fuzzy_threshold: args.fuzzy_threshold,
         };
 
         let stale_resolved = stale_meshes(repo, mesh_root, options).unwrap();

@@ -42,7 +42,7 @@ struct OverlaySummaryPayload {
 
 /// In-memory overlay: the affected mesh set + their re-resolved
 /// reportable form.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DirtyOverlay {
     pub(crate) affected_meshes: Vec<String>,
     pub(crate) meshes: Vec<MeshResolved>,

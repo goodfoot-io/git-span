@@ -50,6 +50,7 @@ fn stale_meshes_succeeds_without_commit_graph() -> Result<()> {
             since: None,
             ignore_unavailable: false,
             needs_all_layers: false,
+            fuzzy_threshold: 0.95,
         },
     );
 

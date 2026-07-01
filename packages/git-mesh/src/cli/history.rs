@@ -571,6 +571,7 @@ fn build_current(
         ignore_unavailable: false,
         since: None,
         needs_all_layers: true,
+        fuzzy_threshold: 0.95,
     };
     let names = [mesh_name.to_string()];
     let resolved = crate::resolver::resolve_named_meshes(repo, mesh_root, &names, options)?;

@@ -691,6 +691,7 @@ fn fresh_anchor_resolved_from_mesh(
         source: None,
         layer_sources: Vec::new(),
         locus: None,
+        fuzzy_successors: vec![],
     }
 }
 
@@ -764,6 +765,7 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
                 ignore_unavailable: false,
                 since: None,
                 needs_all_layers: true,
+                fuzzy_threshold: 0.95,
             },
         )?;
         let mut out = Vec::with_capacity(resolved.len());
@@ -785,6 +787,7 @@ fn build_committed_meshes(repo: &gix::Repository, mesh_root: &str) -> Result<Vec
         ignore_unavailable: false,
         since: None,
         needs_all_layers: true,
+        fuzzy_threshold: 0.95,
     };
     let resolved = super::engine::resolve_named_meshes_parallel(
         repo,

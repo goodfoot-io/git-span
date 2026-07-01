@@ -9,12 +9,12 @@ use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
     submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
-    DriftSource, MeshConfig, SubmoduleKind, UnavailableReason,
+    DriftSource, FuzzySuccessor, MeshConfig, SubmoduleKind, UnavailableReason,
 };
 use crate::{Error, Result};
 use git_mesh_core::{
-    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, rk64_from_hex, rk64_to_hex,
-    RK64_ALGORITHM,
+    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_similarity, rk64_from_hex,
+    rk64_to_hex, RK64_ALGORITHM,
 };
 use git_mesh_core::{LineIndex, scan_indexed_rk64};
 use std::path::PathBuf;
@@ -280,6 +280,123 @@ fn find_relocated_range_in_paths(
     None
 }
 
+/// Max candidate files to scan per fuzzy-similarity invocation.
+const FUZZY_SCAN_MAX_CANDIDATES: usize = 50;
+
+/// Minimum Jaccard similarity for a fuzzy successor to be reported (noise
+/// floor). Matches below this are discarded.
+const FUZZY_NOISE_FLOOR: f64 = 0.50;
+
+/// Fuzzy-similarity fallback: scan candidate files for content similar to
+/// the anchored content. Returns candidates above the noise floor sorted by
+/// confidence descending.
+///
+/// Candidate paths come from the git index (tracked files excluding
+/// `exclude`), capped at [`FUZZY_SCAN_MAX_CANDIDATES`]. Each candidate file
+/// is read (from the session text memo or fresh) and every window of `span`
+/// lines is scored via [`jaccard_similarity`]. Returns results sorted by
+/// confidence descending, then by path for determinism.
+fn find_similar_ranges(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    deepest: DriftSource,
+    anchored_text: &str,
+    span: usize,
+    exclude: &str,
+) -> Vec<FuzzySuccessor> {
+    if span == 0 {
+        return vec![];
+    }
+
+    let Some(entries) = crate::git::index_entries(repo).ok() else {
+        return vec![];
+    };
+    let Ok(workdir) = crate::git::work_dir(repo) else {
+        return vec![];
+    };
+
+    // Warm the HEAD blob memo for the rename-target scan.
+    let head_sha = state.head_sha.clone();
+    state.session.warm_head_blob_memo(repo, &head_sha);
+
+    // Pre-normalize the anchored lines (once, reused for every window).
+    let anchored_bytes = anchored_text.as_bytes();
+    let extent = AnchorExtent::LineRange {
+        start: 1,
+        end: span as u32,
+    };
+    let mut results: Vec<FuzzySuccessor> = Vec::new();
+    let mut candidates_scanned = 0usize;
+
+    for en in entries {
+        if en.stage != gix::index::entry::Stage::Unconflicted {
+            continue;
+        }
+        if en.path == exclude || en.mode.is_commit() {
+            continue;
+        }
+        if candidates_scanned >= FUZZY_SCAN_MAX_CANDIDATES {
+            break;
+        }
+
+        // Read the candidate file text (reusing the session memo).
+        let memo_key = (en.path.clone(), deepest);
+        let text: String = match state.session.relocation_text_memo.get(&memo_key) {
+            Some(Some(t)) => t.clone(),
+            Some(None) => continue,
+            None => {
+                let read: Option<String> = match deepest {
+                    DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
+                        .ok()
+                        .map(|b| string_from_utf8_lossy(&b)),
+                    DriftSource::Index | DriftSource::Head => {
+                        Some(read_blob_text(repo, &en.oid.to_string()))
+                    }
+                };
+                state
+                    .session
+                    .relocation_text_memo
+                    .insert(memo_key, read.clone());
+                match read {
+                    Some(t) => t,
+                    None => continue,
+                }
+            }
+        };
+        candidates_scanned += 1;
+
+        // Slide a window over the candidate file's lines.
+        let candidate_lines: Vec<&str> = text.lines().collect();
+        if candidate_lines.len() < span {
+            continue;
+        }
+
+        let win_max = candidate_lines.len() - span;
+        for win_start in 0..=win_max {
+            let win_bytes = candidate_lines[win_start..win_start + span].join("\n");
+            let confidence = jaccard_similarity(anchored_bytes, win_bytes.as_bytes(), &extent);
+
+            if confidence >= FUZZY_NOISE_FLOOR {
+                results.push(FuzzySuccessor {
+                    path: en.path.clone(),
+                    start: (win_start as u32) + 1,
+                    end: (win_start as u32) + span as u32,
+                    confidence,
+                });
+            }
+        }
+    }
+
+    // Sort by confidence descending, then by path for determinism.
+    results.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    results
+}
+
 pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -323,6 +440,7 @@ pub(crate) fn resolve_anchor_inner(
             source: None,
             layer_sources: vec![],
             locus: None,
+            fuzzy_successors: vec![],
         });
     }
 
@@ -376,6 +494,7 @@ pub(crate) fn resolve_anchor_inner(
                 source: None,
                 layer_sources: vec![],
                 locus: None,
+                fuzzy_successors: vec![],
             });
         }
     }
@@ -574,6 +693,7 @@ pub(crate) fn resolve_anchor_inner(
     // slice is whitespace-equivalent to the genuine original anchored slice;
     // `false` everywhere else (Fresh, Moved, Deleted, current==None).
     let mut content_equivalent = false;
+    let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
 
     match current {
         None => {
@@ -675,29 +795,121 @@ pub(crate) fn resolve_anchor_inner(
                         current_loc = None;
                         layer_sources = vec![];
                     } else {
-                        status = AnchorStatus::Deleted;
-                        source = None;
-                        current_loc = None;
-                        layer_sources = vec![];
+                        // Fuzzy-similarity fallback: exact-match relocation found
+                        // nothing, so try a content-similarity scan over candidate
+                        // files. A candidate above the auto-fix threshold
+                        // (state.fuzzy_threshold, default 0.95) is treated as
+                        // MOVED; candidates below threshold are still reported in
+                        // fuzzy_successors for the operator to review.
+                        let fuzzy_found = find_similar_ranges(
+                            repo,
+                            state,
+                            deepest_layer,
+                            &anchored_text,
+                            span,
+                            &r.path,
+                        );
+                        let best_confidence = fuzzy_found
+                            .first()
+                            .map(|b| b.confidence)
+                            .unwrap_or(-1.0);
+                        if !fuzzy_found.is_empty() {
+                            fuzzy_successors = fuzzy_found;
+                        }
+                        if best_confidence >= state.fuzzy_threshold {
+                            status = AnchorStatus::Moved;
+                            source = Some(deepest_layer);
+                            layer_sources = vec![deepest_layer];
+                            // SAFETY: confidence >= threshold implies first exists.
+                            let best = fuzzy_successors.first().unwrap();
+                            current_loc = Some(AnchorLocation {
+                                path: PathBuf::from(&best.path),
+                                extent: AnchorExtent::LineRange {
+                                    start: best.start,
+                                    end: best.end,
+                                },
+                                blob: None,
+                            });
+                        } else {
+                            // Candidates exist below threshold (reported for
+                            // review) or none found — terminal Deleted either way.
+                            status = AnchorStatus::Deleted;
+                            source = None;
+                            current_loc = None;
+                            layer_sources = vec![];
+                        }
                     }
                 } else {
-                    // Removed only in the index/worktree (still at
-                    // HEAD). Keep the per-layer attribution from
-                    // `compute_layer_sources` so the drift-label
-                    // formatter renders "deleted in the index" vs
-                    // "deleted in the working tree" correctly; with
-                    // `current = None` it never reads "changed in …".
-                    status = AnchorStatus::Changed;
-                    source = computed_layer_sources
+                    // Fuzzy-similarity fallback: exact-match relocation found
+                    // nothing, so try a content-similarity scan over candidate
+                    // files. A candidate above the auto-fix threshold
+                    // (state.fuzzy_threshold, default 0.95) is treated as
+                    // MOVED; candidates below threshold are still reported in
+                    // fuzzy_successors for the operator to review.
+                    let fuzzy_found = find_similar_ranges(
+                        repo,
+                        state,
+                        deepest_layer,
+                        &anchored_text,
+                        span,
+                        &r.path,
+                    );
+                    let best_confidence = fuzzy_found
                         .first()
-                        .copied()
-                        .or(Some(deepest_layer));
-                    current_loc = None;
-                    layer_sources = if computed_layer_sources.is_empty() {
-                        vec![deepest_layer]
+                        .map(|b| b.confidence)
+                        .unwrap_or(-1.0);
+                    if !fuzzy_found.is_empty() {
+                        fuzzy_successors = fuzzy_found;
+                    }
+                    if best_confidence >= state.fuzzy_threshold {
+                        status = AnchorStatus::Moved;
+                        source = Some(deepest_layer);
+                        layer_sources = vec![deepest_layer];
+                        // SAFETY: confidence >= threshold implies first exists.
+                        let best = fuzzy_successors.first().unwrap();
+                        current_loc = Some(AnchorLocation {
+                            path: PathBuf::from(&best.path),
+                            extent: AnchorExtent::LineRange {
+                                start: best.start,
+                                end: best.end,
+                            },
+                            blob: None,
+                        });
+                    } else if !fuzzy_successors.is_empty() {
+                        // Candidates exist but none clear the auto-fix
+                        // threshold: report them for operator review but
+                        // keep the terminal status. Not head_path_absent,
+                        // so use Changed with layer attribution.
+                        status = AnchorStatus::Changed;
+                        source = computed_layer_sources
+                            .first()
+                            .copied()
+                            .or(Some(deepest_layer));
+                        current_loc = None;
+                        layer_sources = if computed_layer_sources.is_empty() {
+                            vec![deepest_layer]
+                        } else {
+                            computed_layer_sources
+                        };
                     } else {
-                        computed_layer_sources
-                    };
+                        // Removed only in the index/worktree (still at
+                        // HEAD). Keep the per-layer attribution from
+                        // `compute_layer_sources` so the drift-label
+                        // formatter renders "deleted in the index" vs
+                        // "deleted in the working tree" correctly; with
+                        // `current = None` it never reads "changed in …".
+                        status = AnchorStatus::Changed;
+                        source = computed_layer_sources
+                            .first()
+                            .copied()
+                            .or(Some(deepest_layer));
+                        current_loc = None;
+                        layer_sources = if computed_layer_sources.is_empty() {
+                            vec![deepest_layer]
+                        } else {
+                            computed_layer_sources
+                        };
+                    }
                 }
             } else if head_path_absent {
                 // Directory promoted to submodule: the anchored path
@@ -1082,6 +1294,7 @@ pub(crate) fn resolve_anchor_inner(
         source,
         layer_sources,
         locus: None,
+        fuzzy_successors,
     })
 }
 
@@ -1101,6 +1314,7 @@ fn unavailable(
         source: None,
         layer_sources: vec![],
         locus: None,
+        fuzzy_successors: vec![],
     }
 }
 
@@ -1163,6 +1377,7 @@ fn clean_head_fast_path(
         source: None,
         layer_sources: vec![],
         locus: None,
+        fuzzy_successors: vec![],
     }))
 }
 

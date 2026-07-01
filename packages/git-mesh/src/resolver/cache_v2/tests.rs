@@ -43,6 +43,7 @@ fn anchor(id: &str, status: AnchorStatus) -> AnchorResolved {
         source: None,
         layer_sources: Vec::new(),
         locus: None,
+        fuzzy_successors: vec![],
     }
 }
 

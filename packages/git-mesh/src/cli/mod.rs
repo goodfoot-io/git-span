@@ -346,6 +346,12 @@ pub struct StaleArgs {
     /// Machine-readable output for batch mode. Required by `--batch`.
     #[arg(long, conflicts_with = "format")]
     pub porcelain: bool,
+
+    /// Confidence threshold (0.0–1.0) for fuzzy-similarity auto-fix.
+    /// Only fuzzy matches at or above this threshold are automatically
+    /// re-anchored by `--fix`. Default 0.95.
+    #[arg(long, default_value = "0.95", value_name = "0.0-1.0")]
+    pub fuzzy_threshold: f64,
 }
 
 #[derive(Debug, clap::Args)]

@@ -559,6 +559,61 @@ pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 
     }
 }
 
+/// Compute line-level Jaccard similarity between two byte buffers.
+///
+/// Both buffers are split into lines, then each line is whitespace-normalized
+/// (split on whitespace and rejoined). The similarity is `|A ∩ B| / |A ∪ B|`
+/// over the multiset of normalized lines, returning 0.0–1.0.
+///
+/// The `extent_a` parameter indicates whether `a` was sourced from a
+/// whole-file or line-range anchor, allowing the caller to verify
+/// canonicalization; the similarity computation itself treats both buffers
+/// identically.
+pub fn jaccard_similarity(a: &[u8], b: &[u8], _extent_a: &AnchorExtent) -> f64 {
+    let lines_a = normalize_lines_jaccard(a);
+    let lines_b = normalize_lines_jaccard(b);
+
+    // Count frequencies in A using &str borrowing from lines_a / lines_b
+    let mut freq_a: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in &lines_a {
+        *freq_a.entry(line.as_str()).or_default() += 1;
+    }
+
+    let mut freq_b: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in &lines_b {
+        *freq_b.entry(line.as_str()).or_default() += 1;
+    }
+
+    let mut intersection = 0usize;
+    let mut union = 0usize;
+
+    for (line, &ca) in &freq_a {
+        let cb = freq_b.get(line).copied().unwrap_or(0);
+        intersection += ca.min(cb);
+        union += ca.max(cb);
+    }
+    for (_line, &cb) in &freq_b {
+        if !freq_a.contains_key(_line) {
+            union += cb;
+        }
+    }
+
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+/// Split `bytes` into lines, whitespace-normalize each line, and collect into
+/// `Vec<String>`. Used by [`jaccard_similarity`] and extracted so the anchored
+/// lines can be normalized once and cached across many candidate windows.
+fn normalize_lines_jaccard(bytes: &[u8]) -> Vec<String> {
+    let s = String::from_utf8_lossy(bytes);
+    s.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<&str>>().join(" "))
+        .collect()
+}
+
 /// Exhaustive, fail-closed match set — the **same** return contract as
 /// [`scan_indexed`] (all matches, same `near` ordering, ≥2 ⇒ ambiguous) —
 /// reached cheaply via a fingerprint prefilter.
@@ -1845,5 +1900,87 @@ mod tests {
         assert!(scan_indexed_prefiltered(&indexed, &hash, 0, extent, None).is_empty());
         assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
         assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
+    }
+
+    // --- Jaccard similarity ---
+
+    #[test]
+    fn jaccard_identical_content_scores_one() {
+        let text = b"fn hello() {\n    let x = 1;\n    return x;\n}\n";
+        let extent = AnchorExtent::LineRange { start: 1, end: 4 };
+        let score = jaccard_similarity(text, text, &extent);
+        assert!(
+            (score - 1.0).abs() < 1e-9,
+            "identical content should score 1.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn jaccard_disjoint_content_scores_zero() {
+        // Truly disjoint: no shared normalized lines at all.
+        let a = b"aaaaa bbbbb\nccccc ddddd\n";
+        let b = b"eeeee fffff\nggggg hhhhh\n";
+        let extent = AnchorExtent::LineRange { start: 1, end: 2 };
+        let score = jaccard_similarity(a, b, &extent);
+        assert!(
+            score < 1e-9,
+            "disjoint content should score 0.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn jaccard_typical_move_and_edit() {
+        // 3 lines, 1 changed (variable rename on line 2).
+        // Intersection: {"a()", "}"} → 2 lines.
+        // Union: {"a()", "x = 1;", "y = 1;", "}"} → 4 distinct lines.
+        // score = 2/4 = 0.50.
+        let a = b"a()\nx = 1;\n}\n";
+        let b = b"a()\ny = 1;\n}\n";
+        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
+        let score = jaccard_similarity(a, b, &extent);
+        assert!(
+            (score - 0.50).abs() < 0.01,
+            "1-line edit in 3 should score ~0.50, got {score}"
+        );
+    }
+
+    #[test]
+    fn jaccard_single_line_edge_case() {
+        let a = b"let x = 1;";
+        let b = b"let y = 2;";
+        let extent = AnchorExtent::LineRange { start: 1, end: 1 };
+        let score = jaccard_similarity(a, b, &extent);
+        // Single line, both lines differ
+        assert!(
+            (score - 0.0).abs() < 1e-9,
+            "single differing line should score 0.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn jaccard_empty_content_scores_zero() {
+        let a = b"";
+        let b = b"some content\n";
+        let extent = AnchorExtent::LineRange { start: 1, end: 1 };
+        let score = jaccard_similarity(a, b, &extent);
+        assert!(
+            (score - 0.0).abs() < 1e-9,
+            "empty content should score 0.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn jaccard_whitespace_differences_normalized() {
+        // Same tokens with only whitespace differences.
+        // Note: `( )` vs `()` differ because parentheses are not whitespace.
+        // Use function calls where only internal spaces differ.
+        let a = b"hello    world\nfoo  bar  baz\nend\n";
+        let b = b"hello world\nfoo bar baz\nend\n";
+        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
+        let score = jaccard_similarity(a, b, &extent);
+        assert!(
+            (score - 1.0).abs() < 1e-9,
+            "whitespace-only differences should score 1.0, got {score}"
+        );
     }
 }

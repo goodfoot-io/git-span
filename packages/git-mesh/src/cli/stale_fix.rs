@@ -491,6 +491,7 @@ pub(crate) fn apply_fix(
     repo: &gix::Repository,
     meshes: &[MeshResolved],
     mesh_root: &str,
+    fuzzy_threshold: f64,
 ) -> Result<FixResult> {
     let mut rewritten: HashSet<String> = HashSet::new();
     let mut rewritten_mesh_names: HashSet<String> = HashSet::new();
@@ -580,7 +581,15 @@ pub(crate) fn apply_fix(
             // meaning-changing edit is left drifting so the coupling
             // resurfaces. Everything else (Fresh, terminal) is skipped.
             let reanchor = match resolved.status {
-                AnchorStatus::Moved => true,
+                AnchorStatus::Moved => {
+                    // Exact-match MOVED (fuzzy_successors empty): always
+                    // re-anchor. Fuzzy MOVED: only re-anchor when confidence
+                    // meets or exceeds the threshold.
+                    match resolved.fuzzy_successors.first() {
+                        Some(best) => best.confidence >= fuzzy_threshold,
+                        None => true,
+                    }
+                }
                 AnchorStatus::Changed => resolved.content_equivalent,
                 _ => false,
             };

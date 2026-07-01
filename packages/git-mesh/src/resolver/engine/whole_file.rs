@@ -153,6 +153,7 @@ pub(crate) fn resolve_whole_file(
             layer_sources: vec![],
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
+            fuzzy_successors: vec![],
         });
     }
 
@@ -175,6 +176,7 @@ pub(crate) fn resolve_whole_file(
             layer_sources: vec![],
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
+            fuzzy_successors: vec![],
         });
     }
 
@@ -228,6 +230,7 @@ pub(crate) fn resolve_whole_file(
             layer_sources,
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
+            fuzzy_successors: vec![],
         });
     }
 
@@ -395,7 +398,9 @@ pub(crate) fn resolve_whole_file(
                         source,
                         layer_sources,
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-                                locus: None,
+                        acknowledged_by: None,
+                        locus: None,
+                        fuzzy_successors: vec![],
                     });
                 }
                 None if head_path_absent => {
@@ -424,7 +429,9 @@ pub(crate) fn resolve_whole_file(
                         source: None,
                         layer_sources: vec![],
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-                                locus: None,
+                        acknowledged_by: None,
+                        locus: None,
+                        fuzzy_successors: vec![],
                     });
                 }
                 None => {
@@ -447,7 +454,9 @@ pub(crate) fn resolve_whole_file(
                         source: Some(removed_layer),
                         layer_sources: vec![removed_layer],
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-                                locus: None,
+                        acknowledged_by: None,
+                        locus: None,
+                        fuzzy_successors: vec![],
                     });
                 }
             }
@@ -562,6 +571,7 @@ pub(crate) fn resolve_whole_file(
         layer_sources,
         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
         locus: None,
+        fuzzy_successors: vec![],
     })
 }
 

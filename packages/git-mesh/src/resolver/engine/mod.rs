@@ -43,6 +43,10 @@ pub(crate) struct EngineState {
     /// `cli/stale.rs` based on whether the output mode requires per-layer
     /// detail (`--patch`, `--stat`, the `human` renderer).
     pub(crate) needs_all_layers: bool,
+    /// Confidence threshold for fuzzy-similarity auto-fix. Matches at or
+    /// above this threshold are automatically re-anchored by `--fix`.
+    /// Default 0.95. Passed through from `EngineOptions`.
+    pub(crate) fuzzy_threshold: f64,
     /// Per-command memo for anchor commit reachability. This avoids
     /// scanning all refs once per anchor in large repositories.
     commit_reachability: HashMap<String, bool>,
@@ -74,6 +78,15 @@ pub(crate) struct SourceLayers {
 
 impl EngineState {
     pub(crate) fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
+        Self::new_with_fuzzy_threshold(repo, layers, needs_all_layers, 0.95)
+    }
+
+    pub(crate) fn new_with_fuzzy_threshold(
+        repo: &gix::Repository,
+        layers: LayerSet,
+        needs_all_layers: bool,
+        fuzzy_threshold: f64,
+    ) -> Result<Self> {
         let _perf = crate::perf::span("resolver.init-layers");
         let head_sha = crate::git::head_oid(repo)?;
         let layer_status = if layers.index || layers.worktree {
@@ -99,6 +112,7 @@ impl EngineState {
             custom_filters: HashMap::new(),
             session: ResolveSession::new(repo),
             needs_all_layers,
+            fuzzy_threshold,
             commit_reachability: HashMap::new(),
             filter_attrs: HashMap::new(),
         };
@@ -346,6 +360,7 @@ impl EngineState {
         layers: SourceLayers,
         repo: &gix::Repository,
         needs_all_layers: bool,
+        fuzzy_threshold: f64,
     ) -> Self {
         // Soundness: `apply_fix` writes only under `mesh_root`, and no anchor
         // path is under `mesh_root` (interior anchors are excised before the
@@ -372,6 +387,7 @@ impl EngineState {
             custom_filters: layers.custom_filters,
             session: ResolveSession::new(repo),
             needs_all_layers,
+            fuzzy_threshold,
             commit_reachability: HashMap::new(),
             filter_attrs: HashMap::new(),
         }
@@ -680,7 +696,12 @@ pub(crate) fn resolve_named_meshes_with_source_layers(
     options: EngineOptions,
     source_layers: SourceLayers,
 ) -> Result<NamedMeshResults> {
-    let state = EngineState::from_source_layers(source_layers, repo, options.needs_all_layers);
+    let state = EngineState::from_source_layers(
+        source_layers,
+        repo,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    );
     let (out, _) = resolve_named_meshes_with_state(repo, mesh_root, names, options, state, false)?;
     Ok(out)
 }
@@ -1434,6 +1455,7 @@ fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
         source: None,
         layer_sources: vec![],
         locus: None,
+        fuzzy_successors: vec![],
     }
 }
 
@@ -1462,6 +1484,7 @@ mod tests {
                     source: None,
                     layer_sources: vec![],
                     locus: None,
+                    fuzzy_successors: vec![],
                 })
                 .collect(),
             follow_moves: false,
