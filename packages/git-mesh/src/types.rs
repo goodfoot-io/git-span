@@ -799,7 +799,7 @@ pub fn validate_add_target(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SubmoduleKind {
+pub(crate) enum SubmoduleKind {
     /// The path is itself a submodule gitlink (mode 160000).
     Gitlink,
     /// The path lives inside a submodule (a parent in `path` is a
@@ -816,7 +816,7 @@ fn is_tracked_path(index_snapshot: &[crate::git::IndexEntrySnapshot], path: &str
     index_snapshot.iter().any(|e| e.path == path)
 }
 
-fn submodule_classify(
+pub(crate) fn submodule_classify(
     index_snapshot: &[crate::git::IndexEntrySnapshot],
     path: &str,
 ) -> SubmoduleKind {

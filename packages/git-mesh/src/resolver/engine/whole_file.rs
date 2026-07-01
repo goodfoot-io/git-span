@@ -6,7 +6,8 @@ use super::super::session::follow_path_to_head_shared;
 use super::EngineState;
 use crate::git;
 use crate::types::{
-    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
+    submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
+    DriftSource, MeshConfig, SubmoduleKind,
 };
 use crate::{Error, Result};
 use git_mesh_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
@@ -398,12 +399,28 @@ pub(crate) fn resolve_whole_file(
                     });
                 }
                 None if head_path_absent => {
+                    // Directory promoted to submodule: the anchored path
+                    // lives inside a gitlink and cannot resolve at HEAD.
+                    let is_submodule = git::index_entries(repo)
+                        .ok()
+                        .map(|entries| {
+                            !matches!(
+                                submodule_classify(&entries, &r.path),
+                                SubmoduleKind::None,
+                            )
+                        })
+                        .unwrap_or(false);
+                    let status = if is_submodule {
+                        AnchorStatus::Submodule
+                    } else {
+                        AnchorStatus::Deleted
+                    };
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
                         anchor_sha: r.anchor_sha,
                         anchored,
                         current: None,
-                        status: AnchorStatus::Deleted,
+                        status,
                         source: None,
                         layer_sources: vec![],
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix

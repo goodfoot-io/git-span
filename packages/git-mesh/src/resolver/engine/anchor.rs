@@ -8,8 +8,8 @@ use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
-    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
-    UnavailableReason,
+    submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
+    DriftSource, MeshConfig, SubmoduleKind, UnavailableReason,
 };
 use crate::{Error, Result};
 use git_mesh_core::{
@@ -658,10 +658,28 @@ pub(crate) fn resolve_anchor_inner(
                         blob: None,
                     });
                 } else if head_path_absent {
-                    status = AnchorStatus::Deleted;
-                    source = None;
-                    current_loc = None;
-                    layer_sources = vec![];
+                    // Directory promoted to submodule: the anchored path
+                    // lives inside a gitlink and cannot resolve at HEAD.
+                    let is_submodule = git::index_entries(repo)
+                        .ok()
+                        .map(|entries| {
+                            !matches!(
+                                submodule_classify(&entries, &r.path),
+                                SubmoduleKind::None,
+                            )
+                        })
+                        .unwrap_or(false);
+                    if is_submodule {
+                        status = AnchorStatus::Submodule;
+                        source = None;
+                        current_loc = None;
+                        layer_sources = vec![];
+                    } else {
+                        status = AnchorStatus::Deleted;
+                        source = None;
+                        current_loc = None;
+                        layer_sources = vec![];
+                    }
                 } else {
                     // Removed only in the index/worktree (still at
                     // HEAD). Keep the per-layer attribution from
@@ -682,10 +700,28 @@ pub(crate) fn resolve_anchor_inner(
                     };
                 }
             } else if head_path_absent {
-                status = AnchorStatus::Deleted;
-                source = None;
-                current_loc = None;
-                layer_sources = vec![];
+                // Directory promoted to submodule: the anchored path
+                // lives inside a gitlink and cannot resolve at HEAD.
+                let is_submodule = git::index_entries(repo)
+                    .ok()
+                    .map(|entries| {
+                        !matches!(
+                            submodule_classify(&entries, &r.path),
+                            SubmoduleKind::None,
+                        )
+                    })
+                    .unwrap_or(false);
+                if is_submodule {
+                    status = AnchorStatus::Submodule;
+                    source = None;
+                    current_loc = None;
+                    layer_sources = vec![];
+                } else {
+                    status = AnchorStatus::Deleted;
+                    source = None;
+                    current_loc = None;
+                    layer_sources = vec![];
+                }
             } else {
                 status = AnchorStatus::Changed;
                 source = computed_layer_sources
