@@ -1,9 +1,8 @@
 //! Resolver: compute staleness for anchors and meshes (§5).
 //!
 //! Layered HEAD/Index/Worktree resolution atop the HEAD-resolved
-//! location; the staged-mesh layer surfaces `PendingFinding`s and
-//! matches `acknowledged_by` by `anchor_id` (re-normalized on the sidecar
-//! freshness stamp).
+//! location. The file-backed model has no staging area: `add`/`remove`/`why`
+//! edit worktree mesh files directly.
 //!
 //! Module map:
 //!
@@ -11,8 +10,7 @@
 //! - `layers` — index/worktree diff parsing, normalized reads,
 //!   LFS + custom filter-process orchestration.
 //! - `engine` — top-level `resolve_anchor` / `resolve_mesh` /
-//!   `stale_meshes`, acknowledgment matching, the concurrency
-//!   SHA-trailer guard.
+//!   `stale_meshes`, the concurrency SHA-trailer guard.
 //! - [`attribution`] — `drift_locus` HEAD-source forward walk.
 
 #![allow(dead_code)]
@@ -28,7 +26,6 @@ pub(crate) mod session;
 pub(crate) mod timeline;
 pub(crate) mod walker;
 
-pub use engine::pending::build_pending_findings;
 pub use engine::{
     resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes, stale_meshes_with_trace,
 };

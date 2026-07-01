@@ -15,7 +15,6 @@
 
 use crate::mesh_file::MeshFile;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 // `AnchorExtent` is the pure anchor-extent shape; it lives in the gix-free
@@ -192,10 +191,6 @@ pub struct AnchorResolved {
     /// (Index → Worktree → Head). Empty for `Fresh` and terminal statuses.
     /// When non-empty, one `Finding` is emitted per entry at render time.
     pub layer_sources: Vec<DriftSource>,
-    /// Staged re-anchor that acknowledges this drift, matched by `anchor_id`.
-    /// Populated in slice 5: the engine compares re-normalized sidecar
-    /// bytes against the live content for the referenced anchor.
-    pub acknowledged_by: Option<StagedOpRef>,
     /// HEAD-history drift locus, populated only when
     /// `source == Some(Head)`. Carries the first commit on the path since
     /// the anchor that mutated the anchored byte range (`ChangedAt`), the
@@ -224,9 +219,6 @@ pub struct MeshResolved {
     /// One resolved entry per Anchor id in the Mesh, in the Mesh's
     /// stored order.
     pub anchors: Vec<AnchorResolved>,
-    /// Pending mesh ops surfaced from `.git/mesh/staging/<name>` when
-    /// `LayerSet.staged_mesh` is on. Empty otherwise.
-    pub pending: Vec<PendingFinding>,
     /// Committed `follow_moves` flag from the mesh config, carried through
     /// so post-resolution code (e.g. `git mesh stale` auto-follow precheck)
     /// does not have to reload the mesh file to read it.
@@ -430,8 +422,6 @@ pub enum Scope {
 }
 
 /// Layer that produced drift for a `Finding`. There is no `StagedMesh`
-/// variant: staged-mesh-layer disagreement rides on `PendingFinding::drift`
-/// (see plan §"Key types" comment).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriftSource {
     Head,
@@ -588,123 +578,6 @@ pub struct Hunk {
     pub new: (u32, u32),
 }
 
-/// Staged-op data carriers.
-///
-/// The file-backed model has no staging area: `add`/`remove`/`why` edit
-/// worktree mesh files directly and the worktree layer of the reader is
-/// the source of truth. These types are retained only as inert data
-/// shapes so the stale renderers and their JSON schema stay stable; the
-/// engine never produces them (`build_pending_findings` is empty).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedAdd {
-    pub line_number: u32,
-    pub path: String,
-    pub extent: AnchorExtent,
-    pub anchor: Option<String>,
-}
-
-impl StagedAdd {
-    pub fn start(&self) -> u32 {
-        match self.extent {
-            AnchorExtent::LineRange { start, .. } => start,
-            AnchorExtent::WholeFile => 0,
-        }
-    }
-    pub fn end(&self) -> u32 {
-        match self.extent {
-            AnchorExtent::LineRange { end, .. } => end,
-            AnchorExtent::WholeFile => 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedRemove {
-    pub path: String,
-    pub extent: AnchorExtent,
-}
-
-impl StagedRemove {
-    pub fn start(&self) -> u32 {
-        match self.extent {
-            AnchorExtent::LineRange { start, .. } => start,
-            AnchorExtent::WholeFile => 0,
-        }
-    }
-    pub fn end(&self) -> u32 {
-        match self.extent {
-            AnchorExtent::LineRange { end, .. } => end,
-            AnchorExtent::WholeFile => 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StagedConfig {
-    CopyDetection(CopyDetection),
-    IgnoreWhitespace(bool),
-    FollowMoves(bool),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StagedOp {
-    Add(StagedAdd),
-    Remove(StagedRemove),
-    Config(StagedConfig),
-    Why(String),
-}
-
-/// Back-pointer from a `Finding` to the staged mesh op that acknowledges
-/// its drift.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedOpRef {
-    pub mesh: String,
-    /// Index into `PendingState.mesh_ops`.
-    pub index: usize,
-}
-
-/// Drift observed on a staged mesh op's sidecar vs. the blob it claims
-/// to anchor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PendingDrift {
-    /// Sidecar bytes disagree with the claimed blob under current filters.
-    SidecarMismatch,
-    /// Sidecar bytes do not match the `content_sha256` recorded in the
-    /// sidecar's `.meta` file (or the meta is missing the hash). Slice 4:
-    /// distinguishes external tampering / corruption from the legitimate
-    /// "live blob diverged" `SidecarMismatch` case.
-    SidecarTampered,
-}
-
-/// Staged mesh operation surfaced by the engine alongside `Finding`s.
-///
-/// `Add` and `Remove` carry a possible `drift: Option<PendingDrift>`;
-/// `Why` and `ConfigChange` are informational and never drive exit
-/// code (see plan B3).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PendingFinding {
-    Add {
-        mesh: String,
-        anchor_id: String,
-        op: StagedAdd,
-        drift: Option<PendingDrift>,
-    },
-    Remove {
-        mesh: String,
-        anchor_id: String,
-        op: StagedRemove,
-        drift: Option<PendingDrift>,
-    },
-    Why {
-        mesh: String,
-        body: String,
-    },
-    ConfigChange {
-        mesh: String,
-        change: StagedConfig,
-    },
-}
-
 /// A single drift observation produced by the engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
@@ -718,27 +591,8 @@ pub struct Finding {
     /// `None` when `Deleted` / `Submodule` / `ContentUnavailable`;
     /// populated with best-effort path for `Conflict`.
     pub current: Option<AnchorLocation>,
-    /// Staged re-anchor matched by `anchor_id`.
-    pub acknowledged_by: Option<StagedOpRef>,
     /// Only when `source == Some(Head)`.
     pub locus: Option<DriftLocus>,
-}
-
-/// Index-layer entry for a single stage-0 path. Conflicted paths are
-/// omitted; the engine surfaces `MergeConflict` for those.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedIndexEntry {
-    pub blob: gix::ObjectId,
-    /// Hunks from `git diff-index --cached -U0 -M HEAD`.
-    pub hunks: Vec<Hunk>,
-}
-
-/// All "pending" inputs to the engine — the git index plus the on-disk
-/// `.git/mesh/staging/` operations.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PendingState {
-    pub index: HashMap<PathBuf, StagedIndexEntry>,
-    pub mesh_ops: Vec<StagedOp>,
 }
 
 /// Engine invocation options. See plan §B3/§B4.

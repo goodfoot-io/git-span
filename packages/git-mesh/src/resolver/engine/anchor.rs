@@ -322,7 +322,6 @@ pub(crate) fn resolve_anchor_inner(
             content_equivalent: false,
             source: None,
             layer_sources: vec![],
-            acknowledged_by: None,
             locus: None,
         });
     }
@@ -376,7 +375,6 @@ pub(crate) fn resolve_anchor_inner(
                 content_equivalent: false,
                 source: None,
                 layer_sources: vec![],
-                acknowledged_by: None,
                 locus: None,
             });
         }
@@ -969,7 +967,6 @@ pub(crate) fn resolve_anchor_inner(
         content_equivalent,
         source,
         layer_sources,
-        acknowledged_by: None,
         locus: None,
     })
 }
@@ -989,7 +986,6 @@ fn unavailable(
         content_equivalent: false,
         source: None,
         layer_sources: vec![],
-        acknowledged_by: None,
         locus: None,
     }
 }
@@ -1052,7 +1048,6 @@ fn clean_head_fast_path(
         content_equivalent: false,
         source: None,
         layer_sources: vec![],
-        acknowledged_by: None,
         locus: None,
     }))
 }

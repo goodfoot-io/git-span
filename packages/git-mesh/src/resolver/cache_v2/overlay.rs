@@ -196,7 +196,6 @@ pub(crate) fn load_overlay(
                 name: payload.mesh_name.clone(),
                 message: payload.mesh_message.clone(),
                 anchors: Vec::new(),
-                pending: Vec::new(),
                 follow_moves: payload.follow_moves,
             })
             .anchors

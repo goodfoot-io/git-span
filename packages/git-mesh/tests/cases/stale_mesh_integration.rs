@@ -12,8 +12,8 @@ use crate::support;
 
 use anyhow::Result;
 use git_mesh::types::{
-    AnchorExtent, AnchorStatus, ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift,
-    Scope, UnavailableReason,
+    AnchorExtent, AnchorStatus, ContentRef, DriftSource, EngineOptions, LayerSet, Scope,
+    UnavailableReason,
 };
 use git_mesh::{resolve_anchor, resolve_mesh, stale_meshes};
 use std::path::PathBuf;
@@ -242,7 +242,7 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: `git mesh add` matching sidecar → acknowledged_by populated, exit 0.
+/// Plan bullet: `git mesh add` re-anchors matching content → exit 0.
 #[test]
 
 fn git_mesh_add_matching_sidecar_acknowledges_exit_zero() -> Result<()> {
@@ -969,7 +969,6 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
     assert!(!committed.worktree && !committed.index && !committed.staged_mesh);
     let _scope = Scope::All;
     let _src = DriftSource::Worktree;
-    let _drift = PendingDrift::SidecarMismatch;
     let _ref = ContentRef::WorktreeFile(PathBuf::from("file1.txt"));
     // Actually invoking read_normalized() would hit todo!(); we only
     // need this to type-check. Keep as a compile-time guard.

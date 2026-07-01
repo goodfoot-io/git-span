@@ -200,7 +200,6 @@ pub(crate) fn resolve_lfs_anchor(
             source,
             layer_sources,
             content_equivalent: false,
-            acknowledged_by: None,
             locus: None,
         };
     }
@@ -262,7 +261,6 @@ pub(crate) fn resolve_lfs_anchor(
             source,
             layer_sources,
             content_equivalent: false,
-            acknowledged_by: None,
             locus: None,
         };
     }
@@ -325,7 +323,6 @@ pub(crate) fn resolve_lfs_anchor(
         source,
         layer_sources,
         content_equivalent: false,
-        acknowledged_by: None,
         locus: None,
     }
 }
@@ -345,7 +342,6 @@ fn lfs_terminal(
         source: None,
         layer_sources: vec![],
         content_equivalent: false,
-        acknowledged_by: None,
         locus: None,
     }
 }

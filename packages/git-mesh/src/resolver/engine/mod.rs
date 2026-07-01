@@ -1,8 +1,7 @@
 //! Engine orchestration: layer setup, per-anchor resolution, mesh-wide
-//! resolution, acknowledgment + pending wiring, concurrency guard.
+//! resolution, concurrency guard.
 
 pub(crate) mod anchor;
-pub mod pending;
 pub(crate) mod whole_file;
 
 use super::layers::{
@@ -15,7 +14,7 @@ use super::session::ResolveSession;
 use crate::mesh_file_reader::MeshFileReader;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
-    MeshResolved, PendingFinding, mesh_from_file,
+    MeshResolved, mesh_from_file,
 };
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
@@ -23,7 +22,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anchor::resolve_anchor_inner;
-use pending::{apply_acknowledgment, build_pending_findings};
 
 /// Engine-level state cached for one `stale` run.
 pub(crate) struct EngineState {
@@ -405,15 +403,12 @@ pub fn resolve_anchor(
     state
         .session
         .build_reverse_walk(repo, &[(mesh_name.to_string(), mesh.clone())])?;
-    let mut out = match mesh.anchors.into_iter().find(|(id, _)| id == anchor_id) {
+    let out = match mesh.anchors.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => {
             resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?
         }
         None => deleted_placeholder(anchor_id),
     };
-    if state.layers.staged_mesh {
-        apply_acknowledgment(repo, mesh_name, &mut out);
-    }
     state.finish(repo);
     Ok(out)
 }
@@ -569,35 +564,10 @@ fn resolve_loaded_mesh_with_state(
             since_oid
         ));
     }
-    let pending = if state.layers.staged_mesh {
-        let _perf = crate::perf::span("resolver.resolve-pending");
-        {
-            for r in &mut anchors {
-                apply_acknowledgment(repo, &mesh.name, r);
-            }
-            let acked_indices: std::collections::HashSet<usize> = anchors
-                .iter()
-                .filter_map(|r| r.acknowledged_by.as_ref().map(|s| s.index))
-                .collect();
-            let mut p = build_pending_findings(repo, &mesh.name);
-            for f in &mut p {
-                if let PendingFinding::Add { op, drift, .. } = f {
-                    let idx = (op.line_number as usize).saturating_sub(1);
-                    if acked_indices.contains(&idx) {
-                        *drift = None;
-                    }
-                }
-            }
-            p
-        }
-    } else {
-        Vec::new()
-    };
     Ok(MeshResolved {
         name: mesh.name,
         message: mesh.message,
         anchors,
-        pending,
         follow_moves: mesh.config.follow_moves,
     })
 }
@@ -664,7 +634,7 @@ fn emit_timeline_cache_counters(session: &super::session::ResolveSession) {
 }
 
 pub(crate) fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
-    m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
+    m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
 }
 
 /// Resolve a small caller-provided list of mesh names without scanning all
@@ -1463,7 +1433,6 @@ fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
         content_equivalent: false,
         source: None,
         layer_sources: vec![],
-        acknowledged_by: None,
         locus: None,
     }
 }
@@ -1492,11 +1461,9 @@ mod tests {
                     content_equivalent: false,
                     source: None,
                     layer_sources: vec![],
-                    acknowledged_by: None,
                     locus: None,
                 })
                 .collect(),
-            pending: vec![],
             follow_moves: false,
         }
     }

@@ -584,7 +584,6 @@ fn build_clean_whole_result(
             name: name.clone(),
             message,
             anchors: rebuilt,
-            pending: resolved.map(|m| m.pending.clone()).unwrap_or_default(),
             follow_moves,
         });
     }
@@ -665,7 +664,6 @@ fn build_committed_render_base(
             name: name.clone(),
             message: record.message.clone(),
             anchors: rebuilt,
-            pending: Vec::new(),
             follow_moves: record.config.follow_moves,
         });
     }
@@ -692,12 +690,11 @@ fn fresh_anchor_resolved_from_mesh(
         content_equivalent: false,
         source: None,
         layer_sources: Vec::new(),
-        acknowledged_by: None,
         locus: None,
     }
 }
 
-/// Keep only meshes that have a non-`Fresh` anchor or a pending op —
+/// Keep only meshes that have a non-`Fresh` anchor.
 /// the same predicate the engine uses for stale discovery output.
 fn reportable(meshes: Vec<MeshResolved>) -> Vec<MeshResolved> {
     meshes
@@ -706,7 +703,6 @@ fn reportable(meshes: Vec<MeshResolved>) -> Vec<MeshResolved> {
             m.anchors
                 .iter()
                 .any(|a| a.status != crate::types::AnchorStatus::Fresh)
-                || !m.pending.is_empty()
         })
         .collect()
 }

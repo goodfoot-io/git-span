@@ -16,7 +16,7 @@
 
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource,
-    MeshResolved, StagedOpRef, UnavailableReason,
+    MeshResolved, UnavailableReason,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -229,30 +229,6 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct StagedOpRefDto {
-    pub(crate) mesh: String,
-    pub(crate) index: u64,
-}
-
-impl From<&StagedOpRef> for StagedOpRefDto {
-    fn from(r: &StagedOpRef) -> Self {
-        Self {
-            mesh: r.mesh.clone(),
-            index: r.index as u64,
-        }
-    }
-}
-
-impl From<StagedOpRefDto> for StagedOpRef {
-    fn from(r: StagedOpRefDto) -> Self {
-        Self {
-            mesh: r.mesh,
-            index: r.index as usize,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AnchorResolvedDto {
     pub(crate) anchor_id: String,
     pub(crate) anchor_sha: String,
@@ -263,7 +239,6 @@ pub(crate) struct AnchorResolvedDto {
     pub(crate) content_equivalent: bool,
     pub(crate) source: Option<DriftSourceDto>,
     pub(crate) layer_sources: Vec<DriftSourceDto>,
-    pub(crate) acknowledged_by: Option<StagedOpRefDto>,
     pub(crate) locus: Option<DriftLocusDto>,
 }
 
@@ -278,7 +253,6 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
             content_equivalent: a.content_equivalent,
             source: a.source.map(Into::into),
             layer_sources: a.layer_sources.iter().copied().map(Into::into).collect(),
-            acknowledged_by: a.acknowledged_by.as_ref().map(Into::into),
             locus: a.locus.map(Into::into),
         }
     }
@@ -304,16 +278,13 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             content_equivalent: d.content_equivalent,
             source: d.source.map(Into::into),
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
-            acknowledged_by: d.acknowledged_by.map(Into::into),
             locus,
         })
     }
 }
 
-/// Persisted shape of `MeshResolved`. `pending` is intentionally always
-/// empty in the persisted form: the persistent baseline captures the
-/// committed (HEAD-only) resolution, and pending findings derive from
-/// the live `.git/mesh/staging/` directory at render time.
+/// Persisted shape of `MeshResolved`. The persistent baseline captures the
+/// committed (HEAD-only) resolution.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct MeshResolvedDto {
     pub(crate) format_version: u8,
@@ -352,7 +323,6 @@ impl TryFrom<MeshResolvedDto> for MeshResolved {
             name: d.name,
             message: d.message,
             anchors,
-            pending: Vec::new(),
             follow_moves: d.follow_moves,
         })
     }

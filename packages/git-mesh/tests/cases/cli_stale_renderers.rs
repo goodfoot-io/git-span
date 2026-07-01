@@ -1,7 +1,7 @@
 //! Slice 8 renderer × layer-combination smoke tests.
 //!
 //! Per `docs/stale-layers-slices.md` slice 8: the renderers consume
-//! `Finding` / `PendingFinding` end-to-end. These tests exercise each
+//! `Finding` end-to-end. These tests exercise each
 //! `--format` against representative layer toggles to catch shape
 //! regressions cheaply. `tests/cli_stale_human.rs` and
 //! `tests/cli_stale_machine.rs` continue to host older / phase-pending
@@ -65,7 +65,6 @@ fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     let v: Value = serde_json::from_slice(&out.stdout)?;
     assert_eq!(v["schema_version"], 2);
     assert!(v["findings"].is_array(), "envelope: {v}");
-    assert!(v["pending"].is_array(), "envelope: {v}");
     let first = &v["findings"][0];
     assert_eq!(first["status"]["code"], "CHANGED");
     assert_eq!(first["mesh"], "m");

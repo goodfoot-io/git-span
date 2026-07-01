@@ -2,14 +2,13 @@
 //!
 //! Slice 8 of the layered-stale rewrite (see
 //! `docs/stale-layers-plan.md` §"Renderers"). Renderers consume
-//! `Finding` / `PendingFinding` end-to-end via a thin adapter that maps
-//! the engine's `AnchorResolved` + `MeshResolved.pending` into the
-//! plan's "Key types" shape.
+//! `Finding` end-to-end via a thin adapter that maps the engine's
+//! `AnchorResolved` into the plan's "Key types" shape.
 
 use crate::cli::show::BatchFilter;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    SourceLayers, WholeResult, build_pending_findings, mesh_is_reportable_in_stale_discovery,
+    SourceLayers, WholeResult, mesh_is_reportable_in_stale_discovery,
     resolve_named_meshes, resolve_named_meshes_retaining_source_layers,
     resolve_named_meshes_with_source_layers, sort_meshes_by_anchor_path, stale_meshes,
     stale_meshes_retaining_source_layers, stale_meshes_with_trace,
@@ -17,8 +16,7 @@ use crate::resolver::{
 use std::collections::HashMap;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
-    LayerSet, MeshResolved, PendingDrift, PendingFinding, StagedAdd, StagedConfig, StagedOpRef,
-    StagedRemove, UnavailableReason,
+    LayerSet, MeshResolved, UnavailableReason,
 };
 use crate::validation::validate_mesh_name_shape;
 use anyhow::Result;
@@ -419,12 +417,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     // Not a committed mesh; check for staging-only mesh before
                     // falling through to path-index lookup. Matches the original
                     // single-mesh path's MeshNotFound → staging check.
-                    if layers.staged_mesh && !build_pending_findings(repo, arg).is_empty() {
-                        if seen.insert(arg.clone()) {
-                            mesh_names.push(arg.clone());
-                        }
-                        found = true;
-                    }
                 }
             }
 
@@ -503,38 +495,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         for (_name, result) in resolved {
             match result {
                 Ok(mesh) => meshes.push(mesh),
-                Err(crate::Error::MeshNotFound(_)) => {
-                    // Staging-only mesh; step 6 will check for pending entries.
-                }
+                Err(crate::Error::MeshNotFound(_)) => {}
                 Err(e) => return Err(e.into()),
-            }
-        }
-
-        // Step 6: surface staging-only meshes for names that had no committed ref.
-        if layers.staged_mesh {
-            let _perf = crate::perf::span("stale.resolve-staging-only");
-            for name in &mesh_names {
-                if meshes.iter().any(|m| m.name == *name) {
-                    continue;
-                }
-                let pending = build_pending_findings(repo, name);
-                if !pending.is_empty() {
-                    meshes.push(MeshResolved {
-                        name: name.clone(),
-                        message: String::new(),
-                        anchors: Vec::new(),
-                        pending,
-                        follow_moves: false,
-                    });
-                }
             }
         }
 
         // Every scoped query is a drift report: clean meshes are filtered
         // out across all formats, whether they were resolved by path/glob or
         // named explicitly. A scope merely selects which meshes to check — if
-        // none of a mesh's anchors drifted and it has no pending entries, it
-        // is clean and must not surface, in Human or in JSON/porcelain (where
+        // none of a mesh's anchors drifted, it is clean and must not surface,
+        // in Human or in JSON/porcelain (where
         // `render_json` names `meshes.first()`). A clean scope prints the
         // "0 stale" summary instead (see the no-drift block below).
         // Conflict-injected meshes are added after this block and carry a
@@ -567,7 +537,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         // arg like `src/lib.rs` contributes the mesh(es) that anchor it.
         scoped_mesh_names = Some(mesh_names.iter().cloned().collect());
         meshes.retain(|m| {
-            m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
+            m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
         });
 
         meshes
@@ -677,10 +647,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     content_equivalent: false,
                     source: None,
                     layer_sources: vec![],
-                    acknowledged_by: None,
                     locus: None,
                 }],
-                pending: Vec::new(),
                 follow_moves: false,
             });
         }
@@ -768,7 +736,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                     name,
                     message: mesh.message,
                     anchors,
-                    pending: Vec::new(),
                     follow_moves: mesh.config.follow_moves,
                 });
             }
@@ -892,16 +859,15 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     {
         let _perf = crate::perf::span("stale.backfill-fresh-anchors");
         // Drift-report contract: a scan shows a mesh iff it has a non-Fresh
-        // anchor or a drifting pending entry. The all-layers discovery path
-        // (`needs_all_layers`, Human-only) can return meshes that re-resolve
-        // fully Fresh — the machine renderers never show them because they
+        // anchor. The all-layers discovery path (`needs_all_layers`,
+        // Human-only) can return meshes that re-resolve fully Fresh — the
+        // machine renderers never show them because they
         // emit drift findings only. Enforce the same predicate here so a
         // backfilled fresh mesh cannot leak into the human scan.
         meshes.retain(|m| {
             m.anchors
                 .iter()
                 .any(|a| a.status != AnchorStatus::Fresh)
-                || !m.pending.is_empty()
         });
         // Reuse the shared post-region corpus (fresh post-`apply_fix` on the
         // `--fix` path; the unchanged pre-fix corpus on the plain path) instead
@@ -944,24 +910,23 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     }
 
     // Adapter: engine output (`MeshResolved`) → renderer input
-    // (`Finding` / `PendingFinding`). The adapter is a pure data shape
-    // transform; semantics live in the engine.
+    // (`Finding`). The adapter is a pure data shape transform; semantics
+    // live in the engine.
     //
     // Per-layer expansion: each non-Fresh anchor emits one `Finding` per
     // drifting layer in `layer_sources` (shallow-to-deep: I → W → H).
     // Terminal statuses (Deleted, Conflict, Submodule,
     // ContentUnavailable) have an empty `layer_sources` and emit exactly
     // one row with `source=None`. MOVED also emits one row.
-    let (findings, pending): (Vec<Finding>, Vec<PendingFinding>) = {
+    let findings: Vec<Finding> = {
         let _perf = crate::perf::span("stale.build-findings");
-        let findings: Vec<Finding> = meshes
+        meshes
             .iter()
             .flat_map(|m| {
                 m.anchors
                     .iter()
                     .filter(|r| r.status != AnchorStatus::Fresh)
                     .flat_map(|r| {
-                        let ack = r.acknowledged_by.clone();
                         if r.layer_sources.is_empty() {
                             // Terminal status or MOVED with no tracked layer:
                             // emit one row with the stored source.
@@ -972,7 +937,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                                 source: r.source,
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
-                                acknowledged_by: ack,
                                 locus: r.locus,
                             }]
                         } else {
@@ -986,7 +950,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                                     source: Some(src),
                                     anchored: r.anchored.clone(),
                                     current: r.current.clone(),
-                                    acknowledged_by: ack.clone(),
                                     locus: if src == DriftSource::Head {
                                         r.locus
                                     } else {
@@ -997,24 +960,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                         }
                     })
             })
-            .collect();
-        let pending: Vec<PendingFinding> = meshes
-            .iter()
-            .flat_map(|m| m.pending.iter().cloned())
-            .collect();
-        (findings, pending)
+            .collect()
     };
 
-    // Plan §B3: an acknowledged finding does not drive exit code; nor
-    // does a `ContentUnavailable` finding under `--ignore-unavailable`.
-    // Followed Moved findings are also subtracted: we just rewrote them so
-    // they are logically Fresh for this invocation's exit code.
-    let unacked_findings: usize = findings
+    // Exit-code computation: findings that are `ContentUnavailable` under
+    // `--ignore-unavailable` do not drive exit code. Followed Moved
+    // findings are also subtracted: we just rewrote them so they are
+    // logically Fresh for this invocation's exit code.
+    let stale_findings: usize = findings
         .iter()
         .filter(|f| {
-            if f.acknowledged_by.is_some() {
-                return false;
-            }
             if args.ignore_unavailable && matches!(f.status, AnchorStatus::ContentUnavailable(_)) {
                 return false;
             }
@@ -1022,19 +977,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 return false;
             }
             true
-        })
-        .count();
-    // Pending ops with sidecar drift (mismatch or tampered) drive exit code:
-    // a tampered or mismatched sidecar is a real integrity problem callers
-    // must surface (`<fail-closed>`). Clean pending ops do not.
-    let drifting_pending: usize = pending
-        .iter()
-        .filter(|p| {
-            matches!(
-                p,
-                PendingFinding::Add { drift: Some(_), .. }
-                    | PendingFinding::Remove { drift: Some(_), .. }
-            )
         })
         .count();
     // Interior-anchor surfacing (CARD AC4: surfaced at stale/validate time).
@@ -1084,7 +1026,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         eprintln!();
     }
 
-    let stale_count = unacked_findings + drifting_pending;
+    let stale_count = stale_findings;
 
     match args.format {
         StaleFormat::Human => {
@@ -1093,7 +1035,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 repo,
                 &meshes,
                 &findings,
-                &pending,
                 &followed_ids,
                 HumanRenderOptions {
                     oneline: args.oneline,
@@ -1136,7 +1077,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         }
         StaleFormat::Json => {
             let _perf = crate::perf::span("stale.render-json");
-            render_json(&meshes, &findings, &pending, &followed_ids)?;
+            render_json(&meshes, &findings, &followed_ids)?;
         }
         StaleFormat::Junit => {
             let _perf = crate::perf::span("stale.render-junit");
@@ -1480,7 +1421,6 @@ fn fresh_anchor_resolved(anchor_id: &str, a: &crate::types::Anchor) -> crate::ty
         content_equivalent: false,
         source: None,
         layer_sources: Vec::new(),
-        acknowledged_by: None,
         locus: None,
     }
 }
@@ -1489,15 +1429,14 @@ fn render_human(
     repo: &gix::Repository,
     meshes: &[MeshResolved],
     findings: &[Finding],
-    pending: &[PendingFinding],
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
     mesh_anchor_totals: &std::collections::HashMap<String, usize>,
 ) -> Result<bool> {
     // named_lookup: true when positional args were given (named lookup mode).
-    // For workspace scan: suppress clean meshes and pending bullets.
-    // For named lookup: always render block, append pending bullets.
-    let is_named_lookup = options.named_lookup;
+    // For workspace scan: suppress clean meshes.
+    // For named lookup: always render block.
+    let _is_named_lookup = options.named_lookup;
 
     let mut printed_any_mesh = false;
     for m in meshes.iter() {
@@ -1514,7 +1453,6 @@ fn render_human(
                         source: None,
                         anchored: r.anchored.clone(),
                         current: r.current.clone(),
-                        acknowledged_by: r.acknowledged_by.clone(),
                         locus: None,
                     }]
                 } else {
@@ -1536,10 +1474,6 @@ fn render_human(
             })
             .collect();
         let mesh_findings: Vec<&Finding> = mesh_findings_owned.iter().collect();
-        let mesh_pending: Vec<&PendingFinding> = pending
-            .iter()
-            .filter(|p| pending_mesh(p) == m.name.as_str())
-            .collect();
 
         let mesh_stale = mesh_findings
             .iter()
@@ -1617,29 +1551,13 @@ fn render_human(
 
         // --- DEFAULT UNIFIED BLOCK OUTPUT ---
         // Shape: ## <mesh-name>
-        //        - <plain-path-extent>[ — <status>][ — auto-updated][ — acknowledged]
+        //        - <plain-path-extent>[ — <status>][ — auto-updated]
         //        (blank line)
         //        <why text>
 
         println!("## {}", m.name);
 
-        // Named lookup only: count pending add/remove bullets.
-        let pending_add_remove: Vec<&PendingFinding> = if is_named_lookup {
-            mesh_pending
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p,
-                        PendingFinding::Add { .. } | PendingFinding::Remove { .. }
-                    )
-                })
-                .copied()
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        if m.anchors.is_empty() && pending_add_remove.is_empty() {
+        if m.anchors.is_empty() {
             println!("*Mesh has no anchors*");
         } else {
             // Committed anchors in stored order.
@@ -1651,12 +1569,7 @@ fn render_human(
                     let is_followed = followed_ids.contains(&f.anchor_id);
                     let desc = describe_finding_lower(f);
                     let auto_tag = if is_followed { " — auto-updated" } else { "" };
-                    let ack_tag = if f.acknowledged_by.is_some() {
-                        " — acknowledged"
-                    } else {
-                        ""
-                    };
-                    println!("- {addr} — {desc}{auto_tag}{ack_tag}");
+                    println!("- {addr} — {desc}{auto_tag}");
                     if options.patch {
                         let diff = render_patch(repo, f);
                         if !diff.trim().is_empty() {
@@ -1666,24 +1579,6 @@ fn render_human(
                 }
             }
 
-            // Named lookup only: append pending bullets after committed anchors.
-            for p in &pending_add_remove {
-                match p {
-                    PendingFinding::Add { op, drift, .. } => {
-                        let path = std::path::Path::new(&op.path);
-                        let addr = render_path_extent_plain(path, op.extent);
-                        let suffix = pending_drift_suffix(drift.as_ref());
-                        println!("- {addr} — pending add{suffix}");
-                    }
-                    PendingFinding::Remove { op, drift, .. } => {
-                        let path = std::path::Path::new(&op.path);
-                        let addr = render_path_extent_plain(path, op.extent);
-                        let suffix = pending_drift_suffix(drift.as_ref());
-                        println!("- {addr} — pending remove{suffix}");
-                    }
-                    _ => {}
-                }
-            }
         }
 
         // Why text: print verbatim after a blank line if non-empty.
@@ -1780,23 +1675,6 @@ fn slice_lines(text: &str, start: u32, end: u32) -> String {
     out
 }
 
-fn pending_drift_suffix(drift: Option<&PendingDrift>) -> &'static str {
-    match drift {
-        Some(PendingDrift::SidecarMismatch) => " (sidecar mismatch)",
-        Some(PendingDrift::SidecarTampered) => " (sidecar tampered)",
-        None => "",
-    }
-}
-
-fn pending_mesh(p: &PendingFinding) -> &str {
-    match p {
-        PendingFinding::Add { mesh, .. }
-        | PendingFinding::Remove { mesh, .. }
-        | PendingFinding::Why { mesh, .. }
-        | PendingFinding::ConfigChange { mesh, .. } => mesh,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Porcelain renderer.
 // ---------------------------------------------------------------------------
@@ -1814,10 +1692,7 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
             AnchorExtent::LineRange { start, end } => (start.to_string(), end.to_string()),
         };
         if show_src {
-            let mut src = source_marker(f.source).to_string();
-            if f.acknowledged_by.is_some() {
-                src.push_str("/ack");
-            }
+            let src = source_marker(f.source).to_string();
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
                 status_str(&f.status),
@@ -1841,23 +1716,21 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// JSON renderer (`{ "schema_version": 1, findings, pending }`).
+// JSON renderer (`{ "schema_version": 2, findings }`).
 // ---------------------------------------------------------------------------
 
 fn render_json(
     meshes: &[MeshResolved],
     findings: &[Finding],
-    pending: &[PendingFinding],
     followed_ids: &HashSet<String>,
 ) -> Result<()> {
-    if findings.is_empty() && pending.is_empty() {
+    if findings.is_empty() {
         return Ok(());
     }
     let v = json!({
         "schema_version": 2,
         "mesh": meshes.first().map(|m| m.name.clone()).unwrap_or_default(),
         "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
-        "pending": pending.iter().map(pending_json).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
     Ok(())
@@ -1921,97 +1794,12 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "current": f.current.as_ref().map(location_json),
         "moved_to": moved_to,
         "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
-        "acknowledged_by": f.acknowledged_by.as_ref().map(staged_op_ref_json),
         "locus": match f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
             Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),
             None => Value::Null,
         },
     })
-}
-
-fn staged_op_ref_json(s: &StagedOpRef) -> Value {
-    json!({ "mesh": s.mesh, "index": s.index })
-}
-
-fn staged_add_json(a: &StagedAdd) -> Value {
-    json!({
-        "line_number": a.line_number,
-        "path": a.path,
-        "extent": extent_json(a.extent),
-        "anchor": a.anchor,
-    })
-}
-
-fn staged_remove_json(r: &StagedRemove) -> Value {
-    json!({
-        "path": r.path,
-        "extent": extent_json(r.extent),
-    })
-}
-
-fn staged_config_json(c: &StagedConfig) -> Value {
-    match c {
-        StagedConfig::CopyDetection(cd) => json!({
-            "kind": "copy_detection",
-            "value": format!("{cd:?}"),
-        }),
-        StagedConfig::IgnoreWhitespace(b) => json!({
-            "kind": "ignore_whitespace",
-            "value": b,
-        }),
-        StagedConfig::FollowMoves(b) => json!({
-            "kind": "follow_moves",
-            "value": b,
-        }),
-    }
-}
-
-fn drift_json(d: Option<&PendingDrift>) -> Value {
-    match d {
-        Some(PendingDrift::SidecarMismatch) => json!("SIDECAR_MISMATCH"),
-        Some(PendingDrift::SidecarTampered) => json!("SIDECAR_TAMPERED"),
-        None => Value::Null,
-    }
-}
-
-fn pending_json(p: &PendingFinding) -> Value {
-    match p {
-        PendingFinding::Add {
-            mesh,
-            anchor_id,
-            op,
-            drift,
-        } => json!({
-            "kind": "add",
-            "mesh": mesh,
-            "anchor_id": anchor_id,
-            "op": staged_add_json(op),
-            "drift": drift_json(drift.as_ref()),
-        }),
-        PendingFinding::Remove {
-            mesh,
-            anchor_id,
-            op,
-            drift,
-        } => json!({
-            "kind": "remove",
-            "mesh": mesh,
-            "anchor_id": anchor_id,
-            "op": staged_remove_json(op),
-            "drift": drift_json(drift.as_ref()),
-        }),
-        PendingFinding::Why { mesh, body } => json!({
-            "kind": "why",
-            "mesh": mesh,
-            "body": body,
-        }),
-        PendingFinding::ConfigChange { mesh, change } => json!({
-            "kind": "config_change",
-            "mesh": mesh,
-            "change": staged_config_json(change),
-        }),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2030,17 +1818,11 @@ fn render_junit(findings: &[Finding]) {
     for f in findings {
         let addr = render_path_extent_human(&f.anchored.path, f.anchored.extent);
         let src = source_marker(f.source);
-        let ack = if f.acknowledged_by.is_some() {
-            " (ack)"
-        } else {
-            ""
-        };
         println!(
-            "  <testcase classname=\"{}\" name=\"{} [{}]{}\"><failure message=\"{}\"/></testcase>",
+            "  <testcase classname=\"{}\" name=\"{} [{}]\"><failure message=\"{}\"/></testcase>",
             f.mesh,
             addr,
             src,
-            ack,
             status_str(&f.status)
         );
     }
@@ -2054,11 +1836,6 @@ fn render_github(findings: &[Finding]) {
             _ => "error",
         };
         let src = source_marker(f.source);
-        let ack = if f.acknowledged_by.is_some() {
-            " (ack)"
-        } else {
-            ""
-        };
         // Whole-file pins omit `,line=N`; line ranges emit the start line.
         let loc = match f.anchored.extent {
             AnchorExtent::WholeFile => format!("file={}", f.anchored.path.display()),
@@ -2067,11 +1844,10 @@ fn render_github(findings: &[Finding]) {
             }
         };
         println!(
-            "::{level} {}::{} [{}]{}",
+            "::{level} {}::{} [{}]",
             loc,
             status_str(&f.status),
             src,
-            ack,
         );
     }
 }

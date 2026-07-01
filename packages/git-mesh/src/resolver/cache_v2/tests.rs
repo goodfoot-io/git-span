@@ -42,7 +42,6 @@ fn anchor(id: &str, status: AnchorStatus) -> AnchorResolved {
         content_equivalent: false,
         source: None,
         layer_sources: Vec::new(),
-        acknowledged_by: None,
         locus: None,
     }
 }
@@ -52,7 +51,6 @@ fn mesh(name: &str, anchors: Vec<AnchorResolved>) -> MeshResolved {
         name: name.into(),
         message: format!("why {name}"),
         anchors,
-        pending: Vec::new(),
         follow_moves: false,
     }
 }
