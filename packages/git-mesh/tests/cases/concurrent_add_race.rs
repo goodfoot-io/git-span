@@ -53,6 +53,7 @@ fn concurrent_add_race_loses_anchors() -> Result<()> {
             name: "test/race".into(),
             anchors: vec!["file1.txt#L6-L10".into()],
             at: None,
+            replace: None,
         };
         run_add(&gix_repo, args, ".mesh")?;
         Ok(())
@@ -66,6 +67,7 @@ fn concurrent_add_race_loses_anchors() -> Result<()> {
             name: "test/race".into(),
             anchors: vec!["file2.txt#L1-L5".into()],
             at: None,
+            replace: None,
         };
         run_add(&gix_repo, args, ".mesh")?;
         Ok(())
