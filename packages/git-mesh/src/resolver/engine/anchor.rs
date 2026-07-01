@@ -765,6 +765,7 @@ pub(crate) fn resolve_anchor_inner(
                 source: None,
                 layer_sources: vec![],
                 locus: None,
+                fuzzy_successors: vec![],
             });
         }
     }
