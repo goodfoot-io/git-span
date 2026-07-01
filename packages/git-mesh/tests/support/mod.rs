@@ -311,6 +311,22 @@ pub fn mode(_path: &Path) -> Option<u32> {
     None
 }
 
+/// The inode number of `path`, or `None` on platforms with no inodes
+/// (Windows). An inode change between writes indicates atomic rename rather
+/// than in-place overwrite.
+#[cfg(unix)]
+pub fn inode(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.ino())
+}
+
+/// Inode of `path`. Always `None` on Windows — atomicity tests relying on
+/// inode comparison are skipped via `#[cfg(unix)]`.
+#[cfg(windows)]
+pub fn inode(_path: &Path) -> Option<u64> {
+    None
+}
+
 /// Create a `.mesh/<name>` file with the given anchors and why, then
 /// commit it with ordinary git (file-backed model).
 ///

@@ -181,15 +181,16 @@ fn add_replace_fails_on_invalid_old_address() -> Result<()> {
 
 /// Verify that `--replace` goes through the atomic rename path by
 /// checking that the mesh file's inode changes after a replace.
+/// Unix-only — Windows has no inodes; the `write_worktree_mesh` unit
+/// test in commit.rs already covers atomicity for all platforms.
 #[test]
 #[cfg(unix)]
 fn add_replace_is_atomic() -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-
     let repo = seeded_repo_with_mesh()?;
 
     let mesh_path = repo.path().join(".mesh/test-mesh");
-    let ino_before = std::fs::metadata(&mesh_path)?.ino();
+    let ino_before =
+        support::inode(&mesh_path).expect("mesh file must exist and metadata must be readable");
 
     repo.mesh_stdout([
         "add",
@@ -199,7 +200,8 @@ fn add_replace_is_atomic() -> Result<()> {
         "file1.txt#L2-L3",
     ])?;
 
-    let ino_after = std::fs::metadata(&mesh_path)?.ino();
+    let ino_after =
+        support::inode(&mesh_path).expect("mesh file must exist after --replace");
 
     assert_ne!(
         ino_before, ino_after,
