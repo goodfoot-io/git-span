@@ -16,7 +16,7 @@
 
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource,
-    MeshResolved, UnavailableReason,
+    FuzzySuccessor, MeshResolved, UnavailableReason,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -228,6 +228,39 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
     }
 }
 
+/// DTO mirror of [`FuzzySuccessor`] with `Eq` by storing confidence as
+/// basis points (0-10000 → 0.00%–100.00%).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct FuzzySuccessorDto {
+    pub(crate) path: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    /// Confidence × 10000 (basis points). 0.9500 → 9500.
+    pub(crate) confidence_bps: u32,
+}
+
+impl From<&FuzzySuccessor> for FuzzySuccessorDto {
+    fn from(f: &FuzzySuccessor) -> Self {
+        Self {
+            path: f.path.clone(),
+            start: f.start,
+            end: f.end,
+            confidence_bps: (f.confidence * 10000.0).round() as u32,
+        }
+    }
+}
+
+impl From<&FuzzySuccessorDto> for FuzzySuccessor {
+    fn from(d: &FuzzySuccessorDto) -> Self {
+        FuzzySuccessor {
+            path: d.path.clone(),
+            start: d.start,
+            end: d.end,
+            confidence: d.confidence_bps as f64 / 10000.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AnchorResolvedDto {
     pub(crate) anchor_id: String,
@@ -240,6 +273,11 @@ pub(crate) struct AnchorResolvedDto {
     pub(crate) source: Option<DriftSourceDto>,
     pub(crate) layer_sources: Vec<DriftSourceDto>,
     pub(crate) locus: Option<DriftLocusDto>,
+    /// Fuzzy successors (empty for anchors without fuzzy matches). Serde
+    /// default so cached data from older format versions deserializes
+    /// without error.
+    #[serde(default)]
+    pub(crate) fuzzy_successors: Vec<FuzzySuccessorDto>,
 }
 
 impl From<&AnchorResolved> for AnchorResolvedDto {
@@ -254,6 +292,7 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
             source: a.source.map(Into::into),
             layer_sources: a.layer_sources.iter().copied().map(Into::into).collect(),
             locus: a.locus.map(Into::into),
+            fuzzy_successors: a.fuzzy_successors.iter().map(Into::into).collect(),
         }
     }
 }
@@ -279,7 +318,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             source: d.source.map(Into::into),
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
             locus,
-            fuzzy_successors: vec![],
+            fuzzy_successors: d.fuzzy_successors.iter().map(Into::into).collect(),
         })
     }
 }

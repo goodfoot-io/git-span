@@ -402,7 +402,12 @@ pub fn resolve_anchor(
     options: EngineOptions,
 ) -> Result<AnchorResolved> {
     let _perf = crate::perf::span("resolver.resolve-anchor");
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let mut state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
 
     let mesh = {
         let _perf = crate::perf::span("resolver.read-mesh");
@@ -436,7 +441,12 @@ pub fn resolve_mesh(
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let _perf = crate::perf::span("resolver.resolve-mesh");
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let mut state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
     let out = resolve_mesh_with_state(repo, mesh_root, &mut state, name, options)?;
     state.finish(repo);
     Ok(out)
@@ -456,7 +466,12 @@ pub fn resolve_mesh_at(
     commit_oid: &str,
 ) -> Result<MeshResolved> {
     let _perf = crate::perf::span("resolver.resolve-mesh-at");
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let mut state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
     let out = resolve_mesh_with_state_at(repo, mesh_root, &mut state, name, commit_oid, options)?;
     state.finish(repo);
     Ok(out)
@@ -669,7 +684,12 @@ pub(crate) fn resolve_named_meshes(
     names: &[String],
     options: EngineOptions,
 ) -> Result<NamedMeshResults> {
-    let state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
     let (out, _) = resolve_named_meshes_with_state(repo, mesh_root, names, options, state, false)?;
     Ok(out)
 }
@@ -715,7 +735,12 @@ pub(crate) fn resolve_named_meshes_retaining_source_layers(
     names: &[String],
     options: EngineOptions,
 ) -> Result<(NamedMeshResults, SourceLayers)> {
-    let state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
     let (out, layers) =
         resolve_named_meshes_with_state(repo, mesh_root, names, options, state, true)?;
     Ok((out, layers.expect("retain_layers=true yields Some(SourceLayers)")))
@@ -962,7 +987,12 @@ fn stale_meshes_inner(
     let mut out = Vec::new();
     let mut state = {
         let _perf = crate::perf::span("resolver.engine-state-new");
-        EngineState::new(repo, options.layers, options.needs_all_layers)?
+        EngineState::new_with_fuzzy_threshold(
+            repo,
+            options.layers,
+            options.needs_all_layers,
+            options.fuzzy_threshold,
+        )?
     };
     if enable_trace {
         state.session.enable_trace();

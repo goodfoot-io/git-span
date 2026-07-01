@@ -1285,7 +1285,7 @@ fn describe_finding_lower(f: &Finding) -> String {
         }
     };
 
-    match &f.status {
+    let base = match &f.status {
         AnchorStatus::Changed => super::drift_label::format_drift_label(
             &f.status,
             f.source,
@@ -1348,6 +1348,27 @@ fn describe_finding_lower(f: &Finding) -> String {
             }
         }
         AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
+    };
+
+    // When fuzzy successors exist but the status was NOT reclassified as
+    // MOVED (candidates below auto-fix threshold), surface the best match
+    // so the operator sees there are candidates to review.
+    if f.status != AnchorStatus::Moved
+        && let Some(best) = f.fuzzy_successors.first()
+    {
+        let pct = (best.confidence * 100.0).round() as u32;
+        let path_extent = AnchorLocation {
+            path: std::path::PathBuf::from(&best.path),
+            extent: AnchorExtent::LineRange {
+                start: best.start,
+                end: best.end,
+            },
+            blob: None,
+        };
+        let dest = render_path_extent_plain(&path_extent.path, path_extent.extent);
+        format!("{base} — possible match: {dest} ({pct}% similar)")
+    } else {
+        base
     }
 }
 
@@ -1805,6 +1826,22 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         None
     };
     let auto_followed = followed_ids.contains(&f.anchor_id);
+    // Surface all fuzzy successors for operator review, regardless of
+    // anchor status. Empty when no fuzzy scan ran or no candidates found.
+    let fuzzy_successors_json: Vec<Value> = f
+        .fuzzy_successors
+        .iter()
+        .map(|fs| {
+            json!({
+                "path": fs.path,
+                "extent": extent_json(AnchorExtent::LineRange {
+                    start: fs.start,
+                    end: fs.end,
+                }),
+                "confidence": fs.confidence,
+            })
+        })
+        .collect();
     json!({
         "mesh": f.mesh,
         "status": status_json(&f.status),
@@ -1816,6 +1853,7 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "anchored": location_json(&f.anchored),
         "current": f.current.as_ref().map(location_json),
         "moved_to": moved_to,
+        "fuzzy_successors": fuzzy_successors_json,
         "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
         "locus": match f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
