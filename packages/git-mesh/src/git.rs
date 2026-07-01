@@ -669,6 +669,32 @@ pub fn index_entries(repo: &gix::Repository) -> Result<Vec<IndexEntrySnapshot>> 
     Ok(out)
 }
 
+/// Check whether the index entry for `path` has the SKIP_WORKTREE flag set,
+/// indicating the path is excluded by sparse-checkout and should not be
+/// expected on disk.
+pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<bool> {
+    let idx = repo
+        .index_or_load_from_head()
+        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let file = &*idx;
+    for entry in file.entries() {
+        if entry.path(file) == path {
+            return Ok(entry.flags.contains(gix::index::entry::Flags::SKIP_WORKTREE));
+        }
+    }
+    Ok(false)
+}
+
+/// Check whether the repository has promisor pack files (partial clone
+/// markers in `objects/info/`), indicating that some blobs referenced by
+/// the commit graph may not be locally available.
+pub(crate) fn promisor_active(repo: &gix::Repository) -> bool {
+    let od = common_dir(repo).join("objects");
+    std::fs::read_dir(od.join("info"))
+        .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("promisor")))
+        .unwrap_or(false)
+}
+
 /// Compute the SHA-1 a blob with `bytes` would have, without writing it
 /// (replaces `git hash-object [--stdin] <…>`).
 pub fn hash_blob(bytes: &[u8]) -> Result<ObjectId> {

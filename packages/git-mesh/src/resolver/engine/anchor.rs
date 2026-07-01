@@ -478,7 +478,19 @@ pub(crate) fn resolve_anchor_inner(
             let (cur_text, cur_blob) = match deepest_layer {
                 DriftSource::Worktree => {
                     match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
-                        Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
+                        Ok(bytes) => {
+                            if bytes.is_empty()
+                                && crate::git::is_skip_worktree(repo, &t.path)?
+                            {
+                                return Ok(unavailable(
+                                    anchor_id,
+                                    &r,
+                                    anchored,
+                                    UnavailableReason::SparseExcluded,
+                                ));
+                            }
+                            (string_from_utf8_lossy(&bytes), None)
+                        }
                         Err(Error::FilterFailed { filter }) => {
                             return Ok(unavailable(
                                 anchor_id,
@@ -505,7 +517,18 @@ pub(crate) fn resolve_anchor_inner(
                     };
                     match oid {
                         Some(o) => {
-                            let txt = git::read_git_text(repo, &o).unwrap_or_default();
+                            let txt = match git::read_git_text(repo, &o) {
+                                Ok(t) => t,
+                                Err(_) if crate::git::promisor_active(repo) => {
+                                    return Ok(unavailable(
+                                        anchor_id,
+                                        &r,
+                                        anchored,
+                                        UnavailableReason::PromisorMissing,
+                                    ));
+                                }
+                                Err(_) => String::new(),
+                            };
                             (txt, oid_from_hex(&o).ok())
                         }
                         None => (String::new(), None),
@@ -522,7 +545,18 @@ pub(crate) fn resolve_anchor_inner(
                     }
                     let oid = state.head_blob_at(repo, &t.path)?;
                     let txt = match &oid {
-                        Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
+                        Some(o) => match git::read_git_text(repo, o) {
+                            Ok(t) => t,
+                            Err(_) if crate::git::promisor_active(repo) => {
+                                return Ok(unavailable(
+                                    anchor_id,
+                                    &r,
+                                    anchored,
+                                    UnavailableReason::PromisorMissing,
+                                ));
+                            }
+                            Err(_) => String::new(),
+                        },
                         None => String::new(),
                     };
                     (txt, oid.and_then(|o| oid_from_hex(&o).ok()))
@@ -544,10 +578,32 @@ pub(crate) fn resolve_anchor_inner(
     match current {
         None => {
             let anchored_text = if !r.blob.is_empty() {
-                git::read_git_text(repo, &r.blob)?
+                match git::read_git_text(repo, &r.blob) {
+                    Ok(t) => t,
+                    Err(_) if crate::git::promisor_active(repo) => {
+                        return Ok(unavailable(
+                            anchor_id,
+                            &r,
+                            anchored,
+                            UnavailableReason::PromisorMissing,
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
             } else {
                 match state.head_blob_at(repo, &r.path)? {
-                    Some(oid) => git::read_git_text(repo, &oid).unwrap_or_default(),
+                    Some(oid) => match git::read_git_text(repo, &oid) {
+                        Ok(t) => t,
+                        Err(_) if crate::git::promisor_active(repo) => {
+                            return Ok(unavailable(
+                                anchor_id,
+                                &r,
+                                anchored,
+                                UnavailableReason::PromisorMissing,
+                            ));
+                        }
+                        Err(_) => String::new(),
+                    },
                     None => String::new(),
                 }
             };
@@ -646,10 +702,32 @@ pub(crate) fn resolve_anchor_inner(
         }
         Some((t, cur_text, cur_blob)) => {
             let anchored_text = if !r.blob.is_empty() {
-                git::read_git_text(repo, &r.blob)?
+                match git::read_git_text(repo, &r.blob) {
+                    Ok(t) => t,
+                    Err(_) if crate::git::promisor_active(repo) => {
+                        return Ok(unavailable(
+                            anchor_id,
+                            &r,
+                            anchored,
+                            UnavailableReason::PromisorMissing,
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
             } else {
                 match state.head_blob_at(repo, &r.path)? {
-                    Some(oid) => git::read_git_text(repo, &oid).unwrap_or_default(),
+                    Some(oid) => match git::read_git_text(repo, &oid) {
+                        Ok(t) => t,
+                        Err(_) if crate::git::promisor_active(repo) => {
+                            return Ok(unavailable(
+                                anchor_id,
+                                &r,
+                                anchored,
+                                UnavailableReason::PromisorMissing,
+                            ));
+                        }
+                        Err(_) => String::new(),
+                    },
                     None => String::new(),
                 }
             };
