@@ -49,8 +49,16 @@ fn devcontainer_has_no_rustc_wrapper() {
         .join(".devcontainer")
         .join("devcontainer.json");
     let body = std::fs::read_to_string(&path).unwrap();
+    // devcontainer.json is JSONC (the Dev Container spec allows `//`
+    // line comments); strip full-line comments before handing it to
+    // `serde_json`, which only accepts strict JSON.
+    let stripped: String = body
+        .lines()
+        .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
+        .collect::<Vec<_>>()
+        .join("\n");
     let json: serde_json::Value =
-        serde_json::from_str(&body).expect("devcontainer.json must be valid JSON");
+        serde_json::from_str(&stripped).expect("devcontainer.json must be valid JSONC");
     let wrapper = json
         .get("remoteEnv")
         .and_then(|e| e.get("RUSTC_WRAPPER"))

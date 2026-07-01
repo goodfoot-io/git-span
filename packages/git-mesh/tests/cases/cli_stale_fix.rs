@@ -268,17 +268,16 @@ fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
 }
 
 #[test]
-fn fix_leaves_whitespace_only_changed_at_head_layer() -> Result<()> {
+fn fix_reanchors_whitespace_only_changed_at_head_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Commit a whitespace-only edit. Even though it is content-equivalent,
-    // the equivalence gate is fail-closed at the HEAD layer: once the change
-    // is committed, the *original* anchored bytes are gone from HEAD, so the
-    // resolver cannot prove `a_slice` is the genuine original (its hash will
-    // not match the recorded `stored_hash`). The anchor is therefore left
-    // drifting rather than re-anchored to content we cannot verify is a pure
-    // reshaping of the original.
+    // Commit a whitespace-only edit. The visible text is a pure reshaping
+    // of the original — no meaning changed — so `--fix` must re-anchor it
+    // just as it does at the worktree/index layers, not silently no-op.
+    // The genuine original bytes are still recoverable one commit back
+    // (HEAD~1), so the resolver can walk back to prove equivalence even
+    // though HEAD itself now carries the edited content.
     let reindented =
         "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
@@ -291,12 +290,20 @@ fn fix_leaves_whitespace_only_changed_at_head_layer() -> Result<()> {
     let original = line_slice_hash(ORIGINAL, 1, 5);
     let reanchored = line_slice_hash(reindented, 1, 5);
     assert!(
-        mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
-        "HEAD-layer whitespace change is fail-closed: original hash retained; got:\n{mesh}"
+        !mesh.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "HEAD-layer whitespace-only change must not keep the stale original hash; got:\n{mesh}"
     );
     assert!(
-        !mesh.contains(&reanchored),
-        "HEAD-layer whitespace change must NOT be re-anchored; got:\n{mesh}"
+        mesh.contains(&format!("file1.txt#L1-L5 rk64:{reanchored}")),
+        "HEAD-layer whitespace-only change must be re-anchored to current content; got:\n{mesh}"
+    );
+
+    // A follow-up scan reports no drift.
+    let out = repo.run_mesh(["stale", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("0 stale"),
+        "anchor must be clean after re-anchoring; stdout=\n{stdout}"
     );
     Ok(())
 }

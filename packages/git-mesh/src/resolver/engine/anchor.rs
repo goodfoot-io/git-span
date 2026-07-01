@@ -43,6 +43,55 @@ fn string_from_utf8_lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Bound on how many ancestor commits [`find_original_line_slice_in_history`]
+/// will consult before giving up (fail-closed): real repos can have deep
+/// histories, and each step reads one tree entry and one blob, so this keeps
+/// the walk bounded rather than scanning to the root commit.
+const HISTORY_WALK_LIMIT: u32 = 64;
+
+/// Walk first-parent history strictly before HEAD for the last blob at `path`
+/// whose line range `[start, end]` still hashes to `stored_hash` — i.e. the
+/// last point before HEAD where the anchor's genuine original bytes are
+/// recoverable. Used only when HEAD itself no longer carries the original
+/// (the drifting edit was committed), so a committed whitespace-only reshape
+/// can still be proven content-equivalent instead of being left drifting
+/// merely because the true original fell out of HEAD.
+///
+/// Returns the historical `[start, end]` lines (owned, since the backing
+/// blob text does not outlive this scan). `None` on a rename, deletion, or
+/// hash mismatch anywhere in the walk, or once [`HISTORY_WALK_LIMIT`] is
+/// exhausted — every such case leaves the caller fail-closed.
+fn find_original_line_slice_in_history(
+    repo: &gix::Repository,
+    path: &str,
+    start: u32,
+    end: u32,
+    stored_hash: &str,
+) -> Option<Vec<String>> {
+    for i in 1..=HISTORY_WALK_LIMIT {
+        let commit_oid = git::resolve_commit(repo, &format!("HEAD~{i}")).ok()?;
+        let blob_oid = git::path_blob_at(repo, &commit_oid, path).ok()?;
+        let Ok(text) = git::read_git_text(repo, &blob_oid) else {
+            continue;
+        };
+        let computed = format!(
+            "{RK64_ALGORITHM}:{}",
+            rk64_to_hex(cheap_fingerprint_with_extent(
+                text.as_bytes(),
+                &AnchorExtent::LineRange { start, end },
+            ))
+        );
+        if computed == stored_hash {
+            let lines: Vec<&str> = text.lines().collect();
+            let lo = (start as usize).saturating_sub(1);
+            let hi = (end as usize).min(lines.len());
+            let slice = if lo <= hi { &lines[lo..hi] } else { &[][..] };
+            return Some(slice.iter().map(|s| (*s).to_string()).collect());
+        }
+    }
+    None
+}
+
 /// Read the text content of an index blob by OID.
 fn read_blob_text(repo: &gix::Repository, oid_hex: &str) -> String {
     git::read_git_text(repo, oid_hex).unwrap_or_default()
@@ -857,11 +906,9 @@ pub(crate) fn resolve_anchor_inner(
                 // reshaping of the *genuine* original anchored slice. For
                 // file-backed anchors `a_slice` reads the HEAD blob, which may
                 // already carry the change (HEAD-layer drift); verify it is
-                // the true original by hashing it against `stored_hash`. When
-                // the original bytes are unrecoverable the hash mismatches and
-                // we leave the anchor drifting — fail-closed. Pinned-blob
-                // anchors read `a_slice` from the anchored blob, so it is the
-                // original by construction.
+                // the true original by hashing it against `stored_hash`.
+                // Pinned-blob anchors read `a_slice` from the anchored blob,
+                // so it is the original by construction.
                 let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty() {
                     let a_joined = a_slice.join("\n");
                     format!("{RK64_ALGORITHM}:{}",
@@ -873,8 +920,34 @@ pub(crate) fn resolve_anchor_inner(
                 } else {
                     !r.blob.is_empty()
                 };
-                content_equivalent =
-                    anchored_is_original && lines_equal(a_slice, c_slice, true);
+                content_equivalent = if anchored_is_original {
+                    lines_equal(a_slice, c_slice, true)
+                } else if !r.stored_hash.is_empty() && r.blob.is_empty() {
+                    // HEAD no longer carries the genuine original — the drift
+                    // was committed, so `a_slice` (read from HEAD) is already
+                    // the edited content and can never hash-match
+                    // `stored_hash`. The only remaining evidence of the true
+                    // original is `stored_hash` itself: walk bounded,
+                    // strictly-before-HEAD history for the last blob whose
+                    // recorded line range still hashes to it, and check
+                    // *that* content for whitespace-equivalence. A rename,
+                    // deletion, or exhausted walk along the way leaves the
+                    // anchor drifting exactly as before — fail-closed.
+                    find_original_line_slice_in_history(
+                        repo,
+                        &t.path,
+                        anchored_start,
+                        anchored_end,
+                        &r.stored_hash,
+                    )
+                    .is_some_and(|original| {
+                        let original_refs: Vec<&str> =
+                            original.iter().map(String::as_str).collect();
+                        lines_equal(&original_refs, c_slice, true)
+                    })
+                } else {
+                    false
+                };
                 current_loc = Some(AnchorLocation {
                     path: PathBuf::from(t.path.clone()),
                     extent: AnchorExtent::LineRange {
