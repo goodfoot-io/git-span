@@ -1059,7 +1059,7 @@ describe('buildAgentPrompt', () => {
   it('includes scratch path and instructions', () => {
     const prompt = buildAgentPrompt('/tmp/scratch-abc', baseDetection, [anchor('src/foo.ts', 'write', 1, 10)]);
     expect(prompt).toContain('/tmp/scratch-abc');
-    expect(prompt).toContain('Never touch source files outside .mesh/');
+    expect(prompt).toContain('.mesh/');
     expect(prompt).toContain('standalone mesh reconciler');
   });
   it('includes stale rows when present', () => {

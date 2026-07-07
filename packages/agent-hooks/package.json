@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "yarn build:hooks && yarn build:dispatcher",
-    "build:dispatcher": "node -e \"require('esbuild').buildSync({entryPoints:['src/dispatcher.ts'],bundle:true,platform:'node',format:'esm',outfile:'../../plugins/git-mesh/hooks/bin/dispatcher.mjs'})\"",
+    "build:dispatcher": "node -e \"require('esbuild').buildSync({entryPoints:['src/dispatcher.ts'],bundle:true,platform:'node',format:'esm',loader:{'.md':'text'},outfile:'../../plugins/git-mesh/hooks/bin/dispatcher.mjs'})\"",
     "build:hooks": "claude-code-hooks -i \"src/**/*.ts\" -o \"../../plugins/git-mesh/hooks/hooks.json\"",
     "test": "vitest run",
     "lint": "biome check .",

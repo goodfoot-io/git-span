@@ -151,6 +151,9 @@ function moveRecord(from, to) {
   fs.renameSync(from, to);
 }
 
+// src/agent-prompt.md
+var agent_prompt_default = 'You are a standalone mesh reconciler agent. Your job is to reconcile meshes in the scratch worktree.\n\nThe scratch worktree is at: {{scratchPath}}\n\n## Instructions\n\nUse the `git-mesh` skill for all git-mesh command mechanics.\nAll git operations must use the `-C` flag targeting the scratch worktree, e.g. `git -C <scratch-path> mesh stale`.\n\n## Stale Findings\n\n{{#if staleRows}}\nThe following anchors are stale:\n\n{{staleRows}}\n\nFor each stale mesh:\n- Re-anchor it to where the lines moved if the coupling still holds.\n- Reshape the slug or rewrite the why if the subsystem changed.\n- Retire the mesh if the coupling no longer holds.\n\n{{else}}\nNo stale anchors detected.\n{{/if}}\n\n{{#if listRows}}\n## Related Meshes\n\nThe following meshes are related to the touched anchors:\n\n{{listRows}}\n\nExtend or prune these meshes as appropriate: absorb an uncovered write into one, prune an anchor that no longer holds, or refactor \u2014 whichever fits.\n{{/if}}\n\n{{#if uncoveredAnchors}}\n## Uncovered Writes\n\nThe following touched paths are not covered by any existing mesh:\n\n{{uncoveredAnchors}}\n\nWhere two or more form a coherent subsystem \u2014 a flow or concern that spans them \u2014 create one: `git mesh add <slug> <anchors>` then `git mesh why <slug> -m "<one sentence>"`. Leave a lone file that forms no subsystem alone.\n\nThe why must name the relationship the anchors hold in one sentence that survives a rewrite of either side, in role-words. A good why: "the validator rejects every field the schema marks required, so the two must list the same keys." A bad why restates the slug ("charge flow"), describes a change ("added the charge() call"), or just lists the filenames \u2014 none of those survive a rewrite or tell the next reader why the sites move together.\n{{/if}}\n\n## Commit Boundary\n\n- Never touch source files outside `.mesh/`.\n- Only commit `.mesh/` changes \u2014 one commit per session.\n- Only commit once all anchored source files are already committed.\n- Use: `git -C {{scratchPath}} add .mesh/** && git -C {{scratchPath}} commit -m "<summary>"`\n\nWork in the background and do not report unless something needs human intervention.\n';
+
 // src/dispatcher.ts
 var LOG_FILE_NAME = "dispatcher.log";
 var CLAIM_PID_SUFFIX = ".pid-";
@@ -729,53 +732,25 @@ function runDetection(log, _repoRoot, scratchPath, anchors) {
   return { staleOutput: staleOut, listOutput: listOut, staleRows, listRows, actionable };
 }
 function buildAgentPrompt(scratchPath, detectionResult, anchors) {
-  const lines = [
-    "You are a standalone mesh reconciler agent. Your job is to reconcile meshes in the scratch worktree.",
-    "",
-    `The scratch worktree is at: ${scratchPath}`,
-    "",
-    "## Instructions",
-    "",
-    "Use the `git-mesh` skill for all git-mesh command mechanics.",
-    "All git operations must use the `-C` flag targeting the scratch worktree, e.g. `git -C <scratch-path> mesh stale`.",
-    "",
-    "## Stale Findings"
-  ];
-  if (detectionResult.staleRows.length > 0) {
-    lines.push("");
-    lines.push("The following anchors are stale:");
-    for (const row of detectionResult.staleRows) {
-      lines.push(`  - ${row.name}: ${row.path}#L${row.start}-L${row.end}`);
-    }
-  } else {
-    lines.push("");
-    lines.push("No stale anchors detected.");
-  }
-  if (detectionResult.listRows.length > 0) {
-    lines.push("");
-    lines.push("## Related Meshes");
-    lines.push("The following meshes are related to the touched anchors:");
-    for (const row of detectionResult.listRows) {
-      lines.push(`  - ${row.name}: ${row.path}#L${row.start}-L${row.end}`);
-    }
-  }
   const coveredPaths = new Set(detectionResult.listRows.map((r) => r.path));
   const uncoveredAnchors = anchors.filter((a) => !coveredPaths.has(a.path));
-  if (uncoveredAnchors.length > 0) {
-    lines.push("");
-    lines.push("## Uncovered Writes");
-    lines.push("The following touched paths are not covered by any existing mesh:");
-    for (const a of uncoveredAnchors) {
-      lines.push(`  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ""}`);
-    }
-  }
-  lines.push("");
-  lines.push("## Commit Boundary");
-  lines.push("- Never touch source files outside .mesh/.");
-  lines.push("- Only commit .mesh/ changes \u2014 one commit per session.");
-  lines.push("- Only commit once all anchored source files are already committed.");
-  lines.push(`- Use: git -C ${scratchPath} add .mesh/** && git -C ${scratchPath} commit -m "<summary>"`);
-  return lines.join("\n");
+  const staleRows = detectionResult.staleRows.length > 0 ? detectionResult.staleRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join("\n") : "";
+  const listRows = detectionResult.listRows.length > 0 ? detectionResult.listRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join("\n") : "";
+  const uncoveredLines = uncoveredAnchors.length > 0 ? uncoveredAnchors.map((a) => `  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ""}`).join("\n") : "";
+  let prompt = agent_prompt_default;
+  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m, name, block) => {
+    const has = name === "staleRows" ? staleRows.length > 0 : name === "listRows" ? listRows.length > 0 : name === "uncoveredAnchors" ? uncoveredLines.length > 0 : false;
+    return has ? block.trimEnd() : "";
+  });
+  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{else\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m, name, ifBlock, elseBlock) => {
+    const has = name === "staleRows" ? staleRows.length > 0 : name === "listRows" ? listRows.length > 0 : name === "uncoveredAnchors" ? uncoveredLines.length > 0 : false;
+    return has ? ifBlock.trimEnd() : elseBlock.trimEnd();
+  });
+  prompt = prompt.replace(/\{\{scratchPath\}\}/g, scratchPath);
+  prompt = prompt.replace(/\{\{staleRows\}\}/g, staleRows);
+  prompt = prompt.replace(/\{\{listRows\}\}/g, listRows);
+  prompt = prompt.replace(/\{\{uncoveredAnchors\}\}/g, uncoveredLines);
+  return prompt.trimEnd();
 }
 var AGENT_TIMEOUT_MS = 15 * 60 * 1e3;
 var SIGTERM_GRACE_MS = 1e4;
@@ -819,10 +794,19 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
   };
   const claudeArgs = ["-p", promptText, "--resume", sessionId, "--settings", JSON.stringify(settings)];
   log.info(`spawn: launching agent (session ${sessionId})`);
+  const agentLogPath = nodePath2.resolve(repoRoot, meshDir, `agent-${sessionId}.log`);
+  let agentLogFd;
+  try {
+    fs2.mkdirSync(nodePath2.dirname(agentLogPath), { recursive: true });
+    agentLogFd = fs2.openSync(agentLogPath, "a");
+  } catch (err) {
+    log.warn(`spawn: could not open agent log ${agentLogPath}: ${err}`);
+    agentLogFd = -1;
+  }
   try {
     const child = spawn("claude", claudeArgs, {
       cwd: repoRoot,
-      stdio: "ignore",
+      stdio: ["ignore", agentLogFd > 0 ? agentLogFd : "ignore", agentLogFd > 0 ? agentLogFd : "ignore"],
       detached: true
     });
     const timeoutHandle = setTimeout(() => {
@@ -837,12 +821,23 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
     }, timeoutMs);
     timeoutHandle.unref();
     const exitCode = await new Promise((resolve3) => {
+      const cleanup = () => {
+        if (agentLogFd > 0) {
+          try {
+            fs2.closeSync(agentLogFd);
+          } catch (_) {
+            void _;
+          }
+        }
+      };
       child.on("exit", (code) => {
         clearTimeout(timeoutHandle);
+        cleanup();
         resolve3(code);
       });
       child.on("error", (err) => {
         clearTimeout(timeoutHandle);
+        cleanup();
         log.error(`spawn: agent process error: ${err}`);
         resolve3(null);
       });
@@ -850,11 +845,18 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
     if (exitCode === null) {
       log.error("spawn: agent failed to start");
     } else {
-      log.info(`spawn: agent exited with code ${exitCode}`);
+      log.info(`spawn: agent exited with code ${exitCode} (log: ${agentLogPath})`);
     }
     return exitCode;
   } catch (err) {
     log.error(`spawn: unexpected error spawning agent: ${err}`);
+    if (agentLogFd > 0) {
+      try {
+        fs2.closeSync(agentLogFd);
+      } catch (_) {
+        void _;
+      }
+    }
     return null;
   }
 }

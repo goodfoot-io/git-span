@@ -36,6 +36,7 @@ import {
   withQueueLock,
   writeJsonFileAtomic
 } from './agent-hooks-common.js';
+import PROMPT_TEMPLATE from './agent-prompt.md';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -947,59 +948,64 @@ export function runDetection(
  * Build the prompt text for the standalone reconciler agent.
  */
 export function buildAgentPrompt(scratchPath: string, detectionResult: DetectionResult, anchors: AnchorSpec[]): string {
-  const lines: string[] = [
-    'You are a standalone mesh reconciler agent. Your job is to reconcile meshes in the scratch worktree.',
-    '',
-    `The scratch worktree is at: ${scratchPath}`,
-    '',
-    '## Instructions',
-    '',
-    'Use the `git-mesh` skill for all git-mesh command mechanics.',
-    'All git operations must use the `-C` flag targeting the scratch worktree, e.g. `git -C <scratch-path> mesh stale`.',
-    '',
-    '## Stale Findings'
-  ];
-
-  if (detectionResult.staleRows.length > 0) {
-    lines.push('');
-    lines.push('The following anchors are stale:');
-    for (const row of detectionResult.staleRows) {
-      lines.push(`  - ${row.name}: ${row.path}#L${row.start}-L${row.end}`);
-    }
-  } else {
-    lines.push('');
-    lines.push('No stale anchors detected.');
-  }
-
-  if (detectionResult.listRows.length > 0) {
-    lines.push('');
-    lines.push('## Related Meshes');
-    lines.push('The following meshes are related to the touched anchors:');
-    for (const row of detectionResult.listRows) {
-      lines.push(`  - ${row.name}: ${row.path}#L${row.start}-L${row.end}`);
-    }
-  }
-
-  // Check for uncovered writes (anchors not covered by any mesh)
   const coveredPaths = new Set(detectionResult.listRows.map((r) => r.path));
   const uncoveredAnchors = anchors.filter((a) => !coveredPaths.has(a.path));
-  if (uncoveredAnchors.length > 0) {
-    lines.push('');
-    lines.push('## Uncovered Writes');
-    lines.push('The following touched paths are not covered by any existing mesh:');
-    for (const a of uncoveredAnchors) {
-      lines.push(`  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ''}`);
+
+  const staleRows =
+    detectionResult.staleRows.length > 0
+      ? detectionResult.staleRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join('\n')
+      : '';
+
+  const listRows =
+    detectionResult.listRows.length > 0
+      ? detectionResult.listRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join('\n')
+      : '';
+
+  const uncoveredLines =
+    uncoveredAnchors.length > 0
+      ? uncoveredAnchors.map((a) => `  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ''}`).join('\n')
+      : '';
+
+  // Simple {{#if NAME}}...{{else}}...{{/if}} and {{NAME}} substitution.
+  // The template is a standalone .md file bundled at build time via esbuild.
+  let prompt = PROMPT_TEMPLATE;
+
+  // {{#if NAME}}BLOCK{{/if}} — content between opening and closing, no else
+  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m: string, name: string, block: string) => {
+    const has =
+      name === 'staleRows'
+        ? staleRows.length > 0
+        : name === 'listRows'
+          ? listRows.length > 0
+          : name === 'uncoveredAnchors'
+            ? uncoveredLines.length > 0
+            : false;
+    return has ? block.trimEnd() : '';
+  });
+
+  // {{#if NAME}}IF_BLOCK{{else}}ELSE_BLOCK{{/if}}
+  prompt = prompt.replace(
+    /\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{else\}\}\n([\s\S]*?)\{\{\/if\}\}/g,
+    (_m: string, name: string, ifBlock: string, elseBlock: string) => {
+      const has =
+        name === 'staleRows'
+          ? staleRows.length > 0
+          : name === 'listRows'
+            ? listRows.length > 0
+            : name === 'uncoveredAnchors'
+              ? uncoveredLines.length > 0
+              : false;
+      return has ? ifBlock.trimEnd() : elseBlock.trimEnd();
     }
-  }
+  );
 
-  lines.push('');
-  lines.push('## Commit Boundary');
-  lines.push('- Never touch source files outside .mesh/.');
-  lines.push('- Only commit .mesh/ changes — one commit per session.');
-  lines.push('- Only commit once all anchored source files are already committed.');
-  lines.push(`- Use: git -C ${scratchPath} add .mesh/** && git -C ${scratchPath} commit -m "<summary>"`);
+  // Plain {{NAME}} substitution
+  prompt = prompt.replace(/\{\{scratchPath\}\}/g, scratchPath);
+  prompt = prompt.replace(/\{\{staleRows\}\}/g, staleRows);
+  prompt = prompt.replace(/\{\{listRows\}\}/g, listRows);
+  prompt = prompt.replace(/\{\{uncoveredAnchors\}\}/g, uncoveredLines);
 
-  return lines.join('\n');
+  return prompt.trimEnd();
 }
 
 const AGENT_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes default
@@ -1066,10 +1072,22 @@ export async function spawnAgent(
 
   log.info(`spawn: launching agent (session ${sessionId})`);
 
+  // Pipe agent stdout/stderr to .mesh/agent-<sessionId>.log so the user can
+  // inspect what the reconciler did (or why it failed).
+  const agentLogPath = nodePath.resolve(repoRoot, meshDir, `agent-${sessionId}.log`);
+  let agentLogFd: number;
+  try {
+    fs.mkdirSync(nodePath.dirname(agentLogPath), { recursive: true });
+    agentLogFd = fs.openSync(agentLogPath, 'a');
+  } catch (err) {
+    log.warn(`spawn: could not open agent log ${agentLogPath}: ${err}`);
+    agentLogFd = -1;
+  }
+
   try {
     const child = spawn('claude', claudeArgs, {
       cwd: repoRoot,
-      stdio: 'ignore',
+      stdio: ['ignore', agentLogFd > 0 ? agentLogFd : 'ignore', agentLogFd > 0 ? agentLogFd : 'ignore'],
       detached: true
     });
 
@@ -1087,12 +1105,23 @@ export async function spawnAgent(
     timeoutHandle.unref();
 
     const exitCode = await new Promise<number | null>((resolve) => {
+      const cleanup = () => {
+        if (agentLogFd > 0) {
+          try {
+            fs.closeSync(agentLogFd);
+          } catch (_) {
+            void _;
+          }
+        }
+      };
       child.on('exit', (code) => {
         clearTimeout(timeoutHandle);
+        cleanup();
         resolve(code);
       });
       child.on('error', (err) => {
         clearTimeout(timeoutHandle);
+        cleanup();
         log.error(`spawn: agent process error: ${err}`);
         resolve(null);
       });
@@ -1101,12 +1130,19 @@ export async function spawnAgent(
     if (exitCode === null) {
       log.error('spawn: agent failed to start');
     } else {
-      log.info(`spawn: agent exited with code ${exitCode}`);
+      log.info(`spawn: agent exited with code ${exitCode} (log: ${agentLogPath})`);
     }
 
     return exitCode;
   } catch (err) {
     log.error(`spawn: unexpected error spawning agent: ${err}`);
+    if (agentLogFd > 0) {
+      try {
+        fs.closeSync(agentLogFd);
+      } catch (_) {
+        void _;
+      }
+    }
     return null;
   }
 }
