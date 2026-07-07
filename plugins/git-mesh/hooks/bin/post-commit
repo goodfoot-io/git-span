@@ -1,18 +1,25 @@
 #!/bin/sh
-# Thin trigger for git-mesh post-commit pipeline.
+# git-mesh post-commit hook -- thin trigger.
 # Spawns the dispatcher detached and returns 0 immediately.
 # All real work happens in the background; failures log to .mesh/dispatcher.log.
+#
+# Installation: symlink into .git/hooks/post-commit.
+# If a post-commit hook already exists, append the nohup line to it.
+
+set -e
 
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+
+# Resolve dispatcher relative to this script's own location on disk.
+# Works when this hook is symlinked from its plugin directory.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+DISPATCHER="${SCRIPT_DIR}/dispatcher.mjs"
 
 # Capture HEAD before backgrounding so the dispatcher uses the commit that
 # triggered the hook, not whatever HEAD points to when it eventually runs.
 COMMIT_SHA=$(git rev-parse HEAD)
 
-DISPATCHER="${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs"
-
-nohup node "${DISPATCHER}" \
-  --repo-root "$REPO_ROOT" --commit-sha "$COMMIT_SHA" \
+nohup node "${DISPATCHER}" --repo-root "${REPO_ROOT}" --commit-sha "${COMMIT_SHA}" \
   > /dev/null 2>&1 &
 
 exit 0

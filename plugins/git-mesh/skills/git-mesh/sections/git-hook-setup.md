@@ -27,10 +27,10 @@ Reference shell scripts are provided at:
 - `plugins/git-mesh/hooks/git-hooks/post-commit`
 - `plugins/git-mesh/hooks/git-hooks/post-rewrite`
 
-Each script resolves the dispatcher relative to the repository root (via `git
-rev-parse --show-toplevel`) so no environment variables are needed. They work
-from any invocation context -- Claude Code sessions, plain terminals, and CI
-environments.
+Each script resolves the dispatcher relative to its own location on disk via
+`$0`, so it works regardless of where the plugin is installed. **Symlink
+installation is required** -- if you copy the script, `$0` resolves to
+`.git/hooks/` and the dispatcher won't be found.
 
 The scripts are POSIX `sh` (no bashisms) and safe to use as-is or as a template
 for custom hook configurations.
@@ -43,29 +43,21 @@ optional merge driver (see below).
 
 ### post-commit
 
-Copy or symlink the reference script into your repository's hooks directory:
+Symlink the reference script into your repository's hooks directory. The script
+finds `dispatcher.mjs` relative to its real location on disk -- copying instead
+of symlinking breaks this resolution.
 
 ```bash
-# Symlink (recommended -- picks up updates)
 ln -s ../../plugins/git-mesh/hooks/git-hooks/post-commit .git/hooks/post-commit
-
-# Or copy
-cp plugins/git-mesh/hooks/git-hooks/post-commit .git/hooks/post-commit
+chmod +x .git/hooks/post-commit
 ```
-
-The file must be executable (`chmod +x .git/hooks/post-commit`).
 
 ### post-rewrite
 
 ```bash
-# Symlink (recommended)
 ln -s ../../plugins/git-mesh/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
-
-# Or copy
-cp plugins/git-mesh/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
+chmod +x .git/hooks/post-rewrite
 ```
-
-The file must be executable (`chmod +x .git/hooks/post-rewrite`).
 
 ### Chaining into existing hooks
 
@@ -79,9 +71,11 @@ mesh hook line rather than overwriting:
 ./scripts/bump-version.sh
 
 # git-mesh post-commit trigger
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-nohup node "${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs" \
-  --repo-root "${REPO_ROOT}" \
+COMMIT_SHA=$(git rev-parse HEAD)
+nohup node "${SCRIPT_DIR}/../bin/dispatcher.mjs" \
+  --repo-root "${REPO_ROOT}" --commit-sha "${COMMIT_SHA}" \
   < /dev/null > /dev/null 2>&1 &
 exit 0
 ```
