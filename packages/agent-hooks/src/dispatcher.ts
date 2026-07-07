@@ -12,6 +12,7 @@
  *   node dispatcher.mjs --repo-root <path>
  *   node dispatcher.mjs --repo-root <path> --post-rewrite
  *   node dispatcher.mjs --repo-root <path> --trigger-worktree <path>
+ *   node dispatcher.mjs --repo-root <path> --commit-sha <sha>
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -42,6 +43,52 @@ import {
 
 const LOG_FILE_NAME = 'dispatcher.log';
 const CLAIM_PID_SUFFIX = '.pid-';
+
+/**
+ * Read all of stdin as a string with a timeout.  If stdin is a TTY, empty
+ * pipe, or the timeout fires, returns `''` so the caller can distinguish
+ * "nothing was sent" from an error.
+ */
+function readStdinWithTimeout(log: Logger, timeoutMs: number): Promise<string> {
+  if (process.stdin.isTTY) return Promise.resolve('');
+
+  return new Promise<string>((resolve) => {
+    const chunks: Buffer[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      process.stdin.off('data', onData);
+      process.stdin.off('end', onEnd);
+      process.stdin.off('error', onError);
+      if (timer) clearTimeout(timer);
+    };
+
+    const onData = (chunk: Buffer) => {
+      chunks.push(chunk);
+    };
+
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+
+    const onError = () => {
+      cleanup();
+      resolve(''); // Treat errors as EOF
+    };
+
+    timer = setTimeout(() => {
+      log.warn('dispatcher: stdin read timed out, continuing with empty data');
+      cleanup();
+      resolve('');
+    }, timeoutMs);
+
+    process.stdin.on('data', onData);
+    process.stdin.on('end', onEnd);
+    process.stdin.on('error', onError);
+    process.stdin.resume();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -107,15 +154,18 @@ export function stripClaimSuffix(filename: string): string {
 }
 
 /**
- * Get the set of file paths changed in the current HEAD commit.
- * Includes --root to handle the initial commit.
- * Returns absolute or repo-relative POSIX paths (as output by diff-tree).
+ * Get the set of file paths changed in the given commit (or HEAD if not
+ * specified).  Includes --root to handle the initial commit.
+ * Uses --name-status with rename detection so that for renamed files **_both_**
+ * the old and new paths are included in the returned set — a mesh anchored to
+ * the old (pre-rename) path is not silently dropped from the pipeline.
  */
-export function getChangedPaths(repoRoot: string): Set<string> {
+export function getChangedPaths(repoRoot: string, commitSha?: string): Set<string> {
+  const rev = commitSha ?? 'HEAD';
   try {
     const out = execFileSync(
       'git',
-      ['-C', repoRoot, 'diff-tree', '--no-commit-id', '--name-only', '-r', '--root', 'HEAD'],
+      ['-C', repoRoot, 'diff-tree', '--no-commit-id', '--name-status', '-r', '--root', '-M', rev],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -124,7 +174,19 @@ export function getChangedPaths(repoRoot: string): Set<string> {
     const paths = new Set<string>();
     for (const line of out.trim().split('\n')) {
       const trimmed = line.trim();
-      if (trimmed) paths.add(trimmed);
+      if (!trimmed) continue;
+      // --name-status format: <status>\t<path>  or  R<score>\t<old-path>\t<new-path>
+      const parts = trimmed.split('\t');
+      if (parts.length < 2) continue;
+      const status = parts[0];
+      if (!status) continue;
+      if (status.startsWith('R')) {
+        // Rename: include both old and new names
+        if (parts[1]) paths.add(parts[1]);
+        if (parts[2]) paths.add(parts[2]);
+      } else if (parts[1]) {
+        paths.add(parts[1]);
+      }
     }
     return paths;
   } catch {
@@ -388,8 +450,16 @@ function rmEmptyScratchDirs(dir: string): void {
 /**
  * Scan `pre-commit/` for records whose anchors intersect the changed paths.
  * Promote clean records to `post-commit/` with SHA and branch stamp.
+ * When `commitSha` is provided it is used instead of reading HEAD (avoids a
+ * race where another commit lands before the background process runs).
  */
-export function promote(log: Logger, repoRoot: string, changedPaths: Set<string>, sweepAll: boolean): void {
+export function promote(
+  log: Logger,
+  repoRoot: string,
+  changedPaths: Set<string>,
+  sweepAll: boolean,
+  commitSha?: string
+): void {
   const pDir = preCommitDir(repoRoot);
   let files: string[];
   try {
@@ -400,7 +470,7 @@ export function promote(log: Logger, repoRoot: string, changedPaths: Set<string>
 
   if (files.length === 0) return;
 
-  const sha = getHeadSha(repoRoot);
+  const sha = commitSha ?? getHeadSha(repoRoot);
   const branch = getCurrentBranch(repoRoot);
 
   for (const file of files) {
@@ -652,9 +722,23 @@ export function resolveBranch(
   }
 
   // 4. Path-based re-validation fallback
-  //   Check all containing branches (even those checked out elsewhere) to see
-  //   if the anchor content exists on any branch tip.
-  for (const branch of containingBranches) {
+  //   Check branches to see if the anchor content exists on any branch tip.
+  //   When the stamped SHA is unreachable (dead commit), `git branch --contains`
+  //   returns nothing — fall back to ALL local branches.
+  let candidateBranches = containingBranches;
+  if (candidateBranches.length === 0) {
+    try {
+      const out = execFileSync('git', ['-C', repoRoot, 'branch', '--format=%(refname:short)'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8'
+      });
+      candidateBranches = out.trim().split('\n').filter(Boolean);
+    } catch {
+      void 0;
+    }
+  }
+
+  for (const branch of candidateBranches) {
     const tipSha = refExists(repoRoot, branch);
     if (!tipSha) continue;
     if (doAnchorsExistAt(repoRoot, tipSha, record.anchors)) {
@@ -913,14 +997,20 @@ export function buildAgentPrompt(scratchPath: string, detectionResult: Detection
   lines.push('- Never touch source files outside .mesh/.');
   lines.push('- Only commit .mesh/ changes — one commit per session.');
   lines.push('- Only commit once all anchored source files are already committed.');
-  lines.push(`- Use: git -C ${scratchPath} add .mesh && git -C ${scratchPath} commit -m "<summary>"`);
+  lines.push(`- Use: git -C ${scratchPath} add .mesh/** && git -C ${scratchPath} commit -m "<summary>"`);
 
   return lines.join('\n');
 }
 
+const AGENT_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes default
+const SIGTERM_GRACE_MS = 10_000; // 10 seconds between SIGTERM and SIGKILL
+
 /**
  * Spawn the standalone `claude -p` agent, wait for it to complete, and return
  * its exit code (null if spawn failed).
+ *
+ * If the agent does not complete within `timeoutMs`, SIGTERM is sent followed
+ * by SIGKILL after `SIGTERM_GRACE_MS`.
  */
 export async function spawnAgent(
   log: Logger,
@@ -928,7 +1018,8 @@ export async function spawnAgent(
   scratchPath: string,
   meshDir: string,
   detectionResult: DetectionResult,
-  anchors: AnchorSpec[]
+  anchors: AnchorSpec[],
+  timeoutMs: number = AGENT_TIMEOUT_MS
 ): Promise<number | null> {
   const sessionId = randomUUID();
   const promptText = buildAgentPrompt(scratchPath, detectionResult, anchors);
@@ -938,7 +1029,9 @@ export async function spawnAgent(
 
   const settings = {
     allowedTools: [
-      'Bash(git mesh *)',
+      // All git mesh commands must go through the scratch worktree (not the
+      // real worktree) so they operate on the scratch's .mesh/ directory.
+      `Bash(git -C ${scratchPath} mesh *)`,
       `Bash(git -C ${scratchPath} add .mesh/**)`,
       `Bash(git -C ${scratchPath} commit *)`,
       `Bash(git -C ${scratchPath} status)`,
@@ -980,9 +1073,26 @@ export async function spawnAgent(
       detached: true
     });
 
+    // Timeout: SIGTERM then SIGKILL after grace period
+    const timeoutHandle = setTimeout(() => {
+      log.warn(`spawn: agent timed out after ${timeoutMs}ms, sending SIGTERM`);
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (child.exitCode === null) {
+          log.warn('spawn: agent did not exit after SIGTERM, sending SIGKILL');
+          child.kill('SIGKILL');
+        }
+      }, SIGTERM_GRACE_MS).unref();
+    }, timeoutMs);
+    timeoutHandle.unref();
+
     const exitCode = await new Promise<number | null>((resolve) => {
-      child.on('exit', (code) => resolve(code));
+      child.on('exit', (code) => {
+        clearTimeout(timeoutHandle);
+        resolve(code);
+      });
       child.on('error', (err) => {
+        clearTimeout(timeoutHandle);
         log.error(`spawn: agent process error: ${err}`);
         resolve(null);
       });
@@ -1019,7 +1129,8 @@ export function landCommit(
   scratchPath: string,
   targetBranch: string,
   expectedOldTip: string,
-  _claimed: ClaimedFile
+  _claimed: ClaimedFile,
+  anchors: AnchorSpec[]
 ): boolean {
   let oldTip = expectedOldTip;
 
@@ -1052,8 +1163,10 @@ export function landCommit(
       log.warn(`land: CAS failed on attempt ${attempt}, re-resolving branch`);
     }
 
-    // Re-resolve branch to find if there's a new tip
-    const resolved = resolveBranch(log, repoRoot, { anchors: [], sha: oldTip, branch: targetBranch, created_at: '' });
+    // Re-resolve branch to find if there's a new tip.
+    // Preserve anchors so the path-based fallback can re-validate even when
+    // the old tip SHA is unreachable (branches containing a dead SHA).
+    const resolved = resolveBranch(log, repoRoot, { anchors, sha: oldTip, branch: targetBranch, created_at: '' });
     if (!resolved) {
       log.error('land: branch no longer reachable after CAS failure — discarding');
       return false;
@@ -1157,8 +1270,8 @@ export async function processClaimedRecord(
       return;
     }
 
-    // Step 10: CAS landing
-    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed);
+    // Step 10: CAS landing (pass anchors for re-resolution fallback)
+    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed, record.anchors);
     if (landed) {
       deleteClaim(log, claimed);
       log.info(`process: successfully landed ${claimed.originalName} on ${resolved.branch}`);
@@ -1211,6 +1324,7 @@ export interface DispatcherArgs {
   repoRoot: string;
   postRewrite: boolean;
   triggerWorktree?: string;
+  commitSha?: string;
 }
 
 /**
@@ -1221,6 +1335,7 @@ export function parseArgs(argv: string[]): DispatcherArgs | null {
   let repoRoot: string | undefined;
   let postRewrite = false;
   let triggerWorktree: string | undefined;
+  let commitSha: string | undefined;
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -1230,30 +1345,48 @@ export function parseArgs(argv: string[]): DispatcherArgs | null {
       postRewrite = true;
     } else if (arg === '--trigger-worktree' && i + 1 < argv.length) {
       triggerWorktree = argv[++i];
+    } else if (arg === '--commit-sha' && i + 1 < argv.length) {
+      commitSha = argv[++i];
     }
   }
 
   if (!repoRoot) return null;
-  return { repoRoot, postRewrite, triggerWorktree };
+  return { repoRoot, postRewrite, triggerWorktree, commitSha };
 }
 
 /**
  * Determine the main/root worktree path for the repository.  The agent's cwd
  * is always set to this path (never a linked worktree that could be removed).
+ *
+ * In `git worktree list --porcelain` the `bare` key appears as its own line
+ * inside a bare-repo entry block, NOT as part of the `worktree` path line.
+ * The old check (`!trimmed.includes('bare')`) tested the wrong line; a proper
+ * parser tracks the `bare` key on its own line within the current entry.
  */
 export function getMainWorktreePath(repoRoot: string): string {
-  // Use git worktree list --porcelain and return the first non-bare entry
   try {
     const out = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
     });
+
+    let currentPath = '';
+    let entryIsBare = false;
+
     for (const line of out.split('\n')) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('worktree ') && !trimmed.includes('bare')) {
-        return trimmed.slice('worktree '.length);
+      if (trimmed.startsWith('worktree ')) {
+        // Previous entry was non-bare — return it immediately
+        if (!entryIsBare && currentPath) return currentPath;
+        currentPath = trimmed.slice('worktree '.length);
+        entryIsBare = false;
+      } else if (trimmed === 'bare') {
+        entryIsBare = true;
       }
     }
+
+    // Last entry
+    if (!entryIsBare && currentPath) return currentPath;
   } catch {
     void 0;
   }
@@ -1287,16 +1420,7 @@ export async function main(): Promise<void> {
     // Post-rewrite path (step 6)
     // -----------------------------------------------------------------------
     if (args.postRewrite) {
-      let stdinData = '';
-      try {
-        // fs.readFileSync with fd 0 reads stdin (synchronous)
-        stdinData = fs.readFileSync('/dev/stdin', 'utf8');
-      } catch {
-        // stdin is a TTY or not available — no-op
-        log.info('dispatcher: --post-rewrite but stdin unavailable, skipping');
-        return;
-      }
-
+      const stdinData = await readStdinWithTimeout(log, 5_000);
       const shaMap = parsePostRewriteInput(stdinData);
       if (shaMap.size > 0) {
         log.info(`dispatcher: post-rewrite mapping has ${shaMap.size} entries`);
@@ -1316,18 +1440,18 @@ export async function main(): Promise<void> {
     // -----------------------------------------------------------------------
 
     // Determine changed paths in this commit
-    const changedPaths = getChangedPaths(args.repoRoot);
+    const changedPaths = getChangedPaths(args.repoRoot, args.commitSha);
     log.info(`dispatcher: commit changed ${changedPaths.size} paths`);
 
-    const sweepAll = shouldSweepAll(args.repoRoot);
-    if (sweepAll) log.info('dispatcher: performing full backlog sweep');
-
-    // Step 3+4: Queue operations under lock
+    // Step 3+4: Queue operations under lock (including sweep-counter read)
     const claimedRecords = withQueueLock(args.repoRoot, () => {
       // Step 5 (reclaim runs before promote)
       reclaim(log, args.repoRoot);
+      // Sweep counter: under lock so concurrent dispatchers don't race
+      const sweepAll = shouldSweepAll(args.repoRoot);
+      if (sweepAll) log.info('dispatcher: performing full backlog sweep');
       // Step 3 (promote)
-      promote(log, args.repoRoot, changedPaths, sweepAll);
+      promote(log, args.repoRoot, changedPaths, sweepAll, args.commitSha);
       // Step 4 (claim)
       return claim(log, args.repoRoot);
     });
@@ -1343,4 +1467,16 @@ export async function main(): Promise<void> {
   } catch (err) {
     log.error(`dispatcher: unhandled error: ${err}`);
   }
+}
+
+// Top-level entry point: invoke main() only when this module is the entry
+// point, not when imported by tests or other modules.
+const isMainModule =
+  process.argv[1]?.replace(/\\/g, '/').endsWith('dispatcher.mjs') ||
+  process.argv[1]?.replace(/\\/g, '/').endsWith('dispatcher.ts');
+if (isMainModule) {
+  main().catch((err: unknown) => {
+    console.error('dispatcher: fatal error:', err);
+    process.exit(1);
+  });
 }

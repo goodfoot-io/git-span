@@ -1020,7 +1020,7 @@ describe('Utility functions', () => {
           originalName: 'fake.json'
         };
 
-        const result = landCommit(logger, root, scratchPath, branch, expectedTip, claimedFile);
+        const result = landCommit(logger, root, scratchPath, branch, expectedTip, claimedFile, []);
         expect(result).toBe(true);
 
         const newTip = refExists(root, branch);
@@ -1103,6 +1103,7 @@ describe('parseArgs', () => {
     expect(args!.repoRoot).toBe('/tmp/repo');
     expect(args!.postRewrite).toBe(false);
     expect(args!.triggerWorktree).toBeUndefined();
+    expect(args!.commitSha).toBeUndefined();
   });
   it('parses --post-rewrite flag', () => {
     const args = parseArgs(['node', 'dispatcher.mjs', '--repo-root', '/tmp/repo', '--post-rewrite']);
@@ -1113,6 +1114,11 @@ describe('parseArgs', () => {
     const args = parseArgs(['node', 'dispatcher.mjs', '--repo-root', '/tmp/repo', '--trigger-worktree', '/tmp/wt']);
     expect(args).not.toBeNull();
     expect(args!.triggerWorktree).toBe('/tmp/wt');
+  });
+  it('parses --commit-sha', () => {
+    const args = parseArgs(['node', 'dispatcher.mjs', '--repo-root', '/tmp/repo', '--commit-sha', 'abc123def456']);
+    expect(args).not.toBeNull();
+    expect(args!.commitSha).toBe('abc123def456');
   });
   it('returns null when --repo-root is missing', () => {
     expect(parseArgs(['node', 'dispatcher.mjs'])).toBeNull();

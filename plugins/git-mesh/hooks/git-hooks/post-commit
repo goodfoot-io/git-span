@@ -9,7 +9,11 @@
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
 DISPATCHER="${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs"
 
-nohup node "${DISPATCHER}" --repo-root "${REPO_ROOT}" \
-  < /dev/null > /dev/null 2>&1 &
+# Capture HEAD before backgrounding so the dispatcher uses the commit that
+# triggered the hook, not whatever HEAD points to when it eventually runs.
+COMMIT_SHA=$(git rev-parse HEAD)
+
+nohup node "${DISPATCHER}" --repo-root "${REPO_ROOT}" --commit-sha "${COMMIT_SHA}" \
+  > /dev/null 2>&1 &
 
 exit 0

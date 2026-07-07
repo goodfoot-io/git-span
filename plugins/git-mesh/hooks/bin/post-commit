@@ -5,8 +5,12 @@
 
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
 
+# Capture HEAD before backgrounding so the dispatcher uses the commit that
+# triggered the hook, not whatever HEAD points to when it eventually runs.
+COMMIT_SHA=$(git rev-parse HEAD)
+
 nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
-  --repo-root "$REPO_ROOT" \
-  < /dev/null > /dev/null 2>&1 &
+  --repo-root "$REPO_ROOT" --commit-sha "$COMMIT_SHA" \
+  > /dev/null 2>&1 &
 
 exit 0

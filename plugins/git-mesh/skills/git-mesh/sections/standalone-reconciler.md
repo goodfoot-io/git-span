@@ -36,19 +36,32 @@ resolved target commit. Your prompt includes this path.
 All `git` commands must use `git -C <scratch-path> ...`. The following
 restrictions apply:
 
-### Allowed
-- `git -C <scratch-path> mesh stale` — examine drift (read-only)
-- `git -C <scratch-path> mesh list` — list meshes (read-only)
-- `git -C <scratch-path> mesh show <name>` — view mesh details (read-only)
-- `git -C <scratch-path> mesh why <name> -m "<why>"` — write/update a why
-- `git -C <scratch-path> mesh add <name> <anchor> [<anchor> ...]` — add/re-anchor
-- `git -C <scratch-path> mesh remove <name> <anchor>` — remove an anchor
-- `git -C <scratch-path> mesh delete <name>` — retire a mesh
-- `git -C <scratch-path> mesh move <old> <new>` — rename a mesh
-- `git -C <scratch-path> add .mesh/<name>` — stage a mesh file
-- `git -C <scratch-path> status` — inspect working tree state (read-only)
-- `git -C <scratch-path> diff` — inspect changes (read-only)
-- `git -C <scratch-path> log` — inspect history (read-only)
+### Allowed (exact --allowedTools patterns from dispatcher.ts)
+
+The agent shell is confined by these allowlist patterns:
+
+```
+Bash(git -C <scratch-path> mesh *)           # all mesh subcommands (add, stale, list, why, remove, delete, move, show, …)
+Bash(git -C <scratch-path> add .mesh/**)     # stage .mesh files only
+Bash(git -C <scratch-path> commit *)          # commit (only .mesh/ staged)
+Bash(git -C <scratch-path> status)            # inspect working tree
+Bash(git -C <scratch-path> diff)             # inspect changes
+Bash(git -C <scratch-path> log)              # inspect history
+```
+
+These resolve to commands such as:
+- `git -C <scratch-path> mesh stale`
+- `git -C <scratch-path> mesh list`
+- `git -C <scratch-path> mesh show <name>`
+- `git -C <scratch-path> mesh why <name> -m "<why>"`
+- `git -C <scratch-path> mesh add <name> <anchor> [<anchor> ...]`
+- `git -C <scratch-path> mesh remove <name> <anchor>`
+- `git -C <scratch-path> mesh delete <name>`
+- `git -C <scratch-path> mesh move <old> <new>`
+- `git -C <scratch-path> add .mesh/<name>`
+- `git -C <scratch-path> status`
+- `git -C <scratch-path> diff`
+- `git -C <scratch-path> log`
 
 ### Forbidden (error if attempted)
 - Any shell command outside the patterns above.
@@ -76,7 +89,7 @@ restrictions apply:
   New anchors must reference files that exist in the resolved target commit.
 - **One commit command:**
   ```
-  git -C <scratch-path> add .mesh
+  git -C <scratch-path> add .mesh/**
   git -C <scratch-path> commit -m "<summary>"
   ```
   The dispatcher expects exactly one new commit on the scratch worktree's HEAD
