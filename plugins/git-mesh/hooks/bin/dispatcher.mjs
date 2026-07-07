@@ -154,6 +154,39 @@ function moveRecord(from, to) {
 // src/dispatcher.ts
 var LOG_FILE_NAME = "dispatcher.log";
 var CLAIM_PID_SUFFIX = ".pid-";
+function readStdinWithTimeout(log, timeoutMs) {
+  if (process.stdin.isTTY) return Promise.resolve("");
+  return new Promise((resolve3) => {
+    const chunks = [];
+    let timer;
+    const cleanup = () => {
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onError);
+      if (timer) clearTimeout(timer);
+    };
+    const onData = (chunk) => {
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve3(Buffer.concat(chunks).toString("utf8"));
+    };
+    const onError = () => {
+      cleanup();
+      resolve3("");
+    };
+    timer = setTimeout(() => {
+      log.warn("dispatcher: stdin read timed out, continuing with empty data");
+      cleanup();
+      resolve3("");
+    }, timeoutMs);
+    process.stdin.on("data", onData);
+    process.stdin.on("end", onEnd);
+    process.stdin.on("error", onError);
+    process.stdin.resume();
+  });
+}
 function getLogFilePath(repoRoot) {
   const meshDir = resolveMeshRoot(repoRoot);
   const absMesh = nodePath2.resolve(repoRoot, meshDir);
@@ -187,11 +220,12 @@ function stripClaimSuffix(filename) {
   const idx = filename.lastIndexOf(CLAIM_PID_SUFFIX);
   return idx === -1 ? filename : filename.slice(0, idx);
 }
-function getChangedPaths(repoRoot) {
+function getChangedPaths(repoRoot, commitSha) {
+  const rev = commitSha ?? "HEAD";
   try {
     const out = execFileSync2(
       "git",
-      ["-C", repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "HEAD"],
+      ["-C", repoRoot, "diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "-M", rev],
       {
         stdio: ["ignore", "pipe", "pipe"],
         encoding: "utf8"
@@ -200,7 +234,17 @@ function getChangedPaths(repoRoot) {
     const paths = /* @__PURE__ */ new Set();
     for (const line of out.trim().split("\n")) {
       const trimmed = line.trim();
-      if (trimmed) paths.add(trimmed);
+      if (!trimmed) continue;
+      const parts = trimmed.split("	");
+      if (parts.length < 2) continue;
+      const status = parts[0];
+      if (!status) continue;
+      if (status.startsWith("R")) {
+        if (parts[1]) paths.add(parts[1]);
+        if (parts[2]) paths.add(parts[2]);
+      } else if (parts[1]) {
+        paths.add(parts[1]);
+      }
     }
     return paths;
   } catch {
@@ -382,7 +426,7 @@ function rmEmptyScratchDirs(dir) {
   } catch {
   }
 }
-function promote(log, repoRoot, changedPaths, sweepAll) {
+function promote(log, repoRoot, changedPaths, sweepAll, commitSha) {
   const pDir = preCommitDir(repoRoot);
   let files;
   try {
@@ -391,7 +435,7 @@ function promote(log, repoRoot, changedPaths, sweepAll) {
     return;
   }
   if (files.length === 0) return;
-  const sha = getHeadSha(repoRoot);
+  const sha = commitSha ?? getHeadSha(repoRoot);
   const branch = getCurrentBranch(repoRoot);
   for (const file of files) {
     const filePath = nodePath2.join(pDir, file);
@@ -553,7 +597,18 @@ function resolveBranch(log, repoRoot, record, triggerWorktree) {
       return { branch: resolved, sha: tipSha };
     }
   }
-  for (const branch of containingBranches) {
+  let candidateBranches = containingBranches;
+  if (candidateBranches.length === 0) {
+    try {
+      const out = execFileSync2("git", ["-C", repoRoot, "branch", "--format=%(refname:short)"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8"
+      });
+      candidateBranches = out.trim().split("\n").filter(Boolean);
+    } catch {
+    }
+  }
+  for (const branch of candidateBranches) {
     const tipSha = refExists(repoRoot, branch);
     if (!tipSha) continue;
     if (doAnchorsExistAt(repoRoot, tipSha, record.anchors)) {
@@ -719,16 +774,20 @@ function buildAgentPrompt(scratchPath, detectionResult, anchors) {
   lines.push("- Never touch source files outside .mesh/.");
   lines.push("- Only commit .mesh/ changes \u2014 one commit per session.");
   lines.push("- Only commit once all anchored source files are already committed.");
-  lines.push(`- Use: git -C ${scratchPath} add .mesh && git -C ${scratchPath} commit -m "<summary>"`);
+  lines.push(`- Use: git -C ${scratchPath} add .mesh/** && git -C ${scratchPath} commit -m "<summary>"`);
   return lines.join("\n");
 }
-async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, anchors) {
+var AGENT_TIMEOUT_MS = 15 * 60 * 1e3;
+var SIGTERM_GRACE_MS = 1e4;
+async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, anchors, timeoutMs = AGENT_TIMEOUT_MS) {
   const sessionId = randomUUID2();
   const promptText = buildAgentPrompt(scratchPath, detectionResult, anchors);
   const meshDirAbs = nodePath2.resolve(repoRoot, meshDir);
   const settings = {
     allowedTools: [
-      "Bash(git mesh *)",
+      // All git mesh commands must go through the scratch worktree (not the
+      // real worktree) so they operate on the scratch's .mesh/ directory.
+      `Bash(git -C ${scratchPath} mesh *)`,
       `Bash(git -C ${scratchPath} add .mesh/**)`,
       `Bash(git -C ${scratchPath} commit *)`,
       `Bash(git -C ${scratchPath} status)`,
@@ -766,9 +825,24 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
       stdio: "ignore",
       detached: true
     });
+    const timeoutHandle = setTimeout(() => {
+      log.warn(`spawn: agent timed out after ${timeoutMs}ms, sending SIGTERM`);
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null) {
+          log.warn("spawn: agent did not exit after SIGTERM, sending SIGKILL");
+          child.kill("SIGKILL");
+        }
+      }, SIGTERM_GRACE_MS).unref();
+    }, timeoutMs);
+    timeoutHandle.unref();
     const exitCode = await new Promise((resolve3) => {
-      child.on("exit", (code) => resolve3(code));
+      child.on("exit", (code) => {
+        clearTimeout(timeoutHandle);
+        resolve3(code);
+      });
       child.on("error", (err) => {
+        clearTimeout(timeoutHandle);
         log.error(`spawn: agent process error: ${err}`);
         resolve3(null);
       });
@@ -785,7 +859,7 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
   }
 }
 var MAX_CAS_ATTEMPTS = 3;
-function landCommit(log, repoRoot, scratchPath, targetBranch, expectedOldTip, _claimed) {
+function landCommit(log, repoRoot, scratchPath, targetBranch, expectedOldTip, _claimed, anchors) {
   let oldTip = expectedOldTip;
   for (let attempt = 1; attempt <= MAX_CAS_ATTEMPTS; attempt++) {
     let agentSha;
@@ -810,7 +884,7 @@ function landCommit(log, repoRoot, scratchPath, targetBranch, expectedOldTip, _c
     } catch {
       log.warn(`land: CAS failed on attempt ${attempt}, re-resolving branch`);
     }
-    const resolved = resolveBranch(log, repoRoot, { anchors: [], sha: oldTip, branch: targetBranch, created_at: "" });
+    const resolved = resolveBranch(log, repoRoot, { anchors, sha: oldTip, branch: targetBranch, created_at: "" });
     if (!resolved) {
       log.error("land: branch no longer reachable after CAS failure \u2014 discarding");
       return false;
@@ -878,7 +952,7 @@ async function processClaimedRecord(log, repoRoot, triggerWorktree, claimed) {
       cleanupScratch();
       return;
     }
-    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed);
+    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed, record.anchors);
     if (landed) {
       deleteClaim(log, claimed);
       log.info(`process: successfully landed ${claimed.originalName} on ${resolved.branch}`);
@@ -913,6 +987,7 @@ function parseArgs(argv) {
   let repoRoot;
   let postRewrite = false;
   let triggerWorktree;
+  let commitSha;
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--repo-root" && i + 1 < argv.length) {
@@ -921,10 +996,12 @@ function parseArgs(argv) {
       postRewrite = true;
     } else if (arg === "--trigger-worktree" && i + 1 < argv.length) {
       triggerWorktree = argv[++i];
+    } else if (arg === "--commit-sha" && i + 1 < argv.length) {
+      commitSha = argv[++i];
     }
   }
   if (!repoRoot) return null;
-  return { repoRoot, postRewrite, triggerWorktree };
+  return { repoRoot, postRewrite, triggerWorktree, commitSha };
 }
 function getMainWorktreePath(repoRoot) {
   try {
@@ -932,12 +1009,19 @@ function getMainWorktreePath(repoRoot) {
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8"
     });
+    let currentPath = "";
+    let entryIsBare = false;
     for (const line of out.split("\n")) {
       const trimmed = line.trim();
-      if (trimmed.startsWith("worktree ") && !trimmed.includes("bare")) {
-        return trimmed.slice("worktree ".length);
+      if (trimmed.startsWith("worktree ")) {
+        if (!entryIsBare && currentPath) return currentPath;
+        currentPath = trimmed.slice("worktree ".length);
+        entryIsBare = false;
+      } else if (trimmed === "bare") {
+        entryIsBare = true;
       }
     }
+    if (!entryIsBare && currentPath) return currentPath;
   } catch {
   }
   return repoRoot;
@@ -953,13 +1037,7 @@ async function main() {
   const mainWorktree = getMainWorktreePath(args.repoRoot);
   try {
     if (args.postRewrite) {
-      let stdinData = "";
-      try {
-        stdinData = fs2.readFileSync("/dev/stdin", "utf8");
-      } catch {
-        log.info("dispatcher: --post-rewrite but stdin unavailable, skipping");
-        return;
-      }
+      const stdinData = await readStdinWithTimeout(log, 5e3);
       const shaMap = parsePostRewriteInput(stdinData);
       if (shaMap.size > 0) {
         log.info(`dispatcher: post-rewrite mapping has ${shaMap.size} entries`);
@@ -972,13 +1050,13 @@ async function main() {
       log.info("dispatcher: post-rewrite complete");
       return;
     }
-    const changedPaths = getChangedPaths(args.repoRoot);
+    const changedPaths = getChangedPaths(args.repoRoot, args.commitSha);
     log.info(`dispatcher: commit changed ${changedPaths.size} paths`);
-    const sweepAll = shouldSweepAll(args.repoRoot);
-    if (sweepAll) log.info("dispatcher: performing full backlog sweep");
     const claimedRecords = withQueueLock(args.repoRoot, () => {
       reclaim(log, args.repoRoot);
-      promote(log, args.repoRoot, changedPaths, sweepAll);
+      const sweepAll = shouldSweepAll(args.repoRoot);
+      if (sweepAll) log.info("dispatcher: performing full backlog sweep");
+      promote(log, args.repoRoot, changedPaths, sweepAll, args.commitSha);
       return claim(log, args.repoRoot);
     });
     log.info(`dispatcher: claimed ${claimedRecords.length} records`);
@@ -989,6 +1067,13 @@ async function main() {
   } catch (err) {
     log.error(`dispatcher: unhandled error: ${err}`);
   }
+}
+var isMainModule = process.argv[1]?.replace(/\\/g, "/").endsWith("dispatcher.mjs") || process.argv[1]?.replace(/\\/g, "/").endsWith("dispatcher.ts");
+if (isMainModule) {
+  main().catch((err) => {
+    console.error("dispatcher: fatal error:", err);
+    process.exit(1);
+  });
 }
 export {
   anchorsIntersectChangedPaths,
