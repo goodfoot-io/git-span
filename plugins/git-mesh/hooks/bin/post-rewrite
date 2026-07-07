@@ -8,7 +8,9 @@ REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
 
 # Capture stdin (old->new SHA mapping from git post-rewrite) and pipe to dispatcher
 INPUT=$(cat)
-echo "$INPUT" | nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
+DISPATCHER="${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs"
+
+echo "$INPUT" | nohup node "${DISPATCHER}" \
   --repo-root "$REPO_ROOT" --post-rewrite \
   > /dev/null 2>&1 &
 
