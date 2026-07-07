@@ -15,70 +15,54 @@ Two thin-trigger git hooks drive the background mesh-reconciliation pipeline:
   The dispatcher demotes any post-commit records whose stamped SHA was
   rewritten, so they are re-promoted and re-detected against the new commit.
 
-Both hooks are **thin triggers** — they spawn a background process, return
+Both hooks are **thin triggers** -- they spawn a background process, return
 exit code 0 immediately, and never propagate downstream failures. All logging,
 error handling, and retry logic lives in the dispatcher
 (`hooks/bin/dispatcher.mjs`), which writes to `.mesh/dispatcher.log`.
 
+## Hook scripts
+
+Reference shell scripts are provided at:
+
+- `plugins/git-mesh/hooks/git-hooks/post-commit`
+- `plugins/git-mesh/hooks/git-hooks/post-rewrite`
+
+Each script resolves the dispatcher relative to the repository root (via `git
+rev-parse --show-toplevel`) so no environment variables are needed. They work
+from any invocation context -- Claude Code sessions, plain terminals, and CI
+environments.
+
+The scripts are POSIX `sh` (no bashisms) and safe to use as-is or as a template
+for custom hook configurations.
+
 ## Installation
 
-Git hooks are **per-clone** configuration. There is no auto-installer — hook
+Git hooks are **per-clone** configuration. There is no auto-installer -- hook
 installation is manual by design, matching the same pattern used for the
 optional merge driver (see below).
 
-If you already have existing `post-commit` or `post-rewrite` hooks, **append
-the mesh hook commands** rather than replacing the file. Never overwrite a
-working hook without verifying it is not used by other tooling.
-
 ### post-commit
 
-Create or append to `.git/hooks/post-commit` in your repository:
+Copy or symlink the reference script into your repository's hooks directory:
 
-```sh
-#!/bin/sh
-# Thin trigger for git-mesh post-commit pipeline.
-# Spawns the dispatcher detached and returns 0 immediately.
-# All real work happens in the background; failures log to .mesh/dispatcher.log.
+```bash
+# Symlink (recommended -- picks up updates)
+ln -s ../../plugins/git-mesh/hooks/git-hooks/post-commit .git/hooks/post-commit
 
-REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-
-nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
-  --repo-root "$REPO_ROOT" \
-  < /dev/null > /dev/null 2>&1 &
-
-exit 0
+# Or copy
+cp plugins/git-mesh/hooks/git-hooks/post-commit .git/hooks/post-commit
 ```
 
 The file must be executable (`chmod +x .git/hooks/post-commit`).
 
-`$CLAUDE_PLUGIN_ROOT` is set by the Claude Code runtime when it activates the
-plugin. If you invoke hooks outside of a Claude Code session (e.g., from a
-plain terminal or CI), you must set `CLAUDE_PLUGIN_ROOT` in the environment:
-
-```bash
-export CLAUDE_PLUGIN_ROOT="/path/to/plugins/git-mesh"
-```
-
 ### post-rewrite
 
-Create or append to `.git/hooks/post-rewrite` in your repository:
+```bash
+# Symlink (recommended)
+ln -s ../../plugins/git-mesh/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
 
-```sh
-#!/bin/sh
-# Thin trigger for git-mesh post-rewrite pipeline.
-# Spawns the dispatcher detached with the --post-rewrite flag and
-# passes the old->new SHA mapping received on stdin.
-# All real work happens in the background; failures log to .mesh/dispatcher.log.
-
-REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-
-# Capture stdin (old->new SHA mapping from git post-rewrite) and pipe to dispatcher
-INPUT=$(cat)
-echo "$INPUT" | nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
-  --repo-root "$REPO_ROOT" --post-rewrite \
-  > /dev/null 2>&1 &
-
-exit 0
+# Or copy
+cp plugins/git-mesh/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
 ```
 
 The file must be executable (`chmod +x .git/hooks/post-rewrite`).
@@ -87,7 +71,7 @@ The file must be executable (`chmod +x .git/hooks/post-rewrite`).
 
 If your repository already has `post-commit` or `post-rewrite` hooks (for
 version bumping, build steps, doc validation, or other tooling), append the
-mesh commands rather than overwriting:
+mesh hook line rather than overwriting:
 
 ```sh
 #!/bin/sh
@@ -96,11 +80,15 @@ mesh commands rather than overwriting:
 
 # git-mesh post-commit trigger
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
-  --repo-root "$REPO_ROOT" \
+nohup node "${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs" \
+  --repo-root "${REPO_ROOT}" \
   < /dev/null > /dev/null 2>&1 &
 exit 0
 ```
+
+Some tools (e.g., husky) manage hook files through their own lifecycle. In
+those cases, call the mesh hook from within the existing hook file rather
+than replacing the managed file.
 
 ### stdin ordering for post-rewrite
 
@@ -145,22 +133,22 @@ the `.mesh/` file content along with everything else in the commit, and a
 fresh clone gets the meshes via the same `git clone`/`git pull` that brings
 the code.
 
-Mesh files are LF-pinned on all platforms automatically — no `core.autocrlf`
+Mesh files are LF-pinned on all platforms automatically -- no `core.autocrlf`
 configuration is needed. The `.mesh/` directory contains a `.gitattributes`
 that enforces `* text eol=lf`, so Windows and Unix checkouts produce identical
 mesh content without any developer action.
 
 The only other automation is the Claude Code mesh-overlap hook (PreToolUse),
-which surfaces intersecting mesh anchors inline — see `./understanding-hook-output.md`.
+which surfaces intersecting mesh anchors inline -- see `./understanding-hook-output.md`.
 
 ## Optional merge driver
 
-This is the one piece of git *config* meshes can use — and it is **optional**,
+This is the one piece of git *config* meshes can use -- and it is **optional**,
 not required. Registering a merge driver makes git collapse the easy majority
 of `.mesh/` conflicts in place during `git merge` so they never surface.
 Skipping it costs nothing: `.mesh/**` falls back to git's line merge, and
 `git mesh stale --fix` resolves the result afterward to the identical clean
-state (see `./command-reference.md` § "Merge conflict resolution").
+state (see `./command-reference.md` section "Merge conflict resolution").
 Registration has two parts, because git distributes one and not the other:
 
 ```gitattributes
@@ -169,13 +157,13 @@ Registration has two parts, because git distributes one and not the other:
 ```
 
 ```ini
-# .git/config — per-clone, NOT distributed by git; each clone adds it once
+# .git/config -- per-clone, NOT distributed by git; each clone adds it once
 [merge "mesh"]
     name = git-mesh structural mesh merge
     driver = git mesh merge-driver %O %A %B %L
 ```
 
-There is **no auto-installer** — registration is manual by design, and
+There is **no auto-installer** -- registration is manual by design, and
 `git mesh doctor` does not check for it. Never run `git mesh merge-driver` by
 hand; git invokes it with the temp-file arguments shown above. Until a clone
 adds the `.git/config` block, conflicts simply fall back to `--fix`.

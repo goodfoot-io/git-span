@@ -108,14 +108,19 @@ export function stripClaimSuffix(filename: string): string {
 
 /**
  * Get the set of file paths changed in the current HEAD commit.
+ * Includes --root to handle the initial commit.
  * Returns absolute or repo-relative POSIX paths (as output by diff-tree).
  */
 export function getChangedPaths(repoRoot: string): Set<string> {
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
-    });
+    const out = execFileSync(
+      'git',
+      ['-C', repoRoot, 'diff-tree', '--no-commit-id', '--name-only', '-r', '--root', 'HEAD'],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8'
+      }
+    );
     const paths = new Set<string>();
     for (const line of out.trim().split('\n')) {
       const trimmed = line.trim();
@@ -428,6 +433,7 @@ export function promote(log: Logger, repoRoot: string, changedPaths: Set<string>
 
     const postPath = nodePath.join(postCommitDir(repoRoot), file);
     try {
+      fs.mkdirSync(postCommitDir(repoRoot), { recursive: true });
       writeJsonFileAtomic(postPath, postRecord);
       fs.unlinkSync(filePath);
       log.info(`promote: promoted ${file} (${record.anchors.length} anchors, branch=${branch ?? 'detached'})`);
@@ -567,6 +573,7 @@ export function postRewriteDemote(log: Logger, repoRoot: string, shaMap: Map<str
 
     const prePath = nodePath.join(preCommitDir(repoRoot), file);
     try {
+      fs.mkdirSync(preCommitDir(repoRoot), { recursive: true });
       writeJsonFileAtomic(prePath, preRecord);
       fs.unlinkSync(filePath);
       log.info(`demote: demoted ${file} (SHA ${record.sha.slice(0, 8)} was rewritten)`);

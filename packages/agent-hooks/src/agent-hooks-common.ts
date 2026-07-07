@@ -496,7 +496,13 @@ export function resolveGitCommonDir(repoRoot: string): string {
     stdio: ['ignore', 'pipe', 'ignore'],
     encoding: 'utf8'
   });
-  return toPosix(out.trim());
+  const trimmed = toPosix(out.trim());
+  // git returns a relative path (e.g. ".git") for simple repos. Resolve it
+  // against repoRoot so callers never depend on process.cwd().
+  if (!nodePath.isAbsolute(trimmed)) {
+    return toPosix(nodePath.resolve(repoRoot, trimmed));
+  }
+  return trimmed;
 }
 
 /**

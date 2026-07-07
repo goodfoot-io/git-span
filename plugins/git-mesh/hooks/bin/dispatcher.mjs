@@ -63,7 +63,11 @@ function resolveGitCommonDir(repoRoot) {
     stdio: ["ignore", "pipe", "ignore"],
     encoding: "utf8"
   });
-  return toPosix(out.trim());
+  const trimmed = toPosix(out.trim());
+  if (!nodePath.isAbsolute(trimmed)) {
+    return toPosix(nodePath.resolve(repoRoot, trimmed));
+  }
+  return trimmed;
 }
 function queueRoot(repoRoot) {
   return nodePath.join(resolveGitCommonDir(repoRoot), "git-mesh");
@@ -185,10 +189,14 @@ function stripClaimSuffix(filename) {
 }
 function getChangedPaths(repoRoot) {
   try {
-    const out = execFileSync2("git", ["-C", repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8"
-    });
+    const out = execFileSync2(
+      "git",
+      ["-C", repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "HEAD"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8"
+      }
+    );
     const paths = /* @__PURE__ */ new Set();
     for (const line of out.trim().split("\n")) {
       const trimmed = line.trim();
@@ -408,6 +416,7 @@ function promote(log, repoRoot, changedPaths, sweepAll) {
     };
     const postPath = nodePath2.join(postCommitDir(repoRoot), file);
     try {
+      fs2.mkdirSync(postCommitDir(repoRoot), { recursive: true });
       writeJsonFileAtomic(postPath, postRecord);
       fs2.unlinkSync(filePath);
       log.info(`promote: promoted ${file} (${record.anchors.length} anchors, branch=${branch ?? "detached"})`);
@@ -497,6 +506,7 @@ function postRewriteDemote(log, repoRoot, shaMap) {
     };
     const prePath = nodePath2.join(preCommitDir(repoRoot), file);
     try {
+      fs2.mkdirSync(preCommitDir(repoRoot), { recursive: true });
       writeJsonFileAtomic(prePath, preRecord);
       fs2.unlinkSync(filePath);
       log.info(`demote: demoted ${file} (SHA ${record.sha.slice(0, 8)} was rewritten)`);
@@ -756,11 +766,11 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
       stdio: "ignore",
       detached: true
     });
-    const exitCode = await new Promise((resolve2) => {
-      child.on("exit", (code) => resolve2(code));
+    const exitCode = await new Promise((resolve3) => {
+      child.on("exit", (code) => resolve3(code));
       child.on("error", (err) => {
         log.error(`spawn: agent process error: ${err}`);
-        resolve2(null);
+        resolve3(null);
       });
     });
     if (exitCode === null) {
