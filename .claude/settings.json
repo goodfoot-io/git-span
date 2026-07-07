@@ -21,6 +21,12 @@
     "defaultMode": "bypassPermissions",
     "disableAutoMode": "disable"
   },
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "askUserQuestionTimeout": "never",
   "hooks": {
     "Stop": [
       {
