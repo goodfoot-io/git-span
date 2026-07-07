@@ -1,0 +1,15 @@
+#!/bin/sh
+# git-mesh post-commit hook -- thin trigger.
+# Spawns the dispatcher detached and returns 0 immediately.
+# All real work happens in the background; failures log to .mesh/dispatcher.log.
+#
+# Installation: copy or symlink into .git/hooks/post-commit.
+# If a post-commit hook already exists, append the nohup line to it.
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+DISPATCHER="${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs"
+
+nohup node "${DISPATCHER}" --repo-root "${REPO_ROOT}" \
+  < /dev/null > /dev/null 2>&1 &
+
+exit 0

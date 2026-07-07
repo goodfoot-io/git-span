@@ -1,0 +1,15 @@
+#!/bin/sh
+# Thin trigger for git-mesh post-rewrite pipeline.
+# Spawns the dispatcher detached with the --post-rewrite flag and
+# passes the old->new SHA mapping received on stdin.
+# All real work happens in the background; failures log to .mesh/dispatcher.log.
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+
+# Capture stdin (old->new SHA mapping from git post-rewrite) and pipe to dispatcher
+INPUT=$(cat)
+echo "$INPUT" | nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
+  --repo-root "$REPO_ROOT" --post-rewrite \
+  > /dev/null 2>&1 &
+
+exit 0

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Thin trigger for git-mesh post-commit pipeline.
+# Spawns the dispatcher detached and returns 0 immediately.
+# All real work happens in the background; failures log to .mesh/dispatcher.log.
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+
+nohup node "$CLAUDE_PLUGIN_ROOT/hooks/bin/dispatcher.mjs" \
+  --repo-root "$REPO_ROOT" \
+  < /dev/null > /dev/null 2>&1 &
+
+exit 0
