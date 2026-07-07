@@ -457,3 +457,194 @@ export function formatAnchor(path: string, kind: TouchKind, range?: LineRange): 
   }
   return path;
 }
+
+// ---------------------------------------------------------------------------
+// Anchor spec type (shared with queue record types)
+// ---------------------------------------------------------------------------
+
+export interface AnchorSpec {
+  path: string;
+  kind: TouchKind;
+  range?: LineRange;
+}
+
+// ---------------------------------------------------------------------------
+// Queue record types
+// ---------------------------------------------------------------------------
+
+export interface PreCommitRecord {
+  anchors: AnchorSpec[];
+  created_at: string;
+}
+
+export interface PostCommitRecord extends PreCommitRecord {
+  sha: string;
+  branch: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Queue directory helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the git common directory for the given repo root.
+ * This is the shared directory (not the worktree-specific .git), so queue
+ * records survive worktree deletion.
+ */
+export function resolveGitCommonDir(repoRoot: string): string {
+  const out = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8'
+  });
+  return toPosix(out.trim());
+}
+
+/**
+ * Root of the git-mesh queue directory tree, under the git common dir.
+ */
+export function queueRoot(repoRoot: string): string {
+  return nodePath.join(resolveGitCommonDir(repoRoot), 'git-mesh');
+}
+
+/** Directory for pre-commit records (written by the Stop hook). */
+export function preCommitDir(repoRoot: string): string {
+  return nodePath.join(queueRoot(repoRoot), 'pre-commit');
+}
+
+/** Directory for post-commit records (promoted from pre-commit). */
+export function postCommitDir(repoRoot: string): string {
+  return nodePath.join(queueRoot(repoRoot), 'post-commit');
+}
+
+/** Directory for claimed records (picked up by the dispatcher). */
+export function claimedDir(repoRoot: string): string {
+  return nodePath.join(postCommitDir(repoRoot), 'claimed');
+}
+
+/** Directory for scratch worktrees created by the dispatcher. */
+export function scratchDir(repoRoot: string): string {
+  return nodePath.join(queueRoot(repoRoot), 'scratch');
+}
+
+// ---------------------------------------------------------------------------
+// Queue lock
+// ---------------------------------------------------------------------------
+
+/**
+ * Acquire an exclusive queue lock.
+ *
+ * Spins with LOCK_RETRY_INTERVAL_MS sleeps up to LOCK_MAX_RETRIES attempts.
+ * A lock whose mtime is older than LOCK_STALE_MS is treated as abandoned and
+ * reclaimed atomically via rename + unlink (same pattern as acquireLock).
+ */
+function acquireQueueLock(lockPath: string): string {
+  let attempts = 0;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.closeSync(fd);
+      return lockPath;
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code !== 'EEXIST') throw err;
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          const sideline = `${lockPath}.stale.${process.pid}.${randomUUID()}`;
+          try {
+            fs.renameSync(lockPath, sideline);
+            try {
+              fs.unlinkSync(sideline);
+            } catch {
+              void 0;
+            }
+          } catch {
+            void 0;
+          }
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (++attempts >= LOCK_MAX_RETRIES) {
+        throw new Error(`withQueueLock: could not acquire lock after ${LOCK_MAX_RETRIES} retries`);
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_INTERVAL_MS);
+    }
+  }
+}
+
+/**
+ * Execute a function under the exclusive queue lock.
+ * The lock file is at `<queueRoot(repoRoot)>/.queue.lock`.
+ */
+export function withQueueLock<T>(repoRoot: string, fn: () => T): T {
+  const qRoot = queueRoot(repoRoot);
+  const lockPath = nodePath.join(qRoot, '.queue.lock');
+  fs.mkdirSync(qRoot, { recursive: true });
+  const acquiredPath = acquireQueueLock(lockPath);
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.unlinkSync(acquiredPath);
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic record I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * Read and parse a JSON file.
+ * Propagates ENOENT or parse errors to the caller.
+ */
+export function readJsonFile<T>(path: string): T {
+  const raw = fs.readFileSync(path, 'utf8');
+  return JSON.parse(raw) as T;
+}
+
+/**
+ * Atomically write a JSON file using tmp+rename.
+ * The temp name carries the pid and a uuid so concurrent writers never collide.
+ */
+export function writeJsonFileAtomic<T>(path: string, data: T): void {
+  const tmpPath = `${path}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf8');
+    fs.renameSync(tmpPath, path);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      void 0;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Atomically move (rename) a record file from one directory to another.
+ * Both paths must reside on the same filesystem (guaranteed within the queue).
+ */
+export function moveRecord(from: string, to: string): void {
+  fs.renameSync(from, to);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-commit record writer
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a pre-commit record to the queue directory.
+ * The file is written atomically (tmp+rename) with a random UUID filename.
+ */
+export function writePreCommitRecord(repoRoot: string, record: PreCommitRecord): void {
+  const dir = preCommitDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  const path = nodePath.join(dir, `${randomUUID()}.json`);
+  writeJsonFileAtomic(path, record);
+}
