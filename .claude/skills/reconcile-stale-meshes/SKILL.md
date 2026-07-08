@@ -130,6 +130,81 @@ The fork returns its result. If it succeeded, the main agent runs `git log --one
 
 ---
 
+## Variant: parallel forks (many stale meshes)
+
+When there are more than a handful of stale meshes (roughly > 5), the research and execution can be parallelized across multiple forks. Each fork handles a disjoint subset of meshes — mesh files under `.mesh/` are independent, so forks operating on different meshes cannot conflict on the files they mutate.
+
+The constraint: `git mesh stale --fix` is global (it touches all meshes), so it must run **once** before any fork starts. Only the main agent commits at the end — parallel commits to the same repo would race.
+
+### Phase 1 — Main agent: `--fix` + partition
+
+```bash
+git mesh stale --fix
+git add .mesh && git commit -m "Re-anchor moved mesh anchors"
+```
+
+Partition the remaining stale meshes into disjoint subsets. Each fork gets a subset.
+
+### Phase 2 — Parallel research + execution forks
+
+Fork N subagents **without worktree isolation** (they share the main worktree but touch disjoint `.mesh/` files). Each fork:
+
+1. Researches its assigned meshes (read why, read current content, read history `<current>`)
+2. Writes one-sentence confirmations
+3. Executes mutations (remove/add anchors for its meshes only)
+4. Verifies with `git mesh stale` — its meshes should no longer appear
+5. Returns: confirmations written, commands executed, any failures
+
+The fork prompt for each:
+
+```markdown
+You are assigned a subset of stale meshes to reconcile. Only touch `.mesh/`
+files for your assigned meshes. Do not commit — the main agent commits once
+at the end.
+
+## Your meshes
+- <name-1>
+- <name-2>
+
+## For each mesh
+
+1. `git mesh why <name>` — note if empty
+2. Read current bytes at each stale anchor location
+3. `git mesh history <name>` — compare `<current>` against anchored content
+4. Write a one-sentence confirmation of the relationship
+5. Classify and execute: remove old anchor, add new anchor at correct range (or
+   same range to re-hash), delete the mesh, or report that code needs fixing first
+6. `git mesh stale` — confirm this mesh no longer appears in output
+
+## Rules
+- Never bulk re-add every anchor to clear the exit code
+- Each CHANGED finding requires its own one-sentence confirmation
+- Stop and report if any finding cannot be confirmed
+- Do NOT commit
+```
+
+### Phase 3 — Main agent: collect, verify, commit
+
+After all forks complete:
+
+```bash
+git mesh stale     # must exit 0 with "0 stale"
+git mesh doctor    # must report "no findings"
+git add .mesh && git commit -m "Reconcile stale meshes"
+```
+
+If any fork reported a failure, or `git mesh stale` is non-zero, return to the failing meshes with a single fork (or inline) to resolve them.
+
+### When to use each mode
+
+| Mode | Threshold | Why |
+|---|---|---|
+| Single fork | ≤ 5 stale meshes | Fork overhead dominates; serial execution is fast enough |
+| Parallel forks | > 5 stale meshes | Research (reading files, comparing content) scales linearly with mesh count; parallelism cuts wall-clock time proportionally |
+| Inline (no fork) | 1–2 stale meshes, trivial changes | Fork setup cost exceeds the work itself |
+
+---
+
 ## Git allowlist
 
 When resolving meshes in a shared worktree, restrict to: `git mesh …`, `git add .mesh[/<name>]`, `git commit -m` (never `-a` or `--amend`), `git checkout <commit-ish> -- .mesh/<name>`, and read-only `git status`/`git diff`/`git log`/`git show`. Never touch paths outside `.mesh/` or rewind HEAD.
