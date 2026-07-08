@@ -5,7 +5,11 @@ description: Reconcile stale git meshes surfaced by `git mesh stale`. Use when a
 
 <instructions>
 
-The unit of work is a **file-connected component** — a cluster of stale meshes that share at least one anchored file. Within a component, meshes must be reconciled together because they share context about what the correct line ranges are for the files they all anchor. Across components, meshes are fully independent. Each component goes to one fork; components run in parallel.
+Reconcile every stale mesh reported by `git mesh stale`. The workflow has two phases: **research** (read-only — identify what drifted and why) then **execution** (mutate `.mesh/` files to re-anchor, re-hash, or delete). The research phase is done inline by the main agent; the execution phase is handed to forked subagents.
+
+Work is partitioned by **file-connected components** — clusters of stale meshes that share at least one anchored file. Within a component, meshes must be reconciled together because they share context about what the correct line ranges are for the files they all anchor. Across components, meshes are fully independent. Each component goes to one fork; all forks run in parallel. A mesh that shares no files with any other stale mesh is a component of size one — still a valid fork unit.
+
+Some steps reference sections of the `git-mesh:git-mesh` skill (e.g. "the command-reference section"). These are conditional — invoke `git-mesh:git-mesh` only when the topic exceeds what is explained here. The skill's sections are loaded together when the skill is invoked; navigate to the named section within it.
 
 ---
 
@@ -27,6 +31,7 @@ If `--fix` changed meshes:
   git add <source-files> && git commit -m "Commit shifted source files"
   git add .mesh && git commit -m "Re-anchor moved mesh anchors"
   ```
+  *(If this status is unfamiliar, invoke `git-mesh:git-mesh` — the terminal-statuses section covers `resolved, pending commit`.)*
 - **Otherwise**: commit the mesh directly:
   ```bash
   git add .mesh && git commit -m "Re-anchor moved mesh anchors"
@@ -50,6 +55,8 @@ For each stale mesh, enumerate its anchors:
 git mesh show <name>
 ```
 
+*(If the `show` output format is unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the TOML schema.)*
+
 Build a graph:
 - **Nodes** = stale meshes
 - **Edges** = two meshes share at least one anchored file path (regardless of line range)
@@ -57,8 +64,6 @@ Build a graph:
 Find the connected components of this graph. Each component is one unit of work.
 
 *Example: `wiki/meta/update-order`, `git-mesh-touchpoints/cli-config`, and `wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs` — they form one component. `docs/merge-conflict-fix-contract` anchors only `command-reference.md` and `terminal-statuses.md`, which no other stale mesh anchors — it forms a second component. These two components can be forked in parallel.*
-
-A mesh that shares no files with any other stale mesh is a component of size 1 — still a valid component, still forkable.
 
 ### 4. Survey blast radius per component
 
@@ -69,15 +74,17 @@ For the files that connect each component, understand what else touches them:
 git mesh tree '<shared-file>' --depth 2
 ```
 
+*(If the tree output format is unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the nested markdown-list schema.)*
+
 This confirms which meshes outside the component also anchor these files (they aren't stale, but they set context for what the correct range should be).
 
 ### 5. Confirm each CHANGED anchor
 
 For each CHANGED finding, within its component:
 
-1. Read the why: `git mesh why <name>`. Note if it's empty.
+1. The why is printed inline in the stale output — note if it's empty. (`git mesh stale` already shows the why for each mesh that has one; running `git mesh why <name>` separately to *read* is redundant.)
 2. Read the current bytes at the anchored location with the Read tool.
-3. Read the anchored bytes from history — start with just the `<current>` entry of `git mesh history <name>`, which compares HEAD against the working tree. Fetch full history only when the current-vs-anchored comparison is ambiguous.
+3. Read the anchored bytes from history — start with just the `<current>` entry of `git mesh history <name>`, which compares HEAD against the working tree. Fetch full history only when the current-vs-anchored comparison is ambiguous. *(If the XML output format or drift-status labels are unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the history schema and the reading-stale-output section defines CHANGED/MOVED/DELETED.)*
 4. **Write one sentence** stating what relationship the current bytes form relative to the mesh's purpose. If you cannot write it, stop — inspect further or plan to delete the mesh.
 
 **When multiple meshes in the same component anchor the same file**, reconcile their ranges together. If mesh A widens `cli/mod.rs` to L38-L181 but mesh B narrows to L38-L108, decide which is correct and make them consistent — the component's forks will coordinate this.
@@ -93,12 +100,14 @@ Classify each finding into exactly one category, and write the exact commands:
 | Relationship gone entirely | `git mesh delete <name>` |
 | Mesh has no why | `git mesh why <name> -m "<one sentence>"` (write during execution) |
 
+*If a mesh needs to be deleted, invoke `git-mesh:git-mesh` — the command-reference section covers the `git mesh delete` contract. If source code needs fixing or you need to write a why, invoke `git-mesh:git-mesh` — the creating-a-mesh section covers the full create/update workflow and why-writing conventions.*
+
 ### 6. Confirm each DELETED anchor
 
 For each DELETED finding:
 
 - **File still exists but is shorter** → the anchored range was rewritten away. Read the file; if you find the equivalent code at new line numbers, record the remove-old/add-new commands.
-- **File deleted entirely** → read the remaining anchors. If the relationship survives, plan to remove this anchor. If the relationship is gone, plan to delete the mesh.
+- **File deleted entirely** → read the remaining anchors. If the relationship survives, plan to remove this anchor. If the relationship is gone, plan to delete the mesh. *(If deletion syntax is unfamiliar, invoke `git-mesh:git-mesh` — the command-reference section covers `git mesh delete`.)*
 
 ### 7. Assemble the work plan — one per component
 
@@ -136,7 +145,7 @@ their ranges — they must be consistent.
 
 ## For each mesh
 
-1. `git mesh why <name>` — note if empty
+1. The why is in the stale output — note if empty. (Do not run `git mesh why <name>` to read it.)
 2. Read current bytes at each stale anchor location
 3. `git mesh history <name>` — compare `<current>` against anchored content
 4. Write a one-sentence confirmation of the relationship
