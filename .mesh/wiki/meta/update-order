@@ -4,3 +4,4 @@ packages/git-mesh/src/cli/mod.rs#L38-L181 rk64:bb1664f1fc09dc79
 packages/git-mesh/src/main.rs#L50-L113 rk64:de349cf32633354f
 wiki/meta/git-mesh-documentation-touchpoints.md#L34-L42 rk64:9d6edd1a4d49bb46
 
+Wiki documentation update order: when git-mesh CLI behavior or documentation changes, this checklist defines the sequence in which operator-facing and agent-facing documentation must be updated to avoid drift from the implementation source of truth.
