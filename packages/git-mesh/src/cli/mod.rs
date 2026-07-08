@@ -71,11 +71,16 @@ pub enum Commands {
 
     /// Report anchors whose content has drifted from their anchored state.
     ///
-    /// With `--fix`, also re-anchors `Moved` and `Changed` anchors in
-    /// place and resolves `.mesh/` merge conflicts structurally. Conflict
-    /// resolution splits Git textual conflict markers into ours/theirs,
-    /// enforces a clean-source precondition (all referenced source files
-    /// must be conflict-free), and calls the structural merge kernel.
+    /// With `--fix`, also re-anchors `Moved` anchors unconditionally and
+    /// whitespace-equivalent `Changed` anchors in place, and resolves
+    /// `.mesh/` merge conflicts structurally. A `Changed` anchor whose
+    /// content differs beyond whitespace is left drifting so the coupling
+    /// resurfaces for human confirmation — the operator reviews the
+    /// rewritten meshes with `git diff` and stages only what they agree with.
+    /// Conflict resolution splits Git textual conflict markers into
+    /// ours/theirs, enforces a clean-source precondition (all referenced
+    /// source files must be conflict-free), and calls the structural merge
+    /// kernel.
     ///
     /// Fail-closed cases:
     ///   - A referenced source file itself contains conflict markers.
@@ -320,17 +325,20 @@ pub struct StaleArgs {
     #[arg(long, value_name = "PATH")]
     pub perf_trace: Option<std::path::PathBuf>,
 
-    /// Re-anchor `Moved` and `Changed` anchors in place by rewriting the
-    /// mesh worktree files. Each surfacing anchor is re-hashed against the
-    /// deepest drifting layer (Worktree > Index > HEAD). Also resolves
-    /// `.mesh/` merge conflicts structurally: splits conflict markers into
-    /// ours/theirs, enforces a clean-source precondition (all referenced
-    /// source files must be conflict-free), and calls the structural merge
-    /// kernel. Fully resolved meshes are written clean; meshes with
-    /// residual unresolvable anchors or divergent `--why` text (no merge
-    /// base) write resolved anchors cleanly with minimal residue markers
-    /// and are not re-staged. No commit is produced. Only supported with
-    /// `--format human`.
+    /// Re-anchor `Moved` anchors unconditionally and whitespace-equivalent
+    /// `Changed` anchors in place by rewriting the mesh worktree files. A
+    /// `Changed` anchor whose content differs beyond whitespace is left
+    /// drifting — the stored hash gates on content-equivalence so that
+    /// meaning-altering edits keep surfacing until the operator confirms
+    /// them. Each surfacing anchor is re-hashed against the deepest drifting
+    /// layer (Worktree > Index > HEAD). Also resolves `.mesh/` merge
+    /// conflicts structurally: splits conflict markers into ours/theirs,
+    /// enforces a clean-source precondition (all referenced source files
+    /// must be conflict-free), and calls the structural merge kernel. Fully
+    /// resolved meshes are written clean; meshes with residual unresolvable
+    /// anchors or divergent `--why` text (no merge base) write resolved
+    /// anchors cleanly with minimal residue markers and are not re-staged.
+    /// No commit is produced. Only supported with `--format human`.
     #[arg(long, conflicts_with = "batch")]
     pub fix: bool,
 

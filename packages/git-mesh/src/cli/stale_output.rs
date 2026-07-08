@@ -665,10 +665,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // they came from a full scan, positional args, or staging-only discovery.
     sort_meshes_by_anchor_path(&mut meshes);
 
-    // `--fix`: re-anchor drifted Moved/Changed records in the mesh worktree
-    // files, then re-resolve so the rendered post-fix view reflects the new
-    // statuses. The set of anchor ids actually rewritten drives the
-    // "auto-updated" tag and the exit-code subtraction.
+    // `--fix`: re-anchor drifted Moved records (unconditional) and
+    // whitespace-equivalent Changed records in the mesh worktree files, then
+    // re-resolve so the rendered post-fix view reflects the new statuses.
+    // The set of anchor ids actually rewritten drives the "auto-updated" tag
+    // and the exit-code subtraction.
     let followed_ids: HashSet<String> = if args.fix {
         let _perf = crate::perf::span("stale.apply-fix");
         // Ensure the single PRE-fix corpus is loaded for the `--fix` consumers

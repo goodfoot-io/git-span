@@ -1,6 +1,7 @@
-//! `git mesh stale --fix` — rewrite `Moved` and `Changed` anchors in
-//! place by editing the mesh worktree files. No commit is produced; the
-//! operator inspects the rewrite with `git diff` and stages it manually.
+//! `git mesh stale --fix` — rewrite `Moved` anchors and whitespace-equivalent
+//! `Changed` anchors in place by editing the mesh worktree files. No commit is
+//! produced; the operator inspects the rewrite with `git diff` and stages it
+//! manually.
 //!
 //! The per-layer hashing rule (Worktree > Index > HEAD) drives both
 //! which layer's content to read and which hashing convention to use.
@@ -468,10 +469,11 @@ fn resolve_conflicted_mesh(
     Ok(())
 }
 
-/// Re-anchor every `Moved`/`Changed` anchor in `meshes` by rewriting the
-/// matching mesh worktree files. Returns a [`FixResult`] carrying the set of
-/// `anchor_id`s actually rewritten and the set of mesh names whose files were
-/// written to disk.
+/// Re-anchor every `Moved` anchor and whitespace-equivalent `Changed` anchor
+/// in `meshes` by rewriting the matching mesh worktree files. A `Changed`
+/// anchor whose content differs beyond whitespace is left drifting. Returns a
+/// [`FixResult`] carrying the set of `anchor_id`s actually rewritten and the
+/// set of mesh names whose files were written to disk.
 ///
 /// Terminal statuses (`Deleted`, `ContentUnavailable`, `MergeConflict`,
 /// `Submodule`, `Orphaned`) are left untouched. `Fresh` anchors are not
