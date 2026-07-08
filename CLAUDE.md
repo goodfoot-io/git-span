@@ -20,10 +20,6 @@ Always choose the "right way" over the "easy way".
 Prefer 'fail closed' workflows over 'fail open' workflows.
 </fail-closed>
 
-<commit-message>
-Do not include a "Co-Authored-By: Claude ..." message in commits.
-</commit-message>
-
 <workspace-information>
 Our workspace uses Yarn 4.x as a package manager. Do not use other package managers such as 'npm'.
 
