@@ -1,4 +1,4 @@
 packages/git-mesh/src/cli/history.rs#L596-L610 rk64:e8162406ce9f1605
-packages/git-mesh/src/cli/stale_output.rs#L1678-L1683 rk64:e4ad362a46f49c7e
+packages/git-mesh/src/cli/stale_output.rs#L1679-L1684 rk64:e4ad362a46f49c7e
 
 Shared drifted-anchor rendering contract: git mesh history's current section reuses stale_output's read_location_text and drift labels so both commands display identical drifted content for the same anchor.
