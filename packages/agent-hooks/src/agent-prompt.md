@@ -15,16 +15,20 @@ Use the `git-mesh` skill for all git-mesh command mechanics.
 
 ### 1. Enter one worktree for the whole run
 
-Call `EnterWorktree` once, at the start, to create a fresh worktree branched off the repo root's current branch. You do not pass it a specific commit — it doesn't support one. Reuse this same worktree for every record you process below; don't create a new one per record.
+Call the `EnterWorktree` tool once, at the start, to create a fresh worktree branched off the repo root's current branch. You do not pass it a specific commit — it doesn't support one. Reuse this same worktree for every record you process below; don't create a new one per record.
+
+Do not confuse this with the `Agent` tool used for forking in step 8 below — a fork call is not inert. If you invoke `Agent(subagent_type: "fork")` when you meant `EnterWorktree`, it inherits your full context and immediately starts acting on it (potentially redoing your own job in a second worktree). Double-check the tool name before calling either.
 
 ### 2. Claim your work
 
-List the `*.json` files in `{{postCommitDir}}`. Move the ones you intend to work on into `{{claimDir}}` (e.g. `mv {{postCommitDir}}/<file>.json {{claimDir}}/`). Claim as many or as few as you have time for — anything you leave behind stays available for a future run. Once a record is in your claim directory, it's exclusively yours.
+Your claim directory (`{{claimDir}}`) may not exist yet — create it first: `mkdir -p {{claimDir}}`. Then list the `*.json` files in `{{postCommitDir}}` and move the ones you intend to work on into it (e.g. `mv {{postCommitDir}}/<file>.json {{claimDir}}/`). Claim as many or as few as you have time for — anything you leave behind stays available for a future run. Once a record is in your claim directory, it's exclusively yours.
 
 ### 3. For each record you claimed, in turn
 
+If two or more claimed records share the same `sha`, you only need to `git checkout <sha>` once before processing all of them — group your claimed records by `sha` first, and process each group under a single checkout rather than re-checking-out per record. Still treat each record as its own unit of work for the remaining steps below (its own detection, commit, and land) unless their anchors overlap enough that combining them into one commit is clearly simpler.
+
 1. Read the record's JSON to get its `sha`, `branch`, and `anchors`.
-2. In your worktree, `git checkout <sha>` (detached — it's an arbitrary past commit, not a branch tip).
+2. In your worktree, `git checkout <sha>` (detached — it's an arbitrary past commit, not a branch tip) — skip this if you already checked out this `sha` for a previous record in this group (see above).
 3. **Auto-fix first.** `--fix` only runs in human format (it can't be combined with `--porcelain --batch`), but it does accept explicit paths, so scope it to this record's anchor paths (deduped, ranges dropped): `git mesh stale --fix -- <path-1> <path-2> ...`. This silently re-anchors `Moved` anchors and whitespace-equivalent `Changed` anchors — cheap, mechanical drift that needs no judgment. Anything left after this is a real finding.
 4. Run detection filtered to this record's anchors: pipe the anchors (one per line, formatted as above) as stdin to `git mesh stale --porcelain --batch` and `git mesh list --porcelain --batch`.
 5. **Find findings that need reconciliation.** Collect three kinds from what step 4 turned up: stale anchors (CHANGED or DELETED after the auto-fix pass), related meshes (anchors already covered by an existing mesh that may need extending or pruning), and uncovered writes (anchor paths with no existing mesh at all). If there are none of any kind, there's nothing to commit or land for this record — skip straight to deleting it from your claim directory (step 12 below). If the auto-fix pass DID change something even though no further finding remains, continue on to commit and land it (skip steps 6–8).

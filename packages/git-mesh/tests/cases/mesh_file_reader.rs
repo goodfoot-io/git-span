@@ -397,6 +397,34 @@ fn list_skips_dotfile_config_under_mesh_root() {
     );
 }
 
+/// The reconciler dispatcher's generated artifacts under the mesh root
+/// (`dispatcher.log`, `agent-<claimId>.log`, and generated
+/// `manual-hook-dispatch-<datetime>.sh` scripts -- see
+/// `packages/agent-hooks/src/dispatcher.ts`) must be skipped by discovery
+/// and must NOT be parsed as meshes.
+#[test]
+fn list_skips_dispatcher_generated_artifacts_under_mesh_root() {
+    let repo = support::TestRepo::seeded().unwrap();
+    write_worktree_mesh(&repo, "real-mesh", &make_mesh(&[], "real"));
+    repo.write_file(".mesh/dispatcher.log", "[INFO] dispatcher: started\n")
+        .unwrap();
+    repo.write_file(
+        ".mesh/agent-daf06226-85d1-471c-b59c-43733590a3f0.log",
+        "some agent output\n",
+    )
+    .unwrap();
+    repo.write_file(
+        ".mesh/manual-hook-dispatch-2026-07-08T21-02-05-537Z.sh",
+        "#!/bin/sh\nexec claude -p '...' --settings '...'\n",
+    )
+    .unwrap();
+
+    let gix = repo.gix_repo().unwrap();
+    let reader = MeshFileReader::new(&gix, ".mesh".into());
+    let names = reader.list_mesh_names().unwrap();
+    assert_eq!(names, vec!["real-mesh".to_string()], "names: {names:?}");
+}
+
 /// A dot-directory under the mesh root and any non-mesh files nested
 /// inside it must be skipped entirely by discovery.
 #[test]

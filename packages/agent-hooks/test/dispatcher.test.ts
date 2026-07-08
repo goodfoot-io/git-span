@@ -775,7 +775,7 @@ describe('buildAgentPrompt', () => {
 // ===========================================================================
 
 describe('buildClaudeArgs', () => {
-  it('builds -p/--resume/--settings args with the claim id as the resume session', () => {
+  it('builds -p/--settings args as a fresh session with no resume and no allow list', () => {
     const repo = initRepo();
     const { root, cleanup } = repo;
     let args: string[];
@@ -786,13 +786,10 @@ describe('buildClaudeArgs', () => {
     }
     expect(args[0]).toBe('-p');
     expect(typeof args[1]).toBe('string');
-    expect(args[2]).toBe('--resume');
-    expect(args[3]).toBe('claim-123');
-    expect(args[4]).toBe('--settings');
-    const settings = JSON.parse(args[5]);
-    expect(settings.permissions.allow).toContain('EnterWorktree');
-    expect(settings.permissions.allow).toContain('ExitWorktree');
-    expect(settings.permissions.allow).toContain('Agent');
+    expect(args[2]).toBe('--settings');
+    expect(args).not.toContain('--resume');
+    const settings = JSON.parse(args[3]);
+    expect(settings.permissions).not.toHaveProperty('allow');
     expect(settings.permissions.deny).toContain('AskUserQuestion');
     expect(settings).not.toHaveProperty('allowedTools');
     expect(settings).not.toHaveProperty('deniedTools');
@@ -834,9 +831,13 @@ describe('writeManualDispatchScript', () => {
       expect(content).toMatch(/^#!\/bin\/sh/);
       expect(content).toContain(claimDir);
       expect(content).toContain('claude');
-      expect(content).toContain('--resume');
+      expect(content).not.toContain('--resume');
       expect(content).toContain(claimId);
       expect(content).toContain('--settings');
+      // Must cd to the repo root before exec -- the script may be run from
+      // any cwd, but the agent needs to see the repo it's reconciling.
+      expect(content).toContain(`cd '${root}'`);
+      expect(content.indexOf(`cd '${root}'`)).toBeLessThan(content.indexOf('exec '));
 
       // The claim directory must be left in place (not swept) for the script
       // to be runnable later against the exact same claim.

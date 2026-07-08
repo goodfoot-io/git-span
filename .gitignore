@@ -2,9 +2,6 @@
 logs
 *.log
 
-# git-mesh dispatcher: generated manual-run scripts (see .mesh/.manual-run)
-.mesh/manual-hook-dispatch-*.sh
-
 # Build artifacts
 target/
 target-cache/

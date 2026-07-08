@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_mesh_dir;
+    use super::{ensure_mesh_dir, MESH_GITIGNORE_CONTENTS};
 
     /// `ensure_mesh_dir` must create `.mesh/.gitattributes` with exact
     /// canonical content and must be idempotent.
@@ -43,22 +43,65 @@ mod tests {
             "content must be unchanged after idempotent second call"
         );
     }
+
+    /// `ensure_mesh_dir` must create `.mesh/.gitignore` with exact canonical
+    /// content and must be idempotent.
+    #[test]
+    fn ensure_mesh_dir_writes_canonical_gitignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let mesh_root = ".mesh";
+
+        ensure_mesh_dir(workdir, mesh_root).expect("first call");
+
+        let gi_path = workdir.join(mesh_root).join(".gitignore");
+        assert!(gi_path.exists(), ".mesh/.gitignore must exist after first call");
+
+        let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
+        assert_eq!(
+            content, MESH_GITIGNORE_CONTENTS,
+            ".mesh/.gitignore content must match the canonical form"
+        );
+
+        ensure_mesh_dir(workdir, mesh_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&gi_path).expect("read .gitignore again");
+        assert_eq!(
+            content2, MESH_GITIGNORE_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
 }
 
 const DEFAULT_MESH_ROOT: &str = ".mesh";
 
+/// Canonical contents of `.mesh/.gitignore` -- ignores the dispatcher's
+/// generated log files and manual-run dispatch scripts (see
+/// `packages/agent-hooks/src/dispatcher.ts`), none of which are meant to be
+/// committed alongside the meshes they live next to.
+const MESH_GITIGNORE_CONTENTS: &str = "*.log\nmanual-hook-dispatch-*.sh\n";
+
 /// Ensure the mesh root directory exists and contains a `.gitattributes`
-/// that pins LF for all mesh files. Idempotent: writes `.gitattributes`
-/// only when missing or when content differs from the canonical form.
+/// that pins LF for all mesh files, and a `.gitignore` that excludes the
+/// dispatcher's generated artifacts. Idempotent: each file is (re)written
+/// only when missing or when content differs from its canonical form.
 pub(crate) fn ensure_mesh_dir(workdir: &Path, mesh_root: &str) -> Result<()> {
     let mesh_dir = workdir.join(mesh_root);
     std::fs::create_dir_all(&mesh_dir)?;
+
     let ga_path = mesh_dir.join(".gitattributes");
-    let canonical = "* text eol=lf\n";
-    let current = std::fs::read_to_string(&ga_path).unwrap_or_default();
-    if current != canonical {
-        std::fs::write(&ga_path, canonical)?;
+    let ga_canonical = "* text eol=lf\n";
+    let ga_current = std::fs::read_to_string(&ga_path).unwrap_or_default();
+    if ga_current != ga_canonical {
+        std::fs::write(&ga_path, ga_canonical)?;
     }
+
+    let gi_path = mesh_dir.join(".gitignore");
+    let gi_current = std::fs::read_to_string(&gi_path).unwrap_or_default();
+    if gi_current != MESH_GITIGNORE_CONTENTS {
+        std::fs::write(&gi_path, MESH_GITIGNORE_CONTENTS)?;
+    }
+
     Ok(())
 }
 

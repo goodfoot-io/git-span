@@ -305,17 +305,30 @@ impl<'repo> MeshFileReader<'repo> {
 ///
 /// Mesh names and slugs never begin with `.`, so any dotfile or
 /// dot-directory under the mesh root (e.g. the `.hookignore` config
-/// sibling) is a non-mesh config artifact and must be skipped by every
-/// enumeration path — filesystem walk, HEAD-tree walk, and index scan.
-/// This is the single choke-point predicate shared by all three.
+/// sibling, or the reconciler dispatcher's `.manual-run` marker) is a
+/// non-mesh config artifact and must be skipped by every enumeration path —
+/// filesystem walk, HEAD-tree walk, and index scan. This is the single
+/// choke-point predicate shared by all three.
 fn is_mesh_name_segment(basename: &str) -> bool {
-    // Dot-prefixed names are config artifacts (e.g. .hookignore).
+    // Dot-prefixed names are config artifacts (e.g. .hookignore, .manual-run,
+    // .gitignore, .gitattributes).
     if basename.starts_with('.') {
         return false;
     }
     // Editor scratch files (e.g. myflow.EDITMSG) left behind after a
     // failed run_why_editor must never be enumerated as meshes.
     if basename.ends_with(".EDITMSG") {
+        return false;
+    }
+    // Log files written by the reconciler dispatcher (e.g. dispatcher.log,
+    // agent-<claimId>.log) are runtime diagnostics, not mesh content.
+    if basename.ends_with(".log") {
+        return false;
+    }
+    // Generated manual-run dispatch scripts (see
+    // packages/agent-hooks/src/dispatcher.ts) are shell scripts, not mesh
+    // content.
+    if basename.starts_with("manual-hook-dispatch-") && basename.ends_with(".sh") {
         return false;
     }
     true
@@ -397,5 +410,25 @@ mod tests {
         assert!(!is_mesh_name_segment(".config"));
         assert!(!is_mesh_name_segment(".git"));
         assert!(!is_mesh_name_segment("."));
+        assert!(!is_mesh_name_segment(".manual-run"));
+        assert!(!is_mesh_name_segment(".gitignore"));
+        assert!(!is_mesh_name_segment(".gitattributes"));
+    }
+
+    #[test]
+    fn rejects_dispatcher_generated_artifacts() {
+        assert!(!is_mesh_name_segment("dispatcher.log"));
+        assert!(!is_mesh_name_segment("agent-daf06226-85d1-471c-b59c-43733590a3f0.log"));
+        assert!(!is_mesh_name_segment(
+            "manual-hook-dispatch-2026-07-08T21-02-05-537Z.sh"
+        ));
+    }
+
+    #[test]
+    fn accepts_names_that_merely_contain_but_do_not_match_reserved_suffixes() {
+        // A real mesh name could plausibly contain "log" or "sh" as a
+        // substring without matching the reserved suffix/prefix rules.
+        assert!(is_mesh_name_segment("logging-pipeline"));
+        assert!(is_mesh_name_segment("shell-completion"));
     }
 }

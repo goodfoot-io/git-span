@@ -546,34 +546,11 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
   const claimDirAbs = claimDirFor(repoRoot, claimId);
   const promptText = buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs);
 
-  // Resolve the absolute worktrees root for edit/write scoping. EnterWorktree
-  // always creates worktrees inside `.claude/worktrees/` of the repo, so this
-  // permits editing `.mesh/` in any worktree the agent creates without
-  // needing to know its exact name ahead of time.
-  const worktreesRoot = nodePath.resolve(repoRoot, '.claude/worktrees');
-  const meshEditGlob = `${worktreesRoot}/**/.mesh/**`;
-
+  // No allow list: every tool is permitted except what's explicitly denied
+  // below. The prompt itself is what constrains the agent to git-mesh
+  // mechanics, worktree/fork orchestration, and its own claim directory.
   const settings = {
     permissions: {
-      allow: [
-        'EnterWorktree',
-        'ExitWorktree',
-        'Agent',
-        'Bash(git checkout *)',
-        'Bash(git mesh *)',
-        'Bash(git add .mesh/**)',
-        'Bash(git commit *)',
-        'Bash(git rebase *)',
-        'Bash(git merge *)',
-        'Bash(git status)',
-        'Bash(git diff)',
-        'Bash(git log)',
-        `Bash(mv ${postCommitDirAbs}/*.json ${claimDirAbs}/)`,
-        `Bash(mv ${claimDirAbs}/*.json ${postCommitDirAbs}/)`,
-        `Bash(rm ${claimDirAbs}/*.json)`,
-        `Edit(${meshEditGlob})`,
-        `Write(${meshEditGlob})`
-      ],
       deny: [
         'EnterPlanMode',
         'ExitPlanMode',
@@ -597,7 +574,7 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
     disableArtifact: true
   };
 
-  return ['-p', promptText, '--resume', claimId, '--settings', JSON.stringify(settings)];
+  return ['-p', promptText, '--settings', JSON.stringify(settings)];
 }
 
 /**
@@ -607,9 +584,9 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
  * The agent is self-claiming and self-landing: it claims records from
  * `post-commit/` into `claimDirFor(repoRoot, claimId)` itself, enters its own
  * worktree via the EnterWorktree tool, reconciles each record it claimed, and
- * lands its work via rebase + fast-forward merge. `claimId` doubles as both
- * the claim directory name (created by the caller before this is invoked)
- * and the agent's own `--resume` session id, so the two always match.
+ * lands its work via rebase + fast-forward merge. Every invocation starts a
+ * fresh session -- `claimId` only names the claim directory (created by the
+ * caller before this is invoked), it is never passed to `claude`.
  *
  * If the agent does not complete within `timeoutMs`, SIGTERM is sent followed
  * by SIGKILL after `SIGTERM_GRACE_MS`.
@@ -763,6 +740,7 @@ export function writeManualDispatchScript(
     '# spawned automatically. If left unrun for too long, a future dispatcher',
     '# invocation may reclaim the (still-empty) claim directory as abandoned.',
     '',
+    `cd ${shellQuoteSingle(repoRoot)} || exit 1`,
     `exec ${quotedCommand}`,
     ''
   ].join('\n');
