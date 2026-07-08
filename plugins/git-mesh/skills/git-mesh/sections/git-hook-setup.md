@@ -37,9 +37,46 @@ for custom hook configurations.
 
 ## Installation
 
-Git hooks are **per-clone** configuration. There is no auto-installer -- hook
-installation is manual by design, matching the same pattern used for the
-optional merge driver (see below).
+Git hooks are **per-clone** configuration by default (`.git/hooks/`, never
+tracked by git). There is no auto-installer -- hook installation is manual by
+design, matching the same pattern used for the optional merge driver (see
+below).
+
+**Check `core.hooksPath` before installing.** A repo may redirect hooks to a
+tracked directory:
+
+```bash
+git config core.hooksPath   # empty/unset -> .git/hooks/ is authoritative
+                             # a path (e.g. `.githooks`) -> that tracked dir is authoritative instead
+```
+
+If `core.hooksPath` is set, symlinking into `.git/hooks/` is a silent no-op --
+git never reads that directory in this clone. Some repos additionally use a
+tracked **dispatcher model** in their hooks directory (a thin `<event>`
+script holding an ordered `PARTS` list of single-concern `<event>.<concern>.sh`
+files, rather than one script per event). Where that pattern is already in
+use, add git-mesh as its own concern script and register it in `PARTS`
+instead of replacing the event file:
+
+```bash
+# e.g. .githooks/post-commit.git-mesh.sh -- resolve the dispatcher from the
+# repo root (git rev-parse --show-toplevel) rather than $0, since concern
+# scripts are tracked files, not symlinks, and $0 already points at their
+# real location in the repo
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+DISPATCHER="${REPO_ROOT}/plugins/git-mesh/hooks/bin/dispatcher.mjs"
+```
+
+`post-commit`/`post-rewrite` are **advisory** events (they fire after the
+action already landed), so a dispatcher wiring them must never let a
+sub-script failure abort -- log/report and continue, matching whatever
+convention the repo's dispatcher already uses for advisory vs. fail-closed
+sub-scripts.
+
+### Direct symlink installation (no existing hook dispatcher)
+
+Use this approach only when `core.hooksPath` is unset (or points at the
+default `.git/hooks/`) and the repo has no tracked hook dispatcher already.
 
 ### post-commit
 

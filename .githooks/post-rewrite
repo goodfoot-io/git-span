@@ -1,0 +1,18 @@
+#!/bin/bash
+# post-rewrite dispatcher. Runs each sub-script in order, passing through the
+# old->new SHA mapping git supplies on stdin. Advisory: a sub-script failure
+# is reported but never aborts. Edit PARTS to add/reorder concerns.
+#
+# Each sub-script is independently runnable and bash -n clean; run one by
+# hand (e.g. echo "$OLD $NEW" | .githooks/post-rewrite.git-mesh.sh) to debug it.
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+PARTS=(
+    post-rewrite.git-mesh.sh
+)
+INPUT="$(cat)"
+for part in "${PARTS[@]}"; do
+    script="$HOOK_DIR/$part"
+    [ -x "$script" ] || continue
+    echo "$INPUT" | "$script" || echo "post-rewrite: $part failed (advisory, not blocking)" >&2
+done
+exit 0

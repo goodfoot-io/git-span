@@ -55,11 +55,22 @@ pre-commit hook can stage those freshly-created `.mesh/` files into the commit
 being made and abort the commit when coverage cannot be created, so the gate
 is fail-closed there rather than advisory.
 
+## post-commit / post-rewrite (advisory)
+
+Same dispatcher model as `pre-commit`, but a sub-script failure is reported
+(to stderr) and never aborts -- you cannot un-commit from `post-commit`, and
+`post-rewrite` has already rewritten history by the time it fires.
+
+| Sub-script                     | Purpose                                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `post-commit.git-mesh.sh`       | Spawns the git-mesh dispatcher detached to promote pre-commit anchor records and reconcile stale meshes in the background. Logs to `.mesh/dispatcher.log`. |
+| `post-rewrite.git-mesh.sh`      | Spawns the git-mesh dispatcher detached with `--post-rewrite`, passing git's old->new SHA mapping through stdin, so rewritten commits get re-detected. |
+
 ## Adding a concern
 
-1. Write `.githooks/pre-commit.<concern>.sh` from the pattern above.
+1. Write `.githooks/<event>.<concern>.sh` from the pattern above.
 2. `chmod +x` it (git must store mode `100755`).
-3. Add its filename to `PARTS` in `.githooks/pre-commit`, in run order.
+3. Add its filename to `PARTS` in `.githooks/<event>`, in run order.
 4. Document it in the table above.
 
 ## Not a hook
