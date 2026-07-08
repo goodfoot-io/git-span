@@ -5,9 +5,9 @@
 Two thin-trigger git hooks drive the background mesh-reconciliation pipeline:
 
 - **`post-commit`** fires after every successful commit. It spawns the detached
-  dispatcher, which promotes matching pre-commit records, runs detection in a
-  scratch worktree, and (if needed) spawns a confined standalone agent to
-  reconcile stale meshes.
+  dispatcher, which promotes matching pre-commit records and, if any are
+  pending, spawns a single confined standalone agent that claims its own work,
+  runs its own detection, and reconciles stale meshes.
 
 - **`post-rewrite`** fires after `git commit --amend`, `git rebase`, and other
   commands that rewrite existing commits. It spawns the dispatcher with the
@@ -108,9 +108,12 @@ at any position.
    dispatcher with `--post-rewrite`. It demotes post-commit records whose
    stamped SHA was rewritten back to `pre-commit/` for re-promotion.
 
-4. The dispatcher claims, detects, and (if needed) spawns a confined
-   standalone agent to reconcile stale meshes. All results are landed via
-   atomic CAS on the resolved branch.
+4. If any post-commit records are pending, the dispatcher spawns a single
+   confined standalone agent. The agent claims records from `post-commit/`
+   into its own claim directory, runs its own detection, reconciles stale
+   meshes, and lands each result itself via rebase + fast-forward merge onto
+   the resolved branch. Anything left unresolved when the agent exits is
+   swept back to `post-commit/` by the dispatcher for a future run.
 
 ## Mesh files are tracked content
 

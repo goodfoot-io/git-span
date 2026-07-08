@@ -49,118 +49,179 @@ The remaining findings are CHANGED (beyond whitespace) and DELETED. Group them b
 
 ### 3. Build the file-sharing graph and find connected components
 
-For each stale mesh, enumerate its anchors:
+The `git mesh stale` output already lists every anchor for every stale mesh (stale
+ones marked `— changed`/`— deleted`, healthy ones unmarked). Use that directly —
+no need to run `git mesh show` on each mesh.
+
+For every file that appears in more than one stale mesh, run `tree` at depth 1:
 
 ```bash
-git mesh show <name>
+git mesh tree '<shared-file>' --depth 1
 ```
 
-*(If the `show` output format is unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the TOML schema.)*
+The tree output is the adjacency list: each child line represents one mesh that
+anchors the file, displayed as its *other* anchored file paths. Stale meshes that
+appear as children of the same file are connected — they form one component. A
+stale mesh whose anchored files each appear in only one stale mesh is a component
+of size one. Meshes that appear in the tree output but are not stale are context
+the fork will use to understand what the correct line ranges should be.
 
-Build a graph:
-- **Nodes** = stale meshes
-- **Edges** = two meshes share at least one anchored file path (regardless of line range)
+*(If the tree output format is unfamiliar, invoke `git-mesh:git-mesh` — the
+inspecting-meshes section covers the nested markdown-list schema.)*
+
+*Example: `wiki/meta/update-order`, `git-mesh-touchpoints/cli-config`, and
+`wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs` — running
+`git mesh tree cli/mod.rs --depth 1` shows all three as children, so they form
+one component. `docs/merge-conflict-fix-contract` anchors only
+`command-reference.md` and `terminal-statuses.md`, which no other stale mesh
+anchors — it forms a second component. These two components can be forked in
+parallel.*
 
 Find the connected components of this graph. Each component is one unit of work.
 
-*Example: `wiki/meta/update-order`, `git-mesh-touchpoints/cli-config`, and `wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs` — they form one component. `docs/merge-conflict-fix-contract` anchors only `command-reference.md` and `terminal-statuses.md`, which no other stale mesh anchors — it forms a second component. These two components can be forked in parallel.*
+### 4. Survey blast radius for context
 
-### 4. Survey blast radius per component
-
-For the files that connect each component, understand what else touches them:
+For the shared files within each component, widen the tree one more level to
+understand the second-degree neighborhood — meshes that don't anchor the shared
+file directly, but anchor files that the component's other meshes anchor:
 
 ```bash
-# For the shared files within a component — don't dump `tree '**'`
 git mesh tree '<shared-file>' --depth 2
 ```
 
-*(If the tree output format is unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the nested markdown-list schema.)*
+This reveals the full neighborhood the fork needs: stale meshes (the component),
+non-stale meshes that anchor the same files (context for correct ranges), and
+one hop beyond (meshes that might be affected by a range change). The fork
+prompt will include the non-stale meshes as context.
 
-This confirms which meshes outside the component also anchor these files (they aren't stale, but they set context for what the correct range should be).
+### 5. Note findings per component — do not investigate yet
 
-### 5. Confirm each CHANGED anchor
+The main agent's job is structural, not investigative. For each component, record
+**what** is stale — the forks will determine **why** and **what to do about it**.
 
-For each CHANGED finding, within its component:
-
-1. The why is printed inline in the stale output — note if it's empty. (`git mesh stale` already shows the why for each mesh that has one; running `git mesh why <name>` separately to *read* is redundant.)
-2. Read the current bytes at the anchored location with the Read tool.
-3. Read the anchored bytes from history — start with just the `<current>` entry of `git mesh history <name>`, which compares HEAD against the working tree. Fetch full history only when the current-vs-anchored comparison is ambiguous. *(If the XML output format or drift-status labels are unfamiliar, invoke `git-mesh:git-mesh` — the inspecting-meshes section covers the history schema and the reading-stale-output section defines CHANGED/MOVED/DELETED.)*
-4. **Write one sentence** stating what relationship the current bytes form relative to the mesh's purpose. If you cannot write it, stop — inspect further or plan to delete the mesh.
-
-**When multiple meshes in the same component anchor the same file**, reconcile their ranges together. If mesh A widens `cli/mod.rs` to L38-L181 but mesh B narrows to L38-L108, decide which is correct and make them consistent — the component's forks will coordinate this.
-
-Classify each finding into exactly one category, and write the exact commands:
-
-| Category | Commands |
-|---|---|
-| Bytes shifted, meaning preserved | `git mesh remove <name> '<path>#L<old>'` then `git mesh add <name> '<path>#L<new>'` |
-| Content updated, same relationship | `git mesh remove <name> '<path>#L<N>'` then `git mesh add <name> '<path>#L<N>'` (same range, re-hash) |
-| Content no longer describes relationship | `git mesh remove <name> '<path>#L<N>'` |
-| One side of the relationship broke | Fix the code first, then re-anchor (both sides in one commit) |
-| Relationship gone entirely | `git mesh delete <name>` |
-| Mesh has no why | `git mesh why <name> -m "<one sentence>"` (write during execution) |
-
-*If a mesh needs to be deleted, invoke `git-mesh:git-mesh` — the command-reference section covers the `git mesh delete` contract. If source code needs fixing or you need to write a why, invoke `git-mesh:git-mesh` — the creating-a-mesh section covers the full create/update workflow and why-writing conventions.*
-
-### 6. Confirm each DELETED anchor
-
-For each DELETED finding:
-
-- **File still exists but is shorter** → the anchored range was rewritten away. Read the file; if you find the equivalent code at new line numbers, record the remove-old/add-new commands.
-- **File deleted entirely** → read the remaining anchors. If the relationship survives, plan to remove this anchor. If the relationship is gone, plan to delete the mesh. *(If deletion syntax is unfamiliar, invoke `git-mesh:git-mesh` — the command-reference section covers `git mesh delete`.)*
-
-### 7. Assemble the work plan — one per component
-
-For each component, you must have:
+For each component, assemble a brief:
 
 - Every mesh in the component
-- Every CHANGED or DELETED anchor classified into one of the categories above
-- Coordinated ranges for any file anchored by multiple meshes in the component
-- The exact `git mesh remove` / `git mesh add` / `git mesh delete` / `git mesh why` commands to run, sorted mesh-at-a-time within the component
-- The commit message for the final commit
+- Every stale anchor (from the `git mesh stale` output) — path, line range, CHANGED or DELETED
+- The why for each mesh (from the stale output — do not run `git mesh why <name>` to read it)
+- Shared files within the component, and any non-stale meshes that also anchor them (from step 4's blast radius)
+- Flag any anchors on shared files whose ranges overlap — the fork will need to coordinate them
 
-**STOP here if any finding lacks a one-sentence confirmation.** Do not fork until every anchor has one.
+**Do not** read every stale-anchored file, run `git mesh history`, or write per-anchor
+confirmations here. That investigation is the fork's job (Phase 2). The main agent
+only reads a file in Phase 1 when it needs to resolve a range conflict visible from
+the stale output alone (e.g., two meshes anchor the same file at overlapping ranges
+and the stale output gives conflicting signals about which range is current).
+
+**Do not run `git mesh why <name>`.** The stale output already prints the why for
+every mesh that has one. Running `why` separately is a wasted command — the fork
+will read the why from the same stale output.
+
+Classify each anchor as CHANGED or DELETED (from the stale output — no further
+classification yet). The forks will read the files, compare against history, and
+assign the final category (re-hash, range-shift, delete, code-fix-first, add-why).
+
+**STOP if a DELETED anchor's file no longer exists on disk.** The fork can't
+investigate a deleted file — the main agent must handle this case inline:
+- If the remaining anchors still describe a valid relationship, remove the
+  deleted-file anchor from the mesh.
+- If the relationship is gone entirely, delete the mesh.
+*(If deletion syntax is unfamiliar, invoke `git-mesh:git-mesh` — the
+command-reference section covers `git mesh delete`.)*
+
+### 6. Assemble the work plan — one per component
+
+For each component, produce:
+
+- Component label (shared-file name, or "isolated")
+- Mesh names
+- Stale anchor paths with CHANGED/DELETED status
+- Why (from stale output)
+- Shared files and any non-stale meshes anchoring them (from blast radius)
+- Any range-overlap flags for the fork to coordinate
+
+**That's it.** No per-anchor confirmations, no pre-computed `remove`/`add` commands,
+no classification beyond CHANGED/DELETED. The forks own the investigation.
+
+### 7. Check whether forking is worthwhile
+
+If the set of stale meshes is small and simple (e.g., 1–2 meshes, all WholeFile
+anchors, no shared files), the overhead of a fork may not be justified. In that
+case handle it inline — read the files, run history, confirm, classify, and execute
+directly. Skip Phase 2.
+
+Otherwise, hand each component to a fork in Phase 2.
 
 ---
 
 ## Phase 2 — Execution (one fork per component, all forks in parallel)
 
-Fork one subagent per component. If there is 1 component, you get 1 fork. If there are N components, N forks run in parallel.
+Fork one subagent per component. If there is 1 component, you get 1 fork. If there
+are N components, N forks run in parallel.
 
-**No worktree isolation** — components are disjoint by construction (if two meshes shared a file, they'd be in the same component), so forks touch disjoint `.mesh/` files. They share the main worktree without conflict. Only the main agent commits at the end.
+**No worktree isolation** — components are disjoint by construction (if two meshes
+shared a file, they'd be in the same component), so forks touch disjoint `.mesh/`
+files. They share the main worktree without conflict. Only the main agent commits
+at the end.
 
-The fork prompt for each component:
+Dispatch each component with a fork. Forks inherit the full conversation context
+(including this skill's instructions), so the prompt only needs to identify which
+meshes the fork owns and the structural context the main agent gathered in Phase 1:
 
-```markdown
-You are assigned one file-connected component of stale meshes to reconcile.
-Only touch `.mesh/` files for the meshes listed below. Do not commit — the
-main agent commits once after all components complete.
+```xml
+<invoke name="Agent">
+<parameter name="description" string="true">Reconcile <component-label> cluster</parameter>
+<parameter name="subagent_type" string="true">fork</parameter>
+<parameter name="prompt" string="true">
+Reconcile these <N> stale meshes (component: <component-label> — connected via <shared-file>). Do not commit.
 
-## Your meshes (component: <component-label>)
-- <name-1>
-- <name-2>
+## <name-1>
+- CHANGED: <path>#L<N>-L<M>
+- Healthy: <paths>
+- Why: <from stale output>
 
-These meshes share anchored files. If they anchor the same file, coordinate
-their ranges — they must be consistent.
+## <name-2>
+- CHANGED: <path> — <CHANGED|DELETED>
+- Why: <from stale output>
 
-## For each mesh
-
-1. The why is in the stale output — note if empty. (Do not run `git mesh why <name>` to read it.)
-2. Read current bytes at each stale anchor location
-3. `git mesh history <name>` — compare `<current>` against anchored content
-4. Write a one-sentence confirmation of the relationship
-5. Classify and execute: remove old anchor, add new anchor at correct range (or
-   same range to re-hash), delete the mesh, or report that code needs fixing first
-6. `git mesh stale` — confirm this mesh no longer appears in output (ignore
-   meshes assigned to other components)
-
-## Rules
-- Never bulk re-add every anchor to clear the exit code
-- Each CHANGED finding requires its own one-sentence confirmation
-- If multiple meshes anchor the same file, coordinate their ranges
-- Stop and report if any finding cannot be confirmed
-- Do NOT commit
+(Context: these meshes share <shared-file>. Non-stale meshes also anchoring it: <list>. <Range-overlap flag if any>.)
+</parameter>
+</invoke>
 ```
+
+### Fork procedure
+
+Each fork reads this section from context to know what to do. The main agent's
+prompt only designates which meshes — the procedure is shared here.
+
+For each assigned mesh:
+
+1. Read the current bytes at each stale anchor location.
+2. Run `git mesh history <name>`; compare `<current>` against anchored content.
+3. Write a one-sentence confirmation of the relationship. Stop if you cannot.
+4. Classify and execute:
+
+| Category | Action |
+|---|---|
+| Bytes shifted, meaning preserved | `git mesh remove <name> '<path>#L<old>'` then `git mesh add <name> '<path>#L<new>'` |
+| Content updated, same relationship | `git mesh remove <name> '<path>#L<N>'` then `git mesh add <name> '<path>#L<N>'` (re-hash) |
+| Content no longer describes relationship | `git mesh remove <name> '<path>#L<N>'` |
+| One side of the relationship broke | Fix the code first, then re-anchor (both sides in one commit) |
+| Relationship gone entirely | `git mesh delete <name>` |
+| Mesh has no why | `git mesh why <name> -m "<one sentence>"` |
+
+*(If deletion syntax is unfamiliar, invoke `git-mesh:git-mesh` — the
+command-reference section covers `git mesh delete`. If source code needs
+fixing or you need to write a why, invoke `git-mesh:git-mesh` — the
+creating-a-mesh section covers why-writing conventions.)*
+
+5. `git mesh stale` — confirm this mesh no longer appears (ignore meshes
+   assigned to other components).
+
+**Rules**: Never bulk re-add every anchor to clear the exit code. Each CHANGED
+finding requires its own one-sentence confirmation. Coordinate ranges when
+multiple meshes in the component anchor the same file. Stop and report if any
+finding cannot be confirmed. Do not commit.
 
 ### After all forks complete
 
@@ -170,7 +231,9 @@ git mesh doctor    # must report "no findings"
 git add .mesh && git commit -m "Reconcile stale meshes"
 ```
 
-If any fork reported a failure, or `git mesh stale` is non-zero, handle the failing component inline (its meshes are isolated from the successful components by definition, so only the failed component needs rework).
+If any fork reported a failure, or `git mesh stale` is non-zero, handle the
+failing component inline (its meshes are isolated from the successful components
+by definition, so only the failed component needs rework).
 
 ---
 

@@ -12,11 +12,11 @@
     "deny": [
       "EnterPlanMode",
       "ExitPlanMode",
-      "EnterWorktree",
-      "ExitWorktree",
-      "LSP",
-      "Read(.worktrees/)",
-      "Read(./packages/extension/dist/)"
+      "DesignSync",
+      "NotebookEdit",
+      "PushNotification",
+      "RemoteTrigger",
+      "ReportFindings"
     ],
     "defaultMode": "bypassPermissions",
     "disableAutoMode": "disable"

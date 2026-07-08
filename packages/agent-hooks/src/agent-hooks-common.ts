@@ -527,6 +527,15 @@ export function claimedDir(repoRoot: string): string {
   return nodePath.join(postCommitDir(repoRoot), 'claimed');
 }
 
+/**
+ * Directory for a single claim session's records, scoped by claim ID.
+ * A claim ID is a UUID shared between the claim directory name and the
+ * reconciler agent's own `--resume` session id, so the two always match.
+ */
+export function claimDirFor(repoRoot: string, claimId: string): string {
+  return nodePath.join(claimedDir(repoRoot), claimId);
+}
+
 /** Directory for scratch worktrees created by the dispatcher. */
 export function scratchDir(repoRoot: string): string {
   return nodePath.join(queueRoot(repoRoot), 'scratch');

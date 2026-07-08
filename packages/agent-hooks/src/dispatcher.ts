@@ -1,17 +1,33 @@
 /**
  * Detached background dispatcher for the git-mesh post-commit pipeline.
  *
- * Spawned (detached) by the post-commit and post-rewrite git hooks.  Owns the
- * entire pipeline from pre-commit records through promotion, claiming,
- * detection, agent spawn, and atomic CAS landing.
+ * Spawned (detached) by the post-commit and post-rewrite git hooks. Owns
+ * promotion of pre-commit records to post-commit once their anchors are
+ * clean, reclaiming claim directories abandoned by a dispatcher that died
+ * before it could sweep them, and spawning a single self-claiming,
+ * self-landing reconciler agent per invocation. The agent claims records
+ * from post-commit/ itself (into its own claimed/<claim-id>/ directory),
+ * enters its own worktree, reconciles each record it claimed, and lands its
+ * work via rebase + fast-forward merge -- the dispatcher never touches
+ * branches or worktrees directly. For a record with multiple independent
+ * findings, the agent may fan work out to fork subagents (one per
+ * file-connected component, sharing its worktree) before committing and
+ * landing the record itself.
  *
- * Never writes to stdout/stderr of the hook that spawned it — all logging goes
- * to .mesh/dispatcher.log.  Errors are logged, never thrown to the caller.
+ * If .mesh/.manual-run is present, automatic spawning is suspended: the
+ * dispatcher still reserves a real claim directory but writes the exact
+ * agent invocation to .mesh/manual-hook-dispatch-<datetime>.sh instead of
+ * launching it, leaving the claim directory in place for a human to run the
+ * script later. The marker is not consumed -- remove it to resume automatic
+ * dispatch.
+ *
+ * Never writes to stdout/stderr of the hook that spawned it -- all logging
+ * goes to .mesh/dispatcher.log. Errors are logged, never thrown to the
+ * caller.
  *
  * Usage:
  *   node dispatcher.mjs --repo-root <path>
  *   node dispatcher.mjs --repo-root <path> --post-rewrite
- *   node dispatcher.mjs --repo-root <path> --trigger-worktree <path>
  *   node dispatcher.mjs --repo-root <path> --commit-sha <sha>
  */
 
@@ -21,13 +37,11 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   type AnchorSpec,
+  claimDirFor,
   claimedDir,
-  formatAnchor,
   moveRecord,
-  type PorcelainRow,
   type PostCommitRecord,
   type PreCommitRecord,
-  parsePorcelain,
   postCommitDir,
   preCommitDir,
   queueRoot,
@@ -43,10 +57,9 @@ import PROMPT_TEMPLATE from './agent-prompt.md';
 // ---------------------------------------------------------------------------
 
 const LOG_FILE_NAME = 'dispatcher.log';
-const CLAIM_PID_SUFFIX = '.pid-';
 
 /**
- * Read all of stdin as a string with a timeout.  If stdin is a TTY, empty
+ * Read all of stdin as a string with a timeout. If stdin is a TTY, empty
  * pipe, or the timeout fires, returns `''` so the caller can distinguish
  * "nothing was sent" from an error.
  */
@@ -139,26 +152,11 @@ export function createLogger(repoRoot: string): Logger {
 // Git helpers
 // ---------------------------------------------------------------------------
 
-/** Parse a PID from a claimed filename like `<uuid>.json.pid-12345`. */
-export function parsePidFromClaimed(filename: string): number | null {
-  const idx = filename.lastIndexOf(CLAIM_PID_SUFFIX);
-  if (idx === -1) return null;
-  const pidStr = filename.slice(idx + CLAIM_PID_SUFFIX.length);
-  const pid = parseInt(pidStr, 10);
-  return Number.isFinite(pid) ? pid : null;
-}
-
-/** Strip the `.pid-NNNN` suffix from a claimed filename to get the original name. */
-export function stripClaimSuffix(filename: string): string {
-  const idx = filename.lastIndexOf(CLAIM_PID_SUFFIX);
-  return idx === -1 ? filename : filename.slice(0, idx);
-}
-
 /**
  * Get the set of file paths changed in the given commit (or HEAD if not
- * specified).  Includes --root to handle the initial commit.
+ * specified). Includes --root to handle the initial commit.
  * Uses --name-status with rename detection so that for renamed files **_both_**
- * the old and new paths are included in the returned set — a mesh anchored to
+ * the old and new paths are included in the returned set -- a mesh anchored to
  * the old (pre-rename) path is not silently dropped from the pipeline.
  */
 export function getChangedPaths(repoRoot: string, commitSha?: string): Set<string> {
@@ -220,56 +218,6 @@ export function getCurrentBranch(repoRoot: string): string | null {
   }
 }
 
-/**
- * Parse `git worktree list --porcelain` into a Map<branch, worktree-path>.
- * Only entries with an explicit branch ref are included (detached HEAD entries
- * are skipped).
- */
-export function getWorktreeBranches(repoRoot: string): Map<string, string> {
-  const map = new Map<string, string>();
-  try {
-    const out = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
-    });
-    let currentPath = '';
-    for (const line of out.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('worktree ')) {
-        currentPath = trimmed.slice('worktree '.length);
-      } else if (trimmed.startsWith('branch refs/heads/')) {
-        const branch = trimmed.slice('branch refs/heads/'.length);
-        map.set(branch, currentPath);
-      }
-    }
-  } catch {
-    void 0;
-  }
-  return map;
-}
-
-/**
- * Run a `git show-ref --verify` for a branch.  Returns the tip SHA if the
- * branch exists, null otherwise.
- */
-export function refExists(repoRoot: string, branch: string): string | null {
-  try {
-    const out = execFileSync('git', ['-C', repoRoot, 'show-ref', '--verify', `refs/heads/${branch}`], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
-    });
-    return out.trim().split(' ')[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Get the absolute path of the scratch directory for this repo. */
-export function scratchDirAbs(repoRoot: string): string {
-  const qRoot = queueRoot(repoRoot);
-  return nodePath.resolve(repoRoot, qRoot, 'scratch');
-}
-
 // ---------------------------------------------------------------------------
 // Anchor intersection and clean checks
 // ---------------------------------------------------------------------------
@@ -301,151 +249,123 @@ export function areAnchorsClean(repoRoot: string, anchors: AnchorSpec[]): boolea
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Reclaim: recover claim directories abandoned by a dead dispatcher
+// ---------------------------------------------------------------------------
+
 /**
- * True when every anchor path exists at a specific commit SHA.
- * Checks via `git cat-file -e <sha>:<path>`.
+ * A claim directory older than this is considered abandoned -- its owning
+ * dispatcher process died before it could sweep the directory itself.
+ * Comfortably above AGENT_TIMEOUT_MS (15 min) + SIGTERM_GRACE_MS (10 s), so a
+ * still-running agent's claim directory is never mistaken for abandoned.
  */
-export function doAnchorsExistAt(repoRoot: string, sha: string, anchors: AnchorSpec[]): boolean {
-  for (const a of anchors) {
-    try {
-      execFileSync('git', ['-C', repoRoot, 'cat-file', '-e', `${sha}:${a.path}`], {
-        stdio: ['ignore', 'ignore', 'pipe']
-      });
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// Reclaim (step 5)
-// ---------------------------------------------------------------------------
+const CLAIM_STALE_MS = 20 * 60 * 1000; // 20 minutes
 
 /**
- * Scan `post-commit/claimed/` for files whose encoded PID is dead.
- * Rename them back to `post-commit/`.  Cross-reference scratch worktrees
- * and force-remove any whose owning claim is gone or dead.
+ * Scan `post-commit/claimed/*` for claim directories whose mtime indicates
+ * they were abandoned (no live dispatcher is going to sweep them). Move every
+ * record inside back to `post-commit/` and remove the directory.
+ *
+ * This only covers a dispatcher process that died before reaching its own
+ * `sweepClaimDir` call (e.g. killed, crashed, OOM). A dispatcher that runs to
+ * completion always sweeps its own claim directory in `main()` -- this
+ * function exists purely to recover from the case where that never happened.
  */
 export function reclaim(log: Logger, repoRoot: string): void {
   const cDir = claimedDir(repoRoot);
-  let claimFiles: string[];
+  let entries: string[];
   try {
-    claimFiles = fs.readdirSync(cDir).filter((f) => f.includes(CLAIM_PID_SUFFIX));
+    entries = fs.readdirSync(cDir);
   } catch {
     return; // No claimed directory yet
   }
 
-  const deadPids: Array<{ file: string; pid: number }> = [];
-  for (const file of claimFiles) {
-    const pid = parsePidFromClaimed(file);
-    if (pid === null) continue;
+  for (const entry of entries) {
+    const dirPath = nodePath.join(cDir, entry);
+    let stat: fs.Stats;
     try {
-      process.kill(pid, 0);
-      // PID is alive — skip
+      stat = fs.statSync(dirPath);
     } catch {
-      deadPids.push({ file, pid });
+      continue;
     }
-  }
+    if (!stat.isDirectory()) continue;
+    if (Date.now() - stat.mtimeMs <= CLAIM_STALE_MS) continue;
 
-  for (const { file, pid } of deadPids) {
-    const srcPath = nodePath.join(cDir, file);
-    const originalName = stripClaimSuffix(file);
-    const destPath = nodePath.join(postCommitDir(repoRoot), originalName);
+    // Abandoned claim directory -- return its records to post-commit/.
+    let files: string[];
     try {
-      moveRecord(srcPath, destPath);
-      log.info(`reclaim: returned ${file} to post-commit/ (PID ${pid} dead)`);
+      files = fs.readdirSync(dirPath).filter((f) => f.endsWith('.json'));
     } catch (err) {
-      log.error(`reclaim: failed to reclaim ${file}: ${err}`);
+      log.error(`reclaim: could not read claim directory ${entry}: ${err}`);
+      continue;
     }
-  }
 
-  // Cross-reference scratch worktrees
-  try {
-    cleanupOrphanedScratchWorktrees(log, repoRoot, claimFiles);
-  } catch (err) {
-    log.error(`reclaim: scratch worktree cleanup failed: ${err}`);
+    let recovered = 0;
+    for (const file of files) {
+      const srcPath = nodePath.join(dirPath, file);
+      const destPath = nodePath.join(postCommitDir(repoRoot), file);
+      try {
+        moveRecord(srcPath, destPath);
+        recovered++;
+      } catch (err) {
+        log.error(`reclaim: failed to move ${entry}/${file} back to post-commit/: ${err}`);
+      }
+    }
+
+    try {
+      const remaining = fs.readdirSync(dirPath);
+      if (remaining.length > 0) {
+        log.warn(
+          `reclaim: claim directory ${entry} still has ${remaining.length} entries after sweep, removing anyway`
+        );
+      }
+      fs.rmSync(dirPath, { recursive: true, force: true });
+      log.info(`reclaim: reclaimed ${recovered} record(s) from abandoned claim directory ${entry}`);
+    } catch (err) {
+      log.error(`reclaim: failed to remove claim directory ${entry}: ${err}`);
+    }
   }
 }
 
 /**
- * Remove scratch worktrees whose owning claim file is not present (or whose
- * PID is dead).  Also removes the scratch worktree path from the filesystem
- * after git worktree removal.
+ * Sweep a claim directory after its agent has exited (success, failure, or
+ * timeout -- called unconditionally). Anything still present was not fully
+ * resolved by the agent; move it back to `post-commit/` for a future
+ * dispatcher run to retry, then remove the now-empty directory.
  */
-function cleanupOrphanedScratchWorktrees(log: Logger, repoRoot: string, claimFiles: string[]): void {
-  const worktreeOut = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    encoding: 'utf8'
-  });
+export function sweepClaimDir(log: Logger, repoRoot: string, claimId: string): void {
+  const dirPath = claimDirFor(repoRoot, claimId);
+  let files: string[];
+  try {
+    files = fs.readdirSync(dirPath).filter((f) => f.endsWith('.json'));
+  } catch {
+    return; // Nothing to sweep (directory never created, or already gone)
+  }
 
-  const scrAbs = scratchDirAbs(repoRoot);
-  const liveClaimNames = new Set(claimFiles.map((f) => stripClaimSuffix(f)));
-
-  for (const line of worktreeOut.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('worktree ')) continue;
-    const wtPath = trimmed.slice('worktree '.length);
-    // Only care about worktrees under our scratch directory
-    if (!wtPath.startsWith(scrAbs)) continue;
-
-    // The scratch dir basename is the UUID; find any claim with a matching
-    // original prefix
-    const uuid = nodePath.basename(wtPath);
-    const isClaimed = [...liveClaimNames].some((name) => name.startsWith(uuid));
-    if (isClaimed) continue;
-
-    // Orphaned — force remove
+  for (const file of files) {
+    const srcPath = nodePath.join(dirPath, file);
+    const destPath = nodePath.join(postCommitDir(repoRoot), file);
     try {
-      execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', wtPath], {
-        stdio: ['ignore', 'ignore', 'pipe']
-      });
-      log.info(`reclaim: removed orphaned scratch worktree ${uuid}`);
+      moveRecord(srcPath, destPath);
+      log.warn(`sweep: returned unresolved record ${file} from claim ${claimId} to post-commit/`);
     } catch (err) {
-      log.error(`reclaim: failed to remove scratch worktree ${uuid}: ${err}`);
+      log.error(`sweep: failed to move ${claimId}/${file} back to post-commit/: ${err}`);
     }
   }
 
-  // Also clean up empty scratch directories
-  try {
-    rmEmptyScratchDirs(scrAbs);
-  } catch {
-    void 0;
+  if (files.length === 0) {
+    log.info(`sweep: claim ${claimId} clean, nothing to return`);
   }
-}
 
-/** Recursively remove empty subdirectories under `dir`. */
-function rmEmptyScratchDirs(dir: string): void {
-  let entries: string[];
   try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const full = nodePath.join(dir, e);
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      rmEmptyScratchDirs(full);
-    }
-  }
-  // After removing children, check if now empty
-  try {
-    if (fs.readdirSync(dir).length === 0) {
-      fs.rmdirSync(dir);
-    }
-  } catch {
-    void 0;
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch (err) {
+    log.error(`sweep: failed to remove claim directory ${claimId}: ${err}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Promotion (step 3)
+// Promotion
 // ---------------------------------------------------------------------------
 
 /**
@@ -515,78 +435,7 @@ export function promote(
 }
 
 // ---------------------------------------------------------------------------
-// Claiming (step 4)
-// ---------------------------------------------------------------------------
-
-export interface ClaimedFile {
-  /** Absolute path to the claimed record file. */
-  path: string;
-  /** The claiming process PID. */
-  pid: number;
-  /** The original filename (UUID.json). */
-  originalName: string;
-}
-
-/**
- * Under the queue lock, scan `post-commit/*.json` and atomically rename each
- * into `post-commit/claimed/<name>.pid-<pid>`.  Returns the list of newly
- * claimed files.
- */
-export function claim(log: Logger, repoRoot: string): ClaimedFile[] {
-  const pDir = postCommitDir(repoRoot);
-  const cDir = claimedDir(repoRoot);
-  fs.mkdirSync(cDir, { recursive: true });
-
-  let files: string[];
-  try {
-    files = fs.readdirSync(pDir).filter((f) => f.endsWith('.json'));
-  } catch {
-    return [];
-  }
-
-  const claimed: ClaimedFile[] = [];
-  for (const file of files) {
-    const srcPath = nodePath.join(pDir, file);
-    const destName = `${file}${CLAIM_PID_SUFFIX}${process.pid}`;
-    const destPath = nodePath.join(cDir, destName);
-    try {
-      moveRecord(srcPath, destPath);
-      claimed.push({ path: destPath, pid: process.pid, originalName: file });
-      log.info(`claim: claimed ${file}`);
-    } catch (err) {
-      log.warn(`claim: could not claim ${file} (concurrent claim): ${err}`);
-    }
-  }
-  return claimed;
-}
-
-/**
- * Release a claim by moving it back to post-commit/.
- */
-export function releaseClaim(log: Logger, repoRoot: string, claimed: ClaimedFile): void {
-  try {
-    const destPath = nodePath.join(postCommitDir(repoRoot), claimed.originalName);
-    moveRecord(claimed.path, destPath);
-    log.info(`release: released ${claimed.originalName} back to post-commit/`);
-  } catch (err) {
-    log.error(`release: failed to release ${claimed.originalName}: ${err}`);
-  }
-}
-
-/**
- * Delete a claimed record and remove its file.
- */
-export function deleteClaim(log: Logger, claimed: ClaimedFile): void {
-  try {
-    fs.unlinkSync(claimed.path);
-    log.info(`delete: removed claim ${claimed.originalName}`);
-  } catch (err) {
-    log.warn(`delete: failed to remove claim ${claimed.originalName}: ${err}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Post-rewrite demotion (step 6)
+// Post-rewrite demotion
 // ---------------------------------------------------------------------------
 
 /**
@@ -611,8 +460,8 @@ export function parsePostRewriteInput(stdin: string): Map<string, string> {
 
 /**
  * Scan `post-commit/` for records whose stamped SHA matches an old value in
- * the rewrite map.  Demote those records back to `pre-commit/` (strip SHA and
- * branch fields).  Never touches `claimed/` records.
+ * the rewrite map. Demote those records back to `pre-commit/` (strip SHA and
+ * branch fields). Never touches `claimed/` records.
  */
 export function postRewriteDemote(log: Logger, repoRoot: string, shaMap: Map<string, string>): void {
   if (shaMap.size === 0) return;
@@ -655,365 +504,112 @@ export function postRewriteDemote(log: Logger, repoRoot: string, shaMap: Map<str
 }
 
 // ---------------------------------------------------------------------------
-// Branch resolution (step 7)
+// Agent prompt
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the best target branch for a claimed record.
- *
- * Returns `{ branch, sha }` on success.  If nothing reachable, returns null
- * (caller should delete the record).
+ * Build the prompt text for the standalone reconciler agent. The agent
+ * claims its own work from `postCommitDir`, self-lands via rebase + FF
+ * merge, and manages its own worktree -- so the prompt only needs to tell it
+ * where things are, not what is stale (the agent runs its own detection per
+ * record it claims).
  */
-export function resolveBranch(
-  log: Logger,
+export function buildAgentPrompt(
   repoRoot: string,
-  record: PostCommitRecord,
-  triggerWorktree?: string
-): { branch: string; sha: string } | null {
-  const stampedSha = record.sha;
-  const stampedBranch = record.branch;
-
-  // 1. Stamped branch still exists and tip matches stamped SHA
-  if (stampedBranch) {
-    const tipSha = refExists(repoRoot, stampedBranch);
-    if (tipSha === stampedSha) {
-      log.info(`branch-resolve: stamped branch ${stampedBranch} still valid at ${tipSha.slice(0, 8)}`);
-      return { branch: stampedBranch, sha: tipSha };
-    }
-  }
-
-  // 2. git branch --contains <sha>
-  let containingBranches: string[] = [];
-  try {
-    const out = execFileSync('git', ['-C', repoRoot, 'branch', '--contains', stampedSha], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
-    });
-    containingBranches = out
-      .trim()
-      .split('\n')
-      .map((b) => b.replace(/^\*?\s*/, '').trim())
-      .filter(Boolean);
-  } catch {
-    void 0;
-  }
-
-  // 3. Exclude branches checked out in other worktrees
-  const worktreeMap = getWorktreeBranches(repoRoot);
-  const liveBranches = containingBranches.filter((b) => {
-    const wt = worktreeMap.get(b);
-    return !wt || wt === triggerWorktree;
-  });
-
-  if (liveBranches.length > 0) {
-    // Prefer trigger worktree's branch > stamped name > most recently committed
-    let resolved: string;
-    if (liveBranches.length === 1) {
-      resolved = liveBranches[0];
-    } else {
-      const triggerBranch = getBranchForWorktree(worktreeMap, triggerWorktree);
-      resolved = pickBestBranch(liveBranches, triggerBranch, stampedBranch ?? undefined, repoRoot);
-    }
-
-    const tipSha = refExists(repoRoot, resolved);
-    if (tipSha) {
-      log.info(`branch-resolve: resolved to ${resolved} at ${tipSha.slice(0, 8)}`);
-      return { branch: resolved, sha: tipSha };
-    }
-  }
-
-  // 4. Path-based re-validation fallback
-  //   Check branches to see if the anchor content exists on any branch tip.
-  //   When the stamped SHA is unreachable (dead commit), `git branch --contains`
-  //   returns nothing — fall back to ALL local branches.
-  let candidateBranches = containingBranches;
-  if (candidateBranches.length === 0) {
-    try {
-      const out = execFileSync('git', ['-C', repoRoot, 'branch', '--format=%(refname:short)'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
-      candidateBranches = out.trim().split('\n').filter(Boolean);
-    } catch {
-      void 0;
-    }
-  }
-
-  for (const branch of candidateBranches) {
-    const tipSha = refExists(repoRoot, branch);
-    if (!tipSha) continue;
-    if (doAnchorsExistAt(repoRoot, tipSha, record.anchors)) {
-      log.info(`branch-resolve: path-based fallback found ${branch} at ${tipSha.slice(0, 8)}`);
-      return { branch, sha: tipSha };
-    }
-  }
-
-  log.warn(`branch-resolve: no reachable branch found for stamped SHA ${stampedSha.slice(0, 8)}`);
-  return null;
-}
-
-/**
- * Get the branch that is checked out at a given worktree path.
- */
-function getBranchForWorktree(worktreeMap: Map<string, string>, worktreePath?: string): string | undefined {
-  if (!worktreePath) return undefined;
-  for (const [branch, wt] of worktreeMap) {
-    if (wt === worktreePath) return branch;
-  }
-  return undefined;
-}
-
-/**
- * Pick the best branch from a list of candidates.
- * Preference: triggerBranch > stampedName > most recently committed.
- */
-function pickBestBranch(candidates: string[], triggerBranch?: string, stampedName?: string, repoRoot?: string): string {
-  // Trigger's branch
-  if (triggerBranch && candidates.includes(triggerBranch)) return triggerBranch;
-
-  // Stamped name
-  if (stampedName && candidates.includes(stampedName)) return stampedName;
-
-  // Most recently committed — determine by the commit date of each branch tip
-  if (repoRoot && candidates.length > 1) {
-    let best = candidates[0];
-    let bestTime = 0;
-    for (const branch of candidates) {
-      try {
-        const out = execFileSync('git', ['-C', repoRoot, 'log', '-1', '--format=%ct', `refs/heads/${branch}`], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          encoding: 'utf8'
-        });
-        const ts = parseInt(out.trim(), 10);
-        if (ts > bestTime) {
-          bestTime = ts;
-          best = branch;
-        }
-      } catch {
-        void 0;
-      }
-    }
-    return best;
-  }
-
-  return candidates[0];
-}
-
-// ---------------------------------------------------------------------------
-// Scratch worktree creation (step 8)
-// ---------------------------------------------------------------------------
-
-/**
- * Create a detached scratch worktree at the resolved commit SHA.
- * Returns the scratch worktree path on success, null on failure.
- */
-export function createScratchWorktree(log: Logger, repoRoot: string, sha: string): string | null {
-  const uuid = randomUUID();
-  const scrAbs = scratchDirAbs(repoRoot);
-  const scratchPath = nodePath.join(scrAbs, uuid);
-
-  fs.mkdirSync(scrAbs, { recursive: true });
-
-  try {
-    execFileSync('git', ['-C', repoRoot, 'worktree', 'add', '--detach', scratchPath, sha], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30_000
-    });
-    log.info(`scratch: created worktree at ${scratchPath} (SHA ${sha.slice(0, 8)})`);
-    return scratchPath;
-  } catch (err) {
-    log.error(`scratch: failed to create worktree at ${scratchPath}: ${err}`);
-    return null;
-  }
-}
-
-/**
- * Remove a scratch worktree and its directory on disk.
- */
-export function removeScratchWorktree(log: Logger, repoRoot: string, scratchPath: string): void {
-  try {
-    execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', scratchPath], {
-      stdio: ['ignore', 'ignore', 'pipe']
-    });
-    log.info(`scratch: removed worktree at ${scratchPath}`);
-  } catch (err) {
-    log.warn(`scratch: git worktree remove failed for ${scratchPath}: ${err}`);
-    // Also try to remove the directory directly
-    try {
-      fs.rmSync(scratchPath, { recursive: true, force: true });
-    } catch {
-      void 0;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Detection (step 8 continued)
-// ---------------------------------------------------------------------------
-
-export interface DetectionResult {
-  /** Raw stdout from `git mesh stale --porcelain --batch`. */
-  staleOutput: string;
-  /** Raw stdout from `git mesh list --porcelain --batch`. */
-  listOutput: string;
-  /** Parsed stale rows (non-stale anchors do not appear). */
-  staleRows: PorcelainRow[];
-  /** Parsed list rows. */
-  listRows: PorcelainRow[];
-  /** True when there is actionable work (stale drift or uncovered writes). */
-  actionable: boolean;
-}
-
-/**
- * Run `git mesh stale` and `git mesh list` in the scratch worktree against
- * the record's anchors.  Returns null on parse failure (record should stay
- * pending).
- */
-export function runDetection(
-  log: Logger,
-  _repoRoot: string,
-  scratchPath: string,
-  anchors: AnchorSpec[]
-): DetectionResult | null {
-  const filterLines = anchors.map((a) => formatAnchor(a.path, a.kind, a.range)).join('\n');
-
-  let staleOut: string;
-  let listOut: string;
-
-  try {
-    staleOut = execFileSync('git', ['-C', scratchPath, 'mesh', 'stale', '--porcelain', '--batch'], {
-      input: filterLines,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      timeout: 60_000
-    });
-  } catch (err) {
-    log.error(`detection: git mesh stale failed: ${err}`);
-    return null;
-  }
-
-  try {
-    listOut = execFileSync('git', ['-C', scratchPath, 'mesh', 'list', '--porcelain', '--batch'], {
-      input: filterLines,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      timeout: 60_000
-    });
-  } catch (err) {
-    log.error(`detection: git mesh list failed: ${err}`);
-    return null;
-  }
-
-  // Parse output — a format change that produces no rows from non-empty
-  // output is treated as a parse failure (fail-closed).
-  const staleRows = parsePorcelain(staleOut);
-  const listRows = parsePorcelain(listOut);
-
-  const staleNonEmptyLines = staleOut.trim().split('\n').filter(Boolean).length;
-  const listNonEmptyLines = listOut.trim().split('\n').filter(Boolean).length;
-
-  if (staleNonEmptyLines > 0 && staleRows.length === 0) {
-    log.error('detection: stale porcelain format mismatch (non-empty output produced no rows)');
-    return null;
-  }
-  if (listNonEmptyLines > 0 && listRows.length === 0) {
-    log.error('detection: list porcelain format mismatch (non-empty output produced no rows)');
-    return null;
-  }
-
-  // Determine if actionable: stale drift exists, or anchor paths have no
-  // existing meshes (uncovered writes).
-  const hasStale = staleRows.length > 0;
-
-  // Uncovered writes: check which filter lines are NOT covered by any list
-  // row's path (within the scratch worktree).
-  const coveredPaths = new Set(listRows.map((r) => r.path));
-  const hasUncovered = anchors.some((a) => {
-    // The path in listRows is repo-relative, matching the anchor path
-    return !coveredPaths.has(a.path);
-  });
-
-  const actionable = hasStale || hasUncovered;
-
-  log.info(`detection: stale=${staleRows.length} rows, list=${listRows.length} rows, actionable=${actionable}`);
-
-  return { staleOutput: staleOut, listOutput: listOut, staleRows, listRows, actionable };
-}
-
-// ---------------------------------------------------------------------------
-// Agent spawn (step 9)
-// ---------------------------------------------------------------------------
-
-/**
- * Build the prompt text for the standalone reconciler agent.
- */
-export function buildAgentPrompt(scratchPath: string, detectionResult: DetectionResult, anchors: AnchorSpec[]): string {
-  const coveredPaths = new Set(detectionResult.listRows.map((r) => r.path));
-  const uncoveredAnchors = anchors.filter((a) => !coveredPaths.has(a.path));
-
-  const staleRows =
-    detectionResult.staleRows.length > 0
-      ? detectionResult.staleRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join('\n')
-      : '';
-
-  const listRows =
-    detectionResult.listRows.length > 0
-      ? detectionResult.listRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join('\n')
-      : '';
-
-  const uncoveredLines =
-    uncoveredAnchors.length > 0
-      ? uncoveredAnchors.map((a) => `  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ''}`).join('\n')
-      : '';
-
-  // Simple {{#if NAME}}...{{else}}...{{/if}} and {{NAME}} substitution.
-  // The template is a standalone .md file bundled at build time via esbuild.
+  meshDir: string,
+  postCommitDirAbs: string,
+  claimDirAbs: string
+): string {
   let prompt = PROMPT_TEMPLATE;
-
-  // {{#if NAME}}BLOCK{{/if}} — content between opening and closing, no else
-  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m: string, name: string, block: string) => {
-    const has =
-      name === 'staleRows'
-        ? staleRows.length > 0
-        : name === 'listRows'
-          ? listRows.length > 0
-          : name === 'uncoveredAnchors'
-            ? uncoveredLines.length > 0
-            : false;
-    return has ? block.trimEnd() : '';
-  });
-
-  // {{#if NAME}}IF_BLOCK{{else}}ELSE_BLOCK{{/if}}
-  prompt = prompt.replace(
-    /\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{else\}\}\n([\s\S]*?)\{\{\/if\}\}/g,
-    (_m: string, name: string, ifBlock: string, elseBlock: string) => {
-      const has =
-        name === 'staleRows'
-          ? staleRows.length > 0
-          : name === 'listRows'
-            ? listRows.length > 0
-            : name === 'uncoveredAnchors'
-              ? uncoveredLines.length > 0
-              : false;
-      return has ? ifBlock.trimEnd() : elseBlock.trimEnd();
-    }
-  );
-
-  // Plain {{NAME}} substitution
-  prompt = prompt.replace(/\{\{scratchPath\}\}/g, scratchPath);
-  prompt = prompt.replace(/\{\{staleRows\}\}/g, staleRows);
-  prompt = prompt.replace(/\{\{listRows\}\}/g, listRows);
-  prompt = prompt.replace(/\{\{uncoveredAnchors\}\}/g, uncoveredLines);
-
+  prompt = prompt.replace(/\{\{repoRoot\}\}/g, repoRoot);
+  prompt = prompt.replace(/\{\{meshDir\}\}/g, meshDir);
+  prompt = prompt.replace(/\{\{postCommitDir\}\}/g, postCommitDirAbs);
+  prompt = prompt.replace(/\{\{claimDir\}\}/g, claimDirAbs);
   return prompt.trimEnd();
 }
+
+// ---------------------------------------------------------------------------
+// Agent spawn
+// ---------------------------------------------------------------------------
 
 const AGENT_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes default
 const SIGTERM_GRACE_MS = 10_000; // 10 seconds between SIGTERM and SIGKILL
 
 /**
- * Spawn the standalone `claude -p` agent, wait for it to complete, and return
- * its exit code (null if spawn failed).
+ * Build the exact `claude` CLI arguments used to launch the standalone
+ * reconciler agent for a given claim. Shared by `spawnAgent` (which runs
+ * this for real) and `writeManualDispatchScript` (which dumps it to a shell
+ * script instead) so the two can never drift apart.
+ */
+export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: string): string[] {
+  const postCommitDirAbs = postCommitDir(repoRoot);
+  const claimDirAbs = claimDirFor(repoRoot, claimId);
+  const promptText = buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs);
+
+  // Resolve the absolute worktrees root for edit/write scoping. EnterWorktree
+  // always creates worktrees inside `.claude/worktrees/` of the repo, so this
+  // permits editing `.mesh/` in any worktree the agent creates without
+  // needing to know its exact name ahead of time.
+  const worktreesRoot = nodePath.resolve(repoRoot, '.claude/worktrees');
+  const meshEditGlob = `${worktreesRoot}/**/.mesh/**`;
+
+  const settings = {
+    permissions: {
+      allow: [
+        'EnterWorktree',
+        'ExitWorktree',
+        'Agent',
+        'Bash(git checkout *)',
+        'Bash(git mesh *)',
+        'Bash(git add .mesh/**)',
+        'Bash(git commit *)',
+        'Bash(git rebase *)',
+        'Bash(git merge *)',
+        'Bash(git status)',
+        'Bash(git diff)',
+        'Bash(git log)',
+        `Bash(mv ${postCommitDirAbs}/*.json ${claimDirAbs}/)`,
+        `Bash(mv ${claimDirAbs}/*.json ${postCommitDirAbs}/)`,
+        `Bash(rm ${claimDirAbs}/*.json)`,
+        `Edit(${meshEditGlob})`,
+        `Write(${meshEditGlob})`
+      ],
+      deny: [
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'DesignSync',
+        'NotebookEdit',
+        'SendMessage',
+        'PushNotification',
+        'RemoteTrigger',
+        'ReportFindings',
+        'ScheduleWakeup',
+        'AskUserQuestion',
+        'CronCreate',
+        'CronDelete',
+        'CronList'
+      ]
+    },
+    disableBundledSkills: true,
+    disableWorkflows: true,
+    disableRemoteControl: true,
+    disableClaudeAiConnectors: true,
+    disableArtifact: true
+  };
+
+  return ['-p', promptText, '--resume', claimId, '--settings', JSON.stringify(settings)];
+}
+
+/**
+ * Spawn the standalone `claude -p` reconciler agent, wait for it to complete,
+ * and return its exit code (null if spawn failed).
+ *
+ * The agent is self-claiming and self-landing: it claims records from
+ * `post-commit/` into `claimDirFor(repoRoot, claimId)` itself, enters its own
+ * worktree via the EnterWorktree tool, reconciles each record it claimed, and
+ * lands its work via rebase + fast-forward merge. `claimId` doubles as both
+ * the claim directory name (created by the caller before this is invoked)
+ * and the agent's own `--resume` session id, so the two always match.
  *
  * If the agent does not complete within `timeoutMs`, SIGTERM is sent followed
  * by SIGKILL after `SIGTERM_GRACE_MS`.
@@ -1021,60 +617,17 @@ const SIGTERM_GRACE_MS = 10_000; // 10 seconds between SIGTERM and SIGKILL
 export async function spawnAgent(
   log: Logger,
   repoRoot: string,
-  scratchPath: string,
   meshDir: string,
-  detectionResult: DetectionResult,
-  anchors: AnchorSpec[],
+  claimId: string,
   timeoutMs: number = AGENT_TIMEOUT_MS
 ): Promise<number | null> {
-  const sessionId = randomUUID();
-  const promptText = buildAgentPrompt(scratchPath, detectionResult, anchors);
+  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
 
-  // Resolve the absolute mesh directory for Edit/Write scoping
-  const meshDirAbs = nodePath.resolve(repoRoot, meshDir);
+  log.info(`spawn: launching agent (claim ${claimId})`);
 
-  const settings = {
-    allowedTools: [
-      // All git mesh commands must go through the scratch worktree (not the
-      // real worktree) so they operate on the scratch's .mesh/ directory.
-      `Bash(git -C ${scratchPath} mesh *)`,
-      `Bash(git -C ${scratchPath} add .mesh/**)`,
-      `Bash(git -C ${scratchPath} commit *)`,
-      `Bash(git -C ${scratchPath} status)`,
-      `Bash(git -C ${scratchPath} diff)`,
-      `Bash(git -C ${scratchPath} log)`
-    ],
-    deniedTools: [
-      'EnterPlanMode',
-      'ExitPlanMode',
-      'DesignSync',
-      'NotebookEdit',
-      'SendMessage',
-      'PushNotification',
-      'RemoteTrigger',
-      'ReportFindings',
-      'ScheduleWakeup',
-      'AskUserQuestion',
-      'CronCreate',
-      'CronDelete',
-      'CronList'
-    ],
-    disableBundledSkills: true,
-    disableWorkflows: true,
-    disableRemoteControl: true,
-    disableClaudeAiConnectors: true,
-    disableArtifact: true,
-    editFileScope: `${meshDirAbs}/**`,
-    writeFileScope: `${meshDirAbs}/**`
-  };
-
-  const claudeArgs = ['-p', promptText, '--resume', sessionId, '--settings', JSON.stringify(settings)];
-
-  log.info(`spawn: launching agent (session ${sessionId})`);
-
-  // Pipe agent stdout/stderr to .mesh/agent-<sessionId>.log so the user can
+  // Pipe agent stdout/stderr to .mesh/agent-<claimId>.log so the user can
   // inspect what the reconciler did (or why it failed).
-  const agentLogPath = nodePath.resolve(repoRoot, meshDir, `agent-${sessionId}.log`);
+  const agentLogPath = nodePath.resolve(repoRoot, meshDir, `agent-${claimId}.log`);
   let agentLogFd: number;
   try {
     fs.mkdirSync(nodePath.dirname(agentLogPath), { recursive: true });
@@ -1148,182 +701,83 @@ export async function spawnAgent(
 }
 
 // ---------------------------------------------------------------------------
-// CAS landing (step 10)
+// Manual dispatch
 // ---------------------------------------------------------------------------
 
+const MANUAL_RUN_MARKER_NAME = '.manual-run';
+
 /**
- * Land the agent's commit onto the resolved branch via compare-and-swap.
- * Returns true on success, false if the record should be retried or deleted.
+ * Path to the manual-run marker file. Its presence suspends automatic
+ * spawning: instead of launching the reconciler agent, the dispatcher writes
+ * a runnable shell script and leaves the claim directory in place for a
+ * human to invoke later. The marker is NOT consumed -- it stays in effect
+ * for every subsequent invocation until a human removes it.
+ */
+export function manualRunMarkerPath(repoRoot: string, meshDir: string): string {
+  return nodePath.join(nodePath.resolve(repoRoot, meshDir), MANUAL_RUN_MARKER_NAME);
+}
+
+/**
+ * Single-quote a string for safe embedding in a POSIX `sh` command line:
+ * wraps in `'...'`, escaping any embedded `'` as `'\''`.
+ */
+function shellQuoteSingle(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * In place of spawning the reconciler agent, write the exact `claude`
+ * invocation that would have been run to a standalone, executable shell
+ * script under the mesh directory. The claim directory has already been
+ * created by the caller and is left untouched (not swept) -- running the
+ * generated script later launches the agent against that same claim,
+ * picking up exactly where the dispatcher left off.
  *
- * Bound to MAX_CAS_ATTEMPTS attempts.
+ * Returns the absolute path of the script written.
  */
-const MAX_CAS_ATTEMPTS = 3;
-
-export function landCommit(
+export function writeManualDispatchScript(
   log: Logger,
   repoRoot: string,
-  scratchPath: string,
-  targetBranch: string,
-  expectedOldTip: string,
-  _claimed: ClaimedFile,
-  anchors: AnchorSpec[]
-): boolean {
-  let oldTip = expectedOldTip;
+  meshDir: string,
+  claimId: string,
+  now: Date
+): string {
+  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
+  const meshDirAbs = nodePath.resolve(repoRoot, meshDir);
+  const claimDirAbs = claimDirFor(repoRoot, claimId);
 
-  for (let attempt = 1; attempt <= MAX_CAS_ATTEMPTS; attempt++) {
-    // Read agent's commit SHA from scratch worktree
-    let agentSha: string;
-    try {
-      agentSha = execFileSync('git', ['-C', scratchPath, 'rev-parse', 'HEAD'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      }).trim();
-    } catch (err) {
-      log.error(`land: could not read agent HEAD from scratch worktree: ${err}`);
-      return false;
-    }
+  const datetimeStamp = now.toISOString().replace(/[:.]/g, '-');
+  const scriptPath = nodePath.join(meshDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
 
-    log.info(
-      `land: attempt ${attempt}/${MAX_CAS_ATTEMPTS} — update-ref ${targetBranch} ` +
-        `${agentSha.slice(0, 8)} (expected old tip ${oldTip.slice(0, 8)})`
-    );
+  const quotedCommand = ['claude', ...claudeArgs].map(shellQuoteSingle).join(' \\\n  ');
+  const script = [
+    '#!/bin/sh',
+    `# git-mesh manual dispatch script -- generated ${now.toISOString()}`,
+    '#',
+    `# Claim directory: ${claimDirAbs}`,
+    `# Mesh directory:  ${meshDirAbs}`,
+    '#',
+    '# The claim directory above was already reserved for this run and is left',
+    '# in place until this script is executed -- running it launches the same',
+    '# self-claiming, self-landing reconciler agent the dispatcher would have',
+    '# spawned automatically. If left unrun for too long, a future dispatcher',
+    '# invocation may reclaim the (still-empty) claim directory as abandoned.',
+    '',
+    `exec ${quotedCommand}`,
+    ''
+  ].join('\n');
 
-    try {
-      execFileSync('git', ['-C', repoRoot, 'update-ref', `refs/heads/${targetBranch}`, agentSha, oldTip], {
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      log.info(`land: CAS succeeded on attempt ${attempt}`);
-      return true;
-    } catch {
-      // CAS failed — branch moved underneath us
-      log.warn(`land: CAS failed on attempt ${attempt}, re-resolving branch`);
-    }
-
-    // Re-resolve branch to find if there's a new tip.
-    // Preserve anchors so the path-based fallback can re-validate even when
-    // the old tip SHA is unreachable (branches containing a dead SHA).
-    const resolved = resolveBranch(log, repoRoot, { anchors, sha: oldTip, branch: targetBranch, created_at: '' });
-    if (!resolved) {
-      log.error('land: branch no longer reachable after CAS failure — discarding');
-      return false;
-    }
-
-    if (resolved.sha === oldTip) {
-      // Branch hasn't moved — update-ref should have worked.  Something else
-      // is wrong (e.g. permission).  Give up.
-      log.error('land: CAS failed but branch tip unchanged — giving up');
-      return false;
-    }
-
-    // Rebase the agent's single .mesh commit onto the new tip
-    try {
-      execFileSync('git', ['-C', scratchPath, 'rebase', '--onto', resolved.sha, oldTip], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 30_000
-      });
-      log.info(`land: rebased onto new tip ${resolved.sha.slice(0, 8)}`);
-    } catch (err) {
-      log.error(`land: rebase onto new tip failed: ${err}`);
-      return false;
-    }
-
-    oldTip = resolved.sha;
-    // Retry CAS with the rebased commit
-  }
-
-  log.error(`land: exhausted ${MAX_CAS_ATTEMPTS} attempts`);
-  return false;
+  fs.mkdirSync(meshDirAbs, { recursive: true });
+  fs.writeFileSync(scriptPath, script, 'utf8');
+  fs.chmodSync(scriptPath, 0o755);
+  log.info(`manual-run: wrote ${scriptPath} instead of spawning (claim ${claimId})`);
+  return scriptPath;
 }
 
 // ---------------------------------------------------------------------------
-// Main pipeline
+// Sweep counter (throttles full-backlog promotion sweeps)
 // ---------------------------------------------------------------------------
 
-/**
- * Process a single claimed record: resolve branch, create scratch worktree,
- * run detection, spawn agent, and land the result.
- */
-export async function processClaimedRecord(
-  log: Logger,
-  repoRoot: string,
-  triggerWorktree: string | undefined,
-  claimed: ClaimedFile
-): Promise<void> {
-  // Read the claimed record
-  let record: PostCommitRecord;
-  try {
-    record = readJsonFile<PostCommitRecord>(claimed.path);
-  } catch (err) {
-    log.error(`process: could not read claimed record ${claimed.originalName}: ${err}`);
-    deleteClaim(log, claimed);
-    return;
-  }
-
-  // Step 7: Resolve branch
-  const resolved = resolveBranch(log, repoRoot, record, triggerWorktree);
-  if (!resolved) {
-    log.warn(`process: cannot resolve branch for ${claimed.originalName}, deleting`);
-    deleteClaim(log, claimed);
-    return;
-  }
-
-  // Step 8: Create scratch worktree
-  const scratchPath = createScratchWorktree(log, repoRoot, resolved.sha);
-  if (!scratchPath) {
-    log.warn(`process: could not create scratch worktree for ${claimed.originalName}, releasing`);
-    releaseClaim(log, repoRoot, claimed);
-    return;
-  }
-
-  const cleanupScratch = () => removeScratchWorktree(log, repoRoot, scratchPath);
-
-  try {
-    // Step 8 continued: Detection
-    const detectionResult = runDetection(log, repoRoot, scratchPath, record.anchors);
-    if (!detectionResult) {
-      // Parse failure — leave pending for retry
-      log.warn(`process: detection parse failure for ${claimed.originalName}, releasing`);
-      releaseClaim(log, repoRoot, claimed);
-      cleanupScratch();
-      return;
-    }
-
-    if (!detectionResult.actionable) {
-      log.info(`process: nothing actionable for ${claimed.originalName}, deleting`);
-      deleteClaim(log, claimed);
-      cleanupScratch();
-      return;
-    }
-
-    // Step 9: Spawn agent
-    const meshDir = resolveMeshRoot(repoRoot);
-    const exitCode = await spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, record.anchors);
-
-    if (exitCode === null || exitCode !== 0) {
-      log.warn(`process: agent exited with code ${exitCode}, releasing claim for retry`);
-      releaseClaim(log, repoRoot, claimed);
-      cleanupScratch();
-      return;
-    }
-
-    // Step 10: CAS landing (pass anchors for re-resolution fallback)
-    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed, record.anchors);
-    if (landed) {
-      deleteClaim(log, claimed);
-      log.info(`process: successfully landed ${claimed.originalName} on ${resolved.branch}`);
-    } else {
-      log.warn(`process: CAS landing failed for ${claimed.originalName}, releasing`);
-      releaseClaim(log, repoRoot, claimed);
-    }
-  } finally {
-    cleanupScratch();
-  }
-}
-
-/**
- * Sweep counter file path (under queue root).  Used to throttle full-backlog
- * promotion sweeps.
- */
 function sweepCounterPath(repoRoot: string): string {
   return nodePath.join(queueRoot(repoRoot), '.sweep-counter');
 }
@@ -1331,7 +785,7 @@ function sweepCounterPath(repoRoot: string): string {
 const SWEEP_EVERY_N = 10;
 
 /**
- * Read, increment, and return the sweep counter.  Returns true when the
+ * Read, increment, and return the sweep counter. Returns true when the
  * caller should perform a full backlog sweep.
  */
 function shouldSweepAll(repoRoot: string): boolean {
@@ -1359,18 +813,16 @@ function shouldSweepAll(repoRoot: string): boolean {
 export interface DispatcherArgs {
   repoRoot: string;
   postRewrite: boolean;
-  triggerWorktree?: string;
   commitSha?: string;
 }
 
 /**
- * Parse command-line arguments.  No external CLI library — just manual
+ * Parse command-line arguments. No external CLI library -- just manual
  * flag scanning.
  */
 export function parseArgs(argv: string[]): DispatcherArgs | null {
   let repoRoot: string | undefined;
   let postRewrite = false;
-  let triggerWorktree: string | undefined;
   let commitSha: string | undefined;
 
   for (let i = 2; i < argv.length; i++) {
@@ -1379,55 +831,13 @@ export function parseArgs(argv: string[]): DispatcherArgs | null {
       repoRoot = argv[++i];
     } else if (arg === '--post-rewrite') {
       postRewrite = true;
-    } else if (arg === '--trigger-worktree' && i + 1 < argv.length) {
-      triggerWorktree = argv[++i];
     } else if (arg === '--commit-sha' && i + 1 < argv.length) {
       commitSha = argv[++i];
     }
   }
 
   if (!repoRoot) return null;
-  return { repoRoot, postRewrite, triggerWorktree, commitSha };
-}
-
-/**
- * Determine the main/root worktree path for the repository.  The agent's cwd
- * is always set to this path (never a linked worktree that could be removed).
- *
- * In `git worktree list --porcelain` the `bare` key appears as its own line
- * inside a bare-repo entry block, NOT as part of the `worktree` path line.
- * The old check (`!trimmed.includes('bare')`) tested the wrong line; a proper
- * parser tracks the `bare` key on its own line within the current entry.
- */
-export function getMainWorktreePath(repoRoot: string): string {
-  try {
-    const out = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
-    });
-
-    let currentPath = '';
-    let entryIsBare = false;
-
-    for (const line of out.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('worktree ')) {
-        // Previous entry was non-bare — return it immediately
-        if (!entryIsBare && currentPath) return currentPath;
-        currentPath = trimmed.slice('worktree '.length);
-        entryIsBare = false;
-      } else if (trimmed === 'bare') {
-        entryIsBare = true;
-      }
-    }
-
-    // Last entry
-    if (!entryIsBare && currentPath) return currentPath;
-  } catch {
-    void 0;
-  }
-  // Fallback: repoRoot itself
-  return repoRoot;
+  return { repoRoot, postRewrite, commitSha };
 }
 
 /**
@@ -1435,13 +845,14 @@ export function getMainWorktreePath(repoRoot: string): string {
  *
  * 1. Parse args and open log
  * 2. (post-rewrite only) Demote matching records
- * 3. Under queue lock: reclaim, promote, claim
- * 4. For each claimed record: process (resolve → detect → spawn → land)
+ * 3. Under queue lock: reclaim abandoned claim directories, promote
+ * 4. If any post-commit records are pending, spawn one self-claiming,
+ *    self-landing reconciler agent and sweep its claim directory afterward
  */
 export async function main(): Promise<void> {
   const args = parseArgs(process.argv);
   if (!args) {
-    // Cannot log — no repo root
+    // Cannot log -- no repo root
     process.exit(1);
   }
 
@@ -1449,11 +860,9 @@ export async function main(): Promise<void> {
   log.info('dispatcher: started');
   log.info(`dispatcher: args repoRoot=${args.repoRoot} postRewrite=${args.postRewrite}`);
 
-  const mainWorktree = getMainWorktreePath(args.repoRoot);
-
   try {
     // -----------------------------------------------------------------------
-    // Post-rewrite path (step 6)
+    // Post-rewrite path
     // -----------------------------------------------------------------------
     if (args.postRewrite) {
       const stdinData = await readStdinWithTimeout(log, 5_000);
@@ -1479,27 +888,43 @@ export async function main(): Promise<void> {
     const changedPaths = getChangedPaths(args.repoRoot, args.commitSha);
     log.info(`dispatcher: commit changed ${changedPaths.size} paths`);
 
-    // Step 3+4: Queue operations under lock (including sweep-counter read)
-    const claimedRecords = withQueueLock(args.repoRoot, () => {
-      // Step 5 (reclaim runs before promote)
+    // Queue operations under lock: reclaim abandoned claim directories, then
+    // promote clean pre-commit records into post-commit/.
+    withQueueLock(args.repoRoot, () => {
       reclaim(log, args.repoRoot);
-      // Sweep counter: under lock so concurrent dispatchers don't race
       const sweepAll = shouldSweepAll(args.repoRoot);
       if (sweepAll) log.info('dispatcher: performing full backlog sweep');
-      // Step 3 (promote)
       promote(log, args.repoRoot, changedPaths, sweepAll, args.commitSha);
-      // Step 4 (claim)
-      return claim(log, args.repoRoot);
     });
 
-    log.info(`dispatcher: claimed ${claimedRecords.length} records`);
-
-    // Process each claimed record sequentially
-    for (const claimed of claimedRecords) {
-      await processClaimedRecord(log, args.repoRoot, args.triggerWorktree ?? mainWorktree, claimed);
+    let pending: string[];
+    try {
+      pending = fs.readdirSync(postCommitDir(args.repoRoot)).filter((f) => f.endsWith('.json'));
+    } catch {
+      pending = [];
+    }
+    if (pending.length === 0) {
+      log.info('dispatcher: nothing to reconcile');
+      return;
     }
 
-    log.info('dispatcher: finished');
+    const claimId = randomUUID();
+    fs.mkdirSync(claimDirFor(args.repoRoot, claimId), { recursive: true });
+    const meshDir = resolveMeshRoot(args.repoRoot);
+
+    if (fs.existsSync(manualRunMarkerPath(args.repoRoot, meshDir))) {
+      // Manual-run mode: the claim directory above is real and stays put --
+      // it is intentionally NOT swept here, since the generated script is
+      // meant to be run later against that exact claim.
+      writeManualDispatchScript(log, args.repoRoot, meshDir, claimId, new Date());
+      log.info('dispatcher: manual-run marker present, skipped automatic spawn');
+      return;
+    }
+
+    const exitCode = await spawnAgent(log, args.repoRoot, meshDir, claimId);
+    sweepClaimDir(log, args.repoRoot, claimId);
+
+    log.info(`dispatcher: finished (agent exit code ${exitCode})`);
   } catch (err) {
     log.error(`dispatcher: unhandled error: ${err}`);
   }

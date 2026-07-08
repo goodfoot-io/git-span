@@ -31,33 +31,10 @@ function resolveMeshRoot(repoRoot) {
   }
   return MESH_ROOT;
 }
-function parsePorcelain(stdout) {
-  const rows = [];
-  for (const line of stdout.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split("	");
-    if (parts.length < 3) continue;
-    const [name, path, range] = parts;
-    const dashIdx = range.indexOf("-");
-    if (dashIdx === -1) continue;
-    const start = parseInt(range.slice(0, dashIdx), 10);
-    const end = parseInt(range.slice(dashIdx + 1), 10);
-    if (Number.isNaN(start) || Number.isNaN(end)) continue;
-    rows.push({ name, path, start, end });
-  }
-  return rows;
-}
 var SESSION_BASE_DIR = nodePath.join(os.homedir(), ".cache", "git-mesh", "session");
 var LOCK_RETRY_INTERVAL_MS = 5;
 var LOCK_MAX_RETRIES = 1e3;
 var LOCK_STALE_MS = 3e4;
-function formatAnchor(path, kind, range) {
-  if ((kind === "read" || kind === "write") && range) {
-    return `${path}#L${range.start}-L${range.end}`;
-  }
-  return path;
-}
 function resolveGitCommonDir(repoRoot) {
   const out = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
     stdio: ["ignore", "pipe", "ignore"],
@@ -80,6 +57,9 @@ function postCommitDir(repoRoot) {
 }
 function claimedDir(repoRoot) {
   return nodePath.join(postCommitDir(repoRoot), "claimed");
+}
+function claimDirFor(repoRoot, claimId) {
+  return nodePath.join(claimedDir(repoRoot), claimId);
 }
 function acquireQueueLock(lockPath) {
   let attempts = 0;
@@ -152,11 +132,10 @@ function moveRecord(from, to) {
 }
 
 // src/agent-prompt.md
-var agent_prompt_default = 'You are a standalone mesh reconciler agent. Your job is to reconcile meshes in the scratch worktree.\n\nThe scratch worktree is at: {{scratchPath}}\n\n## Instructions\n\nUse the `git-mesh` skill for all git-mesh command mechanics.\nAll git operations must use the `-C` flag targeting the scratch worktree, e.g. `git -C <scratch-path> mesh stale`.\n\n## Stale Findings\n\n{{#if staleRows}}\nThe following anchors are stale:\n\n{{staleRows}}\n\nFor each stale mesh:\n- Re-anchor it to where the lines moved if the coupling still holds.\n- Reshape the slug or rewrite the why if the subsystem changed.\n- Retire the mesh if the coupling no longer holds.\n\n{{else}}\nNo stale anchors detected.\n{{/if}}\n\n{{#if listRows}}\n## Related Meshes\n\nThe following meshes are related to the touched anchors:\n\n{{listRows}}\n\nExtend or prune these meshes as appropriate: absorb an uncovered write into one, prune an anchor that no longer holds, or refactor \u2014 whichever fits.\n{{/if}}\n\n{{#if uncoveredAnchors}}\n## Uncovered Writes\n\nThe following touched paths are not covered by any existing mesh:\n\n{{uncoveredAnchors}}\n\nWhere two or more form a coherent subsystem \u2014 a flow or concern that spans them \u2014 create one: `git mesh add <slug> <anchors>` then `git mesh why <slug> -m "<one sentence>"`. Leave a lone file that forms no subsystem alone.\n\nThe why must name the relationship the anchors hold in one sentence that survives a rewrite of either side, in role-words. A good why: "the validator rejects every field the schema marks required, so the two must list the same keys." A bad why restates the slug ("charge flow"), describes a change ("added the charge() call"), or just lists the filenames \u2014 none of those survive a rewrite or tell the next reader why the sites move together.\n{{/if}}\n\n## Commit Boundary\n\n- Never touch source files outside `.mesh/`.\n- Only commit `.mesh/` changes \u2014 one commit per session.\n- Only commit once all anchored source files are already committed.\n- Use: `git -C {{scratchPath}} add .mesh/** && git -C {{scratchPath}} commit -m "<summary>"`\n\nWork in the background and do not report unless something needs human intervention.\n';
+var agent_prompt_default = "You are a standalone mesh reconciler agent. Your job is to reconcile meshes for whatever records are waiting in the post-commit queue \u2014 claiming them yourself, reconciling each one, and landing your work directly onto its target branch.\n\n## Queue layout\n\n- Pending records live in: `{{postCommitDir}}` \u2014 one `*.json` file per record, shape `{ anchors: [{path, kind, range?}], created_at, sha, branch }`.\n  - `sha` is the commit whose anchors this record covers.\n  - `branch` is the branch that commit landed on (may be `null` for a detached-HEAD commit \u2014 if so, skip that record and leave it in place; there is no branch to land it on).\n  - `anchors` are mesh anchor specs: `kind` is `read`/`write` (has a `range: {start, end}`, format as `path#L<start>-L<end>`) or `whole-read`/`whole-write`/`create` (format as bare `path`).\n- Your own claim directory is: `{{claimDir}}` \u2014 nothing else touches this directory; anything you move here is yours alone.\n- The repo root is: `{{repoRoot}}`. The mesh directory (relative to any worktree root) is: `{{meshDir}}`.\n\n## Instructions\n\nUse the `git-mesh` skill for all git-mesh command mechanics.\n\n### 1. Enter one worktree for the whole run\n\nCall `EnterWorktree` once, at the start, to create a fresh worktree branched off the repo root's current branch. You do not pass it a specific commit \u2014 it doesn't support one. Reuse this same worktree for every record you process below; don't create a new one per record.\n\n### 2. Claim your work\n\nList the `*.json` files in `{{postCommitDir}}`. Move the ones you intend to work on into `{{claimDir}}` (e.g. `mv {{postCommitDir}}/<file>.json {{claimDir}}/`). Claim as many or as few as you have time for \u2014 anything you leave behind stays available for a future run. Once a record is in your claim directory, it's exclusively yours.\n\n### 3. For each record you claimed, in turn\n\n1. Read the record's JSON to get its `sha`, `branch`, and `anchors`.\n2. In your worktree, `git checkout <sha>` (detached \u2014 it's an arbitrary past commit, not a branch tip).\n3. **Auto-fix first.** `--fix` only runs in human format (it can't be combined with `--porcelain --batch`), but it does accept explicit paths, so scope it to this record's anchor paths (deduped, ranges dropped): `git mesh stale --fix -- <path-1> <path-2> ...`. This silently re-anchors `Moved` anchors and whitespace-equivalent `Changed` anchors \u2014 cheap, mechanical drift that needs no judgment. Anything left after this is a real finding.\n4. Run detection filtered to this record's anchors: pipe the anchors (one per line, formatted as above) as stdin to `git mesh stale --porcelain --batch` and `git mesh list --porcelain --batch`.\n5. **Find findings that need reconciliation.** Collect three kinds from what step 4 turned up: stale anchors (CHANGED or DELETED after the auto-fix pass), related meshes (anchors already covered by an existing mesh that may need extending or pruning), and uncovered writes (anchor paths with no existing mesh at all). If there are none of any kind, there's nothing to commit or land for this record \u2014 skip straight to deleting it from your claim directory (step 12 below). If the auto-fix pass DID change something even though no further finding remains, continue on to commit and land it (skip steps 6\u20138).\n6. **Build the component graph.** For every file that appears in more than one finding from step 5, run `git mesh tree '<file>' --depth 1` \u2014 its children are the meshes that also anchor that file. Findings connected through a shared file form one component; a finding that shares no file with any other finding in this record is a component of size one. Within a component, findings must be reconciled together since they share context about what the correct line ranges and mesh boundaries are.\n7. **Check whether forking is worthwhile.** If this record's findings are small and simple (e.g. 1\u20132 meshes total, no shared files, no components larger than one), the overhead of a fork isn't justified \u2014 handle it inline yourself using the procedure in step 9, then skip to step 10.\n8. **Fork one subagent per component, all in parallel.** Each fork works in the worktree you already entered \u2014 do not call `EnterWorktree` again inside a fork. Components are disjoint by construction, so forks touch disjoint `.mesh/` files and never conflict with each other. A fork mutates `.mesh/` only; it never commits and never lands (you do that once, after all forks return, in steps 10\u201311). Give each fork:\n   - The mesh names in its component, their current anchors, and their why (if any).\n   - Which anchors are stale (CHANGED/DELETED), which are related-mesh findings, and which are uncovered writes.\n   - The shared file(s) connecting the component, and any healthy (non-stale) meshes that also anchor them, for range context.\n   - The full procedure from step 9 below, to execute for its component only.\n\n   Dispatch each component with a fork:\n\n   ```xml\n   <invoke name=\"Agent\">\n   <parameter name=\"description\">Reconcile <component-label> cluster</parameter>\n   <parameter name=\"subagent_type\">fork</parameter>\n   <parameter name=\"prompt\">\n   Reconcile these findings (component: <component-label> \u2014 connected via <shared-file>). Do not commit, do not land, do not call EnterWorktree.\n\n   ## <mesh-name-1>\n   - Stale: <path>#L<N>-L<M> \u2014 <CHANGED|DELETED>\n   - Why: <current why, or \"none\">\n\n   ## <mesh-name-2>\n   - Related: extend with uncovered write <path>\n   - Why: <current why>\n\n   (Context: these share <shared-file>. Healthy meshes also anchoring it: <list>.)\n\n   Follow step 9 of your instructions (the reconciliation procedure) for these findings only.\n   </parameter>\n   </invoke>\n   ```\n9. **The reconciliation procedure** (run this yourself in step 7's inline case, or hand it to each fork in step 8). For every finding, follow the same discipline: **read before you write, confirm in one sentence, then act** \u2014 never bulk-clear a finding just to make the exit code pass.\n   - **Stale anchors** \u2014 for each: read the current bytes at the anchor location and run `git mesh history <name>` to compare against what's anchored; write a one-sentence confirmation of whether the relationship still holds; stop and leave it for a human if you cannot confirm it. Then classify and act:\n\n     | Finding | Action |\n     |---|---|\n     | Bytes shifted, meaning preserved | `git mesh remove <name> '<path>#L<old>'` then `git mesh add <name> '<path>#L<new>'` |\n     | Content updated, same relationship | `git mesh remove <name> '<path>#L<N>'` then `git mesh add <name> '<path>#L<N>'` (re-hash) |\n     | Content no longer describes the relationship | `git mesh remove <name> '<path>#L<N>'` |\n     | One side of the relationship broke | Fix the code first, then re-anchor both sides in the same commit |\n     | Relationship gone entirely | `git mesh delete <name>` |\n     | Mesh has no why | `git mesh why <name> -m \"<one sentence>\"` |\n\n     If a DELETED anchor's file no longer exists on disk at all: remove just that anchor if the mesh's remaining anchors still describe a valid relationship, or delete the whole mesh if the relationship is gone without it.\n   - **Related meshes** \u2014 extend or prune as appropriate: absorb an uncovered write into one, prune an anchor that no longer holds, or refactor \u2014 whichever fits. Confirm the relationship still holds before extending; don't grow a mesh past what its why actually describes.\n   - **Uncovered writes** \u2014 where two or more form a coherent subsystem, a flow or concern that spans them, create one: `git mesh add <slug> <anchors>` then `git mesh why <slug> -m \"<one sentence>\"`. Leave a lone file that forms no subsystem alone.\n     The why must name the relationship the anchors hold in one sentence that survives a rewrite of either side, in role-words. A good why: \"the validator rejects every field the schema marks required, so the two must list the same keys.\" A bad why restates the slug (\"charge flow\"), describes a change (\"added the charge() call\"), or just lists the filenames \u2014 none of those survive a rewrite or tell the next reader why the sites move together.\n   - When run as a fork: stop at this point once your component's findings are handled. Do not re-run detection, commit, or land \u2014 return control to the top-level agent.\n10. Re-run `git mesh stale --porcelain --batch` filtered to this record's anchors \u2014 confirm none of them appear anymore (ignore anchors that belong to other records; you're only responsible for your own).\n11. Commit your `.mesh/` changes: `git add .mesh/** && git commit -m \"<summary>\"` \u2014 one commit per record, covering the auto-fix pass and every component's reconciliation (whether done inline or by a fork). Never touch source files outside `.mesh/`; only commit once the record's anchored source files are already committed (they always are, since these are post-commit records).\n12. **Land it yourself.** Rebase your `.mesh` commit onto the current tip of `branch`, then fast-forward `branch` to your rebased commit \u2014 e.g. `git rebase <branch>` while on your commit, then `git checkout <branch> && git merge --ff-only <your-commit>`. If the rebase produces conflicts in `.mesh/` files (another agent landed an overlapping change first), resolve them structurally rather than by hand: make sure the referenced source files are conflict-free, run `git mesh stale --fix` to resolve the `.mesh/` conflict markers, then continue the rebase. If the fast-forward fails because `branch` moved again in the meantime, retry once. If it still fails, **do not force it**: leave that record's `.json` file sitting in `{{claimDir}}` \u2014 do not delete it, do not move it \u2014 so it goes back to `{{postCommitDir}}` for a future run to retry.\n13. Once a record is successfully landed (or determined to need no action), delete its file from your claim directory: `rm {{claimDir}}/<file>.json`. Do not move resolved records back to `{{postCommitDir}}`.\n14. Before checking out the next record's SHA, make sure the worktree is clean (nothing uncommitted).\n\n### 4. When you're done\n\nOnce you've processed everything you claimed (or you're running low on time), call `ExitWorktree` with `action: \"remove\"`. There should be nothing left to keep \u2014 successful work has already landed on the real branches, and the worktree itself has nothing further to commit.\n\nWork in the background and do not report unless something needs human intervention.\n";
 
 // src/dispatcher.ts
 var LOG_FILE_NAME = "dispatcher.log";
-var CLAIM_PID_SUFFIX = ".pid-";
 function readStdinWithTimeout(log, timeoutMs) {
   if (process.stdin.isTTY) return Promise.resolve("");
   return new Promise((resolve3) => {
@@ -212,17 +191,6 @@ function createLogger(repoRoot) {
     error: (msg) => writeLine("ERROR", msg)
   };
 }
-function parsePidFromClaimed(filename) {
-  const idx = filename.lastIndexOf(CLAIM_PID_SUFFIX);
-  if (idx === -1) return null;
-  const pidStr = filename.slice(idx + CLAIM_PID_SUFFIX.length);
-  const pid = parseInt(pidStr, 10);
-  return Number.isFinite(pid) ? pid : null;
-}
-function stripClaimSuffix(filename) {
-  const idx = filename.lastIndexOf(CLAIM_PID_SUFFIX);
-  return idx === -1 ? filename : filename.slice(0, idx);
-}
 function getChangedPaths(repoRoot, commitSha) {
   const rev = commitSha ?? "HEAD";
   try {
@@ -273,42 +241,6 @@ function getCurrentBranch(repoRoot) {
     return null;
   }
 }
-function getWorktreeBranches(repoRoot) {
-  const map = /* @__PURE__ */ new Map();
-  try {
-    const out = execFileSync2("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8"
-    });
-    let currentPath = "";
-    for (const line of out.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("worktree ")) {
-        currentPath = trimmed.slice("worktree ".length);
-      } else if (trimmed.startsWith("branch refs/heads/")) {
-        const branch = trimmed.slice("branch refs/heads/".length);
-        map.set(branch, currentPath);
-      }
-    }
-  } catch {
-  }
-  return map;
-}
-function refExists(repoRoot, branch) {
-  try {
-    const out = execFileSync2("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${branch}`], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8"
-    });
-    return out.trim().split(" ")[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-function scratchDirAbs(repoRoot) {
-  const qRoot = queueRoot(repoRoot);
-  return nodePath2.resolve(repoRoot, qRoot, "scratch");
-}
 function anchorsIntersectChangedPaths(anchors, changedPaths) {
   for (const a of anchors) {
     if (changedPaths.has(a.path)) return true;
@@ -327,106 +259,82 @@ function areAnchorsClean(repoRoot, anchors) {
   }
   return true;
 }
-function doAnchorsExistAt(repoRoot, sha, anchors) {
-  for (const a of anchors) {
-    try {
-      execFileSync2("git", ["-C", repoRoot, "cat-file", "-e", `${sha}:${a.path}`], {
-        stdio: ["ignore", "ignore", "pipe"]
-      });
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
+var CLAIM_STALE_MS = 20 * 60 * 1e3;
 function reclaim(log, repoRoot) {
   const cDir = claimedDir(repoRoot);
-  let claimFiles;
-  try {
-    claimFiles = fs2.readdirSync(cDir).filter((f) => f.includes(CLAIM_PID_SUFFIX));
-  } catch {
-    return;
-  }
-  const deadPids = [];
-  for (const file of claimFiles) {
-    const pid = parsePidFromClaimed(file);
-    if (pid === null) continue;
-    try {
-      process.kill(pid, 0);
-    } catch {
-      deadPids.push({ file, pid });
-    }
-  }
-  for (const { file, pid } of deadPids) {
-    const srcPath = nodePath2.join(cDir, file);
-    const originalName = stripClaimSuffix(file);
-    const destPath = nodePath2.join(postCommitDir(repoRoot), originalName);
-    try {
-      moveRecord(srcPath, destPath);
-      log.info(`reclaim: returned ${file} to post-commit/ (PID ${pid} dead)`);
-    } catch (err) {
-      log.error(`reclaim: failed to reclaim ${file}: ${err}`);
-    }
-  }
-  try {
-    cleanupOrphanedScratchWorktrees(log, repoRoot, claimFiles);
-  } catch (err) {
-    log.error(`reclaim: scratch worktree cleanup failed: ${err}`);
-  }
-}
-function cleanupOrphanedScratchWorktrees(log, repoRoot, claimFiles) {
-  const worktreeOut = execFileSync2("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8"
-  });
-  const scrAbs = scratchDirAbs(repoRoot);
-  const liveClaimNames = new Set(claimFiles.map((f) => stripClaimSuffix(f)));
-  for (const line of worktreeOut.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("worktree ")) continue;
-    const wtPath = trimmed.slice("worktree ".length);
-    if (!wtPath.startsWith(scrAbs)) continue;
-    const uuid = nodePath2.basename(wtPath);
-    const isClaimed = [...liveClaimNames].some((name) => name.startsWith(uuid));
-    if (isClaimed) continue;
-    try {
-      execFileSync2("git", ["-C", repoRoot, "worktree", "remove", "--force", wtPath], {
-        stdio: ["ignore", "ignore", "pipe"]
-      });
-      log.info(`reclaim: removed orphaned scratch worktree ${uuid}`);
-    } catch (err) {
-      log.error(`reclaim: failed to remove scratch worktree ${uuid}: ${err}`);
-    }
-  }
-  try {
-    rmEmptyScratchDirs(scrAbs);
-  } catch {
-  }
-}
-function rmEmptyScratchDirs(dir) {
   let entries;
   try {
-    entries = fs2.readdirSync(dir);
+    entries = fs2.readdirSync(cDir);
   } catch {
     return;
   }
-  for (const e of entries) {
-    const full = nodePath2.join(dir, e);
+  for (const entry of entries) {
+    const dirPath = nodePath2.join(cDir, entry);
     let stat;
     try {
-      stat = fs2.statSync(full);
+      stat = fs2.statSync(dirPath);
     } catch {
       continue;
     }
-    if (stat.isDirectory()) {
-      rmEmptyScratchDirs(full);
+    if (!stat.isDirectory()) continue;
+    if (Date.now() - stat.mtimeMs <= CLAIM_STALE_MS) continue;
+    let files;
+    try {
+      files = fs2.readdirSync(dirPath).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      log.error(`reclaim: could not read claim directory ${entry}: ${err}`);
+      continue;
+    }
+    let recovered = 0;
+    for (const file of files) {
+      const srcPath = nodePath2.join(dirPath, file);
+      const destPath = nodePath2.join(postCommitDir(repoRoot), file);
+      try {
+        moveRecord(srcPath, destPath);
+        recovered++;
+      } catch (err) {
+        log.error(`reclaim: failed to move ${entry}/${file} back to post-commit/: ${err}`);
+      }
+    }
+    try {
+      const remaining = fs2.readdirSync(dirPath);
+      if (remaining.length > 0) {
+        log.warn(
+          `reclaim: claim directory ${entry} still has ${remaining.length} entries after sweep, removing anyway`
+        );
+      }
+      fs2.rmSync(dirPath, { recursive: true, force: true });
+      log.info(`reclaim: reclaimed ${recovered} record(s) from abandoned claim directory ${entry}`);
+    } catch (err) {
+      log.error(`reclaim: failed to remove claim directory ${entry}: ${err}`);
     }
   }
+}
+function sweepClaimDir(log, repoRoot, claimId) {
+  const dirPath = claimDirFor(repoRoot, claimId);
+  let files;
   try {
-    if (fs2.readdirSync(dir).length === 0) {
-      fs2.rmdirSync(dir);
-    }
+    files = fs2.readdirSync(dirPath).filter((f) => f.endsWith(".json"));
   } catch {
+    return;
+  }
+  for (const file of files) {
+    const srcPath = nodePath2.join(dirPath, file);
+    const destPath = nodePath2.join(postCommitDir(repoRoot), file);
+    try {
+      moveRecord(srcPath, destPath);
+      log.warn(`sweep: returned unresolved record ${file} from claim ${claimId} to post-commit/`);
+    } catch (err) {
+      log.error(`sweep: failed to move ${claimId}/${file} back to post-commit/: ${err}`);
+    }
+  }
+  if (files.length === 0) {
+    log.info(`sweep: claim ${claimId} clean, nothing to return`);
+  }
+  try {
+    fs2.rmSync(dirPath, { recursive: true, force: true });
+  } catch (err) {
+    log.error(`sweep: failed to remove claim directory ${claimId}: ${err}`);
   }
 }
 function promote(log, repoRoot, changedPaths, sweepAll, commitSha) {
@@ -470,48 +378,6 @@ function promote(log, repoRoot, changedPaths, sweepAll, commitSha) {
     } catch (err) {
       log.error(`promote: failed to promote ${file}: ${err}`);
     }
-  }
-}
-function claim(log, repoRoot) {
-  const pDir = postCommitDir(repoRoot);
-  const cDir = claimedDir(repoRoot);
-  fs2.mkdirSync(cDir, { recursive: true });
-  let files;
-  try {
-    files = fs2.readdirSync(pDir).filter((f) => f.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  const claimed = [];
-  for (const file of files) {
-    const srcPath = nodePath2.join(pDir, file);
-    const destName = `${file}${CLAIM_PID_SUFFIX}${process.pid}`;
-    const destPath = nodePath2.join(cDir, destName);
-    try {
-      moveRecord(srcPath, destPath);
-      claimed.push({ path: destPath, pid: process.pid, originalName: file });
-      log.info(`claim: claimed ${file}`);
-    } catch (err) {
-      log.warn(`claim: could not claim ${file} (concurrent claim): ${err}`);
-    }
-  }
-  return claimed;
-}
-function releaseClaim(log, repoRoot, claimed) {
-  try {
-    const destPath = nodePath2.join(postCommitDir(repoRoot), claimed.originalName);
-    moveRecord(claimed.path, destPath);
-    log.info(`release: released ${claimed.originalName} back to post-commit/`);
-  } catch (err) {
-    log.error(`release: failed to release ${claimed.originalName}: ${err}`);
-  }
-}
-function deleteClaim(log, claimed) {
-  try {
-    fs2.unlinkSync(claimed.path);
-    log.info(`delete: removed claim ${claimed.originalName}`);
-  } catch (err) {
-    log.warn(`delete: failed to remove claim ${claimed.originalName}: ${err}`);
   }
 }
 function parsePostRewriteInput(stdin) {
@@ -562,239 +428,71 @@ function postRewriteDemote(log, repoRoot, shaMap) {
     }
   }
 }
-function resolveBranch(log, repoRoot, record, triggerWorktree) {
-  const stampedSha = record.sha;
-  const stampedBranch = record.branch;
-  if (stampedBranch) {
-    const tipSha = refExists(repoRoot, stampedBranch);
-    if (tipSha === stampedSha) {
-      log.info(`branch-resolve: stamped branch ${stampedBranch} still valid at ${tipSha.slice(0, 8)}`);
-      return { branch: stampedBranch, sha: tipSha };
-    }
-  }
-  let containingBranches = [];
-  try {
-    const out = execFileSync2("git", ["-C", repoRoot, "branch", "--contains", stampedSha], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8"
-    });
-    containingBranches = out.trim().split("\n").map((b) => b.replace(/^\*?\s*/, "").trim()).filter(Boolean);
-  } catch {
-  }
-  const worktreeMap = getWorktreeBranches(repoRoot);
-  const liveBranches = containingBranches.filter((b) => {
-    const wt = worktreeMap.get(b);
-    return !wt || wt === triggerWorktree;
-  });
-  if (liveBranches.length > 0) {
-    let resolved;
-    if (liveBranches.length === 1) {
-      resolved = liveBranches[0];
-    } else {
-      const triggerBranch = getBranchForWorktree(worktreeMap, triggerWorktree);
-      resolved = pickBestBranch(liveBranches, triggerBranch, stampedBranch ?? void 0, repoRoot);
-    }
-    const tipSha = refExists(repoRoot, resolved);
-    if (tipSha) {
-      log.info(`branch-resolve: resolved to ${resolved} at ${tipSha.slice(0, 8)}`);
-      return { branch: resolved, sha: tipSha };
-    }
-  }
-  let candidateBranches = containingBranches;
-  if (candidateBranches.length === 0) {
-    try {
-      const out = execFileSync2("git", ["-C", repoRoot, "branch", "--format=%(refname:short)"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8"
-      });
-      candidateBranches = out.trim().split("\n").filter(Boolean);
-    } catch {
-    }
-  }
-  for (const branch of candidateBranches) {
-    const tipSha = refExists(repoRoot, branch);
-    if (!tipSha) continue;
-    if (doAnchorsExistAt(repoRoot, tipSha, record.anchors)) {
-      log.info(`branch-resolve: path-based fallback found ${branch} at ${tipSha.slice(0, 8)}`);
-      return { branch, sha: tipSha };
-    }
-  }
-  log.warn(`branch-resolve: no reachable branch found for stamped SHA ${stampedSha.slice(0, 8)}`);
-  return null;
-}
-function getBranchForWorktree(worktreeMap, worktreePath) {
-  if (!worktreePath) return void 0;
-  for (const [branch, wt] of worktreeMap) {
-    if (wt === worktreePath) return branch;
-  }
-  return void 0;
-}
-function pickBestBranch(candidates, triggerBranch, stampedName, repoRoot) {
-  if (triggerBranch && candidates.includes(triggerBranch)) return triggerBranch;
-  if (stampedName && candidates.includes(stampedName)) return stampedName;
-  if (repoRoot && candidates.length > 1) {
-    let best = candidates[0];
-    let bestTime = 0;
-    for (const branch of candidates) {
-      try {
-        const out = execFileSync2("git", ["-C", repoRoot, "log", "-1", "--format=%ct", `refs/heads/${branch}`], {
-          stdio: ["ignore", "pipe", "pipe"],
-          encoding: "utf8"
-        });
-        const ts = parseInt(out.trim(), 10);
-        if (ts > bestTime) {
-          bestTime = ts;
-          best = branch;
-        }
-      } catch {
-      }
-    }
-    return best;
-  }
-  return candidates[0];
-}
-function createScratchWorktree(log, repoRoot, sha) {
-  const uuid = randomUUID2();
-  const scrAbs = scratchDirAbs(repoRoot);
-  const scratchPath = nodePath2.join(scrAbs, uuid);
-  fs2.mkdirSync(scrAbs, { recursive: true });
-  try {
-    execFileSync2("git", ["-C", repoRoot, "worktree", "add", "--detach", scratchPath, sha], {
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 3e4
-    });
-    log.info(`scratch: created worktree at ${scratchPath} (SHA ${sha.slice(0, 8)})`);
-    return scratchPath;
-  } catch (err) {
-    log.error(`scratch: failed to create worktree at ${scratchPath}: ${err}`);
-    return null;
-  }
-}
-function removeScratchWorktree(log, repoRoot, scratchPath) {
-  try {
-    execFileSync2("git", ["-C", repoRoot, "worktree", "remove", "--force", scratchPath], {
-      stdio: ["ignore", "ignore", "pipe"]
-    });
-    log.info(`scratch: removed worktree at ${scratchPath}`);
-  } catch (err) {
-    log.warn(`scratch: git worktree remove failed for ${scratchPath}: ${err}`);
-    try {
-      fs2.rmSync(scratchPath, { recursive: true, force: true });
-    } catch {
-    }
-  }
-}
-function runDetection(log, _repoRoot, scratchPath, anchors) {
-  const filterLines = anchors.map((a) => formatAnchor(a.path, a.kind, a.range)).join("\n");
-  let staleOut;
-  let listOut;
-  try {
-    staleOut = execFileSync2("git", ["-C", scratchPath, "mesh", "stale", "--porcelain", "--batch"], {
-      input: filterLines,
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf8",
-      timeout: 6e4
-    });
-  } catch (err) {
-    log.error(`detection: git mesh stale failed: ${err}`);
-    return null;
-  }
-  try {
-    listOut = execFileSync2("git", ["-C", scratchPath, "mesh", "list", "--porcelain", "--batch"], {
-      input: filterLines,
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf8",
-      timeout: 6e4
-    });
-  } catch (err) {
-    log.error(`detection: git mesh list failed: ${err}`);
-    return null;
-  }
-  const staleRows = parsePorcelain(staleOut);
-  const listRows = parsePorcelain(listOut);
-  const staleNonEmptyLines = staleOut.trim().split("\n").filter(Boolean).length;
-  const listNonEmptyLines = listOut.trim().split("\n").filter(Boolean).length;
-  if (staleNonEmptyLines > 0 && staleRows.length === 0) {
-    log.error("detection: stale porcelain format mismatch (non-empty output produced no rows)");
-    return null;
-  }
-  if (listNonEmptyLines > 0 && listRows.length === 0) {
-    log.error("detection: list porcelain format mismatch (non-empty output produced no rows)");
-    return null;
-  }
-  const hasStale = staleRows.length > 0;
-  const coveredPaths = new Set(listRows.map((r) => r.path));
-  const hasUncovered = anchors.some((a) => {
-    return !coveredPaths.has(a.path);
-  });
-  const actionable = hasStale || hasUncovered;
-  log.info(`detection: stale=${staleRows.length} rows, list=${listRows.length} rows, actionable=${actionable}`);
-  return { staleOutput: staleOut, listOutput: listOut, staleRows, listRows, actionable };
-}
-function buildAgentPrompt(scratchPath, detectionResult, anchors) {
-  const coveredPaths = new Set(detectionResult.listRows.map((r) => r.path));
-  const uncoveredAnchors = anchors.filter((a) => !coveredPaths.has(a.path));
-  const staleRows = detectionResult.staleRows.length > 0 ? detectionResult.staleRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join("\n") : "";
-  const listRows = detectionResult.listRows.length > 0 ? detectionResult.listRows.map((r) => `  - ${r.name}: ${r.path}#L${r.start}-L${r.end}`).join("\n") : "";
-  const uncoveredLines = uncoveredAnchors.length > 0 ? uncoveredAnchors.map((a) => `  - ${a.path}${a.range ? `#L${a.range.start}-L${a.range.end}` : ""}`).join("\n") : "";
+function buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs) {
   let prompt = agent_prompt_default;
-  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m, name, block) => {
-    const has = name === "staleRows" ? staleRows.length > 0 : name === "listRows" ? listRows.length > 0 : name === "uncoveredAnchors" ? uncoveredLines.length > 0 : false;
-    return has ? block.trimEnd() : "";
-  });
-  prompt = prompt.replace(/\{\{#if (\w+)\}\}\n([\s\S]*?)\{\{else\}\}\n([\s\S]*?)\{\{\/if\}\}/g, (_m, name, ifBlock, elseBlock) => {
-    const has = name === "staleRows" ? staleRows.length > 0 : name === "listRows" ? listRows.length > 0 : name === "uncoveredAnchors" ? uncoveredLines.length > 0 : false;
-    return has ? ifBlock.trimEnd() : elseBlock.trimEnd();
-  });
-  prompt = prompt.replace(/\{\{scratchPath\}\}/g, scratchPath);
-  prompt = prompt.replace(/\{\{staleRows\}\}/g, staleRows);
-  prompt = prompt.replace(/\{\{listRows\}\}/g, listRows);
-  prompt = prompt.replace(/\{\{uncoveredAnchors\}\}/g, uncoveredLines);
+  prompt = prompt.replace(/\{\{repoRoot\}\}/g, repoRoot);
+  prompt = prompt.replace(/\{\{meshDir\}\}/g, meshDir);
+  prompt = prompt.replace(/\{\{postCommitDir\}\}/g, postCommitDirAbs);
+  prompt = prompt.replace(/\{\{claimDir\}\}/g, claimDirAbs);
   return prompt.trimEnd();
 }
 var AGENT_TIMEOUT_MS = 15 * 60 * 1e3;
 var SIGTERM_GRACE_MS = 1e4;
-async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, anchors, timeoutMs = AGENT_TIMEOUT_MS) {
-  const sessionId = randomUUID2();
-  const promptText = buildAgentPrompt(scratchPath, detectionResult, anchors);
-  const meshDirAbs = nodePath2.resolve(repoRoot, meshDir);
+function buildClaudeArgs(repoRoot, meshDir, claimId) {
+  const postCommitDirAbs = postCommitDir(repoRoot);
+  const claimDirAbs = claimDirFor(repoRoot, claimId);
+  const promptText = buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs);
+  const worktreesRoot = nodePath2.resolve(repoRoot, ".claude/worktrees");
+  const meshEditGlob = `${worktreesRoot}/**/.mesh/**`;
   const settings = {
-    allowedTools: [
-      // All git mesh commands must go through the scratch worktree (not the
-      // real worktree) so they operate on the scratch's .mesh/ directory.
-      `Bash(git -C ${scratchPath} mesh *)`,
-      `Bash(git -C ${scratchPath} add .mesh/**)`,
-      `Bash(git -C ${scratchPath} commit *)`,
-      `Bash(git -C ${scratchPath} status)`,
-      `Bash(git -C ${scratchPath} diff)`,
-      `Bash(git -C ${scratchPath} log)`
-    ],
-    deniedTools: [
-      "EnterPlanMode",
-      "ExitPlanMode",
-      "DesignSync",
-      "NotebookEdit",
-      "SendMessage",
-      "PushNotification",
-      "RemoteTrigger",
-      "ReportFindings",
-      "ScheduleWakeup",
-      "AskUserQuestion",
-      "CronCreate",
-      "CronDelete",
-      "CronList"
-    ],
+    permissions: {
+      allow: [
+        "EnterWorktree",
+        "ExitWorktree",
+        "Agent",
+        "Bash(git checkout *)",
+        "Bash(git mesh *)",
+        "Bash(git add .mesh/**)",
+        "Bash(git commit *)",
+        "Bash(git rebase *)",
+        "Bash(git merge *)",
+        "Bash(git status)",
+        "Bash(git diff)",
+        "Bash(git log)",
+        `Bash(mv ${postCommitDirAbs}/*.json ${claimDirAbs}/)`,
+        `Bash(mv ${claimDirAbs}/*.json ${postCommitDirAbs}/)`,
+        `Bash(rm ${claimDirAbs}/*.json)`,
+        `Edit(${meshEditGlob})`,
+        `Write(${meshEditGlob})`
+      ],
+      deny: [
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "DesignSync",
+        "NotebookEdit",
+        "SendMessage",
+        "PushNotification",
+        "RemoteTrigger",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "AskUserQuestion",
+        "CronCreate",
+        "CronDelete",
+        "CronList"
+      ]
+    },
     disableBundledSkills: true,
     disableWorkflows: true,
     disableRemoteControl: true,
     disableClaudeAiConnectors: true,
-    disableArtifact: true,
-    editFileScope: `${meshDirAbs}/**`,
-    writeFileScope: `${meshDirAbs}/**`
+    disableArtifact: true
   };
-  const claudeArgs = ["-p", promptText, "--resume", sessionId, "--settings", JSON.stringify(settings)];
-  log.info(`spawn: launching agent (session ${sessionId})`);
-  const agentLogPath = nodePath2.resolve(repoRoot, meshDir, `agent-${sessionId}.log`);
+  return ["-p", promptText, "--resume", claimId, "--settings", JSON.stringify(settings)];
+}
+async function spawnAgent(log, repoRoot, meshDir, claimId, timeoutMs = AGENT_TIMEOUT_MS) {
+  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
+  log.info(`spawn: launching agent (claim ${claimId})`);
+  const agentLogPath = nodePath2.resolve(repoRoot, meshDir, `agent-${claimId}.log`);
   let agentLogFd;
   try {
     fs2.mkdirSync(nodePath2.dirname(agentLogPath), { recursive: true });
@@ -860,111 +558,41 @@ async function spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, 
     return null;
   }
 }
-var MAX_CAS_ATTEMPTS = 3;
-function landCommit(log, repoRoot, scratchPath, targetBranch, expectedOldTip, _claimed, anchors) {
-  let oldTip = expectedOldTip;
-  for (let attempt = 1; attempt <= MAX_CAS_ATTEMPTS; attempt++) {
-    let agentSha;
-    try {
-      agentSha = execFileSync2("git", ["-C", scratchPath, "rev-parse", "HEAD"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8"
-      }).trim();
-    } catch (err) {
-      log.error(`land: could not read agent HEAD from scratch worktree: ${err}`);
-      return false;
-    }
-    log.info(
-      `land: attempt ${attempt}/${MAX_CAS_ATTEMPTS} \u2014 update-ref ${targetBranch} ${agentSha.slice(0, 8)} (expected old tip ${oldTip.slice(0, 8)})`
-    );
-    try {
-      execFileSync2("git", ["-C", repoRoot, "update-ref", `refs/heads/${targetBranch}`, agentSha, oldTip], {
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      log.info(`land: CAS succeeded on attempt ${attempt}`);
-      return true;
-    } catch {
-      log.warn(`land: CAS failed on attempt ${attempt}, re-resolving branch`);
-    }
-    const resolved = resolveBranch(log, repoRoot, { anchors, sha: oldTip, branch: targetBranch, created_at: "" });
-    if (!resolved) {
-      log.error("land: branch no longer reachable after CAS failure \u2014 discarding");
-      return false;
-    }
-    if (resolved.sha === oldTip) {
-      log.error("land: CAS failed but branch tip unchanged \u2014 giving up");
-      return false;
-    }
-    try {
-      execFileSync2("git", ["-C", scratchPath, "rebase", "--onto", resolved.sha, oldTip], {
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 3e4
-      });
-      log.info(`land: rebased onto new tip ${resolved.sha.slice(0, 8)}`);
-    } catch (err) {
-      log.error(`land: rebase onto new tip failed: ${err}`);
-      return false;
-    }
-    oldTip = resolved.sha;
-  }
-  log.error(`land: exhausted ${MAX_CAS_ATTEMPTS} attempts`);
-  return false;
+var MANUAL_RUN_MARKER_NAME = ".manual-run";
+function manualRunMarkerPath(repoRoot, meshDir) {
+  return nodePath2.join(nodePath2.resolve(repoRoot, meshDir), MANUAL_RUN_MARKER_NAME);
 }
-async function processClaimedRecord(log, repoRoot, triggerWorktree, claimed) {
-  let record;
-  try {
-    record = readJsonFile(claimed.path);
-  } catch (err) {
-    log.error(`process: could not read claimed record ${claimed.originalName}: ${err}`);
-    deleteClaim(log, claimed);
-    return;
-  }
-  const resolved = resolveBranch(log, repoRoot, record, triggerWorktree);
-  if (!resolved) {
-    log.warn(`process: cannot resolve branch for ${claimed.originalName}, deleting`);
-    deleteClaim(log, claimed);
-    return;
-  }
-  const scratchPath = createScratchWorktree(log, repoRoot, resolved.sha);
-  if (!scratchPath) {
-    log.warn(`process: could not create scratch worktree for ${claimed.originalName}, releasing`);
-    releaseClaim(log, repoRoot, claimed);
-    return;
-  }
-  const cleanupScratch = () => removeScratchWorktree(log, repoRoot, scratchPath);
-  try {
-    const detectionResult = runDetection(log, repoRoot, scratchPath, record.anchors);
-    if (!detectionResult) {
-      log.warn(`process: detection parse failure for ${claimed.originalName}, releasing`);
-      releaseClaim(log, repoRoot, claimed);
-      cleanupScratch();
-      return;
-    }
-    if (!detectionResult.actionable) {
-      log.info(`process: nothing actionable for ${claimed.originalName}, deleting`);
-      deleteClaim(log, claimed);
-      cleanupScratch();
-      return;
-    }
-    const meshDir = resolveMeshRoot(repoRoot);
-    const exitCode = await spawnAgent(log, repoRoot, scratchPath, meshDir, detectionResult, record.anchors);
-    if (exitCode === null || exitCode !== 0) {
-      log.warn(`process: agent exited with code ${exitCode}, releasing claim for retry`);
-      releaseClaim(log, repoRoot, claimed);
-      cleanupScratch();
-      return;
-    }
-    const landed = landCommit(log, repoRoot, scratchPath, resolved.branch, resolved.sha, claimed, record.anchors);
-    if (landed) {
-      deleteClaim(log, claimed);
-      log.info(`process: successfully landed ${claimed.originalName} on ${resolved.branch}`);
-    } else {
-      log.warn(`process: CAS landing failed for ${claimed.originalName}, releasing`);
-      releaseClaim(log, repoRoot, claimed);
-    }
-  } finally {
-    cleanupScratch();
-  }
+function shellQuoteSingle(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function writeManualDispatchScript(log, repoRoot, meshDir, claimId, now) {
+  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
+  const meshDirAbs = nodePath2.resolve(repoRoot, meshDir);
+  const claimDirAbs = claimDirFor(repoRoot, claimId);
+  const datetimeStamp = now.toISOString().replace(/[:.]/g, "-");
+  const scriptPath = nodePath2.join(meshDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
+  const quotedCommand = ["claude", ...claudeArgs].map(shellQuoteSingle).join(" \\\n  ");
+  const script = [
+    "#!/bin/sh",
+    `# git-mesh manual dispatch script -- generated ${now.toISOString()}`,
+    "#",
+    `# Claim directory: ${claimDirAbs}`,
+    `# Mesh directory:  ${meshDirAbs}`,
+    "#",
+    "# The claim directory above was already reserved for this run and is left",
+    "# in place until this script is executed -- running it launches the same",
+    "# self-claiming, self-landing reconciler agent the dispatcher would have",
+    "# spawned automatically. If left unrun for too long, a future dispatcher",
+    "# invocation may reclaim the (still-empty) claim directory as abandoned.",
+    "",
+    `exec ${quotedCommand}`,
+    ""
+  ].join("\n");
+  fs2.mkdirSync(meshDirAbs, { recursive: true });
+  fs2.writeFileSync(scriptPath, script, "utf8");
+  fs2.chmodSync(scriptPath, 493);
+  log.info(`manual-run: wrote ${scriptPath} instead of spawning (claim ${claimId})`);
+  return scriptPath;
 }
 function sweepCounterPath(repoRoot) {
   return nodePath2.join(queueRoot(repoRoot), ".sweep-counter");
@@ -988,7 +616,6 @@ function shouldSweepAll(repoRoot) {
 function parseArgs(argv) {
   let repoRoot;
   let postRewrite = false;
-  let triggerWorktree;
   let commitSha;
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -996,37 +623,12 @@ function parseArgs(argv) {
       repoRoot = argv[++i];
     } else if (arg === "--post-rewrite") {
       postRewrite = true;
-    } else if (arg === "--trigger-worktree" && i + 1 < argv.length) {
-      triggerWorktree = argv[++i];
     } else if (arg === "--commit-sha" && i + 1 < argv.length) {
       commitSha = argv[++i];
     }
   }
   if (!repoRoot) return null;
-  return { repoRoot, postRewrite, triggerWorktree, commitSha };
-}
-function getMainWorktreePath(repoRoot) {
-  try {
-    const out = execFileSync2("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8"
-    });
-    let currentPath = "";
-    let entryIsBare = false;
-    for (const line of out.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("worktree ")) {
-        if (!entryIsBare && currentPath) return currentPath;
-        currentPath = trimmed.slice("worktree ".length);
-        entryIsBare = false;
-      } else if (trimmed === "bare") {
-        entryIsBare = true;
-      }
-    }
-    if (!entryIsBare && currentPath) return currentPath;
-  } catch {
-  }
-  return repoRoot;
+  return { repoRoot, postRewrite, commitSha };
 }
 async function main() {
   const args = parseArgs(process.argv);
@@ -1036,7 +638,6 @@ async function main() {
   const log = createLogger(args.repoRoot);
   log.info("dispatcher: started");
   log.info(`dispatcher: args repoRoot=${args.repoRoot} postRewrite=${args.postRewrite}`);
-  const mainWorktree = getMainWorktreePath(args.repoRoot);
   try {
     if (args.postRewrite) {
       const stdinData = await readStdinWithTimeout(log, 5e3);
@@ -1054,18 +655,33 @@ async function main() {
     }
     const changedPaths = getChangedPaths(args.repoRoot, args.commitSha);
     log.info(`dispatcher: commit changed ${changedPaths.size} paths`);
-    const claimedRecords = withQueueLock(args.repoRoot, () => {
+    withQueueLock(args.repoRoot, () => {
       reclaim(log, args.repoRoot);
       const sweepAll = shouldSweepAll(args.repoRoot);
       if (sweepAll) log.info("dispatcher: performing full backlog sweep");
       promote(log, args.repoRoot, changedPaths, sweepAll, args.commitSha);
-      return claim(log, args.repoRoot);
     });
-    log.info(`dispatcher: claimed ${claimedRecords.length} records`);
-    for (const claimed of claimedRecords) {
-      await processClaimedRecord(log, args.repoRoot, args.triggerWorktree ?? mainWorktree, claimed);
+    let pending;
+    try {
+      pending = fs2.readdirSync(postCommitDir(args.repoRoot)).filter((f) => f.endsWith(".json"));
+    } catch {
+      pending = [];
     }
-    log.info("dispatcher: finished");
+    if (pending.length === 0) {
+      log.info("dispatcher: nothing to reconcile");
+      return;
+    }
+    const claimId = randomUUID2();
+    fs2.mkdirSync(claimDirFor(args.repoRoot, claimId), { recursive: true });
+    const meshDir = resolveMeshRoot(args.repoRoot);
+    if (fs2.existsSync(manualRunMarkerPath(args.repoRoot, meshDir))) {
+      writeManualDispatchScript(log, args.repoRoot, meshDir, claimId, /* @__PURE__ */ new Date());
+      log.info("dispatcher: manual-run marker present, skipped automatic spawn");
+      return;
+    }
+    const exitCode = await spawnAgent(log, args.repoRoot, meshDir, claimId);
+    sweepClaimDir(log, args.repoRoot, claimId);
+    log.info(`dispatcher: finished (agent exit code ${exitCode})`);
   } catch (err) {
     log.error(`dispatcher: unhandled error: ${err}`);
   }
@@ -1081,32 +697,20 @@ export {
   anchorsIntersectChangedPaths,
   areAnchorsClean,
   buildAgentPrompt,
-  claim,
+  buildClaudeArgs,
   createLogger,
-  createScratchWorktree,
-  deleteClaim,
-  doAnchorsExistAt,
   getChangedPaths,
   getCurrentBranch,
   getHeadSha,
   getLogFilePath,
-  getMainWorktreePath,
-  getWorktreeBranches,
-  landCommit,
   main,
+  manualRunMarkerPath,
   parseArgs,
-  parsePidFromClaimed,
   parsePostRewriteInput,
   postRewriteDemote,
-  processClaimedRecord,
   promote,
   reclaim,
-  refExists,
-  releaseClaim,
-  removeScratchWorktree,
-  resolveBranch,
-  runDetection,
-  scratchDirAbs,
   spawnAgent,
-  stripClaimSuffix
+  sweepClaimDir,
+  writeManualDispatchScript
 };
