@@ -1169,3 +1169,66 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn fix_conflict_resolved_summary() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Mesh conflict: ours has file1.txt#L1-L5, theirs has file2.txt#L1-L5.
+    // Both source files are clean => merge resolves both anchors.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let mesh_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Reconciled 1 mesh, 2 anchors (2 updated, 0 removed)."),
+        "expected summary for fully-resolved conflict; stdout=\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "clean resolution must exit 0");
+    Ok(())
+}
+
+#[test]
+fn fix_partial_conflict_summary() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // One anchor outside markers (common), one inside (same hash on both
+    // sides), why text diverges => partial resolution: resolved anchors
+    // written clean, why residue wrapped in conflict markers.
+    let h_out = line_slice_hash(ORIGINAL, 1, 5);
+    let h_in = line_slice_hash(FILE2, 1, 3);
+    let mesh_content = format!(
+        "\
+file1.txt#L1-L5 rk64:{h_out}
+<<<<<<< ours
+file2.txt#L1-L3 rk64:{h_in}
+
+our refined purpose
+=======
+file2.txt#L1-L3 rk64:{h_in}
+
+their refined purpose
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".mesh/m", &mesh_content)?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Reconciled 1 mesh, 2 anchors (2 updated, 0 removed)."),
+        "expected summary for partially-resolved conflict; stdout=\n{stdout}"
+    );
+    Ok(())
+}

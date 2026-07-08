@@ -28,10 +28,12 @@ pub(crate) struct FixResult {
     pub(crate) rewritten_anchor_ids: HashSet<String>,
     /// Names of mesh files written to disk (`write_worktree_mesh` called).
     /// Exact: a name appears here iff `any_rewritten || coalesced` was true
-    /// for that mesh.  Used by `run_stale` to scope the post-fix re-resolve.
-    /// Conflicted meshes that were fully resolved are included here;
-    /// meshes with residual conflicts are NOT (they remain in their
-    /// pre-fix conflict state for re-resolve).
+    /// for that mesh, OR the mesh is a conflicted mesh whose conflict
+    /// resolution wrote the file (fully resolved or partially resolved).
+    /// Used by `run_stale` to scope the post-fix re-resolve.
+    /// Fully and partially resolved meshes are both included so the
+    /// post-fix re-resolve sees the post-resolution content and reflects
+    /// any remaining residue accurately.
     pub(crate) rewritten_mesh_names: HashSet<String>,
     /// How many distinct mesh files were written to disk during this fix
     /// pass.  Incremented when `write_worktree_mesh` or `write_residue_mesh`
@@ -464,6 +466,7 @@ fn resolve_conflicted_mesh(
             &ours.why,
             &theirs.why,
         )?;
+        fix_result.rewritten_mesh_names.insert(name.to_string());
         fix_result.meshes_touched += 1;
         fix_result.anchors_updated += result.merged.anchors.len();
 
