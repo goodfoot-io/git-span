@@ -158,17 +158,19 @@ git mesh stale --fix              # authoritative resolver (also re-anchors drif
 git mesh merge-driver <O> <A> <B> <L>   # git-invoked accelerator (never run by hand)
 ```
 
-`git mesh stale --fix` is the authoritative finisher. Beyond re-anchoring
-`Moved`/`Changed` anchors in place (re-hashing each against the deepest drifting
-layer, Worktree > Index > HEAD), it rewrites conflict-markered `.mesh/` files
-into one clean version: it splits the markers into ours/theirs, **enforces a
-clean-source precondition** — every source file an affected mesh anchors must
-itself be conflict-free — reads the now-clean source, and merges structurally
-(anchors unioned, re-pointed, re-hashed against the worktree, written in
-canonical `(path, start, end)` order). It produces no commit and is only
-supported with `--format human`. It **fails closed** in two cases, leaving a
-minimal conflict around exactly the unresolvable lines, declining to re-stage
-that mesh, and reporting loudly:
+`git mesh stale --fix` is the authoritative finisher. It re-anchors every
+`Moved` anchor and whitespace-equivalent `Changed` anchor in place (re-hashing
+each against the deepest drifting layer, Worktree > Index > HEAD) — a `Changed`
+anchor whose content differs beyond whitespace is left drifting so the coupling
+resurfaces for human confirmation. Beyond re-anchoring, it rewrites
+conflict-markered `.mesh/` files into one clean version: it splits the markers
+into ours/theirs, **enforces a clean-source precondition** — every source file an
+affected mesh anchors must itself be conflict-free — reads the now-clean source,
+and merges structurally (anchors unioned, re-pointed, re-hashed against the
+worktree, written in canonical `(path, start, end)` order). It produces no
+commit and is only supported with `--format human`. It **fails closed** in two
+cases, leaving a minimal conflict around exactly the unresolvable lines,
+declining to re-stage that mesh, and reporting loudly:
 
 - a source file an affected mesh anchors still carries conflict markers, or
 - the `--why` prose diverged between ours and theirs (no merge base to resolve it).
