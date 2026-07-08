@@ -574,7 +574,7 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
     disableArtifact: true
   };
 
-  return ['-p', promptText, '--settings', JSON.stringify(settings)];
+  return ['-p', promptText, '--model', 'sonnet', '--effort', 'low', '--settings', JSON.stringify(settings)];
 }
 
 /**
@@ -740,7 +740,14 @@ export function writeManualDispatchScript(
     '# spawned automatically. If left unrun for too long, a future dispatcher',
     '# invocation may reclaim the (still-empty) claim directory as abandoned.',
     '',
-    `cd ${shellQuoteSingle(repoRoot)} || exit 1`,
+    "# Resolve the repo root from this script's own location on disk (it",
+    '# lives under the mesh directory, which is always inside the repo)',
+    '# rather than hardcoding the path this script happened to be generated',
+    '# for -- the script stays runnable even if the repo is moved, cloned',
+    '# elsewhere, or renamed.',
+    'script_dir=$(cd "$(dirname "$0")" && pwd -P) || exit 1',
+    'repo_root=$(cd "$script_dir" && git rev-parse --show-toplevel) || exit 1',
+    'cd "$repo_root" || exit 1',
     `exec ${quotedCommand}`,
     ''
   ].join('\n');

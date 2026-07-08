@@ -775,7 +775,7 @@ describe('buildAgentPrompt', () => {
 // ===========================================================================
 
 describe('buildClaudeArgs', () => {
-  it('builds -p/--settings args as a fresh session with no resume and no allow list', () => {
+  it('builds -p/--model/--effort/--settings args as a fresh session with no resume and no allow list', () => {
     const repo = initRepo();
     const { root, cleanup } = repo;
     let args: string[];
@@ -786,9 +786,13 @@ describe('buildClaudeArgs', () => {
     }
     expect(args[0]).toBe('-p');
     expect(typeof args[1]).toBe('string');
-    expect(args[2]).toBe('--settings');
+    expect(args[2]).toBe('--model');
+    expect(args[3]).toBe('sonnet');
+    expect(args[4]).toBe('--effort');
+    expect(args[5]).toBe('low');
+    expect(args[6]).toBe('--settings');
     expect(args).not.toContain('--resume');
-    const settings = JSON.parse(args[3]);
+    const settings = JSON.parse(args[7]);
     expect(settings.permissions).not.toHaveProperty('allow');
     expect(settings.permissions.deny).toContain('AskUserQuestion');
     expect(settings).not.toHaveProperty('allowedTools');
@@ -834,10 +838,15 @@ describe('writeManualDispatchScript', () => {
       expect(content).not.toContain('--resume');
       expect(content).toContain(claimId);
       expect(content).toContain('--settings');
-      // Must cd to the repo root before exec -- the script may be run from
-      // any cwd, but the agent needs to see the repo it's reconciling.
-      expect(content).toContain(`cd '${root}'`);
-      expect(content.indexOf(`cd '${root}'`)).toBeLessThan(content.indexOf('exec '));
+      // Must compute the repo root dynamically via git (relative to the
+      // script's own location) rather than hardcoding the path -- the
+      // script may be run from any cwd, and must stay runnable even if the
+      // repo is later moved or cloned elsewhere.
+      expect(content).not.toContain(`cd '${root}'`);
+      expect(content).not.toContain(`'${root}'`);
+      expect(content).toContain('git rev-parse --show-toplevel');
+      expect(content).toContain('cd "$repo_root"');
+      expect(content.indexOf('cd "$repo_root"')).toBeLessThan(content.indexOf('exec '));
 
       // The claim directory must be left in place (not swept) for the script
       // to be runnable later against the exact same claim.
