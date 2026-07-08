@@ -358,8 +358,10 @@ fn golden_cold_path_bare_scan() -> Result<()> {
     // bare scan (drift report) shows no meshes and prints the 0-stale summary.
     assert_eq!(code, Some(0), "fully-fixed bare scan exits 0; stderr={stderr}");
     assert_eq!(
-        stdout, "0 stale across 1 mesh (1 anchor checked)\n",
-        "cold-path bare-scan stdout must match baseline 0-stale summary"
+        stdout,
+        "0 stale across 1 mesh (1 anchor checked)\n\
+         Reconciled 1 mesh, 1 anchor (1 updated, 0 removed).\n",
+        "cold-path bare-scan stdout must match baseline including reconciled summary"
     );
     assert_eq!(stderr, "", "no warnings expected; stderr={stderr}");
 

@@ -33,6 +33,20 @@ pub(crate) struct FixResult {
     /// meshes with residual conflicts are NOT (they remain in their
     /// pre-fix conflict state for re-resolve).
     pub(crate) rewritten_mesh_names: HashSet<String>,
+    /// How many distinct mesh files were written to disk during this fix
+    /// pass.  Incremented when `write_worktree_mesh` or `write_residue_mesh`
+    /// is called (conflict-resolution both fully- and partially-resolved),
+    /// or when the per-mesh re-anchor/coalesce loop calls
+    /// `write_worktree_mesh`.  A mesh touched by both interior-anchor repair
+    /// AND re-anchoring counts once.
+    pub(crate) meshes_touched: usize,
+    /// How many anchor records were updated (re-anchored, coalesced, or
+    /// merged during conflict resolution).  Coalesced groups count as one
+    /// anchor each.  Conflict-resolution merged anchors count here.
+    pub(crate) anchors_updated: usize,
+    /// How many anchor records were removed outright (interior-anchor
+    /// repair: records whose path falls under the mesh root).
+    pub(crate) anchors_removed: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +427,7 @@ fn resolve_conflicted_mesh(
 
     if result.unresolved.is_empty() {
         // Fully resolved — all anchors merged cleanly, why resolved.
+        let resolved_count = result.merged.anchors.len();
         let mut merged = result.merged;
         write_worktree_mesh(repo, mesh_root, name, &mut merged)?;
 
@@ -435,6 +450,8 @@ fn resolve_conflicted_mesh(
         }
 
         fix_result.rewritten_mesh_names.insert(name.to_string());
+        fix_result.meshes_touched += 1;
+        fix_result.anchors_updated += resolved_count;
         println!("  resolved conflict: `{name}` — all anchors merged clean");
     } else {
         // Partial resolution — write resolved anchors + minimal residue.
@@ -447,6 +464,8 @@ fn resolve_conflicted_mesh(
             &ours.why,
             &theirs.why,
         )?;
+        fix_result.meshes_touched += 1;
+        fix_result.anchors_updated += result.merged.anchors.len();
 
         // Build a human-readable reason for the residue report.
         let reasons: Vec<String> = {
@@ -495,8 +514,13 @@ pub(crate) fn apply_fix(
     mesh_root: &str,
     fuzzy_threshold: f64,
 ) -> Result<FixResult> {
-    let mut rewritten: HashSet<String> = HashSet::new();
-    let mut rewritten_mesh_names: HashSet<String> = HashSet::new();
+    let mut fix = FixResult {
+        rewritten_anchor_ids: HashSet::new(),
+        rewritten_mesh_names: HashSet::new(),
+        meshes_touched: 0,
+        anchors_updated: 0,
+        anchors_removed: 0,
+    };
 
     // Resolve HEAD once for HEAD-layer rewrites. Some test scenarios may
     // have no HEAD yet (unborn branch); in that case we simply skip
@@ -532,14 +556,8 @@ pub(crate) fn apply_fix(
 
         // If the raw content has conflict markers, resolve structurally.
         if has_conflict_markers(&raw) {
-            let mut fix_result = FixResult {
-                rewritten_anchor_ids: HashSet::new(),
-                rewritten_mesh_names: HashSet::new(),
-            };
-            match resolve_conflicted_mesh(repo, mesh_root, &m.name, &raw, &mut fix_result) {
-                Ok(()) => {
-                    rewritten_mesh_names.extend(fix_result.rewritten_mesh_names);
-                }
+            match resolve_conflicted_mesh(repo, mesh_root, &m.name, &raw, &mut fix) {
+                Ok(()) => {}
                 Err(e) => {
                     // Resolution failed (e.g. conflicted source file).
                     // Report loudly and leave the mesh conflicted.
@@ -572,7 +590,9 @@ pub(crate) fn apply_fix(
         mesh_file
             .anchors
             .retain(|r| crate::mesh_root::classify_interior_anchor(mesh_root, &r.path).is_none());
-        if mesh_file.anchors.len() != before {
+        let dropped = before - mesh_file.anchors.len();
+        if dropped > 0 {
+            fix.anchors_removed += dropped;
             any_rewritten = true;
         }
 
@@ -775,7 +795,8 @@ pub(crate) fn apply_fix(
             record.end_line = new_end;
             record.algorithm = RK64_ALGORITHM.to_string();
             record.content_hash = hash_hex;
-            rewritten.insert(resolved.anchor_id.clone());
+            fix.rewritten_anchor_ids.insert(resolved.anchor_id.clone());
+            fix.anchors_updated += 1;
             crate::perf::record_fix_rewritable_anchor();
             any_rewritten = true;
         }
@@ -809,7 +830,7 @@ pub(crate) fn apply_fix(
                     // and its deepest drift layer is the worktree (so the
                     // rewritten record hashes the worktree content). The loop
                     // rewrote the record to `current`'s path/extent.
-                    if !rewritten.contains(&resolved.anchor_id) {
+                    if !fix.rewritten_anchor_ids.contains(&resolved.anchor_id) {
                         continue;
                     }
                     let Some(current) = &resolved.current else {
@@ -845,25 +866,26 @@ pub(crate) fn apply_fix(
         // both ranges this run relocated and ranges that were already
         // adjacent in the authored mesh — so the written file is fully
         // normalized regardless of whether anything was re-anchored.
+        let before_coalesce = fix.rewritten_anchor_ids.len();
         let coalesced = coalesce_line_ranges(
             repo,
             &m.name,
             &mut mesh_file,
             &mergeable_keys,
-            &mut rewritten,
+            &mut fix.rewritten_anchor_ids,
             index_snapshot.as_deref().unwrap_or(&[]),
         );
+        let coalesced_count = fix.rewritten_anchor_ids.len() - before_coalesce;
+        fix.anchors_updated += coalesced_count;
 
         if any_rewritten || coalesced {
             write_worktree_mesh(repo, mesh_root, &m.name, &mut mesh_file)?;
-            rewritten_mesh_names.insert(m.name.clone());
+            fix.rewritten_mesh_names.insert(m.name.clone());
+            fix.meshes_touched += 1;
         }
     }
 
-    Ok(FixResult {
-        rewritten_anchor_ids: rewritten,
-        rewritten_mesh_names,
-    })
+    Ok(fix)
 }
 
 /// Coalesce contiguous and overlapping line-range anchors on the same path

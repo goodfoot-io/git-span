@@ -1071,3 +1071,101 @@ fn fix_moved_with_worktree_shifts_reanchors_against_head() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// --fix reconciled summary
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_prints_reconciled_summary_for_updated_anchors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Whitespace-only worktree edit → content-equivalent Changed → re-anchored.
+    repo.write_file(
+        "file1.txt",
+        "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Reconciled 1 mesh, 1 anchor (1 updated, 0 removed)."),
+        "expected summary for one re-anchored anchor; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_prints_zero_summary_on_clean_tree() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // No drift at all — clean tree.
+    let out = repo.run_mesh(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Reconciled 0 meshes, 0 anchors (0 updated, 0 removed)."),
+        "expected zero summary on clean tree; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_prints_summary_with_remaining_drift() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "mixed"])?;
+    repo.run_git(["add", ".mesh"])?;
+    repo.run_git(["commit", "-m", "mesh commit"])?;
+
+    // file1: fixable whitespace-only Changed.
+    repo.write_file(
+        "file1.txt",
+        "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    // file2: unfixable Deleted.
+    std::fs::remove_file(repo.path().join("file2.txt"))?;
+
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The summary counts only the reconciled anchor despite remaining drift.
+    assert!(
+        stdout.contains("Reconciled 1 mesh, 1 anchor (1 updated, 0 removed)."),
+        "expected summary with remaining drift; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_mesh(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Inject an interior anchor whose path is under .mesh/.
+    // Write the mesh file raw to bypass `git mesh add` validation.
+    let h = line_slice_hash(ORIGINAL, 1, 5);
+    let interior = format!(
+        ".mesh/m rk64:{h}\nfile1.txt#L1-L5 rk64:{h}\n\ninterior anchor test\n"
+    );
+    repo.write_file(".mesh/m", &interior)?;
+    repo.run_git(["add", ".mesh/m"])?;
+    repo.run_git(["commit", "-m", "add interior anchor"])?;
+
+    // --fix must remove the interior anchor and re-anchor the valid one.
+    let out = repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("1 removed") || stdout.contains("Reconciled"),
+        "expected summary mentioning removed interior anchor; stdout=\n{stdout}"
+    );
+    // With interior anchor removal (1 removed) plus 0 re-anchored (the
+    // interior-anchor path is unresolvable so the valid anchor may or may
+    // not drift — just verify the removed count is non-zero).
+    assert!(
+        stdout.contains("(0 updated, 1 removed)")
+            || stdout.contains("(1 updated, 1 removed)"),
+        "expected removed count > 0; stdout=\n{stdout}"
+    );
+    Ok(())
+}

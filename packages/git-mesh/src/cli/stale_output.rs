@@ -6,6 +6,7 @@
 //! `AnchorResolved` into the plan's "Key types" shape.
 
 use crate::cli::show::BatchFilter;
+use crate::cli::stale_fix::FixResult;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
     SourceLayers, WholeResult, mesh_is_reportable_in_stale_discovery,
@@ -670,7 +671,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
     // re-resolve so the rendered post-fix view reflects the new statuses.
     // The set of anchor ids actually rewritten drives the "auto-updated" tag
     // and the exit-code subtraction.
-    let followed_ids: HashSet<String> = if args.fix {
+    let fix_result: Option<FixResult> = if args.fix {
         let _perf = crate::perf::span("stale.apply-fix");
         // Ensure the single PRE-fix corpus is loaded for the `--fix` consumers
         // (interior pre-scan + `fix_input` supplement). It is already `Some` on
@@ -772,7 +773,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
             pre_fix_source_layers = Some(crate::resolver::build_source_layers(repo, options)?);
         }
         let apply_start = crate::perf::enabled().then(std::time::Instant::now);
-        let fix_result = super::stale_fix::apply_fix(repo, &fix_input, mesh_root, options.fuzzy_threshold)?;
+        let fr = super::stale_fix::apply_fix(repo, &fix_input, mesh_root, options.fuzzy_threshold)?;
         if let Some(start) = apply_start {
             crate::perf::record_fix_apply_ns(start.elapsed().as_nanos() as u64);
         }
@@ -804,7 +805,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 mesh_root,
                 options,
                 meshes,
-                &fix_result.rewritten_mesh_names,
+                &fr.rewritten_mesh_names,
                 pre_fix_source_layers.take(),
             )?;
         } else {
@@ -813,7 +814,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 mesh_root,
                 options,
                 meshes,
-                &fix_result.rewritten_mesh_names,
+                &fr.rewritten_mesh_names,
                 pre_fix_source_layers.take(),
             )?;
         }
@@ -821,12 +822,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
         if let Some(start) = post_resolve_start {
             crate::perf::record_fix_post_resolve_ns(start.elapsed().as_nanos() as u64);
         }
-        crate::perf::record_fix_meshes_rewritten_count(fix_result.rewritten_mesh_names.len() as u64);
-        fix_result.rewritten_anchor_ids
+        crate::perf::record_fix_meshes_rewritten_count(fr.rewritten_mesh_names.len() as u64);
+        Some(fr)
     } else {
-        // File-backed model: no mesh-commit rewrite, so no auto-follow.
-        HashSet::new()
+        None
     };
+    let followed_ids: HashSet<String> = fix_result.as_ref().map_or(HashSet::new(), |fr| fr.rewritten_anchor_ids.clone());
 
     // POST-region corpus: the corpus state observed by the backfill and the
     // interior-anchor scan below. On the plain (non-`--fix`) path no mutation
@@ -1080,6 +1081,24 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, mesh_root: &str) -> Re
                 println!(
                     "0 stale across {} {} ({} {} checked)",
                     mesh_count, mesh_word, total_anchors, anchor_word,
+                );
+            }
+
+            // Reconciled summary line: always printed after --fix, regardless
+            // of whether drift remains or all counts are zero.
+            if args.fix && let Some(ref fr) = fix_result {
+                let updated = fr.anchors_updated;
+                let removed = fr.anchors_removed;
+                let total = updated + removed;
+                let meshes = fr.meshes_touched;
+                println!(
+                    "Reconciled {} {}, {} {} ({} updated, {} removed).",
+                    meshes,
+                    if meshes == 1 { "mesh" } else { "meshes" },
+                    total,
+                    if total == 1 { "anchor" } else { "anchors" },
+                    updated,
+                    removed,
                 );
             }
         }
