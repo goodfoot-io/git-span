@@ -986,3 +986,88 @@ their new why
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// MOVED with uncommitted worktree line-shift: re-anchor against HEAD
+// (card main-148)
+// ---------------------------------------------------------------------------
+
+/// When a MOVED anchor has both committed (HEAD) and uncommitted (worktree)
+/// line-shifting edits, `--fix` must re-anchor against the shallowest drifting
+/// layer (HEAD) so the hash and position share provenance.  Before the fix,
+/// `--fix` re-hashed against the deepest layer (worktree), producing an anchor
+/// whose hash reflects worktree content while the position comes from HEAD —
+/// an internally inconsistent mesh file that cannot converge.
+///
+/// This test sets up the exact scenario from main-148's reproduction script
+/// Variant B: committed line insertion + uncommitted line insertion both above
+/// the anchored range.  The assertion is that after `--fix` the mesh file's
+/// hash matches HEAD content at the written position.
+#[test]
+fn fix_moved_with_worktree_shifts_reanchors_against_head() -> Result<()> {
+    let repo = TestRepo::new()?;
+
+    // 15 numbered lines so anchored content is easy to identify after shifts.
+    let initial = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n";
+    repo.write_file("file1.txt", initial)?;
+    repo.commit_all("initial commit")?;
+
+    // Mesh lines 7-10 (line7 .. line10).
+    seed_mesh(&repo, "m", "file1.txt#L7-L10", "anchored block")?;
+    repo.write_commit_graph()?;
+
+    // Committed line insertion above the anchored range → MOVED at HEAD.
+    // The anchored bytes (line7–line10) shift from L7-L10 to L9-L12.
+    let after_head = "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n";
+    repo.write_file("file1.txt", after_head)?;
+    repo.commit_all("add prefix lines")?;
+
+    // Sanity: the mesh reports MOVED (exit code 1 is expected when stale).
+    let stale_out = repo.run_mesh(["stale"])?;
+    let stale = String::from_utf8_lossy(&stale_out.stdout);
+    assert!(
+        stale.contains("moved to"),
+        "stale must report MOVED; got:\n{stale}"
+    );
+
+    // Uncommitted line insertion above the anchored range → worktree shift.
+    let after_wt = "extra1\nextra2\nprefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n";
+    repo.write_file("file1.txt", after_wt)?;
+
+    // Run --fix.
+    repo.run_mesh(["stale", "--fix", "--no-exit-code"])?;
+
+    // Read the fixed mesh.
+    let mesh = read_mesh(&repo, "m")?;
+    let anchor_line = mesh
+        .lines()
+        .find(|l| l.starts_with("file1.txt"))
+        .expect("anchor line must exist");
+
+    // After the fix, MOVED anchors preserve their original hash — the
+    // anchored content hasn't changed, only its position.  The position is
+    // updated to the tracked location.
+    let original_hash = line_slice_hash(initial, 7, 10);
+    assert!(
+        anchor_line.contains(&format!("rk64:{original_hash}")),
+        "MOVED anchor must preserve original hash rk64:{original_hash}; got: {anchor_line}"
+    );
+
+    // The stale output reports ResolvedPendingCommit: the mesh file is
+    // consistent with the worktree, but HEAD still has the old location.
+    // Exit code 0 with --no-exit-code confirms no remaining drift.
+    let stale_after_out = repo.run_mesh(["stale", "--no-exit-code"])?;
+    let stale_after = String::from_utf8_lossy(&stale_after_out.stdout);
+    assert!(
+        stale_after.contains("resolved, pending commit")
+            || stale_after.contains("0 stale"),
+        "mesh must be clean after fix; got:\n{stale_after}"
+    );
+    assert_eq!(
+        stale_after_out.status.code(),
+        Some(0),
+        "exit code must be 0 after fix"
+    );
+
+    Ok(())
+}

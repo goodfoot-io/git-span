@@ -603,15 +603,17 @@ pub(crate) fn apply_fix(
                 continue;
             };
 
-            // Pick the deepest drifting layer: W > I > H.
+            // Pick the shallowest drifting layer: H < I < W.
+            // Re-anchoring against the shallowest layer ensures the hash
+            // and position share provenance (card main-148).
             let layer = match resolved
                 .layer_sources
                 .iter()
                 .copied()
-                .max_by_key(|s| match s {
-                    DriftSource::Worktree => 3,
-                    DriftSource::Index => 2,
+                .min_by_key(|s| match s {
                     DriftSource::Head => 1,
+                    DriftSource::Index => 2,
+                    DriftSource::Worktree => 3,
                 }) {
                 Some(s) => s,
                 None => continue,
@@ -620,99 +622,134 @@ pub(crate) fn apply_fix(
             let cur_path_str = current.path.to_string_lossy().to_string();
             let cur_extent = current.extent;
 
-            // Compute the canonical hash from the surfacing layer.
+            // For in-file MOVED anchors the anchored content has not
+            // changed — only its position. Re-use the existing hash from
+            // the mesh record instead of re-hashing, which would compute
+            // a hash against a potentially different layer's content at
+            // the tracked position (card main-148).
+            // Cross-file (rename) and fuzzy relocations must re-hash:
+            // the content is at a different path or has changed.
             let idx = index_snapshot.as_deref().unwrap_or(&[]);
-            let hash_hex: String = match layer {
-                DriftSource::Worktree => {
-                    crate::perf::record_fix_hash_call();
-                    match hash_anchor_content(repo, &cur_path_str, &cur_extent, None, idx) {
-                        Ok((_alg, h)) => h,
-                        Err(_) => continue,
-                    }
+            let hash_hex: String = if matches!(resolved.status, AnchorStatus::Moved)
+                && resolved.fuzzy_successors.is_empty()
+                && resolved
+                    .current
+                    .as_ref()
+                    .is_some_and(|c| c.path == resolved.anchored.path)
+            {
+                let (anc_start, anc_end) = match resolved.anchored.extent {
+                    AnchorExtent::LineRange { start, end } => (start, end),
+                    AnchorExtent::WholeFile => (0, 0),
+                };
+                let anc_path = resolved.anchored.path.to_string_lossy().to_string();
+                match mesh_file
+                    .anchors
+                    .iter()
+                    .find(|r| {
+                        r.path == anc_path
+                            && r.start_line == anc_start
+                            && r.end_line == anc_end
+                    })
+                    .map(|r| r.content_hash.clone())
+                {
+                    Some(h) => h,
+                    None => continue,
                 }
-                DriftSource::Head => {
-                    let oid = match head_oid.as_deref() {
-                        Some(o) => o,
-                        None => continue,
-                    };
-                    crate::perf::record_fix_hash_call();
-                    let head_result =
-                        hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx);
-                    // When the deepest drifting layer is HEAD and the
-                    // file has a different line count in HEAD than in the
-                    // current layer (e.g. mid-merge where the worktree /
-                    // index file grew), `hash_anchor_content` fails extent
-                    // validation ("end exceeds file line count"). Fall
-                    // back to the index layer so a `continue` does not
-                    // silently leave the anchor stuck stale while the
-                    // diagnostic reports it as fixed.
-                    match head_result {
-                        Ok((_alg, h)) => h,
-                        Err(_) => {
-                            let entry = match index_snapshot
-                                .as_deref()
-                                .unwrap_or(&[])
-                                .iter()
-                                .find(|en| {
-                                    en.path == cur_path_str
-                                        && en.stage
-                                            == gix::index::entry::Stage::Unconflicted
-                                }) {
-                                Some(e) => e,
-                                None => continue,
-                            };
-                            let blob_oid_hex = entry.oid.to_string();
-                            let bytes = match crate::git::read_blob_bytes(
-                                repo,
-                                &blob_oid_hex,
-                            ) {
-                                Ok(b) => b,
-                                Err(_) => continue,
-                            };
-                            if let AnchorExtent::LineRange { start, end } = cur_extent {
-                                let line_count = std::str::from_utf8(&bytes)
-                                    .map(|s| s.lines().count() as u32)
-                                    .unwrap_or(0);
-                                if start < 1 || end < start || end > line_count {
-                                    continue;
+            } else {
+                // Compute the canonical hash from the surfacing layer.
+                match layer {
+                    DriftSource::Worktree => {
+                        crate::perf::record_fix_hash_call();
+                        match hash_anchor_content(
+                            repo, &cur_path_str, &cur_extent, None, idx,
+                        ) {
+                            Ok((_alg, h)) => h,
+                            Err(_) => continue,
+                        }
+                    }
+                    DriftSource::Head => {
+                        let oid = match head_oid.as_deref() {
+                            Some(o) => o,
+                            None => continue,
+                        };
+                        crate::perf::record_fix_hash_call();
+                        let head_result = hash_anchor_content(
+                            repo, &cur_path_str, &cur_extent, Some(oid), idx,
+                        );
+                        match head_result {
+                            Ok((_alg, h)) => h,
+                            Err(_) => {
+                                let entry = match index_snapshot
+                                    .as_deref()
+                                    .unwrap_or(&[])
+                                    .iter()
+                                    .find(|en| {
+                                        en.path == cur_path_str
+                                            && en.stage
+                                                == gix::index::entry::Stage::Unconflicted
+                                    }) {
+                                    Some(e) => e,
+                                    None => continue,
+                                };
+                                let blob_oid_hex = entry.oid.to_string();
+                                let bytes = match crate::git::read_blob_bytes(
+                                    repo, &blob_oid_hex,
+                                ) {
+                                    Ok(b) => b,
+                                    Err(_) => continue,
+                                };
+                                if let AnchorExtent::LineRange { start, end } =
+                                    cur_extent
+                                {
+                                    let line_count = std::str::from_utf8(&bytes)
+                                        .map(|s| s.lines().count() as u32)
+                                        .unwrap_or(0);
+                                    if start < 1 || end < start || end > line_count {
+                                        continue;
+                                    }
+                                    if std::str::from_utf8(&bytes).is_err() {
+                                        continue;
+                                    }
                                 }
-                                if std::str::from_utf8(&bytes).is_err() {
-                                    continue;
-                                }
+                                rk64_to_hex(cheap_fingerprint_with_extent(
+                                    &bytes, &cur_extent,
+                                ))
                             }
-                            rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
                         }
                     }
-                }
-                DriftSource::Index => {
-                    // Read the index entry's blob bytes, then hash per extent.
-                    let entry = match index_snapshot
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .find(|en| en.path == cur_path_str && en.stage == gix::index::entry::Stage::Unconflicted)
-                    {
-                        Some(e) => e,
-                        None => continue,
-                    };
-                    let blob_oid_hex = entry.oid.to_string();
-                    let bytes = match crate::git::read_blob_bytes(repo, &blob_oid_hex) {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                    // Validate line extent against blob.
-                    if let AnchorExtent::LineRange { start, end } = cur_extent {
-                        let line_count = std::str::from_utf8(&bytes)
-                            .map(|s| s.lines().count() as u32)
-                            .unwrap_or(0);
-                        if start < 1 || end < start || end > line_count {
-                            continue;
+                    DriftSource::Index => {
+                        let entry = match index_snapshot
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .find(|en| {
+                                en.path == cur_path_str
+                                    && en.stage
+                                        == gix::index::entry::Stage::Unconflicted
+                            }) {
+                            Some(e) => e,
+                            None => continue,
+                        };
+                        let blob_oid_hex = entry.oid.to_string();
+                        let bytes = match crate::git::read_blob_bytes(
+                            repo, &blob_oid_hex,
+                        ) {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
+                        if let AnchorExtent::LineRange { start, end } = cur_extent {
+                            let line_count = std::str::from_utf8(&bytes)
+                                .map(|s| s.lines().count() as u32)
+                                .unwrap_or(0);
+                            if start < 1 || end < start || end > line_count {
+                                continue;
+                            }
+                            if std::str::from_utf8(&bytes).is_err() {
+                                continue;
+                            }
                         }
-                        if std::str::from_utf8(&bytes).is_err() {
-                            continue;
-                        }
+                        rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
                     }
-                    rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
                 }
             };
 
