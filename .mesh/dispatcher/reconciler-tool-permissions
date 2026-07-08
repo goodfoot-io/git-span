@@ -1,0 +1,4 @@
+packages/agent-hooks/src/agent-prompt.md#L16-L20 rk64:dbf04100c9e71bcd
+packages/agent-hooks/src/dispatcher.ts#L549-L575 rk64:9e914a74c6ae5530
+
+The reconciler prompt drives its agent through worktree and fork tools (EnterWorktree, ExitWorktree, Agent), so the deny list in the settings the dispatcher launches that agent with must keep permitting every tool the prompt requires.
