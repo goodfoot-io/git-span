@@ -5,7 +5,7 @@ description: Reconcile stale git meshes surfaced by `git mesh stale`. Use when a
 
 <instructions>
 
-This skill splits into two phases with a hard boundary at the fork point: **research** (read-only, requires judgment — main agent) and **execution** (mutating `.mesh/` files, deterministic once decisions are made — forked subagent in an isolated worktree). The fork happens after every one-sentence confirmation is written and the exact commands are known, before the first `git mesh remove`.
+The unit of work is a **file-connected component** — a cluster of stale meshes that share at least one anchored file. Within a component, meshes must be reconciled together because they share context about what the correct line ranges are for the files they all anchor. Across components, meshes are fully independent. Each component goes to one fork; components run in parallel.
 
 ---
 
@@ -13,36 +13,74 @@ This skill splits into two phases with a hard boundary at the fork point: **rese
 
 Do not mutate any file. Every command in this phase is read-only.
 
-### 1. Run `git mesh stale` (no `--fix`)
+### 1. Auto-fix and commit before any research
+
+`--fix` is global (it touches all meshes), so run it once before partitioning:
+
+```bash
+git mesh stale --fix
+```
+
+If `--fix` changed meshes:
+- **`resolved, pending commit`**: commit source files first, then the mesh:
+  ```bash
+  git add <source-files> && git commit -m "Commit shifted source files"
+  git add .mesh && git commit -m "Re-anchor moved mesh anchors"
+  ```
+- **Otherwise**: commit the mesh directly:
+  ```bash
+  git add .mesh && git commit -m "Re-anchor moved mesh anchors"
+  ```
+
+If `--fix` changed nothing, say so explicitly and note the reason (no MOVED or whitespace-equivalent CHANGED anchors). Do not proceed silently.
+
+### 2. Run `git mesh stale` again
 
 ```bash
 git mesh stale
 ```
 
-Group findings by mesh name. Identify which anchors are CHANGED, DELETED, or `resolved, pending commit`.
+The remaining findings are CHANGED (beyond whitespace) and DELETED. Group them by mesh name.
 
-### 2. Survey blast radius
+### 3. Build the file-sharing graph and find connected components
 
-For every file that appears in a stale anchor:
+For each stale mesh, enumerate its anchors:
 
 ```bash
-# Which meshes anchor this file? Cross-check you aren't missing a stale anchor.
-git mesh list '<stale-file-path>'
-
-# What else does each affected mesh anchor? Scope to the files involved —
-# don't dump `tree '**'`. Depth 2 shows: the file, its sibling anchors, and
-# one hop beyond (files those siblings co-anchor with elsewhere).
-git mesh tree '<stale-file-path>' --depth 2
+git mesh show <name>
 ```
 
-### 3. Confirm each CHANGED anchor
+Build a graph:
+- **Nodes** = stale meshes
+- **Edges** = two meshes share at least one anchored file path (regardless of line range)
 
-For each CHANGED finding:
+Find the connected components of this graph. Each component is one unit of work.
+
+*Example: `wiki/meta/update-order`, `git-mesh-touchpoints/cli-config`, and `wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs` — they form one component. `docs/merge-conflict-fix-contract` anchors only `command-reference.md` and `terminal-statuses.md`, which no other stale mesh anchors — it forms a second component. These two components can be forked in parallel.*
+
+A mesh that shares no files with any other stale mesh is a component of size 1 — still a valid component, still forkable.
+
+### 4. Survey blast radius per component
+
+For the files that connect each component, understand what else touches them:
+
+```bash
+# For the shared files within a component — don't dump `tree '**'`
+git mesh tree '<shared-file>' --depth 2
+```
+
+This confirms which meshes outside the component also anchor these files (they aren't stale, but they set context for what the correct range should be).
+
+### 5. Confirm each CHANGED anchor
+
+For each CHANGED finding, within its component:
 
 1. Read the why: `git mesh why <name>`. Note if it's empty.
 2. Read the current bytes at the anchored location with the Read tool.
 3. Read the anchored bytes from history — start with just the `<current>` entry of `git mesh history <name>`, which compares HEAD against the working tree. Fetch full history only when the current-vs-anchored comparison is ambiguous.
 4. **Write one sentence** stating what relationship the current bytes form relative to the mesh's purpose. If you cannot write it, stop — inspect further or plan to delete the mesh.
+
+**When multiple meshes in the same component anchor the same file**, reconcile their ranges together. If mesh A widens `cli/mod.rs` to L38-L181 but mesh B narrows to L38-L108, decide which is correct and make them consistent — the component's forks will coordinate this.
 
 Classify each finding into exactly one category, and write the exact commands:
 
@@ -55,116 +93,46 @@ Classify each finding into exactly one category, and write the exact commands:
 | Relationship gone entirely | `git mesh delete <name>` |
 | Mesh has no why | `git mesh why <name> -m "<one sentence>"` (write during execution) |
 
-### 4. Confirm each DELETED anchor
+### 6. Confirm each DELETED anchor
 
 For each DELETED finding:
 
 - **File still exists but is shorter** → the anchored range was rewritten away. Read the file; if you find the equivalent code at new line numbers, record the remove-old/add-new commands.
 - **File deleted entirely** → read the remaining anchors. If the relationship survives, plan to remove this anchor. If the relationship is gone, plan to delete the mesh.
 
-### 5. Assemble the work plan
+### 7. Assemble the work plan — one per component
 
-Before forking, you must have for every stale mesh:
+For each component, you must have:
 
-- The mesh name
+- Every mesh in the component
 - Every CHANGED or DELETED anchor classified into one of the categories above
-- The exact `git mesh remove` / `git mesh add` / `git mesh delete` / `git mesh why` commands to run, in mesh-at-a-time order
-- The commit message
+- Coordinated ranges for any file anchored by multiple meshes in the component
+- The exact `git mesh remove` / `git mesh add` / `git mesh delete` / `git mesh why` commands to run, sorted mesh-at-a-time within the component
+- The commit message for the final commit
 
 **STOP here if any finding lacks a one-sentence confirmation.** Do not fork until every anchor has one.
 
 ---
 
-## Phase 2 — Execution (forked subagent, worktree isolation)
+## Phase 2 — Execution (one fork per component, all forks in parallel)
 
-Fork a subagent with `isolation: "worktree"`. The worktree starts from a clean HEAD — the research phase didn't touch any files, so HEAD matches the working tree the research was based on.
+Fork one subagent per component. If there is 1 component, you get 1 fork. If there are N components, N forks run in parallel.
 
-The fork prompt must include the complete work plan: every command to run, the serial order, the verification check after each mesh, and the final commit message. The subagent does not redo research — it executes the plan.
+**No worktree isolation** — components are disjoint by construction (if two meshes shared a file, they'd be in the same component), so forks touch disjoint `.mesh/` files. They share the main worktree without conflict. Only the main agent commits at the end.
 
-```markdown
-Execute the following stale-mesh reconciliation plan. Run commands in the
-exact order given. Verify with `git mesh stale` after each mesh completes
-before moving to the next. If any verification fails, stop and report the
-failure — do not continue to the next mesh.
-
-## 1. Auto-fix
-
-```bash
-git mesh stale --fix
-```
-
-If `--fix` changed nothing, note it. If it changed meshes:
-- If `resolved, pending commit`: `git add <source-files> && git commit -m "..."` then `git add .mesh && git commit -m "..."`
-- Otherwise: `git add .mesh && git commit -m "Re-anchor moved mesh anchors"`
-
-Then `git mesh stale` again to confirm the remaining findings match the work plan.
-
-## 2. Execute planned mutations
-
-Process each mesh to completion before starting the next:
-
-### Mesh: <name>
-- [ ] `git mesh remove <name> '<path>#L<old>'`
-- [ ] `git mesh add <name> '<path>#L<new>'`
-- [ ] `git mesh why <name> -m "..."` (if needed)
-- [ ] `git mesh stale` — confirm this mesh no longer appears
-
-### Mesh: <name>
-...
-
-## 3. Final verification
-
-```bash
-git mesh stale     # must exit 0 with "0 stale"
-git mesh doctor    # must report "no findings"
-```
-
-## 4. Commit
-
-```bash
-git add .mesh && git commit -m "Reconcile stale meshes"
-```
-```
-
-The fork returns its result. If it succeeded, the main agent runs `git log --oneline -1` to confirm the commit landed.
-
----
-
-## Variant: parallel forks (many stale meshes)
-
-When there are more than a handful of stale meshes (roughly > 5), the research and execution can be parallelized across multiple forks. Each fork handles a disjoint subset of meshes — mesh files under `.mesh/` are independent, so forks operating on different meshes cannot conflict on the files they mutate.
-
-The constraint: `git mesh stale --fix` is global (it touches all meshes), so it must run **once** before any fork starts. Only the main agent commits at the end — parallel commits to the same repo would race.
-
-### Phase 1 — Main agent: `--fix` + partition
-
-```bash
-git mesh stale --fix
-git add .mesh && git commit -m "Re-anchor moved mesh anchors"
-```
-
-Partition the remaining stale meshes into disjoint subsets. Each fork gets a subset.
-
-### Phase 2 — Parallel research + execution forks
-
-Fork N subagents **without worktree isolation** (they share the main worktree but touch disjoint `.mesh/` files). Each fork:
-
-1. Researches its assigned meshes (read why, read current content, read history `<current>`)
-2. Writes one-sentence confirmations
-3. Executes mutations (remove/add anchors for its meshes only)
-4. Verifies with `git mesh stale` — its meshes should no longer appear
-5. Returns: confirmations written, commands executed, any failures
-
-The fork prompt for each:
+The fork prompt for each component:
 
 ```markdown
-You are assigned a subset of stale meshes to reconcile. Only touch `.mesh/`
-files for your assigned meshes. Do not commit — the main agent commits once
-at the end.
+You are assigned one file-connected component of stale meshes to reconcile.
+Only touch `.mesh/` files for the meshes listed below. Do not commit — the
+main agent commits once after all components complete.
 
-## Your meshes
+## Your meshes (component: <component-label>)
 - <name-1>
 - <name-2>
+
+These meshes share anchored files. If they anchor the same file, coordinate
+their ranges — they must be consistent.
 
 ## For each mesh
 
@@ -174,18 +142,18 @@ at the end.
 4. Write a one-sentence confirmation of the relationship
 5. Classify and execute: remove old anchor, add new anchor at correct range (or
    same range to re-hash), delete the mesh, or report that code needs fixing first
-6. `git mesh stale` — confirm this mesh no longer appears in output
+6. `git mesh stale` — confirm this mesh no longer appears in output (ignore
+   meshes assigned to other components)
 
 ## Rules
 - Never bulk re-add every anchor to clear the exit code
 - Each CHANGED finding requires its own one-sentence confirmation
+- If multiple meshes anchor the same file, coordinate their ranges
 - Stop and report if any finding cannot be confirmed
 - Do NOT commit
 ```
 
-### Phase 3 — Main agent: collect, verify, commit
-
-After all forks complete:
+### After all forks complete
 
 ```bash
 git mesh stale     # must exit 0 with "0 stale"
@@ -193,15 +161,7 @@ git mesh doctor    # must report "no findings"
 git add .mesh && git commit -m "Reconcile stale meshes"
 ```
 
-If any fork reported a failure, or `git mesh stale` is non-zero, return to the failing meshes with a single fork (or inline) to resolve them.
-
-### When to use each mode
-
-| Mode | Threshold | Why |
-|---|---|---|
-| Single fork | ≤ 5 stale meshes | Fork overhead dominates; serial execution is fast enough |
-| Parallel forks | > 5 stale meshes | Research (reading files, comparing content) scales linearly with mesh count; parallelism cuts wall-clock time proportionally |
-| Inline (no fork) | 1–2 stale meshes, trivial changes | Fork setup cost exceeds the work itself |
+If any fork reported a failure, or `git mesh stale` is non-zero, handle the failing component inline (its meshes are isolated from the successful components by definition, so only the failed component needs rework).
 
 ---
 
