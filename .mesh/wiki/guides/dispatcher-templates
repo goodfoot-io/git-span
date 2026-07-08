@@ -1,3 +1,6 @@
+.githooks/post-commit#L1-L18 rk64:4cbfc588f71ab35a
+.githooks/post-rewrite#L1-L18 rk64:a2d4699cb2c75f21
 .githooks/pre-commit#L1-L19 rk64:1ee38c93e6f6629b
 wiki/guides/git-hook-router-pattern.md#L59-L113 rk64:0ca0a90805109141
 
+The hook-router guide's dispatcher templates are kept honest by the repo's tracked hook routers, which are the working instances of the fail-closed, advisory, and stdin-forwarding shapes the guide shows.
