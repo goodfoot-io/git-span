@@ -64,6 +64,8 @@ If two or more claimed records share the same `sha`, you only need to `git check
    </invoke>
    ```
 9. **The reconciliation procedure** (run this yourself in step 7's inline case, or hand it to each fork in step 8). For every finding, follow the same discipline: **read before you write, confirm in one sentence, then act** — never bulk-clear a finding just to make the exit code pass.
+
+   "Read before you write" means read the implementation on *both* sides of every anchor pair, not just the side that's easiest to read (a prompt/doc/config file) plus a single `grep` hit on the other side. An import statement or filename match proves coupling exists; it proves nothing about whether the specific relationship you're about to write in a `why` is still true of the other side's current logic. If you can't point to the actual lines on both sides that make the claim true, you haven't confirmed it — you've paraphrased one file and called it verified. This applies equally when creating a new mesh for an uncovered write: read both files fully before writing the `why`, don't infer one side from the other's name or a single reference to it.
    - **Stale anchors** — for each: read the current bytes at the anchor location and run `git mesh history <name>` to compare against what's anchored; write a one-sentence confirmation of whether the relationship still holds; stop and leave it for a human if you cannot confirm it. Then classify and act:
 
      | Finding | Action |
