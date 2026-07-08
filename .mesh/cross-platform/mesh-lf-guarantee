@@ -1,6 +1,5 @@
 .gitattributes#L12-L12 rk64:179e3dda7e58eb08
 packages/git-mesh/src/mesh/structural.rs#L50-L63 rk64:ed8a61ac53787364
-plugins/git-mesh/skills/git-mesh/sections/git-hook-setup.md#L27-L30 rk64:1424b2914daf28ae
 plugins/git-mesh/skills/git-mesh/sections/storage-model.md#L34-L38 rk64:df7defbf4e3c3b4e
 
 Two-level LF pin guaranteeing .mesh/ files check out with LF on every platform: the root .gitattributes rule covers files already committed in this repo, ensure_mesh_dir() carries the same pin into every downstream repo on scaffold, and the handbook documents it as a zero-setup property requiring no core.autocrlf.

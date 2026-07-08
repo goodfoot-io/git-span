@@ -1,4 +1,4 @@
-CLAUDE.md#L96-L96 rk64:83d67efedabb665c
+CLAUDE.md#L92-L92 rk64:83d67efedabb665c
 scripts/validate.sh#L27-L36 rk64:58bd00139e0219ea
 
 The instructions tell the operator that running the script writes ./yarn-validate-output.log and prints 'Exit code: N'; the script is the source of truth for those output facts when they disagree.

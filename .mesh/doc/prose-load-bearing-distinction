@@ -1,4 +1,3 @@
-packages/agent-hooks/src/stop.ts#L635-L651 rk64:9d46aaa5c2ba8d84
 plugins/git-mesh/agents/expert.md#L17-L17 rk64:3f802d742bd811a9
 plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md#L22-L26 rk64:938482fb95fe56b7
 
