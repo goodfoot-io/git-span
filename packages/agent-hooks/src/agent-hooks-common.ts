@@ -479,7 +479,7 @@ export interface PreCommitRecord {
 
 export interface PostCommitRecord extends PreCommitRecord {
   sha: string;
-  branch: string | null;
+  branch: string;
 }
 
 // ---------------------------------------------------------------------------

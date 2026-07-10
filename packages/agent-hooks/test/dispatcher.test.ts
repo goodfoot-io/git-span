@@ -504,7 +504,7 @@ describe('Queue lifecycle', () => {
         cleanup();
       }
     });
-    it('promotes with detached HEAD', () => {
+    it('does NOT promote with detached HEAD — records stay in pre-commit/', () => {
       const repo = initRepoWithPrev('src/foo.ts', 'v1');
       const { root, cleanup } = repo;
       try {
@@ -524,12 +524,14 @@ describe('Queue lifecycle', () => {
         const { logger } = makeTestLogger();
         promote(logger, root, changedPaths, false);
 
-        const postFiles = fs.readdirSync(postCommitDir(root)).filter((f) => f.endsWith('.json'));
-        expect(postFiles).toHaveLength(1);
-
-        const promoted = readJsonFile<PostCommitRecord>(nodePath.join(postCommitDir(root), postFiles[0]));
-        expect(promoted.sha).toMatch(/^[0-9a-f]{40}$/);
-        expect(promoted.branch).toBeNull();
+        // A record stamped without a branch could never be landed, so a
+        // detached HEAD must skip promotion; the record survives untouched
+        // in pre-commit/ for a later on-branch commit (or sweep) to promote.
+        expect(fs.readdirSync(preCommitDir(root)).filter((f) => f.endsWith('.json'))).toHaveLength(1);
+        const postDirPath = postCommitDir(root);
+        expect(
+          fs.existsSync(postDirPath) ? fs.readdirSync(postDirPath).filter((f) => f.endsWith('.json')).length : 0
+        ).toBe(0);
       } finally {
         cleanup();
       }

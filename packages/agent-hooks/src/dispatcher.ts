@@ -373,6 +373,12 @@ export function sweepClaimDir(log: Logger, repoRoot: string, claimId: string): v
  * Promote clean records to `post-commit/` with SHA and branch stamp.
  * When `commitSha` is provided it is used instead of reading HEAD (avoids a
  * race where another commit lands before the background process runs).
+ *
+ * Skips promotion entirely when HEAD is detached: a record stamped with no
+ * branch can never be landed by the reconciler, and detached-HEAD commits are
+ * routinely the reconciler's own worktree commits triggering this hook.
+ * Unpromoted records stay in `pre-commit/` until an on-branch commit (or a
+ * periodic full sweep) promotes them with a real branch.
  */
 export function promote(
   log: Logger,
@@ -393,6 +399,10 @@ export function promote(
 
   const sha = commitSha ?? getHeadSha(repoRoot);
   const branch = getCurrentBranch(repoRoot);
+  if (branch === null) {
+    log.info(`promote: HEAD is detached, skipping promotion of ${files.length} record(s)`);
+    return;
+  }
 
   for (const file of files) {
     const filePath = nodePath.join(pDir, file);
@@ -427,7 +437,7 @@ export function promote(
       fs.mkdirSync(postCommitDir(repoRoot), { recursive: true });
       writeJsonFileAtomic(postPath, postRecord);
       fs.unlinkSync(filePath);
-      log.info(`promote: promoted ${file} (${record.anchors.length} anchors, branch=${branch ?? 'detached'})`);
+      log.info(`promote: promoted ${file} (${record.anchors.length} anchors, branch=${branch})`);
     } catch (err) {
       log.error(`promote: failed to promote ${file}: ${err}`);
     }
