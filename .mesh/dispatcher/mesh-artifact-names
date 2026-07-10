@@ -1,7 +1,7 @@
 packages/agent-hooks/src/dispatcher.ts#L59-L59 rk64:43a443bb2f0bae14
-packages/agent-hooks/src/dispatcher.ts#L605-L607 rk64:21279816b0336d46
-packages/agent-hooks/src/dispatcher.ts#L684-L684 rk64:fdc0625e13fa9b2b
-packages/agent-hooks/src/dispatcher.ts#L727-L727 rk64:62f195c2f2b58833
+packages/agent-hooks/src/dispatcher.ts#L615-L617 rk64:21279816b0336d46
+packages/agent-hooks/src/dispatcher.ts#L694-L694 rk64:fdc0625e13fa9b2b
+packages/agent-hooks/src/dispatcher.ts#L737-L737 rk64:62f195c2f2b58833
 packages/git-mesh/src/mesh/structural.rs#L78-L82 rk64:2bb2f2f4a4d8034a
 packages/git-mesh/src/mesh_file_reader.rs#L304-L335 rk64:71d535b8509441be
 
