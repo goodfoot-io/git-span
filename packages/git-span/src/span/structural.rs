@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_span_dir, SPAN_GITIGNORE_CONTENTS};
+    use super::{
+        ensure_span_dir, GITATTRIBUTES_CONTENTS, HOOKIGNORE_CONTENTS,
+        MANUAL_RUN_CONTENTS, SPAN_GITIGNORE_CONTENTS,
+    };
 
     /// `ensure_span_dir` must create `.span/.gitattributes` with exact
     /// canonical content and must be idempotent.
@@ -30,8 +33,8 @@ mod tests {
 
         let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
         assert_eq!(
-            content, "* text eol=lf\n",
-            ".span/.gitattributes content must be exactly `* text eol=lf\\n`"
+            content, GITATTRIBUTES_CONTENTS,
+            ".span/.gitattributes content must match the canonical form"
         );
 
         // Second call: idempotent — no error, content unchanged.
@@ -39,7 +42,7 @@ mod tests {
 
         let content2 = std::fs::read_to_string(&ga_path).expect("read .gitattributes again");
         assert_eq!(
-            content2, "* text eol=lf\n",
+            content2, GITATTRIBUTES_CONTENTS,
             "content must be unchanged after idempotent second call"
         );
     }
@@ -71,35 +74,182 @@ mod tests {
             "content must be unchanged after idempotent second call"
         );
     }
+
+    /// `ensure_span_dir` must create `.span/.manual-run` with exact
+    /// canonical content and must be idempotent.
+    #[test]
+    fn ensure_span_dir_writes_canonical_manual_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let mr_path = workdir.join(span_root).join(".manual-run");
+        assert!(mr_path.exists(), ".span/.manual-run must exist after first call");
+
+        let content = std::fs::read_to_string(&mr_path).expect("read .manual-run");
+        assert_eq!(
+            content, MANUAL_RUN_CONTENTS,
+            ".span/.manual-run content must match the canonical form"
+        );
+
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&mr_path).expect("read .manual-run again");
+        assert_eq!(
+            content2, MANUAL_RUN_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `ensure_span_dir` must create `.span/.hookignore` with exact
+    /// canonical content on first call, and the second call must be a
+    /// no-op (existence guard) even when content differs.
+    #[test]
+    fn ensure_span_dir_writes_canonical_hookignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let hi_path = workdir.join(span_root).join(".hookignore");
+        assert!(hi_path.exists(), ".span/.hookignore must exist after first call");
+
+        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
+        assert_eq!(
+            content, HOOKIGNORE_CONTENTS,
+            ".span/.hookignore content must match the canonical form"
+        );
+
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&hi_path).expect("read .hookignore again");
+        assert_eq!(
+            content2, HOOKIGNORE_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `.hookignore` with user-added content must NOT be overwritten by a
+    /// subsequent call to `ensure_span_dir`.
+    #[test]
+    fn ensure_span_dir_hookignore_preserves_user_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        // Pre-populate .hookignore with user content that differs from
+        // the canonical form.
+        let span_dir = workdir.join(span_root);
+        std::fs::create_dir_all(&span_dir).expect("create .span");
+        let user_content = "# my custom rule\npath/to/foo  my-prefix\n";
+        std::fs::write(span_dir.join(".hookignore"), user_content)
+            .expect("write user .hookignore");
+
+        ensure_span_dir(workdir, span_root).expect("call after user content");
+
+        let hi_path = workdir.join(span_root).join(".hookignore");
+        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
+        assert_eq!(
+            content, user_content,
+            ".hookignore must preserve user-added rules"
+        );
+    }
 }
 
 const DEFAULT_SPAN_ROOT: &str = ".span";
+
+/// Canonical contents of `.span/.gitattributes` -- forces LF line endings
+/// for all span files, keeping anchors portable across platforms.
+const GITATTRIBUTES_CONTENTS: &str = "\
+# Force LF line endings for all span files. gitattributes inherits
+# to every descendant, so a single rule here covers the entire span
+# tree and keeps anchors portable across platforms.
+* text eol=lf
+";
 
 /// Canonical contents of `.span/.gitignore` -- ignores the dispatcher's
 /// generated log files and manual-run dispatch scripts (see
 /// `packages/agent-hooks/src/dispatcher.ts`), none of which are meant to be
 /// committed alongside the spans they live next to.
-const SPAN_GITIGNORE_CONTENTS: &str = "*.log\nmanual-hook-dispatch-*.sh\n";
+const SPAN_GITIGNORE_CONTENTS: &str = "\
+# Ignore dispatcher-generated runtime artifacts. The reconciler's
+# agent-hooks dispatcher writes log files and manual-run dispatch
+# scripts alongside spans; none of these are meant to be committed.
+*.log
+manual-hook-dispatch-*.sh
+";
 
-/// Ensure the span root directory exists and contains a `.gitattributes`
-/// that pins LF for all span files, and a `.gitignore` that excludes the
-/// dispatcher's generated artifacts. Idempotent: each file is (re)written
-/// only when missing or when content differs from its canonical form.
+/// Canonical contents of `.span/.manual-run` -- a presence-only marker
+/// that suspends automatic reconciler agent spawning.
+const MANUAL_RUN_CONTENTS: &str = "\
+# When this file exists, the agent-hooks dispatcher suspends automatic
+# reconciler agent spawning. Instead of launching the agent directly,
+# the dispatcher writes a runnable shell script and leaves the claim
+# directory in place for a human to invoke later.
+#
+# This file is a presence-only marker: its content is never inspected.
+# Delete it to resume automatic agent dispatch.
+#
+# Created automatically on the first `git span add` or `git span why`
+# in this repository.
+";
+
+/// Canonical contents of `.span/.hookignore` -- path-scoped span
+/// suppression rules for the agent hooks.
+const HOOKIGNORE_CONTENTS: &str = "\
+# Path-scoped span suppression for the agent hooks.
+#
+# Grammar (a deliberate subset of gitignore):
+#   <path-pattern>  <prefix>[,<prefix>...]
+#
+# - path-pattern: glob matched against an anchor's repo-relative path.
+#   * and ? stay within a segment; ** spans segments; trailing /
+#   restricts to directories.
+# - prefixes: comma-separated span slug prefixes to suppress for
+#   matching paths. A slug carries a prefix when it equals the prefix
+#   or begins with \"<prefix>/\".
+#
+# Full specification: plugins/git-span/skills/git-span/sections/hookignore.md
+#
+# This file is inert when it contains no active rules (all comment and
+# blank lines). Add rules below.
+";
+
+/// Ensure the span root directory exists and contains the four `.span/`
+/// control files with their canonical content. Idempotent:
+///
+/// * `.gitattributes`, `.gitignore`, `.manual-run` -- each is (re)written
+///   only when missing or when content differs from its canonical form.
+/// * `.hookignore` -- written only when missing (existence-only guard),
+///   preserving any user-added rules.
 pub(crate) fn ensure_span_dir(workdir: &Path, span_root: &str) -> Result<()> {
     let span_dir = workdir.join(span_root);
     std::fs::create_dir_all(&span_dir)?;
 
     let ga_path = span_dir.join(".gitattributes");
-    let ga_canonical = "* text eol=lf\n";
     let ga_current = std::fs::read_to_string(&ga_path).unwrap_or_default();
-    if ga_current != ga_canonical {
-        std::fs::write(&ga_path, ga_canonical)?;
+    if ga_current != GITATTRIBUTES_CONTENTS {
+        std::fs::write(&ga_path, GITATTRIBUTES_CONTENTS)?;
     }
 
     let gi_path = span_dir.join(".gitignore");
     let gi_current = std::fs::read_to_string(&gi_path).unwrap_or_default();
     if gi_current != SPAN_GITIGNORE_CONTENTS {
         std::fs::write(&gi_path, SPAN_GITIGNORE_CONTENTS)?;
+    }
+
+    let mr_path = span_dir.join(".manual-run");
+    let mr_current = std::fs::read_to_string(&mr_path).unwrap_or_default();
+    if mr_current != MANUAL_RUN_CONTENTS {
+        std::fs::write(&mr_path, MANUAL_RUN_CONTENTS)?;
+    }
+
+    let hi_path = span_dir.join(".hookignore");
+    if !hi_path.exists() {
+        std::fs::write(&hi_path, HOOKIGNORE_CONTENTS)?;
     }
 
     Ok(())
