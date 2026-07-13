@@ -1,4 +1,0 @@
-plugins/git-mesh/agents/expert.md#L17-L17 rk64:3f802d742bd811a9
-plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md#L22-L26 rk64:938482fb95fe56b7
-
-Defines load-bearing prose (by content: someone reads and acts; by corpus: kept in sync) to distinguish when prose warrants a mesh; the dispatch task block operationalizes this distinction by naming the concrete actions (repair/retire/reshape stale, create for uncovered coherent subsystems, expand/prune related) the forked review session performs when prose or prose-linked code drifts.

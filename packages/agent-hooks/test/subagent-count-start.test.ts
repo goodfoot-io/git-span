@@ -40,9 +40,9 @@ function sid(label: string): string {
 }
 
 describe('subagent-count-start hook', () => {
-  it('increments the counter for a git-mesh:expert agent', async () => {
+  it('increments the counter for a git-span:expert agent', async () => {
     const id = sid('expert');
-    await hook(input(id, 'git-mesh:expert', 'agent-abc') as never, { logger } as never);
+    await hook(input(id, 'git-span:expert', 'agent-abc') as never, { logger } as never);
     expect(readSubagentCount(id)).toBe(1);
   });
 
@@ -54,14 +54,14 @@ describe('subagent-count-start hook', () => {
 
   it('accumulates across multiple spawns', async () => {
     const id = sid('multi');
-    await hook(input(id, 'git-mesh:expert', 'agent-1') as never, { logger } as never);
+    await hook(input(id, 'git-span:expert', 'agent-1') as never, { logger } as never);
     await hook(input(id, 'some-type', 'agent-2') as never, { logger } as never);
     expect(readSubagentCount(id)).toBe(2);
   });
 
   it('returns a valid subagentStartOutput', async () => {
     const id = sid('output');
-    const result = await hook(input(id, 'git-mesh:expert', 'agent-x') as never, { logger } as never);
+    const result = await hook(input(id, 'git-span:expert', 'agent-x') as never, { logger } as never);
     // SDK wraps output: { _type, stdout }. Returning {} means no block/deny.
     expect(result).toBeDefined();
   });

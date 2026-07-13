@@ -25,13 +25,13 @@ function isEmbeddedAnchorsContent(content) {
     return !!firstLine && firstLine.startsWith('id ');
 }
 
-function buildEmbeddedFromLegacyIds(meshName, ids) {
+function buildEmbeddedFromLegacyIds(spanName, ids) {
     let out = '';
     for (const id of ids) {
         const anchorRef = `refs/anchors/v1/${id}`;
         const anchorBlobId = tryRun(`git rev-parse ${anchorRef}`);
         if (!anchorBlobId) {
-            console.warn(`[${meshName}] Could not find anchor ref ${anchorRef}`);
+            console.warn(`[${spanName}] Could not find anchor ref ${anchorRef}`);
             continue;
         }
         const anchorContent = run(`git cat-file -p ${anchorBlobId}`);
@@ -42,7 +42,7 @@ function buildEmbeddedFromLegacyIds(meshName, ids) {
     return out;
 }
 
-function rewriteMesh(meshRef, newAnchorsBlob, configBlobId, originalCommitId) {
+function rewriteSpan(spanRef, newAnchorsBlob, configBlobId, originalCommitId) {
     let mktreeInput = `100644 blob ${newAnchorsBlob}\tanchors\n`;
     if (configBlobId) {
         mktreeInput += `100644 blob ${configBlobId}\tconfig\n`;
@@ -53,22 +53,22 @@ function rewriteMesh(meshRef, newAnchorsBlob, configBlobId, originalCommitId) {
         .split(' ').filter(Boolean).map(p => `-p ${p}`).join(' ');
 
     if (dryRun) {
-        console.log(`[Dry Run] Would update ${meshRef} to tree ${newTree}`);
+        console.log(`[Dry Run] Would update ${spanRef} to tree ${newTree}`);
         return;
     }
-    const messagePath = '/tmp/mesh_message.txt';
+    const messagePath = '/tmp/span_message.txt';
     execSync(`cat > ${messagePath}`, { input: message });
     const newCommit = run(`git commit-tree ${newTree} ${parents} -F ${messagePath}`);
-    run(`git update-ref ${meshRef} ${newCommit} ${originalCommitId}`);
-    console.log(`Updated ${meshRef}`);
+    run(`git update-ref ${spanRef} ${newCommit} ${originalCommitId}`);
+    console.log(`Updated ${spanRef}`);
 }
 
-const meshes = run(`git for-each-ref --format='%(refname)' refs/meshes/v1/`).split('\n').filter(Boolean);
+const spans = run(`git for-each-ref --format='%(refname)' refs/spans/v1/`).split('\n').filter(Boolean);
 
-for (const mesh of meshes) {
-    const meshName = mesh.replace('refs/meshes/v1/', '');
-    console.log(`Inspecting mesh ${meshName}...`);
-    const commitId = run(`git rev-parse ${mesh}`);
+for (const span of spans) {
+    const spanName = span.replace('refs/spans/v1/', '');
+    console.log(`Inspecting span ${spanName}...`);
+    const commitId = run(`git rev-parse ${span}`);
 
     const lsTreeAnchorsV2 = tryRun(`git ls-tree ${commitId} anchors.v2`);
     const lsTreeAnchors = tryRun(`git ls-tree ${commitId} anchors`);
@@ -79,16 +79,16 @@ for (const mesh of meshes) {
     if (lsTreeAnchorsV2) {
         const anchorsV2BlobId = lsTreeAnchorsV2.split(/\s+/)[2];
         if (lsTreeAnchors) {
-            console.warn(`[${meshName}] Both anchors and anchors.v2 present; preferring anchors.v2 and dropping anchors.`);
+            console.warn(`[${spanName}] Both anchors and anchors.v2 present; preferring anchors.v2 and dropping anchors.`);
         }
-        console.log(`[${meshName}] Renaming anchors.v2 -> anchors`);
-        rewriteMesh(mesh, anchorsV2BlobId, configBlobId, commitId);
+        console.log(`[${spanName}] Renaming anchors.v2 -> anchors`);
+        rewriteSpan(span, anchorsV2BlobId, configBlobId, commitId);
         continue;
     }
 
     // No anchors.v2. Inspect `anchors` to decide if it's legacy IDs or already embedded.
     if (!lsTreeAnchors) {
-        console.log(`[${meshName}] No anchors blob found; skipping`);
+        console.log(`[${spanName}] No anchors blob found; skipping`);
         continue;
     }
 
@@ -96,16 +96,16 @@ for (const mesh of meshes) {
     const anchorsContent = run(`git cat-file -p ${anchorsBlobId}`);
 
     if (isEmbeddedAnchorsContent(anchorsContent)) {
-        console.log(`[${meshName}] Already on 1.0.37 anchors layout`);
+        console.log(`[${spanName}] Already on 1.0.37 anchors layout`);
         continue;
     }
 
     // Case B: 1.0.34 legacy — `anchors` blob is a list of IDs pointing to refs/anchors/v1/<id>.
     const anchorIds = anchorsContent.split('\n').filter(Boolean);
-    const embedded = buildEmbeddedFromLegacyIds(meshName, anchorIds);
+    const embedded = buildEmbeddedFromLegacyIds(spanName, anchorIds);
     const newAnchorsBlob = run(`git hash-object -w --stdin`, embedded);
-    console.log(`[${meshName}] Migrating legacy anchors -> embedded anchors`);
-    rewriteMesh(mesh, newAnchorsBlob, configBlobId, commitId);
+    console.log(`[${spanName}] Migrating legacy anchors -> embedded anchors`);
+    rewriteSpan(span, newAnchorsBlob, configBlobId, commitId);
 }
 
 const anchorRefs = run(`git for-each-ref --format='%(refname)' refs/anchors/v1/`).split('\n').filter(Boolean);

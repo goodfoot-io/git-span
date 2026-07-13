@@ -1,0 +1,19 @@
+{
+  "name": "@goodfoot/git-span-linux-x64",
+  "version": "1.0.131",
+  "description": "Platform-specific binary for @goodfoot/git-span",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git"
+  }
+}

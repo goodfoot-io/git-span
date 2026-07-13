@@ -8,4 +8,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - Initial release: migrated from internal monorepo to standalone repository
-- Reworked the VS Code extension as a lightweight Git Mesh CLI binary manager.
+- Reworked the VS Code extension as a lightweight Git Span CLI binary manager.

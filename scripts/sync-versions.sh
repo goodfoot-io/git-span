@@ -8,7 +8,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -W)" ;;
   *)                    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)" ;;
 esac
-SOURCE="$REPO_ROOT/packages/git-mesh/package.json"
+SOURCE="$REPO_ROOT/packages/git-span/package.json"
 
 if [ ! -f "$SOURCE" ]; then
   echo "Error: Source package.json not found at $SOURCE" >&2
@@ -29,7 +29,7 @@ echo ""
 updated=0
 
 # Update npm platform packages
-for pkg_dir in "$REPO_ROOT"/npm/git-mesh-*/; do
+for pkg_dir in "$REPO_ROOT"/npm/git-span-*/; do
   pkg_json="$pkg_dir/package.json"
   if [ -f "$pkg_json" ]; then
     current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$pkg_json','utf8')).version)")
@@ -48,8 +48,8 @@ for pkg_dir in "$REPO_ROOT"/npm/git-mesh-*/; do
   fi
 done
 
-# Update optionalDependencies in packages/git-mesh/package.json
-cli_json="$REPO_ROOT/packages/git-mesh/package.json"
+# Update optionalDependencies in packages/git-span/package.json
+cli_json="$REPO_ROOT/packages/git-span/package.json"
 if [ -f "$cli_json" ]; then
   result=$(node -e "
     const fs = require('fs');
@@ -94,8 +94,8 @@ if [ -f "$ext_json" ]; then
   fi
 fi
 
-# Update packages/git-mesh/Cargo.toml so the compiled binary's --version matches.
-cargo_toml="$REPO_ROOT/packages/git-mesh/Cargo.toml"
+# Update packages/git-span/Cargo.toml so the compiled binary's --version matches.
+cargo_toml="$REPO_ROOT/packages/git-span/Cargo.toml"
 if [ -f "$cargo_toml" ]; then
   current=$(awk '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/"/, "", $3); print $3; exit}' "$cargo_toml")
   if [ -n "$current" ] && [ "$current" != "$VERSION" ]; then
@@ -118,23 +118,23 @@ if [ -f "$cargo_toml" ]; then
   fi
 fi
 
-# Refresh Cargo.lock so the git-mesh entry matches the new [package] version.
+# Refresh Cargo.lock so the git-span entry matches the new [package] version.
 # CI uses `cargo build --locked` which fails if Cargo.lock is out of sync.
-cargo_lock="$REPO_ROOT/packages/git-mesh/Cargo.lock"
+cargo_lock="$REPO_ROOT/packages/git-span/Cargo.lock"
 if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
   lock_version=$(awk '
     /^\[\[package\]\]/ { in_pkg = 1; name = ""; next }
-    in_pkg && /^name[[:space:]]*=[[:space:]]*"git-mesh"$/ { name = "git-mesh"; next }
-    in_pkg && name == "git-mesh" && /^version[[:space:]]*=/ {
+    in_pkg && /^name[[:space:]]*=[[:space:]]*"git-span"$/ { name = "git-span"; next }
+    in_pkg && name == "git-span" && /^version[[:space:]]*=/ {
       gsub(/"/, "", $3); print $3; exit
     }
     /^$/ { in_pkg = 0; name = "" }
   ' "$cargo_lock")
   if [ "$lock_version" != "$VERSION" ]; then
     (
-      cd "$REPO_ROOT/packages/git-mesh" && \
+      cd "$REPO_ROOT/packages/git-span" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build" \
+        env CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build" \
         cargo update --workspace --quiet
     )
     echo "Updated: $cargo_lock ($lock_version -> $VERSION)"
@@ -145,16 +145,16 @@ if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
 fi
 
 # Regenerate the man page so its embedded version matches Cargo.toml.
-# The manpage test in packages/git-mesh/tests asserts byte-equality with the checked-in artifact.
-manpage="$REPO_ROOT/packages/git-mesh/man/git-mesh.1"
+# The manpage test in packages/git-span/tests asserts byte-equality with the checked-in artifact.
+manpage="$REPO_ROOT/packages/git-span/man/git-span.1"
 if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
-  manpage_version=$(awk '/^\.TH/ { for (i = 1; i <= NF; i++) if ($i ~ /^"git-mesh/) { gsub(/"/, "", $(i+1)); print $(i+1); exit } }' "$manpage")
+  manpage_version=$(awk '/^\.TH/ { for (i = 1; i <= NF; i++) if ($i ~ /^"git-span/) { gsub(/"/, "", $(i+1)); print $(i+1); exit } }' "$manpage")
   if [ "$manpage_version" != "$VERSION" ]; then
     (
-      cd "$REPO_ROOT/packages/git-mesh" && \
+      cd "$REPO_ROOT/packages/git-span" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/git-mesh/build" \
-        cargo run --quiet --locked --bin gen-manpage -- man/git-mesh.1
+        env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build" \
+        cargo run --quiet --locked --bin gen-manpage -- man/git-span.1
     )
     echo "Updated: $manpage ($manpage_version -> $VERSION)"
     updated=$((updated + 1))

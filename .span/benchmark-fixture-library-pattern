@@ -1,0 +1,5 @@
+packages/git-span/benches/stale_head_only.rs#L46-L68 rk64:6a0ac200426fb504
+packages/git-span/benches/stale_warm.rs#L55-L79 rk64:e48d29adfe7e1376
+packages/git-span/tests/support/mod.rs#L337-L384 rk64:cfe58e2694b70934
+
+Benchmark fixtures use binary CLI (span_bin) to create test spans, but test support module uses library APIs (SpanFile::serialize). If SpanFile/AnchorRecord APIs change, bench fixtures fail at runtime; using library directly catches changes at compile time. Benchmarks and tests should use the same pattern.

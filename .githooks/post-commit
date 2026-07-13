@@ -5,10 +5,10 @@
 # PARTS to add/reorder concerns.
 #
 # Each sub-script is independently runnable and bash -n clean; run one by
-# hand (e.g. .githooks/post-commit.git-mesh.sh) to debug it.
+# hand (e.g. .githooks/post-commit.git-span.sh) to debug it.
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARTS=(
-    post-commit.git-mesh.sh
+    post-commit.git-span.sh
 )
 for part in "${PARTS[@]}"; do
     script="$HOOK_DIR/$part"

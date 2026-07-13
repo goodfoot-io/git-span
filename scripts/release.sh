@@ -8,7 +8,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -W)" ;;
   *)                    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" ;;
 esac
-CLI_PKG="$REPO_ROOT/packages/git-mesh/package.json"
+CLI_PKG="$REPO_ROOT/packages/git-span/package.json"
 EXT_PKG="$REPO_ROOT/packages/extension/package.json"
 
 # --- Read versions ---
@@ -16,7 +16,7 @@ CLI_VERSION=$(node -pe "require('$CLI_PKG').version")
 EXT_VERSION=$(node -pe "require('$EXT_PKG').version")
 
 if [[ ! "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "ERROR: Version '$CLI_VERSION' in packages/git-mesh/package.json is not valid semver." >&2
+  echo "ERROR: Version '$CLI_VERSION' in packages/git-span/package.json is not valid semver." >&2
   exit 1
 fi
 
@@ -27,7 +27,7 @@ if [[ "$CLI_VERSION" != "$EXT_VERSION" ]]; then
   exit 1
 fi
 
-TAG="git-mesh-v$CLI_VERSION"
+TAG="git-span-v$CLI_VERSION"
 
 # --- Branch check ---
 BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)

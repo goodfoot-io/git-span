@@ -59,30 +59,30 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
  * (do not drop the touch) rather than silently hiding a tracked file.
  */
 /**
- * The default mesh root directory, relative to the repo root, used when no
+ * The default span root directory, relative to the repo root, used when no
  * environment variable or git config overrides the location.
  */
-export const MESH_ROOT = '.mesh';
+export const SPAN_ROOT = '.span';
 
 /**
- * Resolve the mesh root directory for a given repo, mirroring the Rust CLI
- * precedence (minus the --mesh-dir CLI flag, which is invisible to file-write
+ * Resolve the span root directory for a given repo, mirroring the Rust CLI
+ * precedence (minus the --span-dir CLI flag, which is invisible to file-write
  * hooks):
- *   1. GIT_MESH_DIR environment variable
- *   2. `git config git-mesh.dir` in the repo
- *   3. Default: ".mesh"
+ *   1. GIT_SPAN_DIR environment variable
+ *   2. `git config git-span.dir` in the repo
+ *   3. Default: ".span"
  *
  * The returned value is a POSIX-style path with no trailing slash.
- * Fail-safe: any resolution error falls back to ".mesh" so the hook never
+ * Fail-safe: any resolution error falls back to ".span" so the hook never
  * crashes.
  */
-export function resolveMeshRoot(repoRoot: string): string {
-  const envDir = process.env['GIT_MESH_DIR'];
+export function resolveSpanRoot(repoRoot: string): string {
+  const envDir = process.env['GIT_SPAN_DIR'];
   if (envDir && envDir.trim().length > 0) {
     return toPosix(envDir.trim()).replace(/\/+$/, '');
   }
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'config', 'git-mesh.dir'], {
+    const out = execFileSync('git', ['-C', repoRoot, 'config', 'git-span.dir'], {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8'
     });
@@ -91,19 +91,19 @@ export function resolveMeshRoot(repoRoot: string): string {
   } catch (err) {
     void err; // config key absent or git error — fall through to default
   }
-  return MESH_ROOT;
+  return SPAN_ROOT;
 }
 
 /**
- * Report whether a repo-relative POSIX path falls inside the given mesh root
- * directory. A path is inside when it equals the mesh root exactly or is
- * nested beneath it (i.e. starts with "<meshRoot>/"). The "/" boundary prevents
- * false positives for siblings like ".meshes/x" or ".mesh-notes/x".
+ * Report whether a repo-relative POSIX path falls inside the given span root
+ * directory. A path is inside when it equals the span root exactly or is
+ * nested beneath it (i.e. starts with "<spanRoot>/"). The "/" boundary prevents
+ * false positives for siblings like ".spans/x" or ".span-notes/x".
  *
- * Pass the result of `resolveMeshRoot(repoRoot)` as `meshRoot`.
+ * Pass the result of `resolveSpanRoot(repoRoot)` as `spanRoot`.
  */
-export function isInsideMeshRoot(repoRelPath: string, meshRoot: string = MESH_ROOT): boolean {
-  const root = meshRoot.replace(/\/+$/, '');
+export function isInsideSpanRoot(repoRelPath: string, spanRoot: string = SPAN_ROOT): boolean {
+  const root = spanRoot.replace(/\/+$/, '');
   return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
 }
 
@@ -213,7 +213,7 @@ export function sanitizeSessionId(sessionId: string): string {
 // directory; the subagent counter lives alongside the journal so the
 // SubagentStart/SubagentStop hooks (writers) and the Stop hook (reader) agree on
 // its location.
-const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
+const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
 
 // ---------------------------------------------------------------------------
 // Per-session subagent counter
@@ -377,7 +377,7 @@ function withCountLock(countFilePath: string, fn: (current: number) => number): 
 // later increment's pre-write read inside withCountLock — which means no
 // successful RMW can ever re-establish a numeric count once the marker is on
 // disk. The latch is permanent for the remainder of the session: the Stop hook
-// will suppress mesh-review dispatch on every Stop for this session, and
+// will suppress span-review dispatch on every Stop for this session, and
 // recovery requires a fresh session (new session id → new per-session
 // directory). This is the safe (fail-closed) direction and is consistent with
 // the accepted "crashed subagent leaks the count and suppresses session-wide"
@@ -446,7 +446,7 @@ export function readSubagentCount(sessionId: string): number {
 export type TouchKind = 'read' | 'write' | 'whole-read' | 'whole-write' | 'create';
 
 /**
- * Format a mesh anchor string.
+ * Format a span anchor string.
  *
  * - `whole-read`, `whole-write`, and `create`: returns just the path
  * - `read` and `write`: returns `path#L<start>-L<end>` (requires range)
@@ -506,10 +506,10 @@ export function resolveGitCommonDir(repoRoot: string): string {
 }
 
 /**
- * Root of the git-mesh queue directory tree, under the git common dir.
+ * Root of the git-span queue directory tree, under the git common dir.
  */
 export function queueRoot(repoRoot: string): string {
-  return nodePath.join(resolveGitCommonDir(repoRoot), 'git-mesh');
+  return nodePath.join(resolveGitCommonDir(repoRoot), 'git-span');
 }
 
 /** Directory for pre-commit records (written by the Stop hook). */

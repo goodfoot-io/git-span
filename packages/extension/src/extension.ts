@@ -1,22 +1,22 @@
 /**
- * VS Code extension entry point for the Git Mesh CLI.
+ * VS Code extension entry point for the Git Span CLI.
  *
- * Resolves `git-mesh` from PATH on demand. No managed install -- the binary
+ * Resolves `git-span` from PATH on demand. No managed install -- the binary
  * must be installed independently (npm, Homebrew, or direct download).
  *
- * @summary VS Code extension entry point for the Git Mesh CLI.
+ * @summary VS Code extension entry point for the Git Span CLI.
  */
 
 import * as vscode from 'vscode';
 import {
-  GitMeshBinaryError,
-  getGitMeshBinaryErrorMessage,
-  resolveGitMeshBinaryOnPath,
-  runGitMeshCommand
-} from './utils/gitMeshBinary.js';
+  GitSpanBinaryError,
+  getGitSpanBinaryErrorMessage,
+  resolveGitSpanBinaryOnPath,
+  runGitSpanCommand
+} from './utils/gitSpanBinary.js';
 
-const MISSING_GIT_MESH_MESSAGE =
-  'git-mesh is not on PATH. Install it from https://github.com/goodfoot-io/git-mesh/releases, or via npm / Homebrew (see installation docs at the repository).';
+const MISSING_GIT_SPAN_MESSAGE =
+  'git-span is not on PATH. Install it from https://github.com/goodfoot-io/git-span/releases, or via npm / Homebrew (see installation docs at the repository).';
 
 /**
  * Called by VS Code when the extension is activated.
@@ -29,37 +29,37 @@ export function activate(context: vscode.ExtensionContext): void {
   try {
     context.environmentVariableCollection.clear();
   } catch (error) {
-    console.error('Git Mesh: failed to clear environment variable collection:', error);
+    console.error('Git Span: failed to clear environment variable collection:', error);
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('gitMesh.showVersion', async () => {
+    vscode.commands.registerCommand('gitSpan.showVersion', async () => {
       try {
-        const binaryPath = await resolveGitMeshBinaryOnPath();
+        const binaryPath = await resolveGitSpanBinaryOnPath();
         if (binaryPath == null) {
-          throw new GitMeshBinaryError(MISSING_GIT_MESH_MESSAGE);
+          throw new GitSpanBinaryError(MISSING_GIT_SPAN_MESSAGE);
         }
-        const result = await runGitMeshCommand(binaryPath, ['--version']);
+        const result = await runGitSpanCommand(binaryPath, ['--version']);
         if (result.exitCode !== 0) {
-          throw new Error(result.stderr.trim() || `git-mesh --version exited with code ${result.exitCode}.`);
+          throw new Error(result.stderr.trim() || `git-span --version exited with code ${result.exitCode}.`);
         }
         void vscode.window.showInformationMessage(result.stdout.trim());
       } catch (error) {
-        void vscode.window.showErrorMessage(`Git Mesh: ${getGitMeshBinaryErrorMessage(error)}`);
+        void vscode.window.showErrorMessage(`Git Span: ${getGitSpanBinaryErrorMessage(error)}`);
       }
     }),
 
-    vscode.commands.registerCommand('gitMesh.openTerminal', async () => {
+    vscode.commands.registerCommand('gitSpan.openTerminal', async () => {
       try {
-        const binaryPath = await resolveGitMeshBinaryOnPath();
+        const binaryPath = await resolveGitSpanBinaryOnPath();
         if (binaryPath == null) {
-          throw new GitMeshBinaryError(MISSING_GIT_MESH_MESSAGE);
+          throw new GitSpanBinaryError(MISSING_GIT_SPAN_MESSAGE);
         }
-        const terminal = vscode.window.createTerminal({ name: 'Git Mesh' });
+        const terminal = vscode.window.createTerminal({ name: 'Git Span' });
         terminal.show();
         terminal.sendText(`"${binaryPath}" --help`);
       } catch (error) {
-        void vscode.window.showErrorMessage(`Git Mesh: ${getGitMeshBinaryErrorMessage(error)}`);
+        void vscode.window.showErrorMessage(`Git Span: ${getGitSpanBinaryErrorMessage(error)}`);
       }
     })
   );

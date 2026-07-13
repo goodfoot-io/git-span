@@ -1,4 +1,0 @@
-plugins/git-mesh/skills/git-mesh/SKILL.md#L22-L22 rk64:781667bdfd451f34
-plugins/git-mesh/skills/git-mesh/sections/hookignore.md rk64:6dd5e30e1983b96d
-
-Skill handbook instruction at line 22 points readers to the hookignore.md section that documents per-path mesh suppression via .hookignore files.

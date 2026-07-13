@@ -1,0 +1,4 @@
+packages/git-span/benches/perf-baseline.json rk64:38db8e8540025b2a
+packages/git-span/benches/real_corpus.rs#L673-L706 rk64:f4df18e9b3e72d2a
+
+The real_corpus benchmark's no-regression gate reads perf-baseline.json by op name, requiring each gated op to have an entry whose median_ms and noise_floor_ms are f64; an absent key silently skips the regression rule for that op while a malformed entry panics, so the JSON's keys and per-op field shape must match the op names and Baseline parse the bench uses.

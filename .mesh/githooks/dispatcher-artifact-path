@@ -1,5 +1,0 @@
-.githooks/post-commit.git-mesh.sh#L8-L10 rk64:c1dbffcfaeced4da
-.githooks/post-rewrite.git-mesh.sh#L9-L11 rk64:c1dbffcfaeced4da
-packages/agent-hooks/package.json#L7-L7 rk64:05f383e63a786cb6
-
-The post-commit and post-rewrite triggers locate the reconciler dispatcher at the bundle path the agent-hooks build writes, and their file-exists guard exits silently, so the trigger path and the build outfile must name the same artifact.

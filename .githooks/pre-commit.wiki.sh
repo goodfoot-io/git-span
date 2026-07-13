@@ -1,21 +1,21 @@
 #!/bin/bash
 # Single wiki concern, single invocation:
-#   wiki check --fix creates/renames git meshes for uncovered fragment links and
+#   wiki check --fix creates/renames git spans for uncovered fragment links and
 #   auto-fixes drifted wiki links/anchors/frontmatter in the working tree.
 # --no-exit-code makes this best-effort: the hook never aborts a commit.
-# --print-applied routes created/renamed mesh paths to stdout; everything else
+# --print-applied routes created/renamed span paths to stdout; everything else
 # goes to stderr (shown on the terminal).
 set -e
 
 command -v wiki >/dev/null 2>&1 || exit 0
 WIKI_BIN=$(command -v wiki)
 
-# ── Single-pass: auto-fix + mesh coverage, re-stage all touched paths ─────────
+# ── Single-pass: auto-fix + span coverage, re-stage all touched paths ─────────
 # --fix rewrites in place (requires --source=worktree); --print-applied prints
-# created/renamed mesh paths to stdout; --no-exit-code = advisory (best-effort).
+# created/renamed span paths to stdout; --no-exit-code = advisory (best-effort).
 #
 # wiki check --fix has no flag that reports which .md files it rewrote (only
-# --print-applied's mesh paths are machine-readable). So we snapshot the
+# --print-applied's span paths are machine-readable). So we snapshot the
 # content hash of every tracked .md file before running --fix, and after it
 # runs, re-stage only the ones whose hash actually changed. A plain
 # `git diff --name-only -- '*.md'` post-hoc would sweep in unrelated .md
@@ -46,10 +46,10 @@ if [ ${#WIKI_FIXED[@]} -gt 0 ]; then
 fi
 
 if [ -n "$APPLIED" ]; then
-    while IFS= read -r mesh_path; do
-        [ -n "$mesh_path" ] && git add -- "$mesh_path"
+    while IFS= read -r span_path; do
+        [ -n "$span_path" ] && git add -- "$span_path"
     done <<< "$APPLIED"
-    echo "Staged scaffolded meshes:"
+    echo "Staged scaffolded spans:"
     echo "$APPLIED"
 fi
 exit 0

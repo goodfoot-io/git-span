@@ -1,0 +1,4 @@
+plugins/git-span/skills/git-span/SKILL.md#L9-L9 rk64:5fa84925968e07ae
+plugins/git-span/skills/git-span/sections/creating-a-span.md#L3-L5 rk64:e656bdf119f25521
+
+SKILL.md router entry sends a reader to the "Should this be a span?" section by title; the section heading in creating-a-span.md must keep that title or the pointer dangles silently.

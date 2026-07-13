@@ -4,10 +4,10 @@
 # is reported but never aborts. Edit PARTS to add/reorder concerns.
 #
 # Each sub-script is independently runnable and bash -n clean; run one by
-# hand (e.g. echo "$OLD $NEW" | .githooks/post-rewrite.git-mesh.sh) to debug it.
+# hand (e.g. echo "$OLD $NEW" | .githooks/post-rewrite.git-span.sh) to debug it.
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARTS=(
-    post-rewrite.git-mesh.sh
+    post-rewrite.git-span.sh
 )
 INPUT="$(cat)"
 for part in "${PARTS[@]}"; do

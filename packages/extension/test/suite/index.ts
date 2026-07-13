@@ -1,12 +1,12 @@
 /**
  * Discovers compiled test files and runs them with Mocha.
  *
- * Simplified runner with no caching infrastructure — git-mesh-extension has a small
+ * Simplified runner with no caching infrastructure — git-span-extension has a small
  * test suite that does not benefit from fingerprint-based caching.
  *
  * Supports the TEST_PATTERN environment variable for focused runs.
  *
- * @summary Mocha test runner entry point for the git-mesh-extension test suite.
+ * @summary Mocha test runner entry point for the git-span-extension test suite.
  * @module test/suite/index
  */
 

@@ -1,66 +1,66 @@
-# git-mesh
+# git-span
 
-`git-mesh` is a Rust CLI for recording durable relationships between exact
-anchors in a Git repository. It stores mesh metadata as ordinary tracked files
+`git-span` is a Rust CLI for recording durable relationships between exact
+anchors in a Git repository. It stores span metadata as ordinary tracked files
 so teams can review, fetch, push, and audit those relationships alongside the
 code they describe.
 
 The monorepo ships:
 
-- **`@goodfoot/git-mesh`** - the Rust CLI and npm wrapper
-- **`goodfoot.git-mesh`** - a lightweight VS Code extension that manages the
-  packaged `git-mesh` binary and exposes command entry points
+- **`@goodfoot/git-span`** - the Rust CLI and npm wrapper
+- **`goodfoot.git-span`** - a lightweight VS Code extension that manages the
+  packaged `git-span` binary and exposes command entry points
 
 The extension intentionally does not include a visualization webview yet. The
-current goal is reliable binary resolution and command execution; richer mesh
+current goal is reliable binary resolution and command execution; richer span
 visualization will be added later.
 
 ## CLI
 
-During local development, run commands from `packages/git-mesh`:
+During local development, run commands from `packages/git-span`:
 
 ```bash
-cd packages/git-mesh
+cd packages/git-span
 yarn build
 ```
 
 Common command shape:
 
 ```bash
-git mesh doctor
-git mesh add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
-git mesh why checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
-git add .mesh && git commit -m "Record checkout-request-flow mesh"
-git mesh stale checkout-request-flow
+git span doctor
+git span add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
+git span why checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+git add .span && git commit -m "Record checkout-request-flow span"
+git span stale checkout-request-flow
 ```
 
-See [docs/git-mesh-the-missing-handbook.md](./docs/git-mesh-the-missing-handbook.md)
+See [docs/git-span-the-missing-handbook.md](./docs/git-span-the-missing-handbook.md)
 for the project model and workflow.
 
 ### Exit codes
 
-`git-mesh` follows the POSIX convention used by `git` and `cargo`:
+`git-span` follows the POSIX convention used by `git` and `cargo`:
 
 - **0** — success.
 - **1** — operational failure: the command was well-formed, but
   the environment or repository state prevents completion.
-  Example: `git mesh fetch nope` when `nope` is not a configured
-  remote, or `git mesh show nope` when `nope` is not a known mesh.
+  Example: `git span fetch nope` when `nope` is not a configured
+  remote, or `git span show nope` when `nope` is not a known span.
 - **2** — usage error: the command itself is malformed (unknown
-  flag, missing required argument). Example: `git mesh fetch --bogus`.
+  flag, missing required argument). Example: `git span fetch --bogus`.
 
-`git mesh stale` overlays its own §10.4 contract on top of this:
+`git span stale` overlays its own §10.4 contract on top of this:
 exit 1 when drift is found, exit 0 with `--no-exit-code`. The
 `pre-commit` subcommand likewise exits 1 on in-flight drift.
 
 ## VS Code Extension
 
-The VS Code extension is named `git-mesh` and publishes as
-`goodfoot.git-mesh`. For now it is a lightweight command and binary manager:
+The VS Code extension is named `git-span` and publishes as
+`goodfoot.git-span`. For now it is a lightweight command and binary manager:
 
-- resolves the packaged `git-mesh` executable for the current platform
+- resolves the packaged `git-span` executable for the current platform
 - installs or retries the managed binary when needed
-- exposes Git Mesh command entry points inside VS Code
+- exposes Git Span command entry points inside VS Code
 - keeps terminal PATH integration focused on the managed binary
 
 It does not register a custom editor, Markdown renderer, search UI, or webview.
@@ -70,12 +70,12 @@ It does not register a custom editor, Markdown renderer, search UI, or webview.
 ```text
 .
 ├── packages/
-│   ├── git-mesh/       # @goodfoot/git-mesh Rust CLI
-│   └── extension/      # goodfoot.git-mesh VS Code extension
+│   ├── git-span/       # @goodfoot/git-span Rust CLI
+│   └── extension/      # goodfoot.git-span VS Code extension
 ├── npm/
-│   └── git-mesh-*/     # platform-specific binary distribution packages
+│   └── git-span-*/     # platform-specific binary distribution packages
 ├── docs/
-│   ├── git-mesh-the-missing-handbook.md
+│   ├── git-span-the-missing-handbook.md
 │   └── cross-compilation.md
 └── scripts/
     ├── sync-versions.sh
@@ -116,31 +116,31 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" car
 **Per-user Cargo target directory:**
 
 Build artifacts are stored in a shared per-user directory at
-`$HOME/.cache/git-mesh/cargo-target/<crate>/<group>/` — `<group>` is `check`
+`$HOME/.cache/git-span/cargo-target/<crate>/<group>/` — `<group>` is `check`
 (non-codegen `cargo check`/`clippy`) or `build` (codegen `cargo test`/`build`).
 The two are kept separate on purpose: mixing rmeta-only (`check`) and rlib
 (`build`) artifacts in one directory causes spurious `can't find crate` link
 failures. See
-[packages/git-mesh/scripts/cargo-build-system.md](packages/git-mesh/scripts/cargo-build-system.md)
+[packages/git-span/scripts/cargo-build-system.md](packages/git-span/scripts/cargo-build-system.md)
 for details. This directory is shared across all worktrees on the same machine —
 a worktree cloned from `main` will reuse dependency artifacts already built by
 another worktree.
 
-Override the target root via `GIT_MESH_CARGO_TARGET_ROOT`:
+Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 
 ```bash
-GIT_MESH_CARGO_TARGET_ROOT=/tmp/my-target yarn test
+GIT_SPAN_CARGO_TARGET_ROOT=/tmp/my-target yarn test
 ```
 
-Note: `yarn build:clean` cleans only the `git-mesh/build` subdirectory of the
+Note: `yarn build:clean` cleans only the `git-span/build` subdirectory of the
 shared target root. Running it while another worktree is building waits for that
 build (it takes the exclusive target-root lock) rather than corrupting it.
 
 ## Contributing
 
 ```bash
-git clone https://github.com/goodfoot-io/git-mesh.git
-cd git-mesh
+git clone https://github.com/goodfoot-io/git-span.git
+cd git-span
 yarn install
 yarn build
 yarn validate
@@ -150,7 +150,7 @@ Use Yarn for all JavaScript package management. Per-package validation should
 run from the package directory that contains the changed files:
 
 ```bash
-cd packages/git-mesh
+cd packages/git-span
 yarn lint
 yarn typecheck
 yarn test
@@ -166,17 +166,17 @@ configuration changes.
 
 ### Manpage
 
-The CLI ships a `git-mesh(1)` manpage generated from the clap definitions. To
+The CLI ships a `git-span(1)` manpage generated from the clap definitions. To
 browse it without installing:
 
 ```bash
-MANPATH=packages/git-mesh/man man git-mesh
+MANPATH=packages/git-span/man man git-span
 ```
 
 Regenerate after changing CLI flags or descriptions:
 
 ```bash
-cd packages/git-mesh
+cd packages/git-span
 yarn build:man
 ```
 
@@ -185,9 +185,9 @@ drifts from what the generator produces.
 
 ## Releases
 
-Releases are tag-driven from `goodfoot-io/git-mesh`. CLI and extension release
-assets use `git-mesh` names, including `git-mesh-v*` tags and
-`git-mesh-cli-checksums.json`.
+Releases are tag-driven from `goodfoot-io/git-span`. CLI and extension release
+assets use `git-span` names, including `git-span-v*` tags and
+`git-span-cli-checksums.json`.
 
 ## License
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bundle scripts/mesh-ref-to-tracked-file.mjs into a single self-contained
+// Bundle scripts/span-ref-to-tracked-file.mjs into a single self-contained
 // CommonJS file. rkyv-js is not published to npm and ships TypeScript sources
 // with no built `dist/`, so esbuild compiles its `src/` and inlines it. The
 // resulting bundle runs on the three testing installations with only Node +
@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
-const outfile = join(here, 'dist', 'mesh-ref-to-tracked-file.cjs');
+const outfile = join(here, 'dist', 'span-ref-to-tracked-file.cjs');
 
 // rkyv-js's package "exports" only map to a non-existent dist/. Resolve its
 // package root from its package.json and alias the bare specifier to src/.
@@ -24,7 +24,7 @@ const require = createRequire(import.meta.url);
 const rkyvPkgRoot = dirname(require.resolve('rkyv-js/package.json'));
 
 await build({
-  entryPoints: [join(here, 'mesh-ref-to-tracked-file.mjs')],
+  entryPoints: [join(here, 'span-ref-to-tracked-file.mjs')],
   outfile,
   bundle: true,
   platform: 'node',

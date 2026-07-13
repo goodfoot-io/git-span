@@ -1,13 +1,13 @@
 /**
- * Porcelain contract test: verifies that the git mesh porcelain output format
+ * Porcelain contract test: verifies that the git span porcelain output format
  * is parseable by the shared parsePorcelain function.
  *
- * These tests exercise the actual `git mesh stale --porcelain --batch` and
- * `git mesh list --porcelain --batch` commands against a real temporary git
- * repo with a mesh, then validate the output through the same parser the
+ * These tests exercise the actual `git span stale --porcelain --batch` and
+ * `git span list --porcelain --batch` commands against a real temporary git
+ * repo with a span, then validate the output through the same parser the
  * dispatcher uses.
  *
- * If `git mesh` is not available on PATH, all tests in this file are skipped
+ * If `git span` is not available on PATH, all tests in this file are skipped
  * with a descriptive message.
  */
 
@@ -18,21 +18,21 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parsePorcelain } from '../src/agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
-// Git-mesh availability check
+// Git-span availability check
 // ---------------------------------------------------------------------------
 
-const hasGitMesh = (() => {
+const hasGitSpan = (() => {
   try {
-    execFileSync('git', ['mesh', '--version'], { stdio: 'ignore' });
+    execFileSync('git', ['span', '--version'], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
   }
 })();
 
-const suite = hasGitMesh ? describe : describe.skip;
+const suite = hasGitSpan ? describe : describe.skip;
 
-suite('Porcelain contract (git mesh)', () => {
+suite('Porcelain contract (git span)', () => {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -69,13 +69,13 @@ suite('Porcelain contract (git mesh)', () => {
     execFileSync('git', ['-C', repoRoot, 'commit', '-m', msg], { stdio: 'ignore' });
   }
 
-  function addMesh(repoRoot: string, name: string, anchor: string): void {
-    execFileSync('git', ['mesh', 'add', name, anchor], {
+  function addSpan(repoRoot: string, name: string, anchor: string): void {
+    execFileSync('git', ['span', 'add', name, anchor], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
     });
-    execFileSync('git', ['mesh', 'why', name, '-m', `mesh ${name}`], {
+    execFileSync('git', ['span', 'why', name, '-m', `span ${name}`], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
@@ -102,18 +102,18 @@ suite('Porcelain contract (git mesh)', () => {
   // Tests
   // ---------------------------------------------------------------------------
 
-  describe('git mesh list --porcelain --batch', () => {
-    it('produces parseable rows for existing meshes', () => {
+  describe('git span list --porcelain --batch', () => {
+    it('produces parseable rows for existing spans', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\nline4\nline5\n');
       gitAddCommit(repoRoot, 'initial');
 
-      // Add a mesh and commit
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L5');
-      gitAddCommit(repoRoot, 'add mesh');
+      // Add a span and commit
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L5');
+      gitAddCommit(repoRoot, 'add span');
 
       // Run list --porcelain --batch with the source path as filter
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'list', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
         input: 'src/app.ts\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -133,19 +133,19 @@ suite('Porcelain contract (git mesh)', () => {
         expect(row.end).toBeGreaterThanOrEqual(row.start);
       }
 
-      // Our specific mesh should be present
-      const ourMesh = rows.find((r) => r.name === 'my-module');
-      expect(ourMesh).toBeDefined();
-      expect(ourMesh!.path).toBe('src/app.ts');
-      expect(ourMesh!.start).toBe(1);
-      expect(ourMesh!.end).toBe(5);
+      // Our specific span should be present
+      const ourSpan = rows.find((r) => r.name === 'my-module');
+      expect(ourSpan).toBeDefined();
+      expect(ourSpan!.path).toBe('src/app.ts');
+      expect(ourSpan!.start).toBe(1);
+      expect(ourSpan!.end).toBe(5);
     });
 
-    it('produces no rows for a path with no meshes', () => {
+    it('produces no rows for a path with no spans', () => {
       writeFile(repoRoot, 'src/other.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'list', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
         input: 'src/other.ts\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -158,7 +158,7 @@ suite('Porcelain contract (git mesh)', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'list', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
         input: '',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -168,21 +168,21 @@ suite('Porcelain contract (git mesh)', () => {
     });
   });
 
-  describe('git mesh stale --porcelain --batch', () => {
+  describe('git span stale --porcelain --batch', () => {
     it('produces parseable rows for stale anchors', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\n');
       gitAddCommit(repoRoot, 'initial');
 
-      // Add a mesh and commit
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L2');
-      gitAddCommit(repoRoot, 'add mesh');
+      // Add a span and commit
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L2');
+      gitAddCommit(repoRoot, 'add span');
 
       // Modify the source file so the anchor becomes stale
       writeFile(repoRoot, 'src/app.ts', 'CHANGED\nline2\nline3\n');
 
       // Run stale --porcelain --batch with the anchor spec on stdin
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'stale', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
         input: 'src/app.ts#L1-L2\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -202,10 +202,10 @@ suite('Porcelain contract (git mesh)', () => {
         expect(row.end).toBeGreaterThanOrEqual(row.start);
       }
 
-      // Our specific mesh should be reported as stale
-      const ourMesh = rows.find((r) => r.name === 'my-module');
-      expect(ourMesh).toBeDefined();
-      expect(ourMesh!.path).toBe('src/app.ts');
+      // Our specific span should be reported as stale
+      const ourSpan = rows.find((r) => r.name === 'my-module');
+      expect(ourSpan).toBeDefined();
+      expect(ourSpan!.path).toBe('src/app.ts');
     });
 
     it('produces no rows for anchors that are not stale', () => {
@@ -213,12 +213,12 @@ suite('Porcelain contract (git mesh)', () => {
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\n');
       gitAddCommit(repoRoot, 'initial');
 
-      // Add a mesh and commit
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L2');
-      gitAddCommit(repoRoot, 'add mesh');
+      // Add a span and commit
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L2');
+      gitAddCommit(repoRoot, 'add span');
 
       // Don't modify the source -- anchors should not be stale
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'stale', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
         input: 'src/app.ts#L1-L2\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -230,10 +230,10 @@ suite('Porcelain contract (git mesh)', () => {
     it('handles empty stdin gracefully', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L1');
-      gitAddCommit(repoRoot, 'add mesh');
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L1');
+      gitAddCommit(repoRoot, 'add span');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'stale', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
         input: '',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -245,10 +245,10 @@ suite('Porcelain contract (git mesh)', () => {
     it('produces no rows for nonexistent anchor paths', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L1');
-      gitAddCommit(repoRoot, 'add mesh');
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L1');
+      gitAddCommit(repoRoot, 'add span');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'mesh', 'stale', '--porcelain', '--batch'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
         input: 'nonexistent.ts#L1-L5\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -263,16 +263,16 @@ suite('Porcelain contract (git mesh)', () => {
       writeFile(repoRoot, 'src/app.ts', 'a\nb\nc\n');
       gitAddCommit(repoRoot, 'initial');
 
-      // Add both a mesh and a second file that is not meshed
-      addMesh(repoRoot, 'my-module', 'src/app.ts#L1-L2');
+      // Add both a span and a second file that is not spanned
+      addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L2');
       writeFile(repoRoot, 'src/other.ts', 'x\ny\nz\n');
-      gitAddCommit(repoRoot, 'add mesh and other file');
+      gitAddCommit(repoRoot, 'add span and other file');
 
       // Make the anchored file stale
       writeFile(repoRoot, 'src/app.ts', 'MODIFIED\nb\nc\n');
 
       // List with the source path
-      const listOut = execFileSync('git', ['-C', repoRoot, 'mesh', 'list', '--porcelain', '--batch'], {
+      const listOut = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
         input: 'src/app.ts\nsrc/other.ts\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'
@@ -281,7 +281,7 @@ suite('Porcelain contract (git mesh)', () => {
       expect(listRows.length).toBeGreaterThan(0);
 
       // Stale with the anchor spec
-      const staleOut = execFileSync('git', ['-C', repoRoot, 'mesh', 'stale', '--porcelain', '--batch'], {
+      const staleOut = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
         input: 'src/app.ts#L1-L2\n',
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf8'

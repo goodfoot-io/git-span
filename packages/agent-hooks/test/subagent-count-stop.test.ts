@@ -49,7 +49,7 @@ describe('subagent-count-stop hook', () => {
     const id = sid('decr');
     incrementSubagentCount(id, logger);
     incrementSubagentCount(id, logger);
-    await hook(input(id, 'git-mesh:expert', 'agent-abc') as never, { logger } as never);
+    await hook(input(id, 'git-span:expert', 'agent-abc') as never, { logger } as never);
     expect(readSubagentCount(id)).toBe(1);
   });
 
@@ -69,7 +69,7 @@ describe('subagent-count-stop hook', () => {
   it('returns a valid subagentStopOutput even after a counter failure', async () => {
     const id = sid('output');
     // Even if the counter file doesn't exist, the hook should return normally
-    const result = await hook(input(id, 'git-mesh:expert', 'agent-x') as never, { logger } as never);
+    const result = await hook(input(id, 'git-span:expert', 'agent-x') as never, { logger } as never);
     expect(result).toBeDefined();
   });
 
@@ -80,7 +80,7 @@ describe('subagent-count-stop hook', () => {
     // We simulate this by calling decrement on an absent session — it should
     // swallow any error and the hook should still return an output.
     decrementSubagentCount(id, logger); // no-op, no throw
-    const result = await hook(input(id, 'git-mesh:expert', 'agent-fail') as never, { logger } as never);
+    const result = await hook(input(id, 'git-span:expert', 'agent-fail') as never, { logger } as never);
     expect(result).toBeDefined();
   });
 });

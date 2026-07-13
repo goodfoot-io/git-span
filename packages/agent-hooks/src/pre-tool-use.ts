@@ -1,18 +1,18 @@
 /**
- * PreToolUse: surface overlapping mesh anchors inline when an agent reads or
- * edits a line range that intersects an existing mesh anchor on the same file.
+ * PreToolUse: surface overlapping span anchors inline when an agent reads or
+ * edits a line range that intersects an existing span anchor on the same file.
  *
  * On every Read / Edit / Write whose tool input resolves to a partial line
- * range on one file, the hook calls `git mesh list <path> --porcelain`, keeps
- * only meshes that have a line-ranged anchor intersecting the tool's range,
+ * range on one file, the hook calls `git span list <path> --porcelain`, keeps
+ * only spans that have a line-ranged anchor intersecting the tool's range,
  * drops slugs already surfaced in this Claude Code session (on-disk
  * per-session memo), and — if anything remains — emits the human-readable
- * `git mesh list <names…>` block wrapped in `<git-mesh>…</git-mesh>` on both
+ * `git span list <names…>` block wrapped in `<git-span>…</git-span>` on both
  * channels: `hookSpecificOutput.additionalContext` (the channel that reaches
  * the model loop) and `systemMessage` (the user-facing UI line).
  *
- * Any surfaced mesh that is already stale (the touched lines have drifted from
- * its anchored state) additionally carries a `git mesh history <name>` pointer,
+ * Any surfaced span that is already stale (the touched lines have drifted from
+ * its anchored state) additionally carries a `git span history <name>` pointer,
  * so the agent can review how that subsystem evolved before working on it.
  * Staleness is read as-of-now: PreToolUse fires before the edit applies, so the
  * hint flags pre-existing drift; drift the session itself causes is handled by
@@ -20,7 +20,7 @@
  *
  * Additionally, every Read / Edit / Write call is appended to a per-session
  * JSONL journal at
- * ~/.cache/git-mesh/session/<sanitizedSessionId>/touches.jsonl.
+ * ~/.cache/git-span/session/<sanitizedSessionId>/touches.jsonl.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -31,19 +31,19 @@ import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutpu
 import {
   derivePath,
   isGitIgnored,
-  isInsideMeshRoot,
+  isInsideSpanRoot,
   type LineRange,
   type PorcelainRow,
   parsePorcelain,
   rangesIntersect,
   relativeToRepo,
-  resolveMeshRoot,
   resolveRepoRoot,
+  resolveSpanRoot,
   sanitizeSessionId,
   type TouchKind,
   toPosix
 } from './agent-hooks-common.js';
-import { type HookIgnoreLoader, isMeshSuppressed, loadHookIgnore } from './mesh-ignore.js';
+import { type HookIgnoreLoader, isSpanSuppressed, loadHookIgnore } from './span-ignore.js';
 
 // Re-export for backward-compat of test imports (tests import these from here)
 export { toPosix };
@@ -167,18 +167,18 @@ function deriveWriteRange(toolInput: ToolInput): LineRange | null {
 }
 
 // ---------------------------------------------------------------------------
-// Mesh executor abstraction
+// Span executor abstraction
 // ---------------------------------------------------------------------------
 
 /**
- * Executes `git mesh list` with given args in a given cwd.
+ * Executes `git span list` with given args in a given cwd.
  * Returns stdout string. Throws on non-zero exit.
  */
-export type MeshExecutor = (args: string[], cwd: string) => string;
+export type SpanExecutor = (args: string[], cwd: string) => string;
 
-export function createDefaultMeshExecutor(timeoutMs = 10_000): MeshExecutor {
+export function createDefaultSpanExecutor(timeoutMs = 10_000): SpanExecutor {
   return (args, cwd) => {
-    return execFileSync('git', ['mesh', 'list', ...args], {
+    return execFileSync('git', ['span', 'list', ...args], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -188,9 +188,9 @@ export function createDefaultMeshExecutor(timeoutMs = 10_000): MeshExecutor {
 }
 
 /**
- * Runs `git mesh stale --porcelain <slugs>` and returns its porcelain stdout —
- * one row per *drifted* anchor among the given meshes, empty when all are clean.
- * `git mesh stale` exits 0 in porcelain mode whether or not drift exists, but we
+ * Runs `git span stale --porcelain <slugs>` and returns its porcelain stdout —
+ * one row per *drifted* anchor among the given spans, empty when all are clean.
+ * `git span stale` exits 0 in porcelain mode whether or not drift exists, but we
  * still capture stdout from a thrown error so a drift signal is never lost to a
  * non-zero exit. Throws only when no stdout is available (genuine failure).
  */
@@ -199,7 +199,7 @@ export type StaleExecutor = (slugs: string[], cwd: string) => string;
 export function createDefaultStaleExecutor(timeoutMs = 10_000): StaleExecutor {
   return (slugs, cwd) => {
     try {
-      return execFileSync('git', ['mesh', 'stale', '--porcelain', ...slugs], {
+      return execFileSync('git', ['span', 'stale', '--porcelain', ...slugs], {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -222,7 +222,7 @@ export interface MemoStore {
   addSurfaced(sessionId: string, names: string[]): void;
 }
 
-const MEMO_DIR = nodePath.join(os.tmpdir(), 'agent-hooks-git-mesh');
+const MEMO_DIR = nodePath.join(os.tmpdir(), 'agent-hooks-git-span');
 
 function memoFilePath(sessionId: string): string {
   return nodePath.join(MEMO_DIR, `${sanitizeSessionId(sessionId)}.json`);
@@ -265,7 +265,7 @@ export function createDiskMemoStore(logger: MemoLogger): MemoStore {
 // ---------------------------------------------------------------------------
 
 /** Base path for per-session touch journals. */
-const JOURNAL_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
+const JOURNAL_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
 
 interface TouchEntry {
   tool: string;
@@ -361,7 +361,7 @@ export function diskMemoFactory(logger: MemoLogger): MemoStore {
 }
 
 export function createHandler(
-  executor: MeshExecutor,
+  executor: SpanExecutor,
   memoFactory: MemoFactory,
   loadRules: HookIgnoreLoader = loadHookIgnore,
   staleExecutor: StaleExecutor = createDefaultStaleExecutor()
@@ -380,7 +380,7 @@ export function createHandler(
     // Bound everything to the CWD repo. Resolve the repo root of the current
     // working directory and require the touched file to resolve to the SAME
     // repo root. A file in a different repository — or a different worktree —
-    // is out of scope: we neither journal it nor surface its meshes, so the
+    // is out of scope: we neither journal it nor surface its spans, so the
     // Stop hook's status doc can never report foreign paths. Comparing resolved
     // `git --show-toplevel` toplevels (not path prefixes) distinguishes separate
     // repos and worktrees and is robust to symlinks. Fail closed: if the CWD
@@ -397,20 +397,20 @@ export function createHandler(
     const repoRelPath = relativeToRepo(repoRoot, absPath);
 
     // Skip gitignored files entirely. Build output, caches, and logs are not
-    // mesh-relevant: they must never enter the touch journal, so the Stop hook
+    // span-relevant: they must never enter the touch journal, so the Stop hook
     // can never surface them as reads, writes, or uncovered writes — nor offer
-    // mesh overlaps on them. This sits with the repo-scoping guard above: both
+    // span overlaps on them. This sits with the repo-scoping guard above: both
     // bound what the journal may ever contain.
     if (isGitIgnored(repoRoot, repoRelPath)) return null;
 
-    // Skip mesh documents entirely. Files under the resolved mesh root are
-    // managed by git mesh itself and must never enter the touch journal — they
-    // are not application sources that need mesh coverage. Dropping here is
+    // Skip span documents entirely. Files under the resolved span root are
+    // managed by git span itself and must never enter the touch journal — they
+    // are not application sources that need span coverage. Dropping here is
     // strictly better than filtering only in the uncovered-writes pass: it
     // uniformly prevents reads, writes, and uncovered-writes surfacing,
     // matching the gitignore precedent.
-    const meshRoot = resolveMeshRoot(repoRoot);
-    if (isInsideMeshRoot(repoRelPath, meshRoot)) return null;
+    const spanRoot = resolveSpanRoot(repoRoot);
+    if (isInsideSpanRoot(repoRelPath, spanRoot)) return null;
 
     // Journal append — best-effort, runs even when overlap arm returns early
     const touchEntries = deriveTouchEntries(toolName, toolInput, absPath);
@@ -430,18 +430,18 @@ export function createHandler(
 
     if (!range) return null;
 
-    // Filter pass: git mesh list <path> --porcelain
+    // Filter pass: git span list <path> --porcelain
     let porcelainStdout: string;
     try {
       porcelainStdout = executor(['--porcelain', repoRelPath], repoRoot);
     } catch (err) {
-      ctx.logger.warn('git mesh list --porcelain failed', { err });
+      ctx.logger.warn('git span list --porcelain failed', { err });
       return null;
     }
 
-    // Path-scoped suppression: a repo's .mesh/.hookignore can hold back mesh
+    // Path-scoped suppression: a repo's .span/.hookignore can hold back span
     // slug prefixes (e.g. wiki, marketing) for anchors under given paths. A
-    // suppressed mesh is dropped here so it is never surfaced inline.
+    // suppressed span is dropped here so it is never surfaced inline.
     const ignoreRules = loadRules(repoRoot);
 
     const rows: PorcelainRow[] = parsePorcelain(porcelainStdout);
@@ -450,7 +450,7 @@ export function createHandler(
       if (row.path !== repoRelPath) continue;
       if (row.start === 0 && row.end === 0) continue; // whole-file anchor
       if (!rangesIntersect(range, { start: row.start, end: row.end })) continue;
-      if (isMeshSuppressed(ignoreRules, row.path, row.name)) continue;
+      if (isSpanSuppressed(ignoreRules, row.path, row.name)) continue;
       candidateNames.add(row.name);
     }
 
@@ -461,17 +461,17 @@ export function createHandler(
     const toSurface = [...candidateNames].filter((n) => !surfaced.has(n)).sort();
     if (toSurface.length === 0) return null;
 
-    // Render pass: git mesh list <name1> <name2> ...
+    // Render pass: git span list <name1> <name2> ...
     let renderStdout: string;
     try {
       renderStdout = executor(toSurface, repoRoot);
     } catch (err) {
-      ctx.logger.warn('git mesh list (render) failed', { err });
+      ctx.logger.warn('git span list (render) failed', { err });
       return null;
     }
 
-    // Of the meshes being surfaced, flag any already stale — the touched lines
-    // have drifted from their anchored state — with a `git mesh history <name>`
+    // Of the spans being surfaced, flag any already stale — the touched lines
+    // have drifted from their anchored state — with a `git span history <name>`
     // pointer so the agent can see how the subsystem evolved before working on
     // it. Detection is as-of-now (PreToolUse runs before the edit applies), so
     // this catches pre-existing drift; drift this session causes is the Stop
@@ -482,19 +482,19 @@ export function createHandler(
       const staleNames = new Set(parsePorcelain(staleExecutor(toSurface, repoRoot)).map((r) => r.name));
       const staleSurfaced = toSurface.filter((n) => staleNames.has(n));
       if (staleSurfaced.length > 0) {
-        const lines = staleSurfaced.map((n) => `  git mesh history ${n}`).join('\n');
-        staleHint = `\nStale — the lines you're touching have drifted from these meshes' anchored state. Review how each subsystem evolved before changing it:\n${lines}`;
+        const lines = staleSurfaced.map((n) => `  git span history ${n}`).join('\n');
+        staleHint = `\nStale — the lines you're touching have drifted from these spans' anchored state. Review how each subsystem evolved before changing it:\n${lines}`;
       }
     } catch (err) {
-      ctx.logger.warn('git mesh stale (history hint) failed', { err });
+      ctx.logger.warn('git span stale (history hint) failed', { err });
     }
 
-    const wrapped = `\n<git-mesh>\n${renderStdout}${staleHint}\n</git-mesh>\n`;
+    const wrapped = `\n<git-span>\n${renderStdout}${staleHint}\n</git-span>\n`;
 
     // Update memo
     memo.addSurfaced(sessionId, toSurface);
 
-    // Surface the mesh block to the agent loop via `additionalContext` (the
+    // Surface the span block to the agent loop via `additionalContext` (the
     // channel that actually reaches the model) and keep `systemMessage` for the
     // user-facing UI line.
     return preToolUseOutput({
@@ -508,5 +508,5 @@ export function createHandler(
 
 export default preToolUseHook(
   { matcher: 'Read|Edit|Write', timeout: 10_000 },
-  createHandler(createDefaultMeshExecutor(), diskMemoFactory)
+  createHandler(createDefaultSpanExecutor(), diskMemoFactory)
 );

@@ -1,4 +1,0 @@
-packages/git-mesh/benches/stale_warm.rs#L112-L146 rk64:75dc163183c6d351
-packages/git-mesh/src/resolver/cache_v2/mod.rs#L78-L88 rk64:12a93ee35587851c
-
-Warm-cache benchmark measures cache_v2 through EngineOptions::full() eligibility; committed_only() fails the eligibility gate (non-full-layer-set) and measures the uncached cold path instead. If cache eligibility rules change, this bench must change too.

@@ -1,0 +1,19 @@
+{
+  "name": "@goodfoot/git-span-darwin-x64",
+  "version": "1.0.131",
+  "description": "Platform-specific binary for @goodfoot/git-span",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git"
+  }
+}

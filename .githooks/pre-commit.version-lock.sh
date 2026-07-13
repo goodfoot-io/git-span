@@ -9,7 +9,7 @@ command -v node >/dev/null 2>&1 || exit 0
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
 [ -z "$STAGED_FILES" ] && exit 0
 
-VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-mesh/Cargo\.toml)$' || true)
+VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-span/Cargo\.toml)$' || true)
 [ -z "$VERSION_LOCK_STAGED" ] && exit 0
 
 echo "Locking package + plugin versions to highest semver..."
@@ -46,10 +46,10 @@ for (const name of fs.existsSync('plugins') ? fs.readdirSync('plugins') : []) {
   if (fs.existsSync(file)) addPackageJson(file);
 }
 
-// Cargo manifest: packages/git-mesh/Cargo.toml. The CLI's --version is wired
+// Cargo manifest: packages/git-span/Cargo.toml. The CLI's --version is wired
 // to clap's version derive (CARGO_PKG_VERSION at build time), so this MUST
 // stay locked to the JSON manifests or the compiled binary drifts.
-const cargoFile = 'packages/git-mesh/Cargo.toml';
+const cargoFile = 'packages/git-span/Cargo.toml';
 if (fs.existsSync(cargoFile)) {
   // Match the version line inside the [package] block only — never a
   // dependency's `version = "..."`.
@@ -149,8 +149,8 @@ for (const file of changed) {
   console.log(`Updated ${file} -> ${highest}`);
 }
 
-// Also sync optionalDependencies in packages/git-mesh/package.json
-const cliFile = 'packages/git-mesh/package.json';
+// Also sync optionalDependencies in packages/git-span/package.json
+const cliFile = 'packages/git-span/package.json';
 if (fs.existsSync(cliFile)) {
   const cli = loadJson(cliFile);
   let mutated = false;
@@ -174,7 +174,7 @@ git add package.json \
     npm/*/package.json \
     plugins/*/.claude-plugin/plugin.json \
     .claude-plugin/marketplace.json \
-    packages/git-mesh/Cargo.toml \
-    packages/git-mesh/Cargo.lock 2>/dev/null || true
+    packages/git-span/Cargo.toml \
+    packages/git-span/Cargo.lock 2>/dev/null || true
 git add yarn.lock .yarn/install-state.gz 2>/dev/null || true
 exit 0

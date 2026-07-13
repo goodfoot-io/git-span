@@ -1,7 +1,7 @@
 {
-  "name": "git-mesh",
-  "displayName": "Git Mesh",
-  "description": "Exposes the Git Mesh CLI in VS Code.",
+  "name": "git-span",
+  "displayName": "Git Span",
+  "description": "Exposes the Git Span CLI in VS Code.",
   "version": "1.0.131",
   "publisher": "goodfoot",
   "type": "module",
@@ -19,14 +19,14 @@
   "contributes": {
     "commands": [
       {
-        "command": "gitMesh.showVersion",
+        "command": "gitSpan.showVersion",
         "title": "Show CLI Version",
-        "category": "Git Mesh"
+        "category": "Git Span"
       },
       {
-        "command": "gitMesh.openTerminal",
+        "command": "gitSpan.openTerminal",
         "title": "Open Terminal",
-        "category": "Git Mesh"
+        "category": "Git Span"
       }
     ]
   },
@@ -56,7 +56,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/goodfoot-io/git-mesh"
+    "url": "https://github.com/goodfoot-io/git-span"
   },
   "author": {
     "name": "Goodfoot Media LLC",

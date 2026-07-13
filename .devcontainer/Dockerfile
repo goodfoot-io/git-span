@@ -1,4 +1,4 @@
-# Git Mesh devcontainer — builds on the shared local base image.
+# Git Span devcontainer — builds on the shared local base image.
 # The base (devcontainer-base:node24.16-trixie) is built on demand by the
 # initializeCommand in devcontainer.json (see ../../devcontainer-base).
 FROM devcontainer-base:node24.16-trixie

@@ -6,7 +6,7 @@ After making any changes to code or configuration files, lint, type check, and r
 
 ## Workspace
 
-- Yarn 4.x monorepo with packages in `./packages/` containing a Rust CLI (`packages/git-mesh`) and a VS Code extension (`packages/extension`).
+- Yarn 4.x monorepo with packages in `./packages/` containing a Rust CLI (`packages/git-span`) and a VS Code extension (`packages/extension`).
 - Do not use npm. Use `yarn` for all package management.
 - Use local rather than origin branches.
 
@@ -19,7 +19,7 @@ After making any changes to code or configuration files, lint, type check, and r
 
 ## Documentation
 
-Project documentation lives in `README.md` and `docs/`. Keep docs focused on `git-mesh`, the Rust CLI in `packages/git-mesh`, and the lightweight VS Code extension in `packages/extension`.
+Project documentation lives in `README.md` and `docs/`. Keep docs focused on `git-span`, the Rust CLI in `packages/git-span`, and the lightweight VS Code extension in `packages/extension`.
 
 ## Validation
 

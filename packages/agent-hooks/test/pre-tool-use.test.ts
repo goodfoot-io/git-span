@@ -4,17 +4,17 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type HookIgnoreLoader, parseHookIgnore } from '../src/mesh-ignore.js';
 import hook, {
-  createDefaultMeshExecutor,
+  createDefaultSpanExecutor,
   createDiskMemoStore,
   createHandler,
   type MemoFactory,
   type MemoLogger,
   type MemoStore,
-  type MeshExecutor,
+  type SpanExecutor,
   type StaleExecutor
 } from '../src/pre-tool-use.js';
+import { type HookIgnoreLoader, parseHookIgnore } from '../src/span-ignore.js';
 import { journalPath, loadJournal } from '../src/stop.js';
 import { makeTempRepo } from './helpers.js';
 
@@ -30,7 +30,7 @@ interface ExecutorCall {
 }
 
 function createFakeExecutor(responses: Map<string, string> = new Map()): {
-  executor: MeshExecutor;
+  executor: SpanExecutor;
   calls: ExecutorCall[];
   setResponse: (key: string, stdout: string) => void;
   failOn: (key: string) => void;
@@ -38,10 +38,10 @@ function createFakeExecutor(responses: Map<string, string> = new Map()): {
   const calls: ExecutorCall[] = [];
   const errors = new Set<string>();
 
-  const executor: MeshExecutor = (args, cwd) => {
+  const executor: SpanExecutor = (args, cwd) => {
     calls.push({ args, cwd });
     const key = args.join(' ');
-    if (errors.has(key)) throw new Error(`git mesh list ${key} failed`);
+    if (errors.has(key)) throw new Error(`git span list ${key} failed`);
     return responses.get(key) ?? '';
   };
 
@@ -74,14 +74,14 @@ function createMemoryMemoFactory(): { memoFactory: MemoFactory; store: Map<strin
 
 // ---------------------------------------------------------------------------
 // Handler factory wrapper: inject a no-drift stale executor by default so the
-// bulk of tests never shell out to a real `git mesh stale`. Stale-hint tests
+// bulk of tests never shell out to a real `git span stale`. Stale-hint tests
 // pass their own StaleExecutor as the 4th argument.
 // ---------------------------------------------------------------------------
 
 const noDrift: StaleExecutor = () => '';
 
 function makeHandler(
-  executor: MeshExecutor,
+  executor: SpanExecutor,
   memoFactory: MemoFactory,
   loadRules?: HookIgnoreLoader,
   staleExecutor: StaleExecutor = noDrift
@@ -151,11 +151,11 @@ describe('Read tool', () => {
     // Use absolute path rooted at the temp repo so resolveRepoRoot succeeds
     const absFilePath = join(repo.root, 'foo.ts');
     const relPath = 'foo.ts';
-    const meshName = 'billing/checkout';
-    const porcelain = porcelainLine(meshName, relPath, 5, 20);
+    const spanName = 'billing/checkout';
+    const porcelain = porcelainLine(spanName, relPath, 5, 20);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'billing/checkout mesh output');
+    setResponse(spanName, 'billing/checkout span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -167,10 +167,10 @@ describe('Read tool', () => {
     const result = toHookResult(await handler(input as never, { logger }));
 
     expect(calls[0].args).toEqual(['--porcelain', relPath]);
-    expect(calls[1].args).toEqual([meshName]);
-    // The mesh block reaches the agent loop via additionalContext and the UI via systemMessage.
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('billing/checkout mesh output');
-    expect(result.stdout.systemMessage).toContain('billing/checkout mesh output');
+    expect(calls[1].args).toEqual([spanName]);
+    // The span block reaches the agent loop via additionalContext and the UI via systemMessage.
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('billing/checkout span output');
+    expect(result.stdout.systemMessage).toContain('billing/checkout span output');
   });
 
   it('without offset/limit: no executor calls, empty output', async () => {
@@ -191,8 +191,8 @@ describe('Read tool', () => {
   it('whole-file anchor (0-0) is excluded from surfacing', async () => {
     const absFilePath = join(repo.root, 'whole-file.ts');
     const relPath = 'whole-file.ts';
-    const meshName = 'whole-file-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 0, 0);
+    const spanName = 'whole-file-span';
+    const porcelain = porcelainLine(spanName, relPath, 0, 0);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
@@ -208,11 +208,11 @@ describe('Read tool', () => {
     expect(result.stdout.systemMessage).toBeUndefined();
   });
 
-  it('non-intersecting mesh anchor: not surfaced', async () => {
+  it('non-intersecting span anchor: not surfaced', async () => {
     const absFilePath = join(repo.root, 'nonintersect.ts');
     const relPath = 'nonintersect.ts';
-    const meshName = 'far-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 100, 200);
+    const spanName = 'far-span';
+    const porcelain = porcelainLine(spanName, relPath, 100, 200);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
@@ -240,14 +240,14 @@ describe('Edit tool', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('old_string found: derives range and surfaces intersecting mesh', async () => {
+  it('old_string found: derives range and surfaces intersecting span', async () => {
     const relPath = 'src/bar.ts';
-    const meshName = 'bar-mesh';
+    const spanName = 'bar-span';
     // old_string "line2\nline3" is at lines 2-3
-    const porcelain = porcelainLine(meshName, relPath, 2, 3);
+    const porcelain = porcelainLine(spanName, relPath, 2, 3);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'bar-mesh output');
+    setResponse(spanName, 'bar-span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -257,7 +257,7 @@ describe('Edit tool', () => {
       tool_input: { file_path: filePath, old_string: 'line2\nline3', new_string: 'replaced' }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('bar-mesh output');
+    expect(result.stdout.systemMessage).toContain('bar-span output');
   });
 
   it('old_string missing: empty output', async () => {
@@ -318,16 +318,16 @@ describe('Write tool', () => {
     expect(result.stdout.systemMessage).toBeUndefined();
   });
 
-  it('write that changes a middle slice: ranges derived and intersecting mesh surfaced', async () => {
+  it('write that changes a middle slice: ranges derived and intersecting span surfaced', async () => {
     const fp = join(repo.root, 'partial.ts');
     writeFileSync(fp, 'a\nb\nc\nd\ne\n');
     const relPath = 'partial.ts';
-    const meshName = 'partial-mesh';
-    // Lines 2-4 change; mesh anchor covers that range
-    const porcelain = porcelainLine(meshName, relPath, 2, 4);
+    const spanName = 'partial-span';
+    // Lines 2-4 change; span anchor covers that range
+    const porcelain = porcelainLine(spanName, relPath, 2, 4);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'partial mesh output');
+    setResponse(spanName, 'partial span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -337,7 +337,7 @@ describe('Write tool', () => {
       tool_input: { file_path: fp, content: 'a\nB\nC\nD\ne\n' }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('partial mesh output');
+    expect(result.stdout.systemMessage).toContain('partial span output');
   });
 });
 
@@ -348,14 +348,14 @@ describe('Session memo deduplication', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('mesh slug surfaced once is filtered out on the next overlapping call within the same session', async () => {
+  it('span slug surfaced once is filtered out on the next overlapping call within the same session', async () => {
     const absFilePath = join(repo.root, 'memo.ts');
     const relPath = 'memo.ts';
-    const meshName = 'dedup-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const spanName = 'dedup-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 10);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'dedup output');
+    setResponse(spanName, 'dedup output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -366,7 +366,7 @@ describe('Session memo deduplication', () => {
       tool_input: { file_path: absFilePath, offset: 5, limit: 3 }
     });
 
-    // First call: surfaces the mesh
+    // First call: surfaces the span
     const result1 = toHookResult(await handler(input as never, { logger }));
     expect(result1.stdout.systemMessage).toContain('dedup output');
 
@@ -381,11 +381,11 @@ describe('Session memo deduplication', () => {
   it("different session_id does not see the previous session's surfaced set", async () => {
     const absFilePath = join(repo.root, 'sess.ts');
     const relPath = 'sess.ts';
-    const meshName = 'sess-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const spanName = 'sess-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 10);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'sess output');
+    setResponse(spanName, 'sess output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -432,14 +432,14 @@ describe('Cross-repo touch', () => {
     otherRepo.cleanup();
   });
 
-  it('neither surfaces meshes nor journals when the file is in a different repo than cwd', async () => {
+  it('neither surfaces spans nor journals when the file is in a different repo than cwd', async () => {
     const sessionId = `cross-repo-${Date.now()}`;
     // The touched file lives in otherRepo; cwd is cwdRepo. A porcelain response
-    // is wired so that, were the overlap arm to run, it would surface a mesh.
+    // is wired so that, were the overlap arm to run, it would surface a span.
     const absFilePath = join(otherRepo.root, 'foreign.ts');
     const { executor, calls, setResponse } = createFakeExecutor();
-    setResponse('--porcelain foreign.ts', porcelainLine('foreign-mesh', 'foreign.ts', 1, 20));
-    setResponse('foreign-mesh', 'foreign mesh output');
+    setResponse('--porcelain foreign.ts', porcelainLine('foreign-span', 'foreign.ts', 1, 20));
+    setResponse('foreign-span', 'foreign span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -457,7 +457,7 @@ describe('Cross-repo touch', () => {
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
 
     // And the foreign touch is never journaled.
-    const journalPath = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    const journalPath = join(os.homedir(), '.cache', 'git-span', 'session', sessionId, 'touches.jsonl');
     expect(fs.existsSync(journalPath)).toBe(false);
   });
 });
@@ -470,13 +470,13 @@ describe('Gitignored file touch', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('neither surfaces meshes nor journals a read of a gitignored file', async () => {
+  it('neither surfaces spans nor journals a read of a gitignored file', async () => {
     const sessionId = `gitignored-${Date.now()}`;
     const absFilePath = join(repo.root, 'dist', 'bundle.ts');
     const { executor, calls, setResponse } = createFakeExecutor();
-    // Wire a porcelain response so the overlap arm would surface a mesh if it ran.
-    setResponse('--porcelain dist/bundle.ts', porcelainLine('dist-mesh', 'dist/bundle.ts', 1, 20));
-    setResponse('dist-mesh', 'dist mesh output');
+    // Wire a porcelain response so the overlap arm would surface a span if it ran.
+    setResponse('--porcelain dist/bundle.ts', porcelainLine('dist-span', 'dist/bundle.ts', 1, 20));
+    setResponse('dist-span', 'dist span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -494,7 +494,7 @@ describe('Gitignored file touch', () => {
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
 
     // And the ignored touch is never journaled.
-    const journalFile = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    const journalFile = join(os.homedir(), '.cache', 'git-span', 'session', sessionId, 'touches.jsonl');
     expect(fs.existsSync(journalFile)).toBe(false);
   });
 
@@ -522,21 +522,21 @@ describe('Gitignored file touch', () => {
   });
 });
 
-describe('Mesh names with special characters', () => {
+describe('Span names with special characters', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
   });
   afterAll(() => repo.cleanup());
 
-  it('mesh names with slashes and hyphens round-trip safely via execFileSync args', async () => {
+  it('span names with slashes and hyphens round-trip safely via execFileSync args', async () => {
     const absFilePath = join(repo.root, 'special.ts');
     const relPath = 'special.ts';
-    const meshName = 'billing/checkout-request-flow';
-    const porcelain = porcelainLine(meshName, relPath, 1, 50);
+    const spanName = 'billing/checkout-request-flow';
+    const porcelain = porcelainLine(spanName, relPath, 1, 50);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'mesh output');
+    setResponse(spanName, 'span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -547,7 +547,7 @@ describe('Mesh names with special characters', () => {
     });
     await handler(input as never, { logger });
     // Render call passes name as a separate arg, no shell escaping
-    expect(calls[1].args).toEqual([meshName]);
+    expect(calls[1].args).toEqual([spanName]);
   });
 });
 
@@ -579,11 +579,11 @@ describe('Executor failure handling', () => {
   it('render call failure: logs and returns empty output without blocking', async () => {
     const absFilePath = join(repo.root, 'failrender.ts');
     const relPath = 'failrender.ts';
-    const meshName = 'fail-render-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const spanName = 'fail-render-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 10);
     const { executor, setResponse, failOn } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    failOn(meshName);
+    failOn(spanName);
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -621,9 +621,9 @@ describe('Edit tool - countLines trailing newline off-by-one (Finding 1)', () =>
 
   it('old_string ending in newline should not extend range into the next line', async () => {
     const relPath = 'trailing.ts';
-    // mesh anchor covers ONLY line 4 (the "neighbor" line)
-    const neighborMesh = 'neighbor-mesh';
-    const porcelain = porcelainLine(neighborMesh, relPath, 4, 4);
+    // span anchor covers ONLY line 4 (the "neighbor" line)
+    const neighborSpan = 'neighbor-span';
+    const porcelain = porcelainLine(neighborSpan, relPath, 4, 4);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
@@ -637,7 +637,7 @@ describe('Edit tool - countLines trailing newline off-by-one (Finding 1)', () =>
       tool_input: { file_path: filePath, old_string: 'match-line\n', new_string: 'replaced\n' }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    // Only the porcelain call; the neighbor-mesh on line 4 must NOT be surfaced
+    // Only the porcelain call; the neighbor-span on line 4 must NOT be surfaced
     expect(calls).toHaveLength(1);
     expect(result.stdout.systemMessage).toBeUndefined();
   });
@@ -659,8 +659,8 @@ describe('Edit tool - empty old_string (Finding 2)', () => {
 
   it('empty old_string produces no executor calls and no output', async () => {
     const relPath = 'empty-old.ts';
-    const meshName = 'line1-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 1);
+    const spanName = 'line1-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 1);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
     const { memoFactory } = createMemoryMemoFactory();
@@ -687,19 +687,19 @@ describe('Edit tool - replace_all unions ranges (Finding 3)', () => {
   beforeAll(() => {
     repo = makeTempRepo();
     filePath = join(repo.root, 'replace-all.ts');
-    // "TOKEN" appears at line 1 and line 6; meshes cover those lines separately
+    // "TOKEN" appears at line 1 and line 6; spans cover those lines separately
     writeFileSync(filePath, 'TOKEN\nline2\nline3\nline4\nline5\nTOKEN\nline7\n');
   });
   afterAll(() => repo.cleanup());
 
-  it('replace_all surfaces meshes overlapping every occurrence', async () => {
+  it('replace_all surfaces spans overlapping every occurrence', async () => {
     const relPath = 'replace-all.ts';
-    const mesh1 = 'mesh-at-line1';
-    const mesh2 = 'mesh-at-line6';
-    const porcelain = [porcelainLine(mesh1, relPath, 1, 1), porcelainLine(mesh2, relPath, 6, 6)].join('\n');
+    const span1 = 'span-at-line1';
+    const span2 = 'span-at-line6';
+    const porcelain = [porcelainLine(span1, relPath, 1, 1), porcelainLine(span2, relPath, 6, 6)].join('\n');
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(`${mesh1} ${mesh2}`, 'both meshes output');
+    setResponse(`${span1} ${span2}`, 'both spans output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -709,15 +709,15 @@ describe('Edit tool - replace_all unions ranges (Finding 3)', () => {
       tool_input: { file_path: filePath, old_string: 'TOKEN', new_string: 'REPLACED', replace_all: true }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    // Both meshes should be requested in the render call
-    expect(calls[1].args).toContain(mesh1);
-    expect(calls[1].args).toContain(mesh2);
-    expect(result.stdout.systemMessage).toContain('both meshes output');
+    // Both spans should be requested in the render call
+    expect(calls[1].args).toContain(span1);
+    expect(calls[1].args).toContain(span2);
+    expect(result.stdout.systemMessage).toContain('both spans output');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Finding 4: symlinked workdir still surfaces meshes
+// Finding 4: symlinked workdir still surfaces spans
 // ---------------------------------------------------------------------------
 
 describe('Symlinked workdir (Finding 4)', () => {
@@ -738,11 +738,11 @@ describe('Symlinked workdir (Finding 4)', () => {
   it('file path via symlinked cwd resolves correctly and porcelain is called with real repo-relative path', async () => {
     const absFilePath = join(symlinkDir, 'sym.ts');
     const relPath = 'sym.ts';
-    const meshName = 'sym-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const spanName = 'sym-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 10);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'sym mesh output');
+    setResponse(spanName, 'sym span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -754,7 +754,7 @@ describe('Symlinked workdir (Finding 4)', () => {
     const result = toHookResult(await handler(input as never, { logger }));
     // The porcelain call must use the repo-relative path, not the symlink-absolute path
     expect(calls[0].args).toEqual(['--porcelain', relPath]);
-    expect(result.stdout.systemMessage).toContain('sym mesh output');
+    expect(result.stdout.systemMessage).toContain('sym span output');
   });
 });
 
@@ -779,14 +779,14 @@ describe('Session id sanitization - injective (Finding 5)', () => {
 // Finding 6: executor stderr not propagated
 // ---------------------------------------------------------------------------
 
-describe('Mesh executor stderr (Finding 6)', () => {
-  it('createDefaultMeshExecutor captures stderr (uses pipe not inherit)', () => {
-    // createDefaultMeshExecutor is imported at top of file.
+describe('Span executor stderr (Finding 6)', () => {
+  it('createDefaultSpanExecutor captures stderr (uses pipe not inherit)', () => {
+    // createDefaultSpanExecutor is imported at top of file.
     // Verify the executor is a function and that stderr from a failed invocation
     // is captured (not printed to the hook process's stderr) by running a
     // non-git command that exits non-zero with stderr output and confirming
     // the error is thrown (captured) rather than leaked.
-    const executor = createDefaultMeshExecutor(5000);
+    const executor = createDefaultSpanExecutor(5000);
     // 'git -C /nonexistent-path-xyz rev-parse' writes to stderr; execFileSync
     // with stdio: ['ignore','pipe','pipe'] captures it — the throw carries it.
     // With 'inherit' it would leak; with 'pipe' the throw captures stderr.
@@ -817,7 +817,7 @@ describe('Mesh executor stderr (Finding 6)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Finding 7: PreToolUse output carries the mesh block in both additionalContext
+// Finding 7: PreToolUse output carries the span block in both additionalContext
 // (reaches the agent loop) and systemMessage (user-facing UI line).
 // ---------------------------------------------------------------------------
 
@@ -831,11 +831,11 @@ describe('PreToolUse output envelope (Finding 7)', () => {
   it('hook output carries the block in both additionalContext and systemMessage', async () => {
     const absFilePath = join(repo.root, 'envelope.ts');
     const relPath = 'envelope.ts';
-    const meshName = 'envelope-mesh';
-    const porcelain = porcelainLine(meshName, relPath, 1, 10);
+    const spanName = 'envelope-span';
+    const porcelain = porcelainLine(spanName, relPath, 1, 10);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'envelope output');
+    setResponse(spanName, 'envelope output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -845,8 +845,8 @@ describe('PreToolUse output envelope (Finding 7)', () => {
       tool_input: { file_path: absFilePath, offset: 1, limit: 5 }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('<git-mesh>');
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-mesh>');
+    expect(result.stdout.systemMessage).toContain('<git-span>');
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-span>');
   });
 });
 
@@ -941,23 +941,23 @@ describe('Touch kind emission', () => {
   });
 });
 
-describe('path-scoped mesh suppression', () => {
+describe('path-scoped span suppression', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
   });
   afterAll(() => repo.cleanup());
 
-  it('does not surface a mesh whose slug prefix is suppressed for the touched path', async () => {
+  it('does not surface a span whose slug prefix is suppressed for the touched path', async () => {
     const relPath = 'src/component.ts';
     const absFilePath = join(repo.root, relPath);
     fs.mkdirSync(join(repo.root, 'src'), { recursive: true });
     writeFileSync(absFilePath, 'line\n'.repeat(30));
-    const meshName = 'wiki/onboarding';
-    const porcelain = porcelainLine(meshName, relPath, 5, 20);
+    const spanName = 'wiki/onboarding';
+    const porcelain = porcelainLine(spanName, relPath, 5, 20);
     const { executor, calls, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'wiki mesh output');
+    setResponse(spanName, 'wiki span output');
     const { memoFactory } = createMemoryMemoFactory();
     // Inject a rule loader suppressing the `wiki` prefix under `src`.
     const handler = makeHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
@@ -969,21 +969,21 @@ describe('path-scoped mesh suppression', () => {
     });
     const result = toHookResult(await handler(input as never, { logger }));
 
-    // Only the porcelain call happened; the suppressed mesh is never rendered.
+    // Only the porcelain call happened; the suppressed span is never rendered.
     expect(calls).toHaveLength(1);
     expect(result.stdout.systemMessage).toBeUndefined();
   });
 
-  it('still surfaces a non-suppressed mesh on the same suppressed path', async () => {
+  it('still surfaces a non-suppressed span on the same suppressed path', async () => {
     const relPath = 'src/widget.ts';
     const absFilePath = join(repo.root, relPath);
     fs.mkdirSync(join(repo.root, 'src'), { recursive: true });
     writeFileSync(absFilePath, 'line\n'.repeat(30));
-    const meshName = 'billing/checkout';
-    const porcelain = porcelainLine(meshName, relPath, 5, 20);
+    const spanName = 'billing/checkout';
+    const porcelain = porcelainLine(spanName, relPath, 5, 20);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, porcelain);
-    setResponse(meshName, 'billing mesh output');
+    setResponse(spanName, 'billing span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory, () => parseHookIgnore('src wiki\n'));
 
@@ -993,27 +993,27 @@ describe('path-scoped mesh suppression', () => {
       tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('billing mesh output');
+    expect(result.stdout.systemMessage).toContain('billing span output');
   });
 });
 
-describe('Mesh document touch', () => {
+describe('Span document touch', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
   });
   afterAll(() => repo.cleanup());
 
-  it('neither surfaces meshes nor journals a write to a .mesh/<slug> path', async () => {
-    const sessionId = `mesh-doc-write-${Date.now()}`;
-    const absFilePath = join(repo.root, '.mesh', 'wiki', 'reference', 'codex', 'instruction-loading');
+  it('neither surfaces spans nor journals a write to a .span/<slug> path', async () => {
+    const sessionId = `span-doc-write-${Date.now()}`;
+    const absFilePath = join(repo.root, '.span', 'wiki', 'reference', 'codex', 'instruction-loading');
     const { executor, calls, setResponse } = createFakeExecutor();
-    // Wire a porcelain response so the overlap arm would surface a mesh if it ran.
+    // Wire a porcelain response so the overlap arm would surface a span if it ran.
     setResponse(
-      '--porcelain .mesh/wiki/reference/codex/instruction-loading',
-      porcelainLine('wiki', '.mesh/wiki/reference/codex/instruction-loading', 1, 50)
+      '--porcelain .span/wiki/reference/codex/instruction-loading',
+      porcelainLine('wiki', '.span/wiki/reference/codex/instruction-loading', 1, 50)
     );
-    setResponse('wiki', 'wiki mesh output');
+    setResponse('wiki', 'wiki span output');
     const { memoFactory } = createMemoryMemoFactory();
     const handler = makeHandler(executor, memoFactory);
 
@@ -1025,40 +1025,40 @@ describe('Mesh document touch', () => {
     });
     const result = toHookResult(await handler(input as never, { logger }));
 
-    // Overlap arm never runs against a mesh document.
+    // Overlap arm never runs against a span document.
     expect(calls).toHaveLength(0);
     expect(result.stdout.systemMessage).toBeUndefined();
 
-    // And the mesh document touch is never journaled.
-    const journalFile = join(os.homedir(), '.cache', 'git-mesh', 'session', sessionId, 'touches.jsonl');
+    // And the span document touch is never journaled.
+    const journalFile = join(os.homedir(), '.cache', 'git-span', 'session', sessionId, 'touches.jsonl');
     expect(fs.existsSync(journalFile)).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Stale mesh history hint: a surfaced mesh that is already stale (the touched
-// lines have drifted) carries a `git mesh history <name>` pointer on BOTH
-// channels; a clean mesh does not; only the stale subset is hinted; and a
+// Stale span history hint: a surfaced span that is already stale (the touched
+// lines have drifted) carries a `git span history <name>` pointer on BOTH
+// channels; a clean span does not; only the stale subset is hinted; and a
 // failing stale probe degrades to the plain block.
 // ---------------------------------------------------------------------------
 
-describe('Stale mesh history hint', () => {
+describe('Stale span history hint', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
   });
   afterAll(() => repo.cleanup());
 
-  it('appends `git mesh history <name>` on both channels for a stale surfaced mesh', async () => {
+  it('appends `git span history <name>` on both channels for a stale surfaced span', async () => {
     const absFilePath = join(repo.root, 'stale.ts');
     const relPath = 'stale.ts';
-    const meshName = 'billing/checkout';
-    const row = porcelainLine(meshName, relPath, 5, 20);
+    const spanName = 'billing/checkout';
+    const row = porcelainLine(spanName, relPath, 5, 20);
     const { executor, setResponse } = createFakeExecutor();
     setResponse(`--porcelain ${relPath}`, row);
-    setResponse(meshName, 'billing/checkout mesh output');
+    setResponse(spanName, 'billing/checkout span output');
     const { memoFactory } = createMemoryMemoFactory();
-    // The stale probe reports this mesh as drifted (one porcelain row).
+    // The stale probe reports this span as drifted (one porcelain row).
     const handler = makeHandler(executor, memoFactory, undefined, () => row);
 
     const input = baseInput({
@@ -1069,18 +1069,18 @@ describe('Stale mesh history hint', () => {
     const result = toHookResult(await handler(input as never, { logger }));
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
     // Hint on both channels, alongside the underlying list block.
-    expect(ctx).toContain(`git mesh history ${meshName}`);
-    expect(ctx).toContain('billing/checkout mesh output');
-    expect(result.stdout.systemMessage).toContain(`git mesh history ${meshName}`);
+    expect(ctx).toContain(`git span history ${spanName}`);
+    expect(ctx).toContain('billing/checkout span output');
+    expect(result.stdout.systemMessage).toContain(`git span history ${spanName}`);
   });
 
-  it('does not append a hint when the surfaced mesh is clean', async () => {
+  it('does not append a hint when the surfaced span is clean', async () => {
     const absFilePath = join(repo.root, 'clean.ts');
     const relPath = 'clean.ts';
-    const meshName = 'billing/clean';
+    const spanName = 'billing/clean';
     const { executor, setResponse } = createFakeExecutor();
-    setResponse(`--porcelain ${relPath}`, porcelainLine(meshName, relPath, 5, 20));
-    setResponse(meshName, 'clean mesh output');
+    setResponse(`--porcelain ${relPath}`, porcelainLine(spanName, relPath, 5, 20));
+    setResponse(spanName, 'clean span output');
     const { memoFactory } = createMemoryMemoFactory();
     // No drift rows → no hint.
     const handler = makeHandler(executor, memoFactory, undefined, () => '');
@@ -1091,25 +1091,25 @@ describe('Stale mesh history hint', () => {
       tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('clean mesh output');
-    expect(result.stdout.systemMessage).not.toContain('git mesh history');
+    expect(result.stdout.systemMessage).toContain('clean span output');
+    expect(result.stdout.systemMessage).not.toContain('git span history');
   });
 
-  it('hints only the stale subset when several meshes are surfaced', async () => {
+  it('hints only the stale subset when several spans are surfaced', async () => {
     const absFilePath = join(repo.root, 'mixed.ts');
     const relPath = 'mixed.ts';
-    const staleMesh = 'billing/stale';
-    const cleanMesh = 'billing/fresh';
+    const staleSpan = 'billing/stale';
+    const cleanSpan = 'billing/fresh';
     const { executor, setResponse } = createFakeExecutor();
     setResponse(
       `--porcelain ${relPath}`,
-      [porcelainLine(staleMesh, relPath, 5, 20), porcelainLine(cleanMesh, relPath, 5, 20)].join('\n')
+      [porcelainLine(staleSpan, relPath, 5, 20), porcelainLine(cleanSpan, relPath, 5, 20)].join('\n')
     );
     // toSurface is sorted, so the render call key is "fresh stale".
-    setResponse(`${cleanMesh} ${staleMesh}`, 'both meshes output');
+    setResponse(`${cleanSpan} ${staleSpan}`, 'both spans output');
     const { memoFactory } = createMemoryMemoFactory();
-    // Only staleMesh drifts.
-    const handler = makeHandler(executor, memoFactory, undefined, () => porcelainLine(staleMesh, relPath, 5, 20));
+    // Only staleSpan drifts.
+    const handler = makeHandler(executor, memoFactory, undefined, () => porcelainLine(staleSpan, relPath, 5, 20));
 
     const input = baseInput({
       cwd: repo.root,
@@ -1118,20 +1118,20 @@ describe('Stale mesh history hint', () => {
     });
     const result = toHookResult(await handler(input as never, { logger }));
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
-    expect(ctx).toContain(`git mesh history ${staleMesh}`);
-    expect(ctx).not.toContain(`git mesh history ${cleanMesh}`);
+    expect(ctx).toContain(`git span history ${staleSpan}`);
+    expect(ctx).not.toContain(`git span history ${cleanSpan}`);
   });
 
   it('falls back to the plain block when the stale probe throws', async () => {
     const absFilePath = join(repo.root, 'staleerr.ts');
     const relPath = 'staleerr.ts';
-    const meshName = 'billing/err';
+    const spanName = 'billing/err';
     const { executor, setResponse } = createFakeExecutor();
-    setResponse(`--porcelain ${relPath}`, porcelainLine(meshName, relPath, 5, 20));
-    setResponse(meshName, 'err mesh output');
+    setResponse(`--porcelain ${relPath}`, porcelainLine(spanName, relPath, 5, 20));
+    setResponse(spanName, 'err span output');
     const { memoFactory } = createMemoryMemoFactory();
     const throwingStale: StaleExecutor = () => {
-      throw new Error('git mesh stale failed');
+      throw new Error('git span stale failed');
     };
     const handler = makeHandler(executor, memoFactory, undefined, throwingStale);
 
@@ -1141,7 +1141,7 @@ describe('Stale mesh history hint', () => {
       tool_input: { file_path: absFilePath, offset: 10, limit: 5 }
     });
     const result = toHookResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toContain('err mesh output');
-    expect(result.stdout.systemMessage).not.toContain('git mesh history');
+    expect(result.stdout.systemMessage).toContain('err span output');
+    expect(result.stdout.systemMessage).not.toContain('git span history');
   });
 });

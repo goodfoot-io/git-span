@@ -1,5 +1,5 @@
 {
-  "name": "git-mesh",
+  "name": "git-span",
   "owner": {
     "name": "goodfoot",
     "url": "https://github.com/goodfoot-io"
@@ -9,14 +9,14 @@
   },
   "plugins": [
     {
-      "name": "git-mesh",
-      "source": "./plugins/git-mesh",
+      "name": "git-span",
+      "source": "./plugins/git-span",
       "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
       "version": "1.0.131",
       "category": "git",
       "keywords": [
         "git",
-        "mesh",
+        "span",
         "dependencies",
         "semantic",
         "coupling",

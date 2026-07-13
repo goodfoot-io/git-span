@@ -1,0 +1,3 @@
+packages/git-span/src/cli/mod.rs#L38-L181 rk64:bb1664f1fc09dc79
+
+Clap configuration and dispatch in cli/mod.rs that the touchpoints page names as the primary source of truth for top-level git-span command behavior.

@@ -1,7 +1,0 @@
-# Path-scoped mesh suppression for the agent hooks.
-# Format: <gitignore-style path pattern> <comma-separated mesh slug prefixes>
-# See packages/agent-hooks/README.md for the full grammar.
-
-# Wiki meshes anchor prose and add little while browsing source — hide them
-# for anchors anywhere under packages/.
-packages wiki
