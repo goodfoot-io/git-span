@@ -1,4 +1,4 @@
-packages/git-span/tests/cases/cli_stale_human.rs#L248-L271 rk64:da700a0ffce7200e
-packages/git-span/tests/cases/cli_stale_renderers.rs#L318-L379 rk64:726e617f874f3d43
+packages/git-span/tests/cases/cli_stale_human.rs#L248-L271 rk64:3ee555ed6749d3c0
+packages/git-span/tests/cases/cli_stale_renderers.rs#L318-L379 rk64:9c6d11613aa6d26d
 
 Test suite validating that positional path arguments in `git span stale` resolve correctly through the path-index and filter clean spans from drift reports across all output formats (human, JSON, porcelain, stat, patch).

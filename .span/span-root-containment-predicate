@@ -1,3 +1,3 @@
-packages/git-span/src/span_root.rs#L105-L163 rk64:bd07fc326242a1f7
+packages/git-span/src/span_root.rs#L105-L163 rk64:1bfd254aa1609279
 
 Span-root containment primitives: is_inside_span_root (equality or '{root}/' prefix, after trimming trailing / and leading ./, with a /-boundary guard against sibling-prefix false positives), the add-time reject_anchor_inside_span_root, and the read-time classify_interior_anchor that distinguishes a plain interior anchor from a '..'-traversal escape. Shared by add-time CLI validation, the stale/doctor interior-anchor scan, and stale --fix repair.

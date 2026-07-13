@@ -1,4 +1,4 @@
-packages/git-span/src/cli/history.rs#L1-L8 rk64:527d7e6aa7f5c064
-plugins/git-span/skills/git-span/sections/inspecting-spans.md#L106-L127 rk64:499f7ce7b57d5f69
+packages/git-span/src/cli/history.rs#L1-L8 rk64:84ae47364f11e745
+plugins/git-span/skills/git-span/sections/inspecting-spans.md#L106-L127 rk64:be3d2f86bfa20fd9
 
 Handbook documentation of the git span history subcommand behavior, which renders a chronological timeline of a span file's git history showing how anchors and the why prose evolved.

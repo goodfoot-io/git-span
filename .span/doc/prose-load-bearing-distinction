@@ -1,4 +1,3 @@
-plugins/git-span/agents/expert.md#L17-L17 rk64:3f802d742bd811a9
-plugins/git-span/skills/git-span/sections/creating-a-span.md#L22-L26 rk64:938482fb95fe56b7
+plugins/git-span/skills/git-span/sections/creating-a-span.md#L22-L26 rk64:3ccd2b943158f502
 
-Defines load-bearing prose (by content: someone reads and acts; by corpus: kept in sync) to distinguish when prose warrants a span; the dispatch task block operationalizes this distinction by naming the concrete actions (repair/retire/reshape stale, create for uncovered coherent subsystems, expand/prune related) the forked review session performs when prose or prose-linked code drifts.
+Defines load-bearing prose (by content: someone reads and acts on it; by corpus: its freshness against the code is a maintained contract) to distinguish when prose warrants a span.
