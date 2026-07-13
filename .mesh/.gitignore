@@ -1,2 +1,3 @@
 *.log
 manual-hook-dispatch-*.sh
+.manual-run
