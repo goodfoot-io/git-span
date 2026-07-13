@@ -95,7 +95,7 @@ jobs:
       - name: Publish platform packages
         run: |
           for pkg in git-span-linux-x64 git-span-linux-arm64 git-span-darwin-x64 git-span-darwin-arm64 git-span-win32-x64; do
-            echo "Publishing @goodfoot/$pkg..."
+            echo "Publishing $pkg..."
             cd npm/$pkg
             npm publish --access public --provenance
             cd ../..

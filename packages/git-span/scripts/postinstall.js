@@ -26,10 +26,10 @@ function fail(message, error) {
 function buildFromSource(destBinary, binaryName) {
   const cargoToml = path.join(__dirname, '..', 'Cargo.toml');
   if (!fs.existsSync(cargoToml)) {
-    fail(`@goodfoot/git-span: Binary not found at ${destBinary} and no Cargo.toml available to build from source.`);
+    fail(`git-span: Binary not found at ${destBinary} and no Cargo.toml available to build from source.`);
   }
 
-  console.log(`@goodfoot/git-span: Prebuilt binary missing; building from source via cargo...`);
+  console.log(`git-span: Prebuilt binary missing; building from source via cargo...`);
 
   const targetDir = path.join(__dirname, '..', 'target-cache', 'build');
   const result = spawnSync('cargo', ['build', '--release', '--manifest-path', cargoToml], {
@@ -39,14 +39,14 @@ function buildFromSource(destBinary, binaryName) {
 
   if (result.error || result.status !== 0) {
     fail(
-      `@goodfoot/git-span: Failed to build binary from source. Install Rust/cargo or publish the platform package.`,
+      `git-span: Failed to build binary from source. Install Rust/cargo or publish the platform package.`,
       result.error
     );
   }
 
   const builtBinary = path.join(targetDir, 'release', binaryName);
   if (!fs.existsSync(builtBinary)) {
-    fail(`@goodfoot/git-span: cargo build succeeded but binary not found at ${builtBinary}.`);
+    fail(`git-span: cargo build succeeded but binary not found at ${builtBinary}.`);
   }
 
   fs.mkdirSync(path.dirname(destBinary), { recursive: true });
@@ -56,7 +56,7 @@ function buildFromSource(destBinary, binaryName) {
 
 function isInsideSourceTree() {
   // Walk up from this script looking for a `.git` entry. If found, this is
-  // the @goodfoot/git-span source repo (developer doing `yarn install`), not
+  // the git-span source repo (developer doing `yarn install`), not
   // a consumer install under node_modules. Mutating the tracked `bin/git-span`
   // shim in that case dirties the working tree and — if committed — ships a
   // dangling symlink in the published tarball (see git-span-v1.0.25 regression).
@@ -73,7 +73,7 @@ function isInsideSourceTree() {
 
 function main() {
   if (isInsideSourceTree()) {
-    console.log('@goodfoot/git-span: postinstall skipped (running inside source tree).');
+    console.log('git-span: postinstall skipped (running inside source tree).');
     return;
   }
 
@@ -81,17 +81,17 @@ function main() {
   const arch = ARCH_MAP[process.arch];
 
   if (!platform || !arch) {
-    fail(`@goodfoot/git-span: No prebuilt binary available for ${process.platform}-${process.arch}.`);
+    fail(`git-span: No prebuilt binary available for ${process.platform}-${process.arch}.`);
   }
 
-  const packageName = `@goodfoot/git-span-${platform}-${arch}`;
+  const packageName = `git-span-${platform}-${arch}`;
   const sourceBinaryName = process.platform === 'win32' ? 'git-span.exe' : 'git-span';
 
   let packageDir;
   try {
     packageDir = path.dirname(require.resolve(`${packageName}/package.json`));
   } catch (error) {
-    fail(`@goodfoot/git-span: Required platform package ${packageName} not found.`, error);
+    fail(`git-span: Required platform package ${packageName} not found.`, error);
   }
 
   const sourceBinary = path.join(packageDir, 'bin', sourceBinaryName);
@@ -128,7 +128,7 @@ function main() {
         fs.copyFileSync(sourceBinary, binGitSpan);
       } catch (copyError) {
         fail(
-          `@goodfoot/git-span: Could not install binary from ${sourceBinary} to ${binGitSpan}.`,
+          `git-span: Could not install binary from ${sourceBinary} to ${binGitSpan}.`,
           new Error(`link failed: ${linkError.message}\ncopy failed: ${copyError.message}`)
         );
       }
@@ -138,7 +138,7 @@ function main() {
     fs.chmodSync(binGitSpan, 0o755);
   }
 
-  console.log(`@goodfoot/git-span: Installed git-span from ${packageName}`);
+  console.log(`git-span: Installed git-span from ${packageName}`);
 }
 
 main();

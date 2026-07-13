@@ -1,5 +1,5 @@
 {
-  "name": "@goodfoot/git-span",
+  "name": "git-span",
   "version": "1.0.131",
   "bin": "bin/git-span.exe",
   "man": [
@@ -24,11 +24,11 @@
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {
-    "@goodfoot/git-span-darwin-arm64": "1.0.131",
-    "@goodfoot/git-span-darwin-x64": "1.0.131",
-    "@goodfoot/git-span-linux-arm64": "1.0.131",
-    "@goodfoot/git-span-linux-x64": "1.0.131",
-    "@goodfoot/git-span-win32-x64": "1.0.131"
+    "git-span-darwin-arm64": "1.0.131",
+    "git-span-darwin-x64": "1.0.131",
+    "git-span-linux-arm64": "1.0.131",
+    "git-span-linux-x64": "1.0.131",
+    "git-span-win32-x64": "1.0.131"
   },
   "repository": {
     "type": "git",

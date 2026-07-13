@@ -8,11 +8,11 @@ binaries and copies each one into the matching package under `npm/`.
 
 | Platform | Architecture | Rust Target Triple | NPM Package |
 | --- | --- | --- | --- |
-| Linux | x64 | `x86_64-unknown-linux-musl` | `@goodfoot/git-span-linux-x64` |
-| Linux | arm64 | `aarch64-unknown-linux-musl` | `@goodfoot/git-span-linux-arm64` |
-| macOS | x64 | `x86_64-apple-darwin` | `@goodfoot/git-span-darwin-x64` |
-| macOS | arm64 | `aarch64-apple-darwin` | `@goodfoot/git-span-darwin-arm64` |
-| Windows | x64 | `x86_64-pc-windows-msvc` | `@goodfoot/git-span-win32-x64` |
+| Linux | x64 | `x86_64-unknown-linux-musl` | `git-span-linux-x64` |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `git-span-linux-arm64` |
+| macOS | x64 | `x86_64-apple-darwin` | `git-span-darwin-x64` |
+| macOS | arm64 | `aarch64-apple-darwin` | `git-span-darwin-arm64` |
+| Windows | x64 | `x86_64-pc-windows-msvc` | `git-span-win32-x64` |
 
 Linux release binaries use musl targets so they do not depend on the target
 system's glibc version. The npm package names intentionally stay generic
@@ -21,7 +21,7 @@ binary inside each package is built for musl.
 
 ## Install Flow
 
-`@goodfoot/git-span` declares the platform packages as optional dependencies.
+`git-span` declares the platform packages as optional dependencies.
 During install, `packages/git-span/scripts/postinstall.js` maps
 `process.platform` and `process.arch` to the matching package, then links or
 copies that package's native binary to `packages/git-span/bin/git-span`.
@@ -84,7 +84,7 @@ for scripted builds. The `target-cache/` path above is specific to the release w
 which runs bare `cargo` and uses the `.cargo/config.toml` fallback.)
 
 The publish job uploads the platform packages first, then publishes the
-`@goodfoot/git-span` meta-package.
+`git-span` meta-package.
 
 ## Local Builds
 

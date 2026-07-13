@@ -7,7 +7,7 @@ code they describe.
 
 The monorepo ships:
 
-- **`@goodfoot/git-span`** - the Rust CLI and npm wrapper
+- **`git-span`** - the Rust CLI and npm wrapper
 - **`goodfoot.git-span`** - a lightweight VS Code extension that manages the
   packaged `git-span` binary and exposes command entry points
 
@@ -55,8 +55,10 @@ exit 1 when drift is found, exit 0 with `--no-exit-code`. The
 
 ## VS Code Extension
 
-The VS Code extension is named `git-span` and publishes as
-`goodfoot.git-span`. For now it is a lightweight command and binary manager:
+The VS Code extension workspace is named `git-span-extension` (to avoid
+colliding with the CLI's `git-span` npm package name) but publishes to the
+Marketplace as `goodfoot.git-span`. For now it is a lightweight command and
+binary manager:
 
 - resolves the packaged `git-span` executable for the current platform
 - installs or retries the managed binary when needed
@@ -70,7 +72,7 @@ It does not register a custom editor, Markdown renderer, search UI, or webview.
 ```text
 .
 ├── packages/
-│   ├── git-span/       # @goodfoot/git-span Rust CLI
+│   ├── git-span/       # git-span Rust CLI
 │   └── extension/      # goodfoot.git-span VS Code extension
 ├── npm/
 │   └── git-span-*/     # platform-specific binary distribution packages

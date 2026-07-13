@@ -1,7 +1,7 @@
 {
-  "name": "@goodfoot/git-span-darwin-arm64",
+  "name": "git-span-darwin-arm64",
   "version": "1.0.131",
-  "description": "Platform-specific binary for @goodfoot/git-span",
+  "description": "Platform-specific binary for git-span",
   "license": "MIT",
   "os": [
     "darwin"

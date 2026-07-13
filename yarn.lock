@@ -1048,30 +1048,6 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-span-darwin-arm64@npm:1.0.131, @goodfoot/git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"
-  languageName: unknown
-  linkType: soft
-
-"@goodfoot/git-span-darwin-x64@npm:1.0.131, @goodfoot/git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span-darwin-x64@workspace:npm/git-span-darwin-x64"
-  languageName: unknown
-  linkType: soft
-
-"@goodfoot/git-span-linux-arm64@npm:1.0.131, @goodfoot/git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span-linux-arm64@workspace:npm/git-span-linux-arm64"
-  languageName: unknown
-  linkType: soft
-
-"@goodfoot/git-span-linux-x64@npm:1.0.131, @goodfoot/git-span-linux-x64@workspace:npm/git-span-linux-x64":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span-linux-x64@workspace:npm/git-span-linux-x64"
-  languageName: unknown
-  linkType: soft
-
 "@goodfoot/git-span-monorepo@workspace:.":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-span-monorepo@workspace:."
@@ -1083,37 +1059,6 @@ __metadata:
     puppeteer-core: "npm:^24.42.0"
     rkyv-js: "github:cometkim/rkyv-js"
     typescript: "npm:^5.9.3"
-  languageName: unknown
-  linkType: soft
-
-"@goodfoot/git-span-win32-x64@npm:1.0.131, @goodfoot/git-span-win32-x64@workspace:npm/git-span-win32-x64":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span-win32-x64@workspace:npm/git-span-win32-x64"
-  languageName: unknown
-  linkType: soft
-
-"@goodfoot/git-span@workspace:packages/git-span":
-  version: 0.0.0-use.local
-  resolution: "@goodfoot/git-span@workspace:packages/git-span"
-  dependencies:
-    "@goodfoot/git-span-darwin-arm64": "npm:1.0.131"
-    "@goodfoot/git-span-darwin-x64": "npm:1.0.131"
-    "@goodfoot/git-span-linux-arm64": "npm:1.0.131"
-    "@goodfoot/git-span-linux-x64": "npm:1.0.131"
-    "@goodfoot/git-span-win32-x64": "npm:1.0.131"
-  dependenciesMeta:
-    "@goodfoot/git-span-darwin-arm64":
-      optional: true
-    "@goodfoot/git-span-darwin-x64":
-      optional: true
-    "@goodfoot/git-span-linux-arm64":
-      optional: true
-    "@goodfoot/git-span-linux-x64":
-      optional: true
-    "@goodfoot/git-span-win32-x64":
-      optional: true
-  bin:
-    git-span: bin/git-span.exe
   languageName: unknown
   linkType: soft
 
@@ -4097,9 +4042,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-span@workspace:packages/extension":
+"git-span-darwin-arm64@npm:1.0.131, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
   version: 0.0.0-use.local
-  resolution: "git-span@workspace:packages/extension"
+  resolution: "git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"
+  languageName: unknown
+  linkType: soft
+
+"git-span-darwin-x64@npm:1.0.131, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
+  version: 0.0.0-use.local
+  resolution: "git-span-darwin-x64@workspace:npm/git-span-darwin-x64"
+  languageName: unknown
+  linkType: soft
+
+"git-span-extension@workspace:packages/extension":
+  version: 0.0.0-use.local
+  resolution: "git-span-extension@workspace:packages/extension"
   dependencies:
     "@biomejs/biome": "npm:^2.3.13"
     "@types/mocha": "npm:^10.0.10"
@@ -4114,6 +4071,49 @@ __metadata:
     mocha: "npm:^11.7.5"
     tsx: "npm:^4.21.0"
     typescript: "npm:^5.9.3"
+  languageName: unknown
+  linkType: soft
+
+"git-span-linux-arm64@npm:1.0.131, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
+  version: 0.0.0-use.local
+  resolution: "git-span-linux-arm64@workspace:npm/git-span-linux-arm64"
+  languageName: unknown
+  linkType: soft
+
+"git-span-linux-x64@npm:1.0.131, git-span-linux-x64@workspace:npm/git-span-linux-x64":
+  version: 0.0.0-use.local
+  resolution: "git-span-linux-x64@workspace:npm/git-span-linux-x64"
+  languageName: unknown
+  linkType: soft
+
+"git-span-win32-x64@npm:1.0.131, git-span-win32-x64@workspace:npm/git-span-win32-x64":
+  version: 0.0.0-use.local
+  resolution: "git-span-win32-x64@workspace:npm/git-span-win32-x64"
+  languageName: unknown
+  linkType: soft
+
+"git-span@workspace:packages/git-span":
+  version: 0.0.0-use.local
+  resolution: "git-span@workspace:packages/git-span"
+  dependencies:
+    git-span-darwin-arm64: "npm:1.0.131"
+    git-span-darwin-x64: "npm:1.0.131"
+    git-span-linux-arm64: "npm:1.0.131"
+    git-span-linux-x64: "npm:1.0.131"
+    git-span-win32-x64: "npm:1.0.131"
+  dependenciesMeta:
+    git-span-darwin-arm64:
+      optional: true
+    git-span-darwin-x64:
+      optional: true
+    git-span-linux-arm64:
+      optional: true
+    git-span-linux-x64:
+      optional: true
+    git-span-win32-x64:
+      optional: true
+  bin:
+    git-span: bin/git-span.exe
   languageName: unknown
   linkType: soft
 

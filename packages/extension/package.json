@@ -1,5 +1,5 @@
 {
-  "name": "git-span",
+  "name": "git-span-extension",
   "displayName": "Git Span",
   "description": "Exposes the Git Span CLI in VS Code.",
   "version": "1.0.131",
