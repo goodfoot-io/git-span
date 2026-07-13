@@ -98,7 +98,7 @@ git span delete <name>                    # remove .span/<name>
 git add .span && git commit -m "Retire <name> span"
 ```
 
-To restore a prior correct span state, use ordinary git history — the span is a tracked file: `git checkout <commit-ish> -- .span/<name>` (then commit), or `git revert` the commit that broke it. `git span move <old> <new>` renames a span; see `./command-reference.md` § "Structural".
+To restore a prior correct span state, use ordinary git history — the span is a tracked file: `git checkout <commit-ish> -- .span/<name>` (then commit), or `git revert` the commit that broke it. Rename a span by moving the file with `git mv .span/<old> .span/<new>` and committing.
 
 ## Prose spans drift more often than code
 
@@ -117,8 +117,8 @@ A hook or agent that runs `git span stale` on every turn and reacts to drift
 must commit the anchored source together with (or before) the span re-anchor —
 never re-anchor-and-stage-only while deliberately deferring the source commit
 to a human. `stale` has no notion of "already re-anchored to match the current
-worktree, just waiting on a source commit": every read mode (`--worktree`,
-`--staged`, `--head`) reports the same drifted status for as long as the
+worktree, just waiting on a source commit": it always resolves all three layers
+(HEAD, Index, Worktree), and reports the same drifted status for as long as the
 source stays uncommitted, because whichever layer the anchor is repointed to,
 some other layer still disagrees. An automation that is only allowed to
 re-anchor and stage — not commit the source — cannot reach `FRESH` by

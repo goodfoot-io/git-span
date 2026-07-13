@@ -73,5 +73,5 @@ git span add <name> public/claude/codex
 
 A setup audit, not a semantic-drift check. Its only
 job is to confirm every visible span file under the span root parses; it reports
-`ERROR — span <name> failed to parse: …` for any that don't. `--strict`
-promotes findings to a non-zero exit. Run it when local behavior looks wrong.
+`ERROR — span <name> failed to parse: …` for any that don't. Run it when local
+behavior looks wrong.

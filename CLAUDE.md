@@ -111,7 +111,7 @@ git add .span && git commit -m "Wire checkout to charge API"
 
 # Later ...
 
-# Run `git span stale [--patch] [glob]` and carefully examine the files in each span to identify drift
+# Run `git span stale [glob]` and carefully examine the files in each span to identify drift
 git span stale
 ```
 

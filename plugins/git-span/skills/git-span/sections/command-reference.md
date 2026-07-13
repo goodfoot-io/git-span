@@ -1,7 +1,7 @@
 # Command reference
 
 A span is an ordinary tracked plain-text file under the span root (default
-`.span/<name>`, overridable with `--span-dir`, `GIT_SPAN_DIR`, or
+`.span/<name>`, overridable with `GIT_SPAN_DIR` or
 `git config git-span.dir`). `git span add` / `remove` / `why` edit that file
 directly; `git add .span && git commit` persists it. There is no staging area,
 no span refs, and no `git span commit` step.
@@ -19,7 +19,6 @@ These are valid on every subcommand (and on the bare `git span` form):
 
 ```bash
 --perf                  # emit perf timings to stderr (or GIT_SPAN_PERF=1)
---span-dir <SPAN_DIR>   # span root; overrides GIT_SPAN_DIR and git config git-span.dir
 ```
 
 ## Reading
@@ -27,18 +26,15 @@ These are valid on every subcommand (and on the bare `git span` form):
 ```bash
 git span                                             # list every span
 git span <name>                                      # show one span (= git span show <name>)
-git span show <name> [--oneline] [--at <commit-ish>]
+git span show <name>
 git span list [<target>...] [--porcelain] [--oneline]
-git span list [<target>...] [--search <regex>] [--offset <n>] [--limit <n>]
-git span list --porcelain --batch                    # read path filters from stdin
-git span stale [<target>...] [--format human|porcelain|json|junit|github-actions]
-git span stale [<target>...] [--oneline|--stat|--patch] [--since <commit-ish>]
-git span stale [<target>...] [--head|--staged|--worktree]
-git span stale [<target>...] [--no-worktree] [--no-index]
-git span stale [<target>...] [--ignore-unavailable] [--no-exit-code]
+git span list [<target>...] [--offset <n>] [--limit <n>]
+git span list --porcelain
+git span stale [<target>...] [--format human|porcelain|json]
+git span stale [<target>...] [--no-exit-code]
 git span stale [<target>...] [--fix]                 # re-anchor in place; resolve .span/ conflicts
 git span tree <glob>... [-d|--depth <n>] [--format human|json]
-git span history <name> [--format xml|json] [--since <commit-ish>] [-n|--limit <count>]
+git span history <name> [--format xml|json] [-n|--limit <count>]
 ```
 
 Each `<target>` is one of: a span name, a file path, or — for `list` only — a
@@ -58,13 +54,9 @@ Silent exit-0 from `git span stale` (and `list`) means the queried scope is
 clean. See `./reading-stale-output.md` § "No-news-is-good-news".
 
 `git span show` emits the span file's content (name, why, anchors, and the
-`[config]` block). `--at <commit-ish>` shows the span as it existed in the git
-tree at a past commit — ordinary git history, because the span is a tracked file.
-
-`git span stale` read-mode flags select which layer the live content is read
-from: `--head` (HEAD only), `--staged` (index over HEAD), `--worktree`
-(the default — worktree over index over HEAD). `--no-worktree` / `--no-index`
-drop a layer.
+`[config]` block). See `./inspecting-spans.md` § "Historical state" for how to
+read a span at a past commit — ordinary git history, because the span is a
+tracked file.
 
 `git span tree <glob>...` traces blast radius: it renders a clique-grouped
 impact tree rooted at the matched anchor paths, expanding outward through span
@@ -89,8 +81,7 @@ json` emits the same structure as nested
 git span add <name> <anchor>... [--at <commit-ish>]   # write anchors into .span/<name>
 git span remove <name> <anchor>...                    # remove anchors from .span/<name>
 git span why <name>                                   # print current why
-git span why <name> [--at <commit-ish>]               # print historical why
-git span why <name> [-m <text>|-F <file>|--edit]      # write a new why into .span/<name>
+git span why <name> [-m <text>]                       # write a new why into .span/<name>
 git add .span && git commit                           # persist the edits
 ```
 
@@ -129,11 +120,11 @@ versioned and shared by every consumer of the span exactly like the anchors.
 
 ```bash
 git span delete <name>            # remove .span/<name>
-git span move   <old> <new>       # rename a span (<new> must not already exist)
 ```
 
-These edit the working tree (`git rm` / rename of the span file); commit the
-result with `git add .span && git commit`. To restore a prior span state, use
+This removes the span file from the working tree; commit the result with
+`git add .span && git commit`. To rename a span, use
+`git mv .span/<old> .span/<new>` and commit. To restore a prior span state, use
 ordinary git — `git checkout <commit-ish> -- .span/<name>` or `git revert`.
 
 ## Sync and maintenance
@@ -142,7 +133,7 @@ Spans are tracked files: they fetch, push, and pull with ordinary
 `git fetch` / `git push` / `git pull`. There are no span refspecs.
 
 ```bash
-git span doctor [--strict]        # audit the local span setup
+git span doctor                   # audit the local span setup
 ```
 
 ## Merge conflict resolution
@@ -212,6 +203,6 @@ with 2+ anchors on one file.
 A span name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a span name (so the bare `git span <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
-`delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
-`list`, `help`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`,
+`delete`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
+`list`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`,
 `history`.

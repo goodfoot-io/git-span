@@ -5,13 +5,13 @@
 ## Reasons
 
 - **`LfsNotFetched`** — LFS pointer resolves, real bytes not in local cache.
-  Fix: `git lfs fetch`, or `--ignore-unavailable`.
+  Fix: `git lfs fetch`.
 - **`LfsNotInstalled`** — No `git-lfs` binary on PATH.
-  Fix: install `git-lfs`, or `--ignore-unavailable`.
+  Fix: install `git-lfs`.
 - **`PromisorMissing`** — Partial clone; blob not fetched from the promisor remote.
-  Fix: `git fetch` with an unfiltered spec, or `--ignore-unavailable`.
+  Fix: `git fetch` with an unfiltered spec.
 - **`SparseExcluded`** — Sparse-checkout excludes the path.
-  Fix: adjust the sparse cone, or `--ignore-unavailable`.
+  Fix: adjust the sparse cone.
 - **`FilterFailed`** — A custom smudge/clean filter returned non-zero.
   Fix: repair the filter driver; re-run.
 - **`IoError`** — Local read failed for reasons unrelated to the above (permissions, missing file, etc.).
@@ -28,22 +28,6 @@ sparse-checkout cone (`git sparse-checkout list`) or missing only its blob in a
 partial clone, treat it as this section's guidance (adjust the cone / fetch
 unfiltered) rather than `DELETED`'s. `LfsNotFetched`, `LfsNotInstalled`,
 `FilterFailed`, and `IoError` are all live and behave as documented.
-
-## `--ignore-unavailable`
-
-Downgrades only `CONTENT_UNAVAILABLE` findings so they print without failing exit code. Real drift findings (`CHANGED`, `MOVED`, terminal statuses other than `CONTENT_UNAVAILABLE`) still fail as usual.
-
-```bash
-git span stale --ignore-unavailable
-```
-
-Appropriate use:
-- Fresh CI clones where `git lfs fetch` has not run yet.
-- Partial clones where a blob might not be materialized.
-- Advisory reports where unavailable content should be counted but not block.
-
-Inappropriate use:
-- Silencing a finding you don't want to debug. Fix the fetch/install/sparse/filter problem instead.
 
 ## Why no auto-fetch
 

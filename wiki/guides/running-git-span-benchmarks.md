@@ -32,7 +32,7 @@ Per-operation cells: `list`, `tree`, `show`, `history`, `stale-cold`, `stale-war
 
 ### The byte-identical correctness oracle
 
-Before timing each cell, the oracle captures the command's stdout twice against the same clone — once with the cache disabled (`GIT_SPAN_CACHE_V2=0`, the genuine ground truth) and once with the cache live — and asserts the two byte streams are identical, across **all five `stale` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
+Before timing each cell, the oracle captures the command's stdout twice against the same clone — once with the cache disabled (`GIT_SPAN_CACHE_V2=0`, the genuine ground truth) and once with the cache live — and asserts the two byte streams are identical, across **all three `stale` formats** (human, porcelain, json). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
 
 ### Per-op budgets and the no-regression rule
 

@@ -20,7 +20,7 @@ packages/git-span/src/span.rs#L1-L40 sha256:a9f2c310…
 A span name maps directly to a file path. Because a filesystem path cannot be
 both a file and a directory, two span names where one is a strict prefix of the
 other (`a/b` and `a/b/c`) collide; resolve by renaming one
-(`git span move <name> <name>/index`).
+(`git mv .span/<name> .span/<name>/index` and commit).
 
 ## Anchors
 

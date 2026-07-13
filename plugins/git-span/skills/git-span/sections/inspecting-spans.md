@@ -24,17 +24,16 @@ git span list 'src/billing/**/*.ts'             # glob (quote to defer to git sp
 
 Each argument is tried as a span name first when it has the span-name shape (kebab-case segments, optionally separated by `/`); it falls through to path-index lookup when no span matches, then to a worktree existence check. A target that resolves to no spans is fine on its own — the command exits 0. The command only errors when a target names something that doesn't exist (missing file, missing span name, or a literal glob the shell didn't expand). The same rule applies to `git span stale [<target>...]`.
 
-## Narrow by name or content with `--search`
+## Narrow by span name prefix
 
-When the scope is a naming convention or a phrase rather than a path, filter instead of enumerating:
+When the scope is a naming convention rather than a path, filter by span name:
 
 ```bash
-git span list --search 'billing/payments/'   # prefix scan over span names
-git span list --search 'parser'              # case-insensitive match against name, why, or anchor address
+git span list billing/payments/              # prefix scan over span names
 git span list --offset 10 --limit 10         # pagination (by span, after filters)
 ```
 
-Bare `git span list` with no targets and no `--search` enumerates every span in the repo. Avoid it on real repos — prefer a path, glob, or `--search` filter. Use `--porcelain` (`name<TAB>path<TAB>start-end`) when piping into other tools.
+Bare `git span list` with no targets enumerates every span in the repo. Avoid it on real repos — prefer a path, glob, or prefix filter. Use `--porcelain` (`name<TAB>path<TAB>start-end`) when piping into other tools.
 
 Bare `git span` (no arguments) prints short help.
 
@@ -80,7 +79,6 @@ full flag list.
 
 ```bash
 git span <name>                   # full view (= git span show <name>)
-git span show <name> --oneline    # one line per anchor, no header
 ```
 
 `git span show` prints the span file's content: `name`, `message` (the why),
@@ -94,13 +92,11 @@ git span why <name>
 
 ## Historical state
 
-`--at` accepts any ordinary git commit-ish — the span is a tracked file, so this
-is just reading the file out of git history:
+Span history is read from the git tree at any past commit — the span is a
+tracked file, so this is just reading the file out of git history:
 
 ```bash
-git span show <name> --at HEAD~3
-git span show <name> --at <branch-or-tag-or-sha>
-git span why  <name> --at HEAD~5
+git show <commit-ish>:.span/<name>
 ```
 
 ## Walk span history
@@ -113,7 +109,7 @@ drifted. It omits no-op commits and reuses `stale`'s drift labels in `current`.
 ```bash
 git span history <name>                       # XML (default) — for reading
 git span history <name> --format json         # structured — for tooling
-git span history <name> [--since <commit-ish> | -n <count>]   # scope the walk
+git span history <name> [-n <count>]          # limit the walk
 ```
 
 - The XML is **not a parseable document** (no root, multiple top-level

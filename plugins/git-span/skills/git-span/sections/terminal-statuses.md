@@ -16,7 +16,7 @@ moved is not the same as one that vanished. Use `ls` (or `Read` for content) on
 each anchored path:
 
 ```bash
-git span <name> --oneline        # list anchor paths compactly
+git span <name>                  # list anchor paths
 ls path/to/file1 path/to/file2   # check existence
 ```
 

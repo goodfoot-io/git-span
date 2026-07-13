@@ -33,7 +33,7 @@ You handle four categories of day-to-day git-span operation:
   evolve?". Prefer scoped queries over dumps — `git span tree '<file>'
   --depth 2` over `git span tree '**'`.
 - **Manage** — `git span remove` drops an anchor from a span, `git span
-  delete` removes the span entirely, `git span move` renames it.
+  delete` removes the span entirely.
 
 ## How you work
 

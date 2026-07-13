@@ -26,12 +26,8 @@ The same anchor can appear twice when two layers both differ — e.g. a file wit
 one edit `git add`-ed (src=I) and another edit left unstaged (src=W). That's the
 layering doing its job, not a duplicate.
 
-Select or peel layers:
-- `--head` resolves against HEAD only.
-- `--staged` resolves against the index over HEAD (no worktree).
-- `--worktree` is the default (worktree over index over HEAD), named explicitly.
-- `--no-worktree` drops W findings; `--no-index` drops I findings.
-- HEAD is always on — no flag turns it off.
+All three layers — HEAD, Index, Worktree — are always resolved. There is no
+flag to peel or select individual layers.
 
 ## Re-anchoring silences a finding
 
@@ -48,8 +44,7 @@ Non-zero if any of:
 - A terminal status (`DELETED`, `MERGE_CONFLICT`, `SUBMODULE`, `CONTENT_UNAVAILABLE`) isn't suppressed.
 - A positional `<target>` names a referent that doesn't exist (missing file, missing span name, unmatched literal glob). Stderr in that case is `git span stale: file not found: '<target>'`.
 
-`--no-exit-code` forces exit 0 regardless of findings. `--ignore-unavailable`
-downgrades `CONTENT_UNAVAILABLE` only.
+`--no-exit-code` forces exit 0 regardless of findings.
 
 ## No-news-is-good-news
 
@@ -69,8 +64,6 @@ silently. Only a missing referent (see above) drives a non-zero exit.
 ```bash
 git span stale --format porcelain
 git span stale --format json
-git span stale --format junit
-git span stale --format github-actions
 ```
 
 ### JSON schema (schema_version: 2)
