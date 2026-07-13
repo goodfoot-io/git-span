@@ -19,24 +19,6 @@ use support::TestRepo;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// True when `s` contains a commit-sha drift locus of the form
-/// `changed in <>=7 hex chars>` (the ref-backed attribution that the
-/// file-backed model no longer emits). The layer phrase
-/// "changed in the working tree" is NOT a sha locus.
-fn regex_lite_changed_in_sha(s: &str) -> bool {
-    let needle = "changed in ";
-    let mut from = 0;
-    while let Some(pos) = s[from..].find(needle) {
-        let after = &s[from + pos + needle.len()..];
-        let hex_run = after.chars().take_while(|c| c.is_ascii_hexdigit()).count();
-        if hex_run >= 7 {
-            return true;
-        }
-        from += pos + needle.len();
-    }
-    false
-}
-
 /// Seed a span anchoring `file.txt#L1-L5` and commit it, returning the anchor
 /// sha recorded in the span commit.
 fn seed_span(repo: &TestRepo, span: &str, file: &str, start: u32, end: u32) -> Result<()> {
@@ -131,47 +113,11 @@ fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
 // Row 3: changed in the index
 // ---------------------------------------------------------------------------
 
-#[test]
-
-fn staged_range_edit_labels_changed_in_index() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_span(&repo, "m", "file1.txt", 1, 5)?;
-
-    // Mutate lines 1-5 and stage the change (but don't commit).
-    repo.write_file(
-        "file1.txt",
-        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    repo.run_git(["add", "file1.txt"])?;
-
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
-    assert!(
-        stale.contains("changed in the index"),
-        "expected 'changed in the index'; stale=\n{stale}"
-    );
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Row 4: deleted in the index
 // ---------------------------------------------------------------------------
 
-#[test]
-
-fn staged_path_removal_labels_deleted_in_index() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_span(&repo, "m", "file1.txt", 1, 5)?;
-
-    // Stage the removal of the file.
-    repo.run_git(["rm", "file1.txt"])?;
-
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
-    assert!(
-        stale.contains("deleted in the index"),
-        "expected 'deleted in the index'; stale=\n{stale}"
-    );
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Row 5: changed in <sha>
@@ -298,79 +244,8 @@ fn anchored_path_absent_from_head_labels_deleted() -> Result<()> {
 // Precedence: worktree edit wins over index edit wins over HEAD drift
 // ---------------------------------------------------------------------------
 
-#[test]
-
-fn precedence_worktree_wins_over_index_and_head() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_span(&repo, "m", "file1.txt", 1, 5)?;
-
-    // Layer 1 (HEAD): commit a change to the anchored range.
-    repo.commit_file(
-        "file1.txt",
-        "HEAD_CHANGE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-        "head drift",
-    )?;
-
-    // Layer 2 (Index): stage another change on top.
-    repo.write_file(
-        "file1.txt",
-        "INDEX_CHANGE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    repo.run_git(["add", "file1.txt"])?;
-
-    // Layer 3 (Worktree): make an additional unstaged change.
-    repo.write_file(
-        "file1.txt",
-        "WORKTREE_CHANGE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-
-    // Worktree label must win.
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
-    assert!(
-        stale.contains("changed in the working tree"),
-        "worktree label must win; stale=\n{stale}"
-    );
-    assert!(
-        !stale.contains("changed in the index"),
-        "index label must not appear when worktree wins; stale=\n{stale}"
-    );
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Cross-surface consistency: stale, stale --patch, and show emit identical labels
 // ---------------------------------------------------------------------------
 
-#[test]
-
-fn stale_patch_and_show_emit_identical_label_text() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_span(&repo, "m", "file1.txt", 1, 5)?;
-
-    // File-backed model: an uncommitted working-tree edit drifts the
-    // anchor. The label is the plain status word (`changed`, no sha
-    // locus) and must read identically on `stale` and `stale --patch`.
-    repo.write_file(
-        "file1.txt",
-        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    // The file-backed label is the layer phrase ("changed in the
-    // working tree"), never a commit-sha locus ("changed in <hex>").
-    let sha_locus = regex_lite_changed_in_sha;
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
-    let patch = repo.span_stdout(["stale", "m", "--patch", "--no-exit-code"])?;
-
-    assert!(
-        stale.contains("changed") && !sha_locus(&stale),
-        "stale must contain plain 'changed' (no sha locus); stale=\n{stale}"
-    );
-    assert!(
-        patch.contains("changed") && !sha_locus(&patch),
-        "stale --patch must contain plain 'changed' (no sha locus); patch=\n{patch}"
-    );
-    assert!(
-        patch.contains("@@"),
-        "worktree drift must produce a unified diff; patch=\n{patch}"
-    );
-    Ok(())
-}

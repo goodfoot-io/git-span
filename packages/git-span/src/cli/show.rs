@@ -2,14 +2,11 @@
 
 use crate::cli::format;
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
-use crate::span::read::read_span_at_in;
 use crate::types::{AnchorExtent, SpanConfig};
 use crate::validation::validate_span_name_shape;
 use anyhow::Result;
-use regex::RegexBuilder;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::io::{self, BufRead};
 
 // ---------------------------------------------------------------------------
 // Listing pipeline types and helpers
@@ -210,85 +207,6 @@ pub fn merge_batch_filters(filters: &[BatchFilter]) -> (String, Option<Vec<(u32,
     (path, Some(ranges))
 }
 
-fn collect_filtered_porcelain_listings_from_catalog(
-    span_pairs: &[(String, crate::types::Span)],
-    target: &str,
-    staged_listings: Option<&[SpanListing]>,
-) -> Result<Vec<SpanListing>> {
-    let (path, range) = match BatchFilter::parse(target)? {
-        BatchFilter::Path(p) => (p, None),
-        BatchFilter::Ranged { path, start, end } => (path, Some((start, end))),
-    };
-
-    // Scan every visible span in the shared catalog for an anchor matching
-    // the requested (path, range).
-    let _ = staged_listings;
-    let mut listings = Vec::with_capacity(span_pairs.len());
-    for (name, span) in span_pairs {
-        let anchors: Vec<AnchorEntry> = span
-            .anchors
-            .iter()
-            .map(|(_id, anchor)| AnchorEntry {
-                path: anchor.path.clone(),
-                extent: anchor.extent,
-            })
-            .collect();
-        if anchors
-            .iter()
-            .any(|anchor| anchor_matches(anchor, &path, range))
-        {
-            listings.push(SpanListing {
-                name: name.clone(),
-                why: span.message.trim_end_matches('\n').to_string(),
-                anchors,
-            });
-        }
-    }
-
-    Ok(listings)
-}
-
-fn collect_staged_porcelain_listings(_repo: &gix::Repository) -> Result<Vec<SpanListing>> {
-    // File-backed model: no staging area, so no staged-only listings.
-    Ok(Vec::new())
-}
-
-fn anchor_matches(anchor: &AnchorEntry, path: &str, range: Option<(u32, u32)>) -> bool {
-    if anchor.path != path {
-        return false;
-    }
-    match (anchor.extent, range) {
-        (_, None) => true,
-        (AnchorExtent::WholeFile, Some(_)) => true,
-        (AnchorExtent::LineRange { start, end }, Some((query_start, query_end))) => {
-            start <= query_end && end >= query_start
-        }
-    }
-}
-
-fn apply_search(listings: &mut Vec<SpanListing>, re: &regex::Regex) {
-    listings.retain(|l| {
-        if re.is_match(&l.name) {
-            return true;
-        }
-        for line in l.why.lines() {
-            if re.is_match(line) {
-                return true;
-            }
-        }
-        for a in &l.anchors {
-            if re.is_match(&a.path) {
-                return true;
-            }
-            let addr = render_range_address(&a.path, a.extent);
-            if re.is_match(&addr) {
-                return true;
-            }
-        }
-        false
-    });
-}
-
 fn anchor_addr_plain(a: &AnchorEntry) -> String {
     match a.extent {
         AnchorExtent::LineRange { start, end } => format!("{}#L{start}-L{end}", a.path),
@@ -340,111 +258,6 @@ fn render_porcelain(page: &[SpanListing]) {
     }
 }
 
-fn run_list_batch_porcelain(repo: &gix::Repository, span_root: &str) -> Result<i32> {
-    let staged_listings = {
-        let _perf = crate::perf::span("list.batch-read-staged-spans");
-        collect_staged_porcelain_listings(repo)?
-    };
-    // Enumerate the full span catalog once for the whole batch, then filter
-    // the shared in-memory catalog per input path so total work scales as
-    // O(spans + paths) rather than O(spans × paths).
-    let span_pairs = {
-        let _perf = crate::perf::span("list.path-filter-scan");
-        crate::span::read::load_all_spans_in(repo, span_root)?.0
-    };
-    // File-backed model: every query line scans the same span files, so
-    // a span can match more than one query. Render each matched span's
-    // anchors once across the whole batch (dedup by name). A query that
-    // matches no span at all still prints the `no spans` sentinel; a
-    // query whose every match was already rendered prints nothing.
-    //
-    // Each stdin line is parsed into a `BatchFilter`. Multiple lines for
-    // the same path union their ranges before filtering so overlapping
-    // range inputs are collapsed to a single merged range check.
-    let stdin = io::stdin();
-    // Collect all lines first so we can group by path.
-    let mut filters_by_path: std::collections::HashMap<String, Vec<BatchFilter>> =
-        std::collections::HashMap::new();
-    let mut path_order: Vec<String> = Vec::new();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        let filter = BatchFilter::parse(line)?;
-        let path = filter.path().to_string();
-        if !filters_by_path.contains_key(&path) {
-            path_order.push(path.clone());
-        }
-        filters_by_path.entry(path).or_default().push(filter);
-    }
-
-    let mut seen: HashSet<String> = HashSet::new();
-    for path in &path_order {
-        let filters = filters_by_path.get(path).unwrap();
-        let (merged_path, merged_range) = merge_batch_filters(filters);
-
-        let mut listings: Vec<SpanListing> = match merged_range {
-            None => {
-                // Path-only: one catalog scan matches every anchor on the path.
-                collect_filtered_porcelain_listings_from_catalog(
-                    &span_pairs,
-                    &merged_path,
-                    Some(&staged_listings),
-                )?
-            }
-            Some(ref ranges) => {
-                // Individual ranged filters: scan once per range so disjoint
-                // ranges on the same path are not collapsed into a hull.
-                let mut all = Vec::new();
-                let mut seen_span: HashSet<String> = HashSet::new();
-                for (s, e) in ranges {
-                    let target = format!("{merged_path}#L{s}-L{e}");
-                    let batch = collect_filtered_porcelain_listings_from_catalog(
-                        &span_pairs,
-                        &target,
-                        Some(&staged_listings),
-                    )?;
-                    for listing in batch {
-                        if seen_span.insert(listing.name.clone()) {
-                            all.push(listing);
-                        }
-                    }
-                }
-                all
-            }
-        };
-
-        // For ranged filters, suppress whole-file anchors only on the
-        // filtered path — not on unrelated paths in matched spans.
-        if merged_range.is_some() {
-            for listing in &mut listings {
-                listing.anchors.retain(|a| match a.extent {
-                    AnchorExtent::WholeFile => a.path != merged_path,
-                    AnchorExtent::LineRange { .. } => true,
-                });
-            }
-            // Drop listings that became empty after suppressing whole-file anchors.
-            listings.retain(|l| !l.anchors.is_empty());
-        }
-
-        listings.sort_by(|a, b| a.name.cmp(&b.name));
-
-        if listings.is_empty() {
-            println!("no spans");
-        } else {
-            let fresh: Vec<SpanListing> = listings
-                .into_iter()
-                .filter(|l| seen.insert(l.name.clone()))
-                .collect();
-            render_porcelain(&fresh);
-        }
-    }
-
-    Ok(0)
-}
-
 // ---------------------------------------------------------------------------
 // TOML output helpers for `git span show`
 // ---------------------------------------------------------------------------
@@ -492,80 +305,33 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 NextStep::Prose("Resolve the merge conflict in the span file, then retry.".into()),
             ],
         };
-        if args.at.is_none() {
-            crate::span::read::read_span_in(repo, &args.name, span_root).map_err(|e| {
-                if matches!(e, crate::Error::SpanConflict(_)) {
-                    conflict_err(&args.name)
-                } else if matches!(e, crate::Error::SpanNotFound(_)) {
-                    CliError {
-                        subcommand: "show",
-                        summary: format!("no span named `{}`.", args.name),
-                        what_happened: format!("{}", e),
-                        next_steps: vec![NextStep::Bash("git span list".into())],
-                    }
-                } else {
-                    // The span file exists but failed to parse (or another
-                    // read error). Surface only the underlying error —
-                    // a "not found" summary would be misleading for a
-                    // span that exists. Matches what `list`/`stale` do.
-                    CliError {
-                        subcommand: "show",
-                        summary: format!("{}", e),
-                        what_happened: format!(
-                            "The span file for `{}` could not be read.",
-                            args.name
-                        ),
-                        next_steps: vec![NextStep::Bash(format!("git span doctor {}", args.name))],
-                    }
+        crate::span::read::read_span_in(repo, &args.name, span_root).map_err(|e| {
+            if matches!(e, crate::Error::SpanConflict(_)) {
+                conflict_err(&args.name)
+            } else if matches!(e, crate::Error::SpanNotFound(_)) {
+                CliError {
+                    subcommand: "show",
+                    summary: format!("no span named `{}`.", args.name),
+                    what_happened: format!("{}", e),
+                    next_steps: vec![NextStep::Bash("git span list".into())],
                 }
-            })?
-        } else {
-            read_span_at_in(repo, &args.name, args.at.as_deref(), span_root).map_err(|e| {
-                if matches!(e, crate::Error::SpanConflict(_)) {
-                    conflict_err(&args.name)
-                } else if matches!(e, crate::Error::SpanNotFound(_)) {
-                    CliError {
-                        subcommand: "show",
-                        summary: format!("no span named `{}`.", args.name),
-                        what_happened: format!("{}", e),
-                        next_steps: vec![NextStep::Bash("git span list".into())],
-                    }
-                } else {
-                    // The span file exists but failed to parse (or another
-                    // read error). Surface only the underlying error —
-                    // a "not found" summary would be misleading for a
-                    // span that exists. Matches what `list`/`stale` do.
-                    CliError {
-                        subcommand: "show",
-                        summary: format!("{}", e),
-                        what_happened: format!(
-                            "The span file for `{}` could not be read.",
-                            args.name
-                        ),
-                        next_steps: vec![NextStep::Bash(format!("git span doctor {}", args.name))],
-                    }
-                }
-            })?
-        }
-    };
-
-    if args.oneline {
-        let _perf = crate::perf::span("show.render-oneline");
-        for (_id, r) in &span.anchors {
-            match r.extent {
-                AnchorExtent::LineRange { start, end } => {
-                    println!(
-                        "{}",
-                        format::format_anchor_address(&r.path, Some(start), Some(end))
-                    );
-                }
-                AnchorExtent::WholeFile => {
-                    println!("{}", format::format_anchor_address(&r.path, None, None));
+            } else {
+                // The span file exists but failed to parse (or another
+                // read error). Surface only the underlying error —
+                // a "not found" summary would be misleading for a
+                // span that exists. Matches what `list`/`stale` do.
+                CliError {
+                    subcommand: "show",
+                    summary: format!("{}", e),
+                    what_happened: format!(
+                        "The span file for `{}` could not be read.",
+                        args.name
+                    ),
+                    next_steps: vec![NextStep::Bash(format!("git span doctor {}", args.name))],
                 }
             }
-        }
-        return Ok(0);
-    }
+        })?
+    };
 
     let _perf = crate::perf::span("show.render-default");
 
@@ -590,11 +356,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
 }
 
 pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Result<i32> {
-    if args.batch {
-        let _perf = crate::perf::span("list.batch-porcelain");
-        return run_list_batch_porcelain(repo, span_root);
-    }
-
     // Reset the corpus-load counters incremented from deep call sites
     // (`load_all_spans_in`, the glob scan) so the emit block at the end
     // reports values from this single list invocation only.
@@ -684,7 +445,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
         (0, 0)
     };
 
-    let include_why = !args.porcelain || args.search.is_some();
+    let include_why = !args.porcelain;
     let mut listings = {
         let _perf = crate::perf::span("list.collect");
         if let Some(ref names) = resolved_names {
@@ -693,28 +454,6 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
             build_listings(&spans, include_why)
         }
     };
-
-    if let Some(ref pat) = args.search {
-        let _perf = crate::perf::span("list.filter-search");
-        match RegexBuilder::new(pat).case_insensitive(true).build() {
-            Ok(re) => apply_search(&mut listings, &re),
-            Err(err) => {
-                return Err(CliError {
-                    subcommand: "list",
-                    summary: "`--search` regex is invalid.".into(),
-                    what_happened: format!("The regex `{pat}` failed to compile: {err}"),
-                    next_steps: vec![
-                        NextStep::Prose(
-                            "Try a simpler pattern or check for unescaped special characters."
-                                .into(),
-                        ),
-                        NextStep::Bash("git span list --search \"pattern\"".into()),
-                    ],
-                }
-                .into());
-            }
-        }
-    }
 
     // Emit the per-phase corpus-load counters for the list path. Phase
     // timings recorded from deep call sites are read back here, mirroring the
@@ -777,13 +516,6 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
     emit_list_counters(render_us);
 
     Ok(0)
-}
-
-fn render_range_address(path: &str, extent: AnchorExtent) -> String {
-    match extent {
-        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
-        AnchorExtent::WholeFile => format!("{path}  (whole)"),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -955,8 +687,6 @@ mod tests {
         let args = ListArgs {
             targets: vec![],
             porcelain: false,
-            batch: false,
-            search: None,
             offset: 0,
             limit: None,
             oneline: false,
@@ -972,8 +702,6 @@ mod tests {
         let args = ListArgs {
             targets: vec!["my-span".to_string()],
             porcelain: false,
-            batch: false,
-            search: None,
             offset: 0,
             limit: None,
             oneline: false,
@@ -988,8 +716,6 @@ mod tests {
         let args = ListArgs {
             targets: vec!["nonexistent".to_string()],
             porcelain: false,
-            batch: false,
-            search: None,
             offset: 0,
             limit: None,
             oneline: false,
@@ -1008,8 +734,6 @@ mod tests {
         let args = ListArgs {
             targets: vec!["span-a".to_string(), "span-b".to_string()],
             porcelain: false,
-            batch: false,
-            search: None,
             offset: 0,
             limit: None,
             oneline: false,

@@ -42,14 +42,11 @@ fn unknown_subcommand_is_runtime_show_failure() -> Result<()> {
 
 #[test]
 fn help_exits_zero() -> Result<()> {
-    // `--help` / `--version` are clap-handled and exit 0 via
-    // `clap::Error::exit()` — the wrapper must not redirect them
-    // through the runtime exit-1 path.
+    // `--help` is clap-handled and exits 0 via `clap::Error::exit()`
+    // — the wrapper must not redirect it through the runtime exit-1 path.
     let repo = TestRepo::seeded()?;
     let help = repo.run_span(["--help"])?;
     assert_eq!(help.status.code(), Some(0));
-    let version = repo.run_span(["--version"])?;
-    assert_eq!(version.status.code(), Some(0));
     Ok(())
 }
 

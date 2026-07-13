@@ -115,8 +115,6 @@ fn dirty_tree_moved_multi_span_matches_cache_off_all_formats() -> Result<()> {
     assert_format_parity(&repo, "json")?;
     assert_format_parity(&repo, "human")?;
     assert_format_parity(&repo, "porcelain")?;
-    assert_format_parity(&repo, "junit")?;
-    assert_format_parity(&repo, "github-actions")?;
     Ok(())
 }
 

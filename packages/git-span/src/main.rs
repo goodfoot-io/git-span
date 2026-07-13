@@ -43,7 +43,6 @@ fn main() {
     }
 }
 
-/// `--span-dir` is passed through to handlers that resolve the span root.
 fn run() -> Result<i32> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -53,26 +52,19 @@ fn run() -> Result<i32> {
     // A token on the §10.2 reserved list is a subcommand; anything else
     // is a span name and routes to `Commands::Show`.
     //
-    // Repo discovery happens after parsing so `--help`, `--version`, and
-    // any other clap-handled flag works outside a git repo.
+    // Repo discovery happens after parsing so `--help` and any other
+    // clap-handled flag works outside a git repo.
     if args.len() == 1 {
         Cli::command().print_help()?;
         println!();
         return Ok(0);
     }
-    // Skip leading global options so a bare `git span <name>` still
-    // routes to `show` even when prefixed by `--span-dir X` / `--perf`
-    // (F8: a configured-root user must be able to show a span).
-    // `--span-dir` consumes the following token as its value; `--perf`
-    // is a boolean. `--span-dir=VALUE` is self-contained.
+    // Skip leading `--perf` so a bare `git span <name>` still routes to
+    // `show` even when prefixed by `--perf`.
     let mut idx = 1usize;
     while idx < args.len() {
         let tok = args[idx].as_str();
         if tok == "--perf" {
-            idx += 1;
-        } else if tok == "--span-dir" {
-            idx += 2;
-        } else if tok.starts_with("--span-dir=") {
             idx += 1;
         } else {
             break;
@@ -83,10 +75,7 @@ fn run() -> Result<i32> {
     let is_bare_name = first_non_opt.is_some_and(|first| {
         !first.starts_with('-')
             && !RESERVED_SPAN_NAMES.contains(&first.as_str())
-            && !matches!(
-                first.as_str(),
-                "show" | "help" | "--help" | "-h" | "--version" | "-V"
-            )
+            && !matches!(first.as_str(), "show" | "help" | "--help" | "-h")
     });
 
     if is_bare_name {
@@ -104,22 +93,20 @@ fn run() -> Result<i32> {
         let cmd = cli.command.unwrap_or_else(|| {
             Commands::Show(ShowArgs {
                 name: first.clone(),
-                oneline: false,
-                at: None,
             })
         });
         let repo = discover_repo()?;
-        return cli::dispatch(&repo, cmd, cli.span_dir.as_deref());
+        return cli::dispatch(&repo, cmd, None);
     }
 
-    // Parse first so `--help` / `--version` short-circuit before we
-    // touch the filesystem for repo discovery.
+    // Parse first so `--help` short-circuits before we touch the
+    // filesystem for repo discovery.
     let cli = Cli::parse();
     git_span::perf::init(cli.perf);
 
     let repo = discover_repo()?;
     match cli.command {
-        Some(cmd) => cli::dispatch(&repo, cmd, cli.span_dir.as_deref()),
+        Some(cmd) => cli::dispatch(&repo, cmd, None),
         None => {
             Cli::command().print_help()?;
             println!();

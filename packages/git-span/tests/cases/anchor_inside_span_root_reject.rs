@@ -85,14 +85,18 @@ fn add_accepts_legitimate_anchor_with_default_root() -> Result<()> {
 // Layer 1 — add-time, resolved root (--span-dir)
 // ---------------------------------------------------------------------------
 
-/// With `--span-dir docs/span`, an anchor `docs/span/x` is rejected.
+/// With `GIT_SPAN_DIR=docs/span`, an anchor `docs/span/x` is rejected.
 #[test]
 fn add_rejects_anchor_inside_resolved_span_dir_flag() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "line1\nline2\n")?;
     repo.commit_all("seed")?;
 
-    let out = repo.run_span(["--span-dir", "docs/span", "add", "demo/flow", "docs/span/x"])?;
+    let out = repo.run_span_with_env(
+        ["add", "demo/flow", "docs/span/x"],
+        "GIT_SPAN_DIR",
+        "docs/span",
+    )?;
     assert!(
         !out.status.success(),
         "add must reject anchor inside configured span root; exit {:?}\nstdout:\n{}",
@@ -107,7 +111,7 @@ fn add_rejects_anchor_inside_resolved_span_dir_flag() -> Result<()> {
     Ok(())
 }
 
-/// With `--span-dir docs/span`, a literal `.span/x` anchor IS accepted
+/// With `GIT_SPAN_DIR=docs/span`, a literal `.span/x` anchor IS accepted
 /// (proves `.span` is not special-cased when the root is elsewhere).
 #[test]
 fn add_accepts_dot_span_anchor_when_root_is_elsewhere() -> Result<()> {
@@ -117,7 +121,11 @@ fn add_accepts_dot_span_anchor_when_root_is_elsewhere() -> Result<()> {
     repo.write_file("src/lib.rs", "line1\nline2\n")?;
     repo.commit_all("seed")?;
 
-    let out = repo.run_span(["--span-dir", "docs/span", "add", "demo/flow", ".span/bar"])?;
+    let out = repo.run_span_with_env(
+        ["add", "demo/flow", ".span/bar"],
+        "GIT_SPAN_DIR",
+        "docs/span",
+    )?;
     assert!(
         out.status.success(),
         "`.span/bar` must be accepted when span root is `docs/span`; exit {:?}\nstderr:\n{}",

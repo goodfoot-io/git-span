@@ -166,35 +166,6 @@ fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
 // Acceptance tests.
 // ---------------------------------------------------------------------------
 
-/// Plan bullet: HEAD-only mode: byte-identical output on the existing fixture.
-#[test]
-fn head_only_mode_byte_identical_output_on_fixture() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_line_range_span(&repo, "m")?;
-    // Drift at HEAD.
-    repo.write_file(
-        "file1.txt",
-        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    repo.commit_all("mutate")?;
-    let out = repo.run_span([
-        "stale",
-        "m",
-        "--no-worktree",
-        "--no-index",
-        "--no-staged-span",
-        "--format=porcelain",
-    ])?;
-    assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8(out.stdout)?;
-    assert!(stdout.contains("CHANGED"), "stdout={stdout}");
-    // The whole selector set collapses to HEAD-only; the `src` column
-    // must never appear as anything but `H` under that mode.
-    assert!(!stdout.contains(" I "), "unexpected index marker");
-    assert!(!stdout.contains(" W "), "unexpected worktree marker");
-    Ok(())
-}
-
 /// Plan bullet: Worktree-only drift → Changed, source=Worktree, current.blob = None, exit 1.
 #[test]
 fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> {
@@ -763,8 +734,6 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     );
     let out = repo.run_span(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1));
-    let out2 = repo.run_span(["stale", "m", "--ignore-unavailable"])?;
-    assert_eq!(out2.status.code(), Some(0));
     Ok(())
 }
 
@@ -1156,21 +1125,6 @@ fn all_clean_json_empty_stdout() -> Result<()> {
     Ok(())
 }
 
-/// All-clean repo + `--format=junit` → empty stdout, exit 0.
-#[test]
-fn all_clean_junit_empty_stdout() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_line_range_span(&repo, "clean")?;
-    let out = repo.run_span(["stale", "--format=junit"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.trim().is_empty(),
-        "junit output must be empty when all spans are clean, got: {stdout}"
-    );
-    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
-    Ok(())
-}
-
 /// All-clean repo + `--format=porcelain` → empty stdout, exit 0.
 #[test]
 fn all_clean_porcelain_empty_stdout() -> Result<()> {
@@ -1181,21 +1135,6 @@ fn all_clean_porcelain_empty_stdout() -> Result<()> {
     assert!(
         stdout.trim().is_empty(),
         "porcelain output must be empty when all spans are clean, got: {stdout}"
-    );
-    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
-    Ok(())
-}
-
-/// All-clean repo + `--format=github` → empty stdout, exit 0.
-#[test]
-fn all_clean_github_empty_stdout() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_line_range_span(&repo, "clean")?;
-    let out = repo.run_span(["stale", "--format=github-actions"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.trim().is_empty(),
-        "github output must be empty when all spans are clean, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
     Ok(())
@@ -1225,26 +1164,3 @@ fn stale_present_json_emits_envelope() -> Result<()> {
     Ok(())
 }
 
-/// Stale-present repo + `--format=junit` → non-empty testsuite, exit 1.
-#[test]
-fn stale_present_junit_emits_testsuite() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_line_range_span(&repo, "drifty")?;
-    repo.write_file(
-        "file1.txt",
-        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    repo.commit_all("mutate")?;
-    let out = repo.run_span(["stale", "--format=junit"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.trim().is_empty(),
-        "junit output must not be empty when a span is stale"
-    );
-    assert!(
-        stdout.contains("<testsuite"),
-        "junit output must contain <testsuite>"
-    );
-    assert_eq!(out.status.code(), Some(1), "exit 1 when drift present");
-    Ok(())
-}

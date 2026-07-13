@@ -50,10 +50,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub perf: bool,
 
-    /// Span root directory (default: .span). Overrides GIT_SPAN_DIR and git config git-span.dir.
-    #[arg(long, global = true)]
-    pub span_dir: Option<String>,
-
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -122,9 +118,6 @@ pub enum Commands {
     /// Delete a span.
     Delete(DeleteArgs),
 
-    /// Rename a span.
-    Move(MoveArgs),
-
     /// Audit the local span setup.
     Doctor(DoctorArgs),
 
@@ -187,14 +180,6 @@ pub struct ShowArgs {
     /// handled by the `Commands::None` branch in `main`, which lists
     /// every span).
     pub name: String,
-
-    /// One line per anchor, no commit header.
-    #[arg(long)]
-    pub oneline: bool,
-
-    /// Show the span as it existed in the git tree at a past commit-ish.
-    #[arg(long, value_name = "COMMIT-ISH")]
-    pub at: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -206,19 +191,6 @@ pub struct ListArgs {
     /// Emit one tab-separated row per anchor instead of human blocks.
     #[arg(long)]
     pub porcelain: bool,
-
-    /// Read newline-delimited path filters from stdin.
-    #[arg(
-        long,
-        requires = "porcelain",
-        conflicts_with_all = ["targets", "search", "offset", "limit"]
-    )]
-    pub batch: bool,
-
-    /// Filter spans whose name, why, or anchor addresses match a regex
-    /// (case-insensitive by default; use `(?-i)` to re-enable case sensitivity).
-    #[arg(long, value_name = "REGEX")]
-    pub search: Option<String>,
 
     /// Skip the first N spans (after filtering, before --limit).
     #[arg(long, value_name = "N", default_value_t = 0)]
@@ -239,84 +211,20 @@ pub enum StaleFormat {
     Human,
     Porcelain,
     Json,
-    Junit,
-    GithubActions,
 }
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct StaleArgs {
     /// File paths, globs, or span names to report staleness for.
     /// Omit to scan all spans.
-    #[arg(conflicts_with = "batch")]
     pub paths: Vec<String>,
 
-    #[arg(long, value_enum, default_value_t = StaleFormat::Human, conflicts_with = "batch")]
+    #[arg(long, value_enum, default_value_t = StaleFormat::Human)]
     pub format: StaleFormat,
 
     /// Exit 0 even when drift is found (report-only mode).
     #[arg(long)]
     pub no_exit_code: bool,
-
-    /// Read mode: resolve against the HEAD layer only (ignore index and
-    /// working tree). Mutually exclusive with `--staged`/`--worktree`
-    /// and the `--no-*` layer toggles.
-    #[arg(
-        long,
-        conflicts_with_all = ["staged", "worktree", "no_worktree", "no_index"]
-    )]
-    pub head: bool,
-
-    /// Read mode: resolve against the staged view (index overlaid on
-    /// HEAD); ignore working-tree changes. Mutually exclusive with
-    /// `--head`/`--worktree` and the `--no-*` layer toggles.
-    #[arg(
-        long,
-        conflicts_with_all = ["head", "worktree", "no_worktree", "no_index"]
-    )]
-    pub staged: bool,
-
-    /// Read mode: resolve against the full working-tree view (worktree
-    /// overlaid on index overlaid on HEAD) — the default effective view,
-    /// named explicitly. Mutually exclusive with `--head`/`--staged`
-    /// and the `--no-*` layer toggles.
-    #[arg(
-        long,
-        conflicts_with_all = ["head", "staged", "no_worktree", "no_index"]
-    )]
-    pub worktree: bool,
-
-    /// Skip the working-tree layer; scan only HEAD (and the index unless `--no-index`).
-    #[arg(long)]
-    pub no_worktree: bool,
-
-    /// Skip the index layer.
-    #[arg(long)]
-    pub no_index: bool,
-
-    /// Accepted for compatibility; no effect in the tracked-file model
-    /// (span edits live in the worktree, not a separate staging area).
-    #[arg(long)]
-    pub no_staged_span: bool,
-
-    /// Report unreadable content as informational instead of failing.
-    #[arg(long)]
-    pub ignore_unavailable: bool,
-
-    /// One line per finding: `<STATUS> <path>#L<start>-L<end>`.
-    #[arg(long, conflicts_with_all = ["stat", "patch"])]
-    pub oneline: bool,
-
-    /// Per-anchor summary with line counts added/removed relative to the anchor.
-    #[arg(long, conflicts_with_all = ["oneline", "patch"])]
-    pub stat: bool,
-
-    /// Show the diff between the anchored content and the current content.
-    #[arg(long, conflicts_with_all = ["oneline", "stat"])]
-    pub patch: bool,
-
-    /// Only anchors recorded at or after this commit.
-    #[arg(long, value_name = "COMMIT-ISH")]
-    pub since: Option<String>,
 
     /// Write a CSV of per-anchor wall-clock traces to PATH.
     /// Requires a full scan (no positional paths). Columns:
@@ -339,27 +247,8 @@ pub struct StaleArgs {
     /// anchors or divergent `--why` text (no merge base) write resolved
     /// anchors cleanly with minimal residue markers and are not re-staged.
     /// No commit is produced. Only supported with `--format human`.
-    #[arg(long, conflicts_with = "batch")]
+    #[arg(long)]
     pub fix: bool,
-
-    /// Emit one tab-separated row per `(span slug, anchor)` pair instead
-    /// of human/format output. Requires `--porcelain`.
-    #[arg(
-        long,
-        requires = "porcelain",
-        conflicts_with_all = ["paths", "format", "fix"]
-    )]
-    pub batch: bool,
-
-    /// Machine-readable output for batch mode. Required by `--batch`.
-    #[arg(long, conflicts_with = "format")]
-    pub porcelain: bool,
-
-    /// Confidence threshold (0.0–1.0) for fuzzy-similarity auto-fix.
-    /// Only fuzzy matches at or above this threshold are automatically
-    /// re-anchored by `--fix`. Default 0.95.
-    #[arg(long, default_value = "0.95", value_name = "0.0-1.0")]
-    pub fuzzy_threshold: f64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -367,9 +256,6 @@ pub struct AddArgs {
     /// Span name to stage into.
     pub name: String,
 
-    // Annotated `trailing_var_arg = false` + `allow_hyphen_values = false`
-    // so a trailing `--at <commit-ish>` is parsed as the named flag,
-    // not greedily consumed into `anchors`.
     #[arg(
         required = true,
         trailing_var_arg = false,
@@ -383,12 +269,6 @@ pub struct AddArgs {
     /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
-
-    /// Replace an existing anchor. Removes `<OLD_ADDR>` and inserts the
-    /// new anchor(s) in a single atomic write. The old anchor must exist
-    /// in the span or the command fails-closed with no changes.
-    #[arg(long, value_name = "OLD_ADDR")]
-    pub replace: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -403,15 +283,9 @@ pub struct RemoveArgs {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(group(
-    clap::ArgGroup::new("source")
-        .args(["m", "file", "edit"])
-        .required(false)
-        .multiple(false)
-))]
 pub struct WhyArgs {
     /// Span whose why text to read (no writer flag) or stage
-    /// (`-m` / `-F` / `--edit`). The why defines the subsystem the
+    /// (`-m`). The why defines the subsystem the
     /// anchors collectively form.
     pub name: String,
 
@@ -420,20 +294,6 @@ pub struct WhyArgs {
     /// inherited across routine re-anchors.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
-
-    /// Read why text from a file (`-F <file>`). Writer flag.
-    #[arg(short = 'F', value_name = "FILE")]
-    pub file: Option<String>,
-
-    /// Open `$EDITOR` on a pre-populated template. Writer flag.
-    #[arg(long, conflicts_with = "at")]
-    pub edit: bool,
-
-    /// Reader-only: print the why text as it existed in the span file
-    /// at an ordinary git commit-ish (e.g. HEAD~3, a branch, a tag, a
-    /// commit SHA). Mutually exclusive with `-m`/`-F`/`--edit`.
-    #[arg(long, value_name = "COMMIT-ISH", conflicts_with_all = ["m", "file", "edit"])]
-    pub at: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -443,19 +303,7 @@ pub struct DeleteArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct MoveArgs {
-    /// Existing span name.
-    pub old: String,
-
-    /// New span name (must not already exist).
-    pub new: String,
-}
-
-#[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
-    /// Promote INFO and WARN findings to a non-zero exit.
-    #[arg(long)]
-    pub strict: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -518,11 +366,6 @@ pub struct HistoryArgs {
     /// Cap the walk at N commits (newest N are inspected).
     #[arg(short = 'n', long)]
     pub limit: Option<usize>,
-
-    /// Omit commits older than this date or commit-ish (passed to the git
-    /// log walk as a lower-bound cutoff).
-    #[arg(long)]
-    pub since: Option<String>,
 }
 
 /// Parse a `<path>#L<start>-L<end>` anchor address.
@@ -597,10 +440,6 @@ pub fn dispatch(
         Commands::Delete(args) => {
             let _perf = crate::perf::span("command.delete");
             doctor::run_delete(repo, args, span_root)
-        }
-        Commands::Move(args) => {
-            let _perf = crate::perf::span("command.move");
-            doctor::run_move(repo, args, span_root)
         }
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");

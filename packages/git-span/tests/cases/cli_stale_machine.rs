@@ -96,40 +96,7 @@ fn json_finding_has_status_and_anchored() -> Result<()> {
     Ok(())
 }
 
-#[test]
 
-fn junit_has_testsuite_tag() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=junit"])?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("<testsuite"));
-    assert!(s.contains("<testcase"));
-    Ok(())
-}
-
-#[test]
-
-fn github_actions_emits_warning_annotation() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=github-actions"])?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    // CHANGED maps to ::error per §10.4 severity rules; MOVED maps to
-    // ::warning. Either is acceptable depending on the drift shape.
-    assert!(
-        s.contains("::error file=file1.txt") || s.contains("::warning file=file1.txt"),
-        "expected annotation with file=file1.txt, got: {s}"
-    );
-    // No non-spec fields like endLine=.
-    assert!(
-        !s.contains("endLine="),
-        "github-actions output must not include endLine="
-    );
-    Ok(())
-}
 
 #[test]
 
@@ -146,28 +113,3 @@ fn tool_error_exits_one() -> Result<()> {
     Ok(())
 }
 
-#[test]
-
-fn since_filters_by_anchor_age() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let early_anchor = repo.head_sha()?;
-    // Move HEAD forward so --since has something to exclude.
-    repo.commit_file("other.txt", "x\n", "mid")?;
-    let mid = repo.head_sha()?;
-    // Stage anchor anchored at mid, not early.
-    repo.span_stdout(["add", "m", "file1.txt#L1-L5", "--at", &mid])?;
-    repo.span_stdout(["why", "m", "-m", "seed"])?;
-    {
-        repo.run_git(["add", ".span"])?;
-        repo.run_git(["commit", "-m", "span commit"])?;
-    }
-    drift(&repo)?;
-    // --since mid => our anchor is in scope; exit 1.
-    let inc = repo.run_span(["stale", "m", "--since", &mid, "--format=porcelain"])?;
-    assert_eq!(inc.status.code(), Some(1));
-    // --since HEAD (now past mid) — anchor anchor is before HEAD, and
-    // --since filters to anchors in <since>..HEAD, so older anchors
-    // drop out. Use early_anchor to be explicit about scope.
-    let _ = early_anchor;
-    Ok(())
-}

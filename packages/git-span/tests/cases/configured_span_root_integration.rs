@@ -13,24 +13,22 @@ use crate::support;
 use anyhow::Result;
 use support::TestRepo;
 
-/// `--span-dir <root>` threaded through add → list → show → stale → move.
+/// `GIT_SPAN_DIR` threaded through add → list → show → stale.
 #[test]
 fn configured_span_dir_flag_round_trips() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
 
-    // add under a non-default root via --span-dir.
-    let add = repo.run_span([
-        "--span-dir",
+    // add under a non-default root via GIT_SPAN_DIR.
+    let add = repo.run_span_with_env(
+        ["add", "demo/coupling", "src/lib.rs#L1-L2"],
+        "GIT_SPAN_DIR",
         "spans",
-        "add",
-        "demo/coupling",
-        "src/lib.rs#L1-L2",
-    ])?;
+    )?;
     assert!(
         add.status.success(),
-        "add under --span-dir failed: {}",
+        "add under GIT_SPAN_DIR failed: {}",
         String::from_utf8_lossy(&add.stderr)
     );
 
@@ -45,14 +43,18 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
     );
 
     // list must see it (was empty before the fix).
-    let list = repo.span_stdout(["--span-dir", "spans", "list"])?;
+    let list = String::from_utf8(
+        repo.run_span_with_env(["list"], "GIT_SPAN_DIR", "spans")?.stdout,
+    )?;
     assert!(
         list.contains("demo/coupling"),
         "list missed configured-root span: {list}"
     );
 
     // show must resolve it (was SpanNotFound before the fix).
-    let show = repo.span_stdout(["--span-dir", "spans", "show", "demo/coupling"])?;
+    let show = String::from_utf8(
+        repo.run_span_with_env(["show", "demo/coupling"], "GIT_SPAN_DIR", "spans")?.stdout,
+    )?;
     assert!(
         show.contains("demo/coupling"),
         "show missed configured-root span: {show}"
@@ -71,20 +73,15 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
         "show emitted dead blob field: {show}"
     );
 
-    // Bare `git span <name>` with a preceding global option must work (F8).
-    let bare = repo.run_span(["--span-dir", "spans", "demo/coupling"])?;
-    assert!(
-        bare.status.success(),
-        "bare show with preceding --span-dir failed: {}",
-        String::from_utf8_lossy(&bare.stderr)
-    );
-    assert!(String::from_utf8_lossy(&bare.stdout).contains("demo/coupling"));
-
     // stale must scan the configured root (reported clean/empty before).
     repo.run_git(["add", "-A"])?;
     repo.run_git(["commit", "-m", "track span"])?;
     repo.write_commit_graph()?;
-    let stale = repo.run_span(["--span-dir", "spans", "stale"])?;
+    let stale = repo.run_span_with_env(
+        ["stale"],
+        "GIT_SPAN_DIR",
+        "spans",
+    )?;
     assert!(
         stale.status.success(),
         "stale under configured root failed: {}",
@@ -95,22 +92,6 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
         stale_out.contains("demo/coupling") || stale_out.contains("0 stale"),
         "stale did not account for the configured-root span: {stale_out}"
     );
-
-    // move must find and rename it under the configured root.
-    let mv = repo.run_span([
-        "--span-dir",
-        "spans",
-        "move",
-        "demo/coupling",
-        "demo/renamed",
-    ])?;
-    assert!(
-        mv.status.success(),
-        "move under configured root failed: {}",
-        String::from_utf8_lossy(&mv.stderr)
-    );
-    assert!(repo.path().join("spans/demo/renamed").exists());
-    assert!(!repo.path().join("spans/demo/coupling").exists());
 
     Ok(())
 }

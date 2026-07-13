@@ -42,20 +42,6 @@ fn drift_in_head(repo: &TestRepo) -> Result<String> {
     repo.commit_all("mutate")
 }
 
-/// File-backed model: an *uncommitted* working-tree edit. The committed
-/// span pins `file1.txt` lines 1-5 to the HEAD content; `--patch` /
-/// `--stat` diff the anchored HEAD content against this working change.
-/// (A *committed* drift overwrites the anchored content in HEAD itself,
-/// leaving no reconstructable "before" for a unified diff — that is the
-/// correct file-backed limitation, so patch/stat scenarios drift in the
-/// working tree.)
-fn drift_in_worktree(repo: &TestRepo) -> Result<()> {
-    repo.write_file(
-        "file1.txt",
-        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )
-}
-
 #[test]
 fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -136,53 +122,6 @@ fn discovery_clean_head_pinned_span_uses_fast_path() -> Result<()> {
     assert!(
         !stderr.contains("git-span perf: resolver.resolve-anchors"),
         "warm clean discovery should skip per-anchor resolution: {stderr}"
-    );
-    Ok(())
-}
-
-#[test]
-fn json_head_only_findings_carry_source_head() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_head(&repo)?;
-    // HEAD-only via --no-worktree --no-index --no-staged-span.
-    let out = repo.run_span([
-        "stale",
-        "m",
-        "--no-worktree",
-        "--no-index",
-        "--no-staged-span",
-        "--format=json",
-    ])?;
-    let v: Value = serde_json::from_slice(&out.stdout)?;
-    let first = &v["findings"][0];
-    assert_eq!(first["source"], "HEAD");
-    Ok(())
-}
-
-#[test]
-fn porcelain_head_only_omits_src_column() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_head(&repo)?;
-    let out = repo.run_span([
-        "stale",
-        "m",
-        "--no-worktree",
-        "--no-index",
-        "--no-staged-span",
-        "--format=porcelain",
-    ])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("CHANGED"))
-        .unwrap_or("");
-    // 5 columns: STATUS \t span \t path \t s \t e
-    assert_eq!(
-        line.matches('\t').count(),
-        4,
-        "HEAD-only porcelain has no src column: {line}"
     );
     Ok(())
 }
@@ -284,31 +223,6 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
 }
 
 #[test]
-fn junit_has_testsuite_and_testcase_tags() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_head(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=junit"])?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("<testsuite"));
-    assert!(s.contains("<testcase"));
-    assert!(s.contains("CHANGED"));
-    Ok(())
-}
-
-#[test]
-fn github_actions_emits_annotation_with_path() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_head(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=github-actions"])?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("file=file1.txt"), "annotation: {s}");
-    assert!(s.contains("CHANGED"));
-    Ok(())
-}
-
-#[test]
 fn human_pending_ops_render_range_addresses() -> Result<()> {
     // File-backed model: `add` and `remove` edit the worktree span file
     // directly. After adding file2.txt#L1-L5 and removing
@@ -332,35 +246,6 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
         !out.contains("file1.txt#L1-L5"),
         "removed anchor must not appear; stdout={out}"
     );
-    Ok(())
-}
-
-#[test]
-fn human_stat_mode_prints_change_counts() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_worktree(&repo)?;
-    let out = repo.run_span(["stale", "m", "--stat"])?;
-    assert_eq!(out.status.code(), Some(1));
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("file1.txt#L1-L5 | +1 -1"), "stdout={text}");
-    Ok(())
-}
-
-#[test]
-fn human_patch_mode_prints_unified_diff() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift_in_worktree(&repo)?;
-    let out = repo.run_span(["stale", "m", "--patch"])?;
-    assert_eq!(out.status.code(), Some(1));
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("--- file1.txt#L1-L5 (anchored)"),
-        "stdout={text}"
-    );
-    assert!(text.contains("+++ file1.txt#L1-L5"), "stdout={text}");
-    assert!(text.contains("@@"), "stdout={text}");
     Ok(())
 }
 

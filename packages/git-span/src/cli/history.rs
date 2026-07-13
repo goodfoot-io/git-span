@@ -160,35 +160,6 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     // The walk yields newest-first; the timeline reads oldest→newest.
     commits.reverse();
 
-    // `--since` is a lower bound: keep only commits at or after the resolved
-    // commit-ish (i.e. the cutoff is an ancestor of the commit).
-    if let Some(ref since) = args.since {
-        let since_oid = crate::git::resolve_commit(repo, since).map_err(|e| CliError {
-            subcommand: "history",
-            summary: format!("`--since {since}` could not be resolved."),
-            what_happened: format!("{e}"),
-            next_steps: vec![NextStep::Prose(
-                "Pass a valid commit-ish or date (e.g. a SHA, tag, or `HEAD~5`).".into(),
-            )],
-        })?;
-        let mut kept = Vec::with_capacity(commits.len());
-        for c in commits.into_iter() {
-            // Fail-closed: a plumbing error in the ancestry check must abort,
-            // not silently drop the commit from the timeline.
-            if crate::git::is_ancestor(repo, &since_oid, &c.hash).map_err(|e| CliError {
-                subcommand: "history",
-                summary: format!("could not test `--since {since}` ancestry for commit {}.", c.hash),
-                what_happened: format!("{e}"),
-                next_steps: vec![NextStep::Prose(
-                    "Pass a valid commit-ish or date (e.g. a SHA, tag, or `HEAD~5`).".into(),
-                )],
-            })? {
-                kept.push(c);
-            }
-        }
-        commits = kept;
-    }
-
     // Verify the span actually exists somewhere in scope. An empty walk for a
     // never-committed name is a not-found error (mirrors `run_show`).
     if commits.is_empty() {
@@ -217,24 +188,24 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
         build_report(repo, &args.span, span_root, walk_complete, &commits)?
     };
 
-    // `--limit 0` (and `--since` cutting every commit) yields an empty window
-    // for a span that nonetheless exists in history — an empty timeline must
-    // not read as "this span has no history". `build_report` cannot see the
-    // window was non-empty before scoping, so flag it here.
-    if commits.is_empty() && (args.limit == Some(0) || args.since.is_some()) {
+    // `--limit 0` yields an empty window for a span that nonetheless exists
+    // in history — an empty timeline must not read as "this span has no
+    // history". `build_report` cannot see the window was non-empty before
+    // scoping, so flag it here.
+    if commits.is_empty() && args.limit == Some(0) {
         report.scoped = true;
     }
 
     // Fail-closed in spirit: a scoped/partial window must never read as the
     // complete record. Unlike the walk-budget truncation (an internal limit,
-    // exit non-zero), `--limit`/`--since` are explicit user scopes, so we still
-    // render and exit 0 — but warn to stderr that older span history exists
-    // before the window. The first shown commit's events are already truthful
+    // exit non-zero), `--limit` is an explicit user scope, so we still render
+    // and exit 0 — but warn to stderr that older span history exists before
+    // the window. The first shown commit's events are already truthful
     // (seeded from real prior state); this warning prevents a consumer reading
     // stdout alone as the whole timeline.
     if report.scoped {
         eprintln!(
-            "warning: history is scoped — `--limit`/`--since` dropped older commits; \
+            "warning: history is scoped — `--limit` dropped older commits; \
              this is a partial timeline, not the complete record"
         );
     }

@@ -5,7 +5,6 @@
 //! `Finding` end-to-end via a thin adapter that maps the engine's
 //! `AnchorResolved` into the plan's "Key types" shape.
 
-use crate::cli::show::BatchFilter;
 use crate::cli::stale_fix::FixResult;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
@@ -23,7 +22,6 @@ use crate::validation::validate_span_name_shape;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::io::{self, BufRead};
 
 fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
@@ -84,134 +82,7 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
     })
 }
 
-/// `git span stale --batch --porcelain`: read newline-delimited path filters
-/// from stdin (same grammar as `list --batch`) and emit one tab-separated row
-/// per `(span slug, anchor)` pair for every span whose anchors (a) are
-/// classified as drifted by the stale engine AND (b) overlap one of the
-/// batch filter lines. Format: `<slug>\t<path>\t<start>-<end>` where
-/// whole-file anchors emit `0-0`. Honors the same layer-toggle flags
-/// (`--head`/`--staged`/`--worktree` and `--no-*`) as the non-batch path.
-fn run_stale_batch_porcelain(
-    repo: &gix::Repository,
-    args: &crate::cli::StaleArgs,
-    span_root: &str,
-) -> Result<i32> {
-    // Derive layer set from args, identical to the non-batch path.
-    let layers = if args.head {
-        LayerSet {
-            worktree: false,
-            index: false,
-            staged_span: !args.no_staged_span,
-        }
-    } else if args.staged {
-        LayerSet {
-            worktree: false,
-            index: true,
-            staged_span: !args.no_staged_span,
-        }
-    } else if args.worktree {
-        LayerSet {
-            worktree: true,
-            index: true,
-            staged_span: !args.no_staged_span,
-        }
-    } else {
-        LayerSet {
-            worktree: !args.no_worktree,
-            index: !args.no_index,
-            staged_span: !args.no_staged_span,
-        }
-    };
-
-    let options = EngineOptions {
-        layers,
-        ignore_unavailable: args.ignore_unavailable,
-        since: None,
-        needs_all_layers: false,
-        fuzzy_threshold: args.fuzzy_threshold,
-    };
-
-    // Run the stale engine to get only drifted spans.
-    let stale_resolved = {
-        let _perf = crate::perf::span("stale.batch-run-engine");
-        stale_spans(repo, span_root, options)?
-    };
-
-    // Collect stdin lines and group by path, merging ranges.
-    let stdin = io::stdin();
-    let mut filters_by_path: std::collections::HashMap<String, Vec<BatchFilter>> =
-        std::collections::HashMap::new();
-    let mut path_order: Vec<String> = Vec::new();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        let filter = BatchFilter::parse(line)?;
-        let path = filter.path().to_string();
-        if !filters_by_path.contains_key(&path) {
-            path_order.push(path.clone());
-        }
-        filters_by_path.entry(path).or_default().push(filter);
-    }
-
-    // For each path filter, scan only drifted anchors that overlap the filter.
-    for path in &path_order {
-        let filters = filters_by_path.get(path).unwrap();
-        // Collect individual filter ranges — preserve disjoint ranges
-        // instead of collapsing into a hull.
-        let (merged_path, ranges) = crate::cli::show::merge_batch_filters(filters);
-
-        for span in &stale_resolved {
-            for anchor in &span.anchors {
-                // Only emit anchors that the engine classified as drifted.
-                // ResolvedPendingCommit is a terminal resolved state (not stale).
-                if anchor.status == AnchorStatus::Fresh
-                    || anchor.status == AnchorStatus::ResolvedPendingCommit
-                {
-                    continue;
-                }
-                let anchor_path = anchor.anchored.path.to_string_lossy();
-                let matched = match &ranges {
-                    None => anchor_path == merged_path,
-                    Some(ranges) => {
-                        anchor_path == merged_path
-                            && ranges.iter().any(|(s, e)| {
-                                match anchor.anchored.extent {
-                                    AnchorExtent::WholeFile => false,
-                                    AnchorExtent::LineRange {
-                                        start: a_start,
-                                        end: a_end,
-                                    } => a_start <= *e && a_end >= *s,
-                                }
-                            })
-                    }
-                };
-                if !matched {
-                    continue;
-                }
-                let extent_str = match anchor.anchored.extent {
-                    AnchorExtent::LineRange { start, end } => format!("{start}-{end}"),
-                    AnchorExtent::WholeFile => "0-0".to_string(),
-                };
-                println!("{}\t{}\t{}", span.name, anchor_path, extent_str);
-            }
-        }
-    }
-
-    Ok(0)
-}
-
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Result<i32> {
-    // `--batch --porcelain`: read path filters from stdin and emit one row per
-    // (span slug, anchor) for each matching span. Shares the same BatchFilter
-    // grammar as `list --batch`.
-    if args.batch {
-        let _perf = crate::perf::span("stale.batch-porcelain");
-        return run_stale_batch_porcelain(repo, &args, span_root);
-    }
-
     // Reset the `--fix` phase counters once per invocation. The pre- and
     // post-fix resolve passes both feed these process-global counters, so they
     // are reset here (not inside the resolver, which resets per resolve session)
@@ -231,74 +102,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         }
         .into());
     }
-    // Read-mode flags (card "Layered Read Model"): `--head` / `--staged`
-    // / `--worktree` select an explicit layer view. They are mutually
-    // exclusive (enforced by clap) and supersede the `--no-*` toggles
-    // (also clap-enforced). Absent any of them, the default effective
-    // view is worktree-over-index-over-HEAD, refined by `--no-*`.
-    let layers = if args.head {
-        LayerSet {
-            worktree: false,
-            index: false,
-            staged_span: !args.no_staged_span,
-        }
-    } else if args.staged {
-        LayerSet {
-            worktree: false,
-            index: true,
-            staged_span: !args.no_staged_span,
-        }
-    } else if args.worktree {
-        LayerSet {
-            worktree: true,
-            index: true,
-            staged_span: !args.no_staged_span,
-        }
-    } else {
-        LayerSet {
-            worktree: !args.no_worktree,
-            index: !args.no_index,
-            staged_span: !args.no_staged_span,
-        }
-    };
-    let show_src_column = layers.worktree || layers.index;
-    // Slice 5: resolve `--since <commit-ish>` once, fail-closed on
-    // unresolvable input (no silent fallback per `<fail-closed>`).
-    let since = match args.since.as_deref() {
-        Some(s) => {
-            let _perf = crate::perf::span("stale.resolve-since");
-            Some(
-                crate::git::resolve_commit(repo, s)
-                    .map(|hex| {
-                        use std::str::FromStr;
-                        gix::ObjectId::from_str(&hex).expect("resolve_commit returns valid hex")
-                    })
-                    .map_err(|e| CliError {
-                        subcommand: "stale",
-                        summary: format!("`--since {s}` could not be resolved."),
-                        what_happened: format!("{e}"),
-                        next_steps: vec![
-                            NextStep::Bash("git rev-parse HEAD".into()),
-                            NextStep::Bash("git log --oneline".into()),
-                        ],
-                    })?,
-            )
-        }
-        None => None,
-    };
-    // Phase 4: only the renderers that present per-layer detail need
-    // every layer evaluated. The `human` renderer always shows per-layer
-    // expansion; `--patch` / `--stat` need every drifting layer's
-    // content. Otherwise (oneline, porcelain, json, junit, github), HEAD
-    // alone is enough to drive the exit code, so the engine may
-    // short-circuit Index/Worktree once HEAD says "stale".
-    let needs_all_layers = matches!(args.format, StaleFormat::Human) || args.patch || args.stat;
+    // Always scan the full working-tree view (HEAD + Index + Worktree).
+    let layers = LayerSet::full();
+    let show_src_column = true;
+    // Only the human renderer needs per-layer detail; machine formats
+    // can short-circuit once HEAD says "stale".
+    let needs_all_layers = matches!(args.format, StaleFormat::Human);
     let options = EngineOptions {
         layers,
-        ignore_unavailable: args.ignore_unavailable,
-        since,
+        ignore_unavailable: false,
+        since: None,
         needs_all_layers,
-        fuzzy_threshold: args.fuzzy_threshold,
+        fuzzy_threshold: 0.95,
     };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
@@ -983,9 +798,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             if matches!(f.status, AnchorStatus::ResolvedPendingCommit) {
                 return false;
             }
-            if args.ignore_unavailable && matches!(f.status, AnchorStatus::ContentUnavailable(_)) {
-                return false;
-            }
             if followed_ids.contains(&f.anchor_id) {
                 return false;
             }
@@ -1050,9 +862,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                 &findings,
                 &followed_ids,
                 HumanRenderOptions {
-                    oneline: args.oneline,
-                    stat: args.stat,
-                    patch: args.patch,
+                    oneline: false,
+                    stat: false,
+                    patch: false,
                     named_lookup: !args.paths.is_empty(),
                 },
                 &span_anchor_totals,
@@ -1109,14 +921,6 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         StaleFormat::Json => {
             let _perf = crate::perf::span("stale.render-json");
             render_json(&spans, &findings, &followed_ids)?;
-        }
-        StaleFormat::Junit => {
-            let _perf = crate::perf::span("stale.render-junit");
-            render_junit(&findings);
-        }
-        StaleFormat::GithubActions => {
-            let _perf = crate::perf::span("stale.render-github");
-            render_github(&findings);
         }
     }
 
@@ -1892,308 +1696,12 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// JUnit / GitHub Actions renderers.
-// ---------------------------------------------------------------------------
-
-fn render_junit(findings: &[Finding]) {
-    if findings.is_empty() {
-        return;
-    }
-    println!(
-        "<testsuite name=\"git-span\" tests=\"{}\" failures=\"{}\">",
-        findings.len(),
-        findings.len()
-    );
-    for f in findings {
-        let addr = render_path_extent_human(&f.anchored.path, f.anchored.extent);
-        let src = source_marker(f.source);
-        println!(
-            "  <testcase classname=\"{}\" name=\"{} [{}]\"><failure message=\"{}\"/></testcase>",
-            f.span,
-            addr,
-            src,
-            status_str(&f.status)
-        );
-    }
-    println!("</testsuite>");
-}
-
-fn render_github(findings: &[Finding]) {
-    for f in findings {
-        let level = match f.status {
-            AnchorStatus::Moved => "warning",
-            _ => "error",
-        };
-        let src = source_marker(f.source);
-        // Whole-file pins omit `,line=N`; line ranges emit the start line.
-        let loc = match f.anchored.extent {
-            AnchorExtent::WholeFile => format!("file={}", f.anchored.path.display()),
-            AnchorExtent::LineRange { start, .. } => {
-                format!("file={},line={}", f.anchored.path.display(), start)
-            }
-        };
-        println!(
-            "::{level} {}::{} [{}]",
-            loc,
-            status_str(&f.status),
-            src,
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::process::Command;
-    use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
-
-    // -----------------------------------------------------------------------
-    // Repo fixtures for F1 batch-porcelain staleness-filter tests
-    // -----------------------------------------------------------------------
-
-    fn seed_repo() -> (tempfile::TempDir, gix::Repository) {
-        let td = tempfile::tempdir().unwrap();
-        let dir = td.path();
-        run_git(dir, &["init", "--initial-branch=main"]);
-        run_git(dir, &["config", "user.email", "t@t"]);
-        run_git(dir, &["config", "user.name", "t"]);
-        run_git(dir, &["config", "commit.gpgsign", "false"]);
-        std::fs::write(dir.join("a.txt"), "line1\nline2\nline3\n").unwrap();
-        run_git(dir, &["add", "."]);
-        run_git(dir, &["commit", "-m", "init"]);
-        let repo = gix::open(dir).unwrap();
-        (td, repo)
-    }
-
-    fn run_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    /// Write and commit a span file with a specific anchor hash.
-    fn create_span_with_hash(
-        repo: &gix::Repository,
-        name: &str,
-        anchor_path: &str,
-        start: u32,
-        end: u32,
-        hash: &str,
-    ) {
-        let workdir = repo.workdir().unwrap().to_path_buf();
-        let span_dir = workdir.join(".span");
-        std::fs::create_dir_all(&span_dir).unwrap();
-        let mf = crate::span_file::SpanFile {
-            anchors: vec![crate::span_file::AnchorRecord {
-                path: anchor_path.to_string(),
-                start_line: start,
-                end_line: end,
-                algorithm: RK64_ALGORITHM.to_string(),
-                content_hash: hash.to_string(),
-            }],
-            why: format!("span {name}"),
-        };
-        std::fs::write(span_dir.join(name), mf.serialize()).unwrap();
-        run_git(&workdir, &["add", "-A"]);
-        run_git(&workdir, &["commit", "-m", &format!("add span {name}")]);
-    }
-
-    /// Compute the rk64 fingerprint of lines [start..=end] of a string
-    /// (1-based), using the same joining convention as the stale engine
-    /// (`join("\n")` with no trailing newline).
-    fn hash_lines(content: &str, start: u32, end: u32) -> String {
-        let start_idx = (start - 1) as usize;
-        let count = (end - start + 1) as usize;
-        let excerpt: String = content
-            .lines()
-            .skip(start_idx)
-            .take(count)
-            .collect::<Vec<_>>()
-            .join("\n");
-        rk64_to_hex(cheap_fingerprint_with_extent(
-            excerpt.as_bytes(),
-            &crate::types::AnchorExtent::WholeFile,
-        ))
-    }
-
-    fn default_stale_args() -> crate::cli::StaleArgs {
-        crate::cli::StaleArgs {
-            paths: vec![],
-            format: crate::cli::StaleFormat::Human,
-            no_exit_code: false,
-            head: false,
-            staged: false,
-            worktree: false,
-            no_worktree: false,
-            no_index: false,
-            no_staged_span: false,
-            ignore_unavailable: false,
-            oneline: false,
-            stat: false,
-            patch: false,
-            since: None,
-            perf_trace: None,
-            fix: false,
-            batch: true,
-            porcelain: true,
-            fuzzy_threshold: 0.95,
-        }
-    }
-
-    /// Collect all rows emitted by `run_stale_batch_porcelain` for the
-    /// given filter lines. We intercept stdout using a pipe-based approach:
-    /// since the function writes to stdout directly, we use the internal
-    /// helper directly and capture output by redirecting stdout isn't
-    /// straightforward. Instead, call `stale_spans` directly and apply
-    /// the filter logic ourselves (mirrors the implementation).
-    fn stale_batch_rows(
-        repo: &gix::Repository,
-        args: &crate::cli::StaleArgs,
-        span_root: &str,
-        filters: &[&str],
-    ) -> Vec<(String, String, String)> {
-        use crate::cli::show::{BatchFilter, merge_batch_filters};
-
-        let layers = if args.head {
-            LayerSet { worktree: false, index: false, staged_span: !args.no_staged_span }
-        } else if args.staged {
-            LayerSet { worktree: false, index: true, staged_span: !args.no_staged_span }
-        } else if args.worktree {
-            LayerSet { worktree: true, index: true, staged_span: !args.no_staged_span }
-        } else {
-            LayerSet {
-                worktree: !args.no_worktree,
-                index: !args.no_index,
-                staged_span: !args.no_staged_span,
-            }
-        };
-        let options = crate::types::EngineOptions {
-            layers,
-            ignore_unavailable: args.ignore_unavailable,
-            since: None,
-            needs_all_layers: false,
-            fuzzy_threshold: args.fuzzy_threshold,
-        };
-
-        let stale_resolved = stale_spans(repo, span_root, options).unwrap();
-
-        // Parse filter lines.
-        let mut filters_by_path: std::collections::HashMap<String, Vec<BatchFilter>> =
-            std::collections::HashMap::new();
-        let mut path_order: Vec<String> = Vec::new();
-        for &line in filters {
-            let line = line.trim_end();
-            if line.is_empty() {
-                continue;
-            }
-            let filter = BatchFilter::parse(line).unwrap();
-            let path = filter.path().to_string();
-            if !filters_by_path.contains_key(&path) {
-                path_order.push(path.clone());
-            }
-            filters_by_path.entry(path).or_default().push(filter);
-        }
-
-        let mut rows = Vec::new();
-        for path in &path_order {
-            let filters = filters_by_path.get(path).unwrap();
-            let (merged_path, ranges) = merge_batch_filters(filters);
-
-            for span in &stale_resolved {
-                for anchor in &span.anchors {
-                    if anchor.status == AnchorStatus::Fresh {
-                        continue;
-                    }
-                    let anchor_path = anchor.anchored.path.to_string_lossy().to_string();
-                    let matched = match &ranges {
-                        None => anchor_path == merged_path,
-                        Some(ranges) => {
-                            anchor_path == merged_path
-                                && ranges.iter().any(|(s, e)| {
-                                    match anchor.anchored.extent {
-                                        AnchorExtent::WholeFile => false,
-                                        AnchorExtent::LineRange {
-                                            start: a_start,
-                                            end: a_end,
-                                        } => a_start <= *e && a_end >= *s,
-                                    }
-                                })
-                        }
-                    };
-                    if !matched {
-                        continue;
-                    }
-                    let extent_str = match anchor.anchored.extent {
-                        AnchorExtent::LineRange { start, end } => format!("{start}-{end}"),
-                        AnchorExtent::WholeFile => "0-0".to_string(),
-                    };
-                    rows.push((span.name.clone(), anchor_path, extent_str));
-                }
-            }
-        }
-        rows
-    }
-
-    // F1 test 1: fresh span whose anchor overlaps a filter → NO row emitted.
-    #[test]
-    fn stale_batch_fresh_span_no_row() {
-        let (_td, repo) = seed_repo();
-        let content = "line1\nline2\nline3\n";
-        let hash = hash_lines(content, 1, 3);
-        create_span_with_hash(&repo, "fresh-span", "a.txt", 1, 3, &hash);
-
-        let args = default_stale_args();
-        let rows = stale_batch_rows(&repo, &args, ".span", &["a.txt#L1-L3"]);
-        assert!(
-            rows.is_empty(),
-            "expected no rows for fresh span, got: {rows:?}"
-        );
-    }
-
-    // F1 test 2: drifted span whose anchor overlaps a filter → row emitted.
-    #[test]
-    fn stale_batch_drifted_span_overlapping_filter_emits_row() {
-        let (_td, repo) = seed_repo();
-        // Deliberately wrong hash → engine will flag as Changed.
-        let bad_hash = "0".repeat(64);
-        create_span_with_hash(&repo, "drifted-span", "a.txt", 1, 3, &bad_hash);
-
-        let args = default_stale_args();
-        let rows = stale_batch_rows(&repo, &args, ".span", &["a.txt#L1-L3"]);
-        assert_eq!(rows.len(), 1, "expected one row for drifted span, got: {rows:?}");
-        assert_eq!(rows[0].0, "drifted-span");
-        assert_eq!(rows[0].1, "a.txt");
-        assert_eq!(rows[0].2, "1-3");
-    }
-
-    // F1 test 3: drifted span whose anchor does NOT overlap any filter → NO row.
-    #[test]
-    fn stale_batch_drifted_span_non_overlapping_filter_no_row() {
-        let (_td, repo) = seed_repo();
-        let bad_hash = "0".repeat(64);
-        // Anchor is on lines 1-3 of a.txt; filter is on lines 10-20.
-        create_span_with_hash(&repo, "drifted-span", "a.txt", 1, 3, &bad_hash);
-
-        let args = default_stale_args();
-        let rows = stale_batch_rows(&repo, &args, ".span", &["a.txt#L10-L20"]);
-        assert!(
-            rows.is_empty(),
-            "expected no rows when filter does not overlap drifted anchor, got: {rows:?}"
-        );
-    }
 
     #[test]
     fn csv_escape_plain_ascii_unchanged() {

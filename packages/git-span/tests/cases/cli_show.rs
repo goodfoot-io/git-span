@@ -52,31 +52,7 @@ fn show_by_name_has_required_lines() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn show_oneline_drops_header() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "alpha")?;
-    let out = repo.span_stdout(["alpha", "--oneline"])?;
-    assert!(!out.contains("Author:"));
-    assert!(out.contains("file1.txt#L1-L5"));
-    Ok(())
-}
 
-#[test]
-fn show_at_walks_history() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "h")?;
-    // Second commit adds a second anchor.
-    repo.span_stdout(["add", "h", "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", "h", "-m", "v2"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "span v2"])?;
-    let prev = repo.git_stdout(["rev-parse", "HEAD~1"])?;
-    let out = repo.span_stdout(["h", "--at", &prev])?;
-    assert!(out.contains("file1.txt"));
-    assert!(!out.contains("file2.txt"));
-    Ok(())
-}
 
 #[test]
 fn show_missing_span_errors() -> Result<()> {
@@ -86,16 +62,6 @@ fn show_missing_span_errors() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn show_at_bad_revision_reports_missing_span() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "alpha")?;
-    let out = repo.run_span(["alpha", "--at", "does-not-exist"])?;
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no span named `alpha`"), "stderr={stderr}");
-    Ok(())
-}
 
 #[test]
 fn ls_all_lists_every_file_with_ranges() -> Result<()> {

@@ -344,48 +344,6 @@ fn fix_respects_default_fuzzy_threshold() -> Result<()> {
 // Test 5b: --fix with lowered fuzzy threshold -> re-anchors
 // ---------------------------------------------------------------------------
 
-#[test]
-fn fix_with_lowered_fuzzy_threshold() -> Result<()> {
-    let repo = TestRepo::new()?;
-
-    // Same content as 5a: 25 lines, 2 changed => Jaccard ~ 0.852.
-    let lines = generate_unique_lines(25);
-    let content1 = to_content(&lines);
-    let edited = generate_modified_lines(25, &[6, 18]);
-    let content2 = to_content(&edited);
-
-    seed_two_files(&repo, "file1.txt", &content1, "file2.txt", &content2)?;
-    repo.write_commit_graph()?;
-
-    seed_span(&repo, "m", "file1.txt#L1-L25", "fix lowered threshold")?;
-    repo.write_commit_graph()?;
-
-    repo.run_git(["rm", "file1.txt"])?;
-
-    // Lowered threshold: 0.852 >= 0.70 -> re-anchored.
-    let fix_out =
-        repo.run_span(["stale", "--fix", "--fuzzy-threshold", "0.70"])?;
-    let _fix_stdout = String::from_utf8_lossy(&fix_out.stdout);
-
-    let after = read_span(&repo, "m")?;
-    assert!(
-        after.contains("file2.txt"),
-        "span must be re-anchored to file2.txt with --fuzzy-threshold 0.70; span:\n{after}"
-    );
-    assert!(
-        !after.contains("file1.txt"),
-        "old anchor path must be removed from span; span:\n{after}"
-    );
-    // Exit code 0: all drift fixed.
-    assert_eq!(
-        fix_out.status.code(),
-        Some(0),
-        "exit code should be 0 after fix; stderr:\n{}",
-        String::from_utf8_lossy(&fix_out.stderr)
-    );
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Test 6: JSON output includes confidence/fuzzy_successors

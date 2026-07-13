@@ -289,21 +289,6 @@ fn delete_keeps_non_empty_parent_with_sibling() -> Result<()> {
 }
 
 #[test]
-fn move_prunes_empty_old_parent_dirs() -> Result<()> {
-    let repo = TestRepo::new()?;
-    repo.write_file("f.txt", "hi\n")?;
-    repo.commit_all("init")?;
-    repo.span_stdout(["add", "bulk/bar", "f.txt"])?;
-    repo.span_stdout(["move", "bulk/bar", "top"])?;
-    assert!(
-        !repo.path().join(".span/bulk").exists(),
-        "the now-empty old `.span/bulk/` parent dir must be pruned"
-    );
-    assert!(repo.path().join(".span/top").is_file());
-    Ok(())
-}
-
-#[test]
 fn add_success_message_has_no_ref_era_framing() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("f.txt", "hi\n")?;
@@ -352,27 +337,3 @@ fn malformed_show_surfaces_only_parse_error() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn moved_whole_file_stat_shows_moved_not_counts() -> Result<()> {
-    let repo = TestRepo::new()?;
-    repo.write_file("src/w.txt", "one\ntwo\nthree\n")?;
-    repo.commit_all("init")?;
-    repo.span_stdout(["add", "demo/m", "src/w.txt"])?;
-    repo.span_stdout(["why", "demo/m", "-m", "seed"])?;
-    repo.commit_all("seed span")?;
-    std::fs::create_dir_all(repo.path().join("src"))?;
-    repo.run_git(["mv", "src/w.txt", "src/moved.txt"])?;
-    repo.run_git(["commit", "-m", "git mv"])?;
-
-    let s = repo.span_stdout(["stale", "--stat", "--no-exit-code"])?;
-    assert!(
-        s.contains("moved"),
-        "a Moved whole-file --stat row must read 'moved'; stat=\n{s}"
-    );
-    assert!(
-        !s.contains("+3 -0"),
-        "a pure relocation must not show a misleading `+x -0` content \
-         delta; stat=\n{s}"
-    );
-    Ok(())
-}

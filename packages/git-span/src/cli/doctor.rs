@@ -1,8 +1,8 @@
 //! Delete / move / doctor handlers — file-backed model.
 
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
-use crate::cli::{CliError, DeleteArgs, DoctorArgs, MoveArgs, NextStep};
-use crate::span::structural::{delete_span_in, rename_span_in};
+use crate::cli::{CliError, DeleteArgs, DoctorArgs, NextStep};
+use crate::span::structural::delete_span_in;
 use crate::span_file_reader::SpanFileReader;
 use anyhow::Result;
 
@@ -49,27 +49,7 @@ pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> 
     Ok(0)
 }
 
-pub fn run_move(repo: &gix::Repository, args: MoveArgs, span_root: &str) -> Result<i32> {
-    rename_span_in(repo, &args.old, &args.new, span_root).map_err(|e| CliError {
-        subcommand: "move",
-        summary: format!("cannot rename `{}` to `{}`.", args.old, args.new),
-        what_happened: e.to_string(),
-        next_steps: vec![NextStep::Bash("git span list".into())],
-    })?;
-    prune_empty_parents(repo, span_root, &args.old);
-    println!(
-        "Renamed `{}` to `{}`.{}",
-        args.old, args.new, DESTRUCTIVE_TAG
-    );
-    println!();
-    println!(
-        "Run `git span {}` to verify the rename, then commit the change.",
-        args.new
-    );
-    Ok(0)
-}
-
-pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs, span_root: &str) -> Result<i32> {
+pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) -> Result<i32> {
     // File-backed model: spans are ordinary tracked files. The only
     // health check that remains is that every visible span parses.
     let reader = SpanFileReader::new(repo, span_root.to_string());
@@ -105,16 +85,6 @@ pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs, span_root: &str) -> 
     println!();
     for f in &findings {
         println!("- ERROR — {f}");
-    }
-
-    if args.strict {
-        return Err(CliError {
-            subcommand: "doctor",
-            summary: format!("{} finding(s) reported.", findings.len()),
-            what_happened: "One or more span files could not be parsed.".into(),
-            next_steps: vec![NextStep::Prose("Fix the malformed span files.".into())],
-        }
-        .into());
     }
     Ok(1)
 }

@@ -22,7 +22,6 @@ use fs4::fs_std::FileExt;
 use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
-use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -538,55 +537,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         read_worktree_span(repo, span_root, &args.name)?
     };
 
-    // If `--replace <old-addr>` is given, remove the old anchor from the
-    // span before adding new ones.  Both operations share one atomic write
-    // below — no intermediate state is visible.
-    let replaced_addr: Option<String> = match &args.replace {
-        Some(old_addr) => {
-            let _perf = crate::perf::span("add.remove-replaced");
-            let (path, extent) = parse_address(old_addr).ok_or_else(|| CliError {
-                subcommand: "add",
-                summary: format!("`{old_addr}` is not a valid anchor."),
-                what_happened: format!(
-                    "Anchor addresses are either a path on its own (whole file) or \
-                     `<path>#L<start>-L<end>` (line range). `{old_addr}` is missing the `L` \
-                     prefix and the `-L<end>` half."
-                ),
-                next_steps: vec![
-                    NextStep::Bash(
-                        "git span add --replace <old-addr> <name> <path>#L<start>-L<end>"
-                            .to_string(),
-                    ),
-                    NextStep::Bash(
-                        "git span add --replace <old-addr> <name> <path>".to_string(),
-                    ),
-                ],
-            })?;
-            let (start_line, end_line) = match extent {
-                AnchorExtent::LineRange { start, end } => (start, end),
-                AnchorExtent::WholeFile => (0, 0),
-            };
-            let before = span_file.anchors.len();
-            span_file.anchors.retain(|a| {
-                !(a.path == path && a.start_line == start_line && a.end_line == end_line)
-            });
-            if span_file.anchors.len() == before {
-                return Err(CliError {
-                    subcommand: "add",
-                    summary: format!("`{old_addr}` is not an anchor on `{}`.", args.name),
-                    what_happened: format!(
-                        "`{}` does not currently track that anchor, so there is nothing to replace.",
-                        args.name,
-                    ),
-                    next_steps: vec![NextStep::Bash(format!("git span {}", args.name))],
-                }
-                .into());
-            }
-            Some(addr_from_extent(&path, &extent))
-        }
-        None => None,
-    };
-
     // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
     let existing: std::collections::HashMap<(String, u32, u32), String> = span_file
         .anchors
@@ -676,13 +626,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
         .count();
     // Summary line.
-    let replaced_prefix = if replaced_addr.is_some() {
-        "Replaced 1 anchor and "
-    } else {
-        ""
-    };
     let mut summary = format!(
-        "{replaced_prefix}Added {} anchor{}",
+        "Added {} anchor{}",
         added_count,
         if added_count == 1 { "" } else { "s" },
     );
@@ -696,11 +641,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
     println!("{summary}");
     println!();
 
-    // Per-anchor lines.  When `--replace` was used, emit a removal line
-    // first, followed by the per-new-anchor lines.
-    if let Some(ref old_addr) = replaced_addr {
-        println!("- removed via replace: `{}` `{}`", args.name, old_addr);
-    }
     for o in &outcomes {
         let line = match o.kind {
             AddOutcomeKind::Added => {
@@ -813,34 +753,15 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 // ---------------------------------------------------------------------------
 
 pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
-    // Reader vs. writer disambiguation:
-    // any of `-m`/`-F`/`--edit` => writer; otherwise reader (which
-    // optionally accepts `--at <commit>` for historical reads).
-    let writer = args.m.is_some() || args.file.is_some() || args.edit;
-    if !writer {
-        let _perf = crate::perf::span("why.read");
-        return run_why_reader(repo, &args.name, args.at.as_deref(), span_root);
-    }
-    // Writer paths (--edit, -m, -F) must validate the name before touching
-    // the filesystem.  The --edit branch validates internally; -m and -F
-    // go through run_why_writer, which trusts callers to have validated.
-    crate::validation::validate_span_name(&args.name)?;
+    // `-m` sets the why text; otherwise read and print the current why.
     if let Some(m) = args.m {
+        crate::validation::validate_span_name(&args.name)?;
         let _perf = crate::perf::span("why.write-message");
         run_why_writer(repo, &args.name, &m, span_root)?;
         return print_why_written(&args.name);
     }
-    if let Some(f) = args.file {
-        let body = {
-            let _perf = crate::perf::span("why.read-file");
-            std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?
-        };
-        let _perf = crate::perf::span("why.write-message");
-        run_why_writer(repo, &args.name, &body, span_root)?;
-        return print_why_written(&args.name);
-    }
-    // Editor flow (--edit).
-    run_why_editor(repo, &args.name, span_root)
+    let _perf = crate::perf::span("why.read");
+    run_why_reader(repo, &args.name, span_root)
 }
 
 fn print_why_written(name: &str) -> Result<i32> {
@@ -862,66 +783,13 @@ fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, span_root: &st
 fn run_why_reader(
     repo: &gix::Repository,
     name: &str,
-    at: Option<&str>,
     span_root: &str,
 ) -> Result<i32> {
     crate::validation::validate_span_name(name)?;
 
-    let span = if let Some(at_commit) = at {
-        // Historical read: look up the span file in the tree at `at_commit`.
-        let span_path = format!("{span_root}/{name}");
-        let tree_result = crate::git::tree_entry_at(repo, at_commit, Path::new(&span_path))?;
-        match tree_result {
-            Some((_mode, oid)) => {
-                let text = crate::git::read_git_text(repo, &oid.to_string())?;
-                let mf = SpanFile::parse(&text).map_err(|e| {
-                    if matches!(e, git_span_core::Error::SpanConflict(_)) {
-                        CliError {
-                            subcommand: "why",
-                            summary: format!(
-                                "span `{name}` at `{at_commit}` is in a Git conflict state."
-                            ),
-                            what_happened: format!(
-                                "The span file for `{name}` at commit `{at_commit}` has \
-                                 an unresolved merge (conflict markers). git-span refuses \
-                                 to present conflict-marker content as valid span data."
-                            ),
-                            next_steps: vec![
-                                NextStep::Prose(
-                                    "The span file was corrupted during a merge. \
-                                     Use a commit before the merge to recover the why text."
-                                        .into(),
-                                ),
-                            ],
-                        }
-                    } else {
-                        CliError {
-                            subcommand: "why",
-                            summary: format!(
-                                "span `{name}` at `{at_commit}` could not be parsed."
-                            ),
-                            what_happened: e.to_string(),
-                            next_steps: vec![
-                                NextStep::Prose(
-                                    "The historical span file is malformed. \
-                                     Use a different commit to read the why text, \
-                                     or inspect the span file directly with \
-                                     `git show <commit>:.span/{name}`."
-                                        .into(),
-                                ),
-                            ],
-                        }
-                    }
-                })?;
-                Some(mf)
-            }
-            None => None,
-        }
-    } else {
-        // Current effective view: worktree overlays index overlays HEAD.
-        let reader = SpanFileReader::new(repo, span_root.to_string());
-        reader.read_effective(name)?
-    };
+    // Current effective view: worktree overlays index overlays HEAD.
+    let reader = SpanFileReader::new(repo, span_root.to_string());
+    let span = reader.read_effective(name)?;
 
     match span {
         Some(mf) if !mf.why.is_empty() => {
@@ -933,93 +801,6 @@ fn run_why_reader(
         }
     }
     Ok(0)
-}
-
-fn run_why_editor(repo: &gix::Repository, name: &str, span_root: &str) -> Result<i32> {
-    let _perf = crate::perf::span("why.edit");
-    crate::validation::validate_span_name(name)?;
-
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
-
-    // Read current why as the editor template.
-    let template: String = {
-        let path = workdir.join(span_root).join(name);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            let mf = SpanFile::parse(&content)?;
-            if mf.why.is_empty() {
-                String::from("\n# Write the relationship description. Empty why aborts.\n")
-            } else {
-                mf.why
-            }
-        } else {
-            String::from("\n# Write the relationship description. Empty why aborts.\n")
-        }
-    };
-
-    let span_dir_path = workdir.join(span_root);
-    crate::span::structural::ensure_span_dir(workdir, span_root)?;
-
-    let edit_path = span_dir_path.join(format!("{name}.EDITMSG"));
-    std::fs::write(&edit_path, &template)?;
-
-    let editor = std::env::var("GIT_EDITOR")
-        .ok()
-        .or_else(|| std::env::var("VISUAL").ok())
-        .or_else(|| std::env::var("EDITOR").ok())
-        .unwrap_or_else(|| "vi".to_string());
-
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$@\"", editor = editor))
-        .arg(&editor)
-        .arg(&edit_path)
-        .status()
-        .with_context(|| format!("failed to spawn editor `{editor}`"))?;
-    if !status.success() {
-        // Clean up the scratch file before returning on editor error.
-        let _ = std::fs::remove_file(&edit_path);
-        return Err(CliError {
-            subcommand: "why",
-            summary: format!("editor `{editor}` exited with {status}."),
-            what_happened: format!(
-                "The editor `{editor}` exited with a non-zero status ({status}), \
-                 so the why body was not set."
-            ),
-            next_steps: vec![NextStep::Bash(format!("git span why {name} --edit"))],
-        }
-        .into());
-    }
-
-    let raw = std::fs::read_to_string(&edit_path)?;
-    // Scratch file consumed; delete it immediately so no early return
-    // (empty-body check below) can leave an orphan behind.
-    let _ = std::fs::remove_file(&edit_path);
-
-    let stripped = raw
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = stripped.trim_end().to_string();
-
-    if body.is_empty() {
-        return Err(CliError {
-            subcommand: "why",
-            summary: "aborting because the why is empty.".into(),
-            what_happened:
-                "The editor returned a body containing only whitespace and comment lines, \
-                 so there is nothing to set."
-                    .into(),
-            next_steps: vec![NextStep::Bash(format!("git span why {name} --edit"))],
-        }
-        .into());
-    }
-
-    run_why_writer(repo, name, &body, span_root)?;
-    print_why_written(name)
 }
 
 #[cfg(test)]

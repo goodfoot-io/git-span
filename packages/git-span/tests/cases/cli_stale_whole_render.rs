@@ -63,19 +63,6 @@ fn whole_pin_human_renders_whole() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn whole_pin_oneline_renders_whole() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_whole_file_drift(&repo)?;
-    let out = repo.run_span(["stale", "m", "--oneline"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("(whole)"),
-        "oneline missing `(whole)`:\n{text}"
-    );
-    assert!(!text.contains("#L0-L0"));
-    Ok(())
-}
 
 #[test]
 fn whole_pin_porcelain_uses_whole_marker() -> Result<()> {
@@ -94,30 +81,7 @@ fn whole_pin_porcelain_uses_whole_marker() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn whole_pin_junit_name_uses_whole() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_whole_file_drift(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=junit"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("(whole)"), "junit missing `(whole)`:\n{text}");
-    assert!(!text.contains("#L0-L0"));
-    Ok(())
-}
 
-#[test]
-fn whole_pin_github_actions_omits_line_zero() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed_whole_file_drift(&repo)?;
-    let out = repo.run_span(["stale", "m", "--format=github-actions"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !text.contains("line=0"),
-        "github-actions should omit `line=0` for whole pins:\n{text}"
-    );
-    assert!(text.contains("file=hero.png"));
-    Ok(())
-}
 
 #[test]
 fn whole_pin_show_renders_whole() -> Result<()> {

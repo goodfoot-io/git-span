@@ -36,7 +36,6 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
             "file1.txt#L1-L5".into(),
         ],
         at: None,
-        replace: None,
     };
 
     run_add(&gix_repo, args, ".span")?;

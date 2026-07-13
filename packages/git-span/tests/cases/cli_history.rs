@@ -665,76 +665,6 @@ fn limit_window_does_not_fabricate_added_and_warns_scoped() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Test: `--since <ref>` with older commits before the cutoff does not
-// fabricate `added` for pre-existing anchors.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn since_window_does_not_fabricate_added() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-
-    // Resolve C4 (HEAD is the last span commit) and scope `--since` to it, so
-    // only C4 survives and C1/C2 are dropped.
-    let c4 = repo.head_sha()?;
-    let out = repo.run_span(["history", span, "--since", &c4])?;
-    assert!(
-        out.status.success(),
-        "scoped `--since` history must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let xml = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-
-    assert!(
-        xml.contains("C4: remove file2"),
-        "C4 must be shown; got:\n{xml}"
-    );
-    assert!(
-        !xml.contains("C1: create span") && !xml.contains("C2: update why"),
-        "commits before the `--since` cutoff must be dropped; got:\n{xml}"
-    );
-
-    // file1 was anchored before the window and is unchanged at C4 → not
-    // re-emitted, never `added`.
-    assert!(
-        !xml.contains("file1.txt#L1-L5"),
-        "pre-existing unchanged anchor must not be relabeled added in a `--since` window; got:\n{xml}"
-    );
-
-    assert!(
-        stderr.contains("scoped") || stderr.contains("partial"),
-        "a `--since`-scoped timeline must be signalled as partial; stderr:\n{stderr}"
-    );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Test: a garbage `--since` ref errors cleanly (exit 1), never silently
-// dropping commits.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn since_garbage_ref_errors_cleanly() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-
-    let out = repo.run_span(["history", span, "--since", "not-a-real-ref-xyz"])?;
-    assert!(
-        !out.status.success(),
-        "an unresolvable `--since` ref must exit non-zero; stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    // No partial timeline is presented when the scope flag itself is invalid.
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("<commit "),
-        "an unresolvable `--since` must not emit any timeline; got:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Test (trigger 3): worktree anchor-set add/remove surfaces in `current`
 // ---------------------------------------------------------------------------
 
@@ -869,20 +799,3 @@ fn scoped_marker_present_in_limited_run_absent_in_full_run() -> Result<()> {
     Ok(())
 }
 
-/// A `--since`-scoped run also carries the payload-level `scoped` marker.
-#[test]
-fn scoped_marker_present_in_since_run() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-    let c4 = repo.head_sha()?;
-
-    let scoped_json_out =
-        repo.run_span(["history", span, "--since", &c4, "--format=json"])?;
-    let scoped_json: Value = serde_json::from_slice(&scoped_json_out.stdout)?;
-    assert_eq!(
-        scoped_json["scoped"],
-        Value::Bool(true),
-        "`--since`-scoped run must carry 'scoped': true in JSON; got: {scoped_json}"
-    );
-
-    Ok(())
-}

@@ -12,56 +12,13 @@
 use crate::support;
 
 use anyhow::Result;
-use git_span::resolve_span;
-use git_span::types::EngineOptions;
-use std::str::FromStr;
-use support::{TestRepo, create_and_commit_span};
+use support::TestRepo;
 
 // ---------------------------------------------------------------------------
 // Slice 5 — `--since` is a no-op in the file-backed model.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn since_does_not_filter_file_backed_anchors() -> Result<()> {
-    let repo = TestRepo::new()?;
-    repo.write_file("a.txt", "alpha\n")?;
-    let seed = repo.commit_all("seed")?;
-    repo.write_file("a.txt", "beta\n")?;
-    let later = repo.commit_all("later")?;
 
-    let gix = repo.gix_repo()?;
-    create_and_commit_span(&gix, "m", &[("a.txt", 1, 1)], "x")?;
-    repo.write_commit_graph()?;
-
-    // Both an early and a late `since` keep the anchor: file-backed
-    // anchors have no anchor_sha, so the filter cannot exclude them.
-    for cutoff in [&seed, &later] {
-        let opts = EngineOptions {
-            since: Some(gix::ObjectId::from_str(cutoff)?),
-            ..EngineOptions::full()
-        };
-        let mr = resolve_span(&gix, ".span", "m", opts)?;
-        assert_eq!(
-            mr.anchors.len(),
-            1,
-            "since={cutoff} must not filter file-backed anchors"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn since_bad_ref_errors_cleanly() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let out = repo.run_span(["stale", "--since", "definitely-not-a-ref"])?;
-    assert!(!out.status.success(), "expected non-zero exit");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("--since") || err.contains("rev-parse"),
-        "stderr should mention --since: {err}"
-    );
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Slice 6b — content-blind binary detection on `git span add`.

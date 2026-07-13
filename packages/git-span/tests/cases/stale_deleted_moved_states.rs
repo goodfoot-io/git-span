@@ -46,19 +46,13 @@ fn stale_succeeds_without_commit_graph() -> Result<()> {
     // Full scan path too (the headline command).
     let _ = stale_spans(&gix, ".span", full_opts())?;
 
-    // And via the CLI binary, including --patch / --stat.
-    for args in [
-        vec!["stale"],
-        vec!["stale", "--patch"],
-        vec!["stale", "--stat"],
-    ] {
-        let out = repo.run_span(args.clone())?;
-        assert!(
-            out.status.success(),
-            "`git span {args:?}` failed on a no-commit-graph repo: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+    // And via the CLI binary.
+    let out = repo.run_span(vec!["stale"])?;
+    assert!(
+        out.status.success(),
+        "`git span stale` failed on a no-commit-graph repo: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 
@@ -249,98 +243,5 @@ fn whole_file_relocated_in_index_is_moved() -> Result<()> {
         AnchorStatus::Moved,
         "staged-relocation verbatim content must classify as Moved"
     );
-    Ok(())
-}
-
-/// F7: `--stat` on a span where only one of two anchors drifted must list
-/// only the stale anchor, and the heading count/wording must match.
-#[test]
-fn stat_lists_only_stale_anchors() -> Result<()> {
-    let repo = TestRepo::new()?;
-    // Two LINE anchors in the SAME file; only the second range drifts.
-    // This is the experience-evaluator's exact `m/mix` repro.
-    repo.write_file("f.ts", "l1\nl2\nl3\nl4\nl5\n")?;
-    repo.commit_all("seed")?;
-    repo.run_span(["add", "m/mix", "f.ts#L1-L1"])?;
-    repo.run_span(["add", "m/mix", "f.ts#L3-L4"])?;
-    repo.run_span(["why", "m/mix", "-m", "mixed anchors"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "span m/mix"])?;
-
-    // Edit only lines 3-4; f.ts#L1-L1 stays Fresh.
-    repo.write_file("f.ts", "l1\nl2\nL3X\nL4X\nl5\n")?;
-
-    // Run twice: the first invocation is a cold resolve; the second hits
-    // the cache_v2 baseline, which persists only non-`Fresh` finding rows
-    // (so the cached `SpanResolved` carries only the stale anchor). The
-    // heading must read "1 of 2" on BOTH runs — the bug was the cached
-    // path falsely saying "All anchors … are stale".
-    for run in ["cold", "cached"] {
-        let out = repo.run_span(["stale", "--stat", "m/mix"])?;
-        let text = String::from_utf8_lossy(&out.stdout);
-
-        assert!(
-            !text.contains("All anchors"),
-            "[{run}] only one of two anchors is stale; must not say 'All anchors': {text}"
-        );
-        assert!(
-            text.contains("1 of 2 anchors in m/mix are stale:"),
-            "[{run}] heading must report '1 of 2 anchors in m/mix are stale:': {text}"
-        );
-        assert!(
-            text.contains("f.ts#L3-L4"),
-            "[{run}] stale anchor f.ts#L3-L4 must be listed: {text}"
-        );
-        assert!(
-            !text.contains("f.ts#L1-L1"),
-            "[{run}] fresh anchor f.ts#L1-L1 must NOT be listed under --stat: {text}"
-        );
-        assert!(
-            !text.contains("+0 -0"),
-            "[{run}] no fresh `+0 -0` rows under --stat: {text}"
-        );
-    }
-    Ok(())
-}
-
-/// F7 (all-stale): when every anchor in a span is stale, `--stat` heading
-/// reads "All anchors in <span> are stale:" (not a count fraction).
-#[test]
-fn stat_heading_all_stale() -> Result<()> {
-    let repo = TestRepo::new()?;
-    repo.write_file("a.txt", "a1\na2\na3\na4\na5\n")?;
-    repo.write_file("b.txt", "b1\nb2\nb3\nb4\nb5\n")?;
-    repo.commit_all("seed")?;
-    repo.run_span(["add", "all", "a.txt#L1-L3", "b.txt#L1-L3"])?;
-    repo.run_span(["why", "all", "-m", "two anchors both stale"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "span all"])?;
-
-    // Drift both anchored slices.
-    repo.write_file("a.txt", "CHANGED\na2\na3\na4\na5\n")?;
-    repo.write_file("b.txt", "CHANGED\nb2\nb3\nb4\nb5\n")?;
-
-    // Cold + cached: the "All anchors" branch must hold on both paths.
-    for run in ["cold", "cached"] {
-        let out = repo.run_span(["stale", "--stat", "all"])?;
-        let text = String::from_utf8_lossy(&out.stdout);
-
-        assert!(
-            text.contains("All anchors in all are stale:"),
-            "[{run}] all-stale span must say 'All anchors in all are stale:': {text}"
-        );
-        assert!(
-            !text.contains("of 2 anchors"),
-            "[{run}] all-stale span must not use 'N of M' heading: {text}"
-        );
-        assert!(
-            text.contains("a.txt"),
-            "[{run}] stale anchor a.txt must be listed: {text}"
-        );
-        assert!(
-            text.contains("b.txt"),
-            "[{run}] stale anchor b.txt must be listed: {text}"
-        );
-    }
     Ok(())
 }
