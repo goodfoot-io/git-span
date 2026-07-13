@@ -551,7 +551,7 @@ const SIGTERM_GRACE_MS = 10_000; // 10 seconds between SIGTERM and SIGKILL
  * this for real) and `writeManualDispatchScript` (which dumps it to a shell
  * script instead) so the two can never drift apart.
  */
-export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: string): string[] {
+export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: string, headless = true): string[] {
   const postCommitDirAbs = postCommitDir(repoRoot);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
   const promptText = buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs);
@@ -584,7 +584,17 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
     disableArtifact: true
   };
 
-  return ['-p', promptText, '--model', 'sonnet', '--effort', 'low', '--settings', JSON.stringify(settings)];
+  const args = [promptText, '--model', 'sonnet', '--effort', 'low', '--settings', JSON.stringify(settings)];
+
+  // In headless mode (automatic dispatch), prepend -p so claude runs in
+  // print/headless mode with no visible turn-by-turn output. In foreground
+  // mode (manual dispatch), omit -p so the prompt becomes the opening
+  // interactive turn and the developer watches the agent work.
+  if (headless) {
+    args.unshift('-p');
+  }
+
+  return args;
 }
 
 /**
@@ -729,20 +739,24 @@ export function writeManualDispatchScript(
   claimId: string,
   now: Date
 ): string {
-  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
+  // Build args for foreground (interactive) mode -- no -p flag, so the
+  // reconciler prompt becomes the opening interactive turn and the developer
+  // watches the agent work turn by turn instead of a silent batch run.
+  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId, false);
   const meshDirAbs = nodePath.resolve(repoRoot, meshDir);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
+  const postCommitDirAbs = postCommitDir(repoRoot);
 
   const datetimeStamp = now.toISOString().replace(/[:.]/g, '-');
   const scriptPath = nodePath.join(meshDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
 
   const quotedCommand = ['claude', ...claudeArgs].map(shellQuoteSingle).join(' \\\n  ');
+  const quotedPostCommitDir = shellQuoteSingle(postCommitDirAbs);
   const script = [
     '#!/bin/sh',
     `# git-mesh manual dispatch script -- generated ${now.toISOString()}`,
     '#',
     `# Claim directory: ${claimDirAbs}`,
-    `# Mesh directory:  ${meshDirAbs}`,
     '#',
     '# The claim directory above was already reserved for this run and is left',
     '# in place until this script is executed -- running it launches the same',
@@ -758,6 +772,42 @@ export function writeManualDispatchScript(
     'script_dir=$(cd "$(dirname "$0")" && pwd -P) || exit 1',
     'repo_root=$(cd "$script_dir" && git rev-parse --show-toplevel) || exit 1',
     'cd "$repo_root" || exit 1',
+    '',
+    '# ------------------------------------------------------------------',
+    '# Scan the post-commit queue for live numbers at run time',
+    '# ------------------------------------------------------------------',
+    `post_commit_dir=${quotedPostCommitDir}`,
+    'if ls "$post_commit_dir"/*.json >/dev/null 2>&1; then',
+    `  pending_count=$(jq -s 'length' "$post_commit_dir"/*.json 2>/dev/null)`,
+    `  branch_count=$(jq -r '.branch' "$post_commit_dir"/*.json 2>/dev/null | sort -u | wc -l)`,
+    'else',
+    '  pending_count=0',
+    '  branch_count=0',
+    'fi',
+    '',
+    '# ------------------------------------------------------------------',
+    '# Pre-flight confirmation',
+    '# ------------------------------------------------------------------',
+    'echo "git-mesh reconciler is about to process $pending_count pending post-commit record(s) across $branch_count branch(es)."',
+    'echo ""',
+    'echo "The reconciler will:"',
+    'echo "  - Check existing mesh coverage for drift"',
+    'echo "  - Add, update, or remove coverage as needed"',
+    'echo "  - Write a short rationale for any new coverage"',
+    'echo "  - Commit and land the result on each branch"',
+    'echo ""',
+    'printf "Proceed? [y/N] "',
+    'read -r reply',
+    'case "$reply" in',
+    '  [yY]|[yY][eE][sS])',
+    '    ;;',
+    '  *)',
+    '    echo "Aborted. The claim is still reserved for a later attempt."',
+    '    exit 1',
+    '    ;;',
+    'esac',
+    '',
+    'echo "Launching reconciler..."',
     `exec ${quotedCommand}`,
     ''
   ].join('\n');

@@ -802,6 +802,27 @@ describe('buildClaudeArgs', () => {
     expect(settings).not.toHaveProperty('editFileScope');
     expect(settings).not.toHaveProperty('writeFileScope');
   });
+
+  it('omits -p when headless is false, so the prompt becomes the opening interactive turn', () => {
+    const repo = initRepo();
+    const { root, cleanup } = repo;
+    let args: string[];
+    try {
+      args = buildClaudeArgs(root, '.mesh', 'claim-123', false);
+    } finally {
+      cleanup();
+    }
+    expect(args[0]).not.toBe('-p');
+    // The prompt text is the first positional argument
+    expect(typeof args[0]).toBe('string');
+    expect(args[0].length).toBeGreaterThan(0);
+    expect(args[1]).toBe('--model');
+    expect(args[2]).toBe('sonnet');
+    expect(args[3]).toBe('--effort');
+    expect(args[4]).toBe('low');
+    expect(args[5]).toBe('--settings');
+    expect(args).not.toContain('--resume');
+  });
 });
 
 // ===========================================================================
@@ -815,7 +836,7 @@ describe('manualRunMarkerPath', () => {
 });
 
 describe('writeManualDispatchScript', () => {
-  it('writes an executable script embedding the claim dir and claude invocation, without sweeping the claim dir', () => {
+  it('writes an executable script with a pre-flight confirmation gate and foreground claude invocation, without sweeping the claim dir', () => {
     const repo = initRepo();
     const { root, cleanup } = repo;
     try {
@@ -849,6 +870,28 @@ describe('writeManualDispatchScript', () => {
       expect(content).toContain('git rev-parse --show-toplevel');
       expect(content).toContain('cd "$repo_root"');
       expect(content.indexOf('cd "$repo_root"')).toBeLessThan(content.indexOf('exec '));
+
+      // Pre-flight confirmation: scans the post-commit queue with jq and
+      // gates on a [y/N] prompt before launching the reconciler.
+      expect(content).toContain('jq -s');
+      expect(content).toContain('jq -r');
+      expect(content).toContain('pending_count');
+      expect(content).toContain('branch_count');
+      expect(content).toContain('[y/N]');
+      expect(content).toContain('Aborted. The claim is still reserved for a later attempt.');
+      expect(content).toContain('Check existing mesh coverage for drift');
+      expect(content).toContain('Commit and land the result');
+
+      // Foreground mode: the claude invocation must not include -p as a
+      // separate flag argument. shellQuoteSingle('-p') would produce ''-'p''
+      // on its own continuation line; that line must be absent.
+      expect(content).not.toMatch(/^ {2}'-p' \\$/m);
+      // The invocation still carries the standard model/effort/settings flags.
+      const execStart = content.indexOf('exec ');
+      expect(execStart).toBeGreaterThan(-1);
+      const execBlock = content.slice(execStart);
+      expect(execBlock).toContain('--model');
+      expect(execBlock).toContain('--effort');
 
       // The claim directory must be left in place (not swept) for the script
       // to be runnable later against the exact same claim.
