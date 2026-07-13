@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-ground: #0d1117;
+  --color-ground-elevated: #161b22;
+  --color-ink-primary: #e8ecf3;
+  --color-ink-secondary: #959fb8;
+  --color-ink-tertiary: #5f6a85;
+  --color-accent: #0d9488;
+  --color-rule: #21262d;
+  --radius: 0.5rem;
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Fira Code', monospace;
+}
+
+/*
+  Base resets
+*/
+*,
+*::before,
+*::after {
+  border-color: var(--color-rule);
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-ground);
+  color: var(--color-ink-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+  Scrollbar styling for dark theme
+*/
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-tertiary);
+  border-radius: var(--radius);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-secondary);
+}
+
+/*
+  Focus-visible ring matching accent color
+*/
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

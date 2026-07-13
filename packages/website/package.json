@@ -1,0 +1,42 @@
+{
+  "name": "@goodfoot/git-span-website",
+  "version": "1.0.132",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-with-tunnel.mjs",
+    "dev:stop": "node scripts/dev-with-tunnel.mjs stop",
+    "dev:vite": "react-router dev",
+    "build": "react-router build",
+    "deploy": "yarn build && wrangler deploy",
+    "lint": "biome check --write --unsafe --max-diagnostics 500",
+    "fumadocs:generate": "fumadocs-mdx",
+    "typecheck": "yarn fumadocs:generate && tsc --noEmit"
+  },
+  "dependencies": {
+    "fumadocs-core": "^16.11.4",
+    "fumadocs-ui": "^16.11.4",
+    "isbot": "^5.x",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router": "^8.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@cloudflare/vite-plugin": "^1.44.0",
+    "@cloudflare/workers-types": "^4.x",
+    "@react-router/dev": "^8.2.0",
+    "@react-router/node": "^8.2.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/mdx": "^2.0.13",
+    "@types/react": "^19.x",
+    "@types/react-dom": "^19.x",
+    "@vitejs/plugin-rsc": "~0.5.26",
+    "fumadocs-mdx": "^15.1.1",
+    "react-server-dom-webpack": "^19.2.7",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4",
+    "wrangler": "^4.110.0"
+  }
+}

@@ -1,0 +1,8 @@
+name = "git-span-website"
+main = "./app/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[routes]]
+pattern = "git-span.com"
+custom_domain = true

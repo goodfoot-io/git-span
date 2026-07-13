@@ -1,0 +1,8 @@
+name = "git-span-website"
+main = "./app/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+SITE_URL = "http://localhost:5173"
