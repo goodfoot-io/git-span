@@ -1,7 +1,7 @@
-packages/git-span/package.json#L11-L11 rk64:806a0960fd35b1b0
+packages/git-span/package.json#L11-L11 rk64:fc4934129b266cc3
 packages/git-span/package.json#L13-L13 rk64:d69c071b2deb5df1
-packages/git-span/scripts/build-local.sh#L6-L6 rk64:8e894ec19a69324f
-packages/git-span/scripts/build-local.sh#L11-L11 rk64:0c2019272eab39ca
-packages/git-span/scripts/clean-shared-build.sh#L2-L10 rk64:af527e2b889d5029
+packages/git-span/scripts/build-local.sh#L6-L6 rk64:13c8b7f9d84dcb1b
+packages/git-span/scripts/build-local.sh#L11-L11 rk64:e2eb70850baf2617
+packages/git-span/scripts/clean-shared-build.sh#L2-L10 rk64:7a8cade02e7e2a6d
 
 Release build entry points (yarn build, yarn build:clean, and build-local.sh) that produce the git-span release binary with consistent cargo flags, shared target directory, and safe concurrent cleanup.

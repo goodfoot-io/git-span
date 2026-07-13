@@ -1,8 +1,8 @@
-packages/git-span/docs/history-example-output-xml.md rk64:3cd71383740b8f05
-packages/git-span/docs/history-example-output.md rk64:418f726303e05d20
-packages/git-span/src/cli/history.rs rk64:265bcea965ac5f22
-packages/git-span/src/cli/mod.rs#L500-L516 rk64:971effec6351d6b2
-packages/git-span/tests/cases/cli_history.rs rk64:9d2ba1cc13a15506
+packages/git-span/docs/history-example-output-xml.md rk64:4dc93c8a3dcc746e
+packages/git-span/docs/history-example-output.md rk64:4e658c42d7d34e90
+packages/git-span/src/cli/history.rs rk64:52bd70716985cd29
+packages/git-span/src/cli/mod.rs#L500-L516 rk64:3bfaa6c3b4a59ad7
+packages/git-span/tests/cases/cli_history.rs rk64:6194a29ba4cf5624
 packages/git-span/tests/cases/mod.rs#L19-L20 rk64:9a8c9ce10afc19cf
 
 Git span history command: argument definitions, handler implementation, integration tests, and output contract documentation that must evolve together.

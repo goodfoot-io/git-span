@@ -1,7 +1,7 @@
 packages/git-span/src/git.rs#L669-L681 rk64:5984d188eb367df5
 packages/git-span/src/resolver/engine/anchor.rs#L481-L780 rk64:19aa44e8b0893fe4
-packages/git-span/tests/cases/mod.rs#L49-L57 rk64:abb1108781f50ec4
-packages/git-span/tests/cases/promisor_missing_reproduction.rs rk64:b30422b8cf44994c
-packages/git-span/tests/cases/stale_sparse_checkout.rs#L7-L92 rk64:6d8a3cba57250175
+packages/git-span/tests/cases/mod.rs#L49-L57 rk64:966b8dae8fa84e2e
+packages/git-span/tests/cases/promisor_missing_reproduction.rs rk64:dfc34d0d3c63f8b2
+packages/git-span/tests/cases/stale_sparse_checkout.rs#L7-L92 rk64:da49405637e4cda3
 
 The stale resolver consults skip-worktree flags and promisor-marker files to distinguish SparseExcluded and PromisorMissing from Deleted; the integration tests verify each unavailable reason surfaces correctly.

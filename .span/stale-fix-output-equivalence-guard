@@ -1,7 +1,7 @@
 packages/git-span/src/resolver/engine/mod.rs#L703-L705 rk64:ffe5049cf110d674
 packages/git-span/src/resolver/engine/mod.rs#L1294-L1299 rk64:7286db5a1c4f5622
 packages/git-span/src/resolver/mod.rs#L33-L33 rk64:fbf80b9853416cb1
-packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L40-L305 rk64:1f0a5cbf5e593dee
-packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L565-L654 rk64:ef4a8a86ea88cc99
+packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L40-L305 rk64:f4cf7867298ba700
+packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L565-L654 rk64:6953f15a0e49e242
 
 Output-equivalence subsystem keeping consecutive stale --fix runs byte-identical to a baseline full re-resolve. The test suite guards stdout/stderr/exit identity and rendered span ordering; the splice depends on two invariants it cannot type-enforce: span_is_reportable_in_stale_discovery (which fully-freshened spans render) and sort_spans_by_anchor_path returning Equal on a true tie so the stable sort preserves caller input (argument) order across both the read-only and --fix paths.

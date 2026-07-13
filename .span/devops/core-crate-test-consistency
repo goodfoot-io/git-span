@@ -1,4 +1,4 @@
-.github/workflows/ci.yml#L71-L74 rk64:8de31a00075c444d
-packages/git-span-core/package.json#L6-L6 rk64:8fc07485810c2e0a
+.github/workflows/ci.yml#L71-L74 rk64:48045e17ebfabe55
+packages/git-span-core/package.json#L6-L6 rk64:4550842eb772853c
 
 CI-local test command consistency for git-span-core: CI hardcodes cd packages/git-span-core && cargo test and local yarn test picks up the same command from package.json's test script — both must stay in sync so developers and CI validate the crate identically.

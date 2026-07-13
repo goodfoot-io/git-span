@@ -1,4 +1,4 @@
-packages/git-span/src/cli/commit.rs#L547-L562 rk64:c2120da2ab574bd7
+packages/git-span/src/cli/commit.rs#L547-L562 rk64:45843ceb7ed7c5c3
 packages/git-span/tests/cases/add_replace.rs#L168-L178 rk64:81f10f33a8278bb5
 
 The --replace old-address parse error includes --replace in its remediation steps so a user who follows them is guided back to the replace command, not a plain add that would silently append instead of replace.

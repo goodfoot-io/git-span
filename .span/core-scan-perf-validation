@@ -1,4 +1,4 @@
-packages/git-span-core/benches/scan.rs#L1-L155 rk64:8ec6076e59902582
-packages/git-span-core/src/lib.rs#L392-L698 rk64:9bc081eef2f28668
+packages/git-span-core/benches/scan.rs#L1-L155 rk64:d6e5816b46d5e051
+packages/git-span-core/src/lib.rs#L392-L698 rk64:a98e0a570497e1f4
 
 Benchmark validation that the cheap-fingerprint prefilter and other scanning optimizations achieve their >=5× speedup target on the wiki CLI's hot path (single stale anchor in a 2500-line file).

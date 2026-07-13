@@ -1,4 +1,4 @@
-plugins/git-span/agents/expert.md#L31-L39 rk64:8385f8cb068e03fd
-plugins/git-span/skills/git-span/sections/responding-to-drift.md#L54-L54 rk64:d40013e4390aea90
+plugins/git-span/agents/expert.md#L69-L71 rk64:ced214e0a5f779d8
+plugins/git-span/skills/git-span/sections/responding-to-drift.md#L54-L54 rk64:342adebeae209749
 
 Git command allowlist that prevents accidental erasure of shared uncommitted work when span agents run in worktrees with live implementation work.
