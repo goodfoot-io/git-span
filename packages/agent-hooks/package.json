@@ -1,6 +1,6 @@
 {
   "name": "agent-hooks",
-  "version": "1.0.131",
+  "version": "1.0.132",
   "type": "module",
   "scripts": {
     "build": "yarn build:hooks && yarn build:dispatcher",

@@ -1,6 +1,6 @@
 [package]
 name = "git-span"
-version = "1.0.131"
+version = "1.0.132"
 edition = "2024"
 build = "build.rs"
 

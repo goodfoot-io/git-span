@@ -442,7 +442,7 @@ function buildAgentPrompt(repoRoot, spanDir, postCommitDirAbs, claimDirAbs) {
 }
 var AGENT_TIMEOUT_MS = 15 * 60 * 1e3;
 var SIGTERM_GRACE_MS = 1e4;
-function buildClaudeArgs(repoRoot, spanDir, claimId) {
+function buildClaudeArgs(repoRoot, spanDir, claimId, headless = true) {
   const postCommitDirAbs = postCommitDir(repoRoot);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
   const promptText = buildAgentPrompt(repoRoot, spanDir, postCommitDirAbs, claimDirAbs);
@@ -470,7 +470,11 @@ function buildClaudeArgs(repoRoot, spanDir, claimId) {
     disableClaudeAiConnectors: true,
     disableArtifact: true
   };
-  return ["-p", promptText, "--model", "sonnet", "--effort", "low", "--settings", JSON.stringify(settings)];
+  const args = [promptText, "--model", "sonnet", "--effort", "low", "--settings", JSON.stringify(settings)];
+  if (headless) {
+    args.unshift("-p");
+  }
+  return args;
 }
 async function spawnAgent(log, repoRoot, spanDir, claimId, timeoutMs = AGENT_TIMEOUT_MS) {
   const claudeArgs = buildClaudeArgs(repoRoot, spanDir, claimId);
@@ -549,12 +553,14 @@ function shellQuoteSingle(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 function writeManualDispatchScript(log, repoRoot, spanDir, claimId, now) {
-  const claudeArgs = buildClaudeArgs(repoRoot, spanDir, claimId);
+  const claudeArgs = buildClaudeArgs(repoRoot, spanDir, claimId, false);
   const spanDirAbs = nodePath2.resolve(repoRoot, spanDir);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
+  const postCommitDirAbs = postCommitDir(repoRoot);
   const datetimeStamp = now.toISOString().replace(/[:.]/g, "-");
   const scriptPath = nodePath2.join(spanDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
   const quotedCommand = ["claude", ...claudeArgs].map(shellQuoteSingle).join(" \\\n  ");
+  const quotedPostCommitDir = shellQuoteSingle(postCommitDirAbs);
   const script = [
     "#!/bin/sh",
     `# git-span manual dispatch script -- generated ${now.toISOString()}`,
@@ -576,6 +582,47 @@ function writeManualDispatchScript(log, repoRoot, spanDir, claimId, now) {
     'script_dir=$(cd "$(dirname "$0")" && pwd -P) || exit 1',
     'repo_root=$(cd "$script_dir" && git rev-parse --show-toplevel) || exit 1',
     'cd "$repo_root" || exit 1',
+    "",
+    "# ------------------------------------------------------------------",
+    "# Scan the post-commit queue for live numbers at run time",
+    "# ------------------------------------------------------------------",
+    `post_commit_dir=${quotedPostCommitDir}`,
+    'if ls "$post_commit_dir"/*.json >/dev/null 2>&1; then',
+    `  pending_count=$(jq -s 'length' "$post_commit_dir"/*.json 2>/dev/null)`,
+    `  branch_count=$(jq -r '.branch // empty' "$post_commit_dir"/*.json 2>/dev/null | sort -u | wc -l)`,
+    `  # jq may produce no output (e.g. malformed JSON, jq unavailable); fall`,
+    `  # back to counting files by name when the count is empty.`,
+    `  if [ -z "$pending_count" ]; then`,
+    `    pending_count=$(ls "$post_commit_dir"/*.json 2>/dev/null | wc -l)`,
+    `  fi`,
+    "else",
+    "  pending_count=0",
+    "  branch_count=0",
+    "fi",
+    "",
+    "# ------------------------------------------------------------------",
+    "# Pre-flight confirmation",
+    "# ------------------------------------------------------------------",
+    'echo "git-span reconciler is about to process $pending_count pending post-commit record(s) across $branch_count branch(es)."',
+    'echo ""',
+    'echo "The reconciler will:"',
+    'echo "  - Check existing span coverage for drift"',
+    'echo "  - Add, update, or remove coverage as needed"',
+    'echo "  - Write a short rationale for any new coverage"',
+    'echo "  - Commit and land the result on each branch"',
+    'echo ""',
+    'printf "Proceed? [y/N] "',
+    "read -r reply",
+    'case "$reply" in',
+    "  [yY]|[yY][eE][sS])",
+    "    ;;",
+    "  *)",
+    '    echo "Aborted. The claim is still reserved for a later attempt."',
+    "    exit 1",
+    "    ;;",
+    "esac",
+    "",
+    'echo "Launching reconciler..."',
     `exec ${quotedCommand}`,
     ""
   ].join("\n");
