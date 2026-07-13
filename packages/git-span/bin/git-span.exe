@@ -1,4 +1,4 @@
-@goodfoot/git-span placeholder. scripts/postinstall.js replaces this file
+git-span placeholder. scripts/postinstall.js replaces this file
 with the native binary for your platform. The name ends in .exe and the
 first line intentionally has NO "#!" shebang so npm/yarn/pnpm cmd-shim
 generates a direct-exec wrapper that runs on Windows; Unix ignores the

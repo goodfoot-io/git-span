@@ -94,7 +94,12 @@ jobs:
 
       - name: Publish platform packages
         run: |
-          for pkg in git-span-linux-x64 git-span-linux-arm64 git-span-darwin-x64 git-span-darwin-arm64 git-span-win32-x64; do
+          # TEMPORARY: git-span-win32-x64 is excluded from this loop because npm's
+          # automated spam detection is blocking publishes of that package name
+          # (403 "Package name triggered spam detection"), independent of package
+          # content. A support request is open with npm to clear it. Once resolved,
+          # add git-span-win32-x64 back to this list and drop this comment.
+          for pkg in git-span-linux-x64 git-span-linux-arm64 git-span-darwin-x64 git-span-darwin-arm64; do
             echo "Publishing $pkg..."
             cd npm/$pkg
             npm publish --access public --provenance
