@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_label.rs#L79-L80 rk64:dc0da71f5ed4773e
-packages/git-span/src/cli/stale_fix.rs#L584-L598 rk64:26ebfb2e5793c9af
+packages/git-span/src/cli/stale_fix.rs#L607-L621 rk64:26ebfb2e5793c9af
 packages/git-span/src/cli/stale_fix.rs#L791-L862 rk64:1988f95e5de903a9
 packages/git-span/src/resolver/cache_v2/baseline.rs#L60-L85 rk64:f4c5dcd0f639a360
 packages/git-span/src/resolver/cache_v2/dto.rs#L132-L163 rk64:8a039deeb78b5e10
