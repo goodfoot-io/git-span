@@ -19,6 +19,7 @@
     "app/**/*.ts",
     "app/**/*.tsx",
     ".source/**/*.ts",
+    ".react-router/types/**/*.d.ts",
     "source.config.ts",
     "vite.config.ts",
     "react-router.config.ts"
