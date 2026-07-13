@@ -5,11 +5,7 @@ import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
 import globalStyles from '~/styles/global.css?url';
 
-export const links: LinksFunction = () => [
-  { rel: 'stylesheet', href: globalStyles },
-  { rel: 'icon', href: '/favicon.ico', sizes: '48x48' },
-  { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }
-];
+export const links: LinksFunction = () => [{ rel: 'stylesheet', href: globalStyles }];
 
 export const meta: MetaFunction = () => [
   { charset: 'utf-8' },

@@ -51,6 +51,7 @@ export default defineConfig(async ({ command }) => ({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    allowedHosts: ['local.git-span.com'],
     headers: {
       'Cache-Control': 'no-store, max-age=0'
     }

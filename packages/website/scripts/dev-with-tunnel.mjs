@@ -14,11 +14,28 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { env } from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const PID_FILE = '/tmp/git-span-website-dev.pid';
 const LOG_PREFIX = '[git-span-website]';
 const VITE_PORT = 5173;
+
+const TUNNEL_HEALTH_INTERVAL_MS = 30_000;
+const TUNNEL_HEALTH_FETCH_TIMEOUT_MS = 8_000;
+const TUNNEL_HEALTH_FAIL_THRESHOLD = 3;
+const TUNNEL_BACKOFF_MIN_MS = 2_000;
+const TUNNEL_BACKOFF_MAX_MS = 60_000;
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SOURCE_DIR = path.resolve(__dirname, '..', '.source');
+
+let shuttingDown = false;
+let restartAttempt = 0;
+let consecutiveHealthFails = 0;
+let restartTimer = null;
+let healthInterval = null;
 
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
@@ -92,6 +109,20 @@ if (!tunnelToken) {
   log('CLOUDFLARE_TUNNEL_TOKEN_LOCAL not set -- skipping tunnel, serving on localhost only');
 }
 
+// Ensure .source/ exists before starting vite (fumadocs-mdx generates it)
+if (!existsSync(SOURCE_DIR)) {
+  log('.source/ directory not found; running fumadocs:generate...');
+  const generate = spawn('yarn', ['run', 'fumadocs:generate'], {
+    stdio: 'inherit',
+    cwd: path.resolve(__dirname, '..'),
+  });
+  await new Promise((resolve, reject) => {
+    generate.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`fumadocs:generate exited with code ${code}`))
+    );
+  });
+}
+
 // Spawn vite dev server
 const vite = spawn('yarn', ['run', 'dev:vite'], {
   stdio: 'inherit',
@@ -101,28 +132,72 @@ const vite = spawn('yarn', ['run', 'dev:vite'], {
 
 const children = [vite];
 
+// Tunnel health check and respawn helpers
+function scheduleTunnelRestart() {
+  if (shuttingDown) return;
+  const delay = Math.min(
+    TUNNEL_BACKOFF_MIN_MS * Math.pow(2, restartAttempt),
+    TUNNEL_BACKOFF_MAX_MS
+  );
+  restartAttempt++;
+  log(`Scheduling tunnel restart in ${delay}ms (attempt ${restartAttempt})`);
+  restartTimer = setTimeout(() => {
+    if (shuttingDown) return;
+    spawnTunnel();
+  }, delay);
+}
+
+async function checkTunnelHealth() {
+  if (shuttingDown || !tunnelToken) return;
+  try {
+    await fetch('https://local.git-span.com/', {
+      signal: AbortSignal.timeout(TUNNEL_HEALTH_FETCH_TIMEOUT_MS),
+      redirect: 'manual',
+    });
+    // Any HTTP response means the tunnel is forwarding
+    consecutiveHealthFails = 0;
+    restartAttempt = 0;
+  } catch (err) {
+    consecutiveHealthFails++;
+    log(`Tunnel health check failed (${consecutiveHealthFails}/${TUNNEL_HEALTH_FAIL_THRESHOLD}):`, err.message);
+    if (consecutiveHealthFails >= TUNNEL_HEALTH_FAIL_THRESHOLD && tunnel) {
+      log('Tunnel health check threshold reached; killing tunnel for restart...');
+      tunnel.kill('SIGTERM');
+      // Respawning happens in the exit handler
+    }
+  }
+}
+
 // Spawn cloudflared tunnel if token is available
 let tunnel = null;
-if (tunnelToken) {
-  tunnel = spawn(
-    'cloudflared',
-    ['tunnel', 'run', '--token', tunnelToken],
-    {
-      stdio: 'inherit',
-      detached: true
-    }
-  );
+
+function spawnTunnel() {
+  if (shuttingDown) return;
+  tunnel = spawn('cloudflared', ['tunnel', 'run', '--token', tunnelToken], {
+    stdio: 'inherit',
+    detached: true,
+  });
   children.push(tunnel);
 
   tunnel.on('exit', (code) => {
     log('cloudflared tunnel exited with code', code);
-    log('Tunnel will be respawned automatically');
+    if (!shuttingDown) {
+      scheduleTunnelRestart();
+    }
   });
 
   tunnel.on('error', (errMsg) => {
     err('cloudflared tunnel error:', errMsg.message);
     err('Is cloudflared installed? See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/');
+    if (!shuttingDown) {
+      scheduleTunnelRestart();
+    }
   });
+}
+
+if (tunnelToken) {
+  spawnTunnel();
+  healthInterval = setInterval(checkTunnelHealth, TUNNEL_HEALTH_INTERVAL_MS);
 }
 
 const pgid = vite.pid;
@@ -131,7 +206,11 @@ log('Dev server started (PID', pgid + '). Vite running on http://localhost:' + V
 
 // Graceful shutdown handler
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   log('Shutting down...');
+  if (restartTimer) clearTimeout(restartTimer);
+  if (healthInterval) clearInterval(healthInterval);
   for (const child of children) {
     try {
       child.kill('SIGTERM');
