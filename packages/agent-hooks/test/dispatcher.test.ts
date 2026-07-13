@@ -155,33 +155,33 @@ function branchName(repoRoot: string): string {
 describe('Porcelain format contract', () => {
   describe('parsePorcelain', () => {
     it('parses well-formed stale rows', () => {
-      const input = ['my-mesh\tsrc/foo.ts\t10-20', 'other-mesh\tsrc/bar.ts\t5-15'].join('\n');
+      const input = ['my-span\tsrc/foo.ts\t10-20', 'other-span\tsrc/bar.ts\t5-15'].join('\n');
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(2);
-      expect(rows[0]).toEqual({ name: 'my-mesh', path: 'src/foo.ts', start: 10, end: 20 });
-      expect(rows[1]).toEqual({ name: 'other-mesh', path: 'src/bar.ts', start: 5, end: 15 });
+      expect(rows[0]).toEqual({ name: 'my-span', path: 'src/foo.ts', start: 10, end: 20 });
+      expect(rows[1]).toEqual({ name: 'other-span', path: 'src/bar.ts', start: 5, end: 15 });
     });
     it('parses whole-file anchors', () => {
-      const input = 'my-mesh\tsrc/app.ts\t1-100\n';
+      const input = 'my-span\tsrc/app.ts\t1-100\n';
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toEqual({ name: 'my-mesh', path: 'src/app.ts', start: 1, end: 100 });
+      expect(rows[0]).toEqual({ name: 'my-span', path: 'src/app.ts', start: 1, end: 100 });
     });
     it('returns empty array for empty input', () => {
       expect(parsePorcelain('')).toEqual([]);
     });
     it('skips blank lines', () => {
-      const input = '\n\nmy-mesh\tsrc/foo.ts\t10-20\n\n';
+      const input = '\n\nmy-span\tsrc/foo.ts\t10-20\n\n';
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(1);
     });
     it('skips malformed lines (missing tab)', () => {
-      const input = 'no-tabs-here\nmy-mesh\tsrc/foo.ts\t10-20';
+      const input = 'no-tabs-here\nmy-span\tsrc/foo.ts\t10-20';
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(1);
     });
     it('skips lines with missing range dash', () => {
-      const input = 'my-mesh\tsrc/foo.ts\t10\nvalid\tsrc/bar.ts\t1-5';
+      const input = 'my-span\tsrc/foo.ts\t10\nvalid\tsrc/bar.ts\t1-5';
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(1);
       expect(rows[0].name).toBe('valid');
@@ -193,7 +193,7 @@ describe('Porcelain format contract', () => {
       expect(rows[0].name).toBe('valid');
     });
     it('handles trailing newline', () => {
-      const input = 'my-mesh\tsrc/foo.ts\t10-20\n';
+      const input = 'my-span\tsrc/foo.ts\t10-20\n';
       const rows = parsePorcelain(input);
       expect(rows).toHaveLength(1);
     });
@@ -751,24 +751,24 @@ describe('Utility functions', () => {
 // ===========================================================================
 
 describe('buildAgentPrompt', () => {
-  it('substitutes repoRoot, meshDir, postCommitDir, and claimDir into the template', () => {
+  it('substitutes repoRoot, spanDir, postCommitDir, and claimDir into the template', () => {
     const prompt = buildAgentPrompt(
       '/tmp/repo',
-      '.mesh',
-      '/tmp/repo/.git/git-mesh/post-commit',
-      '/tmp/repo/.git/git-mesh/post-commit/claimed/claim-1'
+      '.span',
+      '/tmp/repo/.git/git-span/post-commit',
+      '/tmp/repo/.git/git-span/post-commit/claimed/claim-1'
     );
     expect(prompt).toContain('/tmp/repo');
-    expect(prompt).toContain('.mesh');
-    expect(prompt).toContain('/tmp/repo/.git/git-mesh/post-commit');
-    expect(prompt).toContain('/tmp/repo/.git/git-mesh/post-commit/claimed/claim-1');
+    expect(prompt).toContain('.span');
+    expect(prompt).toContain('/tmp/repo/.git/git-span/post-commit');
+    expect(prompt).toContain('/tmp/repo/.git/git-span/post-commit/claimed/claim-1');
     expect(prompt).not.toContain('{{');
   });
   it('describes the self-claiming, self-landing workflow', () => {
-    const prompt = buildAgentPrompt('/tmp/repo', '.mesh', '/tmp/post', '/tmp/claim');
+    const prompt = buildAgentPrompt('/tmp/repo', '.span', '/tmp/post', '/tmp/claim');
     expect(prompt).toMatch(/EnterWorktree/);
     expect(prompt).toMatch(/rebase/i);
-    expect(prompt.toLowerCase()).toContain('git mesh stale');
+    expect(prompt.toLowerCase()).toContain('git span stale');
   });
 });
 
@@ -782,7 +782,7 @@ describe('buildClaudeArgs', () => {
     const { root, cleanup } = repo;
     let args: string[];
     try {
-      args = buildClaudeArgs(root, '.mesh', 'claim-123');
+      args = buildClaudeArgs(root, '.span', 'claim-123');
     } finally {
       cleanup();
     }
@@ -808,7 +808,7 @@ describe('buildClaudeArgs', () => {
     const { root, cleanup } = repo;
     let args: string[];
     try {
-      args = buildClaudeArgs(root, '.mesh', 'claim-123', false);
+      args = buildClaudeArgs(root, '.span', 'claim-123', false);
     } finally {
       cleanup();
     }
@@ -830,8 +830,8 @@ describe('buildClaudeArgs', () => {
 // ===========================================================================
 
 describe('manualRunMarkerPath', () => {
-  it('resolves to <meshDir>/.manual-run under the repo root', () => {
-    expect(manualRunMarkerPath('/tmp/repo', '.mesh')).toBe(nodePath.join('/tmp/repo', '.mesh', '.manual-run'));
+  it('resolves to <spanDir>/.manual-run under the repo root', () => {
+    expect(manualRunMarkerPath('/tmp/repo', '.span')).toBe(nodePath.join('/tmp/repo', '.span', '.manual-run'));
   });
 });
 
@@ -846,9 +846,9 @@ describe('writeManualDispatchScript', () => {
 
       const { logger } = makeTestLogger();
       const now = new Date('2026-07-08T16:30:00.000Z');
-      const scriptPath = writeManualDispatchScript(logger, root, '.mesh', claimId, now);
+      const scriptPath = writeManualDispatchScript(logger, root, '.span', claimId, now);
 
-      expect(scriptPath).toBe(nodePath.join(root, '.mesh', 'manual-hook-dispatch-2026-07-08T16-30-00-000Z.sh'));
+      expect(scriptPath).toBe(nodePath.join(root, '.span', 'manual-hook-dispatch-2026-07-08T16-30-00-000Z.sh'));
       expect(fs.existsSync(scriptPath)).toBe(true);
 
       const mode = fs.statSync(scriptPath).mode;
@@ -879,7 +879,7 @@ describe('writeManualDispatchScript', () => {
       expect(content).toContain('branch_count');
       expect(content).toContain('[y/N]');
       expect(content).toContain('Aborted. The claim is still reserved for a later attempt.');
-      expect(content).toContain('Check existing mesh coverage for drift');
+      expect(content).toContain('Check existing span coverage for drift');
       expect(content).toContain('Commit and land the result');
 
       // Foreground mode: the claude invocation must not include -p as a
@@ -911,7 +911,7 @@ describe('writeManualDispatchScript', () => {
       const scriptPath = writeManualDispatchScript(
         logger,
         root,
-        '.mesh',
+        '.span',
         claimId,
         new Date('2026-01-01T00:00:00.000Z')
       );

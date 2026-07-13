@@ -1,8 +1,8 @@
 services:
   app:
-    hostname: git-mesh
+    hostname: git-span
     extra_hosts:
-      - "git-mesh:127.0.0.1"
+      - "git-span:127.0.0.1"
     init: true
     cap_add:
       - SYS_TIME
@@ -15,7 +15,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ..:/workspace:cached
-      - ${HOME}/devcontainer/git-mesh:/home/node:cached
+      - ${HOME}/devcontainer/git-span:/home/node:cached
     env_file:
       - .env
     environment:

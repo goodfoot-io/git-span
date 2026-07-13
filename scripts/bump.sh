@@ -8,7 +8,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -W)" ;;
   *)                    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)" ;;
 esac
-SOURCE="$REPO_ROOT/packages/git-mesh/package.json"
+SOURCE="$REPO_ROOT/packages/git-span/package.json"
 LEVEL="${1:-patch}"
 
 case "$LEVEL" in
@@ -33,7 +33,7 @@ NEW_VERSION=$(node -e "
   console.log(newVersion);
 ")
 
-echo "Bumped packages/git-mesh to $NEW_VERSION"
+echo "Bumped packages/git-span to $NEW_VERSION"
 echo ""
 bash "$REPO_ROOT/scripts/sync-versions.sh"
 
@@ -49,4 +49,4 @@ echo ""
 
 echo ""
 echo "Regenerating manpage for $NEW_VERSION"
-(cd "$REPO_ROOT/packages/git-mesh" && yarn build:man)
+(cd "$REPO_ROOT/packages/git-span" && yarn build:man)

@@ -9,16 +9,16 @@
 *.toml text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
-.mesh/** text eol=lf
+.span/** text eol=lf
 .wiki/** text eol=lf
 
-# Collapse the easy majority of .mesh/ conflicts in place during git merge.
-.mesh/** merge=mesh
+# Collapse the easy majority of .span/ conflicts in place during git merge.
+.span/** merge=span
 
-# Structurally merge .wiki/ mesh conflicts in place during git merge.
-.wiki/** merge=wiki-mesh
+# Structurally merge .wiki/ span conflicts in place during git merge.
+.wiki/** merge=wiki-span
 
 # Resolve package version conflicts by picking the highest semver.
 package.json merge=json-version
 packages/extension/package.json merge=json-version
-packages/git-mesh/package.json merge=json-version
+packages/git-span/package.json merge=json-version

@@ -1,9 +1,9 @@
 {
-  "name": "@goodfoot/git-mesh-monorepo",
+  "name": "@goodfoot/git-span-monorepo",
   "version": "1.0.131",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/goodfoot-io/git-mesh.git"
+    "url": "git+https://github.com/goodfoot-io/git-span.git"
   },
   "workspaces": {
     "packages": [

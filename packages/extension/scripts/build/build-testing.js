@@ -1,5 +1,5 @@
 /**
- * Testing build script for the Git Mesh extension.
+ * Testing build script for the Git Span extension.
  *
  * Invoked by test/runTest.ts with TEST_DIST_DIR set to a unique temp path.
  * VS Code loads the extension from TEST_DIST_DIR as its root, using the

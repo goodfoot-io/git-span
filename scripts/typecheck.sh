@@ -10,17 +10,17 @@ PIDS=()
 EXIT=0
 
 # --- Rust CLI typecheck ---
-if [ -f "$WORKSPACE_ROOT/packages/git-mesh/Cargo.toml" ]; then
-  echo "Running cargo check for packages/git-mesh..."
+if [ -f "$WORKSPACE_ROOT/packages/git-span/Cargo.toml" ]; then
+  echo "Running cargo check for packages/git-span..."
   # Delegate to the package-level `typecheck` script so this entry point uses
   # the exact same flags (RUSTFLAGS, --locked), shared target lock, and target
-  # directory (git-mesh/check). A second flag profile writing into the same
+  # directory (git-span/check). A second flag profile writing into the same
   # check/ target dir rebuilds crates in place with new SVHs and leaves E0460
   # "possibly newer version of crate" wreckage when runs interleave.
-  (cd "$WORKSPACE_ROOT/packages/git-mesh" && yarn typecheck) &
+  (cd "$WORKSPACE_ROOT/packages/git-span" && yarn typecheck) &
   PIDS+=($!)
 else
-  echo "Warning: packages/git-mesh/Cargo.toml not found, skipping cargo check." >&2
+  echo "Warning: packages/git-span/Cargo.toml not found, skipping cargo check." >&2
 fi
 
 if [ -d "$WORKSPACE_ROOT/packages/extension" ]; then

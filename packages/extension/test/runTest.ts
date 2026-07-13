@@ -1,13 +1,13 @@
 /**
- * Git Mesh extension test runner.
+ * Git Span extension test runner.
  *
  * Mirrors the structure of packages/extension/test/runTest.ts while provisioning
- * a local git-mesh fixture binary for development PATH fallback during tests.
+ * a local git-span fixture binary for development PATH fallback during tests.
  *
  * Supports headless Linux environments via Xvfb and uses a unique dist directory
  * per test run to enable safe parallel execution.
  *
- * @summary VS Code extension test runner for the git-mesh package.
+ * @summary VS Code extension test runner for the git-span package.
  */
 
 import * as cp from 'node:child_process';
@@ -33,9 +33,9 @@ const INSTANCE_ID = process.pid;
  * Dynamic paths that are unique per test run instance.
  * These enable multiple test runs to execute in parallel.
  */
-const TEST_WORKSPACE_PATH = `/tmp/git-mesh-ext-test-workspace-${INSTANCE_ID}`;
-const USER_DATA_DIR_PATH = `/tmp/git-mesh-ext-test-${INSTANCE_ID}`;
-const TEST_BIN_PATH = `/tmp/git-mesh-ext-test-bin-${INSTANCE_ID}`;
+const TEST_WORKSPACE_PATH = `/tmp/git-span-ext-test-workspace-${INSTANCE_ID}`;
+const USER_DATA_DIR_PATH = `/tmp/git-span-ext-test-${INSTANCE_ID}`;
+const TEST_BIN_PATH = `/tmp/git-span-ext-test-bin-${INSTANCE_ID}`;
 
 /**
  * Unique dist directory for this test run.
@@ -242,11 +242,11 @@ function prepareTestWorkspace(): void {
   fs.writeFileSync(path.join(TEST_WORKSPACE_PATH, 'README.md'), '# Test Workspace\n');
 }
 
-function installGitMeshFixtureBinary(): void {
+function installGitSpanFixtureBinary(): void {
   fs.rmSync(TEST_BIN_PATH, { recursive: true, force: true });
   fs.mkdirSync(TEST_BIN_PATH, { recursive: true });
 
-  const fixtureScriptPath = path.join(TEST_BIN_PATH, 'git-mesh-fixture.js');
+  const fixtureScriptPath = path.join(TEST_BIN_PATH, 'git-span-fixture.js');
   fs.writeFileSync(
     fixtureScriptPath,
     `#!/usr/bin/env node
@@ -254,7 +254,7 @@ const args = process.argv.slice(2);
 const writeJson = (value) => process.stdout.write(JSON.stringify(value));
 
 if (args[0] === '--version') {
-  process.stdout.write('git-mesh 9.9.9-test');
+  process.stdout.write('git-span 9.9.9-test');
   process.exit(0);
 }
 
@@ -270,9 +270,9 @@ process.exit(0);
   );
 
   if (process.platform === 'win32') {
-    fs.writeFileSync(path.join(TEST_BIN_PATH, 'git-mesh.cmd'), `@echo off\r\nnode "${fixtureScriptPath}" %*\r\n`);
+    fs.writeFileSync(path.join(TEST_BIN_PATH, 'git-span.cmd'), `@echo off\r\nnode "${fixtureScriptPath}" %*\r\n`);
   } else {
-    fs.writeFileSync(path.join(TEST_BIN_PATH, 'git-mesh'), `#!/usr/bin/env bash\nnode "${fixtureScriptPath}" "$@"\n`, {
+    fs.writeFileSync(path.join(TEST_BIN_PATH, 'git-span'), `#!/usr/bin/env bash\nnode "${fixtureScriptPath}" "$@"\n`, {
       mode: 0o755
     });
   }
@@ -312,7 +312,7 @@ async function main(): Promise<void> {
     }
 
     prepareTestWorkspace();
-    installGitMeshFixtureBinary();
+    installGitSpanFixtureBinary();
 
     // Remove VSCODE_ and ELECTRON_RUN_AS_NODE env vars that cause MODULE_NOT_FOUND errors.
     const problematicVars = Object.keys(process.env).filter(
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
       version: getMinVSCodeVersion(),
       extensionDevelopmentPath,
       extensionTestsPath,
-      extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_MESH_EXTENSION_USE_PATH_FALLBACK: '1' },
+      extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
       launchArgs: [
         TEST_WORKSPACE_PATH,
         '--disable-extensions',
@@ -370,7 +370,7 @@ async function main(): Promise<void> {
           version: getMinVSCodeVersion(),
           extensionDevelopmentPath,
           extensionTestsPath,
-          extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_MESH_EXTENSION_USE_PATH_FALLBACK: '1' },
+          extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
           launchArgs: [
             TEST_WORKSPACE_PATH,
             '--disable-extensions',
@@ -395,7 +395,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error('[git-mesh] Unhandled error in main:', err);
+  console.error('[git-span] Unhandled error in main:', err);
   performCleanup();
   process.exit(1);
 });

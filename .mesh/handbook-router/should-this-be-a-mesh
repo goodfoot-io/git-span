@@ -1,4 +1,0 @@
-plugins/git-mesh/skills/git-mesh/SKILL.md#L9-L9 rk64:5fa84925968e07ae
-plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md#L3-L5 rk64:e656bdf119f25521
-
-SKILL.md router entry sends a reader to the "Should this be a mesh?" section by title; the section heading in creating-a-mesh.md must keep that title or the pointer dangles silently.

@@ -10,7 +10,7 @@ jobs:
     name: Build CLI (Rust)
     runs-on: ubuntu-latest
     # The target directory layout mirrors the local yarn scripts exactly (see
-    # packages/git-mesh/scripts/cargo-build-system.md): non-codegen tasks
+    # packages/git-span/scripts/cargo-build-system.md): non-codegen tasks
     # (check, clippy) write rmeta into a `check` dir; codegen tasks (nextest,
     # build) write rlib into a `build` dir, per crate. They MUST stay separate —
     # sharing one dir leaves rmeta-only artifacts that fail downstream rlib
@@ -43,46 +43,46 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: packages/git-mesh -> ${{ runner.temp }}/git-mesh-target
+          workspaces: packages/git-span -> ${{ runner.temp }}/git-span-target
 
-      - name: Cargo check (git-mesh)
+      - name: Cargo check (git-span)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/check
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/check
           RUSTFLAGS: "-W unused -W dead-code"
-        run: cd packages/git-mesh && cargo check --quiet --locked
+        run: cd packages/git-span && cargo check --quiet --locked
 
-      - name: Cargo clippy (git-mesh)
+      - name: Cargo clippy (git-span)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/check
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/check
           RUSTFLAGS: "-W unused -W dead-code"
-        run: cd packages/git-mesh && cargo clippy --quiet --locked -- -D warnings
+        run: cd packages/git-span && cargo clippy --quiet --locked -- -D warnings
 
-      - name: Cargo test (git-mesh)
+      - name: Cargo test (git-span)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/build
-        run: cd packages/git-mesh && cargo nextest run --build-jobs 1 --locked
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/build
+        run: cd packages/git-span && cargo nextest run --build-jobs 1 --locked
 
-      - name: Cargo clippy (git-mesh-core)
+      - name: Cargo clippy (git-span-core)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh-core/check
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span-core/check
           RUSTFLAGS: "-W unused -W dead-code"
-        run: cd packages/git-mesh-core && cargo clippy --quiet --locked -- -D warnings
+        run: cd packages/git-span-core && cargo clippy --quiet --locked -- -D warnings
 
-      - name: Cargo test (git-mesh-core)
+      - name: Cargo test (git-span-core)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh-core/build
-        run: cd packages/git-mesh-core && cargo test --locked
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span-core/build
+        run: cd packages/git-span-core && cargo test --locked
 
       - name: Cargo build (release)
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/git-mesh-target/git-mesh/build
-        run: cd packages/git-mesh && cargo build --release --locked
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/build
+        run: cd packages/git-span && cargo build --release --locked
 
       - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
-          name: git-mesh-cli
-          path: ${{ runner.temp }}/git-mesh-target/git-mesh/build/release/git-mesh
+          name: git-span-cli
+          path: ${{ runner.temp }}/git-span-target/git-span/build/release/git-span
           retention-days: 1
 
   build-extension:
@@ -107,10 +107,10 @@ jobs:
       - name: Download CLI binary
         uses: actions/download-artifact@v4
         with:
-          name: git-mesh-cli
+          name: git-span-cli
 
       - name: Place CLI binary on PATH
-        run: chmod +x git-mesh && sudo mv git-mesh /usr/local/bin/
+        run: chmod +x git-span && sudo mv git-span /usr/local/bin/
 
       - name: Install Xvfb
         run: sudo apt-get install -y xvfb

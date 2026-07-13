@@ -1,0 +1,6 @@
+packages/git-span/src/cli/doctor.rs#L78-L90 rk64:903fa7e3b31ca6c9
+packages/git-span/src/cli/interior_anchor.rs rk64:4d8897db028b50a4
+packages/git-span/src/cli/stale_fix.rs#L38-L55 rk64:32d0710f913e2327
+packages/git-span/src/cli/stale_output.rs#L1004-L1039 rk64:a467c0ae46e00b0d
+
+Read-time interior-anchor handling, designed so SpanFile::parse stays a pure text->struct transform and a poisoned span remains loadable/repairable. interior_anchor.rs scans every visible span per-span (one poison never blanks the corpus) and formats the loud actionable report. doctor (run_doctor) and stale (run_stale) both call scan_interior_anchors and emit report_block; stale additionally drives a fail-closed non-zero exit that --no-exit-code cannot mask. stale --fix repairs in place by retaining only anchors classify_interior_anchor accepts. These four sites must move together: changing the surfacing contract, the report shape, or the classify rule in any one breaks the others.

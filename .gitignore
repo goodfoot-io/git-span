@@ -78,12 +78,12 @@ yarn-error.log*
 # devcontainer ssh paste-in scripts
 scripts/ssh/
 
-# git-mesh CLI binaries (produced by cargo build / postinstall)
-# Note: packages/git-mesh/bin/git-mesh is the committed shell stub that
+# git-span CLI binaries (produced by cargo build / postinstall)
+# Note: packages/git-span/bin/git-span is the committed shell stub that
 # npm bin-links against during `npm install`; postinstall replaces it
 # with a symlink to the platform binary on consumer machines.
-npm/git-mesh-*/bin/git-mesh
-npm/git-mesh-*/bin/git-mesh.exe
+npm/git-span-*/bin/git-span
+npm/git-span-*/bin/git-span.exe
 .claude/settings.local.json
 
 # Local benchmark/profiling outputs

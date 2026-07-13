@@ -3,7 +3,7 @@
  *
  * Each test creates a fresh temp repo, invokes createHandler with real
  * dependencies, then reads back the touches.jsonl file written to
- * ~/.cache/git-mesh/session/<sanitizedSessionId>/touches.jsonl.
+ * ~/.cache/git-span/session/<sanitizedSessionId>/touches.jsonl.
  */
 
 import * as fs from 'node:fs';
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sanitizeSessionId } from '../src/agent-hooks-common.js';
-import { createHandler, type MemoFactory, type MeshExecutor } from '../src/pre-tool-use.js';
+import { createHandler, type MemoFactory, type SpanExecutor } from '../src/pre-tool-use.js';
 import { makeTempRepo } from './helpers.js';
 
 const logger = new Logger();
@@ -24,7 +24,7 @@ const logger = new Logger();
 // ---------------------------------------------------------------------------
 
 function journalPath(sessionId: string): string {
-  return nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session', sanitizeSessionId(sessionId), 'touches.jsonl');
+  return nodePath.join(os.homedir(), '.cache', 'git-span', 'session', sanitizeSessionId(sessionId), 'touches.jsonl');
 }
 
 function readJournal(sessionId: string): Array<Record<string, unknown>> {
@@ -46,7 +46,7 @@ function clearJournal(sessionId: string): void {
 // Fake no-op executor (journal runs regardless of executor output)
 // ---------------------------------------------------------------------------
 
-const noopExecutor: MeshExecutor = (_args, _cwd) => '';
+const noopExecutor: SpanExecutor = (_args, _cwd) => '';
 
 // In-memory memo factory to avoid disk memo side effects
 function inMemoryMemoFactory(): MemoFactory {
@@ -305,7 +305,7 @@ describe('Journal: append failure does not throw', () => {
   it('handler returns normally even when journal dir cannot be created', async () => {
     // Use a session id that would require writing under a path that is
     // actually a file (not a directory) — mkdirSync will throw.
-    const blocker = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
+    const blocker = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
     // Ensure the parent exists, then create the session subdir as a file.
     fs.mkdirSync(blocker, { recursive: true });
     const sid = `journal-fail-test-${Date.now()}`;

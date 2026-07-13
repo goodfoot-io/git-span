@@ -1,3 +1,0 @@
-packages/agent-hooks/test/pre-tool-use.test.ts#L996-L1012 rk64:9e7e97a58e8a9243
-
-PreToolUse hook tests verify that anchors inside the mesh root are filtered out and never surfaced to the model.

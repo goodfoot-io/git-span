@@ -1,6 +1,0 @@
-packages/git-mesh/scripts/cleanup-stale-target.sh#L2-L57 rk64:b02f1e7fd3a0e71e
-packages/git-mesh/scripts/with-target-lock.sh rk64:2d831554e01c7bbc
-scripts/sync-versions.sh#L135-L162 rk64:a82cae3c7aaa4853
-scripts/typecheck.sh#L20-L20 rk64:774d052ca2614bab
-
-Shared target directory lock mechanism: with-target-lock.sh implements reader/writer locking (shared for cargo tasks, exclusive for cleanup) to prevent races where one worktree's build:clean rm -rf's artifacts out from under another worktree's in-flight build; cleanup-stale-target.sh, typecheck.sh, and sync-versions.sh all invoke it with consistent mode and parameters to guard concurrent artifact access across worktrees.

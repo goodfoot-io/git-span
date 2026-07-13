@@ -1,5 +1,5 @@
 /**
- * Production build script for the Git Mesh extension.
+ * Production build script for the Git Span extension.
  *
  * Invoked via the `vscode:prepublish` lifecycle hook before `vsce package`.
  * Outputs into dist/ relative to the extension root so package.json's

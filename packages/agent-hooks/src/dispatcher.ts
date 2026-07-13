@@ -1,5 +1,5 @@
 /**
- * Detached background dispatcher for the git-mesh post-commit pipeline.
+ * Detached background dispatcher for the git-span post-commit pipeline.
  *
  * Spawned (detached) by the post-commit and post-rewrite git hooks. Owns
  * promotion of pre-commit records to post-commit once their anchors are
@@ -14,15 +14,15 @@
  * file-connected component, sharing its worktree) before committing and
  * landing the record itself.
  *
- * If .mesh/.manual-run is present, automatic spawning is suspended: the
+ * If .span/.manual-run is present, automatic spawning is suspended: the
  * dispatcher still reserves a real claim directory but writes the exact
- * agent invocation to .mesh/manual-hook-dispatch-<datetime>.sh instead of
+ * agent invocation to .span/manual-hook-dispatch-<datetime>.sh instead of
  * launching it, leaving the claim directory in place for a human to run the
  * script later. The marker is not consumed -- remove it to resume automatic
  * dispatch.
  *
  * Never writes to stdout/stderr of the hook that spawned it -- all logging
- * goes to .mesh/dispatcher.log. Errors are logged, never thrown to the
+ * goes to .span/dispatcher.log. Errors are logged, never thrown to the
  * caller.
  *
  * Usage:
@@ -46,7 +46,7 @@ import {
   preCommitDir,
   queueRoot,
   readJsonFile,
-  resolveMeshRoot,
+  resolveSpanRoot,
   withQueueLock,
   writeJsonFileAtomic
 } from './agent-hooks-common.js';
@@ -115,13 +115,13 @@ export interface Logger {
 }
 
 /**
- * Resolve the absolute log file path for the dispatcher, under the mesh root
+ * Resolve the absolute log file path for the dispatcher, under the span root
  * directory.
  */
 export function getLogFilePath(repoRoot: string): string {
-  const meshDir = resolveMeshRoot(repoRoot);
-  const absMesh = nodePath.resolve(repoRoot, meshDir);
-  return nodePath.join(absMesh, LOG_FILE_NAME);
+  const spanDir = resolveSpanRoot(repoRoot);
+  const absSpan = nodePath.resolve(repoRoot, spanDir);
+  return nodePath.join(absSpan, LOG_FILE_NAME);
 }
 
 /**
@@ -129,7 +129,7 @@ export function getLogFilePath(repoRoot: string): string {
  */
 export function createLogger(repoRoot: string): Logger {
   const logPath = getLogFilePath(repoRoot);
-  // Ensure the mesh directory exists
+  // Ensure the span directory exists
   fs.mkdirSync(nodePath.dirname(logPath), { recursive: true });
 
   const writeLine = (level: string, msg: string): void => {
@@ -156,7 +156,7 @@ export function createLogger(repoRoot: string): Logger {
  * Get the set of file paths changed in the given commit (or HEAD if not
  * specified). Includes --root to handle the initial commit.
  * Uses --name-status with rename detection so that for renamed files **_both_**
- * the old and new paths are included in the returned set -- a mesh anchored to
+ * the old and new paths are included in the returned set -- a span anchored to
  * the old (pre-rename) path is not silently dropped from the pipeline.
  */
 export function getChangedPaths(repoRoot: string, commitSha?: string): Set<string> {
@@ -526,13 +526,13 @@ export function postRewriteDemote(log: Logger, repoRoot: string, shaMap: Map<str
  */
 export function buildAgentPrompt(
   repoRoot: string,
-  meshDir: string,
+  spanDir: string,
   postCommitDirAbs: string,
   claimDirAbs: string
 ): string {
   let prompt = PROMPT_TEMPLATE;
   prompt = prompt.replace(/\{\{repoRoot\}\}/g, repoRoot);
-  prompt = prompt.replace(/\{\{meshDir\}\}/g, meshDir);
+  prompt = prompt.replace(/\{\{spanDir\}\}/g, spanDir);
   prompt = prompt.replace(/\{\{postCommitDir\}\}/g, postCommitDirAbs);
   prompt = prompt.replace(/\{\{claimDir\}\}/g, claimDirAbs);
   return prompt.trimEnd();
@@ -551,13 +551,13 @@ const SIGTERM_GRACE_MS = 10_000; // 10 seconds between SIGTERM and SIGKILL
  * this for real) and `writeManualDispatchScript` (which dumps it to a shell
  * script instead) so the two can never drift apart.
  */
-export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: string, headless = true): string[] {
+export function buildClaudeArgs(repoRoot: string, spanDir: string, claimId: string, headless = true): string[] {
   const postCommitDirAbs = postCommitDir(repoRoot);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
-  const promptText = buildAgentPrompt(repoRoot, meshDir, postCommitDirAbs, claimDirAbs);
+  const promptText = buildAgentPrompt(repoRoot, spanDir, postCommitDirAbs, claimDirAbs);
 
   // No allow list: every tool is permitted except what's explicitly denied
-  // below. The prompt itself is what constrains the agent to git-mesh
+  // below. The prompt itself is what constrains the agent to git-span
   // mechanics, worktree/fork orchestration, and its own claim directory.
   const settings = {
     permissions: {
@@ -614,17 +614,17 @@ export function buildClaudeArgs(repoRoot: string, meshDir: string, claimId: stri
 export async function spawnAgent(
   log: Logger,
   repoRoot: string,
-  meshDir: string,
+  spanDir: string,
   claimId: string,
   timeoutMs: number = AGENT_TIMEOUT_MS
 ): Promise<number | null> {
-  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId);
+  const claudeArgs = buildClaudeArgs(repoRoot, spanDir, claimId);
 
   log.info(`spawn: launching agent (claim ${claimId})`);
 
-  // Pipe agent stdout/stderr to .mesh/agent-<claimId>.log so the user can
+  // Pipe agent stdout/stderr to .span/agent-<claimId>.log so the user can
   // inspect what the reconciler did (or why it failed).
-  const agentLogPath = nodePath.resolve(repoRoot, meshDir, `agent-${claimId}.log`);
+  const agentLogPath = nodePath.resolve(repoRoot, spanDir, `agent-${claimId}.log`);
   let agentLogFd: number;
   try {
     fs.mkdirSync(nodePath.dirname(agentLogPath), { recursive: true });
@@ -710,8 +710,8 @@ const MANUAL_RUN_MARKER_NAME = '.manual-run';
  * human to invoke later. The marker is NOT consumed -- it stays in effect
  * for every subsequent invocation until a human removes it.
  */
-export function manualRunMarkerPath(repoRoot: string, meshDir: string): string {
-  return nodePath.join(nodePath.resolve(repoRoot, meshDir), MANUAL_RUN_MARKER_NAME);
+export function manualRunMarkerPath(repoRoot: string, spanDir: string): string {
+  return nodePath.join(nodePath.resolve(repoRoot, spanDir), MANUAL_RUN_MARKER_NAME);
 }
 
 /**
@@ -725,7 +725,7 @@ function shellQuoteSingle(value: string): string {
 /**
  * In place of spawning the reconciler agent, write the exact `claude`
  * invocation that would have been run to a standalone, executable shell
- * script under the mesh directory. The claim directory has already been
+ * script under the span directory. The claim directory has already been
  * created by the caller and is left untouched (not swept) -- running the
  * generated script later launches the agent against that same claim,
  * picking up exactly where the dispatcher left off.
@@ -735,28 +735,29 @@ function shellQuoteSingle(value: string): string {
 export function writeManualDispatchScript(
   log: Logger,
   repoRoot: string,
-  meshDir: string,
+  spanDir: string,
   claimId: string,
   now: Date
 ): string {
   // Build args for foreground (interactive) mode -- no -p flag, so the
   // reconciler prompt becomes the opening interactive turn and the developer
   // watches the agent work turn by turn instead of a silent batch run.
-  const claudeArgs = buildClaudeArgs(repoRoot, meshDir, claimId, false);
-  const meshDirAbs = nodePath.resolve(repoRoot, meshDir);
+  const claudeArgs = buildClaudeArgs(repoRoot, spanDir, claimId, false);
+  const spanDirAbs = nodePath.resolve(repoRoot, spanDir);
   const claimDirAbs = claimDirFor(repoRoot, claimId);
   const postCommitDirAbs = postCommitDir(repoRoot);
 
   const datetimeStamp = now.toISOString().replace(/[:.]/g, '-');
-  const scriptPath = nodePath.join(meshDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
+  const scriptPath = nodePath.join(spanDirAbs, `manual-hook-dispatch-${datetimeStamp}.sh`);
 
   const quotedCommand = ['claude', ...claudeArgs].map(shellQuoteSingle).join(' \\\n  ');
   const quotedPostCommitDir = shellQuoteSingle(postCommitDirAbs);
   const script = [
     '#!/bin/sh',
-    `# git-mesh manual dispatch script -- generated ${now.toISOString()}`,
+    `# git-span manual dispatch script -- generated ${now.toISOString()}`,
     '#',
     `# Claim directory: ${claimDirAbs}`,
+    `# Span directory:  ${spanDirAbs}`,
     '#',
     '# The claim directory above was already reserved for this run and is left',
     '# in place until this script is executed -- running it launches the same',
@@ -765,7 +766,7 @@ export function writeManualDispatchScript(
     '# invocation may reclaim the (still-empty) claim directory as abandoned.',
     '',
     "# Resolve the repo root from this script's own location on disk (it",
-    '# lives under the mesh directory, which is always inside the repo)',
+    '# lives under the span directory, which is always inside the repo)',
     '# rather than hardcoding the path this script happened to be generated',
     '# for -- the script stays runnable even if the repo is moved, cloned',
     '# elsewhere, or renamed.',
@@ -793,10 +794,10 @@ export function writeManualDispatchScript(
     '# ------------------------------------------------------------------',
     '# Pre-flight confirmation',
     '# ------------------------------------------------------------------',
-    'echo "git-mesh reconciler is about to process $pending_count pending post-commit record(s) across $branch_count branch(es)."',
+    'echo "git-span reconciler is about to process $pending_count pending post-commit record(s) across $branch_count branch(es)."',
     'echo ""',
     'echo "The reconciler will:"',
-    'echo "  - Check existing mesh coverage for drift"',
+    'echo "  - Check existing span coverage for drift"',
     'echo "  - Add, update, or remove coverage as needed"',
     'echo "  - Write a short rationale for any new coverage"',
     'echo "  - Commit and land the result on each branch"',
@@ -817,7 +818,7 @@ export function writeManualDispatchScript(
     ''
   ].join('\n');
 
-  fs.mkdirSync(meshDirAbs, { recursive: true });
+  fs.mkdirSync(spanDirAbs, { recursive: true });
   fs.writeFileSync(scriptPath, script, 'utf8');
   fs.chmodSync(scriptPath, 0o755);
   log.info(`manual-run: wrote ${scriptPath} instead of spawning (claim ${claimId})`);
@@ -960,18 +961,18 @@ export async function main(): Promise<void> {
 
     const claimId = randomUUID();
     fs.mkdirSync(claimDirFor(args.repoRoot, claimId), { recursive: true });
-    const meshDir = resolveMeshRoot(args.repoRoot);
+    const spanDir = resolveSpanRoot(args.repoRoot);
 
-    if (fs.existsSync(manualRunMarkerPath(args.repoRoot, meshDir))) {
+    if (fs.existsSync(manualRunMarkerPath(args.repoRoot, spanDir))) {
       // Manual-run mode: the claim directory above is real and stays put --
       // it is intentionally NOT swept here, since the generated script is
       // meant to be run later against that exact claim.
-      writeManualDispatchScript(log, args.repoRoot, meshDir, claimId, new Date());
+      writeManualDispatchScript(log, args.repoRoot, spanDir, claimId, new Date());
       log.info('dispatcher: manual-run marker present, skipped automatic spawn');
       return;
     }
 
-    const exitCode = await spawnAgent(log, args.repoRoot, meshDir, claimId);
+    const exitCode = await spawnAgent(log, args.repoRoot, spanDir, claimId);
     sweepClaimDir(log, args.repoRoot, claimId);
 
     log.info(`dispatcher: finished (agent exit code ${exitCode})`);

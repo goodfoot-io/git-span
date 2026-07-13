@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "git-span",
+  "version": "1.0.131",
+  "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
+  "author": {
+    "name": "goodfoot",
+    "url": "https://github.com/goodfoot-io"
+  },
+  "homepage": "https://github.com/goodfoot-io/git-span",
+  "repository": "https://github.com/goodfoot-io/git-span",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "span",
+    "dependencies",
+    "semantic",
+    "coupling",
+    "documentation",
+    "drift",
+    "audit"
+  ]
+}

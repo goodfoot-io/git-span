@@ -12,7 +12,7 @@
     "**/.worktrees/**": true,
     "**/*.log": true
   },
-  "rust-analyzer.linkedProjects": ["packages/git-mesh/Cargo.toml"],
+  "rust-analyzer.linkedProjects": ["packages/git-span/Cargo.toml"],
   "cards.detectedAgents": [
     {
       "id": "claude-code-cli",

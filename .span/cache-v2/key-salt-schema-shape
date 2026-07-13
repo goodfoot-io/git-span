@@ -1,0 +1,4 @@
+packages/git-span/src/resolver/cache_v2/schema.rs#L24-L25 rk64:2120bbe0cd471168
+packages/git-span/src/resolver/cache_v2/schema.rs#L67-L220 rk64:a94bccafbc1433a5
+
+KEY_SALT is the cache namespace version: it must be bumped whenever the SCHEMA_SQL table shape, payload schema, or any hashed key input changes, so old rows stop matching and a gc pass removes them. Editing a table definition without bumping KEY_SALT silently serves rows written under an incompatible shape; nothing mechanical enforces the bump.

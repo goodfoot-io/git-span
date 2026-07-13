@@ -1,6 +1,6 @@
-# git mesh-recommend — fine-tuning project
+# git span-recommend — fine-tuning project
 
-A specific plan for a small fine-tuned text-to-text model that, given a `git mesh`
+A specific plan for a small fine-tuned text-to-text model that, given a `git span`
 anchor set plus optional highlight phrases, outputs a `{ "name", "why" }` JSON
 recommendation. The model is shipped as part of an architecture-specific Rust
 binary running on Sonos `tract`, CPU only, under 250 MB packaged.
@@ -41,28 +41,28 @@ These are *not* discussed further in the document. Treat as load-bearing.
 
 ## 3. Source of truth for naming and whys
 
-`plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md` is authoritative.
+`plugins/git-span/skills/git-span/sections/creating-a-span.md` is authoritative.
 All training data, validator rules, and prompts in this project must cite it.
 The training rules in §6 of this document are a *reflection* of that file. If the
-two ever diverge, the git-mesh skill wins and §6 is updated.
+two ever diverge, the git-span skill wins and §6 is updated.
 
 ---
 
 ## 4. The CLI contract
 
 ```bash
-git mesh-recommend \
+git span-recommend \
   <anchor>... \
   [--highlight "<phrase>"]... \
-  [--sibling-meshes <N>] \
+  [--sibling-spans <N>] \
   [--git-context <N>]
 ```
 
 - `<anchor>` is `path#Lstart-Lend` or `path` (whole-file). 2 ≤ N anchors.
 - `--highlight` repeats. Each value is a short phrase (commit subject, wiki link
   text, ADR title). Defaults: none.
-- `--sibling-meshes` defaults to 16. Picks the closest neighbors by prefix from
-  the live `git mesh list` output.
+- `--sibling-spans` defaults to 16. Picks the closest neighbors by prefix from
+  the live `git span list` output.
 - `--git-context` defaults to 8. Pulls commit subjects that touched ≥2 anchor
   paths from `git log --no-renames` (most-recent-first).
 
@@ -83,7 +83,7 @@ repair retry, `3` tract load error, `4` tokenizer round-trip mismatch.
 Exactly three priority tiers plus a sentinel. No other fields.
 
 ```
-@task git-mesh-relationship
+@task git-span-relationship
 
 @P1 highlight  api/charge.ts
 @P1 highlight  Wire checkout to charge API
@@ -120,7 +120,7 @@ Rules:
 
 ---
 
-## 6. Naming and why rules (mirrors the git-mesh skill)
+## 6. Naming and why rules (mirrors the git-span skill)
 
 ### Name
 
@@ -131,7 +131,7 @@ Rules:
 - Forbidden segments: `misc`, `temp`, `stuff`, `things`, `john-work`, `frontend`,
   `backend`, `impl`, `deps`.
 - Forbidden suffixes on the leaf: `-deps`, `-impl`, `-file`.
-- `-link` / `-doc` allowed on prose↔prose meshes (e.g. `threat-model-controls-link`).
+- `-link` / `-doc` allowed on prose↔prose spans (e.g. `threat-model-controls-link`).
 - No file extensions. No bare file/symbol names.
 - No two adjacent equal segments.
 
@@ -156,11 +156,11 @@ Create exactly:
 model-training/
   pyproject.toml
   README.md
-  src/mesh_finetune/
+  src/span_finetune/
     __init__.py
     serialize.py            # tier-prefixed wire format + deterministic truncation
     validate.py             # rules from §6, returns structured report
-    mine.py                 # extracts training rows from git mesh log
+    mine.py                 # extracts training rows from git span log
     dataset.py              # JSONL loader; shuffle anchor order; tokenize
     train.py                # full fine-tune of t5-efficient-tiny
     evaluate.py             # greedy decode + all eval metrics
@@ -181,7 +181,7 @@ model-training/
   artifacts/
     .gitkeep
 
-git-mesh-recommend/
+git-span-recommend/
   Cargo.toml
   src/
     main.rs                 # CLI; assembles the wire format from the live repo
@@ -191,8 +191,8 @@ git-mesh-recommend/
     validate.rs             # §6 rules in Rust; runs on model output
 ```
 
-The Rust binary is `git-mesh-recommend`, installed under `git-mesh`'s `bin/` so
-`git mesh recommend` dispatches to it.
+The Rust binary is `git-span-recommend`, installed under `git-span`'s `bin/` so
+`git span recommend` dispatches to it.
 
 ---
 
@@ -256,7 +256,7 @@ starts. Stop and update this doc if a day's gate fails.
 
 1. Implement `serialize.py` and `serialize.rs`. Property-test that the Python
    and Rust serializers produce byte-identical output for 100 random packets.
-2. Hand-author 12 sample examples covering the git-mesh skill surface (see §11).
+2. Hand-author 12 sample examples covering the git-span skill surface (see §11).
 3. Implement `validate.py` (rules in §6). Run on the sample data; all 12 valid.
 
 **Day 4 — training loop on the sample data.**
@@ -278,17 +278,17 @@ starts. Stop and update this doc if a day's gate fails.
 
 **Day 6 — full Rust binary.**
 
-1. Implement `git-mesh-recommend` end-to-end (assemble packet from live repo,
+1. Implement `git-span-recommend` end-to-end (assemble packet from live repo,
    serialize, encode, greedy-decode in tract, parse, validate).
-2. Run on three real meshes from this repo's `git mesh list` output.
-3. **Gate:** binary exits 0 and produces git-mesh-compliant output on at least
+2. Run on three real spans from this repo's `git span list` output.
+3. **Gate:** binary exits 0 and produces git-span-compliant output on at least
    2 of 3.
 
 **Day 7 — mining + first realistic training run.**
 
-1. Implement `mine.py`: walks `git mesh log` of this repo, emits one row per
-   mesh-version, applies the poison filters (≥1 clean commit cycle; exclude
-   first 24 h after creation; exclude renamed meshes).
+1. Implement `mine.py`: walks `git span log` of this repo, emits one row per
+   span-version, applies the poison filters (≥1 clean commit cycle; exclude
+   first 24 h after creation; exclude renamed spans).
 2. Generate first-pass labels for any mined rows that lack a why with the Claude
    prompts in `prompts/label.md` (manual paste flow; no API call required).
 3. Critique with `prompts/critique.md`. Repair with `prompts/repair.md`.
@@ -297,7 +297,7 @@ starts. Stop and update this doc if a day's gate fails.
 
 **Day 8 — eval, polish, ship.**
 
-1. Run the full Rust binary on a fresh `git mesh` workflow end-to-end.
+1. Run the full Rust binary on a fresh `git span` workflow end-to-end.
 2. Update `tract-smoke/README.md` with measured artifact size and the metrics
    from Day 7.
 3. Tag the artifact directory.
@@ -337,7 +337,7 @@ Acceptance bar (after day 7):
 
 ## 11. Sample data (12 rows)
 
-Each row covers one of the git-mesh skill's named relationship shapes. All produced by
+Each row covers one of the git-span skill's named relationship shapes. All produced by
 the team on Day 3, validated by `validate.py`, and never used as eval data.
 
 1. Browser checkout flow ↔ server charge handler — `billing/checkout-request-flow`.
@@ -353,27 +353,27 @@ the team on Day 3, validated by `validate.py`, and never used as eval data.
 11. ADR governing a runtime invariant ↔ code that relies on it — `adr/0017/uuidv4-lex-order`.
 12. Wiki article ↔ wiki article cross-reference (whole-file × whole-file) — `wiki/world-war-ii/eastern-front`.
 
-Plus 2 negative examples (anchors that *don't* form a mesh — e.g. two unrelated
+Plus 2 negative examples (anchors that *don't* form a span — e.g. two unrelated
 README sections that share a word) with `output.name = "__none__"` and
 `output.why = "__none__"`.
 
 ---
 
-## 12. Mining `git mesh log`
+## 12. Mining `git span log`
 
-`mine.py` walks every mesh in this repo and emits one training row per mesh-version
+`mine.py` walks every span in this repo and emits one training row per span-version
 that satisfies all of:
 
-- The mesh has had at least one clean `git add .mesh && git commit` cycle since creation.
-- The mesh-version is at least 24 hours after the mesh's first creation.
-- The mesh has never been renamed (`git mesh rename` history is empty).
-- Anchor content is reachable at that mesh's commit (no `[ORPHANED]` /
+- The span has had at least one clean `git add .span && git commit` cycle since creation.
+- The span-version is at least 24 hours after the span's first creation.
+- The span has never been renamed (`git span rename` history is empty).
+- Anchor content is reachable at that span's commit (no `[ORPHANED]` /
   `[CONFLICT]` / `[SUBMODULE]` terminal status).
 
 For each row:
 
-- `anchors` from the mesh-version's anchor set, content read at the mesh commit.
-- `siblings` from `git mesh list` *as of that commit*, capped at 16 closest by prefix.
+- `anchors` from the span-version's anchor set, content read at the span commit.
+- `siblings` from `git span list` *as of that commit*, capped at 16 closest by prefix.
 - `highlights` from `git log --no-renames` subjects that touched ≥ 2 anchor paths,
   capped at the most recent 8.
 
@@ -392,7 +392,7 @@ No API calls are required. The four prompt files are paste-targets for Claude:
   anchors/symbols).
 - `prompts/repair.md` — converts validator-failing rows into corrected rows.
 
-Each prompt file includes the §6 rules verbatim and points the LLM at the git-mesh skill.
+Each prompt file includes the §6 rules verbatim and points the LLM at the git-span skill.
 
 ---
 
@@ -402,7 +402,7 @@ Runtime path inside the Rust binary:
 
 1. Parse CLI: anchors, highlights, sibling count, git-context count.
 2. Resolve each anchor (read bytes, compute line range if absent).
-3. Read `git mesh list` for sibling names; pick the N closest by Levenshtein on
+3. Read `git span list` for sibling names; pick the N closest by Levenshtein on
    path components.
 4. Read `git log --no-renames -- <paths>...` for co-touching commit subjects;
    take the top N most recent subjects that touched ≥ 2 anchor paths.
@@ -424,9 +424,9 @@ Runtime path inside the Rust binary:
 
 The project ships when:
 
-1. `git-mesh-recommend` runs end-to-end on this repo and produces git-mesh-valid
-   output on ≥ 80% of meshes mined in §12 (held out from training).
-2. `du -sh git-mesh-recommend/artifacts/onnx` is ≤ 250 MB.
+1. `git-span-recommend` runs end-to-end on this repo and produces git-span-valid
+   output on ≥ 80% of spans mined in §12 (held out from training).
+2. `du -sh git-span-recommend/artifacts/onnx` is ≤ 250 MB.
 3. The Day-2 Python↔Rust tokenizer round-trip test passes in CI.
 4. The Day-3 Python↔Rust serializer property test passes in CI.
 5. `evaluate.py` reports the §10 acceptance bar.
@@ -434,7 +434,7 @@ The project ships when:
    artifact.
 
 If any step fails, the failure (with exact op/error/op-coverage URL) is recorded
-in `git-mesh-recommend/README.md` and this document is updated before further
+in `git-span-recommend/README.md` and this document is updated before further
 work proceeds.
 
 ---
@@ -454,4 +454,4 @@ work proceeds.
 - Tokenizers crate + SentencePiece via `convert_slow_tokenizer` —
   https://github.com/huggingface/tokenizers and the `convert_slow_tokenizer.SpmConverter` source.
 - Handbook (authoritative naming/why rules) —
-  `plugins/git-mesh/skills/git-mesh/sections/creating-a-mesh.md` in this repo.
+  `plugins/git-span/skills/git-span/sections/creating-a-span.md` in this repo.

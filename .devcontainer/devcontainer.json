@@ -1,5 +1,5 @@
 {
-  "name": "Git Mesh",
+  "name": "Git Span",
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
   "workspaceFolder": "/workspace",

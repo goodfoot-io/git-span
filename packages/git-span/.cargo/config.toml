@@ -1,0 +1,16 @@
+[build]
+# Per-worktree target directory. Resolves to packages/git-span/target-cache.
+# CARGO_TARGET_DIR (set by yarn scripts) overrides this.
+target-dir = "target-cache"
+
+[profile.dev]
+incremental = true
+
+[profile.test]
+incremental = true
+
+[target.x86_64-unknown-linux-gnu]
+linker = "scripts/cc.mold-wrapper.sh"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "scripts/cc.mold-wrapper.sh"

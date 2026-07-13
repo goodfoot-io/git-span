@@ -23,25 +23,25 @@ Prefer 'fail closed' workflows over 'fail open' workflows.
 <workspace-information>
 Our workspace uses Yarn 4.x as a package manager. Do not use other package managers such as 'npm'.
 
-This is a Yarn 4.x monorepo with packages in ./packages/ containing a Rust CLI (packages/git-mesh) and a VS Code extension (packages/extension).
+This is a Yarn 4.x monorepo with packages in ./packages/ containing a Rust CLI (packages/git-span) and a VS Code extension (packages/extension).
 
 Use local rather than origin branches.
 
 Cargo build artifacts are written to a **shared per-user directory** at
-`$HOME/.cache/git-mesh/cargo-target/<crate>/<group>/`, where `<crate>` is `git-mesh` or
-`git-mesh-core` and `<group>` is `check` (non-codegen tasks: `cargo check`, `cargo clippy`
+`$HOME/.cache/git-span/cargo-target/<crate>/<group>/`, where `<crate>` is `git-span` or
+`git-span-core` and `<group>` is `check` (non-codegen tasks: `cargo check`, `cargo clippy`
 — rmeta) or `build` (codegen tasks: `cargo nextest`, `cargo build`, `cargo run` — rlib).
-`git-mesh/udeps/` is a third group for the nightly `cargo udeps`. **Non-codegen (rmeta) and
+`git-span/udeps/` is a third group for the nightly `cargo udeps`. **Non-codegen (rmeta) and
 codegen (rlib) artifacts must never share a directory** — doing so leaves rmeta-only crates
 that fail downstream rlib links with `E0463 "can't find crate"`. This was the root cause of
 the build failures; the full rationale and layout live in
-[packages/git-mesh/scripts/cargo-build-system.md](./packages/git-mesh/scripts/cargo-build-system.md).
+[packages/git-span/scripts/cargo-build-system.md](./packages/git-span/scripts/cargo-build-system.md).
 The directory is shared across all card worktrees: a build started from any worktree reuses
 compilation work already done by sibling worktrees.
 
-All yarn scripts and tooling scripts honor the `GIT_MESH_CARGO_TARGET_ROOT` environment
+All yarn scripts and tooling scripts honor the `GIT_SPAN_CARGO_TARGET_ROOT` environment
 variable to override this root (e.g., for CI isolation). The per-worktree fallback
-`packages/git-mesh/target-cache/` (via [.cargo/config.toml](./packages/git-mesh/.cargo/config.toml))
+`packages/git-span/target-cache/` (via [.cargo/config.toml](./packages/git-span/.cargo/config.toml))
 is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
 
 **Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
@@ -49,8 +49,8 @@ sharing the same group subdirectory. Concurrent `yarn test` runs in different wo
 build serially (order of seconds) then test in parallel. This is normal — not a hang.
 
 **Shared target-root lock:** Every scripted cargo task runs under a *shared* flock on
-`$HOME/.cache/git-mesh/cargo-target/.target.lock` (via
-`packages/git-mesh/scripts/with-target-lock.sh`), and anything that deletes from the
+`$HOME/.cache/git-span/cargo-target/.target.lock` (via
+`packages/git-span/scripts/with-target-lock.sh`), and anything that deletes from the
 shared root (`clean-shared-build.sh`, the freshness-stamp wipe in
 `cleanup-stale-target.sh`) takes the *exclusive* lock. A `yarn build:clean` in one
 worktree therefore waits for in-flight builds in sibling worktrees instead of deleting
@@ -91,28 +91,28 @@ Run validation from the package directory containing the changed files, using th
 
 Run `yarn validate` from the workspace root for final validations — it typechecks, lints, tests, and builds all packages. The script merges stderr into stdout, prints `Exit code: N` at the end, and writes everything to `./yarn-validate-output.log`. **Run only `yarn validate` — do not add `2>&1`, `echo $?`, or any other wrapper.** Exit code 0 means all checks passed.
 
-If a new feature was added to the `git-mesh` CLI, build the latest version and use the `Bash` tool to perform smoke tests around the new feature.
+If a new feature was added to the `git-span` CLI, build the latest version and use the `Bash` tool to perform smoke tests around the new feature.
 </validation>
 
-<git-mesh>
+<git-span>
 
 ```bash
-# Stage the mesh: slug titles the subsystem; line-range anchors (`path#L<start>-L<end>`) or whole-file anchors carry the path
-git mesh add billing/checkout-request-flow \
+# Stage the span: slug titles the subsystem; line-range anchors (`path#L<start>-L<end>`) or whole-file anchors carry the path
+git span add billing/checkout-request-flow \
   web/checkout.tsx#L88-L120 \
   api/charge.ts#L30-L76
 
 # Name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them
-git mesh why billing/checkout-request-flow \
+git span why billing/checkout-request-flow \
   -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 
-# Persist the mesh alongside the code in the same commit
-git add .mesh && git commit -m "Wire checkout to charge API"
+# Persist the span alongside the code in the same commit
+git add .span && git commit -m "Wire checkout to charge API"
 
 # Later ...
 
-# Run `git mesh stale [--patch] [glob]` and carefully examine the files in each mesh to identify drift
-git mesh stale
+# Run `git span stale [--patch] [glob]` and carefully examine the files in each span to identify drift
+git span stale
 ```
 
-</git-mesh>
+</git-span>

@@ -1,0 +1,1069 @@
+//! Data shapes for git-span.
+//!
+//! All types describe the v1 on-disk shape (see `docs/git-span.md` §4).
+//! Every field is required; defaults are applied at creation time so
+//! stored records fully self-describe their resolver behaviour.
+//!
+//! ## Error type
+//!
+//! This crate uses `thiserror` to define a library-level `Error` enum as
+//! the public boundary for fallible operations. A CLI crate could reach
+//! for `anyhow::Error` for brevity, but an enum-based error makes it
+//! possible for downstream consumers (including the crate's own tests
+//! and future library consumers) to match on variants without string
+//! matching, which is the idiomatic Rust public-API choice.
+
+use crate::span_file::SpanFile;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+// `AnchorExtent` is the pure anchor-extent shape; it lives in the gix-free
+// `git-span-core` kernel (its `Serialize` derive comes from core's `serde`
+// feature, which this crate enables). Re-exported here so every existing
+// `crate::types::AnchorExtent` / `git_span::AnchorExtent` path is unchanged.
+pub use git_span_core::AnchorExtent;
+
+/// In-memory representation of an Anchor derived from a span file anchor record.
+///
+/// The anchor carries the content's SHA-256 hash (stored_hash) for freshness
+/// comparison instead of the old blob-OID / commit-based anchoring. Fields
+/// that were previously populated from commit metadata (anchor_sha, created_at,
+/// blob) are now empty strings.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Anchor {
+    /// Commit this anchor was anchored to at creation (empty in new model).
+    pub anchor_sha: String,
+    /// ISO-8601 creation timestamp (empty in new model).
+    pub created_at: String,
+    /// File path at the anchor commit.
+    pub path: String,
+    /// Extent (whole-file or line-anchor) pinned by this anchor.
+    pub extent: AnchorExtent,
+    /// Blob OID of `path` at `anchor_sha` (empty in new model).
+    pub blob: String,
+    /// Content hash from the span file anchor record (e.g. "sha256:<hex>").
+    /// Used for freshness comparison instead of blob OID.
+    pub stored_hash: String,
+}
+
+/// `-C` levels for `git log -L` copy detection. Stored in span config,
+/// not in the anchor record. Serialized as the kebab-case variant name:
+/// `off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CopyDetection {
+    Off,
+    SameCommit,
+    AnyFileInCommit,
+    AnyFileInRepo,
+}
+
+/// Resolver options for all anchors in a span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct SpanConfig {
+    pub copy_detection: CopyDetection,
+    pub ignore_whitespace: bool,
+    pub follow_moves: bool,
+}
+
+pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
+pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
+pub const DEFAULT_FOLLOW_MOVES: bool = false;
+
+/// Convert a [`SpanFile`] into a [`Span`] by translating each anchor record
+/// into an `Anchor` struct with `stored_hash` set to `"<algorithm>:<content_hash>"`.
+pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
+    let anchors: Vec<(String, Anchor)> = file
+        .anchors
+        .iter()
+        .map(|a| {
+            let id = format!("{}:{}:L{}-L{}", name, a.path, a.start_line, a.end_line);
+            (
+                id,
+                Anchor {
+                    anchor_sha: String::new(),
+                    created_at: String::new(),
+                    path: a.path.clone(),
+                    extent: if a.start_line == 0 && a.end_line == 0 {
+                        AnchorExtent::WholeFile
+                    } else {
+                        AnchorExtent::LineRange {
+                            start: a.start_line,
+                            end: a.end_line,
+                        }
+                    },
+                    blob: String::new(),
+                    stored_hash: format!("{}:{}", a.algorithm, a.content_hash),
+                },
+            )
+        })
+        .collect();
+    Span {
+        name: name.to_string(),
+        anchors,
+        message: file.why.clone(),
+        config: SpanConfig {
+            copy_detection: DEFAULT_COPY_DETECTION,
+            ignore_whitespace: DEFAULT_IGNORE_WHITESPACE,
+            follow_moves: DEFAULT_FOLLOW_MOVES,
+        },
+    }
+}
+
+/// A Span derived from a span file (text-based tracked storage).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Span {
+    /// The Span's name.
+    pub name: String,
+    /// Active anchors: (anchor_id, Anchor) pairs in stored order.
+    pub anchors: Vec<(String, Anchor)>,
+    /// The span's "why" message (from the span file, after the first blank line).
+    pub message: String,
+    /// Resolver options for all anchors in this span.
+    pub config: SpanConfig,
+}
+
+/// Reason content should exist but is not readable locally without
+/// a network call. See docs/stale-layers-plan.md §D4.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnavailableReason {
+    LfsNotFetched,
+    LfsNotInstalled,
+    /// Partial clone, blob not fetched.
+    PromisorMissing,
+    /// Sparse-checkout excluded path.
+    SparseExcluded,
+    FilterFailed {
+        filter: String,
+    },
+    IoError {
+        message: String,
+    },
+}
+
+/// Declaration order is best → worst; `Ord` derives a total order so
+/// callers that want a one-line summary can reduce via `.max()`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AnchorStatus {
+    /// Current bytes equal anchored bytes.
+    Fresh,
+    /// Span matches the worktree content but the source has uncommitted
+    /// changes; the span is resolved pending the source commit.
+    ResolvedPendingCommit,
+    /// Bytes equal; `(path, extent)` changed.
+    Moved,
+    /// Anchored bytes differ from current bytes, including complete deletion.
+    Changed,
+    /// Anchored path is absent from the current content layer (renamed, moved, or deleted).
+    Deleted,
+    /// No stage-0 index entry for the path.
+    MergeConflict,
+    /// Path is a gitlink; rejected at `add`, surfaces if legacy.
+    Submodule,
+    /// Content should exist but isn't readable locally.
+    ContentUnavailable(UnavailableReason),
+}
+
+/// One candidate successor found by fuzzy similarity scanning.
+/// Populated on `AnchorResolved` and `Finding` when the exact-match
+/// relocation scan found nothing and the fuzzy fallback found candidates
+/// above the noise floor (0.50).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FuzzySuccessor {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    /// Jaccard similarity 0.0–1.0 of the anchored content vs. candidate.
+    pub confidence: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorLocation {
+    pub path: PathBuf,
+    pub extent: AnchorExtent,
+    /// Present when the path has a blob at the resolved layer; `None` for
+    /// worktree-only reads, submodule gitlinks, and terminal statuses where
+    /// no blob resolves.
+    pub blob: Option<gix::ObjectId>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorResolved {
+    pub anchor_id: String,
+    pub anchor_sha: String,
+    pub anchored: AnchorLocation,
+    pub current: Option<AnchorLocation>,
+    pub status: AnchorStatus,
+    /// Whether the current content is whitespace-normalized-equal to the
+    /// *genuine* anchored content. Only meaningful for `Changed`; `false`
+    /// everywhere else. `--fix` re-anchors a `Changed` anchor only when this
+    /// is `true`, so a meaning-changing edit is left drifting (fail-closed).
+    pub content_equivalent: bool,
+    /// Layer that produced the drift; `None` when `Fresh` or terminal.
+    pub source: Option<DriftSource>,
+    /// All layers that show drift for this anchor, in shallow-to-deep order
+    /// (Index → Worktree → Head). Empty for `Fresh` and terminal statuses.
+    /// When non-empty, one `Finding` is emitted per entry at render time.
+    pub layer_sources: Vec<DriftSource>,
+    /// HEAD-history drift locus, populated only when
+    /// `source == Some(Head)`. Carries the first commit on the path since
+    /// the anchor that mutated the anchored byte range (`ChangedAt`), the
+    /// commit that removed or renamed the path (`OrphanedAt`), or marks
+    /// the anchor commit as unreachable from HEAD.
+    pub locus: Option<DriftLocus>,
+    /// Fuzzy-similarity successors found during resolution. Populated only
+    /// when the exact-match relocation scan fails and the fuzzy fallback
+    /// finds candidates above the noise floor (0.50). Empty for all statuses
+    /// except `Moved` that came from the fuzzy fallback.
+    pub fuzzy_successors: Vec<FuzzySuccessor>,
+}
+
+/// Locus emitted by the HEAD-history walk in `resolver::attribution`.
+/// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`;
+/// the other layers carry their own per-layer label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriftLocus {
+    /// First commit reachable from HEAD that mutated the anchored byte
+    /// range on the path.
+    ChangedAt(gix::ObjectId),
+    /// Commit that removed (or renamed) the path; anchored content is
+    /// gone from HEAD.
+    OrphanedAt(gix::ObjectId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpanResolved {
+    pub name: String,
+    pub message: String,
+    /// One resolved entry per Anchor id in the Span, in the Span's
+    /// stored order.
+    pub anchors: Vec<AnchorResolved>,
+    /// Committed `follow_moves` flag from the span config, carried through
+    /// so post-resolution code (e.g. `git span stale` auto-follow precheck)
+    /// does not have to reload the span file to read it.
+    pub follow_moves: bool,
+}
+
+/// Public error boundary for the `git-span` library.
+///
+/// Variants are intentionally specific so callers (CLI, tests, future
+/// library consumers) can match without string-sniffing. Each variant
+/// is documented with the spec section that motivates it.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The named anchor does not exist in any tracked `.span/<name>`
+    /// file (§3.1).
+    #[error("anchor not found: {0}")]
+    AnchorNotFound(String),
+
+    /// The `.span/<name>` span file does not exist (§3.1).
+    #[error("span not found: {0}")]
+    SpanNotFound(String),
+
+    /// Conflict: the `.span/<name>` span file already exists when a
+    /// create-only operation expected it absent (§6.2).
+    #[error("span already exists: {0}")]
+    SpanAlreadyExists(String),
+
+    // `DuplicateRangeLocation` removed per `docs/stale-layers-plan.md` §D5:
+    // staged `(path, extent)` duplicates are last-write-wins. The three
+    // former raise sites in `span/commit.rs` now call `todo!()` pending
+    // the dedup-pass implementation slice.
+    /// `start` is not >= 1, or `end` < `start`, or the line range is
+    /// outside the file's line count at the anchor commit (§6.1).
+    #[error("invalid anchor: start={start} end={end}")]
+    InvalidAnchor { start: u32, end: u32 },
+
+    /// On-disk record could not be parsed (anchor blob, anchors file,
+    /// config file, or staging operations file). (§4.1, §4.2, §6.3)
+    #[error("parse error: {0}")]
+    Parse(String),
+
+    /// A staging operations-file line could not be parsed (§6.3).
+    #[error("parse staging line: {line}")]
+    ParseStaging { line: String },
+
+    /// Span-ref CAS update lost a race; caller should reload and retry (§6.2).
+    #[error("concurrent update: expected {expected}, found {found}")]
+    ConcurrentUpdate { expected: String, found: String },
+
+    /// Span name is on the §10.2 reserved list (collides with a subcommand).
+    #[error("reserved span name: {0}")]
+    ReservedName(String),
+
+    /// Span name or anchor id violates the §3.5 ref-legal rules.
+    #[error("invalid name: {0}")]
+    InvalidName(String),
+
+    /// The staged why begins with a prefix reserved for internal span
+    /// machinery (e.g. `"span: follow "`). Reject at the writer so the
+    /// parent-walk in `why_walking_past_follows` cannot be confused.
+    #[error("why may not begin with reserved prefix `{prefix}`: choose a different message")]
+    ReservedWhyPrefix { prefix: String },
+
+    /// `anchor_sha` is not reachable; resolver classifies the anchor as
+    /// `Deleted` rather than erroring, but callers writing new anchors
+    /// surface this as a hard error (§5.3, §6.8).
+    #[error("anchor commit unreachable: {anchor_sha}")]
+    Unreachable { anchor_sha: String },
+
+    /// The selected remote name is not configured.
+    #[error("remote not found: {remote}")]
+    RemoteNotFound { remote: String },
+
+    /// Anchor address `<path>#L<start>-L<end>` could not be parsed (§10.3).
+    #[error("invalid anchor address: {0}")]
+    InvalidAnchorAddress(String),
+
+    /// Path lookup in a tree failed (§6.1 step 2).
+    #[error("path not in tree: {path} at {commit}")]
+    PathNotInTree { path: String, commit: String },
+
+    /// A path's `.gitattributes` resolves to a `filter=<name>` driver
+    /// outside the slice-2 core-filter allowlist. The engine surfaces
+    /// this as `AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
+    /// See `docs/stale-layers-slices.md` "Standing rules" — fail loud.
+    #[error("filter not implemented: {filter}")]
+    FilterFailed { filter: String },
+
+    /// On-disk catalog blob has a format version that doesn't match what
+    /// this version of git-span expects (§4.1).
+    #[error(
+        "format version mismatch: expected {expected}, got {got}. \
+         Run `git span delete --all && git add .span && git commit` to regenerate all \
+         spans from current anchors. Or downgrade git-span to a version \
+         that supports format version {got}."
+    )]
+    FormatVersionMismatch { expected: u8, got: u8 },
+
+    /// A staged span name cannot coexist with an existing span file because
+    /// a filesystem path cannot be both a file and a directory. Either the
+    /// staged name has an existing span as a strict path prefix
+    /// (`<existing>/...`) or the inverse (an existing span has the staged
+    /// name as a strict prefix). The committed span blocks the staged one
+    /// until one of them is renamed (typically the leaf to `<name>/index`).
+    #[error(
+        "span name `{staged}` collides with existing span `{blocking}`: \
+         a span file path cannot be both a file and a directory. Rename one \
+         of them — e.g. `git span move {blocking} {blocking}/index` — and \
+         retry."
+    )]
+    SpanNameCollidesWithExistingSpan { staged: String, blocking: String },
+
+    /// A staging sidecar's content hash does not match the
+    /// `content_sha256` recorded in its `.meta` file (or the meta is
+    /// missing/empty when one was expected). Slice 4 of the review plan
+    /// — fail closed on tamper before any commit-side work proceeds.
+    #[error("sidecar tampered for span `{span}` slot {index}")]
+    SidecarTampered { span: String, index: u32 },
+
+    /// Span file parse error (§Phase 1 tracked files).
+    #[error("invalid span file: {0}")]
+    InvalidSpanFile(String),
+
+    /// The span file (or its source content) is in a Git conflict state
+    /// (unmerged index entry / textual conflict markers), so it cannot be
+    /// read reliably. Fail-closed: callers must surface `Conflict`, never
+    /// present conflict-marker content as valid span data.
+    #[error("span `{0}` is in a Git conflict state (unresolved merge)")]
+    SpanConflict(String),
+
+    /// Generic git-process / gix error.
+    #[error("git: {0}")]
+    Git(String),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+// The gix-free kernel owns a small, matchable error type covering its pure
+// parse/validate surface. Map each variant 1:1 into this crate's larger
+// `Error` so callers (and the `?` operator) see git-span's `Error` exactly
+// as before — message text and matchable variant are preserved.
+impl From<git_span_core::Error> for Error {
+    fn from(e: git_span_core::Error) -> Self {
+        match e {
+            git_span_core::Error::ReservedName(s) => Error::ReservedName(s),
+            git_span_core::Error::InvalidName(s) => Error::InvalidName(s),
+            git_span_core::Error::InvalidSpanFile(s) => Error::InvalidSpanFile(s),
+            git_span_core::Error::SpanConflict(s) => Error::SpanConflict(s),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 scaffold types — layered engine / renderers / prechecks.
+//
+// These types are introduced ahead of the engine and renderer slices so the
+// public boundary exists when those slices land. See
+// `docs/stale-layers-plan.md` §"Key types" and §D1–D6. Only derives and
+// constructors / a stubbed `ContentRef::read_normalized` live here — runtime
+// logic lands in later slices.
+// ---------------------------------------------------------------------------
+
+/// Which drift layers participate in a `stale` run. HEAD is always on;
+/// these toggles select additional layers on top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerSet {
+    pub worktree: bool,
+    pub index: bool,
+    pub staged_span: bool,
+}
+
+impl LayerSet {
+    /// All three layers enabled (HEAD + Index + Worktree + Staged-span).
+    pub fn full() -> Self {
+        Self {
+            worktree: true,
+            index: true,
+            staged_span: true,
+        }
+    }
+
+    /// HEAD-only fast path (CI invariant). All additional layers off.
+    pub fn committed_only() -> Self {
+        Self {
+            worktree: false,
+            index: false,
+            staged_span: false,
+        }
+    }
+}
+
+/// Scope of a single engine invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Span(String),
+    Anchor(String),
+}
+
+/// Layer that produced drift for a `Finding`. There is no `StagedSpan`
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DriftSource {
+    Head,
+    Index,
+    Worktree,
+}
+
+/// Reference to content readable through git's attribute + filter pipeline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContentRef {
+    /// HEAD or index blob; reader dispatched by `.gitattributes` filter.
+    Blob(gix::ObjectId),
+    /// On-disk worktree file; clean filter applied to match blob form.
+    WorktreeFile(PathBuf),
+    /// `.git/span/staging/<span>.<N>`; re-normalized on read against
+    /// current filters.
+    Sidecar(PathBuf),
+}
+
+impl ContentRef {
+    /// Read the content through the normalization pipeline (D3) and
+    /// return canonical bytes. Callers slice into `&[&str]` on demand.
+    ///
+    /// Slice 1 scope: implemented for the cases the HEAD-only fast path
+    /// needs. LFS / custom `filter=<name>` drivers are deferred to a
+    /// later slice (see `docs/gix-filter-audit.md`).
+    pub fn read_normalized(&self, repo: &gix::Repository) -> Result<Vec<u8>> {
+        match self {
+            ContentRef::Blob(oid) => {
+                let obj = repo
+                    .find_object(*oid)
+                    .map_err(|e| Error::Git(format!("find blob `{oid}`: {e}")))?;
+                Ok(obj.into_blob().detach().data)
+            }
+            ContentRef::WorktreeFile(path) => {
+                let workdir = repo
+                    .workdir()
+                    .ok_or_else(|| Error::Git("bare repositories are not supported".into()))?;
+                // Fail-loud: any `filter=<name>` outside the core-filter
+                // allowlist short-circuits before we touch gix's filter
+                // pipeline. See `docs/stale-layers-slices.md` standing
+                // rules and `docs/gix-filter-audit.md`.
+                if let Some(name) = path_filter_attribute(workdir, path)?
+                    && !is_core_filter(&name)
+                {
+                    return Err(Error::FilterFailed { filter: name });
+                }
+                let abs = workdir.join(path);
+                let md = std::fs::symlink_metadata(&abs)?;
+                if md.file_type().is_symlink() {
+                    let target = std::fs::read_link(&abs)?;
+                    return Ok(target.to_string_lossy().into_owned().into_bytes());
+                }
+                let file = std::fs::File::open(&abs)?;
+                // Apply the clean (to-git) filter so worktree bytes match
+                // blob bytes for comparison. Custom `filter=<name>`
+                // drivers were rejected above; only core filters reach
+                // here.
+                let (mut pipeline, index) = repo
+                    .filter_pipeline(None)
+                    .map_err(|e| Error::Git(format!("filter pipeline: {e}")))?;
+                let outcome = pipeline
+                    .convert_to_git(file, path.as_path(), &index)
+                    .map_err(|e| Error::Git(format!("convert_to_git: {e}")))?;
+                use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+                use std::io::Read;
+                let mut out = Vec::new();
+                match outcome {
+                    ToGitOutcome::Unchanged(mut r) => {
+                        r.read_to_end(&mut out)?;
+                    }
+                    ToGitOutcome::Buffer(buf) => {
+                        out.extend_from_slice(buf);
+                    }
+                    ToGitOutcome::Process(mut r) => {
+                        r.read_to_end(&mut out)?;
+                    }
+                }
+                Ok(out)
+            }
+            ContentRef::Sidecar(path) => {
+                // Slice 1: read raw. Re-normalization across filter changes
+                // (the .gitattributes-stamp dance in plan §B2) is a later
+                // slice.
+                // TODO(stale-layers-plan): re-normalize sidecars on read.
+                Ok(std::fs::read(path)?)
+            }
+        }
+    }
+}
+
+/// Resolve the `filter` `.gitattributes` value for `path` by shelling
+/// out to `git check-attr filter -- <path>`. Returns the driver name
+/// (e.g. `lfs`, `crypt`) when set, `None` for `unspecified` / `unset` /
+/// `set` (no driver name). The fail-loud check in `ContentRef`'s
+/// reader treats any returned name not on the core-filter allowlist
+/// as a hard short-circuit (slice-2 standing rule).
+pub(crate) fn path_filter_attribute(
+    workdir: &std::path::Path,
+    rel_path: &std::path::Path,
+) -> Result<Option<String>> {
+    crate::perf::record_gix_open();
+    let repo = gix::open(workdir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
+    path_filter_attribute_with_repo(&repo, rel_path)
+}
+
+/// Variant of `path_filter_attribute` that reuses the caller's repository
+/// handle instead of re-opening from the workdir. The engine memo path
+/// uses this so a single `stale` run pays at most one `gix::open` for
+/// attribute lookups.
+pub(crate) fn path_filter_attribute_with_repo(
+    repo: &gix::Repository,
+    rel_path: &std::path::Path,
+) -> Result<Option<String>> {
+    // Fail closed on any plumbing error: treat as "no driver" rather than
+    // guessing — the gix pipeline runs downstream.
+    let value = match crate::git::attr_for(repo, rel_path, "filter") {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    // `attr_for` returns `Some("set")` for boolean-set attributes, which
+    // for `filter` is meaningless (no driver name) — collapse to `None`.
+    Ok(match value {
+        None => None,
+        Some(v) if v.as_slice() == b"set" => None,
+        Some(v) => Some(v.to_string()),
+    })
+}
+
+/// Filter-driver allowlist for the engine's reader dispatch.
+///
+/// The `filter` `.gitattributes` attribute is reserved for
+/// `filter=<name>` driver dispatch (LFS, custom process filters, etc.);
+/// core normalization (`text`, `text=auto`, `eol`, `ident`,
+/// `working-tree-encoding`, `core.autocrlf`, `core.eol`) is driven by
+/// other attributes / config and never sets the `filter` value.
+///
+/// Slice 6 added `lfs`: `filter=lfs` is no longer a fail-loud
+/// short-circuit; the engine routes to a managed
+/// `git-lfs filter-process` subprocess (with cache-probe semantics for
+/// `LfsNotFetched` / `LfsNotInstalled`). All other `filter=<name>`
+/// values still short-circuit as `FilterFailed` until slice 7 lands the
+/// generic custom-filter reader.
+pub(crate) fn is_core_filter(name: &str) -> bool {
+    name == "lfs"
+}
+
+/// Unified-diff hunk pair, in 1-based `(start, count)` form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hunk {
+    /// `(start, count)` in the source blob.
+    pub old: (u32, u32),
+    /// `(start, count)` in the destination blob.
+    pub new: (u32, u32),
+}
+
+/// A single drift observation produced by the engine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Finding {
+    pub span: String,
+    pub anchor_id: String,
+    pub status: AnchorStatus,
+    /// `None` when `Fresh` or when `status` is terminal.
+    pub source: Option<DriftSource>,
+    /// Always populated from the pinned `Anchor` record.
+    pub anchored: AnchorLocation,
+    /// `None` when `Deleted` / `Submodule` / `ContentUnavailable`;
+    /// populated with best-effort path for `Conflict`.
+    pub current: Option<AnchorLocation>,
+    /// Only when `source == Some(Head)`.
+    pub locus: Option<DriftLocus>,
+    /// Fuzzy-similarity successors, populated when the exact-match
+    /// relocation scan failed and the fuzzy fallback found candidates
+    /// above the noise floor. Corresponds to
+    /// `AnchorResolved.fuzzy_successors`.
+    pub fuzzy_successors: Vec<FuzzySuccessor>,
+}
+
+/// Engine invocation options. See plan §B3/§B4.
+///
+/// `layers` selects which drift layers (on top of HEAD) participate;
+/// `ignore_unavailable` downgrades `ContentUnavailable` findings to
+/// non-exit-driving per §B3. `--no-exit-code` is an output-rendering
+/// concern and lives on the CLI, not in this struct.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineOptions {
+    pub layers: LayerSet,
+    pub ignore_unavailable: bool,
+    /// Slice 5 of the review plan: `--since <commit-ish>` already
+    /// resolved to a commit OID. The engine includes a anchor only when
+    /// `since` is an ancestor of (or equal to) the anchor's anchor —
+    /// i.e. the anchor is anchored "at or after" `since`. Deleted
+    /// anchors are always included (the filter is for scoping, not
+    /// hiding removed-path anchors).
+    pub since: Option<gix::ObjectId>,
+    /// Phase 4: does the caller need every layer's drift evaluated, or
+    /// is HEAD's verdict alone sufficient to drive the exit code? Set
+    /// to `true` for `--patch`, `--stat`, and the `human` renderer.
+    /// Defaults to `true` for safety; the `stale` CLI flips it to
+    /// `false` for plain oneline / porcelain / json output.
+    pub needs_all_layers: bool,
+    /// Confidence threshold for auto-fix: only fuzzy-successor matches at or
+    /// above this threshold are automatically re-anchored by `--fix`.
+    /// Default 0.95. Overridable via `--fuzzy-threshold`.
+    pub fuzzy_threshold: f64,
+}
+
+impl EngineOptions {
+    /// All layers enabled, unavailable content still drives exit code.
+    pub fn full() -> Self {
+        Self {
+            layers: LayerSet::full(),
+            ignore_unavailable: false,
+            since: None,
+            needs_all_layers: true,
+            fuzzy_threshold: 0.95,
+        }
+    }
+
+    /// HEAD-only fast path (CI invariant per §B4).
+    pub fn committed_only() -> Self {
+        Self {
+            layers: LayerSet::committed_only(),
+            ignore_unavailable: false,
+            since: None,
+            needs_all_layers: true,
+            fuzzy_threshold: 0.95,
+        }
+    }
+}
+
+/// Public error boundary for `validate_add_target` — the stage-time
+/// precheck that rejects pins `git span add` can't honor (see plan
+/// §"CLI and `git span add` prechecks").
+///
+/// These errors surface at `git span add` time, not at commit time, so
+/// the operator gets immediate feedback before sidecars are written.
+#[derive(Debug, thiserror::Error)]
+pub enum AddPrecheckError {
+    /// Anchor target matched by a `.gitignore` rule and not tracked by
+    /// git. git-span resolves content through git's layers, so a path git
+    /// never sees can never resolve — `stale` would report it `deleted`
+    /// forever, with no commit able to clear it. Rejected at `add` time,
+    /// keying on the gitignore match (an untracked-but-not-ignored path
+    /// is still allowed: it resolves the moment it is committed).
+    #[error("anchor path is gitignored: {path}")]
+    GitignoredPath { path: String },
+
+    /// Line-anchor pin on a `.gitattributes`-declared binary path.
+    #[error("line-anchor pin rejected on binary path: {path}")]
+    LineRangeOnBinary { path: String },
+
+    /// Line-anchor pin on a symlink (filters don't run on symlinks;
+    /// whole-file pins are allowed for retarget detection).
+    #[error("line-anchor pin rejected on symlink: {path}")]
+    LineRangeOnSymlink { path: String },
+
+    /// Line-anchor pin on a path inside a submodule (multi-repo content
+    /// resolution is out of scope).
+    #[error("line-anchor pin rejected inside submodule: {path}")]
+    LineRangeInSubmodule { path: String },
+
+    /// Whole-file pin on a non-gitlink path inside a submodule. The
+    /// submodule's object database is not opened; only the gitlink root
+    /// itself may be pinned whole-file.
+    #[error("whole-file pin rejected inside submodule (only the gitlink root is allowed): {path}")]
+    WholeFileInSubmodule { path: String },
+
+    /// `filter=lfs` path whose content is not locally cached. Reuses
+    /// `UnavailableReason::LfsNotFetched` vocabulary with `stale` output
+    /// per plan §D4.
+    #[error("content unavailable for {path}: {reason:?}")]
+    ContentUnavailable {
+        path: String,
+        reason: UnavailableReason,
+    },
+
+    /// Underlying I/O error while probing the path (stat, readlink,
+    /// gitattributes lookup). Surfaces as a precheck failure rather
+    /// than silently allowing the `add`.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// Stage-time validation for a single `git span add` target. Called from
+/// `cli/commit.rs::run_add` before any sidecar is written.
+///
+/// See plan §"CLI and `git span add` prechecks" for the full rule set.
+pub fn validate_add_target(
+    repo: &gix::Repository,
+    path: &std::path::Path,
+    extent: &AnchorExtent,
+    index_snapshot: &[crate::git::IndexEntrySnapshot],
+) -> std::result::Result<(), AddPrecheckError> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| AddPrecheckError::Io(std::io::Error::other("bare repo")))?;
+    let path_str = path.to_string_lossy().into_owned();
+    let abs = workdir.join(path);
+
+    // Submodule detection from the pre-built index snapshot.
+    let submodule_kind = submodule_classify(index_snapshot, &path_str);
+
+    // Gitignored target: git never tracks this path, so the resolver can
+    // never see it and `stale` would report it `deleted` forever. Reject
+    // at the source — but only when the path is *not* tracked: a path
+    // matched by a pattern yet force-added to git resolves normally, and
+    // an untracked-but-not-ignored path is a legitimate anchor that
+    // resolves on commit (so it must still be allowed).
+    if crate::git::path_is_ignored(repo, path).unwrap_or(false)
+        && !is_tracked_path(index_snapshot, &path_str)
+    {
+        return Err(AddPrecheckError::GitignoredPath { path: path_str });
+    }
+
+    // Symlink detection (worktree only).
+    let is_symlink = std::fs::symlink_metadata(&abs)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+
+    // .gitattributes: filter driver name (e.g. "lfs", "binary", custom).
+    let filter = path_filter_attribute(workdir, path).unwrap_or(None);
+    let is_binary_attr = check_binary_attribute(workdir, path).unwrap_or(false);
+    let is_lfs = filter.as_deref() == Some("lfs");
+
+    match extent {
+        AnchorExtent::LineRange { .. } => {
+            if is_binary_attr {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
+            }
+            if is_symlink {
+                return Err(AddPrecheckError::LineRangeOnSymlink { path: path_str });
+            }
+            if matches!(
+                submodule_kind,
+                SubmoduleKind::Inside | SubmoduleKind::Gitlink
+            ) {
+                return Err(AddPrecheckError::LineRangeInSubmodule { path: path_str });
+            }
+            // Slice 6b: content-blind binary detection. After the
+            // attribute-driven check, sniff the first 8 KiB of the
+            // worktree file for a NUL byte — git's own heuristic for
+            // "binary". Reject line-anchor pins; whole-file pins are
+            // still allowed (handled by the outer `match`). Default-on,
+            // no opt-in config: line-anchor pins on NUL-bearing content
+            // can never resolve cleanly anyway.
+            if !is_lfs && content_sniff_binary(&abs) {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
+            }
+            if !is_lfs && content_sniff_non_utf8(&abs) {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
+            }
+        }
+        AnchorExtent::WholeFile => {
+            if matches!(submodule_kind, SubmoduleKind::Inside) {
+                return Err(AddPrecheckError::WholeFileInSubmodule { path: path_str });
+            }
+            // Whole-file on the gitlink root is allowed.
+        }
+    }
+
+    if is_lfs {
+        // Probe local LFS object cache. The standard layout is
+        // `.git/lfs/objects/<oid[..2]>/<oid[2..4]>/<oid>`. We only
+        // need to detect "no LFS content cached for this pointer".
+        if let Ok(bytes) = std::fs::read(&abs)
+            && let Some(oid) = parse_lfs_pointer_oid(&bytes)
+        {
+            let lfs_path = workdir
+                .join(".git")
+                .join("lfs")
+                .join("objects")
+                .join(&oid[..2.min(oid.len())])
+                .join(&oid[2.min(oid.len())..4.min(oid.len())])
+                .join(&oid);
+            if !lfs_path.exists() {
+                return Err(AddPrecheckError::ContentUnavailable {
+                    path: path_str,
+                    reason: UnavailableReason::LfsNotFetched,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubmoduleKind {
+    /// The path is itself a submodule gitlink (mode 160000).
+    Gitlink,
+    /// The path lives inside a submodule (a parent in `path` is a
+    /// gitlink).
+    Inside,
+    /// Neither.
+    None,
+}
+
+/// Whether `path` (span-root-relative POSIX string) has an index entry —
+/// i.e. git tracks it. Used to spare force-added paths from the
+/// gitignore reject.
+fn is_tracked_path(index_snapshot: &[crate::git::IndexEntrySnapshot], path: &str) -> bool {
+    index_snapshot.iter().any(|e| e.path == path)
+}
+
+pub(crate) fn submodule_classify(
+    index_snapshot: &[crate::git::IndexEntrySnapshot],
+    path: &str,
+) -> SubmoduleKind {
+    let mut gitlinks: Vec<&str> = Vec::new();
+    for entry in index_snapshot {
+        // Submodule gitlinks are mode 0o160000 (Commit).
+        if entry.mode.is_commit() {
+            gitlinks.push(&entry.path);
+        }
+    }
+    for g in &gitlinks {
+        if *g == path {
+            return SubmoduleKind::Gitlink;
+        }
+        let prefix = format!("{g}/");
+        if path.starts_with(&prefix) {
+            return SubmoduleKind::Inside;
+        }
+    }
+    SubmoduleKind::None
+}
+
+fn check_binary_attribute(
+    workdir: &std::path::Path,
+    path: &std::path::Path,
+) -> std::result::Result<bool, std::io::Error> {
+    let repo = gix::open(workdir).map_err(std::io::Error::other)?;
+    // gix_attributes expands the built-in `binary` macro automatically:
+    // when `binary` matches, the outcome reports it as Set.
+    match crate::git::attr_for(&repo, path, "binary") {
+        Ok(Some(v)) => Ok(v.as_slice() == b"set" || v.as_slice() == b"true"),
+        Ok(None) => Ok(false),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Slice 6b: returns true if the first ~8 KiB of `abs` contains a NUL
+/// byte. Mirrors git's own binary heuristic. Returns false on any I/O
+/// error (callers already handled symlink / submodule paths) — the
+/// attribute check is the authoritative reject; this is a fallback for
+/// content with no `binary` attribute set.
+fn content_sniff_binary(abs: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(abs) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    buf[..n].contains(&0u8)
+}
+
+fn content_sniff_non_utf8(abs: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(abs) else {
+        return false;
+    };
+    std::str::from_utf8(&bytes).is_err()
+}
+
+fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    if !s.starts_with("version https://git-lfs.github.com/spec/") {
+        return None;
+    }
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("oid sha256:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Sidecar normalization stamp (plan §B2 / §D3).
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the active normalization rules at sidecar capture time.
+/// On `stale` read, an engine-side mismatch against the *current* stamp
+/// triggers re-normalization of both sides before comparison.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizationStamp {
+    /// SHA-1 of the repo-root `.gitattributes` blob (lowercase hex).
+    /// Empty string when no `.gitattributes` is present.
+    pub gitattributes_sha1: String,
+    /// Hash of the configured `filter.<name>.{clean,smudge,process}`
+    /// driver list at capture time. Empty when no drivers are set.
+    pub filter_drivers_sha1: String,
+}
+
+/// Compute the current normalization stamp for `repo`.
+pub fn current_normalization_stamp(repo: &gix::Repository) -> Result<NormalizationStamp> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::Git("bare repo".into()))?;
+    let attrs_sha = stamp_gitattributes_sha1(workdir);
+    let drivers_sha = stamp_filter_drivers_sha1(workdir);
+    Ok(NormalizationStamp {
+        gitattributes_sha1: attrs_sha,
+        filter_drivers_sha1: drivers_sha,
+    })
+}
+
+fn stamp_gitattributes_sha1(workdir: &std::path::Path) -> String {
+    let p = workdir.join(".gitattributes");
+    let bytes = match std::fs::read(&p) {
+        Ok(b) => b,
+        Err(_) => return String::new(),
+    };
+    sha1_hex(&bytes)
+}
+
+fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
+    // Snapshot the configured filter-driver names + their command lines.
+    // Walk every `[filter "<sub>"]` section across all config sources via
+    // `config_snapshot()` and emit a deterministic
+    // `filter.<sub>.<key> <value>\n` line per value, mirroring the
+    // multi-valued behavior of `git config --get-regexp '^filter\.'`.
+    let Ok(repo) = gix::open(workdir) else {
+        return String::new();
+    };
+    let snap = repo.config_snapshot();
+    let file = snap.plumbing();
+    let mut lines: Vec<String> = Vec::new();
+    let Some(sections) = file.sections_by_name("filter") else {
+        return sha1_hex(b"");
+    };
+    for section in sections {
+        let header = section.header();
+        let sub = header
+            .subsection_name()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let body = section.body();
+        // Stable order: walk events in file order via `value_names`.
+        // `value_names` yields each name once per occurrence, but value
+        // lookup must call `values()` to enumerate all multi-valued
+        // entries — so dedupe names first.
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for name in body.value_names() {
+            seen.insert(name.as_ref().to_string());
+        }
+        for name in seen {
+            for v in body.values(&name) {
+                lines.push(format!("filter.{sub}.{name} {v}\n"));
+            }
+        }
+    }
+    lines.sort();
+    let joined: String = lines.concat();
+    sha1_hex(joined.as_bytes())
+}
+
+/// Lowercase hex SHA-1 of `bytes`. We avoid pulling in another crate by
+/// shelling out to `git hash-object --stdin` in --no-filters mode? Too
+/// heavy. Inline a tiny implementation.
+pub(crate) fn sha1_hex(bytes: &[u8]) -> String {
+    use_sha1::sha1_hex(bytes)
+}
+
+// `sha256_hex` is the leaf digest helper; it lives in `git-span-core` and
+// is re-exported here so every `crate::types::sha256_hex` path is unchanged.
+pub use git_span_core::sha256_hex;
+
+pub(crate) mod use_sha1 {
+    /// Minimal SHA-1. Returns lowercase hex.
+    pub fn sha1_hex(input: &[u8]) -> String {
+        let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        let bit_len = (input.len() as u64).wrapping_mul(8);
+        let mut padded = Vec::with_capacity(input.len() + 9 + 64);
+        padded.extend_from_slice(input);
+        padded.push(0x80);
+        while padded.len() % 64 != 56 {
+            padded.push(0);
+        }
+        padded.extend_from_slice(&bit_len.to_be_bytes());
+        for chunk in padded.chunks_exact(64) {
+            let mut w = [0u32; 80];
+            for (i, word) in chunk.chunks_exact(4).enumerate() {
+                w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+            for (i, &wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                    20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                    _ => (b ^ c ^ d, 0xCA62C1D6),
+                };
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            h[0] = h[0].wrapping_add(a);
+            h[1] = h[1].wrapping_add(b);
+            h[2] = h[2].wrapping_add(c);
+            h[3] = h[3].wrapping_add(d);
+            h[4] = h[4].wrapping_add(e);
+        }
+        let mut out = String::with_capacity(40);
+        for word in h {
+            out.push_str(&format!("{word:08x}"));
+        }
+        out
+    }
+}

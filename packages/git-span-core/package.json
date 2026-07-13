@@ -1,0 +1,14 @@
+{
+  "name": "@goodfoot/git-span-core",
+  "version": "1.0.131",
+  "private": true,
+  "scripts": {
+    "test": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span-core/build\" cargo test --locked",
+    "lint": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span-core/check\" cargo clippy --quiet --locked -- -D warnings",
+    "typecheck": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span-core/check\" cargo check --quiet --locked"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git"
+  }
+}

@@ -1,3 +1,0 @@
-packages/agent-hooks/src/pre-tool-use.ts#L406-L413 rk64:36a66c58784d03d4
-
-PreToolUse resolves the mesh root and drops any touch whose path is inside it, so files under the mesh root never enter the touch journal (matching the gitignore precedent) and the Stop hook never flags a mesh document as a read, write, or uncovered write. Relies on resolveMeshRoot/isInsideMeshRoot from agent-hooks-common.ts, whose isInsideMeshRoot takes (path, root) — the reverse of the Rust signature.

@@ -1,4 +1,0 @@
-packages/agent-hooks/src/agent-hooks-common.ts#L60-L107 rk64:949e0a52e8fb033d
-packages/git-mesh/src/mesh_root.rs#L25-L41 rk64:64a603dfdce58802
-
-TypeScript resolveMeshRoot mirrors the Rust CLI mesh-root precedence (GIT_MESH_DIR, then git config git-mesh.dir, then default .mesh) minus the --mesh-dir flag that file-write hooks cannot see; isInsideMeshRoot reimplements the Rust containment predicate. Both are unenforced cross-language mirrors of packages/git-mesh/src/mesh_root.rs — if the Rust precedence or containment rule changes, this copy must change too, and isInsideMeshRoot's (path, root) argument order is the reverse of the Rust signature.

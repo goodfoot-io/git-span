@@ -1,6 +1,6 @@
 # Cross-Compilation Guide
 
-`git-mesh` publishes a small npm meta-package plus platform-specific optional
+`git-span` publishes a small npm meta-package plus platform-specific optional
 packages that contain native Rust binaries. The release workflow builds those
 binaries and copies each one into the matching package under `npm/`.
 
@@ -8,11 +8,11 @@ binaries and copies each one into the matching package under `npm/`.
 
 | Platform | Architecture | Rust Target Triple | NPM Package |
 | --- | --- | --- | --- |
-| Linux | x64 | `x86_64-unknown-linux-musl` | `@goodfoot/git-mesh-linux-x64` |
-| Linux | arm64 | `aarch64-unknown-linux-musl` | `@goodfoot/git-mesh-linux-arm64` |
-| macOS | x64 | `x86_64-apple-darwin` | `@goodfoot/git-mesh-darwin-x64` |
-| macOS | arm64 | `aarch64-apple-darwin` | `@goodfoot/git-mesh-darwin-arm64` |
-| Windows | x64 | `x86_64-pc-windows-msvc` | `@goodfoot/git-mesh-win32-x64` |
+| Linux | x64 | `x86_64-unknown-linux-musl` | `@goodfoot/git-span-linux-x64` |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `@goodfoot/git-span-linux-arm64` |
+| macOS | x64 | `x86_64-apple-darwin` | `@goodfoot/git-span-darwin-x64` |
+| macOS | arm64 | `aarch64-apple-darwin` | `@goodfoot/git-span-darwin-arm64` |
+| Windows | x64 | `x86_64-pc-windows-msvc` | `@goodfoot/git-span-win32-x64` |
 
 Linux release binaries use musl targets so they do not depend on the target
 system's glibc version. The npm package names intentionally stay generic
@@ -21,10 +21,10 @@ binary inside each package is built for musl.
 
 ## Install Flow
 
-`@goodfoot/git-mesh` declares the platform packages as optional dependencies.
-During install, `packages/git-mesh/scripts/postinstall.js` maps
+`@goodfoot/git-span` declares the platform packages as optional dependencies.
+During install, `packages/git-span/scripts/postinstall.js` maps
 `process.platform` and `process.arch` to the matching package, then links or
-copies that package's native binary to `packages/git-mesh/bin/git-mesh`.
+copies that package's native binary to `packages/git-span/bin/git-span`.
 
 The installed CLI entrypoint is the native Rust executable. Node is used only
 for the package `postinstall` step.
@@ -38,7 +38,7 @@ The postinstall script fails closed:
 
 ## Release Workflow
 
-`.github/workflows/release-git-mesh.yml` is the source of truth for published
+`.github/workflows/release-git-span.yml` is the source of truth for published
 artifacts. It uses `houseabsolute/actions-rust-cross` to build every target:
 
 ```yaml
@@ -47,30 +47,30 @@ strategy:
     include:
       - os: ubuntu-latest
         target: x86_64-unknown-linux-musl
-        npm-pkg: git-mesh-linux-x64
-        binary: git-mesh
+        npm-pkg: git-span-linux-x64
+        binary: git-span
       - os: ubuntu-latest
         target: aarch64-unknown-linux-musl
-        npm-pkg: git-mesh-linux-arm64
-        binary: git-mesh
+        npm-pkg: git-span-linux-arm64
+        binary: git-span
       - os: macos-latest
         target: x86_64-apple-darwin
-        npm-pkg: git-mesh-darwin-x64
-        binary: git-mesh
+        npm-pkg: git-span-darwin-x64
+        binary: git-span
       - os: macos-latest
         target: aarch64-apple-darwin
-        npm-pkg: git-mesh-darwin-arm64
-        binary: git-mesh
+        npm-pkg: git-span-darwin-arm64
+        binary: git-span
       - os: windows-latest
         target: x86_64-pc-windows-msvc
-        npm-pkg: git-mesh-win32-x64
-        binary: git-mesh.exe
+        npm-pkg: git-span-win32-x64
+        binary: git-span.exe
 ```
 
 The release workflow copies from:
 
 ```text
-packages/git-mesh/target-cache/<target>/release/<binary>
+packages/git-span/target-cache/<target>/release/<binary>
 ```
 
 to the npm package:
@@ -79,16 +79,16 @@ to the npm package:
 npm/<npm-pkg>/bin/
 ```
 
-(The developer shared default is `$HOME/.cache/git-mesh/cargo-target/git-mesh/build/`
+(The developer shared default is `$HOME/.cache/git-span/cargo-target/git-span/build/`
 for scripted builds. The `target-cache/` path above is specific to the release workflow
 which runs bare `cargo` and uses the `.cargo/config.toml` fallback.)
 
 The publish job uploads the platform packages first, then publishes the
-`@goodfoot/git-mesh` meta-package.
+`@goodfoot/git-span` meta-package.
 
 ## Local Builds
 
-`yarn build` in `packages/git-mesh` builds the host default Rust target:
+`yarn build` in `packages/git-span` builds the host default Rust target:
 
 ```sh
 yarn build
@@ -115,7 +115,7 @@ toolchains available.
 
 ## Dependency Notes
 
-`git-mesh` uses `gix` for Git object and repository operations instead of
+`git-span` uses `gix` for Git object and repository operations instead of
 linking to `libgit2`. The current dependency set does not include OpenSSL,
 `native-tls`, `libgit2`, or other system library crates that would add extra
 runtime shared-library requirements to the released Linux musl binaries.

@@ -1,9 +1,9 @@
 /**
  * Stop hook: reads the per-session touch journal, writes a pre-commit record
- * to the shared queue under <git-common-dir>/git-mesh/pre-commit/, marks the
+ * to the shared queue under <git-common-dir>/git-span/pre-commit/, marks the
  * journal entries seen, and returns null — the stop proceeds.
  *
- * All downstream work (drift detection, mesh reconciliation) is handled by a
+ * All downstream work (drift detection, span reconciliation) is handled by a
  * detached background dispatcher that picks up pre-commit records (Phase 3+).
  *
  * The `stop_hook_active` guard at the top of the handler short-circuits a
@@ -25,7 +25,7 @@ import {
   sanitizeSessionId,
   type TouchKind
 } from './agent-hooks-common.js';
-import type { HookIgnoreLoader } from './mesh-ignore.js';
+import type { HookIgnoreLoader } from './span-ignore.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,7 +44,7 @@ export interface JournalEntry {
 // Journal I/O
 // ---------------------------------------------------------------------------
 
-const JOURNAL_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-mesh', 'session');
+const JOURNAL_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
 
 export function journalDir(sessionId: string): string {
   return nodePath.join(JOURNAL_BASE_DIR, sanitizeSessionId(sessionId));
@@ -158,7 +158,7 @@ export function buildAnchorSpecs(entries: JournalEntry[]): AnchorSpec[] {
 
 /**
  * Injectable writer for pre-commit records. The default implementation writes
- * to the shared queue under <git-common-dir>/git-mesh/pre-commit/.
+ * to the shared queue under <git-common-dir>/git-span/pre-commit/.
  */
 export type PreCommitRecordWriter = (repoRoot: string, record: PreCommitRecord) => void;
 
@@ -167,7 +167,7 @@ export type PreCommitRecordWriter = (repoRoot: string, record: PreCommitRecord) 
 // ---------------------------------------------------------------------------
 
 export interface StopHandlerDeps {
-  /** Load path-scoped mesh suppression rules. */
+  /** Load path-scoped span suppression rules. */
   loadRules?: HookIgnoreLoader;
   /** Write a pre-commit record to the queue. Defaults to writePreCommitRecord. */
   writeRecord?: PreCommitRecordWriter;

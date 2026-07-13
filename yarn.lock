@@ -1042,39 +1042,39 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/git-mesh-core@workspace:packages/git-mesh-core":
+"@goodfoot/git-span-core@workspace:packages/git-span-core":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-core@workspace:packages/git-mesh-core"
+  resolution: "@goodfoot/git-span-core@workspace:packages/git-span-core"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-darwin-arm64@npm:1.0.131, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
+"@goodfoot/git-span-darwin-arm64@npm:1.0.131, @goodfoot/git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64"
+  resolution: "@goodfoot/git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-darwin-x64@npm:1.0.131, @goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64":
+"@goodfoot/git-span-darwin-x64@npm:1.0.131, @goodfoot/git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64"
+  resolution: "@goodfoot/git-span-darwin-x64@workspace:npm/git-span-darwin-x64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-arm64@npm:1.0.131, @goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64":
+"@goodfoot/git-span-linux-arm64@npm:1.0.131, @goodfoot/git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64"
+  resolution: "@goodfoot/git-span-linux-arm64@workspace:npm/git-span-linux-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-x64@npm:1.0.131, @goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64":
+"@goodfoot/git-span-linux-x64@npm:1.0.131, @goodfoot/git-span-linux-x64@workspace:npm/git-span-linux-x64":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64"
+  resolution: "@goodfoot/git-span-linux-x64@workspace:npm/git-span-linux-x64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-monorepo@workspace:.":
+"@goodfoot/git-span-monorepo@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-monorepo@workspace:."
+  resolution: "@goodfoot/git-span-monorepo@workspace:."
   dependencies:
     "@biomejs/biome": "npm:^2.3.13"
     "@types/node": "npm:24.x"
@@ -1086,34 +1086,34 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-win32-x64@npm:1.0.131, @goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64":
+"@goodfoot/git-span-win32-x64@npm:1.0.131, @goodfoot/git-span-win32-x64@workspace:npm/git-span-win32-x64":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64"
+  resolution: "@goodfoot/git-span-win32-x64@workspace:npm/git-span-win32-x64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh@workspace:packages/git-mesh":
+"@goodfoot/git-span@workspace:packages/git-span":
   version: 0.0.0-use.local
-  resolution: "@goodfoot/git-mesh@workspace:packages/git-mesh"
+  resolution: "@goodfoot/git-span@workspace:packages/git-span"
   dependencies:
-    "@goodfoot/git-mesh-darwin-arm64": "npm:1.0.131"
-    "@goodfoot/git-mesh-darwin-x64": "npm:1.0.131"
-    "@goodfoot/git-mesh-linux-arm64": "npm:1.0.131"
-    "@goodfoot/git-mesh-linux-x64": "npm:1.0.131"
-    "@goodfoot/git-mesh-win32-x64": "npm:1.0.131"
+    "@goodfoot/git-span-darwin-arm64": "npm:1.0.131"
+    "@goodfoot/git-span-darwin-x64": "npm:1.0.131"
+    "@goodfoot/git-span-linux-arm64": "npm:1.0.131"
+    "@goodfoot/git-span-linux-x64": "npm:1.0.131"
+    "@goodfoot/git-span-win32-x64": "npm:1.0.131"
   dependenciesMeta:
-    "@goodfoot/git-mesh-darwin-arm64":
+    "@goodfoot/git-span-darwin-arm64":
       optional: true
-    "@goodfoot/git-mesh-darwin-x64":
+    "@goodfoot/git-span-darwin-x64":
       optional: true
-    "@goodfoot/git-mesh-linux-arm64":
+    "@goodfoot/git-span-linux-arm64":
       optional: true
-    "@goodfoot/git-mesh-linux-x64":
+    "@goodfoot/git-span-linux-x64":
       optional: true
-    "@goodfoot/git-mesh-win32-x64":
+    "@goodfoot/git-span-win32-x64":
       optional: true
   bin:
-    git-mesh: bin/git-mesh.exe
+    git-span: bin/git-span.exe
   languageName: unknown
   linkType: soft
 
@@ -4097,9 +4097,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-mesh@workspace:packages/extension":
+"git-span@workspace:packages/extension":
   version: 0.0.0-use.local
-  resolution: "git-mesh@workspace:packages/extension"
+  resolution: "git-span@workspace:packages/extension"
   dependencies:
     "@biomejs/biome": "npm:^2.3.13"
     "@types/mocha": "npm:^10.0.10"

@@ -4,7 +4,7 @@ set -o pipefail
 # Guardrail: integration tests must not reference `std::os::unix` directly —
 # they go through tests/support/mod.rs cross-platform helpers so the suite
 # compiles and runs on Windows. Fail fast before the (slow) yarn pipeline.
-guardrail_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/git-mesh/tests"
+guardrail_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/git-span/tests"
 if [ -d "$guardrail_root" ]; then
   offenders=""
   while IFS= read -r f; do

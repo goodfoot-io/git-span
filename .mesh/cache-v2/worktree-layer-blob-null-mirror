@@ -1,4 +1,0 @@
-packages/git-mesh/src/resolver/cache_v2/mod.rs#L614-L619 rk64:b49b0ccb341245ae
-packages/git-mesh/src/resolver/engine/anchor.rs#L1432-L1436 rk64:50c2b086f694e0cd
-
-The resolver nulls an anchor's current.blob whenever the worktree layer is on; the cache_v2 committed-baseline normalizer hand-replicates that single layer-flag effect so a cheaply-reused committed_only baseline matches effective resolution for an unaffected mesh — the normalizer must mirror whichever AnchorResolved fields the worktree layer flag drives.

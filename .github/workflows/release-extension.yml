@@ -37,19 +37,19 @@ jobs:
       - name: Verify matching CLI release assets
         run: |
           VERSION=$(node -p "require('./packages/extension/package.json').version")
-          EXPECTED_TAG="git-mesh-v${VERSION}"
+          EXPECTED_TAG="git-span-v${VERSION}"
           if [ "${EXPECTED_TAG}" != "${{ inputs.release_tag }}" ]; then
             echo "ERROR: release tag '${{ inputs.release_tag }}' does not match extension version ${VERSION}." >&2
             exit 1
           fi
-          BASE_URL="https://github.com/goodfoot-io/git-mesh/releases/download/${{ inputs.release_tag }}"
+          BASE_URL="https://github.com/goodfoot-io/git-span/releases/download/${{ inputs.release_tag }}"
           for asset in \
-            git-mesh-cli-checksums.json \
-            git-mesh-linux-x64 \
-            git-mesh-linux-arm64 \
-            git-mesh-darwin-x64 \
-            git-mesh-darwin-arm64 \
-            git-mesh-win32-x64.exe
+            git-span-cli-checksums.json \
+            git-span-linux-x64 \
+            git-span-linux-arm64 \
+            git-span-darwin-x64 \
+            git-span-darwin-arm64 \
+            git-span-win32-x64.exe
           do
             curl -fsI "${BASE_URL}/${asset}" > /dev/null
           done
@@ -64,11 +64,11 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         working-directory: packages/extension
-        run: yarn vsce publish --pat ${{ secrets.GIT_MESH_EXTENSION_VS_MARKETPLACE_TOKEN }} --no-dependencies
+        run: yarn vsce publish --pat ${{ secrets.GIT_SPAN_EXTENSION_VS_MARKETPLACE_TOKEN }} --no-dependencies
 
       - name: Publish to Open VSX
         working-directory: packages/extension
-        run: yarn dlx ovsx publish *.vsix --pat ${{ secrets.GIT_MESH_EXTENSION_OPEN_VSX_TOKEN }}
+        run: yarn dlx ovsx publish *.vsix --pat ${{ secrets.GIT_SPAN_EXTENSION_OPEN_VSX_TOKEN }}
 
       - name: Upload VSIX to GitHub Release
         uses: softprops/action-gh-release@v2
