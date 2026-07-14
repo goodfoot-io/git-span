@@ -414,11 +414,49 @@ pub(crate) fn project_revalidate_publish(
     store: &mut CacheStore,
     core: &ResolutionCore,
 ) -> Result<ExactAttempt> {
+    project_revalidate_publish_impl(repo, span_root, options, token, key, store, core, true)
+}
+
+/// Like [`project_revalidate_publish`], but persists only the compact summary,
+/// not the per-span reuse rows (card main-157 Phase 5C). The dirty path uses
+/// this: a dirty-overlay generation is never a reconstruction baseline (the
+/// clean same-HEAD baseline it reused from already is), so storing its
+/// whole-corpus reuse-row set on every dirty call is exactly the O(corpus)
+/// publish cost 5C measured. Rendering is identical (both derive from the one
+/// projected core); only what is persisted differs, and an exact-hit repeat of
+/// the identical dirty state still resolves from the summary alone via
+/// [`CacheStore::publish_generation_summary_only`].
+pub(crate) fn project_revalidate_publish_summary_only(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    token: &crate::resolver::core::token::StateToken,
+    key: &[u8; 32],
+    store: &mut CacheStore,
+    core: &ResolutionCore,
+) -> Result<ExactAttempt> {
+    project_revalidate_publish_impl(repo, span_root, options, token, key, store, core, false)
+}
+
+// The two public wrappers above share this body verbatim; the extra `store_rows`
+// flag over their 7 context params is what makes it one arg past the lint's
+// threshold, so allow it here rather than duplicate the revalidate match.
+#[allow(clippy::too_many_arguments)]
+fn project_revalidate_publish_impl(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    token: &crate::resolver::core::token::StateToken,
+    key: &[u8; 32],
+    store: &mut CacheStore,
+    core: &ResolutionCore,
+    store_rows: bool,
+) -> Result<ExactAttempt> {
     let rr = Arc::new(RenderReady::from_core(core, options.layers));
 
     match revalidate(repo, span_root, options, token)? {
         Revalidation::Unchanged => {
-            publish_if_eligible(store, token, key, &rr, core);
+            publish_if_eligible(store, token, key, &rr, core, store_rows);
             let attempt = rr.to_attempt();
             memo_put(*key, rr);
             Ok(attempt)
@@ -446,17 +484,28 @@ fn publish_if_eligible(
     key: &[u8; 32],
     rr: &RenderReady,
     core: &ResolutionCore,
+    store_rows: bool,
 ) {
     if !token.persistence_eligible() {
         crate::perf::note("cache-path.publish-skipped: ineligible");
         return;
     }
-    // Card main-157 Phase 4A: populate the normalized per-span reuse rows and
-    // the reverse path index from the resolved core, so a later commit's
-    // incremental path can reuse every unchanged span (see `reuse`). Exact-hit
-    // rendering still reads only the compact `summary`; the rows are additive.
-    let widen = reuse::compute_widen(core, global_copy_widen(token));
-    let (rows, path_index) = reuse::core_to_reuse_rows(core, &widen);
+    // Card main-157 Phase 4A: a reconstruction baseline populates the normalized
+    // per-span reuse rows and the reverse path index from the resolved core, so
+    // a later commit's incremental path (or a later dirty overlay) can reuse
+    // every unchanged span (see `reuse`). Exact-hit rendering still reads only
+    // the compact `summary`; the rows are additive.
+    //
+    // Phase 5C: a dirty-overlay generation (`store_rows == false`) persists the
+    // summary only. It is never itself a baseline — the clean same-HEAD baseline
+    // it reused from already is — so writing its whole-corpus reuse-row set on
+    // every dirty call is pure O(corpus) waste.
+    let (rows, path_index) = if store_rows {
+        let widen = reuse::compute_widen(core, global_copy_widen(token));
+        reuse::core_to_reuse_rows(core, &widen)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let input = GenerationInput {
         key_digest: *key,
         head: token.head.clone(),
@@ -467,7 +516,12 @@ fn publish_if_eligible(
         // The current worktree references this generation at publish time.
         live: true,
     };
-    match store.publish_generation(&input) {
+    let published = if store_rows {
+        store.publish_generation(&input)
+    } else {
+        store.publish_generation_summary_only(&input)
+    };
+    match published {
         Ok(()) => {
             crate::perf::counter("cache-path.publish-ok", 1);
         }

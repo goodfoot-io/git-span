@@ -264,16 +264,46 @@ impl CacheStore {
     /// of it. A republish of an existing key atomically replaces it.
     pub(crate) fn publish_generation(&mut self, input: &GenerationInput) -> StoreResult<()> {
         self.in_write_txn.set(true);
-        let outcome = self.publish_txn(input);
+        let outcome = self.publish_txn(input, true);
         self.in_write_txn.set(false);
         outcome
     }
 
-    fn publish_txn(&mut self, input: &GenerationInput) -> StoreResult<()> {
+    /// Publish only the generation row and its compact summary — WITHOUT the
+    /// per-span reuse rows or the reverse path index (card main-157 Phase 5C).
+    ///
+    /// A dirty-overlay generation is never a *reconstruction baseline*: the
+    /// clean same-HEAD baseline it reused from already is one, and both
+    /// [`Self::find_generation_by_head`] and [`Self::find_ancestor`] only ever
+    /// select a rows-bearing generation (`row_count > 0`). Persisting a dirty
+    /// generation's full reuse-row set therefore duplicates the whole corpus on
+    /// every dirty call for a reader that never comes — the O(corpus) publish
+    /// cost that made the dirty tier scale super-linearly with corpus size (5C's
+    /// measurement). Storing summary-only keeps publish proportional to the
+    /// affected set (one BLOB, no per-span rows) while exact-hit repeat of an
+    /// identical dirty state still works: it reads only this compact summary.
+    ///
+    /// The stored generation declares `row_count = 0`, so its integrity envelope
+    /// and cardinality check ([`Self::get_generation`]) verify against the rows
+    /// physically present (none) — a hit, never a spurious rejection.
+    pub(crate) fn publish_generation_summary_only(
+        &mut self,
+        input: &GenerationInput,
+    ) -> StoreResult<()> {
+        self.in_write_txn.set(true);
+        let outcome = self.publish_txn(input, false);
+        self.in_write_txn.set(false);
+        outcome
+    }
+
+    fn publish_txn(&mut self, input: &GenerationInput, store_rows: bool) -> StoreResult<()> {
         let key_hex = hex32(&input.key_digest);
         let created = now_secs();
         let bucket = now_bucket();
-        let row_count = input.rows.len() as u64;
+        // A summary-only publish declares zero rows so that the generation's
+        // cardinality (and integrity envelope) match the rows it physically
+        // stores (none).
+        let row_count = if store_rows { input.rows.len() as u64 } else { 0 };
         let summary_digest = envelope_digest(
             DOMAIN_GENERATION,
             EntryKind::Generation.as_u32(),
@@ -296,41 +326,46 @@ impl CacheStore {
         tx.execute("DELETE FROM generation WHERE key_digest = ?1", [&key_hex])
             .map_err(map_sqlite)?;
 
-        for (ordinal, row) in input.rows.iter().enumerate() {
-            let ord = ordinal as u64;
-            let digest = envelope_digest(
-                DOMAIN_ROW,
-                EntryKind::GenerationRow.as_u32(),
-                input.payload_version,
-                &input.key_digest,
-                ord,
-                &row.payload,
-            );
-            tx.execute(
-                "INSERT INTO generation_row \
-                 (key_digest, ordinal, entry_kind, payload_version, row_kind, row_key, payload, payload_digest) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    &key_hex,
-                    ord as i64,
-                    EntryKind::GenerationRow.as_u32() as i64,
-                    input.payload_version as i64,
-                    row.row_kind as i64,
-                    &row.row_key,
+        // Summary-only generations store neither reuse rows nor the reverse
+        // path index — they are never reconstruction baselines, so the rows
+        // would only cost O(corpus) to write and never be read (Phase 5C).
+        if store_rows {
+            for (ordinal, row) in input.rows.iter().enumerate() {
+                let ord = ordinal as u64;
+                let digest = envelope_digest(
+                    DOMAIN_ROW,
+                    EntryKind::GenerationRow.as_u32(),
+                    input.payload_version,
+                    &input.key_digest,
+                    ord,
                     &row.payload,
-                    &digest[..],
-                ],
-            )
-            .map_err(map_sqlite)?;
-        }
+                );
+                tx.execute(
+                    "INSERT INTO generation_row \
+                     (key_digest, ordinal, entry_kind, payload_version, row_kind, row_key, payload, payload_digest) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        &key_hex,
+                        ord as i64,
+                        EntryKind::GenerationRow.as_u32() as i64,
+                        input.payload_version as i64,
+                        row.row_kind as i64,
+                        &row.row_key,
+                        &row.payload,
+                        &digest[..],
+                    ],
+                )
+                .map_err(map_sqlite)?;
+            }
 
-        for entry in &input.path_index {
-            tx.execute(
-                "INSERT OR IGNORE INTO span_path_index (key_digest, source_path, row_key) \
-                 VALUES (?1, ?2, ?3)",
-                params![&key_hex, &entry.source_path, &entry.row_key],
-            )
-            .map_err(map_sqlite)?;
+            for entry in &input.path_index {
+                tx.execute(
+                    "INSERT OR IGNORE INTO span_path_index (key_digest, source_path, row_key) \
+                     VALUES (?1, ?2, ?3)",
+                    params![&key_hex, &entry.source_path, &entry.row_key],
+                )
+                .map_err(map_sqlite)?;
+            }
         }
 
         // Visibility gate: the generation row lands last.
@@ -487,8 +522,18 @@ impl CacheStore {
     }
 
     /// Locate a cached generation whose stored HEAD hint matches one of
-    /// `head_candidates` (used to find an incremental ancestor in a later
-    /// phase). Returns the first match's canonical key digest.
+    /// `head_candidates` (used to find an incremental ancestor or a dirty
+    /// baseline). Returns the first match's canonical key digest.
+    ///
+    /// Only a **rows-bearing** generation (`row_count > 0`) qualifies: the
+    /// caller reuses the located generation's per-span reuse rows to reconstruct
+    /// a new generation, so a rows-empty one (a Phase-3 legacy summary, or a
+    /// summary-only dirty generation — see
+    /// [`Self::publish_generation_summary_only`]) is useless as a baseline and
+    /// is skipped. This also keeps a summary-only dirty sibling published at the
+    /// same HEAD from shadowing the clean committed baseline the dirty path must
+    /// reuse (5C: the dirty tier degrading to a cold rebuild because it found an
+    /// empty baseline).
     pub(crate) fn find_ancestor(
         &self,
         head_candidates: &[String],
@@ -497,7 +542,7 @@ impl CacheStore {
             let hex: Option<String> = self
                 .conn
                 .query_row(
-                    "SELECT key_digest FROM generation WHERE head = ?1 LIMIT 1",
+                    "SELECT key_digest FROM generation WHERE head = ?1 AND row_count > 0 LIMIT 1",
                     [head],
                     |r| r.get(0),
                 )

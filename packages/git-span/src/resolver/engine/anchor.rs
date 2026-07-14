@@ -1610,6 +1610,18 @@ fn effective_from_clean_head(head: &LayerObservationCore) -> LayerObservationCor
 ///   fuzzy scan over OTHER tracked paths, whose result is layer-invariant only
 ///   when the whole workspace is clean (`clean_layers`).
 ///
+/// A WHOLE-FILE `Changed` anchor is the one exception that clean layers do NOT
+/// make derivable. Line-range drift is *relative* to the next-deeper layer, so
+/// with clean layers only HEAD drifts (vs the anchor) and index/worktree hold
+/// no independent drift — the reused-HEAD observation is exact. Whole-file
+/// drift is *absolute* against the stored fingerprint at each layer
+/// (`resolver/engine/whole_file.rs`): when every layer holds identical bytes
+/// that differ from the fingerprint, HEAD *and* index *and* worktree each drift
+/// and the live resolver emits one finding per layer (order I → W → H) with the
+/// deepest-layer blob populated. Reusing the HEAD observation would collapse
+/// that to a single HEAD finding with a null current blob, so a whole-file
+/// `Changed` anchor always takes the slow per-layer path.
+///
 /// Every other status is excluded: `Moved` (relocation and
 /// `worktree_recorded_fresh` can diverge by depth when content is duplicated),
 /// and `ContentUnavailable`/`Submodule`/`MergeConflict`/`ResolvedPendingCommit`
@@ -1626,6 +1638,10 @@ fn capture_clean_derivable(state: &EngineState, r: &Anchor, head_run: &AnchorRes
     }
     match head_run.status {
         AnchorStatus::Fresh => capture_path_layer_clean(state, &r.path),
+        // Whole-file `Changed` measures drift absolutely per layer, so clean
+        // layers do not collapse to a single HEAD observation — see this
+        // function's doc comment.
+        AnchorStatus::Changed if matches!(r.extent, AnchorExtent::WholeFile) => false,
         AnchorStatus::Changed | AnchorStatus::Deleted => state.clean_layers,
         _ => false,
     }

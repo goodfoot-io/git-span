@@ -41,8 +41,12 @@
 //! 2. **Dirty relevant paths.** [`incremental::relevant_dirty_paths`] from the
 //!    captured token (conservative: a filter-normalized path is over-reported
 //!    dirty, never under-reported). Empty ⇒ the key differs for a non-relevant
-//!    reason (e.g. a staged UNRELATED file moved the whole-index checksum);
-//!    nothing is proportionally reusable, so degrade to cold.
+//!    reason (e.g. an existing tracked but unanchored file edited but not
+//!    committed, moving a whole-index/worktree identity in the token). No span
+//!    can be affected unless it is widen-marked (its relocation/copy scan reads
+//!    every tracked path), so a widen-free corpus reuses **every** baseline core
+//!    verbatim — a proportional C=0 reconstruction — and only a widen-marked
+//!    corpus degrades to cold.
 //! 3. **Affected set.** A span is re-resolved if its span file or any anchored
 //!    path is dirty, if it is new (absent from the baseline), OR — the
 //!    correctness landmine — if it carries the global-widen marker and anything
@@ -93,8 +97,9 @@ mod tests;
 /// dirty path saved (and did).
 struct DirtyBuild {
     core: ResolutionCore,
-    /// Anchors actually re-resolved (0 is impossible here — the dirty path only
-    /// engages when a relevant path is dirty and its span is re-resolved).
+    /// Anchors actually re-resolved. Usually ≥ 1 (a dirty relevant path forces
+    /// its span's re-resolution), but 0 when a non-relevant dirty file over a
+    /// widen-free corpus reuses every baseline core verbatim (step 3).
     anchor_resolutions: u64,
     /// Spans reused from the baseline generation.
     reused: usize,
@@ -128,7 +133,13 @@ pub(crate) fn attempt(
     crate::perf::counter("cache-path.dirty-resolved-spans", build.resolved as u64);
     crate::perf::note("cache-path.hit-class: dirty");
 
-    let attempt = exact::project_revalidate_publish(
+    // Publish summary-only: a dirty-overlay generation is never a
+    // reconstruction baseline (the clean same-HEAD baseline it reused from
+    // already is), so persisting its whole-corpus reuse rows on every dirty
+    // call is the O(corpus) publish cost 5C measured. Rendering is unchanged;
+    // an identical repeat dirty state still becomes a plain exact-hit from the
+    // summary alone.
+    let attempt = exact::project_revalidate_publish_summary_only(
         repo,
         span_root,
         options,
@@ -181,12 +192,29 @@ fn build_dirty_core(
     // ── 3. Dirty relevant paths (from the already-captured token) ───────────
     let dirty_paths = incremental::relevant_dirty_paths(repo, token)?;
     if dirty_paths.is_empty() {
-        // The exact key differs but no relevant path is dirty — the difference
-        // is a non-content signal (e.g. a staged UNRELATED file that moved the
-        // whole-index checksum). Nothing is proportionally reusable without
-        // risking a stale reuse; degrade to the authoritative cold path.
-        crate::perf::note("cache-path.bypass-reason: dirty-no-relevant-dirt");
-        return Ok(None);
+        // The exact key differs but no RELEVANT path is dirty — a non-relevant
+        // tracked file moved a whole-index/worktree identity in the token (e.g.
+        // an existing tracked, unanchored file edited but not committed). No
+        // span's per-anchor observation can change from such an edit UNLESS the
+        // span's relocation/copy scan enumerates every tracked path: a
+        // newly-dirty file anywhere could become that span's relocation/copy
+        // target. `span_needs_widen` marks exactly those spans.
+        //
+        // * No widen-marked span ⇒ every span reuses its baseline core verbatim
+        //   (the affected set below is empty), a fully-proportional C=0
+        //   reconstruction byte-identical to the clean baseline's render. This
+        //   is the "one unrelated dirty file stays cheap" case Phase 5 exists to
+        //   make proportional — 5C measured it falling through to a full cold
+        //   rebuild instead.
+        // * Any widen-marked span ⇒ we cannot prove its reuse safe against an
+        //   unknown non-relevant dirty path, so degrade to the authoritative
+        //   cold path (the established conservative worst-case fallback).
+        if !widen_names.is_empty() {
+            crate::perf::note("cache-path.bypass-reason: dirty-no-relevant-dirt-widen");
+            return Ok(None);
+        }
+        // else: fall through with an empty affected-path set — nothing relevant
+        // is dirty and no span scans beyond its own now-clean paths.
     }
     let affected_paths: HashSet<&str> = dirty_paths.iter().map(String::as_str).collect();
 
@@ -239,7 +267,14 @@ fn build_dirty_core(
         .filter(|n| affected.contains(n.as_str()))
         .cloned()
         .collect();
-    let fresh_core = capture_resolution_core(repo, span_root, &affected_names)?;
+    // An empty affected set (a non-relevant dirty file over a widen-free corpus,
+    // step 3) reuses every baseline core verbatim: skip the resolver's source
+    // scan entirely rather than resolve nothing over it.
+    let fresh_core = if affected_names.is_empty() {
+        ResolutionCore { spans: Vec::new() }
+    } else {
+        capture_resolution_core(repo, span_root, &affected_names)?
+    };
     let anchor_resolutions: u64 = fresh_core
         .spans
         .iter()

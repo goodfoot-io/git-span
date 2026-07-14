@@ -562,11 +562,6 @@ fn changing_index_race_parity() -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "BLOCKED upstream (card main-157): a whole-file anchor drifted at all \
-            layers renders 3 per-layer findings under cache-off but 1 HEAD-sourced \
-            finding via the new store's shared cold capture/projection \
-            (resolver/engine + resolver/core) — outside 5B's dirty/mod.rs \
-            ownership. See the 5B report."]
 fn whole_file_multilayer_drift_blocked_upstream() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("foo.txt", "V1\nline2\nline3\n")?;

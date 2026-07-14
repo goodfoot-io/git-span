@@ -5,7 +5,7 @@
 //! `build_committed_spans` / `build_clean_whole_result`, which this
 //! replaces conceptually by resolving once and projecting twice.
 
-use super::resolution::{AnchorCore, DriftLocusCore, LayerObservationCore};
+use super::resolution::{AnchorCore, DriftLocusCore, ExtentCore, LayerObservationCore};
 use crate::types::{
     AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource, FuzzySuccessor,
     LayerSet, SpanResolved,
@@ -123,12 +123,33 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
     let worktree_drifts = layers.worktree && anchor.worktree.shows_drift();
     let head_drifts = anchor.head.shows_drift();
 
+    // Emit drifting layers in the SAME order the live resolver does, which
+    // differs by extent because the two anchor kinds define drift differently:
+    // line-range anchors compare each layer to its next-deeper neighbor and
+    // `resolver/engine/anchor.rs`'s `compute_layer_sources` lists them
+    // Worktree → Index → Head; whole-file anchors compare each layer absolutely
+    // to the stored fingerprint and `resolver/engine/whole_file.rs` lists them
+    // Index → Worktree → Head. Matching this order is load-bearing: the stale
+    // renderer emits one `Finding` per `layer_sources` entry in list order, so a
+    // whole-file anchor that drifts at every layer (clean worktree, content
+    // changed vs the fingerprint) must project I → W → H to stay byte-identical
+    // to direct resolution.
+    let whole_file = matches!(anchor.anchored.extent, ExtentCore::WholeFile);
     let mut layer_sources = Vec::with_capacity(3);
-    if worktree_drifts {
-        layer_sources.push(DriftSource::Worktree);
-    }
-    if index_drifts {
-        layer_sources.push(DriftSource::Index);
+    if whole_file {
+        if index_drifts {
+            layer_sources.push(DriftSource::Index);
+        }
+        if worktree_drifts {
+            layer_sources.push(DriftSource::Worktree);
+        }
+    } else {
+        if worktree_drifts {
+            layer_sources.push(DriftSource::Worktree);
+        }
+        if index_drifts {
+            layer_sources.push(DriftSource::Index);
+        }
     }
     if head_drifts {
         layer_sources.push(DriftSource::Head);

@@ -325,6 +325,47 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
     );
 }
 
+// ── Unrelated TRACKED dirt reuses every baseline core proportionally ─────────
+
+#[test]
+fn unrelated_tracked_dirt_reuses_all_proportionally() {
+    reset_dirty_test_state();
+    let (_td, dir) = fresh_two_span_repo("untrk");
+    // A tracked, committed file that no span anchors.
+    std::fs::write(dir.join("UNRELATED.md"), "hello\n").expect("write unrelated");
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-m", "add unrelated"]);
+    publish_baseline(&dir);
+
+    // Dirty ONLY the unrelated tracked file (worktree, not committed). This
+    // moves a whole-index/worktree identity in the token (so the exact key
+    // differs and the dirty tier is reached) but is not a RELEVANT path.
+    std::fs::write(dir.join("UNRELATED.md"), "hello CHANGED\n").expect("dirty unrelated");
+
+    let (repo, token, mut store) = open_token_store(&dir);
+    assert!(
+        crate::resolver::incremental::relevant_dirty_paths(&repo, &token)
+            .expect("relevant dirt")
+            .is_empty(),
+        "the unrelated tracked file must not be a relevant dirty path"
+    );
+
+    // The fix: rather than bypassing to a full cold rebuild
+    // (`dirty-no-relevant-dirt`), a widen-free corpus reuses EVERY baseline core
+    // — a fully-proportional C=0 reconstruction.
+    let build = build_dirty_core(&repo, SPAN_ROOT, &token, &mut store)
+        .expect("build")
+        .expect("an unrelated tracked dirty file must engage the proportional dirty path");
+    assert_eq!(build.reused, 2, "both spans reused");
+    assert_eq!(build.resolved, 0, "no span re-resolved");
+    assert_eq!(build.anchor_resolutions, 0, "zero anchor resolutions — fully proportional");
+    assert_eq!(
+        build.core,
+        full_live_core(&repo),
+        "the all-reused reconstruction must equal a full resolve of the live state"
+    );
+}
+
 // ── Unreadable anchored file: publish-skip + fail-closed consistency ─────────
 
 #[test]
