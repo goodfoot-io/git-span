@@ -33,6 +33,7 @@ pub mod cli_stale_renderers;
 pub mod cli_stale_whole_render;
 pub mod cli_tree;
 pub mod concurrent_add_race;
+pub mod dirty_differential;
 pub mod configured_span_root_integration;
 pub mod doctor_deletion_tombstone;
 pub mod drift_label;

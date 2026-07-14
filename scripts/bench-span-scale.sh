@@ -317,6 +317,15 @@ apply_cache_mode_state() {
           && git commit --quiet -m "bench: unrelated ancestor commit" )
       ;;
     dirty-exact)
+      # Card main-157 Phase 5C wiring fix: `dirty-exact`/`dirty-affected` name
+      # the Phase 5 dirty-overlay tier, but that tier is fully inert unless
+      # `GIT_SPAN_CACHE_STORE_V3` selects the new store (see
+      # `resolver/exact/mod.rs::v3_selected()`) — without this export both
+      # modes silently ran the legacy `cache_v2` path this benchmark cell
+      # exists to move past. `export` (not per-invocation `env`) matches this
+      # script's existing `all-off` pattern: `timed()` is a shell function,
+      # invisible to a plain `env KEY=VAL` prefix.
+      export GIT_SPAN_CACHE_STORE_V3=1
       clear_all_cache_tiers "$repo"
       ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
       # Dirty exactly the anchored source of the reader-glob anchor.
@@ -324,6 +333,8 @@ apply_cache_mode_state() {
       ( cd "$repo" && printf '\n// bench dirty-exact marker\n' >>"$target" )
       ;;
     dirty-affected)
+      # See the `dirty-exact` case above for why this export is required.
+      export GIT_SPAN_CACHE_STORE_V3=1
       clear_all_cache_tiers "$repo"
       ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
       # Dirty a tracked file NO span anchors, so the affected-set stays small
