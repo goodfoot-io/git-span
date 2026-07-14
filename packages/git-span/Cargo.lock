@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "git-span"
-version = "1.0.132"
+version = "1.0.133"
 dependencies = [
  "anyhow",
  "assert_cmd",

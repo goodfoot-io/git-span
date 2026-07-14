@@ -78,18 +78,6 @@
         "path": "/workspace"
       }
     },
-    "last30days-skill": {
-      "source": {
-        "source": "github",
-        "repo": "mvanhorn/last30days-skill"
-      }
-    },
-    "impeccable": {
-      "source": {
-        "source": "github",
-        "repo": "pbakaus/impeccable"
-      }
-    },
     "goodfoot": {
       "source": {
         "source": "github",
