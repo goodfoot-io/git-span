@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-span-core",
-  "version": "1.0.133",
+  "version": "1.0.134",
   "private": true,
   "scripts": {
     "test": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span-core/build\" cargo test --locked",
