@@ -38,7 +38,7 @@ When `git span stale` surfaces dozens or hundreds of findings, process them in s
 
 **3. Edit all anchors for a span in one command.** `git span add <name> <anchor1> <anchor2> ...` accepts multiple anchors. One `add` per span, not one per anchor.
 
-**4. Run independent `git span add` calls in parallel.** Spans that don't share a span file can be edited concurrently (up to ~6 at a time). A span that fails to write won't affect others. **Never parallelize two `git span add` calls against the *same* span name** — `add` has no locking around its read-modify-write of the span file, so two concurrent calls on one span can silently lose one call's anchors to a last-write-wins race (exit 0, no error, no warning). If two anchors need adding to one span, put them in a single `git span add <name> <anchor1> <anchor2> ...` call, not two concurrent ones.
+**4. Run independent `git span add` calls in parallel.** Spans that don't share a span file can be edited concurrently (up to ~6 at a time). A span that fails to write won't affect others. Concurrent `add`/`remove`/`why` calls against the *same* span name are safely serialized — each acquires an exclusive advisory lock on the span file before its read-modify-write, so they queue rather than race. Prefer a single `git span add <name> <anchor1> <anchor2> ...` call over multiple concurrent ones anyway, since it's still one write instead of several serialized ones.
 
 **5. Commit in bulk.** After every span file is edited and confirmed, persist them all in one commit:
 ```bash

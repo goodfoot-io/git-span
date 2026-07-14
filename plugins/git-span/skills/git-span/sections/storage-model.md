@@ -11,8 +11,8 @@ default; configurable). The file *is* the span — its anchors are lines in that
 file, not separate objects:
 
 ```text
-packages/agent-hooks/src/pre-tool-use.ts#L34-L34 sha256:4441b3fb…
-packages/git-span/src/span.rs#L1-L40 sha256:a9f2c310…
+packages/agent-hooks/src/pre-tool-use.ts#L34-L34 rk64:4441b3fb2a19c0d4
+packages/git-span/src/span.rs#L1-L40 rk64:a9f2c3105e7b8f16
 
 <the span "why" prose>
 ```
@@ -24,7 +24,7 @@ other (`a/b` and `a/b/c`) collide; resolve by renaming one
 
 ## Anchors
 
-An anchor is a `path#L<start>-L<end> sha256:<hash>` line *inside* a span file
+An anchor is a `path#L<start>-L<end> rk64:<16-hex-digit hash>` line *inside* a span file
 (whole-file anchors omit the `#L…` range). Anchors are never stored as Git
 objects or refs. Reading and resolving an anchor reads the span file and the
 referenced source content directly from the index/worktree/HEAD.

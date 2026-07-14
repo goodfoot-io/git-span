@@ -6,7 +6,9 @@ The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git
 
 ### Upgrading from the sqlite cache
 
-The trail cache now lives at `<common_dir>/span/cache/v1/` as a BLAKE3-keyed content-addressed filesystem store. The previous sqlite-backed cache at `<common_dir>/span/cache/span_cache.sqlite` (or `<git_dir>/span/cache/span_cache.sqlite` on older per-worktree installations), along with its `-shm` and `-wal` companions, is unused and can be removed with a single `rm -f <common_dir>/span/cache/span_cache.sqlite*` (and the `<git_dir>` variant if present). Nothing reads those files anymore; `git span doctor --gc-trail-cache` operates only on the new store.
+The trail cache now lives at `<common_dir>/span/cache/v1/` as a BLAKE3-keyed content-addressed filesystem store. The previous sqlite-backed cache at `<common_dir>/span/cache/span_cache.sqlite` (or `<git_dir>/span/cache/span_cache.sqlite` on older per-worktree installations), along with its `-shm` and `-wal` companions, is unused and can be removed with a single `rm -f <common_dir>/span/cache/span_cache.sqlite*` (and the `<git_dir>` variant if present). Nothing reads those files anymore.
+
+Separately, and unrelated to the sqlite cache above, `git span stale` (and related resolution paths) are backed by a second, currently-active cache: a SQLite database at `<common_dir>/span/stale-cache.db` (see `src/resolver/cache_v2/schema.rs`). Cleanup of the on-disk footprint needs to account for both stores — the `cache/v1/` filesystem store and `stale-cache.db` (plus its `-shm`/`-wal` companions) — not just one.
 
 ## Profiling
 

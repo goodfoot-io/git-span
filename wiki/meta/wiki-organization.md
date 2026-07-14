@@ -6,7 +6,7 @@ tags:
   - wiki
 ---
 
-This page explains *why* the wiki is organized the way it is. For the CLI tools that enforce them, see [[Wiki CLI]].
+This page explains *why* the wiki is organized the way it is. For the CLI tooling that enforces these rules, run `wiki -h` (no dedicated wiki page documents it yet).
 
 ## Why Documentation Modes Must Be Separated
 
@@ -21,7 +21,7 @@ Diátaxis identifies four modes:
 
 A reader consulting reference material is interrupted by rationale. A reader trying to understand a system is distracted by step-by-step instructions. These modes require different writing styles and serve readers in different states of mind.
 
-This repository's wiki maps cleanly onto three of these modes: architecture pages are explanation, guide pages are how-to, and meta pages are reference. The wiki deliberately does not contain tutorials — learning is better served by the code itself, JSDoc, and package READMEs adjacent to what is being learned.
+This repository's wiki currently has two directories, each mapping to one mode: guide pages (`wiki/guides/`) are how-to, and meta pages (`wiki/meta/`) are reference. A `wiki/architecture/` directory for explanation-mode pages does not exist yet — it should be added once cross-cutting "why does this system work this way" content accumulates, following the same one-directory-per-mode principle. The wiki deliberately does not contain tutorials — learning is better served by the code itself, JSDoc, and package READMEs adjacent to what is being learned.
 
 Mixing modes is the most common source of documentation rot. When a page tries to be both a reference and a guide, it is optimized for neither. Over time, the reference sections and the procedural sections go stale at different rates and for different reasons, and neither reader is well served.
 
@@ -31,9 +31,9 @@ This repository uses two parallel systems for wiki content: a central `wiki/` di
 
 **Centralize in `wiki/`** when the content is cross-cutting — when it synthesizes across packages, describes how components interact, or would be needed by someone who doesn't know which package to look in. Cross-cutting content has no natural home in the source tree, and burying it in one package would make it hard to find from another.
 
-**Embed as `*.wiki.md`** when the content is primarily about a single component — its design decisions, internal constraints, or rebuild logic. Co-locating documentation with code has well-established benefits: it is found by whoever is working on the component, it is maintained by the same person who maintains the code, and it signals ownership clearly. A `DESIGN.wiki.md` file in `packages/cards/` is less likely to drift than the same content in `wiki/architecture/` because the person changing `packages/cards/` will encounter it directly.
+**Embed as `*.wiki.md`** when the content is primarily about a single component — its design decisions, internal constraints, or rebuild logic. Co-locating documentation with code has well-established benefits: it is found by whoever is working on the component, it is maintained by the same person who maintains the code, and it signals ownership clearly. A hypothetical `DESIGN.wiki.md` file in `packages/cards/` would be less likely to drift than the same content centralized elsewhere, because the person changing `packages/cards/` would encounter it directly.
 
-The `*.wiki.md` extension is what allows embedded pages to participate in the same wiki index, default `wiki [query]` lookup, and `wiki stale` infrastructure as centralized pages. Co-location does not mean isolation.
+This is currently a planned mechanism, not one in active use — no `*.wiki.md` file exists in the repository yet. The `*.wiki.md` extension is intended to let embedded pages participate in the same wiki index, default `wiki [query]` lookup, and `wiki stale` infrastructure as centralized pages once the tooling and a first embedded page exist. Co-location does not mean isolation.
 
 When writing embedded pages for single components, it is critical to maintain the Diátaxis separation of modes. Do not mix rationale, setup steps, and API typings in unstructured prose. For small components, use strict H2 headers corresponding to the modes (e.g., `## Explanation`, `## Guide`, `## Reference`). For larger components, split the embedded files by mode (e.g., `logging-design.wiki.md` for Explanation and `logging-api.wiki.md` for Reference).
 

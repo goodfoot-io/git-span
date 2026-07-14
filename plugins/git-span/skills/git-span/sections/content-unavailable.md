@@ -17,17 +17,15 @@
 - **`IoError`** — Local read failed for reasons unrelated to the above (permissions, missing file, etc.).
   Fix: investigate the specific error the resolver printed.
 
-**Known gap.** Of the six reasons above, `PromisorMissing` and `SparseExcluded`
-are documented behavior the resolver does not yet actually construct — there
-is no code path that emits either variant today. A partial-clone missing blob
-or a sparse-checkout-excluded anchored path both currently surface as
-`DELETED` instead, with `--fix` failing closed on them (nothing is corrupted),
-but the `DELETED` guidance is misleading: the content is not gone, it's just
-not materialized locally. If a `DELETED` finding's path is excluded by your
-sparse-checkout cone (`git sparse-checkout list`) or missing only its blob in a
-partial clone, treat it as this section's guidance (adjust the cone / fetch
-unfiltered) rather than `DELETED`'s. `LfsNotFetched`, `LfsNotInstalled`,
-`FilterFailed`, and `IoError` are all live and behave as documented.
+All six reasons above are live. `SparseExcluded` is raised when the deepest
+drift layer reads as empty from the worktree and the anchored path is marked
+skip-worktree (sparse-checkout excludes it). `PromisorMissing` is raised when
+a git-object read for the index or HEAD layer fails and the repo has an
+active promisor remote (partial clone), i.e. the blob simply hasn't been
+fetched rather than being genuinely missing. Both checks run inline in the
+resolver's anchor-drift path, immediately after the corresponding read
+failure/emptiness is observed, so they surface before the code would
+otherwise fall through to treating the anchor as `DELETED`.
 
 ## Why no auto-fetch
 

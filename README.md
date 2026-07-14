@@ -34,9 +34,6 @@ git add .span && git commit -m "Record checkout-request-flow span"
 git span stale checkout-request-flow
 ```
 
-See [docs/git-span-the-missing-handbook.md](./docs/git-span-the-missing-handbook.md)
-for the project model and workflow.
-
 ### Exit codes
 
 `git-span` follows the POSIX convention used by `git` and `cargo`:
@@ -44,14 +41,15 @@ for the project model and workflow.
 - **0** — success.
 - **1** — operational failure: the command was well-formed, but
   the environment or repository state prevents completion.
-  Example: `git span fetch nope` when `nope` is not a configured
-  remote, or `git span show nope` when `nope` is not a known span.
+  Example: `git span show nope` when `nope` is not a known span.
 - **2** — usage error: the command itself is malformed (unknown
-  flag, missing required argument). Example: `git span fetch --bogus`.
+  flag, missing required argument). Example: `git span show --bogus`.
 
 `git span stale` overlays its own §10.4 contract on top of this:
-exit 1 when drift is found, exit 0 with `--no-exit-code`. The
-`pre-commit` subcommand likewise exits 1 on in-flight drift.
+exit 1 when drift is found, exit 0 with `--no-exit-code`. There is no
+`pre-commit` subcommand; span coverage is instead enforced by the
+`.githooks/pre-commit.wiki.sh` hook, which runs `wiki check` as a
+fail-closed gate.
 
 ## VS Code Extension
 
@@ -76,9 +74,6 @@ It does not register a custom editor, Markdown renderer, search UI, or webview.
 │   └── extension/      # goodfoot.git-span VS Code extension
 ├── npm/
 │   └── git-span-*/     # platform-specific binary distribution packages
-├── docs/
-│   ├── git-span-the-missing-handbook.md
-│   └── cross-compilation.md
 └── scripts/
     ├── sync-versions.sh
     ├── validate.sh
@@ -182,8 +177,8 @@ cd packages/git-span
 yarn build:man
 ```
 
-The regression test in `tests/manpage.rs` fails if the checked-in artifact
-drifts from what the generator produces.
+The regression test in `packages/git-span/tests/cases/manpage.rs` fails if
+the checked-in artifact drifts from what the generator produces.
 
 ## Releases
 

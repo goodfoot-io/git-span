@@ -1,1 +1,10 @@
-.span/.manual-run 
+# When this file exists, the agent-hooks dispatcher suspends automatic
+# reconciler agent spawning. Instead of launching the agent directly,
+# the dispatcher writes a runnable shell script and leaves the claim
+# directory in place for a human to invoke later.
+#
+# This file is a presence-only marker: its content is never inspected.
+# Delete it to resume automatic agent dispatch.
+#
+# Created automatically on the first `git span add` or `git span why`
+# in this repository.

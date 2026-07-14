@@ -1,1 +1,4 @@
+# Force LF line endings for all span files. gitattributes inherits
+# to every descendant, so a single rule here covers the entire span
+# tree and keeps anchors portable across platforms.
 * text eol=lf

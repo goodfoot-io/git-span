@@ -106,9 +106,10 @@ prompt itself is what confines you. The standing rules:
 - Never modify, stage, or commit anything outside `.span/`. No `git add .`,
   no `-a`, no `--amend`, no `reset`/`clean`/`stash`, no push. The git
   allowlist in `./responding-to-drift.md` § "Batch recovery" applies.
-- Do not parallelize `git span add` against the same span name — `add` has no
-  locking; concurrent calls can silently lose anchors. One `add` with multiple
-  anchors instead.
+- Concurrent `git span add` calls against the same span name are safely
+  serialized via an advisory file lock, so anchors are not lost — but still
+  prefer one `add` with multiple anchors over several concurrent calls, since
+  it's one write instead of several serialized ones.
 - Write a why for every span you create; rewrite an existing why only when the
   subsystem itself changed.
 - If a command fails in a way you cannot cleanly resolve, or you cannot

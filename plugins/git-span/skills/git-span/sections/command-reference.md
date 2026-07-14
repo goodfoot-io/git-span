@@ -203,6 +203,6 @@ with 2+ anchors on one file.
 A span name must be kebab-case segments separated by `/`. The following tokens
 are reserved and cannot be used as a span name (so the bare `git span <name>`
 form is unambiguous): `add`, `remove`, `commit`, `why`, `restore`, `revert`,
-`delete`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
-`list`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`,
+`delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`,
+`list`, `help`, `pre-commit`, `advice`, `rewrite`, `hooks`, `merge-driver`,
 `history`.

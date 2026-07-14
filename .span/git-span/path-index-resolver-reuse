@@ -1,5 +1,5 @@
-packages/git-span/src/cli/show.rs#L795-L849 rk64:be292817de36dba8
-packages/git-span/src/cli/stale_output.rs#L390-L451 rk64:bc476f3c62abf3f8
+packages/git-span/src/cli/show.rs#L527-L581 rk64:be292817de36dba8
+packages/git-span/src/cli/stale_output.rs#L205-L266 rk64:bc476f3c62abf3f8
 packages/git-span/src/span/read.rs#L333-L400 rk64:406e924d55c42e7b
 
 Per-arg span resolution must build SpanPathIndex once and resolve every positional arg through it; the stale and list/show resolvers each reimplement this loop and must never reintroduce a per-arg corpus-reload helper (spans_matching_path_in / matching_span_names_in), which turns a shell-expanded glob of hundreds of args against a large span set into an O(args x spans) freeze. The compiler accepts either form, so this contract is unenforced.

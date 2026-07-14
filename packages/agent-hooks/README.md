@@ -1,8 +1,13 @@
 # agent-hooks
 
-This project contains [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) built with the `@goodfoot/claude-code-hooks` library. Hooks let you extend Claude Code's behavior by running custom code at specific points during a session—before or after tool execution, when Claude starts or stops, and more. This project includes hooks for: `PreToolUse`, `PostToolUse`, `SessionEnd`.
+This project contains [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) built with the `@goodfoot/claude-code-hooks` library. Hooks let you extend Claude Code's behavior by running custom code at specific points during a session—before or after tool execution, when Claude starts or stops, and more. This project includes hooks for:
 
-To get started, run `npm install` to install dependencies, then `npm run build` to compile your hooks into `hooks.json`. Copy the generated `hooks.json` to your Claude Code settings directory (or reference it in your `.claude/settings.json`), and your hooks will run automatically. Edit the files in `src/` to customize behavior, and use `npm test` to verify your changes work correctly.
+- `PreToolUse` — on Read/Edit/Write, surfaces overlapping span anchors inline and journals the touch for later reconciliation.
+- `Stop` — reads the per-session touch journal and writes a pre-commit record for the background dispatcher to reconcile spans against.
+- `SubagentStart` — increments the per-session active-subagent counter so the Stop hook knows subagents are still in flight.
+- `SubagentStop` — decrements that counter when a subagent finishes.
+
+To get started, run `yarn install` to install dependencies, then `yarn build` to compile your hooks into `hooks.json`. Copy the generated `hooks.json` to your Claude Code settings directory (or reference it in your `.claude/settings.json`), and your hooks will run automatically. Edit the files in `src/` to customize behavior, and use `yarn test` to verify your changes work correctly.
 
 ## Suppressing span references per path
 

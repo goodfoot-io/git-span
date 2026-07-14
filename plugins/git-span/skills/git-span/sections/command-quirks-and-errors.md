@@ -59,16 +59,6 @@ Fix the malformed file (revert it with `git checkout -- .span/<name>` if a
 recent commit was good, or correct the syntax by hand) and re-run. This is
 fail-closed: a span that cannot be parsed is surfaced, never silently skipped.
 
-## Symlink anchors
-
-`git span add` resolves and rejects a path that traverses a symbolic link —
-anchor the real path instead:
-
-```bash
-readlink -f public/codex                # → public/claude/codex
-git span add <name> public/claude/codex
-```
-
 ## `git span doctor`
 
 A setup audit, not a semantic-drift check. Its only

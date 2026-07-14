@@ -65,7 +65,7 @@ git span stale --perf-trace /tmp/trace.csv          # OK: full scan
 git span stale --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-It also conflicts with `--compact` and `--auto-follow` (both are mutation modes that contaminate per-anchor wall-clock measurements).
+The only other flag conflict `git span stale` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format.
 
 ### Quick analyses
 

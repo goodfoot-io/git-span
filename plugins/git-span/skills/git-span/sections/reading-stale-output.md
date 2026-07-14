@@ -10,6 +10,7 @@ one finding per anchor per drifting layer.
 - **`CHANGED`** — Current bytes differ from the anchored bytes. Review the relationship, then update code or span.
 - **`DELETED`** — The anchored path is absent from the resolved layer (renamed, moved, or deleted). Read `./terminal-statuses.md`.
 - **`CONFLICT`** (`MERGE_CONFLICT`) / **`SUBMODULE`** / **`CONTENT_UNAVAILABLE(...)`** — Terminal. Read `./terminal-statuses.md` or `./content-unavailable.md`.
+- **`RESOLVED_PENDING_COMMIT`** — `--fix` healed the anchor in this run, but the fix is not yet committed to `.span`. Not counted as stale for this invocation's exit code.
 
 ## Layers and the `src` column
 
@@ -68,20 +69,18 @@ git span stale --format json
 
 ### JSON schema (schema_version: 2)
 
-Top-level: `{ "schema_version": 2, "span": "<name>", "findings": [...], "pending": [...] }`.
-(`pending` is always an empty array — there is no staging stream.)
+Top-level: `{ "schema_version": 2, "span": "<name>", "findings": [...] }`.
 
 Each finding carries:
-- `status.code` — `"FRESH"`, `"CHANGED"`, `"MOVED"`, `"DELETED"`, `"CONFLICT"`, `"SUBMODULE"`, `"CONTENT_UNAVAILABLE"`
-- `status.detail` — reason tag for `CONTENT_UNAVAILABLE` (e.g. `"LfsNotFetched"`); empty otherwise
+- `status.code` — `"FRESH"`, `"CHANGED"`, `"MOVED"`, `"DELETED"`, `"CONFLICT"`, `"SUBMODULE"`, `"CONTENT_UNAVAILABLE"`, `"RESOLVED_PENDING_COMMIT"`
+- `status.reason` — SCREAMING_SNAKE_CASE reason tag for `CONTENT_UNAVAILABLE` (e.g. `"LFS_NOT_FETCHED"`, `"LFS_NOT_INSTALLED"`, `"PROMISOR_MISSING"`, `"SPARSE_EXCLUDED"`, `"FILTER_FAILED"`, `"IO_ERROR"`); absent otherwise
+- `status.detail` — structured payload for `CONTENT_UNAVAILABLE` (e.g. `{"filter": "..."}` for a filter failure, `{"message": "..."}` for an I/O error); `null` for other reasons or other statuses
 - `anchor.kind` — `"lines"` or `"whole"`
 - `anchor.path`, `anchor.line_start`, `anchor.line_end` (null for whole-file)
 - `current.blob` — the live blob OID, or `null` when the file is deleted
 - `current.path`, `current.line_start`, `current.line_end` — live location (may differ from anchor for `MOVED`)
 - `moved_to` — present only for `MOVED`; null for all other statuses
 - `source` — `"(index)"`, `"(worktree)"`, or absent for HEAD
-
-`CONTENT_UNAVAILABLE` findings carry a `status.detail` with the reason tag.
 
 ### Text vs JSON disagreements
 

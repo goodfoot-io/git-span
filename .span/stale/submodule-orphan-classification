@@ -1,6 +1,6 @@
 packages/git-span/src/resolver/engine/anchor.rs#L10-L1015 rk64:f51a009afb3ef5f7
 packages/git-span/src/resolver/engine/whole_file.rs#L8-L430 rk64:15cd2d0cc9f53154
 packages/git-span/src/types.rs#L833-L851 rk64:1e059d5d546213b1
-packages/git-span/tests/cases/stale_span_integration.rs#L598-L605 rk64:e7fa41bd8da6562b
+packages/git-span/tests/cases/stale_span_integration.rs#L569-L576 rk64:e7fa41bd8da6562b
 
 The stale resolver consults submodule_classify before concluding Deleted for a path absent from HEAD, so an anchor orphaned by a directory-to-submodule promotion surfaces as Submodule; the acceptance test exercises the full classification pipeline.

@@ -17,9 +17,9 @@ anchor.
 - Tags are un-indented; content sits between open and close tags.
 - Attribute order within each element: elements are defined as shown below.
 - `<scoped/>` — self-closing, emitted as the very first line when the timeline is a
-  partial view of history (`--limit` or `--since` dropped older span-touching commits).
-  Absent when the timeline is the complete record. A scripted consumer reading stdout
-  must never treat a scoped output as the full history.
+  partial view of history (`--limit` dropped older span-touching commits). Absent when
+  the timeline is the complete record. A scripted consumer reading stdout must never
+  treat a scoped output as the full history.
 - `<commit>` attributes: `hash` (full 40-hex OID), `date` (`YYYY-MM-DD`), `summary`
   (first commit message line, XML-attribute-escaped).
 - `<why>` is emitted only when the why prose changed at this commit, wrapped in CDATA.
