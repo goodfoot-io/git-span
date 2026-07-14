@@ -10,17 +10,17 @@
 
 use super::project::{project_committed, project_effective};
 use super::resolution::{
-    AnchorCore, DefinitionOrdinal, DriftLocusCore, ExtentCore, FuzzySuccessorCore,
-    LayerObservationCore, LocationCore, ResolutionCore, SpanCore,
+    AnchorCore, DefinitionOrdinal, DriftLocusCore, ExtentCore, LayerObservationCore, LocationCore,
+    ResolutionCore, SpanCore,
 };
 use super::token::{
     AvailabilityProof, FilterDependency, LayerSetToken, PathAvailability, PathState,
     PathStateEntry, SpanBlobIdentity, StateToken,
 };
 use crate::cli::drift_label::format_drift_label;
+use crate::resolver::engine::{capture_resolution_core, resolve_named_spans};
 use crate::types::{
-    AnchorLocation, AnchorResolved, AnchorStatus, CopyDetection, DriftLocus, DriftSource,
-    EngineOptions, FuzzySuccessor, LayerSet,
+    AnchorStatus, CopyDetection, DriftSource, EngineOptions, LayerSet,
 };
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
@@ -223,137 +223,7 @@ fn head_change_does_not_change_canonical_key_digest() {
     );
 }
 
-// ── Category 2: projection round-trip ────────────────────────────────────
-
-fn location_core_from(loc: &AnchorLocation) -> LocationCore {
-    LocationCore {
-        path: loc.path.to_string_lossy().into_owned(),
-        extent: loc.extent.into(),
-        blob: loc.blob.map(|b| b.to_string()),
-    }
-}
-
-fn fuzzy_core_from(v: &[FuzzySuccessor]) -> Vec<FuzzySuccessorCore> {
-    v.iter()
-        .map(|f| FuzzySuccessorCore {
-            path: f.path.clone(),
-            start: f.start,
-            end: f.end,
-            confidence_bps: (f.confidence * 10_000.0).round() as u32,
-        })
-        .collect()
-}
-
-/// Bridges two collapsed real resolver views (`committed`, from
-/// `EngineOptions::committed_only()`; `effective`, from the caller's
-/// active `effective_layers`) into one layer-neutral `AnchorCore`.
-///
-/// Caveat: this is a TEST-ONLY reconstruction for Phase 1's round-trip
-/// proof. It assumes at most one of {Index, Worktree} shows drift for a
-/// given anchor (true for every Phase 1 test scenario: committed-only, or
-/// a clean index with a dirty worktree). Independent per-layer capture for
-/// simultaneously-drifting Index and Worktree requires wiring the live
-/// resolver (`resolver/engine/anchor.rs`) to record three observations
-/// directly, which is out of scope for this purely-additive phase (see
-/// `plans/initial.md` Phase 1's "no execution-path wiring" constraint) —
-/// a later phase replaces this bridge with real construction.
-fn anchor_core_from_dual(
-    committed: &AnchorResolved,
-    effective: &AnchorResolved,
-    effective_layers: LayerSet,
-    anchored: LocationCore,
-) -> AnchorCore {
-    let head = LayerObservationCore {
-        status: committed.status.clone(),
-        current: committed.current.as_ref().map(location_core_from),
-        content_equivalent: committed.content_equivalent,
-        fuzzy_successors: fuzzy_core_from(&committed.fuzzy_successors),
-    };
-    let fresh_placeholder = || LayerObservationCore {
-        status: AnchorStatus::Fresh,
-        current: Some(anchored.clone()),
-        content_equivalent: false,
-        fuzzy_successors: Vec::new(),
-    };
-    let worktree = if effective_layers.worktree
-        && matches!(effective.source, Some(DriftSource::Worktree))
-    {
-        LayerObservationCore {
-            status: effective.status.clone(),
-            current: effective.current.as_ref().map(location_core_from),
-            content_equivalent: effective.content_equivalent,
-            fuzzy_successors: fuzzy_core_from(&effective.fuzzy_successors),
-        }
-    } else {
-        fresh_placeholder()
-    };
-    let index = if effective_layers.index && matches!(effective.source, Some(DriftSource::Index))
-    {
-        LayerObservationCore {
-            status: effective.status.clone(),
-            current: effective.current.as_ref().map(location_core_from),
-            content_equivalent: effective.content_equivalent,
-            fuzzy_successors: fuzzy_core_from(&effective.fuzzy_successors),
-        }
-    } else {
-        fresh_placeholder()
-    };
-    let locus = committed.locus.map(|l| match l {
-        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
-        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
-    });
-    AnchorCore {
-        anchor_id: committed.anchor_id.clone(),
-        anchor_sha: committed.anchor_sha.clone(),
-        anchored,
-        head,
-        index,
-        worktree,
-        locus,
-    }
-}
-
-fn build_resolution_core(
-    span_name: &str,
-    committed: &crate::types::SpanResolved,
-    effective: &crate::types::SpanResolved,
-    effective_layers: LayerSet,
-) -> ResolutionCore {
-    assert_eq!(
-        committed.anchors.len(),
-        effective.anchors.len(),
-        "committed and effective resolutions must cover the same anchors"
-    );
-    let mut anchors = Vec::with_capacity(committed.anchors.len());
-    for (c, e) in committed.anchors.iter().zip(effective.anchors.iter()) {
-        assert_eq!(
-            c.anchor_id, e.anchor_id,
-            "committed/effective anchor order must align"
-        );
-        let anchored = location_core_from(&c.anchored);
-        let definition_digest = DefinitionOrdinal::digest_definition(
-            &c.anchor_id,
-            &c.anchor_sha,
-            &c.anchored.path.to_string_lossy(),
-            c.anchored.extent.into(),
-        );
-        let ordinal = DefinitionOrdinal {
-            span_identity: span_name.to_string(),
-            source_ordinal: 0,
-            definition_digest,
-        };
-        let anchor_core = anchor_core_from_dual(c, e, effective_layers, anchored);
-        anchors.push((ordinal, anchor_core));
-    }
-    ResolutionCore {
-        spans: vec![SpanCore {
-            name: span_name.to_string(),
-            message: committed.message.clone(),
-            follow_moves: committed.follow_moves,
-            anchors,
-        }],
-    }
-}
+// ── Category 2: projection round-trip (real single-pass capture) ─────────
 
 fn run_git(dir: &std::path::Path, args: &[&str]) {
     let out = std::process::Command::new("git")
@@ -397,23 +267,26 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
     let mut records = Vec::with_capacity(anchors.len());
     for (path, start, end) in anchors {
         let bytes = std::fs::read(dir.join(path)).unwrap_or_else(|_| panic!("read {path}"));
-        let hashed: Vec<u8> = if *start == 0 && *end == 0 {
-            bytes.clone()
+        // Pin the anchor with the SAME rk64 fingerprint the resolver computes,
+        // so a matching HEAD reads `Fresh` (the previous `sha256:` content hash
+        // labelled `rk64` never matched, forcing every anchor to drift at HEAD).
+        let extent = if *start == 0 && *end == 0 {
+            git_span_core::AnchorExtent::WholeFile
         } else {
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (*start as usize).saturating_sub(1);
-            let hi = (*end as usize).min(lines.len());
-            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-            slice.join("\n").into_bytes()
+            git_span_core::AnchorExtent::LineRange {
+                start: *start,
+                end: *end,
+            }
         };
-        let hash = format!("sha256:{}", crate::types::sha256_hex(&hashed));
+        let content_hash = git_span_core::rk64_to_hex(
+            git_span_core::cheap_fingerprint_with_extent(&bytes, &extent),
+        );
         records.push(crate::span_file::AnchorRecord {
             path: (*path).to_string(),
             start_line: *start,
             end_line: *end,
-            algorithm: "rk64".to_string(),
-            content_hash: hash,
+            algorithm: git_span_core::RK64_ALGORITHM.to_string(),
+            content_hash,
         });
     }
     let mf = crate::span_file::SpanFile {
@@ -425,14 +298,16 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
     run_git(dir, &["commit", "-m", &format!("span: {name}")]);
 }
 
-/// Round-trips `ResolutionCore` -> committed / effective `SpanResolved` and
-/// diffs both against direct current-resolver output on a real (if small)
-/// repo, covering a clean anchor and a worktree-only dirty anchor. Real
-/// multi-thousand-anchor corpora are not available as reusable fixtures in
-/// this crate today (only workspace clones in benches/integration tests,
-/// and a synthetic generator behind the `bench-corpus` feature) — this
-/// exercises the same mechanism at unit scale, which is what a `src/`-level
-/// unit test can reach (see module doc caveat on `anchor_core_from_dual`).
+/// Round-trips a `ResolutionCore` built by ONE real single-pass capture
+/// (`capture_resolution_core`) through `project_committed` /
+/// `project_effective` and diffs both against direct current-resolver output
+/// on a real (if small) repo, covering a clean HEAD with a worktree-only
+/// dirty anchor. This replaces Phase 1's two-pass `anchor_core_from_dual`
+/// reconstruction with genuine per-layer capture. Real multi-thousand-anchor
+/// corpora are not reusable fixtures in this crate (only workspace clones in
+/// benches/integration tests, and a synthetic generator behind the
+/// `bench-corpus` feature) — this exercises the same mechanism at unit scale,
+/// which is what a `src/`-level unit test can reach.
 #[test]
 fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() -> crate::Result<()>
 {
@@ -441,41 +316,104 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
     commit_file(dir, "src/a.rs", "one\ntwo\nthree\n", "init a");
     commit_span(dir, "demo", &[("src/a.rs", 1, 2)], "why demo");
 
+    // Dirty the worktree ONLY (no staged changes): HEAD still matches the
+    // anchor (committed view stays Fresh) while the worktree drifts.
+    std::fs::write(dir.join("src/a.rs"), "ONE\ntwo\nthree\n").expect("dirty worktree");
+
     let repo = gix::open(dir).expect("gix open");
     let names = vec!["demo".to_string()];
 
-    let committed_results = crate::resolver::engine::resolve_named_spans(
-        &repo,
-        ".span",
-        &names,
-        EngineOptions::committed_only(),
-    )?;
-    let committed_span = committed_results[0]
-        .1
-        .as_ref()
-        .expect("committed resolution succeeds")
-        .clone();
-
-    // Dirty the worktree ONLY (no staged changes), so at most one of
-    // {Index, Worktree} shows drift.
-    std::fs::write(dir.join("src/a.rs"), "ONE\ntwo\nthree\n").expect("dirty worktree");
-
-    let full_options = EngineOptions::full();
-    let effective_results =
-        crate::resolver::engine::resolve_named_spans(&repo, ".span", &names, full_options)?;
-    let effective_span = effective_results[0]
+    // Ground truth: two direct resolutions of the SAME on-disk state.
+    let committed_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?
+        [0]
+    .1
+    .as_ref()
+    .expect("committed resolution succeeds")
+    .clone();
+    let effective_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::full())?[0]
         .1
         .as_ref()
         .expect("effective resolution succeeds")
         .clone();
 
-    let core = build_resolution_core("demo", &committed_span, &effective_span, full_options.layers);
-
-    let projected_committed = project_committed(&core);
-    let projected_effective = project_effective(&core, full_options.layers);
+    // One single-pass capture drives both projections.
+    let core = capture_resolution_core(&repo, ".span", &names)?;
 
     assert_eq!(
-        projected_committed,
+        project_committed(&core),
+        vec![committed_span],
+        "committed projection must be byte-identical to direct committed-only resolution"
+    );
+    assert_eq!(
+        project_effective(&core, LayerSet::full()),
+        vec![effective_span],
+        "effective projection must be byte-identical to direct full-layer resolution"
+    );
+    Ok(())
+}
+
+/// The case `anchor_core_from_dual` structurally could not express: an anchor
+/// whose index AND worktree both drift, independently, from HEAD and from each
+/// other (staged one edit to the anchored range, then made a different
+/// unstaged edit). One single-pass capture must record real, independent
+/// per-layer observations for BOTH layers, and both projections must be
+/// byte-identical to direct resolution — including the two-entry
+/// `layer_sources` whose order (`Worktree`, then `Index`) only manifests when
+/// both layers drift at once.
+#[test]
+fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktree_drift(
+) -> crate::Result<()> {
+    let td = init_repo();
+    let dir = td.path();
+    commit_file(dir, "src/a.rs", "l1\nl2\nl3\nl4\nl5\n", "init a");
+    commit_span(dir, "demo", &[("src/a.rs", 2, 4)], "why demo");
+
+    // Stage an edit inside the anchored range: the index now differs from HEAD.
+    std::fs::write(dir.join("src/a.rs"), "l1\nl2\nINDEX\nl4\nl5\n").expect("stage edit");
+    run_git(dir, &["add", "src/a.rs"]);
+    // Then edit the worktree differently: the worktree now differs from the
+    // index too, so Index and Worktree drift simultaneously and independently.
+    std::fs::write(dir.join("src/a.rs"), "l1\nl2\nWORKTREE\nl4\nl5\n").expect("worktree edit");
+
+    let repo = gix::open(dir).expect("gix open");
+    let names = vec!["demo".to_string()];
+
+    let committed_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?
+        [0]
+    .1
+    .as_ref()
+    .expect("committed resolution succeeds")
+    .clone();
+    let effective_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::full())?[0]
+        .1
+        .as_ref()
+        .expect("effective resolution succeeds")
+        .clone();
+
+    let core = capture_resolution_core(&repo, ".span", &names)?;
+
+    // Both layers captured independent drift — the exact property the
+    // two-pass reconstruction could not represent.
+    let (_, anchor_core) = &core.spans[0].anchors[0];
+    assert!(
+        anchor_core.index.shows_drift(),
+        "index layer must record independent drift"
+    );
+    assert!(
+        anchor_core.worktree.shows_drift(),
+        "worktree layer must record independent drift"
+    );
+
+    let projected_effective = project_effective(&core, LayerSet::full());
+    // Direct resolution attributes both layers; the capture must reproduce the
+    // full two-entry attribution, not collapse it to a single source.
+    assert_eq!(
+        projected_effective[0].anchors[0].layer_sources,
+        vec![DriftSource::Worktree, DriftSource::Index],
+        "both drifting layers must be attributed, in resolver order (Worktree, Index)"
+    );
+    assert_eq!(
+        project_committed(&core),
         vec![committed_span],
         "committed projection must be byte-identical to direct committed-only resolution"
     );

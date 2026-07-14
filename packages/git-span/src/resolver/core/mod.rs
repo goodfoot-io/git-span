@@ -31,6 +31,7 @@
 //!   is explicit `(span identity, source ordinal, canonical definition
 //!   digest)` identity, never an address-keyed map.
 
+pub(crate) mod capture;
 pub(crate) mod project;
 pub(crate) mod resolution;
 pub(crate) mod token;

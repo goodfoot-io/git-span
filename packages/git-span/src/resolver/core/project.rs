@@ -86,9 +86,15 @@ pub(crate) fn project_committed(core: &super::resolution::ResolutionCore) -> Vec
 /// shallowest *enabled* layer that shows drift as the primary source
 /// (Worktree, then Index, then Head — matching the current resolver's
 /// `deepest_layer` precedence in `resolver/engine/anchor.rs`), and lists
-/// every enabled drifting layer in `layer_sources` using the field's
-/// documented order (`crate::types::AnchorResolved::layer_sources`:
-/// "shallow-to-deep order (Index → Worktree → Head)").
+/// every enabled drifting layer in `layer_sources` in the SAME order the
+/// live resolver's [`compute_layer_sources`] emits — Worktree, then Index,
+/// then Head. (The `AnchorResolved::layer_sources` doc's "Index → Worktree
+/// → Head" wording contradicts that function's actual runtime output; the
+/// runtime order is authoritative, since `stale_output` renders one
+/// `Finding` per entry in list order and single-pass capture must be
+/// byte-identical to direct resolution when both Index and Worktree drift.)
+///
+/// [`compute_layer_sources`]: crate::resolver::engine::anchor
 pub(crate) fn project_effective(
     core: &super::resolution::ResolutionCore,
     layers: LayerSet,
@@ -117,11 +123,11 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
     let head_drifts = anchor.head.shows_drift();
 
     let mut layer_sources = Vec::with_capacity(3);
-    if index_drifts {
-        layer_sources.push(DriftSource::Index);
-    }
     if worktree_drifts {
         layer_sources.push(DriftSource::Worktree);
+    }
+    if index_drifts {
+        layer_sources.push(DriftSource::Index);
     }
     if head_drifts {
         layer_sources.push(DriftSource::Head);

@@ -606,7 +606,7 @@ fn resolve_loaded_span_with_state(
 /// Populate `AnchorResolved.locus` for anchors whose drift is attributed to
 /// the HEAD layer or whose status is `Deleted`. For all other states the
 /// per-layer label (worktree / index) suffices and no walk is needed.
-fn populate_drift_locus(
+pub(crate) fn populate_drift_locus(
     repo: &gix::Repository,
     resolved: &mut AnchorResolved,
     session: &mut super::session::ResolveSession,
@@ -693,6 +693,80 @@ pub(crate) fn resolve_named_spans(
     )?;
     let (out, _) = resolve_named_spans_with_state(repo, span_root, names, options, state, false)?;
     Ok(out)
+}
+
+/// Single-pass, layer-neutral capture (card main-157 Phase 3A). Resolve every
+/// named span ONCE and assemble a [`ResolutionCore`] whose every anchor holds
+/// three independent per-layer observations (Head / Index / Worktree), instead
+/// of resolving twice — once committed, once effective — and merging the two
+/// collapsed views (the `resolver/core/tests.rs::anchor_core_from_dual`
+/// stand-in this replaces, which could not express simultaneous Index +
+/// Worktree drift).
+///
+/// This is additive instrumentation: it neither alters nor is reachable from
+/// the default resolution path (`resolve_named_spans` / `stale_spans_*`).
+/// Capture always observes all three layers regardless of any eventual view,
+/// so the core is genuinely layer-neutral; `super::core::project` reconstructs
+/// the committed or effective `SpanResolved` from it by pure selection.
+pub(crate) fn capture_resolution_core(
+    repo: &gix::Repository,
+    span_root: &str,
+    names: &[String],
+) -> Result<crate::resolver::core::resolution::ResolutionCore> {
+    use crate::resolver::core::resolution::{DefinitionOrdinal, ResolutionCore, SpanCore};
+
+    let _perf = crate::perf::span("resolver.capture-resolution-core");
+    let mut state =
+        EngineState::new_with_fuzzy_threshold(repo, LayerSet::full(), true, 0.95)?;
+
+    let span_pairs: Vec<(String, Span)> =
+        crate::span::read::read_effective_each_parallel(repo, span_root, names)
+            .into_iter()
+            .zip(names)
+            .filter_map(|(outcome, name)| outcome.ok().flatten().map(|span| (name.clone(), span)))
+            .collect();
+    if !span_pairs.is_empty() {
+        state.session.build_reverse_walk(repo, &span_pairs)?;
+    }
+
+    let mut spans = Vec::with_capacity(span_pairs.len());
+    for (name, span) in span_pairs {
+        debug_assert_eq!(name, span.name);
+        let mut anchors = Vec::with_capacity(span.anchors.len());
+        // Ordinal identity for duplicate anchor addresses: the position among
+        // definitions sharing the same address (anchor_id), in stored order.
+        let mut occurrences: HashMap<String, u32> = HashMap::new();
+        for (id, r) in span.anchors {
+            let anchor_core =
+                anchor::resolve_anchor_captured(repo, &mut state, &span.config, &span.name, &id, r)?;
+            let source_ordinal = {
+                let n = occurrences.entry(id.clone()).or_insert(0);
+                let v = *n;
+                *n += 1;
+                v
+            };
+            let definition_digest = DefinitionOrdinal::digest_definition(
+                &anchor_core.anchor_id,
+                &anchor_core.anchor_sha,
+                &anchor_core.anchored.path,
+                anchor_core.anchored.extent,
+            );
+            let ordinal = DefinitionOrdinal {
+                span_identity: span.name.clone(),
+                source_ordinal,
+                definition_digest,
+            };
+            anchors.push((ordinal, anchor_core));
+        }
+        spans.push(SpanCore {
+            name: span.name.clone(),
+            message: span.message.clone(),
+            follow_moves: span.config.follow_moves,
+            anchors,
+        });
+    }
+    state.finish(repo);
+    Ok(ResolutionCore { spans })
 }
 
 /// Build the reusable source-layer state (worktree/index `git status` scan)

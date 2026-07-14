@@ -1,6 +1,9 @@
 //! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
+use super::super::core::resolution::{
+    AnchorCore, DriftLocusCore, LayerObservationCore, LocationCore,
+};
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::resolve_at_head_shared;
 use super::super::walker::{Tracked, apply_hunks_to_range};
@@ -9,7 +12,8 @@ use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
     submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
-    DriftSource, FuzzySuccessor, SpanConfig, SubmoduleKind, UnavailableReason,
+    DriftLocus, DriftSource, FuzzySuccessor, LayerSet, SpanConfig, SubmoduleKind,
+    UnavailableReason,
 };
 use crate::{Error, Result};
 use git_span_core::{
@@ -1370,6 +1374,160 @@ pub(crate) fn resolve_anchor_inner(
         layer_sources,
         locus: None,
         fuzzy_successors,
+    })
+}
+
+// ── Single-pass layer-neutral capture (card main-157 Phase 3A) ───────────
+
+/// Head-only layer depth (the committed view). Byte-for-byte the layer set
+/// of [`crate::types::EngineOptions::committed_only`].
+const CAPTURE_HEAD_LAYERS: LayerSet = LayerSet {
+    worktree: false,
+    index: false,
+    staged_span: false,
+};
+
+/// HEAD + Index layer depth (the index-as-deepest view).
+const CAPTURE_INDEX_LAYERS: LayerSet = LayerSet {
+    worktree: false,
+    index: true,
+    staged_span: false,
+};
+
+/// HEAD + Index + Worktree layer depth (the full effective view). Byte-for-
+/// byte the layer set of [`crate::types::LayerSet::full`].
+const CAPTURE_FULL_LAYERS: LayerSet = LayerSet {
+    worktree: true,
+    index: true,
+    staged_span: true,
+};
+
+fn location_core(loc: &AnchorLocation) -> LocationCore {
+    LocationCore {
+        path: loc.path.to_string_lossy().into_owned(),
+        extent: loc.extent.into(),
+        blob: loc.blob.map(|b| b.to_string()),
+    }
+}
+
+fn fuzzy_cores(v: &[FuzzySuccessor]) -> Vec<super::super::core::resolution::FuzzySuccessorCore> {
+    v.iter()
+        .map(|f| super::super::core::resolution::FuzzySuccessorCore {
+            path: f.path.clone(),
+            start: f.start,
+            end: f.end,
+            confidence_bps: (f.confidence * 10_000.0).round() as u32,
+        })
+        .collect()
+}
+
+/// Map one layer's collapsed [`AnchorResolved`] into a layer observation.
+fn observation_from(run: &AnchorResolved) -> LayerObservationCore {
+    LayerObservationCore {
+        status: run.status.clone(),
+        current: run.current.as_ref().map(location_core),
+        content_equivalent: run.content_equivalent,
+        fuzzy_successors: fuzzy_cores(&run.fuzzy_successors),
+    }
+}
+
+/// A non-drifting layer: `Fresh`, pointing at the pinned location. Its only
+/// load-bearing property for projection is `shows_drift() == false`; a
+/// non-drifting layer is never selected as a projection's source, so its
+/// other fields are never read (see `super::super::core::project`).
+fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
+    LayerObservationCore {
+        status: AnchorStatus::Fresh,
+        current: Some(anchored.clone()),
+        content_equivalent: false,
+        fuzzy_successors: Vec::new(),
+    }
+}
+
+/// Capture one [`AnchorCore`] — three independent per-layer observations
+/// (Head / Index / Worktree) plus the pinned definition and HEAD-history
+/// locus — from ONE shared resolver pass over the anchor.
+///
+/// Instead of resolving the whole span set twice (committed, then effective)
+/// and reconstructing per-layer state from two collapsed views — the Phase 1
+/// test-only `anchor_core_from_dual` bridge, which could not express
+/// simultaneously-drifting Index and Worktree — this drives the *existing*
+/// [`resolve_anchor_inner`] classification (including `resolve_whole_file`
+/// and every Deleted / MergeConflict / LFS / ContentUnavailable /
+/// ResolvedPendingCommit early-return arm) at three progressively deeper
+/// layer configs against the SAME [`EngineState`]. The reverse walk, blob
+/// memos, and line indexes are shared across the three depths, so this is
+/// one pass in every sense that matters — no second top-level resolution.
+///
+/// A layer's observation shows drift exactly when the full run attributes
+/// drift to it: the full run's `layer_sources` IS
+/// [`compute_layer_sources`] under all layers, so it lists Index precisely
+/// when the index differs from HEAD and Worktree precisely when the worktree
+/// differs from the index — the same "introduces drift vs. the next-deeper
+/// layer" predicate `project_effective` reconstructs from `shows_drift`.
+///
+/// The default resolution path is untouched: this is invoked only through
+/// the opt-in [`super::capture_resolution_core`] entry point.
+pub(crate) fn resolve_anchor_captured(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    cfg: &SpanConfig,
+    span_name: &str,
+    anchor_id: &str,
+    r: Anchor,
+) -> Result<AnchorCore> {
+    let saved_layers = state.layers;
+    let saved_needs_all_layers = state.needs_all_layers;
+    // Every layer must be evaluated so the core is genuinely layer-neutral;
+    // `needs_all_layers` matches both `committed_only()` and `full()`, which
+    // set it `true`, so per-layer output is byte-identical to direct runs.
+    state.needs_all_layers = true;
+
+    state.layers = CAPTURE_HEAD_LAYERS;
+    let mut head_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
+    // The resolver leaves `locus` unset; the live path fills it afterwards in
+    // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
+    // committed projection carries the same locus as a direct committed run.
+    super::populate_drift_locus(repo, &mut head_run, &mut state.session, cfg.copy_detection);
+
+    state.layers = CAPTURE_INDEX_LAYERS;
+    let index_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
+
+    state.layers = CAPTURE_FULL_LAYERS;
+    let full_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r)?;
+
+    state.layers = saved_layers;
+    state.needs_all_layers = saved_needs_all_layers;
+
+    let anchored = location_core(&full_run.anchored);
+    let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
+    let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
+
+    let head = observation_from(&head_run);
+    let index = if index_drifts {
+        observation_from(&index_run)
+    } else {
+        fresh_observation(&anchored)
+    };
+    let worktree = if worktree_drifts {
+        observation_from(&full_run)
+    } else {
+        fresh_observation(&anchored)
+    };
+
+    let locus = head_run.locus.map(|l| match l {
+        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
+        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
+    });
+
+    Ok(AnchorCore {
+        anchor_id: full_run.anchor_id,
+        anchor_sha: full_run.anchor_sha,
+        anchored,
+        head,
+        index,
+        worktree,
+        locus,
     })
 }
 
