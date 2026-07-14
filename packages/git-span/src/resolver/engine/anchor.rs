@@ -1483,6 +1483,11 @@ pub(crate) fn resolve_anchor_captured(
     // set it `true`, so per-layer output is byte-identical to direct runs.
     state.needs_all_layers = true;
 
+    // The committed (HEAD-only) observation is always needed on its own: its
+    // rendered `current.blob` is the committed blob OID, which the deeper
+    // effective view drops. Run it first — for a layer-clean anchor it is also
+    // the ONLY heavy classification we run, since index/worktree read the same
+    // bytes and reclassifying them reproduces this result verbatim.
     state.layers = CAPTURE_HEAD_LAYERS;
     let mut head_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
     // The resolver leaves `locus` unset; the live path fills it afterwards in
@@ -1490,35 +1495,66 @@ pub(crate) fn resolve_anchor_captured(
     // committed projection carries the same locus as a direct committed run.
     super::populate_drift_locus(repo, &mut head_run, &mut state.session, cfg.copy_detection);
 
-    state.layers = CAPTURE_INDEX_LAYERS;
-    let index_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
+    // `anchored` is layer-independent (computed identically at every depth), so
+    // reading it from the HEAD run matches the value a full-depth run produces.
+    let anchored = location_core(&head_run.anchored);
+    let head = observation_from(&head_run);
+    let locus = head_run.locus.as_ref().map(|l| match l {
+        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
+        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
+    });
 
+    // Fast path: when every enabled layer holds identical content for this
+    // anchor's path, index/worktree hunks apply nothing and each layer reads
+    // the same bytes as HEAD — so their classification IS the HEAD
+    // classification, and neither layer drifts. The effective (deepest-layer)
+    // observation is then the HEAD observation with only its rendered blob
+    // dropped (the worktree carries no committed blob OID). This runs the
+    // ~600-line classifier exactly once for the overwhelmingly common
+    // clean-repo anchor instead of three times.
+    if capture_clean_derivable(state, &r, &head_run) {
+        state.layers = saved_layers;
+        state.needs_all_layers = saved_needs_all_layers;
+        let full = effective_from_clean_head(&head);
+        return Ok(AnchorCore {
+            anchor_id: head_run.anchor_id,
+            anchor_sha: head_run.anchor_sha,
+            anchored: anchored.clone(),
+            head,
+            index: fresh_observation(&anchored),
+            worktree: fresh_observation(&anchored),
+            full,
+            locus,
+        });
+    }
+
+    // Slow path: some layer diverges for this anchor. Resolve the full
+    // effective view, and — only when the index layer actually introduces
+    // drift — the index-as-deepest view. A worktree-only edit therefore costs
+    // two heavy passes, not three; only simultaneous index+worktree drift
+    // costs all three.
     state.layers = CAPTURE_FULL_LAYERS;
-    let full_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r)?;
+    let full_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
 
-    state.layers = saved_layers;
-    state.needs_all_layers = saved_needs_all_layers;
-
-    let anchored = location_core(&full_run.anchored);
     let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
     let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
 
-    let head = observation_from(&head_run);
     let index = if index_drifts {
+        state.layers = CAPTURE_INDEX_LAYERS;
+        let index_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r)?;
         observation_from(&index_run)
     } else {
         fresh_observation(&anchored)
     };
+
+    state.layers = saved_layers;
+    state.needs_all_layers = saved_needs_all_layers;
+
     let worktree = if worktree_drifts {
         observation_from(&full_run)
     } else {
         fresh_observation(&anchored)
     };
-
-    let locus = head_run.locus.map(|l| match l {
-        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
-        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
-    });
 
     // The deepest-layer effective observation, captured unconditionally so the
     // effective projection renders `current`/`status` from the true full view
@@ -1536,6 +1572,89 @@ pub(crate) fn resolve_anchor_captured(
         full,
         locus,
     })
+}
+
+/// The effective (deepest-layer) observation derived from the HEAD-depth run
+/// of a layer-clean anchor. When every layer holds the same bytes the status,
+/// current path/extent, content-equivalence, and relocation output are
+/// identical across depths; only the rendered blob differs, because the
+/// effective view's deepest layer is the worktree, which carries no committed
+/// blob OID. So the effective observation is the HEAD observation with its
+/// `current.blob` dropped.
+fn effective_from_clean_head(head: &LayerObservationCore) -> LayerObservationCore {
+    LayerObservationCore {
+        status: head.status.clone(),
+        current: head.current.as_ref().map(|c| LocationCore {
+            path: c.path.clone(),
+            extent: c.extent,
+            blob: None,
+        }),
+        content_equivalent: head.content_equivalent,
+        fuzzy_successors: head.fuzzy_successors.clone(),
+    }
+}
+
+/// Whether the HEAD-depth run of this anchor can be reused — unchanged except
+/// for the dropped effective blob — as every deeper layer's observation, so
+/// the two deeper classification passes can be skipped.
+///
+/// Requires (1) the anchor's path holds identical content across HEAD, index,
+/// and worktree (no diff-map entry, no conflict — the same probes
+/// `resolve_anchor_inner` uses to decide whether a hunk applies), and (2) the
+/// resolved status provably does not vary by layer depth on a content-
+/// identical path:
+/// - `Fresh` — no cross-path scan and no `worktree_recorded_fresh` divergence,
+///   so a merely path-clean anchor qualifies even in a lightly-dirty
+///   workspace.
+/// - `Changed` (in place) / `Deleted` — these run a cross-path relocation or
+///   fuzzy scan over OTHER tracked paths, whose result is layer-invariant only
+///   when the whole workspace is clean (`clean_layers`).
+///
+/// Every other status is excluded: `Moved` (relocation and
+/// `worktree_recorded_fresh` can diverge by depth when content is duplicated),
+/// and `ContentUnavailable`/`Submodule`/`MergeConflict`/`ResolvedPendingCommit`
+/// (layer-specific availability reads). A followed rename resolves to a path
+/// other than `r.path` and is already classified `Moved`; the explicit
+/// path check guards the residual cases.
+fn capture_clean_derivable(state: &EngineState, r: &Anchor, head_run: &AnchorResolved) -> bool {
+    let path_matches = head_run
+        .current
+        .as_ref()
+        .is_none_or(|c| c.path.as_path() == std::path::Path::new(r.path.as_str()));
+    if !path_matches {
+        return false;
+    }
+    match head_run.status {
+        AnchorStatus::Fresh => capture_path_layer_clean(state, &r.path),
+        AnchorStatus::Changed | AnchorStatus::Deleted => state.clean_layers,
+        _ => false,
+    }
+}
+
+/// Whether `path` holds identical content across HEAD, index, and worktree —
+/// no index/worktree diff entry and no merge conflict touches it. Mirrors the
+/// diff-map probes `resolve_anchor_inner` performs before applying a hunk, so
+/// "clean" here means precisely "the deeper layers apply nothing and read the
+/// same bytes as HEAD". Fails closed: an unbuilt diff map (unknown state) is
+/// treated as dirty.
+fn capture_path_layer_clean(state: &EngineState, path: &str) -> bool {
+    if state.clean_layers {
+        return true;
+    }
+    if state.conflicted_paths.contains(path) {
+        return false;
+    }
+    match &state.index_diffs {
+        Some(d) if d.map.contains_key(path) => return false,
+        None => return false,
+        _ => {}
+    }
+    match &state.worktree_diffs {
+        Some(d) if d.map.contains_key(path) => return false,
+        None => return false,
+        _ => {}
+    }
+    true
 }
 
 fn unavailable(

@@ -223,3 +223,184 @@ fn unreadable_path_is_typed_not_wall_clock() {
     let t2 = capture_state_token(&repo, SPAN_ROOT, opts).expect("recapture");
     assert_eq!(t, t2, "unreadable capture must be deterministic");
 }
+
+// ---------------------------------------------------------------------------
+// Filter dependency identity (executable + environment proof)
+// ---------------------------------------------------------------------------
+
+/// Write `body` to `path` and mark it executable (Unix). A minimal `sh` script
+/// is a real, resolvable, readable executable file — exactly what filter
+/// resolution must digest.
+fn write_executable(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .expect("stat executable")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod executable");
+    }
+}
+
+fn filter_dep<'a>(t: &'a StateToken, driver: &str) -> &'a super::super::token::FilterDependency {
+    t.filters
+        .iter()
+        .find(|f| f.driver == driver)
+        .unwrap_or_else(|| panic!("filter `{driver}` present in captured token"))
+}
+
+// A filter whose clean/smudge commands resolve to a concrete executable file
+// gains a complete dependency identity, making the token persistence-eligible
+// (no environment-stripping workaround required).
+#[test]
+fn resolvable_filter_executable_has_complete_identity() {
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("myfilter.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.myfilter.clean",
+            &format!("{} clean -- %f", exe.display()),
+        ],
+    );
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.myfilter.smudge",
+            &format!("{} smudge -- %f", exe.display()),
+        ],
+    );
+
+    let repo = reopen(&td);
+    let t = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("capture");
+    let dep = filter_dep(&t, "myfilter");
+    assert!(
+        dep.executable_digest.is_some(),
+        "a resolvable executable must be digested"
+    );
+    assert!(dep.env_digest.is_some(), "env digest is always computable");
+    assert!(
+        dep.has_complete_identity(),
+        "both halves proven => complete identity"
+    );
+    assert!(
+        t.persistence_eligible(),
+        "resolvable filters plus readable state must be persistence-eligible"
+    );
+}
+
+// A filter command naming a nonexistent program has no provable executable
+// identity, so it fails closed: incomplete identity and an ineligible token.
+#[test]
+fn unresolvable_filter_command_is_ineligible() {
+    let (td, _repo) = repo_with_span();
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.broken.clean",
+            "git-span-no-such-program-xyz123 %f",
+        ],
+    );
+
+    let repo = reopen(&td);
+    let t = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("capture");
+    let dep = filter_dep(&t, "broken");
+    assert!(
+        dep.executable_digest.is_none(),
+        "an unresolvable program must not be digested"
+    );
+    assert!(
+        !dep.has_complete_identity(),
+        "missing executable digest => incomplete identity"
+    );
+    assert!(
+        !t.persistence_eligible(),
+        "one unresolvable filter must make the whole token ineligible (fail closed)"
+    );
+}
+
+// Two captures of the same filter configuration produce byte-identical
+// executable and environment digests (determinism).
+#[test]
+fn identical_filter_config_produces_identical_digests() {
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("det.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.det.clean",
+            &format!("{} %f", exe.display()),
+        ],
+    );
+
+    let repo = reopen(&td);
+    let opts = EngineOptions::full();
+    let t1 = capture_state_token(&repo, SPAN_ROOT, opts).expect("capture 1");
+    let t2 = capture_state_token(&repo, SPAN_ROOT, opts).expect("capture 2");
+    let d1 = filter_dep(&t1, "det");
+    let d2 = filter_dep(&t2, "det");
+    assert_eq!(
+        d1.executable_digest, d2.executable_digest,
+        "identical executable => identical digest"
+    );
+    assert_eq!(
+        d1.env_digest, d2.env_digest,
+        "identical environment => identical digest"
+    );
+    assert_eq!(
+        t1.canonical_key_digest(),
+        t2.canonical_key_digest(),
+        "identical filter config must not perturb the canonical key"
+    );
+}
+
+// Changing the executable's content at the same path changes its digest — a
+// filter binary swap is a real identity change, not a coincidental match.
+#[test]
+fn changed_filter_executable_changes_digest() {
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("chg.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.chg.clean",
+            &format!("{} %f", exe.display()),
+        ],
+    );
+
+    let opts = EngineOptions::full();
+    let repo = reopen(&td);
+    let before = filter_dep(
+        &capture_state_token(&repo, SPAN_ROOT, opts).expect("capture before"),
+        "chg",
+    )
+    .executable_digest;
+
+    // Replace the executable's bytes at the same resolved path.
+    write_executable(&exe, "#!/bin/sh\nsed s/a/b/\n");
+    let repo = reopen(&td);
+    let after = filter_dep(
+        &capture_state_token(&repo, SPAN_ROOT, opts).expect("capture after"),
+        "chg",
+    )
+    .executable_digest;
+
+    assert!(before.is_some() && after.is_some(), "both resolvable");
+    assert_ne!(
+        before, after,
+        "different executable content must produce a different digest"
+    );
+}

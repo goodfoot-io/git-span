@@ -114,7 +114,22 @@ fn enable_v3() {
 
 fn resolved(attempt: ExactAttempt) -> Vec<SpanResolved> {
     match attempt {
-        ExactAttempt::Resolved(spans) => spans,
+        ExactAttempt::Resolved { spans, whole_result } => {
+            // Every `Resolved` outcome (cold miss, memo hit, store hit)
+            // carries the render-ready whole-result so the CLI skips its
+            // corpus reload. Its `spans` (full effective set) must always
+            // contain at least the returned reportable set.
+            assert!(
+                whole_result.is_some(),
+                "a Resolved outcome must carry the render-ready whole-result"
+            );
+            let wr = whole_result.unwrap();
+            assert!(
+                wr.spans.len() >= spans.len(),
+                "whole-result full set must include the reportable set"
+            );
+            spans
+        }
         ExactAttempt::Bypass => panic!("expected Resolved, got Bypass"),
     }
 }
@@ -223,11 +238,14 @@ fn memo_serves_repeat_without_store_read() {
 #[test]
 fn memo_is_bounded() {
     let mut memo = BoundedMemo::new(2);
-    let core = Arc::new(ResolutionCore { spans: Vec::new() });
+    let rr = Arc::new(RenderReady {
+        full: Vec::new(),
+        span_anchor_totals: Vec::new(),
+    });
     let k = |b: u8| [b; 32];
-    memo.put(k(1), Arc::clone(&core));
-    memo.put(k(2), Arc::clone(&core));
-    memo.put(k(3), Arc::clone(&core)); // evicts k(1)
+    memo.put(k(1), Arc::clone(&rr));
+    memo.put(k(2), Arc::clone(&rr));
+    memo.put(k(3), Arc::clone(&rr)); // evicts k(1)
     assert!(memo.get(&k(1)).is_none(), "oldest entry evicted at capacity");
     assert!(memo.get(&k(2)).is_some());
     assert!(memo.get(&k(3)).is_some());

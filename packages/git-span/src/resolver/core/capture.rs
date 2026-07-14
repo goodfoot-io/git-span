@@ -22,16 +22,26 @@
 //! existing plumbing layer ([`crate::git`], [`crate::span_file_reader`],
 //! [`crate::resolver::walker::rename_budget`]) rather than reinventing it.
 //!
+//! ## Filter dependency identity (real, proven)
+//!
+//! Every configured `filter.<driver>` in git config becomes a
+//! [`FilterDependency`] whose `executable_digest`/`env_digest` are proven when
+//! resolvable: the driver's `clean`/`smudge`/`process` command lines are parsed
+//! for their concrete program, resolved through the same `PATH`/relative-to-
+//! worktree rules a spawned filter child obeys (see
+//! [`crate::resolver::layers::filter_process`]), and the resolved executable's
+//! bytes are BLAKE3-digested. The environment digest covers the full process
+//! environment a child filter would inherit (the filter spawners here never
+//! `env_clear`, so the whole environment is observable to the filter). When any
+//! command's program cannot be resolved to a concrete executable file — command
+//! not found, not executable, unparseable, or a bare repository with no worktree
+//! — `executable_digest` stays `None` and
+//! [`FilterDependency::has_complete_identity`] reports `false`, so
+//! [`StateToken::persistence_eligible`] fails closed for that input rather than
+//! trusting command text alone (`notes/investigation-question-log.md` Step 6).
+//!
 //! ## Deliberate scope boundaries (documented gaps for later phases)
 //!
-//! - **Filter dependency identity is captured as unproven.** Every configured
-//!   `filter.<driver>` in git config becomes a [`FilterDependency`] with
-//!   `executable_digest`/`env_digest` both `None`, because the resolver does
-//!   not prove a filter executable's content identity anywhere today. This is
-//!   fail-closed by construction: [`StateToken::persistence_eligible`] returns
-//!   `false` whenever any filter lacks a complete identity, so a repo with a
-//!   custom/LFS filter configured is never persisted until a later phase adds
-//!   real executable-identity proofs.
 //! - **Per-path availability proofs are empty.** [`AvailabilityProof::paths`]
 //!   is left empty: the resolver computes only the three global
 //!   sparse/promisor/LFS booleans today (the "Availability Aliasing" gap the
@@ -52,8 +62,8 @@ use crate::span_file_reader::SpanFileReader;
 use crate::Result;
 use crate::types::{CopyDetection, EngineOptions, Span};
 use blake3::Hasher;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 /// Namespace/version discriminator for the whole token shape. Bump on any
 /// `StateToken` field addition/removal (mirrors `cache_v2`'s `KEY_SALT`).
@@ -304,9 +314,15 @@ fn replace_refs(repo: &gix::Repository) -> Vec<String> {
     out
 }
 
-/// Every configured `filter.<driver>` as a [`FilterDependency`], with unproven
-/// executable/env identity (see module docs). Mirrors the config inputs of
-/// `cache_v2::schema::filter_config_hash`, promoted to structured entries.
+/// The `filter.<driver>.*` value names that name an executable command line
+/// (as opposed to `required`, a boolean). Fixed order so the executable digest
+/// is deterministic.
+const FILTER_COMMAND_KEYS: [&str; 3] = ["clean", "process", "smudge"];
+
+/// Every configured `filter.<driver>` as a [`FilterDependency`] with real,
+/// proven executable and environment identity when resolvable (see module docs).
+/// Mirrors the config inputs of `cache_v2::schema::filter_config_hash`, promoted
+/// to structured entries whose persistence eligibility is gated on proof.
 fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
     let snap = repo.config_snapshot();
     let file = snap.plumbing();
@@ -332,6 +348,18 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
             }
         }
     }
+
+    // A child filter spawned by the resolver inherits the resolver's full
+    // process environment (the spawners in `resolver::layers::filter_process`
+    // never `env_clear`), and resolves relative program paths against the
+    // worktree. Both are the same for every driver, so compute the env digest
+    // once and reuse the executable-content cache across drivers (the common
+    // case — git-lfs `clean`/`smudge`/`process` — is one 11 MiB binary shared
+    // by three commands, digested once).
+    let env_digest = process_env_digest();
+    let workdir = crate::git::work_dir(repo).ok().map(Path::to_path_buf);
+    let mut content_cache: HashMap<PathBuf, Option<[u8; 32]>> = HashMap::new();
+
     by_driver
         .into_iter()
         .map(|(driver, kv)| {
@@ -340,14 +368,160 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let executable_digest = workdir
+                .as_deref()
+                .and_then(|wd| filter_executable_digest(&kv, wd, &mut content_cache));
             FilterDependency {
                 driver,
                 command,
-                executable_digest: None,
-                env_digest: None,
+                executable_digest,
+                env_digest: Some(env_digest),
             }
         })
         .collect()
+}
+
+/// BLAKE3 digest binding every executable-invoking command of one filter driver
+/// to its resolved executable's content. `None` (fail-closed ineligibility) when
+/// the driver declares no executable command, or any declared command cannot be
+/// parsed and resolved to a concrete, readable executable file.
+fn filter_executable_digest(
+    kv: &BTreeMap<String, String>,
+    workdir: &Path,
+    content_cache: &mut HashMap<PathBuf, Option<[u8; 32]>>,
+) -> Option<[u8; 32]> {
+    let mut h = Hasher::new();
+    h.update(b"gm.core.filter-exe\0");
+    let mut any_command = false;
+    for cmd_key in FILTER_COMMAND_KEYS {
+        let Some(cmdline) = kv.get(cmd_key) else {
+            continue;
+        };
+        if cmdline.trim().is_empty() {
+            continue;
+        }
+        any_command = true;
+        // Parse the first shell token as the program; resolve it exactly as a
+        // spawned filter child would; digest the resolved file's bytes. Any
+        // failure here fails the whole dependency closed.
+        let program = first_program(cmdline)?;
+        let resolved = resolve_executable(&program, workdir)?;
+        let content = executable_content_digest(&resolved, content_cache)?;
+        write_prefixed(&mut h, cmd_key.as_bytes());
+        h.update(&content);
+    }
+    if !any_command {
+        return None;
+    }
+    Some(*h.finalize().as_bytes())
+}
+
+/// The concrete program of a filter command line: its first shell word. `None`
+/// when the command line is unparseable (e.g. unbalanced quotes) or empty.
+fn first_program(cmdline: &str) -> Option<String> {
+    let words = shell_words::split(cmdline).ok()?;
+    words.into_iter().find(|w| !w.is_empty())
+}
+
+/// Resolve a program name to a concrete executable file path, obeying the same
+/// rules a spawned filter child does: a program containing a path separator is a
+/// path (absolute, or relative to the worktree the child runs in); a bare name
+/// is searched on `PATH`. `None` when no matching executable file exists.
+fn resolve_executable(program: &str, workdir: &Path) -> Option<PathBuf> {
+    if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
+        let p = Path::new(program);
+        let candidate = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            workdir.join(p)
+        };
+        return is_executable_file(&candidate).then_some(candidate);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(program);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Whether `p` is a regular file that is executable. Follows symlinks (a spawned
+/// child would execute the link target), so the content digest is taken over the
+/// real binary. On non-Unix, the executable bit is not modeled — any regular
+/// file qualifies.
+fn is_executable_file(p: &Path) -> bool {
+    let Ok(md) = std::fs::metadata(p) else {
+        return false;
+    };
+    if !md.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        md.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// BLAKE3 digest of a resolved executable's bytes, memoized by resolved path so
+/// a binary shared by several commands (git-lfs `clean`/`smudge`/`process`) is
+/// read and hashed once. `None` when the file cannot be read.
+fn executable_content_digest(
+    resolved: &Path,
+    content_cache: &mut HashMap<PathBuf, Option<[u8; 32]>>,
+) -> Option<[u8; 32]> {
+    if let Some(cached) = content_cache.get(resolved) {
+        return *cached;
+    }
+    let digest = std::fs::read(resolved)
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+    content_cache.insert(resolved.to_path_buf(), digest);
+    digest
+}
+
+/// BLAKE3 digest of the full process environment a spawned filter child would
+/// inherit. Sorted by key (`vars_os` order is unspecified) so the digest is
+/// deterministic; keys and values are length-prefixed so no `KEY=VALUE`
+/// boundary can be forged by adjacent variables.
+fn process_env_digest() -> [u8; 32] {
+    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
+    vars.sort();
+    let mut h = Hasher::new();
+    h.update(b"gm.core.filter-env\0");
+    h.update(&(vars.len() as u64).to_le_bytes());
+    for (k, v) in &vars {
+        write_prefixed(&mut h, os_str_bytes(k).as_ref());
+        write_prefixed(&mut h, os_str_bytes(v).as_ref());
+    }
+    *h.finalize().as_bytes()
+}
+
+/// Raw bytes of an `OsStr` for digesting. On Unix this is the exact byte
+/// content; elsewhere the lossless-enough UTF-8 view (env vars are effectively
+/// text on those platforms).
+fn os_str_bytes(s: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::borrow::Cow::Borrowed(s.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        match s.to_string_lossy() {
+            std::borrow::Cow::Borrowed(t) => std::borrow::Cow::Borrowed(t.as_bytes()),
+            std::borrow::Cow::Owned(t) => std::borrow::Cow::Owned(t.into_bytes()),
+        }
+    }
 }
 
 /// Digest over the sorted `(path, blob-oid?)` identity of every `.gitattributes`

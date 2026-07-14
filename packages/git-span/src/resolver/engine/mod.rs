@@ -1253,7 +1253,7 @@ pub fn stale_spans(
     // Card main-157 Phase 3 (sub-scope 3C): temporary opt-in new-store path.
     // Fully inert unless `GIT_SPAN_CACHE_STORE_V3` selects it; a `Bypass`
     // leaves today's behavior byte-identical.
-    if let crate::resolver::exact::ExactAttempt::Resolved(spans) =
+    if let crate::resolver::exact::ExactAttempt::Resolved { spans, .. } =
         crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
     {
         return Ok(spans);
@@ -1303,13 +1303,18 @@ pub(crate) fn stale_spans_retaining_source_layers(
 ) -> Result<(Vec<SpanResolved>, Option<SourceLayers>, Option<crate::resolver::cache_v2::baseline::WholeResult>)> {
     use crate::resolver::cache_v2::{CacheAttempt, stale_spans_cached};
     // Card main-157 Phase 3 (sub-scope 3C): temporary opt-in new-store path.
-    // On a `Resolved` outcome the new store rendered the reportable set; there
-    // is no retained `SourceLayers` (a `--fix` post-pass rebuilds them) and no
-    // legacy whole-result. A `Bypass` runs today's path byte-identically.
-    if let crate::resolver::exact::ExactAttempt::Resolved(spans) =
-        crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
+    // On a `Resolved` outcome the new store rendered the reportable set and
+    // hands back the render-ready whole-result so `run_stale` skips its
+    // per-invocation corpus reload (count-totals / Fresh-anchor backfill /
+    // interior-anchor scan) — exactly as the legacy warm-clean hit does. There
+    // is no retained `SourceLayers` (a `--fix` post-pass rebuilds them). A
+    // `Bypass` runs today's path byte-identically.
+    if let crate::resolver::exact::ExactAttempt::Resolved {
+        spans,
+        whole_result,
+    } = crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
     {
-        return Ok((spans, None, None));
+        return Ok((spans, None, whole_result));
     }
     match stale_spans_cached(repo, span_root, options)? {
         CacheAttempt::Resolved {
