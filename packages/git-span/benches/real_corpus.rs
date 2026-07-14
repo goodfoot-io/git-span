@@ -8,9 +8,11 @@
 //! delete only the clone's cache; warm iterations prime only the clone's cache.
 //!
 //! ## Oracle
-//! Before the hot loop each cell runs the command twice: once with
-//! `GIT_SPAN_CACHE_V2=0` (ground truth) and once with the cache enabled.
-//! The oracle asserts byte-identical stdout.  This runs outside the timed window.
+//! Before the hot loop each cell runs the command twice: once with EVERY
+//! persistent cache tier disabled (`GIT_SPAN_CACHE=0` AND
+//! `GIT_SPAN_CACHE_V2=0` — ground truth) and once with the cache enabled.
+//! The oracle asserts byte-identical stdout, a matching stderr contract, and
+//! a matching exit status. This runs outside the timed window.
 //!
 //! ## Gates (collect-all-then-assert)
 //! Each cell records a ROBUST median (warmup sample discarded) into a shared
@@ -390,15 +392,36 @@ fn restore_fix_baseline(repo: &Path, baseline: &FixBaseline) {
 // Cache helpers
 // ---------------------------------------------------------------------------
 
-/// `<git_dir>/span/stale-cache.db` inside the clone.
+/// `<git_dir>/span/stale-cache.db` inside the clone — the `resolver/cache_v2`
+/// SQLite tier, gated by `GIT_SPAN_CACHE_V2`.
 fn cache_db_path(repo: &Path) -> PathBuf {
     repo.join(".git").join("span").join("stale-cache.db")
 }
 
+/// `<git_dir>/span/cache` inside the clone — the `resolver/cache` filesystem
+/// tier, gated by `GIT_SPAN_CACHE`. Sibling to, NOT inside, `cache_db_path()`.
+fn fs_cache_dir(repo: &Path) -> PathBuf {
+    repo.join(".git").join("span").join("cache")
+}
+
+/// Delete EVERY persistent cache tier so a subsequent run is genuinely cold:
+/// the SQLite database (plus WAL/SHM sidecars) and the filesystem cache
+/// directory. Deleting only the SQLite file (the historical behavior here)
+/// left the filesystem tier warm and any "cold" measurement or oracle run
+/// downstream of it was not actually cold — see
+/// `notes/investigation-question-log.md` Step 2, "Does the documented
+/// cache-off oracle provide ground truth?".
 fn delete_cache(repo: &Path) {
-    let p = cache_db_path(repo);
-    if p.exists() {
-        fs::remove_file(&p).unwrap_or_else(|e| panic!("delete stale-cache.db: {e}"));
+    let db = cache_db_path(repo);
+    for suffix in ["", "-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", db.display()));
+        if path.exists() {
+            fs::remove_file(&path).unwrap_or_else(|e| panic!("delete {}: {e}", path.display()));
+        }
+    }
+    let fs_dir = fs_cache_dir(repo);
+    if fs_dir.exists() {
+        fs::remove_dir_all(&fs_dir).unwrap_or_else(|e| panic!("delete {}: {e}", fs_dir.display()));
     }
 }
 
@@ -421,31 +444,81 @@ fn prime_cache(repo: &Path) {
 // Oracle
 // ---------------------------------------------------------------------------
 
-/// Capture stdout of a command run against the clone.
-fn capture_stdout(repo: &Path, args: &[&str], cache_off: bool) -> Vec<u8> {
+/// Full captured result of one oracle invocation: stdout, stderr, and exit
+/// status, so `assert_oracle` can compare all three between cache-on and
+/// cache-off rather than stdout alone.
+struct OracleOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exit_code: Option<i32>,
+}
+
+/// Run a command against the clone. When `cache_off` is set, ground truth
+/// MUST disable every currently-existing persistent cache tier — both
+/// `GIT_SPAN_CACHE` (the `resolver/cache` filesystem tier) and
+/// `GIT_SPAN_CACHE_V2` (the `resolver/cache_v2` SQLite tier). Setting only
+/// `GIT_SPAN_CACHE_V2=0` (the historical behavior here) left the filesystem
+/// tier live, so a "cache-disabled" run could still be served partly from
+/// cache — see `notes/investigation-question-log.md` Step 2, "Does the
+/// documented cache-off oracle provide ground truth?".
+fn run_oracle(repo: &Path, args: &[&str], cache_off: bool) -> OracleOutput {
     let mut cmd = Command::new(SPAN_BIN);
     cmd.current_dir(repo).args(args);
     if cache_off {
+        cmd.env("GIT_SPAN_CACHE", "0");
         cmd.env("GIT_SPAN_CACHE_V2", "0");
     }
     let out = cmd.output().unwrap_or_else(|e| panic!("spawn git-span {args:?}: {e}"));
-    // Some commands exit non-zero when there is drift; that is fine for the oracle.
-    out.stdout
+    // Some commands exit non-zero when there is drift; that is fine for the oracle
+    // — the exit CODE itself is compared below, just not asserted to be 0.
+    OracleOutput {
+        stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+/// Capture stdout of a command run against the clone. Thin wrapper over
+/// `run_oracle` for call sites that only need stdout (e.g. subset-consistency
+/// checks that don't assert byte-identity).
+fn capture_stdout(repo: &Path, args: &[&str], cache_off: bool) -> Vec<u8> {
+    run_oracle(repo, args, cache_off).stdout
 }
 
 /// Assert that cache-on output equals cache-off output for the given args.
+/// Compares stdout, the stderr contract, and exit status: none of these
+/// oracle invocations pass `--perf`/`--perf-trace` (the only documented
+/// source of intentional cache-state-dependent stderr output — see
+/// `packages/git-span/docs/profiling.md`), so stderr is expected to be
+/// byte-identical between cache-on and cache-off exactly like stdout.
 fn assert_oracle(repo: &Path, op_name: &str, args: &[&str]) {
     // For stale cold oracle: ensure cache is absent for both runs.
     delete_cache(repo);
-    let ground_truth = capture_stdout(repo, args, true);
+    let ground_truth = run_oracle(repo, args, true);
     delete_cache(repo);
-    let cached_output = capture_stdout(repo, args, false);
+    let cached = run_oracle(repo, args, false);
 
-    if cached_output != ground_truth {
-        let gt_str = String::from_utf8_lossy(&ground_truth);
-        let cached_str = String::from_utf8_lossy(&cached_output);
+    if cached.stdout != ground_truth.stdout {
+        let gt_str = String::from_utf8_lossy(&ground_truth.stdout);
+        let cached_str = String::from_utf8_lossy(&cached.stdout);
         panic!(
-            "[real_corpus] ORACLE FAIL for '{op_name}':\n\
+            "[real_corpus] ORACLE FAIL (stdout) for '{op_name}':\n\
+             --- ground_truth (cache off) ---\n{gt_str}\n\
+             --- cached_output (cache on) ---\n{cached_str}"
+        );
+    }
+    if cached.exit_code != ground_truth.exit_code {
+        panic!(
+            "[real_corpus] ORACLE FAIL (exit status) for '{op_name}': \
+             cache-off exited {:?}, cache-on exited {:?}",
+            ground_truth.exit_code, cached.exit_code
+        );
+    }
+    if cached.stderr != ground_truth.stderr {
+        let gt_str = String::from_utf8_lossy(&ground_truth.stderr);
+        let cached_str = String::from_utf8_lossy(&cached.stderr);
+        panic!(
+            "[real_corpus] ORACLE FAIL (stderr) for '{op_name}':\n\
              --- ground_truth (cache off) ---\n{gt_str}\n\
              --- cached_output (cache on) ---\n{cached_str}"
         );
@@ -466,8 +539,9 @@ fn list_block_names(stdout: &[u8]) -> std::collections::BTreeSet<String> {
 /// Oracle for a `git span list <glob>` cell.
 ///
 /// 1. DETERMINISM (the required part, mirroring the bare-`list` oracle): the
-///    command's stdout is byte-identical with the cache live vs
-///    `GIT_SPAN_CACHE_V2=0`. For `list` this is a determinism check, which is
+///    command's stdout is byte-identical with the cache live vs every
+///    persistent cache tier disabled (`GIT_SPAN_CACHE=0` AND
+///    `GIT_SPAN_CACHE_V2=0`). For `list` this is a determinism check, which is
 ///    exactly what the existing `list` cell asserts.
 /// 2. SUBSET CONSISTENCY (cheap, span-name level): the spans a glob reports are
 ///    a subset of the bare-`list` corpus. `expect_proper_nonempty` additionally
@@ -528,20 +602,38 @@ fn assert_oracle_stale_cold_all_formats(repo: &Path) {
 
 /// Oracle for warm stale across ALL output formats: prime the cache once,
 /// then for each format compare a warm cache-on run against a cache-off
-/// ground truth.
+/// ground truth. Compares stdout, the stderr contract, and exit status —
+/// see `assert_oracle`'s doc comment for why stderr is expected to match.
 fn assert_oracle_stale_warm(repo: &Path) {
     for fmt in STALE_FORMATS {
         delete_cache(repo);
         prime_cache(repo);
         let args = ["stale", "--no-exit-code", "--format", fmt];
-        // Ground truth: cache disabled. Warm run: cache primed above, kept.
-        let ground_truth = capture_stdout(repo, &args, true);
-        let cached_output = capture_stdout(repo, &args, false);
-        if cached_output != ground_truth {
-            let gt_str = String::from_utf8_lossy(&ground_truth);
-            let cached_str = String::from_utf8_lossy(&cached_output);
+        // Ground truth: cache disabled (every tier). Warm run: cache primed above, kept.
+        let ground_truth = run_oracle(repo, &args, true);
+        let cached = run_oracle(repo, &args, false);
+        let op = format!("stale-warm[--format {fmt}]");
+        if cached.stdout != ground_truth.stdout {
+            let gt_str = String::from_utf8_lossy(&ground_truth.stdout);
+            let cached_str = String::from_utf8_lossy(&cached.stdout);
             panic!(
-                "[real_corpus] ORACLE FAIL for 'stale-warm[--format {fmt}]':\n\
+                "[real_corpus] ORACLE FAIL (stdout) for '{op}':\n\
+                 --- ground_truth (cache off) ---\n{gt_str}\n\
+                 --- cached_output (cache on) ---\n{cached_str}"
+            );
+        }
+        if cached.exit_code != ground_truth.exit_code {
+            panic!(
+                "[real_corpus] ORACLE FAIL (exit status) for '{op}': \
+                 cache-off exited {:?}, cache-on exited {:?}",
+                ground_truth.exit_code, cached.exit_code
+            );
+        }
+        if cached.stderr != ground_truth.stderr {
+            let gt_str = String::from_utf8_lossy(&ground_truth.stderr);
+            let cached_str = String::from_utf8_lossy(&cached.stderr);
+            panic!(
+                "[real_corpus] ORACLE FAIL (stderr) for '{op}':\n\
                  --- ground_truth (cache off) ---\n{gt_str}\n\
                  --- cached_output (cache on) ---\n{cached_str}"
             );

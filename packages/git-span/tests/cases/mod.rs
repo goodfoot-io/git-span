@@ -36,6 +36,7 @@ pub mod configured_span_root_integration;
 pub mod doctor_deletion_tombstone;
 pub mod drift_label;
 pub mod editmsg_orphan_enumerated;
+pub mod gitignore_dirty_cache_divergence;
 pub mod list_loads_corpus_once;
 pub mod manpage;
 pub mod span_file_format;

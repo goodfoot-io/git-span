@@ -6,6 +6,14 @@
 # Outputs a markdown summary to stdout and a CSV file alongside (default
 # ./bench-span.csv). Per cell we collect N raw timings and report
 # mean / median / p95 / p99 / min / max.
+#
+# Card main-157 Phase 0 note: this script previously called `git-span commit`
+# and `git-span restore`, neither of which exist in the current CLI (spans
+# are `.span/<name>` files persisted with plain `git add .span && git
+# commit`, not a span-specific commit/restore subcommand), and `timed()`
+# always reported success regardless of the wrapped command's real exit
+# status. Both are fixed here — see `notes/benchmark-evidence.md` (card
+# main-157) for the failure evidence this repair addresses.
 
 set -euo pipefail
 
@@ -27,8 +35,120 @@ SPAN_COUNTS=(1 10 100)
 ANCHORS_PER_SPAN=(2 20)
 ITERATIONS=5
 OUT_CSV="./bench-span.csv"
-OPS=(add why commit show list stale)
+# `commit`/`restore`/`pre-commit`/`ls` are not git-span subcommands (removed
+# from the CLI, or never existed under those names — see §10.2 in
+# src/cli/mod.rs). `add`/`why`/`show`/`list`/`stale` are the current `.span/`
+# file lifecycle operations this harness exercises.
+OPS=(add why show list stale)
 KEEP_FIXTURE=0
+
+# ----------------------------- Cache-mode controls -----------------------------
+#
+# Seven named cache states, environment/flag-driven. Each currently maps onto
+# the TWO legacy switches (`GIT_SPAN_CACHE` = filesystem `resolver/cache`
+# tier, `GIT_SPAN_CACHE_V2` = SQLite `resolver/cache_v2` tier) because the
+# new-store implementation and its single disable switch don't exist yet
+# (later card main-157 phases build them). When that switch lands, repoint
+# `cache_mode_envs()` below at it — everything else in this section (state
+# setup: cold-delete, warm-prime, ancestor commit, dirtying, concurrent race)
+# stays the same regardless of which switch gates it.
+#
+#   all-off              -- every persistent tier disabled (ground truth / oracle)
+#   exact-cold            -- persistent tiers live, but cache deleted before each sample (first-build/miss path)
+#   exact-warm              -- persistent tiers live, cache primed once before sampling (repeat clean-hit path)
+#   incremental-ancestor    -- warm cache, then an unrelated commit lands before sampling (ancestor-reuse path)
+#   dirty-exact              -- warm cache, then the anchored source itself is dirtied before sampling
+#   dirty-affected           -- warm cache, then an UNRELATED tracked file is dirtied before sampling
+#   concurrent-miss          -- cold cache, N processes race `stale` against the same missing key
+CACHE_MODE="${CACHE_MODE:-exact-warm}"
+CONCURRENT_MISS_PROCS="${CONCURRENT_MISS_PROCS:-4}"
+
+case "$CACHE_MODE" in
+  all-off|exact-cold|exact-warm|incremental-ancestor|dirty-exact|dirty-affected|concurrent-miss) ;;
+  *)
+    echo "invalid CACHE_MODE: $CACHE_MODE (want one of: all-off exact-cold exact-warm incremental-ancestor dirty-exact dirty-affected concurrent-miss)" >&2
+    exit 2
+    ;;
+esac
+
+# `all-off` is the only mode that overrides the environment — every other
+# mode runs with both legacy tiers live and reaches its named state via
+# *actions* (delete/prime/commit/dirty) in `apply_cache_mode_state()` below.
+# Exported once, for the whole script, rather than threaded per-invocation:
+# `timed()` below is a shell FUNCTION, so `env KEY=VAL timed ...` would not
+# work (`env` execs a new process and cannot see shell functions) — a plain
+# `export` is both correct and simpler here since only one mode needs it.
+if [[ "$CACHE_MODE" == "all-off" ]]; then
+  export GIT_SPAN_CACHE=0
+  export GIT_SPAN_CACHE_V2=0
+fi
+
+# Delete every persistent cache tier this worktree could have populated:
+# the filesystem tier (`<git_dir>/span/cache`) and the SQLite tier
+# (`<git_dir>/span/stale-cache.db` plus WAL/SHM sidecars). Deleting only one
+# tier leaves a "cold" state that is not actually cold — see
+# `notes/investigation-question-log.md` Step 2 (card main-157).
+clear_all_cache_tiers() {
+  local workdir="$1"
+  rm -rf "$workdir/.git/span/cache"
+  rm -f "$workdir/.git/span/stale-cache.db" \
+        "$workdir/.git/span/stale-cache.db-wal" \
+        "$workdir/.git/span/stale-cache.db-shm"
+}
+
+# Bring `$workdir` into the state `$CACHE_MODE` names, using the already-seeded
+# span corpus and `$bench_anchors`/`$reader_name` the caller has prepared.
+# Runs OUTSIDE the timed region for every mode.
+apply_cache_mode_state() {
+  local workdir="$1"
+  case "$CACHE_MODE" in
+    all-off)
+      # No further setup needed; the exported GIT_SPAN_CACHE/GIT_SPAN_CACHE_V2
+      # above disable both tiers for every invocation in this script run.
+      clear_all_cache_tiers "$workdir"
+      ;;
+    exact-cold)
+      # Each sample independently clears the cache (see the `stale` op case
+      # in the sweep below) so every sample measures a first build.
+      clear_all_cache_tiers "$workdir"
+      ;;
+    exact-warm)
+      clear_all_cache_tiers "$workdir"
+      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      ;;
+    incremental-ancestor)
+      clear_all_cache_tiers "$workdir"
+      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      # An unrelated committed change (no span anchors it) so a warm cache
+      # must locate an ancestor generation rather than rebuild from scratch.
+      ( cd "$workdir" \
+          && echo "bench ancestor marker $(date +%s%N)" >>BENCH_UNRELATED_FILE.md \
+          && git add BENCH_UNRELATED_FILE.md \
+          && git commit --quiet -m "bench: unrelated ancestor commit" )
+      ;;
+    dirty-exact)
+      clear_all_cache_tiers "$workdir"
+      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      # Dirty exactly one anchored source file (the first bench anchor path).
+      if [[ ${#bench_anchors[@]} -gt 0 ]]; then
+        local target="${bench_anchors[0]%%#L*}"
+        ( cd "$workdir" && printf '\n// bench dirty-exact marker\n' >>"$target" )
+      fi
+      ;;
+    dirty-affected)
+      clear_all_cache_tiers "$workdir"
+      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      # Dirty a tracked file NO span anchors, so the affected-set stays
+      # small relative to corpus size (the path this card's dirty-reuse
+      # work optimizes for).
+      ( cd "$workdir" && printf '\n# bench dirty-affected marker\n' >>README.md 2>/dev/null \
+          || printf 'bench dirty-affected marker\n' >BENCH_DIRTY_AFFECTED.md )
+      ;;
+    concurrent-miss)
+      clear_all_cache_tiers "$workdir"
+      ;;
+  esac
+}
 
 usage() {
   cat <<EOF
@@ -44,8 +164,11 @@ Usage: $0 [options]
   -h, --help           this help
 
 Env:
-  BENCH_CACHE_DIR  cache root (default: $CACHE_DIR)
-  NEXTJS_URL       upstream URL (default: $NEXTJS_URL)
+  BENCH_CACHE_DIR       cache root (default: $CACHE_DIR)
+  NEXTJS_URL            upstream URL (default: $NEXTJS_URL)
+  CACHE_MODE            one of: all-off exact-cold exact-warm incremental-ancestor
+                        dirty-exact dirty-affected concurrent-miss (default: $CACHE_MODE)
+  CONCURRENT_MISS_PROCS process count for concurrent-miss mode (default: $CONCURRENT_MISS_PROCS)
 EOF
 }
 
@@ -72,6 +195,7 @@ echo
 echo "- binary:        \`$GIT_SPAN_BIN\`"
 echo "- version:       \`$(git-span --version 2>/dev/null || echo unknown)\`"
 echo "- cache:         \`$CACHE_DIR\`"
+echo "- cache mode:    $CACHE_MODE"
 echo "- iterations:    $ITERATIONS"
 echo "- refs:          ${REFS[*]}"
 echo "- span counts:   ${SPAN_COUNTS[*]}"
@@ -123,12 +247,35 @@ stats() {
     }'
 }
 
-# Time a command in seconds with sub-millisecond resolution.
+# Time a command in seconds with sub-millisecond resolution, PROPAGATING its
+# real exit status.
+#
+# Usage: timed <accepted-exit-codes-csv> -- <command...>
+# `accepted-exit-codes-csv` is a comma-separated allowlist (e.g. "0" or
+# "0,1"); the command's actual exit code must be one of these for the sample
+# to count. On an unaccepted exit code this prints nothing and returns
+# non-zero — the caller must check `timed`'s own exit status, not just
+# consume its stdout, or a masked failure silently becomes a "0.000000"
+# sample the way the old `timed()` always did via `awk`'s unconditional
+# success.
 timed() {
-  local t0 t1
+  local accepted="$1"; shift
+  [[ "$1" == "--" ]] || { echo "timed: expected -- before command" >&2; return 2; }
+  shift
+  local t0 t1 rc
   t0=$(date +%s.%N)
   "$@" >/dev/null 2>&1
+  rc=$?
   t1=$(date +%s.%N)
+  local ok=0 code
+  IFS=, read -r -a accepted_arr <<<"$accepted"
+  for code in "${accepted_arr[@]}"; do
+    [[ "$rc" -eq "$code" ]] && ok=1 && break
+  done
+  if [[ "$ok" -ne 1 ]]; then
+    echo "timed: command exited $rc (accepted: $accepted): $*" >&2
+    return 1
+  fi
   awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }'
 }
 
@@ -160,7 +307,9 @@ span_init_in() {
       && git config --local user.name "bench" )
 }
 
-# Pre-populate (M-1) spans (untimed setup) so reader ops have something to scan.
+# Pre-populate (M-1) spans (untimed setup) so reader ops have something to
+# scan. Persistence is `.span/<name>` files staged and committed with plain
+# git — there is no `git-span commit` subcommand.
 seed_spans() {
   local workdir="$1" count="$2" anchors_per="$3"
   local i
@@ -171,18 +320,29 @@ seed_spans() {
     ( cd "$workdir" \
         && git-span add "$name" "${anchors[@]}" >/dev/null 2>&1 \
         && git-span why "$name" -m "Seed span $i for benchmark" >/dev/null 2>&1 \
-        && git-span commit "$name" >/dev/null 2>&1 ) || true
+        && git add .span >/dev/null 2>&1 \
+        && git commit --quiet -m "bench: seed span $name" >/dev/null 2>&1 ) || true
   done
+}
+
+# Discard an uncommitted `.span/<name>` file (the analog of the removed
+# `git-span restore` subcommand): if the span is already committed, `git
+# checkout` restores the committed version; if it was never committed,
+# `rm -f` removes the uncommitted file entirely.
+span_discard() {
+  local workdir="$1" name="$2"
+  ( cd "$workdir" \
+      && { git checkout --quiet -- ".span/${name}" 2>/dev/null || rm -f ".span/${name}"; } )
 }
 
 # ----------------------------- Main sweep -------------------------------------
 
 CSV_TMP="$(mktemp)"
-echo "repo_ref,repo_sha,span_count,anchors_per_span,op,n,mean_s,median_s,p95_s,p99_s,min_s,max_s" >"$CSV_TMP"
+echo "repo_ref,repo_sha,span_count,anchors_per_span,cache_mode,op,n,mean_s,median_s,p95_s,p99_s,min_s,max_s" >"$CSV_TMP"
 
 # Markdown header
-printf "| ref | spans | anchors | op | n | mean | median | p95 | p99 | min | max |\n"
-printf "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
+printf "| ref | spans | anchors | mode | op | n | mean | median | p95 | p99 | min | max |\n"
+printf "|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|\n"
 
 for ref in "${REFS[@]}"; do
   sha="${REF_SHA[$ref]:-}"
@@ -199,12 +359,12 @@ for ref in "${REFS[@]}"; do
 
   for M in "${SPAN_COUNTS[@]}"; do
     for A in "${ANCHORS_PER_SPAN[@]}"; do
-      # Fresh span state for each (M, A) combo.
-      ( cd "$WORKDIR" && rm -rf .git/span .git/refs/span .git/packed-refs.lock 2>/dev/null || true )
-      ( cd "$WORKDIR" && git for-each-ref --format='%(refname)' refs/span \
-          | xargs -r -n1 git update-ref -d 2>/dev/null || true )
+      # Fresh span state for each (M, A) combo — current `.span/` file
+      # lifecycle, not the obsolete `.git/span`/`refs/span` layout.
+      ( cd "$WORKDIR" && rm -rf .span && git checkout --quiet HEAD -- .span 2>/dev/null || true )
+      ( cd "$WORKDIR" && rm -rf .span )
 
-      echo "    ref=$ref M=$M A=$A — seeding $((M > 0 ? M : 0)) spans" >&2
+      echo "    ref=$ref M=$M A=$A mode=$CACHE_MODE — seeding $((M > 0 ? M : 0)) spans" >&2
       if [[ "$M" -gt 0 ]]; then
         seed_spans "$WORKDIR" "$M" "$A"
         seeded=$(cd "$WORKDIR" && git-span list --porcelain 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
@@ -221,44 +381,74 @@ for ref in "${REFS[@]}"; do
       # Pick an existing seeded span name for readers (`show`).
       reader_name="seed-0"
 
+      apply_cache_mode_state "$WORKDIR"
       for op in "${OPS[@]}"; do
         samples=()
         for (( it = 0; it < ITERATIONS; it++ )); do
           name="bench-${M}-${A}-${it}"
+          t=""
           case "$op" in
             add)
-              ( cd "$WORKDIR" && git-span restore "$name" >/dev/null 2>&1 || true )
-              t=$(cd "$WORKDIR" && timed git-span add "$name" "${bench_anchors[@]}")
+              span_discard "$WORKDIR" "$name"
+              t=$(cd "$WORKDIR" && timed 0 -- git-span add "$name" "${bench_anchors[@]}") || continue
               ;;
             why)
               ( cd "$WORKDIR" && git-span add "$name" "${bench_anchors[@]}" >/dev/null 2>&1 || true )
-              t=$(cd "$WORKDIR" && timed git-span why "$name" -m "bench why for $name")
-              ;;
-            commit)
-              ( cd "$WORKDIR" \
-                  && git-span add "$name" "${bench_anchors[@]}" >/dev/null 2>&1 \
-                  && git-span why "$name" -m "bench why" >/dev/null 2>&1 ) || true
-              t=$(cd "$WORKDIR" && timed git-span commit "$name")
+              t=$(cd "$WORKDIR" && timed 0 -- git-span why "$name" -m "bench why for $name") || continue
               ;;
             show)
-              t=$(cd "$WORKDIR" && timed git-span show "$reader_name")
+              t=$(cd "$WORKDIR" && timed 0 -- git-span show "$reader_name") || continue
               ;;
             list)
-              t=$(cd "$WORKDIR" && timed git-span list)
+              t=$(cd "$WORKDIR" && timed 0 -- git-span list) || continue
               ;;
             stale)
-              t=$(cd "$WORKDIR" && timed git-span stale --no-exit-code)
+              if [[ "$CACHE_MODE" == "exact-cold" ]]; then
+                clear_all_cache_tiers "$WORKDIR"
+              fi
+              if [[ "$CACHE_MODE" == "concurrent-miss" ]]; then
+                clear_all_cache_tiers "$WORKDIR"
+                # N processes race `stale` against the same missing key; the
+                # sample is the WALL time of the slowest racer (what a caller
+                # of a stampede actually waits for).
+                local_pids=()
+                t0=$(date +%s.%N)
+                for (( p = 0; p < CONCURRENT_MISS_PROCS; p++ )); do
+                  ( cd "$WORKDIR" && git-span stale --no-exit-code >/dev/null 2>&1 ) &
+                  local_pids+=("$!")
+                done
+                rc=0
+                for pid in "${local_pids[@]}"; do
+                  wait "$pid" || rc=1
+                done
+                t1=$(date +%s.%N)
+                if [[ "$rc" -ne 0 ]]; then
+                  echo "timed: a concurrent-miss racer exited non-zero" >&2
+                  continue
+                fi
+                t=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }')
+              else
+                # `stale --no-exit-code` always exits 0 by design; `stale`
+                # itself may legitimately exit 0 or 1 (drift found) — this
+                # harness uses --no-exit-code so 0 is the only accepted code.
+                t=$(cd "$WORKDIR" && timed 0 -- git-span stale --no-exit-code) || continue
+              fi
               ;;
           esac
           samples+=("$t")
         done
 
+        if [[ ${#samples[@]} -eq 0 ]]; then
+          echo "WARNING: no successful samples for ref=$ref M=$M A=$A mode=$CACHE_MODE op=$op" >&2
+          continue
+        fi
+
         read -r n mean median p95 p99 min max < <(stats "${samples[@]}")
-        printf "%s,%s,%d,%d,%s,%d,%s,%s,%s,%s,%s,%s\n" \
-          "$ref" "$sha" "$M" "$A" "$op" "$n" "$mean" "$median" "$p95" "$p99" "$min" "$max" \
+        printf "%s,%s,%d,%d,%s,%s,%d,%s,%s,%s,%s,%s,%s\n" \
+          "$ref" "$sha" "$M" "$A" "$CACHE_MODE" "$op" "$n" "$mean" "$median" "$p95" "$p99" "$min" "$max" \
           >>"$CSV_TMP"
-        printf "| %s | %d | %d | %s | %d | %.4f | %.4f | %.4f | %.4f | %.4f | %.4f |\n" \
-          "$ref" "$M" "$A" "$op" "$n" "$mean" "$median" "$p95" "$p99" "$min" "$max"
+        printf "| %s | %d | %d | %s | %s | %d | %.4f | %.4f | %.4f | %.4f | %.4f | %.4f |\n" \
+          "$ref" "$M" "$A" "$CACHE_MODE" "$op" "$n" "$mean" "$median" "$p95" "$p99" "$min" "$max"
       done
     done
   done

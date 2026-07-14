@@ -1,7 +1,12 @@
 //! Phase 3 step 8: warm-run SLA benchmark for `git span stale`.
 //!
 //! Two scenarios:
-//!   cold — delete `<git_dir>/span/cache/` before each iteration
+//!   cold — clear EVERY persistent cache tier before each iteration: both
+//!          the filesystem cache (`<git_dir>/span/cache/`, gated by
+//!          `GIT_SPAN_CACHE`) and the SQLite cache
+//!          (`<git_dir>/span/stale-cache.db[-wal|-shm]`, gated by
+//!          `GIT_SPAN_CACHE_V2`). Deleting only one tier leaves the other
+//!          warm and the "cold" measurement is not actually cold.
 //!   warm — measure subsequent runs after a priming cold run
 //!
 //! The warm mean must be `< 40 ms` before the SLA appears in user-facing copy.
@@ -123,16 +128,34 @@ fn build_fixture() -> Fixture {
     }
 }
 
-/// Path to the SQLite cache directory inside a repo's `.git`.
-fn cache_dir(repo_path: &std::path::Path) -> PathBuf {
+/// Path to the filesystem cache directory (`resolver/cache`, gated by
+/// `GIT_SPAN_CACHE`) inside a repo's `.git`.
+fn fs_cache_dir(repo_path: &std::path::Path) -> PathBuf {
     repo_path.join(".git").join("span").join("cache")
 }
 
-/// Delete and recreate the cache directory to simulate a cold start.
+/// Path to the SQLite cache database (`resolver/cache_v2`, gated by
+/// `GIT_SPAN_CACHE_V2`) inside a repo's `.git`. Sibling to, NOT inside,
+/// `fs_cache_dir()` — see `git::cache_dir` and `cache_v2::schema::db_path`.
+fn sqlite_cache_db(repo_path: &std::path::Path) -> PathBuf {
+    repo_path.join(".git").join("span").join("stale-cache.db")
+}
+
+/// Clear EVERY persistent cache tier to simulate a cold start: the
+/// filesystem cache directory and the SQLite database (plus its WAL/SHM
+/// sidecar files). Clearing only one tier while the other stays warm would
+/// silently measure a mixed cold/warm state, not a true cold start.
 fn clear_cache(repo_path: &std::path::Path) {
-    let dir = cache_dir(repo_path);
+    let dir = fs_cache_dir(repo_path);
     if dir.exists() {
-        fs::remove_dir_all(&dir).expect("remove cache");
+        fs::remove_dir_all(&dir).expect("remove filesystem cache");
+    }
+    let db = sqlite_cache_db(repo_path);
+    for suffix in ["", "-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", db.display()));
+        if path.exists() {
+            fs::remove_file(&path).unwrap_or_else(|e| panic!("remove {}: {e}", path.display()));
+        }
     }
 }
 
@@ -217,10 +240,17 @@ fn bench_warm(c: &mut Criterion) {
     g.finish();
 }
 
-/// Warm run with the SQLite cache disabled (`GIT_SPAN_CACHE=0`).
+/// Warm run with the filesystem cache disabled (`GIT_SPAN_CACHE=0`).
+///
+/// `GIT_SPAN_CACHE=0` disables ONLY the `resolver/cache` filesystem tier —
+/// it does NOT disable SQLite (`resolver/cache_v2`, gated separately by
+/// `GIT_SPAN_CACHE_V2`). This benchmark therefore still runs with the SQLite
+/// tier live; it documents the filesystem cache's own contribution, not a
+/// fully cache-disabled baseline.
 ///
 /// Documents the relative gap between cached and uncached warm paths.
-/// The warm-no-cache mean minus the warm mean is the cache's contribution.
+/// The warm-no-cache mean minus the warm mean is the filesystem cache's
+/// contribution.
 fn bench_warm_no_cache(c: &mut Criterion) {
     let f = build_fixture();
     // Prime filesystem and gix object store with a cold run (cache disabled).

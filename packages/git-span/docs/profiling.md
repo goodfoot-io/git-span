@@ -1,11 +1,12 @@
 # Profiling `git span stale`
 
-Two complementary tools cover the common perf questions:
+Three complementary tools cover the common perf questions:
 
 1. **`perf record` + `inferno-flamegraph`** — self-time profile. "Which functions are hot?"
 2. **`git span stale --perf-trace <path>`** — per-anchor wall-clock distribution. "Is the runtime uniform across many anchors, or concentrated in a few?"
+3. **`--perf` / `GIT_SPAN_PERF=1` cache-path counters** — "which cache path did this run take, and why?" See [Cache-path counters](#cache-path-counters-perf--git_span_perf1) below.
 
-Both are pre-installed in the devcontainer image
+Both `perf` and `inferno` are pre-installed in the devcontainer image
 ([`./.devcontainer/Dockerfile`](./.devcontainer/Dockerfile)) — no `apt install` or
 `cargo install` step is needed on a fresh rebuild.
 
@@ -90,3 +91,26 @@ awk -F, 'NR>1 && $5 > 50000 {print $5"\t"$1"\t"$2}' /tmp/trace.csv | sort -rn
 ## Trace overhead
 
 When `--perf-trace` is absent, the resolver does not capture per-anchor traces; the session's trace buffer stays `None` and the per-anchor loop pays a single `Option::is_some()` check per iteration. When the flag is set, each anchor adds one `Instant::now()` (already captured for the existing `per_anchor_us` summary), a snapshot of the fast-path counter, and a `Vec::push` of ~80 bytes — well under 1 ms total on a 2,600-anchor workspace.
+
+## Cache-path counters (`--perf` / `GIT_SPAN_PERF=1`)
+
+**`--perf-trace` intentionally forces full resolution** for its per-anchor wall-clock profiling — bypassing every cache tier is what lets it attribute time to `resolve_anchor_inner` uniformly. It stays that way; it answers "where does resolver time go on a full scan," not "which cache path did this run take."
+
+The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`src/perf.rs`](../src/perf.rs)):
+
+```bash
+GIT_SPAN_PERF=1 git span stale --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
+```
+
+| Line | Meaning |
+|------|---------|
+| `git-span perf: cache-path.hit-class: exact` | The committed cache key resolved and the working tree was clean — `resolver/cache_v2`'s warm-clean path. |
+| `git-span perf: cache-path.hit-class: dirty` | The committed cache key resolved but the working tree carried dirty paths — `resolver/cache_v2`'s warm-dirty (affected-set) path. |
+| `git-span perf: cache-path.hit-class: miss` | `resolver/cache_v2` did not serve this run (ineligible options, cache-open failure, or a genuine cold/invalidated key); the uncached resolver ran instead. |
+| `git-span perf: cache-path.bypass-reason: <reason>` | Only emitted alongside `hit-class: miss`; the same text as `cache_v2.fallback-reason`, naming why the cache did not serve this run (e.g. `disabled-by-env`, `dirty-set-requires-full-scan`, `open-cache: <err>`). |
+
+There is no `incremental` hit class yet — the ancestor-reuse path these counters will report on is built in a later card main-157 phase (Phase 4). There is no build-lock-wait counter yet either, because the current code has no lock-shard/build-lock concept (Phase 2 introduces it); once that concept exists, its wait time is added here rather than replacing this section's mechanism.
+
+These three lines are emitted via the same [`crate::perf::note`](../src/perf.rs) call every other free-form `--perf` diagnostic uses — a plain, gated `eprintln!` — so enabling them costs nothing when `--perf`/`GIT_SPAN_PERF=1` is off, and adding them required no new plumbing.
+
+The pre-existing L1/L2 counters (`cache.l1-hits`, `cache.l1-misses`, `cache.l2-hits`, `cache.l2-misses`, and friends — see [`src/perf.rs`](../src/perf.rs)) cover the SEPARATE `resolver/cache` filesystem tier (`GIT_SPAN_CACHE`) at a finer grain; the `cache-path.*` lines above are the `resolver/cache_v2` SQLite tier's (`GIT_SPAN_CACHE_V2`) top-level routing decision. Both tiers, and both counter families, are replaced by the new store's single hit-class/bypass-reason emission in a later phase.

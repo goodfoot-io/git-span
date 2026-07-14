@@ -1189,6 +1189,16 @@ pub fn stale_spans(
         CacheAttempt::Fallback(reason) => {
             crate::perf::counter("cache_v2.fallback", 1);
             crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
+            // Card main-157 Phase 0: normalized cache-path hit-class and
+            // bypass-reason labels — see the `exact`/`dirty` notes in
+            // `resolver/cache_v2/mod.rs` for why these are additive and do
+            // not force full resolution. "miss" here covers every fallback
+            // outcome (ineligible run, cache-open failure, or a genuine
+            // cold/invalidated key); `bypass-reason` carries the same text
+            // as `cache_v2.fallback-reason` under the future single-store
+            // label this card's later phases converge on.
+            crate::perf::note("cache-path.hit-class: miss");
+            crate::perf::note(&format!("cache-path.bypass-reason: {reason}"));
         }
     }
     let (spans, _, _) = stale_spans_inner(repo, span_root, options, false, false)?;
@@ -1223,6 +1233,16 @@ pub(crate) fn stale_spans_retaining_source_layers(
         CacheAttempt::Fallback(reason) => {
             crate::perf::counter("cache_v2.fallback", 1);
             crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
+            // Card main-157 Phase 0: normalized cache-path hit-class and
+            // bypass-reason labels — see the `exact`/`dirty` notes in
+            // `resolver/cache_v2/mod.rs` for why these are additive and do
+            // not force full resolution. "miss" here covers every fallback
+            // outcome (ineligible run, cache-open failure, or a genuine
+            // cold/invalidated key); `bypass-reason` carries the same text
+            // as `cache_v2.fallback-reason` under the future single-store
+            // label this card's later phases converge on.
+            crate::perf::note("cache-path.hit-class: miss");
+            crate::perf::note(&format!("cache-path.bypass-reason: {reason}"));
         }
     }
     let (spans, _, source_layers) = stale_spans_inner(repo, span_root, options, false, true)?;

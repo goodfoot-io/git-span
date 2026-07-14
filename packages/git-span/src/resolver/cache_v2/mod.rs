@@ -263,6 +263,13 @@ pub(crate) fn stale_spans_cached(
     if clean {
         crate::perf::counter("cache_v2.warm-clean", 1);
         crate::perf::counter("cache_v2.fallback", 0);
+        // Card main-157 Phase 0: a normalized cache-path hit-class label,
+        // distinct from `--perf-trace` (which forces full resolution for
+        // per-anchor profiling and is unaffected by this). `exact` here
+        // means "the committed key resolved and the tree is clean" — the
+        // closest existing concept to the future new-store's `exact` hit
+        // class. `incremental` has no equivalent yet (Phase 4 builds it).
+        crate::perf::note("cache-path.hit-class: exact");
         for w in index_warnings {
             eprintln!("{w}");
         }
@@ -341,6 +348,11 @@ pub(crate) fn stale_spans_cached(
 
     // ── Warm dirty path ───────────────────────────────────────────────
     crate::perf::counter("cache_v2.warm-dirty", 1);
+    // Card main-157 Phase 0: normalized cache-path hit-class label — see the
+    // `exact` note in the warm-clean branch above for why this is additive
+    // and does not force full resolution (it is a `perf::note` call, a
+    // no-op unless `--perf`/`GIT_SPAN_PERF=1` is already set).
+    crate::perf::note("cache-path.hit-class: dirty");
 
     // Anchors affected by the dirty source paths or dirty span files.
     let affected_spans = match spans_affected_by(repo, &dirty_paths, &span_root) {

@@ -1,6 +1,6 @@
 ---
 title: Running the git-span benchmarks
-summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-stale SLA gate, the synthetic size-sweep and its deterministic corpus generator, the GIT_SPAN_CACHE_V2 cache-off switch, and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
+summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-stale SLA gate, the synthetic size-sweep and its deterministic corpus generator, the true cache-off oracle (GIT_SPAN_CACHE plus GIT_SPAN_CACHE_V2 both disabled), and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
 aliases: [git-span benchmarks, bench:check, yarn bench, size sweep, perf-baseline, real_corpus]
 ---
 
@@ -32,15 +32,22 @@ Per-operation cells: `list`, `tree`, `show`, `history`, `stale-cold`, `stale-war
 
 ### The byte-identical correctness oracle
 
-Before timing each cell, the oracle captures the command's stdout twice against the same clone — once with the cache disabled (`GIT_SPAN_CACHE_V2=0`, the genuine ground truth) and once with the cache live — and asserts the two byte streams are identical, across **all three `stale` formats** (human, porcelain, json). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
+Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **every currently-existing persistent cache tier disabled** (`GIT_SPAN_CACHE=0` AND `GIT_SPAN_CACHE_V2=0`, the genuine ground truth) and once with the cache live — and asserts all three are identical, across **all five `stale` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
+
+Setting only `GIT_SPAN_CACHE_V2=0` is **not** a valid oracle by itself: it disables the SQLite `resolver/cache_v2` tier but leaves the filesystem `resolver/cache` tier (gated by `GIT_SPAN_CACHE`) live, so a "cache-disabled" run can still be served partly from cache. This was a real gap — see `notes/investigation-question-log.md` Step 2, "Does the documented cache-off oracle provide ground truth?" (card main-157) — fixed by disabling both switches together everywhere this guide's oracle is described.
 
 ### Per-op budgets and the no-regression rule
 
 Each operation has its own hard latency ceiling — never a single composite score, so a win on one command cannot mask a regression on another. Cells accumulate raw samples; a final report computes a robust **median** per op (warmup discarded), prints the full scoreboard, and evaluates every ceiling and the baseline-relative rule in one end-of-run pass (so one noisy op never aborts the rest). The no-regression rule — `median > baseline_median * 1.35 + noise_floor` — reads its baselines from [perf-baseline.json](../../packages/git-span/benches/perf-baseline.json); when that file is absent (a fresh checkout) the regression check is skipped and only ceilings + the oracle run.
 
-### The cache-off switch
+### The cache-off switches
 
-`GIT_SPAN_CACHE_V2=0` disables the cross-invocation SQLite stale cache ([cache_v2](../../packages/git-span/src/resolver/cache_v2/mod.rs)) — distinct from `GIT_SPAN_CACHE=0`, which only disables the within-run L1/L2 content cache. Only the exact string `"0"` disables it; anything else leaves the cache on (fail-closed). It is the mechanism the oracle relies on to produce a ground-truth run.
+Two switches exist today, and BOTH must be set to produce a genuine ground-truth run:
+
+- `GIT_SPAN_CACHE_V2=0` disables the cross-invocation SQLite stale cache ([cache_v2](../../packages/git-span/src/resolver/cache_v2/mod.rs)).
+- `GIT_SPAN_CACHE=0` disables the filesystem content cache ([cache](../../packages/git-span/src/resolver/cache/mod.rs)) — this is a SEPARATE persistent tier, not merely a "within-run" cache; it persists on disk across invocations at `<git_dir>/span/cache`.
+
+Only the exact string `"0"` disables either switch; anything else leaves that tier on (fail-closed). The oracle sets both together — setting only `GIT_SPAN_CACHE_V2=0` leaves the filesystem tier live and is **not** a valid cache-off comparison (see the correctness-oracle section above). Card main-157 replaces both switches with a single new-store disable switch; when that lands, update this section to name the one switch rather than two.
 
 ### The in-process warm SLA
 
