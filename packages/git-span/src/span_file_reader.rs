@@ -7,7 +7,7 @@
 //! fails to parse, the error is surfaced (fail closed) — no fallback to
 //! lower layers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::span_file::SpanFile;
@@ -71,14 +71,24 @@ impl<'repo> SpanFileReader<'repo> {
     pub fn read_head(&self, name: &str) -> Result<Option<SpanFile>> {
         let span_path = self.span_path(name);
         match crate::git::tree_entry_at(self.repo, "HEAD", Path::new(&span_path))? {
-            Some((_mode, oid)) => {
-                let text = crate::git::read_git_text(self.repo, &oid.to_string())?;
-                crate::perf::record_list_layer_read();
-                crate::perf::record_list_bytes_parsed(text.len() as u64);
-                SpanFile::parse(&text).map(Some).map_err(Into::into)
-            }
+            Some((_mode, oid)) => self.read_head_blob(oid).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Read and parse a committed span object whose id is already resolved.
+    ///
+    /// This is the O(1) counterpart to [`Self::read_head`]: given an object
+    /// id already obtained from a single HEAD `.span`-subtree enumeration
+    /// (see [`Self::committed_span_entries`]), it skips the per-name
+    /// `tree_entry_at` HEAD re-walk that `read_head` performs internally.
+    /// Byte-for-byte identical read/parse to `read_head`'s inner branch, so a
+    /// caller with a resolved id gets exactly the same `SpanFile`.
+    pub fn read_head_blob(&self, oid: gix::ObjectId) -> Result<SpanFile> {
+        let text = crate::git::read_git_text(self.repo, &oid.to_string())?;
+        crate::perf::record_list_layer_read();
+        crate::perf::record_list_bytes_parsed(text.len() as u64);
+        SpanFile::parse(&text).map_err(Into::into)
     }
 
     /// Read the span file from the index (staged) layer.
@@ -156,6 +166,34 @@ impl<'repo> SpanFileReader<'repo> {
         let mut names: BTreeSet<String> = BTreeSet::new();
         self.collect_head_names(&mut names)?;
         Ok(names.into_iter().collect())
+    }
+
+    /// Enumerate every committed span leaf under the span root at `HEAD` in a
+    /// single tree walk, mapping span name to its `(mode, object-id)`.
+    ///
+    /// This is the O(N) alternative to calling
+    /// [`crate::git::tree_entry_at`] once per span name — which re-parses
+    /// `HEAD`, re-peels its tree, and re-decodes the entire span subtree on
+    /// every call, making per-span lookups O(N²) across a corpus of N spans.
+    /// One decode of the span subtree here yields every entry; callers then
+    /// look each span up by name (O(log N)) and read its blob directly via
+    /// [`Self::read_head_blob`] with the already-resolved id.
+    ///
+    /// The set of keys is exactly [`Self::committed_span_names`]'s output
+    /// (same HEAD-tree walk, same [`is_span_name_segment`] filtering, same
+    /// leaf-vs-subtree recursion), and each value is exactly what
+    /// `tree_entry_at(repo, "HEAD", "<span_root>/<name>")` would return, so
+    /// this changes performance only, never which spans or identities are seen.
+    pub fn committed_span_entries(
+        &self,
+    ) -> Result<BTreeMap<String, (gix::objs::tree::EntryMode, gix::ObjectId)>> {
+        let mut entries: BTreeMap<String, (gix::objs::tree::EntryMode, gix::ObjectId)> =
+            BTreeMap::new();
+        let Some(span_tree) = self.head_span_tree()? else {
+            return Ok(entries);
+        };
+        collect_tree_leaf_entries(self.repo, &span_tree, "", &mut entries)?;
+        Ok(entries)
     }
 
     /// List span names present on the worktree filesystem under the span
@@ -251,35 +289,45 @@ impl<'repo> SpanFileReader<'repo> {
 
     /// Collect span names from the HEAD tree under the span root.
     fn collect_head_names(&self, names: &mut BTreeSet<String>) -> Result<()> {
+        let Some(span_tree) = self.head_span_tree()? else {
+            return Ok(());
+        };
+        collect_tree_entry_names(self.repo, &span_tree, "", names)
+    }
+
+    /// Resolve the span-root subtree object at `HEAD`, or `None` when `HEAD`
+    /// is unresolvable, the span root is absent, or it is not a tree. The
+    /// single choke point both name enumeration ([`Self::collect_head_names`])
+    /// and entry enumeration ([`Self::committed_span_entries`]) resolve
+    /// through, so they always agree on which subtree they walk.
+    fn head_span_tree(&self) -> Result<Option<gix::Tree<'repo>>> {
         let head_id = match self.repo.head_id() {
             Ok(id) => id.detach(),
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
         let commit = match self.repo.find_commit(head_id) {
             Ok(c) => c,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
         let tree = match commit.tree() {
             Ok(t) => t,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
         let entry = match tree.lookup_entry_by_path(Path::new(&self.span_root)) {
             Ok(Some(e)) => e,
-            _ => return Ok(()),
+            _ => return Ok(None),
         };
         if !entry.mode().is_tree() {
-            return Ok(());
+            return Ok(None);
         }
-        let oid = entry.object_id();
-        let obj = match self.repo.find_object(oid) {
+        let obj = match self.repo.find_object(entry.object_id()) {
             Ok(o) => o,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
-        let span_tree = match obj.peel_to_tree() {
-            Ok(t) => t,
-            Err(_) => return Ok(()),
-        };
-        collect_tree_entry_names(self.repo, &span_tree, "", names)
+        match obj.peel_to_tree() {
+            Ok(t) => Ok(Some(t)),
+            Err(_) => Ok(None),
+        }
     }
 
     /// Collect span names from the index, filtering by span root prefix.
@@ -388,6 +436,44 @@ fn collect_tree_entry_names(
             collect_tree_entry_names(repo, &subtree, &rel, names)?;
         } else {
             names.insert(rel);
+        }
+    }
+    Ok(())
+}
+
+/// Recursively collect leaf `(name -> (mode, object-id))` entries from a tree
+/// object. Structurally identical to [`collect_tree_entry_names`] — same
+/// [`is_span_name_segment`] filtering, same recurse-into-readable-subtree /
+/// treat-everything-else-as-a-leaf rule — so its key set is exactly that
+/// function's, but it additionally carries each leaf's mode and object id so a
+/// caller need not re-resolve them via `tree_entry_at`.
+fn collect_tree_leaf_entries(
+    repo: &gix::Repository,
+    tree: &gix::Tree,
+    prefix: &str,
+    entries: &mut BTreeMap<String, (gix::objs::tree::EntryMode, gix::ObjectId)>,
+) -> Result<()> {
+    for entry in tree.iter() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = entry.filename().to_string();
+        if !is_span_name_segment(&name) {
+            continue;
+        }
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.mode().is_tree()
+            && let Ok(obj) = repo.find_object(entry.object_id())
+            && let Ok(subtree) = obj.peel_to_tree()
+        {
+            collect_tree_leaf_entries(repo, &subtree, &rel, entries)?;
+        } else {
+            entries.insert(rel, (entry.mode(), entry.object_id()));
         }
     }
     Ok(())

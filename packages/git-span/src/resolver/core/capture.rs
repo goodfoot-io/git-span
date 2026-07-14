@@ -225,22 +225,24 @@ struct CommittedSpans {
 
 fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSpans> {
     let reader = SpanFileReader::new(repo, span_root.to_string());
-    let names = reader.committed_span_names()?;
-    let mut blobs = Vec::with_capacity(names.len());
-    let mut spans = Vec::with_capacity(names.len());
-    for name in &names {
-        let span_path = format!("{span_root}/{name}");
-        if let Some((mode, oid)) = crate::git::tree_entry_at(repo, "HEAD", Path::new(&span_path))?
-            && mode.is_blob()
-        {
+    // One HEAD `.span`-subtree decode yields every committed span's mode and
+    // object id. Previously this loop called `tree_entry_at` once per span for
+    // the blob identity AND `read_head` (a second `tree_entry_at`) once per
+    // span for the parse — each re-peeling HEAD and re-decoding the whole span
+    // subtree, i.e. O(N²) over N spans. Now each span is an O(log N) map lookup
+    // plus a direct blob read via `read_head_blob` with the resolved id.
+    let entries = reader.committed_span_entries()?;
+    let mut blobs = Vec::with_capacity(entries.len());
+    let mut spans = Vec::with_capacity(entries.len());
+    for (name, (mode, oid)) in &entries {
+        if mode.is_blob() {
             blobs.push(SpanBlobIdentity {
-                path: span_path,
+                path: format!("{span_root}/{name}"),
                 blob: oid.to_string(),
             });
         }
-        if let Some(file) = reader.read_head(name)? {
-            spans.push(crate::types::span_from_file(name, &file));
-        }
+        let file = reader.read_head_blob(*oid)?;
+        spans.push(crate::types::span_from_file(name, &file));
     }
     Ok(CommittedSpans { blobs, spans })
 }
