@@ -177,17 +177,24 @@ timed() {
   awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }'
 }
 
-# Delete every persistent cache tier: the filesystem tier
-# (`<git_dir>/span/cache`) and the SQLite tier (`<git_dir>/span/stale-cache.db`
-# plus WAL/SHM sidecars). Deleting only one tier leaves a "cold" state that is
-# not actually cold — see `notes/investigation-question-log.md` Step 2 (card
-# main-157).
+# Delete every persistent cache tier: the legacy filesystem tier
+# (`<git_dir>/span/cache`), the legacy SQLite tier
+# (`<git_dir>/span/stale-cache.db` plus WAL/SHM sidecars), and the Phase 2/3
+# new-store SQLite tier (`<git_dir>/span/store.db` plus WAL/SHM sidecars,
+# `GIT_SPAN_CACHE_STORE_V3` — card main-157 Phase 3). Deleting only some tiers
+# leaves a "cold" state that is not actually cold — see
+# `notes/investigation-question-log.md` Step 2 (card main-157). Phase 3
+# sub-scope 3D measurement note: `store.db` was missing here, which would have
+# left the new-store path silently warm during every nominal "cold" sample.
 clear_all_cache_tiers() {
   local repo="$1"
   rm -rf "$repo/.git/span/cache"
   rm -f "$repo/.git/span/stale-cache.db" \
         "$repo/.git/span/stale-cache.db-wal" \
-        "$repo/.git/span/stale-cache.db-shm"
+        "$repo/.git/span/stale-cache.db-shm" \
+        "$repo/.git/span/store.db" \
+        "$repo/.git/span/store.db-wal" \
+        "$repo/.git/span/store.db-shm"
 }
 
 create_repo() {

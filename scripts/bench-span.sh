@@ -84,16 +84,23 @@ if [[ "$CACHE_MODE" == "all-off" ]]; then
 fi
 
 # Delete every persistent cache tier this worktree could have populated:
-# the filesystem tier (`<git_dir>/span/cache`) and the SQLite tier
-# (`<git_dir>/span/stale-cache.db` plus WAL/SHM sidecars). Deleting only one
-# tier leaves a "cold" state that is not actually cold — see
-# `notes/investigation-question-log.md` Step 2 (card main-157).
+# the legacy filesystem tier (`<git_dir>/span/cache`), the legacy SQLite tier
+# (`<git_dir>/span/stale-cache.db` plus WAL/SHM sidecars), and the Phase 2/3
+# new-store SQLite tier (`<git_dir>/span/store.db` plus WAL/SHM sidecars,
+# `GIT_SPAN_CACHE_STORE_V3` — card main-157 Phase 3). Deleting only some tiers
+# leaves a "cold" state that is not actually cold — see
+# `notes/investigation-question-log.md` Step 2 (card main-157). Phase 3
+# sub-scope 3D measurement note: `store.db` was missing here, which would have
+# left the new-store path silently warm during every nominal "cold" sample.
 clear_all_cache_tiers() {
   local workdir="$1"
   rm -rf "$workdir/.git/span/cache"
   rm -f "$workdir/.git/span/stale-cache.db" \
         "$workdir/.git/span/stale-cache.db-wal" \
-        "$workdir/.git/span/stale-cache.db-shm"
+        "$workdir/.git/span/stale-cache.db-shm" \
+        "$workdir/.git/span/store.db" \
+        "$workdir/.git/span/store.db-wal" \
+        "$workdir/.git/span/store.db-shm"
 }
 
 # Bring `$workdir` into the state `$CACHE_MODE` names, using the already-seeded
