@@ -114,6 +114,13 @@ function porcelainLine(name: string, path: string, start: number, end: number): 
   return `${name}\t${path}\t${start}-${end}`;
 }
 
+// `git span stale --format porcelain` emits a different shape than
+// `list --porcelain`: a `# porcelain v2` header followed by
+// `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` rows.
+function stalePorcelainLine(name: string, path: string, start: number, end: number): string {
+  return `# porcelain v2\nChanged\tW\t${name}\t${path}\t${start}\t${end}`;
+}
+
 // ---------------------------------------------------------------------------
 // Result helpers — hook output wraps fields under .stdout
 // ---------------------------------------------------------------------------
@@ -1059,7 +1066,7 @@ describe('Stale span history hint', () => {
     setResponse(spanName, 'billing/checkout span output');
     const { memoFactory } = createMemoryMemoFactory();
     // The stale probe reports this span as drifted (one porcelain row).
-    const handler = makeHandler(executor, memoFactory, undefined, () => row);
+    const handler = makeHandler(executor, memoFactory, undefined, () => stalePorcelainLine(spanName, relPath, 5, 20));
 
     const input = baseInput({
       cwd: repo.root,
@@ -1109,7 +1116,7 @@ describe('Stale span history hint', () => {
     setResponse(`${cleanSpan} ${staleSpan}`, 'both spans output');
     const { memoFactory } = createMemoryMemoFactory();
     // Only staleSpan drifts.
-    const handler = makeHandler(executor, memoFactory, undefined, () => porcelainLine(staleSpan, relPath, 5, 20));
+    const handler = makeHandler(executor, memoFactory, undefined, () => stalePorcelainLine(staleSpan, relPath, 5, 20));
 
     const input = baseInput({
       cwd: repo.root,

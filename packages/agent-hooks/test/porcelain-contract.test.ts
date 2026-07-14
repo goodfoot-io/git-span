@@ -1,11 +1,13 @@
 /**
- * Porcelain contract test: verifies that the git span porcelain output format
- * is parseable by the shared parsePorcelain function.
+ * Porcelain contract test: verifies that the git span porcelain output formats
+ * are parseable by the shared parsePorcelain / parseStalePorcelain functions.
  *
- * These tests exercise the actual `git span stale --porcelain --batch` and
- * `git span list --porcelain --batch` commands against a real temporary git
- * repo with a span, then validate the output through the same parser the
- * dispatcher uses.
+ * These tests exercise the actual `git span stale --format porcelain` and
+ * `git span list --porcelain` commands against a real temporary git repo with
+ * a span, then validate the output through the same parsers the dispatcher
+ * uses. The two commands emit different porcelain shapes: `list --porcelain`
+ * is `<name>\t<path>\t<start>-<end>`, while `stale --format porcelain` is a
+ * `# porcelain v2` header followed by `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` rows.
  *
  * If `git span` is not available on PATH, all tests in this file are skipped
  * with a descriptive message.
@@ -15,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parsePorcelain } from '../src/agent-hooks-common.js';
+import { parsePorcelain, parseStalePorcelain } from '../src/agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
 // Git-span availability check
@@ -102,7 +104,7 @@ suite('Porcelain contract (git span)', () => {
   // Tests
   // ---------------------------------------------------------------------------
 
-  describe('git span list --porcelain --batch', () => {
+  describe('git span list --porcelain', () => {
     it('produces parseable rows for existing spans', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\nline4\nline5\n');
@@ -112,10 +114,9 @@ suite('Porcelain contract (git span)', () => {
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L5');
       gitAddCommit(repoRoot, 'add span');
 
-      // Run list --porcelain --batch with the source path as filter
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
-        input: 'src/app.ts\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      // Run list --porcelain with the source path as filter
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', 'src/app.ts'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
       });
       const rows = parsePorcelain(out);
@@ -145,22 +146,20 @@ suite('Porcelain contract (git span)', () => {
       writeFile(repoRoot, 'src/other.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
-        input: 'src/other.ts\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', 'src/other.ts'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
       });
       const rows = parsePorcelain(out);
       expect(rows).toHaveLength(0);
     });
 
-    it('handles empty stdin gracefully', () => {
+    it('produces no rows when no targets are given and no spans exist', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
-        input: '',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
       });
       const rows = parsePorcelain(out);
@@ -168,7 +167,7 @@ suite('Porcelain contract (git span)', () => {
     });
   });
 
-  describe('git span stale --porcelain --batch', () => {
+  describe('git span stale --format porcelain', () => {
     it('produces parseable rows for stale anchors', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\n');
@@ -181,13 +180,16 @@ suite('Porcelain contract (git span)', () => {
       // Modify the source file so the anchor becomes stale
       writeFile(repoRoot, 'src/app.ts', 'CHANGED\nline2\nline3\n');
 
-      // Run stale --porcelain --batch with the anchor spec on stdin
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
-        input: 'src/app.ts#L1-L2\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
-      const rows = parsePorcelain(out);
+      // Run stale --format porcelain with the source path
+      const out = execFileSync(
+        'git',
+        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8'
+        }
+      );
+      const rows = parseStalePorcelain(out);
 
       // The stale anchor should be reported
       expect(rows.length).toBeGreaterThan(0);
@@ -218,43 +220,48 @@ suite('Porcelain contract (git span)', () => {
       gitAddCommit(repoRoot, 'add span');
 
       // Don't modify the source -- anchors should not be stale
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
-        input: 'src/app.ts#L1-L2\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
-      const rows = parsePorcelain(out);
+      const out = execFileSync(
+        'git',
+        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8'
+        }
+      );
+      const rows = parseStalePorcelain(out);
       expect(rows).toHaveLength(0);
     });
 
-    it('handles empty stdin gracefully', () => {
+    it('produces no rows when no targets are given and no spans are stale', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L1');
       gitAddCommit(repoRoot, 'add span');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
-        input: '',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
       });
-      const rows = parsePorcelain(out);
+      const rows = parseStalePorcelain(out);
       expect(rows).toEqual([]);
     });
 
-    it('produces no rows for nonexistent anchor paths', () => {
+    it('fails closed for a nonexistent path', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L1');
       gitAddCommit(repoRoot, 'add span');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
-        input: 'nonexistent.ts#L1-L5\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
-      const rows = parsePorcelain(out);
-      expect(rows).toHaveLength(0);
+      expect(() =>
+        execFileSync(
+          'git',
+          ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'nonexistent.ts'],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            encoding: 'utf8'
+          }
+        )
+      ).toThrow();
     });
   });
 
@@ -271,22 +278,28 @@ suite('Porcelain contract (git span)', () => {
       // Make the anchored file stale
       writeFile(repoRoot, 'src/app.ts', 'MODIFIED\nb\nc\n');
 
-      // List with the source path
-      const listOut = execFileSync('git', ['-C', repoRoot, 'span', 'list', '--porcelain', '--batch'], {
-        input: 'src/app.ts\nsrc/other.ts\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
+      // List with the source paths
+      const listOut = execFileSync(
+        'git',
+        ['-C', repoRoot, 'span', 'list', '--porcelain', 'src/app.ts', 'src/other.ts'],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8'
+        }
+      );
       const listRows = parsePorcelain(listOut);
       expect(listRows.length).toBeGreaterThan(0);
 
-      // Stale with the anchor spec
-      const staleOut = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--porcelain', '--batch'], {
-        input: 'src/app.ts#L1-L2\n',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        encoding: 'utf8'
-      });
-      const staleRows = parsePorcelain(staleOut);
+      // Stale with the source path
+      const staleOut = execFileSync(
+        'git',
+        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8'
+        }
+      );
+      const staleRows = parseStalePorcelain(staleOut);
       expect(staleRows.length).toBeGreaterThan(0);
 
       // The stale rows should be a subset of list rows (same name+path+range)

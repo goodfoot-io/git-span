@@ -35,6 +35,7 @@ import {
   type LineRange,
   type PorcelainRow,
   parsePorcelain,
+  parseStalePorcelain,
   rangesIntersect,
   relativeToRepo,
   resolveRepoRoot,
@@ -188,7 +189,7 @@ export function createDefaultSpanExecutor(timeoutMs = 10_000): SpanExecutor {
 }
 
 /**
- * Runs `git span stale --porcelain <slugs>` and returns its porcelain stdout —
+ * Runs `git span stale --format porcelain <slugs>` and returns its porcelain stdout —
  * one row per *drifted* anchor among the given spans, empty when all are clean.
  * `git span stale` exits 0 in porcelain mode whether or not drift exists, but we
  * still capture stdout from a thrown error so a drift signal is never lost to a
@@ -199,7 +200,7 @@ export type StaleExecutor = (slugs: string[], cwd: string) => string;
 export function createDefaultStaleExecutor(timeoutMs = 10_000): StaleExecutor {
   return (slugs, cwd) => {
     try {
-      return execFileSync('git', ['span', 'stale', '--porcelain', ...slugs], {
+      return execFileSync('git', ['span', 'stale', '--format', 'porcelain', ...slugs], {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -479,7 +480,7 @@ export function createHandler(
     // plain block rather than dropping it.
     let staleHint = '';
     try {
-      const staleNames = new Set(parsePorcelain(staleExecutor(toSurface, repoRoot)).map((r) => r.name));
+      const staleNames = new Set(parseStalePorcelain(staleExecutor(toSurface, repoRoot)).map((r) => r.name));
       const staleSurfaced = toSurface.filter((n) => staleNames.has(n));
       if (staleSurfaced.length > 0) {
         const lines = staleSurfaced.map((n) => `  git span history ${n}`).join('\n');

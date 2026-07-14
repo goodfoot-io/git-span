@@ -191,6 +191,28 @@ export function parsePorcelain(stdout: string): PorcelainRow[] {
   return rows;
 }
 
+/**
+ * `git span stale --format porcelain` emits a different shape than
+ * `list --porcelain`: a `# porcelain v2` header, `# fuzzy N` comment lines,
+ * and one `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` row per drifted
+ * anchor (whole-file anchors carry `(whole)`/`-` in place of the line columns).
+ */
+export function parseStalePorcelain(stdout: string): PorcelainRow[] {
+  const rows: PorcelainRow[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parts = trimmed.split('\t');
+    if (parts.length < 6) continue;
+    const [, , name, path, startCol, endCol] = parts;
+    const start = startCol === '(whole)' ? 0 : parseInt(startCol, 10);
+    const end = endCol === '-' ? 0 : parseInt(endCol, 10);
+    if (Number.isNaN(start) || Number.isNaN(end)) continue;
+    rows.push({ name, path, start, end });
+  }
+  return rows;
+}
+
 // ---------------------------------------------------------------------------
 // Session ID sanitization
 // ---------------------------------------------------------------------------
