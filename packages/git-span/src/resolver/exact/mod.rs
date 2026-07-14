@@ -76,6 +76,7 @@ use std::sync::Arc;
 
 pub(crate) mod reuse;
 
+use crate::resolver::dirty;
 use crate::resolver::incremental;
 
 #[cfg(test)]
@@ -342,6 +343,20 @@ pub(crate) fn stale_spans_new_store(
     if let Some(attempt) =
         incremental::attempt(repo, span_root, options, &token, &key, &mut store)?
     {
+        return Ok(attempt);
+    }
+
+    // ── Dirty miss: reuse a same-HEAD baseline ──────────────────────────────
+    //
+    // The exact key missed and no committed ancestor was reusable, but the
+    // difference may be a dirty (uncommitted staged/worktree) overlay on a
+    // committed state we DID resolve before. Reuse every span whose relevant
+    // paths are clean now (and the global-widen union is untouched), re-resolving
+    // only the spans a dirty relevant path can affect. A `None` means no
+    // same-HEAD baseline / nothing reusable — fall through to the authoritative
+    // cold path, which resolves the live dirty state correctly (just not
+    // proportionally).
+    if let Some(attempt) = dirty::attempt(repo, span_root, options, &token, &key, &mut store)? {
         return Ok(attempt);
     }
 

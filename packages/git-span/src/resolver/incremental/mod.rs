@@ -286,7 +286,10 @@ fn build_incremental_core(
 /// by construction: a filter-normalized path (whose raw worktree bytes differ
 /// from its raw HEAD blob bytes) is reported dirty even if git would call it
 /// clean — over-reporting only costs an extra re-resolve, never a stale reuse.
-fn relevant_dirty_paths(repo: &gix::Repository, token: &StateToken) -> Result<HashSet<String>> {
+pub(crate) fn relevant_dirty_paths(
+    repo: &gix::Repository,
+    token: &StateToken,
+) -> Result<HashSet<String>> {
     let staged: HashMap<&str, &PathState> = token
         .staged_state
         .iter()
@@ -317,7 +320,7 @@ fn relevant_dirty_paths(repo: &gix::Repository, token: &StateToken) -> Result<Ha
 
 /// HEAD blob OID (hex) for `path`, or `None` when the path is absent at HEAD or
 /// is not a blob.
-fn head_blob_oid(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
+pub(crate) fn head_blob_oid(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
     Ok(
         match crate::git::tree_entry_at(repo, "HEAD", Path::new(path))? {
             Some((mode, oid)) if mode.is_blob() => Some(oid.to_string()),
@@ -327,7 +330,7 @@ fn head_blob_oid(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
 }
 
 /// Whether the staged (index) content of a path matches HEAD.
-fn staged_clean(state: Option<&PathState>, head_oid: Option<&str>) -> bool {
+pub(crate) fn staged_clean(state: Option<&PathState>, head_oid: Option<&str>) -> bool {
     match state {
         None | Some(PathState::Absent) => head_oid.is_none(),
         Some(PathState::Tracked { blob }) => head_oid == Some(blob.as_str()),
@@ -339,7 +342,11 @@ fn staged_clean(state: Option<&PathState>, head_oid: Option<&str>) -> bool {
 
 /// Whether the worktree content of a path matches HEAD (compared as a BLAKE3
 /// digest of raw bytes — the same digest the token stores for worktree state).
-fn worktree_clean(repo: &gix::Repository, state: Option<&PathState>, head_oid: Option<&str>) -> bool {
+pub(crate) fn worktree_clean(
+    repo: &gix::Repository,
+    state: Option<&PathState>,
+    head_oid: Option<&str>,
+) -> bool {
     match state {
         None | Some(PathState::Absent) => head_oid.is_none(),
         Some(PathState::WorktreeContent { content_digest }) => match head_oid {

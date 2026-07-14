@@ -540,6 +540,46 @@ impl CacheStore {
         }
     }
 
+    /// Locate a cached generation whose stored HEAD hint **exactly** matches
+    /// `head` (card main-157 Phase 5A). Returns the first match's canonical key
+    /// digest.
+    ///
+    /// This is the HEAD-*inclusive* counterpart to [`Self::find_ancestor`]:
+    /// [`crate::git::head_ancestors`] deliberately excludes HEAD itself
+    /// (its candidates are strictly earlier commits), so the natural *dirty*
+    /// baseline — a clean generation published at the SAME commit the dirty
+    /// worktree sits on — never appears in an ancestor candidate list. The
+    /// dirty path looks it up directly by the current HEAD.
+    pub(crate) fn find_generation_by_head(&self, head: &str) -> StoreResult<Option<[u8; 32]>> {
+        self.find_ancestor(std::slice::from_ref(&head.to_string()))
+    }
+
+    /// Locate and fully load the first cached generation published at `head`
+    /// (card main-157 Phase 5A) — the dirty path's same-HEAD baseline.
+    ///
+    /// Combines [`Self::find_generation_by_head`] with [`Self::get_generation`]
+    /// so the dirty path gets the baseline's canonical key **and** its verified
+    /// reuse rows in one call, exactly like [`Self::load_ancestor_generation`]
+    /// does for the incremental path. A baseline on a different payload
+    /// version, absent, or integrity-rejected yields `None` (the caller
+    /// degrades to a full resolve) — fail closed, exactly like a plain miss.
+    pub(crate) fn load_head_baseline(
+        &self,
+        head: &str,
+        expected_version: u32,
+    ) -> StoreResult<Option<AncestorGeneration>> {
+        let Some(key_digest) = self.find_generation_by_head(head)? else {
+            return Ok(None);
+        };
+        match self.get_generation(&key_digest, expected_version)? {
+            GetOutcome::Hit(generation) => Ok(Some(AncestorGeneration {
+                key_digest,
+                generation,
+            })),
+            GetOutcome::Miss | GetOutcome::Rejected(_) => Ok(None),
+        }
+    }
+
     /// Record an access, advancing `access_bucket` only when the bucket
     /// actually changed — so a warm hit does not rewrite on every access.
     pub(crate) fn touch(&mut self, key_digest: &[u8; 32]) -> StoreResult<()> {

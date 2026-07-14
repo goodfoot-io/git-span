@@ -20,6 +20,7 @@ pub(crate) mod bloom;
 pub(crate) mod cache;
 pub(crate) mod cache_v2;
 pub(crate) mod core;
+pub(crate) mod dirty;
 pub(crate) mod engine;
 pub(crate) mod exact;
 pub(crate) mod incremental;
