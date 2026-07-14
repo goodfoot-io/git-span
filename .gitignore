@@ -92,3 +92,5 @@ profiling/
 .devcontainer/utilities/deepseek*
 
 reports/*
+
+packages/website/.dev.vars

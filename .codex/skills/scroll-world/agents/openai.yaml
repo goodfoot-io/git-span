@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scroll World"
+  short_description: "Build cinematic product homepages in two phases"
+  default_prompt: "Use $scroll-world to build a still-first cinematic product homepage and prepare its video handoff."

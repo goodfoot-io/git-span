@@ -4,8 +4,9 @@
  * Dev server with optional Cloudflare Tunnel support.
  *
  * Starts `react-router dev` on `localhost:5173`. When
- * `CLOUDFLARE_TUNNEL_TOKEN_LOCAL` is set in the environment, also runs a
- * `cloudflared` tunnel to expose the dev server at a public URL.
+ * `CLOUDFLARE_TUNNEL_TOKEN_LOCAL` is set (in the environment, or in the
+ * repo-root `.env`), also runs a `cloudflared` tunnel to expose the dev
+ * server at a public URL.
  *
  * Usage:
  *   node scripts/dev-with-tunnel.mjs        # start
@@ -30,6 +31,24 @@ const TUNNEL_BACKOFF_MAX_MS = 60_000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_DIR = path.resolve(__dirname, '..', '.source');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const ENV_FILE = path.join(REPO_ROOT, '.env');
+
+function loadEnvFile(file) {
+  if (!existsSync(file)) return;
+  for (const raw of readFileSync(file, 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in env)) env[key] = value;
+  }
+}
 
 let shuttingDown = false;
 let restartAttempt = 0;
@@ -104,6 +123,7 @@ if (existingPid) {
 }
 
 // Check for tunnel token
+loadEnvFile(ENV_FILE);
 const tunnelToken = env['CLOUDFLARE_TUNNEL_TOKEN_LOCAL'];
 if (!tunnelToken) {
   log('CLOUDFLARE_TUNNEL_TOKEN_LOCAL not set -- skipping tunnel, serving on localhost only');
