@@ -145,10 +145,21 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
         None
     };
 
-    let obs = match source {
-        Some(DriftSource::Worktree) => &anchor.worktree,
-        Some(DriftSource::Index) => &anchor.index,
-        _ => &anchor.head,
+    // Rendered `current`/`status`/`content_equivalent`/`fuzzy_successors` come
+    // from the DEEPEST enabled layer's observation, NOT from the drift-source
+    // layer's — the two differ (e.g. a HEAD-sourced `Changed` with a clean
+    // worktree renders the worktree `current`, blob `None`, not the Head blob).
+    // `source`/`layer_sources` above still carry the drift attribution. See
+    // `AnchorCore::full` (card main-157 sub-scope 3C fix). When the worktree
+    // layer is enabled the effective view is `anchor.full`; otherwise (the
+    // committed / HEAD-only projection) the deepest enabled layer is Head.
+    let obs = if layers.worktree {
+        &anchor.full
+    } else {
+        match source {
+            Some(DriftSource::Index) => &anchor.index,
+            _ => &anchor.head,
+        }
     };
     project_anchor(anchor, obs, source, layer_sources)
 }

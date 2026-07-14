@@ -457,6 +457,7 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
         head: fresh_observation(&anchored),
         index: fresh_observation(&anchored),
         worktree: fresh_observation(&anchored),
+        full: fresh_observation(&anchored),
         locus: None,
     };
     let mut anchor_b = anchor_a.clone();
@@ -585,6 +586,9 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         anchored,
         head,
         index,
+        // The effective (deepest-layer) observation IS the worktree view here,
+        // since the worktree is where this anchor drifts.
+        full: worktree.clone(),
         worktree,
         locus: Some(DriftLocusCore::ChangedAt("d".repeat(40))),
     };

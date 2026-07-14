@@ -1520,6 +1520,12 @@ pub(crate) fn resolve_anchor_captured(
         DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
     });
 
+    // The deepest-layer effective observation, captured unconditionally so the
+    // effective projection renders `current`/`status` from the true full view
+    // rather than from the (shallower) drift-source layer's observation — see
+    // `AnchorCore::full` (card main-157 sub-scope 3C fix).
+    let full = observation_from(&full_run);
+
     Ok(AnchorCore {
         anchor_id: full_run.anchor_id,
         anchor_sha: full_run.anchor_sha,
@@ -1527,6 +1533,7 @@ pub(crate) fn resolve_anchor_captured(
         head,
         index,
         worktree,
+        full,
         locus,
     })
 }

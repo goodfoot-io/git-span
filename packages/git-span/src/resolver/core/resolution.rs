@@ -86,11 +86,24 @@ pub(crate) struct LayerObservationCore {
 }
 
 impl LayerObservationCore {
-    /// Whether this layer shows drift from the anchored (pinned) state —
-    /// i.e. this layer is eligible to be selected as a projection's
+    /// Whether this layer is eligible to be selected as a projection's drift
     /// `source`.
+    ///
+    /// Card main-157 sub-scope 3C bug fix (flagged): this must mirror exactly
+    /// which statuses the live resolver attributes a `source`/`layer_sources`
+    /// to. In `resolver/engine/anchor.rs` only `Changed` and `Moved` carry a
+    /// drift source; every terminal status — `Deleted`, `Submodule`,
+    /// `ContentUnavailable`, `MergeConflict`, `ResolvedPendingCommit` — and
+    /// `Fresh` leave `source = None`, `layer_sources = []`. The prior
+    /// `!Fresh` predicate mis-attributed a committed deletion (a `Deleted`
+    /// head observation) to `Head`, so the projected porcelain source column
+    /// read `H` where the direct resolver renders `-`. Restricting to
+    /// `Changed`/`Moved` makes the projection byte-identical to direct
+    /// resolution for these statuses; the finding itself stays reportable via
+    /// the span-level `span_is_reportable_in_stale_discovery` (status !=
+    /// `Fresh`), which is a separate predicate.
     pub(crate) fn shows_drift(&self) -> bool {
-        !matches!(self.status, AnchorStatus::Fresh)
+        matches!(self.status, AnchorStatus::Changed | AnchorStatus::Moved)
     }
 }
 
@@ -105,6 +118,23 @@ pub(crate) struct AnchorCore {
     pub(crate) head: LayerObservationCore,
     pub(crate) index: LayerObservationCore,
     pub(crate) worktree: LayerObservationCore,
+    /// The collapsed full-effective (Head+Index+Worktree) observation,
+    /// captured unconditionally.
+    ///
+    /// Card main-157 sub-scope 3C bug fix (flagged, additive): the per-layer
+    /// `head`/`index`/`worktree` observations carry *drift attribution* (which
+    /// layer introduces drift), but a projection's rendered `current`/`status`
+    /// must be the DEEPEST-enabled-layer view, which is not the drift-source
+    /// layer's view. For a HEAD-sourced `Changed` with a clean worktree, the
+    /// effective `current.blob` is `None` (the worktree file carries no
+    /// committed blob OID) while the Head observation's `current.blob` is the
+    /// HEAD blob — so projecting the Head observation's `current` diverged from
+    /// direct effective resolution (visible only in `--format json`). This
+    /// field is exactly the deepest-layer effective observation the effective
+    /// projection renders from; the per-layer observations still drive
+    /// `source`/`layer_sources`. `super::project::project_effective` reads it
+    /// when the worktree layer is enabled.
+    pub(crate) full: LayerObservationCore,
     /// HEAD-history drift locus. Populated only from the Head observation;
     /// meaningless (and never attached) when a projection's source is
     /// Index or Worktree — see `super::project`.

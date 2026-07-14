@@ -13,6 +13,7 @@ pub mod cache_v2_lfs_shape_parity;
 pub mod cache_v2_partial_drift_parity;
 pub mod cache_v2_untracked_span_invalidation;
 pub mod cache_warm_perf;
+pub mod store_v3_differential;
 pub mod cargo_config_layout;
 pub mod cli_exit_codes;
 pub mod cli_history;

@@ -21,6 +21,7 @@ pub(crate) mod cache;
 pub(crate) mod cache_v2;
 pub(crate) mod core;
 pub(crate) mod engine;
+pub(crate) mod exact;
 pub(crate) mod layers;
 pub(crate) mod linemap;
 pub(crate) mod session;
