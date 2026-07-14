@@ -423,19 +423,62 @@ fn rename_incremental_output_equals_cold_new_store() -> Result<()> {
 }
 
 /// The correct end-to-end contract: a committed rename served by the new store
-/// must be byte-identical to the cache-off oracle. It is NOT today — the new
-/// store emits a duplicate `MOVED` finding (worktree + HEAD layers) that the
-/// oracle collapses to one. Root cause is `project_effective_anchor` in
-/// `resolver/core/project.rs` (Phase 3), outside 4C's file ownership, so this
-/// assertion is intact but ignored pending that fix. Removing the `#[ignore]`
-/// after the Phase 3 collapse fix must make this pass.
+/// must be byte-identical to the cache-off oracle. Before the Phase 3 collapse
+/// fix the new store emitted a duplicate `MOVED` finding (worktree + HEAD
+/// layers) that the oracle renders as one; `project_effective_anchor` in
+/// `resolver/core/project.rs` now collapses a `Moved` anchor to its single
+/// deepest-layer source, matching the live resolver's invariant that every
+/// `Moved` classification carries exactly one `layer_sources` entry.
 #[test]
-#[ignore = "BLOCKED main-157 4C: committed rename duplicates the MOVED finding across worktree+HEAD \
-layers (project_effective_anchor, resolver/core/project.rs — Phase 3, outside 4C ownership). \
-Reproduces in the new-store COLD path, so it is not a 4A/4B defect. See \
-notes/phase-4-latency-measurement.md."]
 fn rename_matches_oracle_known_divergence_blocked() -> Result<()> {
     let (repo, snap) = rename_scenario()?;
     assert_parity_all_formats(&repo, &snap, "rename");
+    Ok(())
+}
+
+/// Regression guard for the `Moved` collapse being *relative*, not a blanket
+/// "drop everything but HEAD". A committed `git mv` relocates alpha's content
+/// to `src/a_renamed.txt` lines 1-3 (the HEAD-layer move); an uncommitted
+/// worktree edit then prepends two lines, relocating the SAME content to lines
+/// 3-5 in the worktree (a genuinely different move introduced only at the
+/// worktree layer, with a different `current` target than the HEAD move). The
+/// live resolver reports one finding — the deepest enabled layer's move, sourced
+/// `WORKTREE` with `current` at lines 3-5 — never the HEAD-layer 1-3 move and
+/// never both. porcelain columns render the *anchored* location (`src/a.txt`
+/// 1-3) for every layer, so only JSON's `current`/`source` distinguishes the
+/// two moves: the guard asserts on JSON that the surviving finding is the
+/// worktree's divergent move, proving the collapse keeps the correct layer
+/// rather than folding onto the shallower layer's target range.
+#[test]
+fn rename_with_further_worktree_move_collapses_to_worktree_finding() -> Result<()> {
+    let (repo, snap) = rename_scenario()?;
+
+    // Uncommitted worktree edit: prepend two lines so alpha's anchored content
+    // (a1/a2/a3) shifts to worktree lines 3-5, distinct from its committed
+    // rename target range (1-3).
+    repo.write_file("src/a_renamed.txt", "pre1\npre2\na1\na2\na3\n")?;
+
+    restore_store(repo.path(), &snap);
+    let disabled = run(repo.path(), &["stale", "--format", "json"], Mode::Disabled, false).0;
+
+    // Non-vacuous premise: the oracle reports exactly one relocation for alpha
+    // (a duplicate, uncollapsed projection would emit a second MOVED sourced
+    // from HEAD), sourced from the WORKTREE layer, with `current` at the
+    // worktree target range 3-5 (not the HEAD-layer 1-3).
+    assert_eq!(
+        disabled.matches("\"MOVED\"").count(),
+        1,
+        "oracle must report exactly one MOVED finding for the divergent rename:\n{disabled}"
+    );
+    assert!(
+        disabled.contains("\"WORKTREE\""),
+        "the single MOVED finding must be sourced from the divergent worktree layer:\n{disabled}"
+    );
+    assert!(
+        disabled.contains("\"start\": 3") && disabled.contains("\"end\": 5"),
+        "the surviving finding's `current` must be the worktree move target (3-5):\n{disabled}"
+    );
+
+    assert_parity_all_formats(&repo, &snap, "rename-further-worktree-move");
     Ok(())
 }

@@ -7,7 +7,8 @@
 
 use super::resolution::{AnchorCore, DriftLocusCore, LayerObservationCore};
 use crate::types::{
-    AnchorLocation, AnchorResolved, DriftLocus, DriftSource, FuzzySuccessor, LayerSet, SpanResolved,
+    AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource, FuzzySuccessor,
+    LayerSet, SpanResolved,
 };
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -161,5 +162,30 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
             _ => &anchor.head,
         }
     };
+
+    // A `Moved` anchor carries exactly ONE drift source in the live resolver:
+    // every relocation arm in `resolver/engine/anchor.rs` and
+    // `resolver/engine/whole_file.rs` sets `layer_sources = vec![deepest]` (or
+    // `vec![]`) — attributing the move to the single deepest enabled drifting
+    // layer, NOT listing every layer whose absolute view relocated ("MOVED
+    // means bytes are equal; keep the single-row shape", design requirement 4).
+    // The per-layer capture, by contrast, records each layer's absolute
+    // observation, so a committed `git mv` seen with a clean worktree yields a
+    // Moved observation at BOTH the Head layer (head-vs-anchor) and the Worktree
+    // layer (the full run's deepest-layer attribution). Emitting both duplicates
+    // the finding (`MOVED W` + `MOVED H`) where direct resolution renders one
+    // (`MOVED W`). Collapse to the single primary source — the deepest enabled
+    // drifting layer, which is exactly what the live resolver's `deepest_layer`
+    // attribution picks — whenever the RENDERED status (the deepest-enabled-
+    // layer observation) is `Moved`. This is a pure `Moved`-only correction:
+    // `Changed` keeps its full relative `layer_sources` list, since the live
+    // resolver genuinely emits one `Changed` finding per relatively-drifting
+    // layer. A `Moved` where a shallower layer introduced a genuinely different
+    // relocation still collapses to that deepest layer's single finding — again
+    // matching the live resolver, which reports only the deepest layer's move.
+    if matches!(obs.status, AnchorStatus::Moved) {
+        layer_sources = source.into_iter().collect();
+    }
+
     project_anchor(anchor, obs, source, layer_sources)
 }
