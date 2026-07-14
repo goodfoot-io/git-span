@@ -296,6 +296,51 @@ fn revalidate_discard_publishes_nothing_and_falls_back() {
     );
 }
 
+// ── Phase 4A: per-span reuse rows round-trip ─────────────────────────────────
+
+#[test]
+fn reuse_rows_round_trip_core_through_store() {
+    reset_test_state();
+    clear_memo();
+    let (_td, repo) = drifted_repo("reusert");
+    let opts = EngineOptions::full();
+
+    // Resolve a real core, normalize it to reuse rows, and publish those rows
+    // in a generation (summary content is irrelevant here).
+    let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
+    let core = capture_resolution_core(&repo, SPAN_ROOT, &names).expect("core");
+    let widen = reuse::compute_widen(&core, false);
+    let (rows, path_index) = reuse::core_to_reuse_rows(&core, &widen);
+    assert!(!rows.is_empty(), "a non-empty corpus yields reuse rows");
+
+    let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
+    let key = token.canonical_key_digest();
+    let mut store = CacheStore::open(&repo).expect("store");
+    let input = GenerationInput {
+        key_digest: key,
+        head: token.head.clone(),
+        payload_version: SUMMARY_VERSION,
+        summary: vec![0xAB, 0xCD],
+        rows,
+        path_index,
+        live: true,
+    };
+    store.publish_generation(&input).expect("publish");
+
+    let stored = match store.get_generation(&key, SUMMARY_VERSION).expect("get") {
+        GetOutcome::Hit(g) => g,
+        other => panic!("expected Hit, got {other:?}"),
+    };
+    let reconstructed = reuse::reuse_rows_to_core(&stored.rows);
+    assert_eq!(
+        reconstructed, core,
+        "reuse rows must round-trip the ResolutionCore byte-identically"
+    );
+    // The drifted span is widen-marked and survives the round trip.
+    let widen_back = reuse::reuse_rows_widen(&stored.rows);
+    assert_eq!(widen_back, widen, "widen markers must round-trip");
+}
+
 #[test]
 fn clean_run_publishes_and_is_eligible() {
     reset_test_state();

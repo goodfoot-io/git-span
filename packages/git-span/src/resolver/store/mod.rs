@@ -108,6 +108,16 @@ pub(crate) struct StoredGeneration {
     pub(crate) rows: Vec<GenerationRow>,
 }
 
+/// A verified ancestor generation located by HEAD hint, carrying its canonical
+/// key digest alongside the loaded generation (card main-157 Phase 4B). The
+/// generation's [`StoredGeneration::head`] is the ancestor commit the
+/// incremental path diffs the current tree against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AncestorGeneration {
+    pub(crate) key_digest: [u8; 32],
+    pub(crate) generation: StoredGeneration,
+}
+
 /// Outcome of a read: a verified hit, a plain miss (absent), or a structured
 /// rejection (present but failed integrity — quarantined, never served).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -500,6 +510,34 @@ impl CacheStore {
             }
         }
         Ok(None)
+    }
+
+    /// Locate and fully load the first cached generation whose stored HEAD hint
+    /// matches one of `head_candidates` (card main-157 Phase 4B).
+    ///
+    /// Combines [`Self::find_ancestor`] (which only yields a key) with
+    /// [`Self::get_generation`] so the incremental path gets the ancestor's
+    /// canonical key **and** its verified reuse rows in one call. A candidate
+    /// whose generation is on a different payload version, absent, or
+    /// integrity-rejected yields `None` (the caller degrades to a full resolve)
+    /// rather than a partial or unverified result — fail closed, exactly like a
+    /// plain miss.
+    pub(crate) fn load_ancestor_generation(
+        &self,
+        head_candidates: &[String],
+        expected_version: u32,
+    ) -> StoreResult<Option<AncestorGeneration>> {
+        let Some(key_digest) = self.find_ancestor(head_candidates)? else {
+            return Ok(None);
+        };
+        match self.get_generation(&key_digest, expected_version)? {
+            GetOutcome::Hit(generation) => Ok(Some(AncestorGeneration {
+                key_digest,
+                generation,
+            })),
+            // Present-but-unverifiable or a vanished race: no reusable ancestor.
+            GetOutcome::Miss | GetOutcome::Rejected(_) => Ok(None),
+        }
     }
 
     /// Record an access, advancing `access_bucket` only when the bucket

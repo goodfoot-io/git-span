@@ -337,6 +337,139 @@ pub fn git_log_name_only_for_paths(
     Ok((out, true))
 }
 
+/// Walk `HEAD`'s ancestry (newest-first) and return up to `max` ancestor
+/// commit hashes, **excluding `HEAD` itself** (card main-157 Phase 4B).
+///
+/// Every returned commit is reachable from `HEAD`, so `HEAD` is a descendant
+/// of each — the soundness precondition the incremental path relies on: for a
+/// path whose blob is identical between an ancestor's tree and `HEAD`'s tree,
+/// and which no intervening commit on the `ancestor..HEAD` range touched, an
+/// anchor's history walk yields the same classification at `HEAD` as it did at
+/// the ancestor. The walk is bounded so the ancestor search stays cheap; past
+/// `max` commits back the incremental path degrades to a full resolve (which
+/// republishes a generation nearby again).
+pub fn head_ancestors(repo: &gix::Repository, max: usize) -> Result<Vec<String>> {
+    if max == 0 {
+        return Ok(Vec::new());
+    }
+    let head_id = repo
+        .head_id()
+        .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?
+        .detach();
+    let walk = repo
+        .rev_walk([head_id])
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ))
+        .all()
+        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
+    let mut out = Vec::with_capacity(max.min(128));
+    for info in walk {
+        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        if info.id == head_id {
+            continue; // exclude HEAD itself; candidates are strictly earlier
+        }
+        out.push(info.id.to_string());
+        if out.len() >= max {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// The set of source paths whose blob differs between two commits' trees
+/// (card main-157 Phase 4B). Rename tracking is **off** — a committed rename
+/// registers as the delete+add of both its endpoints, so both paths land in
+/// the changed set. This matches the relocation semantics of
+/// `resolver/engine/anchor.rs`'s `find_relocated_range_in_paths`
+/// (`track_rewrites(None)`), which is what the incremental affected-set
+/// computation must be consistent with.
+///
+/// Only blob/symlink entries are reported; tree (directory) entries are
+/// skipped, matching `git_log_name_only`'s filter.
+pub fn changed_paths_between(
+    repo: &gix::Repository,
+    from_commit: &str,
+    to_commit: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+    let from_tree = commit_tree(repo, from_commit)?;
+    let to_tree = commit_tree(repo, to_commit)?;
+
+    let mut opts = gix::diff::Options::default();
+    opts.track_rewrites(None);
+
+    let changes = repo
+        .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), Some(opts))
+        .map_err(|e| Error::Git(format!("diff tree {from_commit}..{to_commit}: {e}")))?;
+
+    let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for change in &changes {
+        use gix::object::tree::diff::ChangeDetached;
+        match change {
+            ChangeDetached::Addition {
+                location,
+                entry_mode,
+                ..
+            }
+            | ChangeDetached::Deletion {
+                location,
+                entry_mode,
+                ..
+            }
+            | ChangeDetached::Modification {
+                location,
+                entry_mode,
+                ..
+            } => {
+                if entry_mode.is_blob_or_symlink() {
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+            }
+            ChangeDetached::Rewrite {
+                source_location,
+                source_entry_mode,
+                location,
+                entry_mode,
+                ..
+            } => {
+                if source_entry_mode.is_blob_or_symlink() {
+                    paths.insert(
+                        std::str::from_utf8(source_location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                if entry_mode.is_blob_or_symlink() {
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// Peel a commit hash to its tree object.
+fn commit_tree<'repo>(
+    repo: &'repo gix::Repository,
+    commit_oid: &str,
+) -> Result<gix::Tree<'repo>> {
+    let oid = parse_oid(commit_oid)?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
+    commit
+        .tree()
+        .map_err(|e| Error::Git(format!("commit tree `{commit_oid}`: {e}")))
+}
+
 /// Extracted commit metadata.
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {

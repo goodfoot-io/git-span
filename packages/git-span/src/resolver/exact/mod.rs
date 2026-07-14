@@ -71,8 +71,12 @@ use crate::resolver::engine::{
     capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
 };
 use crate::resolver::store::{CacheStore, GenerationInput, GetOutcome};
-use crate::types::{EngineOptions, LayerSet, SpanResolved};
+use crate::types::{CopyDetection, EngineOptions, LayerSet, SpanResolved};
 use std::sync::Arc;
+
+pub(crate) mod reuse;
+
+use crate::resolver::incremental;
 
 #[cfg(test)]
 mod tests;
@@ -87,7 +91,13 @@ mod tests;
 /// anchor); version 2 stores the single projected effective view plus the
 /// committed anchor totals, ~2.4x smaller and render-ready with no per-hit
 /// re-projection of layer observations.
-const SUMMARY_VERSION: u32 = 2;
+///
+/// Card main-157 Phase 4 additionally populates the generation's normalized
+/// reuse rows (`reuse::core_to_reuse_rows`) under this same version: the rows
+/// carry `bincode(ReuseSpanRow)`, so a change to either the summary encoding or
+/// the reuse-row encoding must bump this constant (a version mismatch rejects
+/// the whole generation — a miss + rebuild — rather than misdecoding either).
+pub(crate) const SUMMARY_VERSION: u32 = 2;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `stale` calls within one
@@ -234,6 +244,18 @@ fn eligible(options: &EngineOptions) -> bool {
         && (options.fuzzy_threshold - 0.95).abs() < 1e-9
 }
 
+/// Whether the whole invocation's effective copy-detection mode is a genuinely
+/// global one (a repo/commit-wide copy pool), in which case EVERY span is
+/// widened to "any tracked path changed" sensitivity (`reuse`). `SameCommit`
+/// (the only mode the file-backed span model expresses today) is local and does
+/// not force a global widen; see `reuse`'s module docs.
+pub(crate) fn global_copy_widen(token: &crate::resolver::core::token::StateToken) -> bool {
+    matches!(
+        token.copy_detection,
+        CopyDetection::AnyFileInCommit | CopyDetection::AnyFileInRepo
+    )
+}
+
 /// The temporary new-store execution path for `git span stale` discovery.
 ///
 /// Returns [`ExactAttempt::Resolved`] with the reportable span set on an exact
@@ -309,6 +331,20 @@ pub(crate) fn stale_spans_new_store(
         }
     }
 
+    // ── Incremental miss: reuse an ancestor generation ──────────────────────
+    //
+    // Between the exact-miss above and the full cold build below, try to
+    // reconstruct this generation from a cached ancestor: reuse every unchanged
+    // span's stored `SpanCore`, re-resolving only the spans a committed/dirty
+    // path change (or the global-widen union) can affect. A `None` means no
+    // usable ancestor / nothing reusable — fall through to the authoritative
+    // one-build cold path unchanged.
+    if let Some(attempt) =
+        incremental::attempt(repo, span_root, options, &token, &key, &mut store)?
+    {
+        return Ok(attempt);
+    }
+
     // ── Cold miss: exactly one build ────────────────────────────────────────
     cold_miss(repo, span_root, options, &token, &key, &mut store)
 }
@@ -338,14 +374,36 @@ fn cold_miss(
     #[cfg(test)]
     fire_after_build_hook();
 
-    // Project ONCE into the compact render-ready form. Both the cold return and
-    // the persisted summary derive from this; there is no second projection or
-    // re-resolve.
-    let rr = Arc::new(RenderReady::from_core(&core, options.layers));
+    // Project ONCE, revalidate, and (only if the snapshot still holds) publish.
+    // Shared with the Phase 4 incremental path so a reconstructed core and a
+    // cold-built core render/publish through exactly one function.
+    project_revalidate_publish(repo, span_root, options, token, key, store, &core)
+}
+
+/// Project a resolved (or reconstructed) [`ResolutionCore`] into the render-
+/// ready form, revalidate the snapshot, and publish only if it still holds.
+/// The single tail shared by [`cold_miss`] and the Phase 4 incremental path.
+///
+/// * `Unchanged` → publish (populating reuse rows), memoize, render.
+/// * `Changed{head}` → render (the content-only key and every resolution input
+///   are unchanged, so the core is still correct), skip publish (stale HEAD
+///   hint) and memo (state is moving).
+/// * `Changed{other}` → a resolution input moved mid-build (possible torn
+///   read); discard and fall back to the authoritative path.
+pub(crate) fn project_revalidate_publish(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    token: &crate::resolver::core::token::StateToken,
+    key: &[u8; 32],
+    store: &mut CacheStore,
+    core: &ResolutionCore,
+) -> Result<ExactAttempt> {
+    let rr = Arc::new(RenderReady::from_core(core, options.layers));
 
     match revalidate(repo, span_root, options, token)? {
         Revalidation::Unchanged => {
-            publish_if_eligible(store, token, key, &rr);
+            publish_if_eligible(store, token, key, &rr, core);
             let attempt = rr.to_attempt();
             memo_put(*key, rr);
             Ok(attempt)
@@ -355,13 +413,8 @@ fn cold_miss(
             crate::perf::counter("cache-path.revalidate-discarded", 1);
             crate::perf::note(&format!("cache-path.revalidate-discarded: {field}"));
             if field == "head" {
-                // Content-only key and every resolution input unchanged: the
-                // computed core is still correct. Render it; skip the publish
-                // (the HEAD hint moved) and skip the memo (state is moving).
                 Ok(rr.to_attempt())
             } else {
-                // A resolution input moved mid-build — possible torn read.
-                // Discard and fall back to the authoritative path.
                 crate::perf::note("cache-path.bypass-reason: revalidate-torn-read");
                 Ok(ExactAttempt::Bypass)
             }
@@ -377,20 +430,25 @@ fn publish_if_eligible(
     token: &crate::resolver::core::token::StateToken,
     key: &[u8; 32],
     rr: &RenderReady,
+    core: &ResolutionCore,
 ) {
     if !token.persistence_eligible() {
         crate::perf::note("cache-path.publish-skipped: ineligible");
         return;
     }
+    // Card main-157 Phase 4A: populate the normalized per-span reuse rows and
+    // the reverse path index from the resolved core, so a later commit's
+    // incremental path can reuse every unchanged span (see `reuse`). Exact-hit
+    // rendering still reads only the compact `summary`; the rows are additive.
+    let widen = reuse::compute_widen(core, global_copy_widen(token));
+    let (rows, path_index) = reuse::core_to_reuse_rows(core, &widen);
     let input = GenerationInput {
         key_digest: *key,
         head: token.head.clone(),
         payload_version: SUMMARY_VERSION,
         summary: encode_summary(rr),
-        // Exact-hit rendering reads only the summary; normalized reuse rows and
-        // the reverse path index are populated by Phase 4's incremental path.
-        rows: Vec::new(),
-        path_index: Vec::new(),
+        rows,
+        path_index,
         // The current worktree references this generation at publish time.
         live: true,
     };
