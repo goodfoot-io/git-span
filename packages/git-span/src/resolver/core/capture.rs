@@ -123,7 +123,10 @@ pub(crate) fn capture_state_token(
     span_root: &str,
     options: EngineOptions,
 ) -> Result<StateToken> {
-    let committed = load_committed(repo, span_root)?;
+    let committed = {
+        let _perf = crate::perf::span("cache.capture.committed");
+        load_committed(repo, span_root)?
+    };
 
     // Uncommitted (worktree-only) span files participate in the resolved output —
     // `list_span_names` is a 3-layer (worktree ∪ index ∪ HEAD) view and
@@ -138,7 +141,10 @@ pub(crate) fn capture_state_token(
     // dirty-tier reuse and only the uncommitted span's own state forces fresh work
     // (it is absent at HEAD, so its span file always reads dirty and the dirty
     // tier always re-resolves just that span).
-    let uncommitted = load_uncommitted(repo, span_root, &committed)?;
+    let uncommitted = {
+        let _perf = crate::perf::span("cache.capture.uncommitted");
+        load_uncommitted(repo, span_root, &committed)?
+    };
 
     // Relevant path set: every committed span file, every uncommitted span file,
     // plus every anchored source path across BOTH corpora. These are the paths
@@ -179,7 +185,10 @@ pub(crate) fn capture_state_token(
     // Load the index once; both the whole-index identity and the per-path
     // staged states derive from this one snapshot. An unreadable index makes
     // both fail closed (`Unreadable`).
-    let index = crate::git::index_entries(repo);
+    let index = {
+        let _perf = crate::perf::span("cache.capture.index-load");
+        crate::git::index_entries(repo)
+    };
     let index_entries: Option<&[crate::git::IndexEntrySnapshot]> =
         index.as_ref().ok().map(Vec::as_slice);
 
@@ -190,21 +199,54 @@ pub(crate) fn capture_state_token(
         needs_all_layers: options.needs_all_layers,
         fuzzy_threshold_bps: fuzzy_threshold_bps(options.fuzzy_threshold),
         since: options.since.map(|o| o.to_string()),
-        head: crate::git::head_oid(repo)?,
-        source_tree: source_tree_oid(repo)?,
+        head: {
+            let _perf = crate::perf::span("cache.capture.head");
+            crate::git::head_oid(repo)?
+        },
+        source_tree: {
+            let _perf = crate::perf::span("cache.capture.source-tree");
+            source_tree_oid(repo)?
+        },
         span_root: span_root.to_string(),
-        span_subtree: span_subtree_oid(repo, span_root)?,
+        span_subtree: {
+            let _perf = crate::perf::span("cache.capture.span-subtree");
+            span_subtree_oid(repo, span_root)?
+        },
         span_blobs: committed.blobs,
         rename_budget: rename_budget_u32(),
         copy_detection,
-        replace_refs: replace_refs(repo),
-        filters: filters(repo),
-        attributes_digest: attributes_digest(repo, &anchored),
-        normalization_digest: normalization_digest(repo),
-        index_identity: index_identity(index_entries),
-        staged_state: staged_states(index_entries, &relevant),
-        worktree_state: worktree_states(repo, &relevant)?,
-        availability: availability(repo),
+        replace_refs: {
+            let _perf = crate::perf::span("cache.capture.replace-refs");
+            replace_refs(repo)
+        },
+        filters: {
+            let _perf = crate::perf::span("cache.capture.filters");
+            filters(repo)
+        },
+        attributes_digest: {
+            let _perf = crate::perf::span("cache.capture.attributes");
+            attributes_digest(repo, &anchored)
+        },
+        normalization_digest: {
+            let _perf = crate::perf::span("cache.capture.normalization");
+            normalization_digest(repo)
+        },
+        index_identity: {
+            let _perf = crate::perf::span("cache.capture.index-identity");
+            index_identity(index_entries)
+        },
+        staged_state: {
+            let _perf = crate::perf::span("cache.capture.staged-state");
+            staged_states(index_entries, &relevant)
+        },
+        worktree_state: {
+            let _perf = crate::perf::span("cache.capture.worktree-state");
+            worktree_states(repo, &relevant)?
+        },
+        availability: {
+            let _perf = crate::perf::span("cache.capture.availability");
+            availability(repo)
+        },
     })
 }
 
@@ -613,9 +655,20 @@ fn executable_content_digest(
     if let Some(cached) = content_cache.get(resolved) {
         return *cached;
     }
-    let digest = std::fs::read(resolved)
-        .ok()
-        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+    // Hash through BLAKE3's mmap path. `std::fs::read` first allocated and
+    // copied the entire executable into a `Vec`, then made a second full pass
+    // to hash it; even streaming through `Read` retains an avoidable copy from
+    // the page cache. Filter programs are often large static binaries (git-lfs
+    // is 12 MiB in the standard installation), so mapping lets BLAKE3 hash the
+    // cached pages directly while preserving the same content identity.
+    let digest = {
+        let mut hasher = Hasher::new();
+        if hasher.update_mmap(resolved).is_ok() {
+            Some(*hasher.finalize().as_bytes())
+        } else {
+            None
+        }
+    };
     content_cache.insert(resolved.to_path_buf(), digest);
     digest
 }

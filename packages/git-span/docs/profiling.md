@@ -142,6 +142,15 @@ is off. `note` lines are free-form text; `counter` lines carry an integer value.
 | `cache-path.publish-ok` / `cache-path.publish-failed` (+ `: <err>`) | Publish outcome. A failure fails closed on the *cache*, never the command — the already-computed result still renders. |
 | `cache-path.publish-skipped: ineligible` | The token was persistence-ineligible (e.g. an incomplete filter dependency identity), so nothing was stored. |
 
+`cache-path.state-observe-us` is split further into opt-in
+`cache.capture.<phase>` wall-clock spans. The phases are `committed`,
+`uncommitted`, `index-load`, `head`, `source-tree`, `span-subtree`,
+`replace-refs`, `filters`, `attributes`, `normalization`, `index-identity`,
+`staged-state`, `worktree-state`, and `availability`. Their sum is slightly
+smaller than `state-observe-us` because token assembly and relevant-path set
+construction remain in the parent measurement. These spans make a slow state
+proof attributable without requiring kernel sampling access.
+
 **Incremental / dirty reuse counts** (work proportional to what changed):
 
 | Line | Meaning |

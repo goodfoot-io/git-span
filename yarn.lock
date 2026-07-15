@@ -734,10 +734,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@cloudflare/workers-types@npm:^4.x":
-  version: 4.20260702.1
-  resolution: "@cloudflare/workers-types@npm:4.20260702.1"
-  checksum: 10c0/2dbd1d8d99285b49f90457321cc6f3668ac2fb89c9e24b36539e60f67925611078724093176bfbe06c8ab8d98eafd4902e4faa2e96a1378f96b14498c28ccdda
+"@cloudflare/workers-types@npm:^5.20260708.1":
+  version: 5.20260715.1
+  resolution: "@cloudflare/workers-types@npm:5.20260715.1"
+  checksum: 10c0/0dbf6fbe040fc4a08943867d19709e85fb56a4401d1451067c01e4b5a798805005605eeb83722f9facc44ec87b0737cc6218642982040f9ceeb552b2545a9bb5
   languageName: node
   linkType: hard
 
@@ -1777,7 +1777,7 @@ __metadata:
   dependencies:
     "@biomejs/biome": "npm:^2.3.13"
     "@cloudflare/vite-plugin": "npm:^1.44.0"
-    "@cloudflare/workers-types": "npm:^4.x"
+    "@cloudflare/workers-types": "npm:^5.20260708.1"
     "@react-router/dev": "npm:^8.2.0"
     "@react-router/node": "npm:^8.2.0"
     "@tailwindcss/vite": "npm:^4.3.2"
