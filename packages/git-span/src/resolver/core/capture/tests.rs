@@ -404,3 +404,187 @@ fn changed_filter_executable_changes_digest() {
         "different executable content must produce a different digest"
     );
 }
+
+/// Isolate captures from any globally-installed filter (e.g. `git lfs install`'s
+/// `filter.lfs.*`) so a configured filter's identity is exactly the one under
+/// test. Mirrors `resolver::incremental::tests::init_repo`.
+fn isolate_global_git_config() {
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+    }
+}
+
+/// Configure `filter.<driver>.clean` to `<cmd>` on the repo at `dir`.
+fn set_filter_clean(dir: &Path, driver: &str, cmd: &str) {
+    git(dir, &["config", &format!("filter.{driver}.clean"), cmd]);
+}
+
+// An environment variable NO filter command references — the finding's `PWD`,
+// terminal, or session-identity class — must not move the env digest or the
+// canonical key. This is the direction the whole-`vars_os()` digest broke:
+// a working-directory or terminal change minted a fresh key at the same clean
+// HEAD, defeating warm-hit and cross-worktree reuse.
+#[test]
+fn unrelated_env_variation_does_not_change_key_with_filter() {
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("plain.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    // A command that references no environment variable.
+    set_filter_clean(td.path(), "plain", &format!("{} %f", exe.display()));
+
+    let opts = EngineOptions::full();
+
+    unsafe {
+        std::env::set_var("PWD", "/tmp/worktree-a");
+        std::env::set_var("GIT_SPAN_UNRELATED_ENV", "one");
+    }
+    let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
+
+    // Vary only variables the filter does not reference.
+    unsafe {
+        std::env::set_var("PWD", "/opt/somewhere-else");
+        std::env::set_var("GIT_SPAN_UNRELATED_ENV", "two");
+    }
+    let t2 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 2");
+
+    assert_eq!(
+        filter_dep(&t1, "plain").env_digest,
+        filter_dep(&t2, "plain").env_digest,
+        "an unreferenced env var must not move the filter env digest"
+    );
+    assert_eq!(
+        t1.canonical_key_digest(),
+        t2.canonical_key_digest(),
+        "unrelated env variation must not change the canonical key (warm hit holds)"
+    );
+    unsafe {
+        std::env::remove_var("GIT_SPAN_UNRELATED_ENV");
+    }
+}
+
+// The other direction: a variable a filter command genuinely references (via
+// `$VAR`, which `sh -c` expands at spawn time) IS a declared dependency, so
+// changing its value must change the env digest and the canonical key —
+// narrowing scope must not blind the key to a real filter-behavior input.
+#[test]
+fn referenced_env_variation_changes_key() {
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("keyed.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    // The command substitutes an environment variable, so its value is part of
+    // what the filter actually runs.
+    set_filter_clean(
+        td.path(),
+        "keyed",
+        &format!("{} --key=$GIT_SPAN_FILTER_KEY %f", exe.display()),
+    );
+
+    let opts = EngineOptions::full();
+
+    unsafe {
+        std::env::set_var("GIT_SPAN_FILTER_KEY", "alpha");
+    }
+    let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
+
+    unsafe {
+        std::env::set_var("GIT_SPAN_FILTER_KEY", "beta");
+    }
+    let t2 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 2");
+
+    assert_ne!(
+        filter_dep(&t1, "keyed").env_digest,
+        filter_dep(&t2, "keyed").env_digest,
+        "a referenced env var's value change must move the filter env digest"
+    );
+    assert_ne!(
+        t1.canonical_key_digest(),
+        t2.canonical_key_digest(),
+        "a real declared filter dependency must still change the canonical key (no false hit)"
+    );
+
+    // And an unreferenced variable still does not perturb the same filter.
+    unsafe {
+        std::env::set_var("GIT_SPAN_FILTER_KEY", "beta");
+        std::env::set_var("PWD", "/somewhere/new");
+    }
+    let t3 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 3");
+    assert_eq!(
+        t2.canonical_key_digest(),
+        t3.canonical_key_digest(),
+        "changing PWD (unreferenced) must not change the key even when a filter references another var"
+    );
+    unsafe {
+        std::env::remove_var("GIT_SPAN_FILTER_KEY");
+    }
+}
+
+// End-to-end cross-worktree reuse with a filter configured: two linked
+// worktrees at the identical clean HEAD, captured under DIFFERENT ambient
+// environments (as two separate CLI invocations from different directories
+// would be), must produce the same canonical key — an immediate exact hit.
+// The whole-`vars_os()` digest made this structurally impossible whenever any
+// filter was configured; content-based identity plus a filter-relevant env
+// digest restores it.
+#[test]
+fn cross_worktree_exact_hit_with_filter() {
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("shared.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    // Repo-local config lives in `.git/config`, shared by every linked worktree.
+    set_filter_clean(td.path(), "shared", &format!("{} %f", exe.display()));
+
+    // Link a second worktree at the same commit.
+    let linked = tempfile::tempdir().expect("linked worktree tempdir");
+    let linked_path = linked.path().join("wt");
+    // `--detach`: `main` is already checked out in the primary worktree, and a
+    // detached checkout at the same commit gives the identical source tree (HEAD
+    // is excluded from the canonical key anyway).
+    git(
+        td.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            linked_path.to_str().expect("utf8 path"),
+            "main",
+        ],
+    );
+
+    let opts = EngineOptions::full();
+
+    // Prime the first worktree warm under one environment.
+    unsafe {
+        std::env::set_var("PWD", td.path().to_str().expect("utf8 path"));
+        std::env::set_var("TERM_SESSION_ID", "session-a");
+    }
+    let primary = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture primary");
+
+    // The sibling worktree runs under a different working directory / session,
+    // exactly as a second CLI invocation would.
+    unsafe {
+        std::env::set_var("PWD", linked_path.to_str().expect("utf8 path"));
+        std::env::set_var("TERM_SESSION_ID", "session-b");
+    }
+    let sibling = capture_state_token(
+        &gix::open(&linked_path).expect("gix open linked worktree"),
+        SPAN_ROOT,
+        opts,
+    )
+    .expect("capture sibling");
+
+    assert_eq!(
+        primary.canonical_key_digest(),
+        sibling.canonical_key_digest(),
+        "sibling worktree at identical clean HEAD with a filter configured must be an exact hit"
+    );
+    unsafe {
+        std::env::remove_var("TERM_SESSION_ID");
+    }
+}

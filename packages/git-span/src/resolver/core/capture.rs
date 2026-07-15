@@ -30,9 +30,18 @@
 //! for their concrete program, resolved through the same `PATH`/relative-to-
 //! worktree rules a spawned filter child obeys (see
 //! [`crate::resolver::layers::filter_process`]), and the resolved executable's
-//! bytes are BLAKE3-digested. The environment digest covers the full process
-//! environment a child filter would inherit (the filter spawners here never
-//! `env_clear`, so the whole environment is observable to the filter). When any
+//! bytes are BLAKE3-digested. The environment digest covers only the variables
+//! a filter command *declares* it consumes — those its `clean`/`smudge`/
+//! `process` command lines reference via shell substitution (`$VAR`/`${VAR}`),
+//! which `sh -c` expands at spawn time (`spawn_custom_filter_process`). Ambient
+//! variables no filter command references — `PWD`, `OLDPWD`, `TERM`, `SHLVL`,
+//! terminal/session identity, editor injections — cannot change what a filter
+//! produces for a given blob, so they never enter the digest and therefore
+//! never fragment the key across working directories, terminals, or sibling
+//! worktrees. (Card main-157: folding the whole `vars_os()` environment in
+//! defeated warm-hit and cross-worktree reuse on every git-lfs-configured
+//! machine, since `git lfs install` writes a global `filter.lfs.*` driver whose
+//! identity then absorbed every `PWD`/session change.) When any
 //! command's program cannot be resolved to a concrete executable file — command
 //! not found, not executable, unparseable, or a bare repository with no worktree
 //! — `executable_digest` stays `None` and
@@ -447,14 +456,13 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
         }
     }
 
-    // A child filter spawned by the resolver inherits the resolver's full
-    // process environment (the spawners in `resolver::layers::filter_process`
-    // never `env_clear`), and resolves relative program paths against the
-    // worktree. Both are the same for every driver, so compute the env digest
-    // once and reuse the executable-content cache across drivers (the common
-    // case — git-lfs `clean`/`smudge`/`process` — is one 11 MiB binary shared
-    // by three commands, digested once).
-    let env_digest = process_env_digest();
+    // A child filter spawned by the resolver resolves relative program paths
+    // against the worktree — the same for every driver — so reuse the
+    // executable-content cache across drivers (the common case — git-lfs
+    // `clean`/`smudge`/`process` — is one 11 MiB binary shared by three
+    // commands, digested once). The environment digest is per-driver: it binds
+    // only the variables that driver's own command lines reference (see
+    // `filter_env_digest`), so an unrelated ambient variable never fragments it.
     let workdir = crate::git::work_dir(repo).ok().map(Path::to_path_buf);
     let mut content_cache: HashMap<PathBuf, Option<[u8; 32]>> = HashMap::new();
 
@@ -473,7 +481,7 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
                 driver,
                 command,
                 executable_digest,
-                env_digest: Some(env_digest),
+                env_digest: Some(filter_env_digest(&kv)),
             }
         })
         .collect()
@@ -587,21 +595,87 @@ fn executable_content_digest(
     digest
 }
 
-/// BLAKE3 digest of the full process environment a spawned filter child would
-/// inherit. Sorted by key (`vars_os` order is unspecified) so the digest is
-/// deterministic; keys and values are length-prefixed so no `KEY=VALUE`
-/// boundary can be forged by adjacent variables.
-fn process_env_digest() -> [u8; 32] {
-    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
-    vars.sort();
+/// BLAKE3 digest of the environment variables a filter driver *declares* it
+/// depends on: those its `clean`/`smudge`/`process` command lines reference via
+/// shell substitution (`$VAR`/`${VAR}`), which `sh -c` expands at spawn time
+/// (`spawn_custom_filter_process`). Each referenced name is digested with its
+/// current value — or a distinct "declared but unset" marker — sorted so the
+/// digest is deterministic, keys and values length-prefixed so no boundary can
+/// be forged by adjacent variables. A driver referencing no variables (the
+/// git-lfs case) yields the fixed empty-set digest, identical across every
+/// working directory, terminal, and sibling worktree.
+///
+/// Variables no command references — `PWD`, `OLDPWD`, `TERM`, session identity
+/// — never participate, so they cannot fragment the key. This is the exact
+/// scope the finding requires: filter-relevant identity only, not the whole
+/// `vars_os()` environment.
+fn filter_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
+    let names = referenced_env_var_names(kv);
     let mut h = Hasher::new();
     h.update(b"gm.core.filter-env\0");
-    h.update(&(vars.len() as u64).to_le_bytes());
-    for (k, v) in &vars {
-        write_prefixed(&mut h, os_str_bytes(k).as_ref());
-        write_prefixed(&mut h, os_str_bytes(v).as_ref());
+    h.update(&(names.len() as u64).to_le_bytes());
+    for name in &names {
+        write_prefixed(&mut h, name.as_bytes());
+        match std::env::var_os(name) {
+            Some(v) => {
+                h.update(&[1u8]);
+                write_prefixed(&mut h, os_str_bytes(&v).as_ref());
+            }
+            None => {
+                h.update(&[0u8]);
+            }
+        }
     }
     *h.finalize().as_bytes()
+}
+
+/// The set of environment-variable names referenced across a driver's
+/// executable command lines. Sorted (a `BTreeSet`) so [`filter_env_digest`] is
+/// order-stable.
+fn referenced_env_var_names(kv: &BTreeMap<String, String>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for cmd_key in FILTER_COMMAND_KEYS {
+        if let Some(cmdline) = kv.get(cmd_key) {
+            scan_env_refs(cmdline, &mut names);
+        }
+    }
+    names
+}
+
+/// Collect POSIX-shell variable references (`$NAME`, `${NAME}`) from one command
+/// line into `out`. A name is `[A-Za-z_][A-Za-z0-9_]*`; a `$` not introducing a
+/// valid name (`$1`, `$$`, a trailing `$`) contributes nothing.
+///
+/// The scan is a conservative superset: it collects every syntactically
+/// referenced name regardless of quoting or escaping (a `$VAR` the shell would
+/// not actually expand inside `'single quotes'` is still keyed). Over-specifying
+/// identity this way is fail-closed — it can only reject a legitimate reuse, not
+/// serve a stale one — whereas under-scanning would risk a false cache hit.
+fn scan_env_refs(s: &str, out: &mut BTreeSet<String>) {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        if j < b.len() && b[j] == b'{' {
+            j += 1;
+        }
+        let start = j;
+        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+            j += 1;
+        }
+        if j > start && !b[start].is_ascii_digit() {
+            // The matched run is ASCII `[A-Za-z0-9_]`, so this never fails.
+            if let Ok(name) = std::str::from_utf8(&b[start..j]) {
+                out.insert(name.to_string());
+            }
+        }
+        // `j >= i + 1` always, so this makes progress past the `$`.
+        i = j;
+    }
 }
 
 /// Raw bytes of an `OsStr` for digesting. On Unix this is the exact byte
