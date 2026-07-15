@@ -7,18 +7,21 @@ import globalStyles from '~/styles/global.css?url';
 
 export const links: LinksFunction = () => [{ rel: 'stylesheet', href: globalStyles }];
 
+// charset and viewport are NOT declared here: a leaf route's `meta` export replaces the
+// root's entirely, so any route defining `meta` would silently drop them. They are
+// document-level invariants and are rendered unconditionally in <head> below.
 export const meta: MetaFunction = () => [
-  { charset: 'utf-8' },
-  { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-  { name: 'theme-color', content: '#0d1117' },
+  { name: 'theme-color', content: '#f2efe6' },
   { property: 'og:type', content: 'website' },
   { property: 'og:site_name', content: 'git-span' }
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
       </head>

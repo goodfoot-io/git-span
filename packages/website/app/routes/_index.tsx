@@ -1,5 +1,10 @@
+import { useRef } from 'react';
 import type { MetaFunction } from 'react-router';
 import { Link } from 'react-router';
+import { AutomotiveStub } from '~/components/marketing/story/AutomotiveStub';
+import { CLOSING, HERO, PHASE_COPY, STAGES } from '~/components/marketing/story/copy';
+import { deriveScene, TIMELINE, TimelineReadout, useTimeline } from '~/components/marketing/story/index';
+import { TerminalPlayer } from '~/components/marketing/story/TerminalPlayer';
 
 export const meta: MetaFunction = () => [
   { title: 'git-span -- Semantic code annotations for git' },
@@ -10,29 +15,131 @@ export const meta: MetaFunction = () => [
   }
 ];
 
-export default function Index() {
+// The narrative states, one scrolling step each. The hero is the unmeasured lead-in above them.
+const STORY_STEPS = TIMELINE.filter((phase) => phase.id !== 'hero');
+
+// Each step is as tall as its phase weight, so the steps sum to the timeline's scroll distance
+// and each step's scroll range lines up with its automotive state.
+function stepHeightClass(scrollVh: number): string {
+  if (scrollVh === 1.5) return 'min-h-[150vh]';
+  if (scrollVh === 0.5) return 'min-h-[50vh]';
+  return 'min-h-screen';
+}
+
+interface CtaLink {
+  label: string;
+  href: string;
+}
+
+function CtaButtons({ primary, secondary }: { primary: CtaLink; secondary: CtaLink }) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[calc(100vh-8rem)] px-6">
-      <div className="max-w-2xl text-center">
-        <h1 className="text-5xl font-bold tracking-tight text-ink-primary">
-          Git-native code annotations
-          <br />
-          <span className="text-accent">that ship with every commit</span>
-        </h1>
-        <p className="mt-6 text-lg text-ink-secondary leading-relaxed">
-          git-span lets you attach semantic annotations to regions of code, persist them alongside your source files,
-          and review them as your project evolves. No external service, no sync, no setup -- just plain files in your
-          repository.
-        </p>
-        <div className="mt-10">
-          <Link
-            to="/docs"
-            className="inline-flex items-center rounded-radius bg-accent px-6 py-3 text-sm font-semibold text-white hover:opacity-90 transition-opacity"
-          >
-            Read the docs
-          </Link>
-        </div>
+    <div className="flex flex-wrap items-center gap-4">
+      <a
+        href={primary.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center rounded-radius bg-ink-primary px-6 py-3 text-sm font-semibold text-ground-raised transition-opacity hover:opacity-90"
+      >
+        {primary.label}
+      </a>
+      <Link
+        to={secondary.href}
+        className="inline-flex items-center rounded-radius border border-rule px-6 py-3 text-sm font-semibold text-ink-primary transition-colors hover:bg-ground-raised"
+      >
+        {secondary.label}
+      </Link>
+    </div>
+  );
+}
+
+function HeroIntro() {
+  return (
+    <div className="max-w-md">
+      <h1 className="text-4xl font-bold leading-tight tracking-tight text-ink-primary sm:text-5xl">
+        {HERO.headline.map((segment) =>
+          segment.code ? (
+            <span key={segment.text} className="font-mono">
+              {segment.text}
+            </span>
+          ) : (
+            <span key={segment.text}>{segment.text}</span>
+          )
+        )}
+      </h1>
+      <p className="mt-6 text-lg leading-relaxed text-ink-secondary">{HERO.supporting}</p>
+      <div className="mt-8">
+        <CtaButtons primary={HERO.primaryCta} secondary={HERO.secondaryCta} />
       </div>
+    </div>
+  );
+}
+
+export default function Index() {
+  const firstStepRef = useRef<HTMLDivElement | null>(null);
+  const t = useTimeline(firstStepRef);
+  const scene = deriveScene(t);
+
+  return (
+    <div className="bg-ground text-ink-primary">
+      {/*
+        Persistent split screen. The left column scrolls: a hero lead-in, then one terminal step
+        per state, each with its prose above it. The right column is pinned and scrubs through the
+        automotive states as those steps scroll past.
+      */}
+      <section className="w-full">
+        <div className="grid grid-cols-1 lg:grid-cols-12">
+          <div className="px-6 lg:col-span-5 lg:pr-8 lg:pl-12">
+            {/*
+              Unmeasured full-viewport hero lead-in. It gives the first measured step a viewport
+              of content above it, so at rest that step sits at the viewport bottom and the timeline
+              resolves to t=0. Scrolling through the hero is the timeline's first (hero) state.
+            */}
+            <div className="flex min-h-screen flex-col justify-center">
+              <HeroIntro />
+            </div>
+
+            {STORY_STEPS.map((phase, index) => {
+              const stageId = PHASE_COPY[phase.id].stage;
+              const stage = stageId ? STAGES[stageId] : null;
+              return (
+                <div
+                  key={phase.id}
+                  ref={index === 0 ? firstStepRef : undefined}
+                  className={`flex flex-col justify-center gap-6 py-12 ${stepHeightClass(phase.scrollVh)}`}
+                >
+                  <TerminalPlayer state={phase.id} />
+                  {stage && (
+                    <div className="max-w-md">
+                      <h2 className="text-2xl font-semibold text-ink-primary sm:text-3xl">{stage.headline}</h2>
+                      <p className="mt-3 text-base leading-relaxed text-ink-secondary">{stage.body}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/*
+            Full-bleed media. The column runs to the right viewport edge so the automotive
+            occupies the right side generously, per the report's "cropped technical cutaway".
+          */}
+          <div className="lg:col-span-7">
+            <div className="flex h-[28rem] items-stretch px-6 py-12 lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:px-0 lg:py-6 lg:pr-6">
+              <AutomotiveStub scene={scene} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Closing */}
+      <section className="mx-auto max-w-2xl px-6 py-32 text-center">
+        <h2 className="text-3xl font-bold tracking-tight text-ink-primary sm:text-4xl">{CLOSING.headline}</h2>
+        <div className="mt-8 flex justify-center">
+          <CtaButtons primary={CLOSING.primaryCta} secondary={CLOSING.secondaryCta} />
+        </div>
+      </section>
+
+      <TimelineReadout t={t} />
     </div>
   );
 }

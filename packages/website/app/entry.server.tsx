@@ -29,7 +29,9 @@ export default async function handleRequest(
     await Promise.race([body.allReady, new Promise((resolve) => setTimeout(resolve, 10_000))]);
   }
 
-  responseHeaders.set('Content-Type', 'text/html');
+  // Without an explicit charset the browser decodes the UTF-8 stream as Latin-1,
+  // which mojibakes every non-ASCII byte and breaks hydration.
+  responseHeaders.set('Content-Type', 'text/html; charset=utf-8');
   return new Response(body, {
     headers: responseHeaders,
     status: responseStatusCode
