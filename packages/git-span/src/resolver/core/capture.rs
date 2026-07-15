@@ -30,18 +30,40 @@
 //! for their concrete program, resolved through the same `PATH`/relative-to-
 //! worktree rules a spawned filter child obeys (see
 //! [`crate::resolver::layers::filter_process`]), and the resolved executable's
-//! bytes are BLAKE3-digested. The environment digest covers only the variables
-//! a filter command *declares* it consumes — those its `clean`/`smudge`/
-//! `process` command lines reference via shell substitution (`$VAR`/`${VAR}`),
-//! which `sh -c` expands at spawn time (`spawn_custom_filter_process`). Ambient
-//! variables no filter command references — `PWD`, `OLDPWD`, `TERM`, `SHLVL`,
-//! terminal/session identity, editor injections — cannot change what a filter
-//! produces for a given blob, so they never enter the digest and therefore
-//! never fragment the key across working directories, terminals, or sibling
-//! worktrees. (Card main-157: folding the whole `vars_os()` environment in
-//! defeated warm-hit and cross-worktree reuse on every git-lfs-configured
-//! machine, since `git lfs install` writes a global `filter.lfs.*` driver whose
-//! identity then absorbed every `PWD`/session change.) When any
+//! bytes are BLAKE3-digested.
+//!
+//! The environment digest is computed by driver *class*, because a driver's
+//! *total* environment dependency can be proven complete only for the known,
+//! dedicated LFS driver — never for an arbitrary `sh -c` driver:
+//!
+//! - **The known LFS driver** (`filter.lfs`, `crate::types::is_core_filter`)
+//!   runs through the dedicated `git-lfs filter-process` spawn
+//!   (`spawn_lfs_process`): a fixed-argument, content-addressed transform whose
+//!   output for a given blob is the stored LFS object, not a function of ambient
+//!   variables. Its env digest covers only the variables its command lines
+//!   *declare* via shell substitution (`$VAR`/`${VAR}`); git-lfs references
+//!   none, so this is the fixed empty-set digest, identical across every working
+//!   directory, terminal, and sibling worktree. That is what restores warm-hit
+//!   and cross-worktree reuse on every git-lfs-configured machine — folding the
+//!   whole `vars_os()` environment in defeated it, since `git lfs install`
+//!   writes a global `filter.lfs.*` driver whose identity then absorbed every
+//!   `PWD`/session change.
+//! - **Arbitrary custom drivers** run through `sh -c <cmd>`
+//!   (`spawn_custom_filter_process`) with NO `env_clear`, so the child inherits
+//!   the FULL process environment and can read any variable internally via
+//!   `getenv` — `envsubst` substituting `$VAR` into file CONTENT, a
+//!   `decrypt --key-env SECRET_KEY` binary reading `$SECRET_KEY`. A command-line
+//!   `$VAR` scan is a sound lower bound on *referenced* names but not a proof of
+//!   *total* dependency, so keying only referenced names would be fail-OPEN: a
+//!   changed variable the scan cannot see would serve a stale exact hit. These
+//!   drivers therefore key the WHOLE process environment (fail-closed): any env
+//!   change fragments the key rather than risk a false hit (CLAUDE.md
+//!   `<fail-closed>`). The over-broad whole-`vars_os()` digest this restores for
+//!   custom drivers was never *wrong*; the Phase 6 narrowing traded its
+//!   correctness for a false-hit risk, which holds only for the LFS driver whose
+//!   spawn path is dedicated and known.
+//!
+//! When any
 //! command's program cannot be resolved to a concrete executable file — command
 //! not found, not executable, unparseable, or a bare repository with no worktree
 //! — `executable_digest` stays `None` and
@@ -460,9 +482,11 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
     // against the worktree — the same for every driver — so reuse the
     // executable-content cache across drivers (the common case — git-lfs
     // `clean`/`smudge`/`process` — is one 11 MiB binary shared by three
-    // commands, digested once). The environment digest is per-driver: it binds
-    // only the variables that driver's own command lines reference (see
-    // `filter_env_digest`), so an unrelated ambient variable never fragments it.
+    // commands, digested once). The environment digest is per-driver AND
+    // per-class: the known LFS driver binds only its referenced variables (none,
+    // so an unrelated ambient variable never fragments it), while an arbitrary
+    // custom `sh -c` driver binds the whole environment fail-closed (see
+    // `filter_env_digest`), since its internal `getenv` reads cannot be proven.
     let workdir = crate::git::work_dir(repo).ok().map(Path::to_path_buf);
     let mut content_cache: HashMap<PathBuf, Option<[u8; 32]>> = HashMap::new();
 
@@ -477,11 +501,12 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
             let executable_digest = workdir
                 .as_deref()
                 .and_then(|wd| filter_executable_digest(&kv, wd, &mut content_cache));
+            let env_digest = Some(filter_env_digest(&driver, &kv));
             FilterDependency {
                 driver,
                 command,
                 executable_digest,
-                env_digest: Some(filter_env_digest(&kv)),
+                env_digest,
             }
         })
         .collect()
@@ -595,6 +620,29 @@ fn executable_content_digest(
     digest
 }
 
+/// Environment digest for one filter driver, computed by driver *class* so a
+/// driver's env dependency is keyed exactly as completely as it can be proven.
+///
+/// * The **known LFS driver** (`crate::types::is_core_filter`) runs through the
+///   dedicated `git-lfs filter-process` spawn (`spawn_lfs_process`), a
+///   fixed-argument content-addressed transform. Its dependency is provably the
+///   variables its own command lines reference (none, for git-lfs), so it takes
+///   the narrow [`declared_env_digest`] — the fixed empty-set digest, identical
+///   across every working directory, terminal, and sibling worktree.
+/// * Every **arbitrary custom driver** runs through `sh -c <cmd>`
+///   (`spawn_custom_filter_process`) with no `env_clear` and can read any
+///   variable internally (`getenv`), which a command-line `$VAR` scan cannot
+///   detect. It therefore takes the fail-closed [`whole_env_digest`]: the whole
+///   process environment, so any env change fragments the key rather than
+///   risking a stale exact hit (CLAUDE.md `<fail-closed>`).
+fn filter_env_digest(driver: &str, kv: &BTreeMap<String, String>) -> [u8; 32] {
+    if crate::types::is_core_filter(driver) {
+        declared_env_digest(kv)
+    } else {
+        whole_env_digest()
+    }
+}
+
 /// BLAKE3 digest of the environment variables a filter driver *declares* it
 /// depends on: those its `clean`/`smudge`/`process` command lines reference via
 /// shell substitution (`$VAR`/`${VAR}`), which `sh -c` expands at spawn time
@@ -605,11 +653,11 @@ fn executable_content_digest(
 /// git-lfs case) yields the fixed empty-set digest, identical across every
 /// working directory, terminal, and sibling worktree.
 ///
-/// Variables no command references — `PWD`, `OLDPWD`, `TERM`, session identity
-/// — never participate, so they cannot fragment the key. This is the exact
-/// scope the finding requires: filter-relevant identity only, not the whole
-/// `vars_os()` environment.
-fn filter_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
+/// Sound ONLY for a driver whose *total* env dependency is known bounded — the
+/// dedicated LFS driver. For arbitrary `sh -c` drivers this is a lower bound on
+/// referenced names, not a proof of total dependency, so [`filter_env_digest`]
+/// routes those to [`whole_env_digest`] instead.
+fn declared_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
     let names = referenced_env_var_names(kv);
     let mut h = Hasher::new();
     h.update(b"gm.core.filter-env\0");
@@ -625,6 +673,32 @@ fn filter_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
                 h.update(&[0u8]);
             }
         }
+    }
+    *h.finalize().as_bytes()
+}
+
+/// Fail-closed environment digest for an arbitrary custom `sh -c` filter driver:
+/// a BLAKE3 digest over the ENTIRE process environment as sorted, length-prefixed
+/// `(name, value)` pairs. `spawn_custom_filter_process` runs the driver via
+/// `sh -c <cmd>` with no `env_clear`, so the child inherits every ambient
+/// variable and may read any of them internally (`getenv`) — `envsubst`
+/// substituting `$VAR` into file CONTENT, a `decrypt --key-env SECRET_KEY` binary
+/// reading `$SECRET_KEY`. A command-line `$VAR` scan proves only *referenced*
+/// names, not a driver's *total* dependency, so keying only those would be
+/// fail-OPEN: a changed variable the scan cannot see would serve a stale exact
+/// hit. Keying the whole environment fails closed — any env change fragments the
+/// key. The cost (no reuse across ambient env changes for custom-filter repos) is
+/// the correct trade for a dependency that cannot be statically proven complete.
+fn whole_env_digest() -> [u8; 32] {
+    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+        std::env::vars_os().collect();
+    vars.sort();
+    let mut h = Hasher::new();
+    h.update(b"gm.core.filter-env-full\0");
+    h.update(&(vars.len() as u64).to_le_bytes());
+    for (name, value) in &vars {
+        write_prefixed(&mut h, os_str_bytes(name).as_ref());
+        write_prefixed(&mut h, os_str_bytes(value).as_ref());
     }
     *h.finalize().as_bytes()
 }

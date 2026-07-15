@@ -420,20 +420,24 @@ fn set_filter_clean(dir: &Path, driver: &str, cmd: &str) {
     git(dir, &["config", &format!("filter.{driver}.clean"), cmd]);
 }
 
-// An environment variable NO filter command references — the finding's `PWD`,
-// terminal, or session-identity class — must not move the env digest or the
-// canonical key. This is the direction the whole-`vars_os()` digest broke:
-// a working-directory or terminal change minted a fresh key at the same clean
-// HEAD, defeating warm-hit and cross-worktree reuse.
+// An ambient variable no LFS command references — the finding's `PWD`,
+// terminal, or session-identity class — must not move the LFS driver's env
+// digest or the canonical key. The LFS driver is the ONE class for which the
+// narrow (referenced-only) digest is sound: its dedicated `git-lfs
+// filter-process` spawn is a fixed-argument, content-addressed transform, not a
+// `getenv`-reading `sh -c` command. This is the direction the whole-`vars_os()`
+// digest broke — a working-directory or terminal change minted a fresh key at
+// the same clean HEAD, defeating warm-hit and cross-worktree reuse on every
+// git-lfs-configured machine.
 #[test]
-fn unrelated_env_variation_does_not_change_key_with_filter() {
+fn unrelated_env_variation_does_not_change_key_with_lfs() {
     isolate_global_git_config();
     let (td, _repo) = repo_with_span();
     let exe_dir = tempfile::tempdir().expect("exe tempdir");
-    let exe = exe_dir.path().join("plain.sh");
+    let exe = exe_dir.path().join("git-lfs.sh");
     write_executable(&exe, "#!/bin/sh\ncat\n");
-    // A command that references no environment variable.
-    set_filter_clean(td.path(), "plain", &format!("{} %f", exe.display()));
+    // The known LFS driver, whose command references no environment variable.
+    set_filter_clean(td.path(), "lfs", &format!("{} %f", exe.display()));
 
     let opts = EngineOptions::full();
 
@@ -443,7 +447,7 @@ fn unrelated_env_variation_does_not_change_key_with_filter() {
     }
     let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
 
-    // Vary only variables the filter does not reference.
+    // Vary only variables the LFS driver does not reference.
     unsafe {
         std::env::set_var("PWD", "/opt/somewhere-else");
         std::env::set_var("GIT_SPAN_UNRELATED_ENV", "two");
@@ -451,33 +455,82 @@ fn unrelated_env_variation_does_not_change_key_with_filter() {
     let t2 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 2");
 
     assert_eq!(
-        filter_dep(&t1, "plain").env_digest,
-        filter_dep(&t2, "plain").env_digest,
-        "an unreferenced env var must not move the filter env digest"
+        filter_dep(&t1, "lfs").env_digest,
+        filter_dep(&t2, "lfs").env_digest,
+        "an unreferenced env var must not move the LFS driver's env digest"
     );
     assert_eq!(
         t1.canonical_key_digest(),
         t2.canonical_key_digest(),
-        "unrelated env variation must not change the canonical key (warm hit holds)"
+        "unrelated env variation must not change the canonical key for LFS (warm hit holds)"
     );
     unsafe {
         std::env::remove_var("GIT_SPAN_UNRELATED_ENV");
     }
 }
 
-// The other direction: a variable a filter command genuinely references (via
-// `$VAR`, which `sh -c` expands at spawn time) IS a declared dependency, so
-// changing its value must change the env digest and the canonical key —
-// narrowing scope must not blind the key to a real filter-behavior input.
+// The finding's core fail-open case, now closed: an `envsubst`-style CUSTOM
+// filter whose command line references NO variable at all, yet whose content
+// transform depends on ambient variables (`envsubst` reads `$VAR` from the
+// environment and substitutes it into the file body). Under the prior narrowing,
+// its env digest was the empty set regardless of which variables actually drove
+// the substitution, so changing one produced the same key — a stale exact hit.
+// A non-LFS driver now keys the whole environment, so that change invalidates.
 #[test]
-fn referenced_env_variation_changes_key() {
+fn envsubst_style_custom_filter_invalidates_on_unreferenced_env_change() {
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("envsubst.sh");
+    write_executable(&exe, "#!/bin/sh\nenvsubst\n");
+    // No `$VAR` anywhere on the command line: a naive command-line scan sees an
+    // empty dependency set, yet the transform reads the environment internally.
+    set_filter_clean(td.path(), "tmpl", &format!("{} %f", exe.display()));
+
+    let opts = EngineOptions::full();
+
+    unsafe {
+        std::env::set_var("GIT_SPAN_TEMPLATE_VALUE", "first");
+    }
+    let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
+
+    // Change a variable the command line never mentions but the filter reads.
+    unsafe {
+        std::env::set_var("GIT_SPAN_TEMPLATE_VALUE", "second");
+    }
+    let t2 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 2");
+
+    assert_ne!(
+        filter_dep(&t1, "tmpl").env_digest,
+        filter_dep(&t2, "tmpl").env_digest,
+        "a custom filter that reads env internally must key on it (whole-env digest)"
+    );
+    assert_ne!(
+        t1.canonical_key_digest(),
+        t2.canonical_key_digest(),
+        "changing an internally-read env var must invalidate the key (no stale exact hit)"
+    );
+    unsafe {
+        std::env::remove_var("GIT_SPAN_TEMPLATE_VALUE");
+    }
+}
+
+// A custom `sh -c` driver's env dependency cannot be statically proven complete
+// (its child may `getenv` any variable), so it is keyed on the WHOLE process
+// environment, fail-closed. BOTH a variable it references on its command line
+// AND one it does not must move the env digest and the canonical key — the
+// codebase cannot tell "genuinely no internal env reads" from "just no
+// command-line reference", so it treats every non-LFS driver uniformly rather
+// than risk a false hit. (Contrast `unrelated_env_variation_does_not_change_key_with_lfs`,
+// where the narrow digest is sound because the LFS spawn is dedicated and known.)
+#[test]
+fn custom_filter_env_variation_changes_key_whole_env() {
     isolate_global_git_config();
     let (td, _repo) = repo_with_span();
     let exe_dir = tempfile::tempdir().expect("exe tempdir");
     let exe = exe_dir.path().join("keyed.sh");
     write_executable(&exe, "#!/bin/sh\ncat\n");
-    // The command substitutes an environment variable, so its value is part of
-    // what the filter actually runs.
+    // A custom driver that happens to reference one variable on its command line.
     set_filter_clean(
         td.path(),
         "keyed",
@@ -488,57 +541,62 @@ fn referenced_env_variation_changes_key() {
 
     unsafe {
         std::env::set_var("GIT_SPAN_FILTER_KEY", "alpha");
+        std::env::set_var("GIT_SPAN_UNREFERENCED", "one");
     }
     let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
 
+    // Changing the command-line-referenced variable moves the key.
     unsafe {
         std::env::set_var("GIT_SPAN_FILTER_KEY", "beta");
     }
     let t2 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 2");
-
     assert_ne!(
         filter_dep(&t1, "keyed").env_digest,
         filter_dep(&t2, "keyed").env_digest,
-        "a referenced env var's value change must move the filter env digest"
+        "a referenced env var's value change must move the custom filter env digest"
     );
     assert_ne!(
         t1.canonical_key_digest(),
         t2.canonical_key_digest(),
-        "a real declared filter dependency must still change the canonical key (no false hit)"
+        "a referenced filter dependency must change the canonical key (no false hit)"
     );
 
-    // And an unreferenced variable still does not perturb the same filter.
+    // And, unlike the LFS driver, a variable the command does NOT reference also
+    // moves the key: the whole-environment digest is fail-closed for a driver
+    // whose internal `getenv` reads cannot be proven.
     unsafe {
-        std::env::set_var("GIT_SPAN_FILTER_KEY", "beta");
-        std::env::set_var("PWD", "/somewhere/new");
+        std::env::set_var("GIT_SPAN_UNREFERENCED", "two");
     }
     let t3 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 3");
-    assert_eq!(
+    assert_ne!(
         t2.canonical_key_digest(),
         t3.canonical_key_digest(),
-        "changing PWD (unreferenced) must not change the key even when a filter references another var"
+        "a custom filter keys the whole environment: even an unreferenced var change must move the key (fail closed)"
     );
     unsafe {
         std::env::remove_var("GIT_SPAN_FILTER_KEY");
+        std::env::remove_var("GIT_SPAN_UNREFERENCED");
     }
 }
 
-// End-to-end cross-worktree reuse with a filter configured: two linked
+// End-to-end cross-worktree reuse with the LFS filter configured: two linked
 // worktrees at the identical clean HEAD, captured under DIFFERENT ambient
 // environments (as two separate CLI invocations from different directories
 // would be), must produce the same canonical key — an immediate exact hit.
-// The whole-`vars_os()` digest made this structurally impossible whenever any
-// filter was configured; content-based identity plus a filter-relevant env
-// digest restores it.
+// The whole-`vars_os()` digest made this structurally impossible whenever
+// git-lfs was configured; the LFS driver's narrow (empty) env digest plus
+// content-based identity restores it. This is the Phase 6 win the fail-closed
+// custom-filter treatment must NOT regress — LFS keeps the narrow digest
+// because its dedicated `git-lfs filter-process` spawn is content-addressed.
 #[test]
-fn cross_worktree_exact_hit_with_filter() {
+fn cross_worktree_exact_hit_with_lfs_filter() {
     isolate_global_git_config();
     let (td, _repo) = repo_with_span();
     let exe_dir = tempfile::tempdir().expect("exe tempdir");
-    let exe = exe_dir.path().join("shared.sh");
+    let exe = exe_dir.path().join("git-lfs.sh");
     write_executable(&exe, "#!/bin/sh\ncat\n");
     // Repo-local config lives in `.git/config`, shared by every linked worktree.
-    set_filter_clean(td.path(), "shared", &format!("{} %f", exe.display()));
+    set_filter_clean(td.path(), "lfs", &format!("{} %f", exe.display()));
 
     // Link a second worktree at the same commit.
     let linked = tempfile::tempdir().expect("linked worktree tempdir");
