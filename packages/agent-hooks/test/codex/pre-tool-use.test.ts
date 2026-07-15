@@ -8,6 +8,8 @@
  * for an apply_patch envelope; no real `git span` is invoked.
  */
 
+import * as fs from 'node:fs';
+import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ReadPreEditFile } from '../../src/codex/apply-patch.js';
@@ -132,6 +134,33 @@ describe('codex pre-tool-use surfacing', () => {
     expect(calls[1].args).toEqual(['billing/checkout']);
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('billing/checkout span output');
     expect(result.stdout.systemMessage).toContain('billing/checkout span output');
+  });
+
+  it('surfaces via the real reader when process.cwd differs from the payload cwd', async () => {
+    // No injected reader: createHandler falls back to defaultReadPreEditFile,
+    // which must resolve the hunk path against the payload cwd — not the hook
+    // process's process.cwd(). This drives the genuine filesystem read.
+    const { executor, setResponse } = createFakeExecutor();
+    setResponse('--porcelain foo.ts', porcelainLine('billing/checkout', 'foo.ts', 2, 4));
+    setResponse('billing/checkout', 'billing/checkout span output');
+    const { memoFactory } = createMemoryMemoFactory();
+    const handler = createHandler(executor, memoFactory, noRules, noDrift);
+
+    // Genuine pre-edit content lives in the payload-cwd repo …
+    fs.writeFileSync(join(repo.root, 'foo.ts'), PRE_EDIT);
+    // … but the hook runs from an unrelated working directory.
+    const foreign = makeTempRepo();
+    const savedCwd = process.cwd();
+    process.chdir(foreign.root);
+    try {
+      const input = preInput({ cwd: repo.root, tool_input: { command: envelope() } });
+      const result = toResult(await handler(input as never, { logger }));
+      expect(result.stdout.systemMessage).toContain('billing/checkout span output');
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('billing/checkout span output');
+    } finally {
+      process.chdir(savedCwd);
+      foreign.cleanup();
+    }
   });
 
   it('dedupes a span already surfaced this session', async () => {

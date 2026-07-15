@@ -63,7 +63,17 @@ export function createHandler(
     // Parse the envelope into per-file anchors, then surface spans overlapping
     // each recovered range. One envelope may touch several files; the shared
     // memo dedupes across anchors within this call and across the session.
-    const anchors = parseApplyPatch(command, readPreEditFile);
+    //
+    // Range recovery reads each hunk's pre-edit content. The apply_patch header
+    // carries a repo-root-relative path (`checkout.ts`), so bind the reader to
+    // the payload `cwd` — resolving the path against the patch base dir before
+    // reading, exactly like `abspathAgainst(cwd, …)` below and the Claude
+    // adapter's absolute paths. Without this the default reader would resolve
+    // against the hook process's `process.cwd()`; when Codex launches the hook
+    // from any other directory the read returns null → range null → the span is
+    // silently dropped and the user sees no `<git-span>` block.
+    const readAgainstCwd: ReadPreEditFile = (path) => readPreEditFile(abspathAgainst(cwd, path));
+    const anchors = parseApplyPatch(command, readAgainstCwd);
     const blocks: string[] = [];
     for (const anchor of anchors) {
       // Whole-file writes/creates carry no range — nothing to intersect on.
