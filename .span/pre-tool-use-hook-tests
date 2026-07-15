@@ -1,3 +1,3 @@
-packages/agent-hooks/test/pre-tool-use.test.ts#L996-L1012 rk64:736d5815a5d173ee
+packages/agent-hooks/test/claude/pre-tool-use.test.ts#L1003-L1019 rk64:736d5815a5d173ee
 
 PreToolUse hook tests verify that anchors inside the span root are filtered out and never surfaced to the model.

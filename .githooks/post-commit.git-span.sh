@@ -6,7 +6,7 @@
 command -v node >/dev/null 2>&1 || exit 0
 
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-DISPATCHER="${REPO_ROOT}/plugins/git-span/hooks/bin/dispatcher.mjs"
+DISPATCHER="${REPO_ROOT}/plugins-claude/git-span/hooks/bin/dispatcher.mjs"
 [ -f "$DISPATCHER" ] || exit 0
 
 # Capture HEAD before backgrounding so the dispatcher uses the commit that

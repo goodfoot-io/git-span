@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { toPosix } from '../src/pre-tool-use.js';
+import { toPosix } from '../src/claude/pre-tool-use.js';
 
 /**
  * Initialise an empty git repo in a fresh temp directory and return its

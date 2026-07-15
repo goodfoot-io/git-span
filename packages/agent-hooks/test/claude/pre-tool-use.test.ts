@@ -13,10 +13,10 @@ import hook, {
   type MemoStore,
   type SpanExecutor,
   type StaleExecutor
-} from '../src/pre-tool-use.js';
-import { type HookIgnoreLoader, parseHookIgnore } from '../src/span-ignore.js';
-import { journalPath, loadJournal } from '../src/stop.js';
-import { makeTempRepo } from './helpers.js';
+} from '../../src/claude/pre-tool-use.js';
+import { journalPath, loadJournal } from '../../src/claude/stop.js';
+import { type HookIgnoreLoader, parseHookIgnore } from '../../src/common/span-ignore.js';
+import { makeTempRepo } from '../helpers.js';
 
 const logger = new Logger();
 

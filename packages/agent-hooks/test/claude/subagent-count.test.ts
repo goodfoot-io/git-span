@@ -16,7 +16,7 @@ import {
   incrementSubagentCount,
   readSubagentCount,
   subagentCountPath
-} from '../src/agent-hooks-common.js';
+} from '../../src/common/agent-hooks-common.js';
 
 const logger = new Logger();
 

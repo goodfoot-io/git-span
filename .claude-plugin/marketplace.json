@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "git-span",
-      "source": "./plugins/git-span",
+      "source": "./plugins-claude/git-span",
       "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
       "version": "1.0.134",
       "category": "git",

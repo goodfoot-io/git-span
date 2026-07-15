@@ -23,7 +23,7 @@ import {
   postCommitDir,
   preCommitDir,
   readJsonFile
-} from '../src/agent-hooks-common.js';
+} from '../../src/common/agent-hooks-common.js';
 import {
   anchorsIntersectChangedPaths,
   areAnchorsClean,
@@ -41,8 +41,8 @@ import {
   reclaim,
   sweepClaimDir,
   writeManualDispatchScript
-} from '../src/dispatcher.js';
-import { makeTempRepo } from './helpers.js';
+} from '../../src/common/dispatcher.js';
+import { makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -92,7 +92,7 @@ skimmability.
 
 ## Hook injections vs. CLI stale output
 
-The PreToolUse hook in `plugins/git-span/hooks.json` does **not** call
+The PreToolUse hook in `plugins-claude/git-span/hooks.json` does **not** call
 `git span stale`. It calls `git span list <names…>` for spans whose anchors
 overlap the tool's line range, wrapping the output in `<git-span>…</git-span>`
 and injecting it as a `systemMessage`. See `./understanding-hook-output.md`

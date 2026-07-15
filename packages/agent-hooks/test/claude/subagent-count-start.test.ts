@@ -6,8 +6,8 @@
 import * as fs from 'node:fs';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readSubagentCount, subagentCountPath } from '../src/agent-hooks-common.js';
-import hook from '../src/subagent-count-start.js';
+import hook from '../../src/claude/subagent-count-start.js';
+import { readSubagentCount, subagentCountPath } from '../../src/common/agent-hooks-common.js';
 
 const logger = new Logger();
 

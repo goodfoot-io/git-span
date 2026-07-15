@@ -6,7 +6,7 @@
  */
 
 import { subagentStopHook, subagentStopOutput } from '@goodfoot/claude-code-hooks';
-import { decrementSubagentCount } from './agent-hooks-common.js';
+import { decrementSubagentCount } from '../common/agent-hooks-common.js';
 
 export default subagentStopHook({}, (input, { logger }) => {
   decrementSubagentCount(input.session_id, logger);

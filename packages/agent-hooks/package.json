@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "yarn build:hooks && yarn build:dispatcher",
-    "build:dispatcher": "node -e \"require('esbuild').buildSync({entryPoints:['src/dispatcher.ts'],bundle:true,platform:'node',format:'esm',loader:{'.md':'text'},outfile:'../../plugins/git-span/hooks/bin/dispatcher.mjs'})\"",
-    "build:hooks": "claude-code-hooks -i \"src/**/*.ts\" -o \"../../plugins/git-span/hooks/hooks.json\"",
+    "build:dispatcher": "node -e \"require('esbuild').buildSync({entryPoints:['src/common/dispatcher.ts'],bundle:true,platform:'node',format:'esm',loader:{'.md':'text'},outfile:'../../plugins-claude/git-span/hooks/bin/dispatcher.mjs'})\"",
+    "build:hooks": "claude-code-hooks -i \"src/claude/**/*.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\"",
     "test": "vitest run",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"

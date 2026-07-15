@@ -8,7 +8,7 @@
  */
 
 import { subagentStartHook, subagentStartOutput } from '@goodfoot/claude-code-hooks';
-import { incrementSubagentCount } from './agent-hooks-common.js';
+import { incrementSubagentCount } from '../common/agent-hooks-common.js';
 
 export default subagentStartHook({}, (input, { logger }) => {
   incrementSubagentCount(input.session_id, logger);

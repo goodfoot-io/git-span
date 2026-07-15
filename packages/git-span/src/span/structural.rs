@@ -212,7 +212,7 @@ const HOOKIGNORE_CONTENTS: &str = "\
 #   matching paths. A slug carries a prefix when it equals the prefix
 #   or begins with \"<prefix>/\".
 #
-# Full specification: plugins/git-span/skills/git-span/sections/hookignore.md
+# Full specification: plugins-claude/git-span/skills/git-span/sections/hookignore.md
 #
 # This file is inert when it contains no active rules (all comment and
 # blank lines). Add rules below.

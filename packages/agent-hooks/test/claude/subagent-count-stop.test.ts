@@ -6,13 +6,13 @@
 import * as fs from 'node:fs';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, describe, expect, it } from 'vitest';
+import hook from '../../src/claude/subagent-count-stop.js';
 import {
   decrementSubagentCount,
   incrementSubagentCount,
   readSubagentCount,
   subagentCountPath
-} from '../src/agent-hooks-common.js';
-import hook from '../src/subagent-count-stop.js';
+} from '../../src/common/agent-hooks-common.js';
 
 const logger = new Logger();
 

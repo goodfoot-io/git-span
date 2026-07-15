@@ -1,4 +1,4 @@
-plugins/git-span/agents/expert.md rk64:9d2f29ac7857d542
-plugins/git-span/skills/git-span/SKILL.md rk64:ccd8c2c5ea8e9b99
+plugins-claude/git-span/agents/expert.md rk64:b08c7abe49f2528d
+plugins-claude/git-span/skills/git-span/SKILL.md rk64:f57f18ac1e757153
 
 Span-expert agent guides authors to create spans and relies on the handbook skill for mechanics; both change when the span authoring workflow evolves.

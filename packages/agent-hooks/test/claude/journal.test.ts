@@ -13,9 +13,9 @@ import * as nodePath from 'node:path';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sanitizeSessionId } from '../src/agent-hooks-common.js';
-import { createHandler, type MemoFactory, type SpanExecutor } from '../src/pre-tool-use.js';
-import { makeTempRepo } from './helpers.js';
+import { createHandler, type MemoFactory, type SpanExecutor } from '../../src/claude/pre-tool-use.js';
+import { sanitizeSessionId } from '../../src/common/agent-hooks-common.js';
+import { makeTempRepo } from '../helpers.js';
 
 const logger = new Logger();
 

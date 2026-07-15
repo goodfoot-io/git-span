@@ -24,8 +24,8 @@ import {
   resolveRepoRoot,
   sanitizeSessionId,
   type TouchKind
-} from './agent-hooks-common.js';
-import type { HookIgnoreLoader } from './span-ignore.js';
+} from '../common/agent-hooks-common.js';
+import type { HookIgnoreLoader } from '../common/span-ignore.js';
 
 // ---------------------------------------------------------------------------
 // Types

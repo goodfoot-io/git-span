@@ -43,8 +43,8 @@ import {
   sanitizeSessionId,
   type TouchKind,
   toPosix
-} from './agent-hooks-common.js';
-import { type HookIgnoreLoader, isSpanSuppressed, loadHookIgnore } from './span-ignore.js';
+} from '../common/agent-hooks-common.js';
+import { type HookIgnoreLoader, isSpanSuppressed, loadHookIgnore } from '../common/span-ignore.js';
 
 // Re-export for backward-compat of test imports (tests import these from here)
 export { toPosix };

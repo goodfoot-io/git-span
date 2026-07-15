@@ -25,7 +25,7 @@ These files are the public guidance surfaces most likely to drift when the CLI c
 
 - The [README CLI section](/README.md#L18-L55) is the reader-facing quick reference for common command shapes, exit code semantics, and `--format` placeholders.
 - The [repository `CLAUDE.md` git-span instructions](/CLAUDE.md#L97-L118) shape how agents in this workspace are told to stage and commit spans.
-- The [git-span skill](/plugins/git-span/skills/git-span/SKILL.md), bundled with the `git-span` plugin and tracked in this repo, is the highest-leverage agent workflow contract for creating, updating, and querying spans. Its [finding-span-candidates section](/plugins/git-span/skills/git-span/sections/finding-span-candidates.md) (backed by `scripts/mine.mjs`) is the topic within that same skill that guides agents through identifying and recording implicit semantic dependencies — coupling that has no schema or test enforcement.
+- The [git-span skill](/plugins-claude/git-span/skills/git-span/SKILL.md), bundled with the `git-span` plugin and tracked in this repo, is the highest-leverage agent workflow contract for creating, updating, and querying spans. Its [finding-span-candidates section](/plugins-claude/git-span/skills/git-span/sections/finding-span-candidates.md) (backed by `scripts/mine.mjs`) is the topic within that same skill that guides agents through identifying and recording implicit semantic dependencies — coupling that has no schema or test enforcement.
 - The [man page](/packages/git-span/man/git-span.1) is the installed reference for the CLI. It is generated from the Clap config; changes to command signatures surface here automatically on the next build, but prose descriptions require manual attention.
 
 If a documentation update changes the recommended operator workflow, all of these surfaces should be checked explicitly, not only the page that first exposed the inconsistency.
@@ -36,7 +36,7 @@ When git-span CLI behavior or documentation changes, use this order:
 
 1. Confirm the implementation in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L46-L174) (Clap config and Commands enum) and [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100) (pre-classification and dispatch).
 2. Update the primary user docs in [README.md](/README.md#L18-L55) and [CLAUDE.md](/CLAUDE.md#L97-L118).
-3. Update the agent workflow contract in the [git-span skill](/plugins/git-span/skills/git-span/SKILL.md).
+3. Update the agent workflow contract in the [git-span skill](/plugins-claude/git-span/skills/git-span/SKILL.md).
 4. Update secondary references such as the finding-span-candidates section and the man page.
 5. Run `wiki check` on the touched pages so fragment links validate and the page participates in `wiki stale`.
 

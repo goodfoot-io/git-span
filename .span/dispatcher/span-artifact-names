@@ -1,7 +1,7 @@
-packages/agent-hooks/src/dispatcher.ts#L59-L59 rk64:43a443bb2f0bae14
-packages/agent-hooks/src/dispatcher.ts#L625-L627 rk64:396b3d815c1fecb4
-packages/agent-hooks/src/dispatcher.ts#L704-L704 rk64:fdc0625e13fa9b2b
-packages/agent-hooks/src/dispatcher.ts#L751-L751 rk64:7a9da0be78dec9f8
+packages/agent-hooks/src/common/dispatcher.ts#L59-L59 rk64:43a443bb2f0bae14
+packages/agent-hooks/src/common/dispatcher.ts#L625-L627 rk64:396b3d815c1fecb4
+packages/agent-hooks/src/common/dispatcher.ts#L704-L704 rk64:fdc0625e13fa9b2b
+packages/agent-hooks/src/common/dispatcher.ts#L751-L751 rk64:7a9da0be78dec9f8
 packages/git-span/src/span/structural.rs#L78-L82 rk64:25c75bf08a1b27e5
 packages/git-span/src/span_file_reader.rs#L304-L335 rk64:225086718ef20a73
 

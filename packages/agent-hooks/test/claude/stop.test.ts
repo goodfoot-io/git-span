@@ -12,8 +12,6 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PreCommitRecord } from '../src/agent-hooks-common.js';
-import { incrementSubagentCount, subagentCountPath } from '../src/agent-hooks-common.js';
 import {
   buildAnchorSpecs,
   createStopHandler,
@@ -21,7 +19,9 @@ import {
   journalPath,
   loadJournal,
   type StopHandlerDeps
-} from '../src/stop.js';
+} from '../../src/claude/stop.js';
+import type { PreCommitRecord } from '../../src/common/agent-hooks-common.js';
+import { incrementSubagentCount, subagentCountPath } from '../../src/common/agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
 // Logger and hook context stub

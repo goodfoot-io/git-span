@@ -6,9 +6,9 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isInsideSpanRoot, resolveSpanRoot } from '../src/agent-hooks-common.js';
-import { isSpanSuppressed, loadHookIgnore, parseHookIgnore } from '../src/span-ignore.js';
-import { makeTempRepo } from './helpers.js';
+import { isInsideSpanRoot, resolveSpanRoot } from '../../src/common/agent-hooks-common.js';
+import { isSpanSuppressed, loadHookIgnore, parseHookIgnore } from '../../src/common/span-ignore.js';
+import { makeTempRepo } from '../helpers.js';
 
 describe('parseHookIgnore', () => {
   it('parses a pattern with comma-separated prefixes', () => {

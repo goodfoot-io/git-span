@@ -80,12 +80,12 @@ span candidate.
 ## End-to-End Workflow
 
 Identify implicit semantic dependencies in three passes. Paths below are
-relative to the git-span skill directory (`plugins/git-span/skills/git-span/`).
+relative to the git-span skill directory (`plugins-claude/git-span/skills/git-span/`).
 
 **1. Mine.** From the repo root:
 
 ```bash
-node plugins/git-span/skills/git-span/scripts/mine.mjs \
+node plugins-claude/git-span/skills/git-span/scripts/mine.mjs \
   --since=6.months --top=25 --no-gh
 ```
 
@@ -96,7 +96,7 @@ for the next step.
 **2. Shortlist.** Distill to actionable candidates:
 
 ```bash
-node plugins/git-span/skills/git-span/scripts/shortlist.mjs \
+node plugins-claude/git-span/skills/git-span/scripts/shortlist.mjs \
   --min-techniques=2
 ```
 
@@ -106,7 +106,7 @@ exactly 2 techniques deserve a look — verify with explain.
 **3. Explain.** For each candidate worth pursuing:
 
 ```bash
-node plugins/git-span/skills/git-span/scripts/explain.mjs \
+node plugins-claude/git-span/skills/git-span/scripts/explain.mjs \
   packages/foo/src/Foo.ts packages/bar/src/Bar.ts
 ```
 

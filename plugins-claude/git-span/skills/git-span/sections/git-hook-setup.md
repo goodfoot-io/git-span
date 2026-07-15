@@ -24,8 +24,8 @@ error handling, and retry logic lives in the dispatcher
 
 Reference shell scripts are provided at:
 
-- `plugins/git-span/hooks/git-hooks/post-commit`
-- `plugins/git-span/hooks/git-hooks/post-rewrite`
+- `plugins-claude/git-span/hooks/git-hooks/post-commit`
+- `plugins-claude/git-span/hooks/git-hooks/post-rewrite`
 
 Each script resolves the dispatcher relative to its own location on disk via
 `$0`, so it works regardless of where the plugin is installed. **Symlink
@@ -64,7 +64,7 @@ instead of replacing the event file:
 # scripts are tracked files, not symlinks, and $0 already points at their
 # real location in the repo
 REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
-DISPATCHER="${REPO_ROOT}/plugins/git-span/hooks/bin/dispatcher.mjs"
+DISPATCHER="${REPO_ROOT}/plugins-claude/git-span/hooks/bin/dispatcher.mjs"
 ```
 
 `post-commit`/`post-rewrite` are **advisory** events (they fire after the
@@ -85,14 +85,14 @@ finds `dispatcher.mjs` relative to its real location on disk -- copying instead
 of symlinking breaks this resolution.
 
 ```bash
-ln -s ../../plugins/git-span/hooks/git-hooks/post-commit .git/hooks/post-commit
+ln -s ../../plugins-claude/git-span/hooks/git-hooks/post-commit .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 ```
 
 ### post-rewrite
 
 ```bash
-ln -s ../../plugins/git-span/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
+ln -s ../../plugins-claude/git-span/hooks/git-hooks/post-rewrite .git/hooks/post-rewrite
 chmod +x .git/hooks/post-rewrite
 ```
 

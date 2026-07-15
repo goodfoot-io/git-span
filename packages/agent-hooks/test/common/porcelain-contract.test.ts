@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parsePorcelain, parseStalePorcelain } from '../src/agent-hooks-common.js';
+import { parsePorcelain, parseStalePorcelain } from '../../src/common/agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
 // Git-span availability check
