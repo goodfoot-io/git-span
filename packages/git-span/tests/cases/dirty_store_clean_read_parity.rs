@@ -10,8 +10,8 @@
 //! intervening commit, the warm-clean path replayed those poisoned worktree
 //! anchors — phantom anchors that exist in no commit — diverging from the
 //! cache-off ground truth. The new store gates the whole result against
-//! uncommitted `.span/` edits (`withhold_whole_result_for_dirty_tree` /
-//! `has_uncommitted_span_files`), so the frozen-phantom shape cannot recur.
+//! uncommitted `.span/` edits (`withhold_whole_result_for_dirty_tree`), so the
+//! frozen-phantom shape cannot recur.
 //!
 //! This pins the guarantee: on the dirty-store -> revert-to-clean ->
 //! warm-read path, the new store must be byte-identical to the

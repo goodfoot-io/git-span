@@ -302,26 +302,18 @@ pub(crate) fn stale_spans_new_store(
         return Ok(ExactAttempt::Bypass);
     }
 
-    // Uncommitted (worktree-only) span files are NOT part of the canonical key
-    // — the token keys only committed span identities (`span_blobs`). Their
-    // creation or deletion is therefore invisible to the store, so a deleted
-    // untracked/gitignored span could be replayed from a stale generation. Fail
-    // closed: bypass to the authoritative resolver whenever any span file exists
-    // only in the worktree, exactly the state the pre-cutover cache routed
-    // through its dirty overlay.
-    match has_uncommitted_span_files(repo, span_root) {
-        Ok(false) => {}
-        Ok(true) => {
-            crate::perf::note("cache-path.bypass-reason: uncommitted-span-files");
-            return Ok(ExactAttempt::Bypass);
-        }
-        Err(e) => {
-            crate::perf::note(&format!(
-                "cache-path.bypass-reason: uncommitted-span-scan: {e}"
-            ));
-            return Ok(ExactAttempt::Bypass);
-        }
-    }
+    // Uncommitted (worktree-only) span files no longer bypass the whole store.
+    // [`capture_state_token`](crate::resolver::core::capture::capture_state_token)
+    // now folds every untracked/gitignored span's file path and anchored source
+    // paths into the token's relevant set (so its worktree/index identity keys
+    // the canonical digest) and its config into the effective copy-detection —
+    // an uncommitted span is a keyed input, not an unobservable one. Adding,
+    // editing, or deleting one moves the key; a span absent at HEAD always reads
+    // dirty, so the dirty tier re-resolves exactly that span while the committed
+    // corpus keeps its exact/dirty-tier reuse (card main-157 F6). The former
+    // all-or-nothing `has_uncommitted_span_files` bypass — which disabled caching
+    // for the ENTIRE committed corpus whenever any one worktree span was
+    // uncommitted — is gone.
 
     let _perf = crate::perf::span("resolver.store");
 
@@ -346,18 +338,6 @@ pub(crate) fn stale_spans_new_store(
     // skip its per-invocation corpus scans) is withheld.
     let attempt = withhold_whole_result_for_interior_anchor(span_root, attempt);
     withhold_whole_result_for_dirty_tree(repo, &token, attempt)
-}
-
-/// Whether any span file exists in the worktree but not at `HEAD` — an
-/// untracked or gitignored span the canonical key cannot observe.
-fn has_uncommitted_span_files(repo: &gix::Repository, span_root: &str) -> Result<bool> {
-    let reader = crate::span_file_reader::SpanFileReader::new(repo, span_root.to_string());
-    let committed: std::collections::HashSet<String> =
-        reader.committed_span_names()?.into_iter().collect();
-    Ok(reader
-        .worktree_span_names()?
-        .into_iter()
-        .any(|name| !committed.contains(&name)))
 }
 
 /// Whether any anchor in the resolved full set points inside the span root — a

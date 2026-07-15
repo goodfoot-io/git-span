@@ -12,6 +12,7 @@ pub mod interior_anchor_parity;
 pub mod lfs_shape_parity;
 pub mod partial_drift_parity;
 pub mod untracked_span_invalidation;
+pub mod uncommitted_span_cache_reuse;
 pub mod store_differential;
 pub mod cargo_config_layout;
 pub mod cli_exit_codes;

@@ -94,9 +94,24 @@ pub(crate) fn capture_state_token(
 ) -> Result<StateToken> {
     let committed = load_committed(repo, span_root)?;
 
-    // Relevant path set: every committed span file plus every anchored source
-    // path across the committed corpus. These are the paths whose index and
-    // worktree identities can affect this invocation's output.
+    // Uncommitted (worktree-only) span files participate in the resolved output —
+    // `list_span_names` is a 3-layer (worktree ∪ index ∪ HEAD) view and
+    // `capture_resolution_core` resolves that effective set — yet they are absent
+    // from `span_blobs`, which keys the HEAD corpus only. Capturing them as
+    // first-class keyed inputs (their file path and anchored source paths join the
+    // `relevant` set below, so their worktree/index identities enter the canonical
+    // key; their config folds into the effective copy-detection) is what lets one
+    // untracked/gitignored span be *observed* rather than *unobservable*. That
+    // closes the card main-157 F6 scope regression: an uncommitted span no longer
+    // has to disable the whole store — the committed corpus keeps its exact/
+    // dirty-tier reuse and only the uncommitted span's own state forces fresh work
+    // (it is absent at HEAD, so its span file always reads dirty and the dirty
+    // tier always re-resolves just that span).
+    let uncommitted = load_uncommitted(repo, span_root, &committed)?;
+
+    // Relevant path set: every committed span file, every uncommitted span file,
+    // plus every anchored source path across BOTH corpora. These are the paths
+    // whose index and worktree identities can affect this invocation's output.
     let mut relevant: BTreeSet<String> = BTreeSet::new();
     let mut anchored: BTreeSet<String> = BTreeSet::new();
     for b in &committed.blobs {
@@ -108,15 +123,27 @@ pub(crate) fn capture_state_token(
             relevant.insert(a.path.clone());
         }
     }
+    for path in &uncommitted.file_paths {
+        relevant.insert(path.clone());
+    }
+    for path in &uncommitted.anchored {
+        anchored.insert(path.clone());
+        relevant.insert(path.clone());
+    }
 
-    // Effective copy-detection mode: the most-permissive across the span set,
-    // exactly as `ResolveSession` derives `max_copy` for the reverse walk.
+    // Effective copy-detection mode: the most-permissive across the FULL effective
+    // span set (committed + uncommitted), exactly as `ResolveSession` derives
+    // `max_copy` from the resolved effective spans. An uncommitted span declaring
+    // a more-permissive mode widens EVERY span's reverse walk, so it must move the
+    // token's copy-detection (and thus `config_fingerprint`); otherwise a reuse
+    // tier could serve committed cores resolved under a narrower mode.
     let copy_detection = committed
         .spans
         .iter()
         .map(|s| s.config.copy_detection)
         .max()
-        .unwrap_or(CopyDetection::Off);
+        .unwrap_or(CopyDetection::Off)
+        .max(uncommitted.copy_detection);
 
     // Load the index once; both the whole-index identity and the per-path
     // staged states derive from this one snapshot. An unreadable index makes
@@ -252,6 +279,68 @@ fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSp
         spans.push(crate::types::span_from_file(name, &file));
     }
     Ok(CommittedSpans { blobs, spans })
+}
+
+/// The uncommitted (worktree-only) span corpus: span files present on the
+/// worktree filesystem under the span root but absent at `HEAD`
+/// (untracked/gitignored authoring state), with the anchored source paths and
+/// effective copy-detection they contribute.
+///
+/// These spans are part of the resolved output — `list_span_names` /
+/// `capture_resolution_core` read the 3-layer effective view — but invisible to
+/// `span_blobs` (HEAD-only). [`capture_state_token`] folds them into the token's
+/// relevant paths and copy-detection so they become keyed inputs (card main-157
+/// F6), rather than an all-or-nothing store bypass.
+struct UncommittedSpans {
+    /// Repo-relative `<span_root>/<name>` path of every uncommitted span file.
+    file_paths: Vec<String>,
+    /// Anchored source paths across the uncommitted corpus.
+    anchored: BTreeSet<String>,
+    /// Most-permissive copy-detection across the uncommitted corpus
+    /// ([`CopyDetection::Off`] when there are none).
+    copy_detection: CopyDetection,
+}
+
+/// Enumerate the worktree span files absent at `HEAD` and read each effectively
+/// (worktree over index over HEAD) to discover its anchored paths and config.
+///
+/// The committed set is taken from `committed` (the same HEAD-tree walk
+/// `committed_span_names` performs), so a worktree name present at HEAD is
+/// skipped here — its identity is already carried by `span_blobs` and, when
+/// dirtied, by the committed relevant path's worktree state. A conflicted or
+/// unreadable uncommitted span contributes no anchors (the authoritative
+/// resolver still surfaces the conflict, and the span file's raw-byte identity
+/// is still keyed via the worktree-state entry the relevant set produces): never
+/// a hard error.
+fn load_uncommitted(
+    repo: &gix::Repository,
+    span_root: &str,
+    committed: &CommittedSpans,
+) -> Result<UncommittedSpans> {
+    let reader = SpanFileReader::new(repo, span_root.to_string());
+    let committed_names: BTreeSet<&str> =
+        committed.spans.iter().map(|s| s.name.as_str()).collect();
+    let mut file_paths = Vec::new();
+    let mut anchored: BTreeSet<String> = BTreeSet::new();
+    let mut copy_detection = CopyDetection::Off;
+    for name in reader.worktree_span_names()? {
+        if committed_names.contains(name.as_str()) {
+            continue;
+        }
+        file_paths.push(format!("{span_root}/{name}"));
+        if let Ok(Some(file)) = reader.read_effective(&name) {
+            let span = crate::types::span_from_file(&name, &file);
+            for (_, a) in &span.anchors {
+                anchored.insert(a.path.clone());
+            }
+            copy_detection = copy_detection.max(span.config.copy_detection);
+        }
+    }
+    Ok(UncommittedSpans {
+        file_paths,
+        anchored,
+        copy_detection,
+    })
 }
 
 // ---------------------------------------------------------------------------
