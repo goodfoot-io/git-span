@@ -151,6 +151,99 @@ pub(crate) fn attempt(
     Ok(Some(attempt))
 }
 
+/// The relevant paths whose current index/worktree content differs from HEAD,
+/// computed against a HEAD blob-path map read **once** rather than one HEAD tree
+/// walk per relevant path.
+///
+/// This is behaviourally identical to
+/// [`incremental::relevant_dirty_paths`] — same per-path
+/// [`incremental::staged_clean`]/[`incremental::worktree_clean`] predicates,
+/// same conservative over-reporting — but sources each path's HEAD blob OID
+/// from a single [`head_blob_path_map`] traversal of the HEAD tree instead of a
+/// per-path [`crate::git::tree_entry_at`] (which re-peels HEAD and re-navigates
+/// the tree on every call).
+///
+/// The dirty path holds a same-HEAD baseline whose relevant set scales with the
+/// whole corpus, so `incremental::relevant_dirty_paths`'s per-path HEAD lookup
+/// is O(R) HEAD peels — and, for a flat corpus (every anchored file in one root
+/// tree), O(R) linear entry scans per lookup, i.e. O(R²) overall. Reading the
+/// HEAD tree once makes the whole computation O(HEAD-tree-size + R) map lookups.
+/// (5C's exit gate is a corpus-growth bound; the per-path walk was ~93% of the
+/// measured dirty-path time at 10,000 spans.)
+///
+/// The map covers the *whole* HEAD tree; a relevant path absent from it (a
+/// newly-staged/untracked file with no HEAD blob) resolves to `None`, exactly
+/// as `incremental::head_blob_oid` returns `None` for a path absent at HEAD.
+fn relevant_dirty_paths(repo: &gix::Repository, token: &StateToken) -> Result<HashSet<String>> {
+    use crate::resolver::core::token::PathState;
+    use std::collections::HashMap;
+
+    let head_blobs = head_blob_path_map(repo)?;
+
+    let staged: HashMap<&str, &PathState> = token
+        .staged_state
+        .iter()
+        .map(|e| (e.path.as_str(), &e.state))
+        .collect();
+    let worktree: HashMap<&str, &PathState> = token
+        .worktree_state
+        .iter()
+        .map(|e| (e.path.as_str(), &e.state))
+        .collect();
+    let mut all: HashSet<&str> = HashSet::new();
+    all.extend(staged.keys().copied());
+    all.extend(worktree.keys().copied());
+
+    let mut dirty: HashSet<String> = HashSet::new();
+    for path in all {
+        let head_oid = head_blobs.get(path).map(String::as_str);
+        let staged_clean = incremental::staged_clean(staged.get(path).copied(), head_oid);
+        let worktree_clean =
+            incremental::worktree_clean(repo, worktree.get(path).copied(), head_oid);
+        if !(staged_clean && worktree_clean) {
+            dirty.insert(path.to_string());
+        }
+    }
+    Ok(dirty)
+}
+
+/// The `path -> blob-OID (hex)` map of every **blob** in the HEAD tree, built in
+/// one breadth-first traversal.
+///
+/// The `mode.is_blob()` filter matches [`incremental::head_blob_oid`]
+/// (`tree_entry_at` + `mode.is_blob()`) exactly, so a lookup here returns
+/// `Some(oid)` for precisely the paths that function returns `Some` for and
+/// `None` for the rest — a symlink, submodule, or tree entry is excluded here
+/// just as `is_blob()` excludes it there. This equality is what keeps the dirty
+/// affected-set byte-identical to the per-path implementation it replaces.
+///
+/// Returns an empty map when HEAD (or its tree) cannot be read — the caller then
+/// treats every relevant path as absent at HEAD, which the per-path predicates
+/// classify conservatively (never a stale reuse).
+fn head_blob_path_map(
+    repo: &gix::Repository,
+) -> Result<std::collections::HashMap<String, String>> {
+    use crate::Error;
+    let Ok(commit) = repo.head_commit() else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let Ok(tree) = commit.tree() else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let records = tree
+        .traverse()
+        .breadthfirst
+        .files()
+        .map_err(|e| Error::Git(format!("HEAD tree traverse: {e}")))?;
+    let mut map = std::collections::HashMap::with_capacity(records.len());
+    for e in records {
+        if e.mode.is_blob() {
+            map.insert(e.filepath.to_string(), e.oid.to_string());
+        }
+    }
+    Ok(map)
+}
+
 /// The whole affected-set + reconstruction computation, factored out of
 /// [`attempt`] so a test can assert the reconstructed core byte-for-byte
 /// against a full resolve of the live dirty state without publishing.
@@ -190,7 +283,7 @@ fn build_dirty_core(
         .collect();
 
     // ── 3. Dirty relevant paths (from the already-captured token) ───────────
-    let dirty_paths = incremental::relevant_dirty_paths(repo, token)?;
+    let dirty_paths = relevant_dirty_paths(repo, token)?;
     if dirty_paths.is_empty() {
         // The exact key differs but no RELEVANT path is dirty — a non-relevant
         // tracked file moved a whole-index/worktree identity in the token (e.g.

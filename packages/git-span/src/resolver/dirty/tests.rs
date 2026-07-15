@@ -487,6 +487,41 @@ fn repeated_identical_dirty_state_becomes_exact_hit() {
     );
 }
 
+// ── The batched dirty-path map agrees with the per-path reference ────────────
+
+/// [`relevant_dirty_paths`] sources each relevant path's HEAD blob OID from a
+/// single HEAD-tree traversal instead of a per-path `tree_entry_at`; it must
+/// stay byte-for-byte equivalent to the [`incremental::relevant_dirty_paths`]
+/// it replaces across clean, dirty-worktree, and staged states (including a
+/// nested `src/…` path, which exercises the full-path map key).
+#[test]
+fn batched_relevant_dirty_paths_matches_per_path_reference() {
+    let (_td, dir) = fresh_three_span_repo("batch");
+
+    let assert_agrees = |dir: &Path, note: &str| {
+        let repo = reopen(dir);
+        let token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("token");
+        let batched = relevant_dirty_paths(&repo, &token).expect("batched");
+        let per_path =
+            crate::resolver::incremental::relevant_dirty_paths(&repo, &token).expect("per-path");
+        assert_eq!(batched, per_path, "{note}: batched map must match per-path walk");
+        batched
+    };
+
+    // Clean: neither reports any relevant dirt.
+    assert!(assert_agrees(&dir, "clean").is_empty());
+
+    // A dirty worktree source under a subdirectory.
+    std::fs::write(dir.join("src/b.txt"), "batch-CHANGED\nb2\nb3\n").expect("dirty b");
+    assert!(assert_agrees(&dir, "dirty worktree source").contains("src/b.txt"));
+
+    // A staged span-definition edit (a relevant path dirty in the index).
+    write_span(&dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha v2");
+    git(&dir, &["add", ".span/alpha"]);
+    let both = assert_agrees(&dir, "staged span definition");
+    assert!(both.contains("src/b.txt") && both.contains(".span/alpha"));
+}
+
 /// The sorted discovery span names of an [`ExactAttempt`], for output-identity
 /// assertions that do not depend on `SpanResolved: PartialEq`.
 fn resolved_names(attempt: &ExactAttempt) -> Vec<String> {
