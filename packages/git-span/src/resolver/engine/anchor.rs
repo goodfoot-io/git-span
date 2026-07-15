@@ -17,10 +17,10 @@ use crate::types::{
 };
 use crate::{Error, Result};
 use git_span_core::{
-    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_similarity, rk64_from_hex,
+    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_window_scan, rk64_from_hex,
     rk64_to_hex, RK64_ALGORITHM,
 };
-use git_span_core::{LineIndex, scan_indexed_rk64};
+use git_span_core::{LineIndex, scan_indexed_rk64_one};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -161,8 +161,10 @@ fn find_relocated_range(
 }
 
 /// [`find_relocated_range`] over a prebuilt [`LineIndex`].  Uses
-/// [`scan_indexed_rk64`] to avoid rebuilding the index and re-reading
-/// the file per anchor — the central amortization Tier 2 enables.
+/// [`scan_indexed_rk64_one`] to avoid rebuilding the index and re-reading
+/// the file per anchor — the central amortization Tier 2 enables — and to
+/// avoid cloning the index (`scan_indexed_rk64_one` takes it by reference)
+/// just to satisfy a `&[(String, LineIndex)]` single-file call.
 fn find_relocated_range_indexed(
     idx: &LineIndex,
     extent_lines: usize,
@@ -177,8 +179,7 @@ fn find_relocated_range_indexed(
         start: 1,
         end: extent_lines as u32,
     };
-    let files = [(String::new(), idx.clone())];
-    scan_indexed_rk64(&files, fp, extent, Some(near_start))
+    scan_indexed_rk64_one("", idx, fp, extent, Some(near_start))
         .into_iter()
         .next()
         .map(|loc| (loc.start_line, loc.end_line))
@@ -226,13 +227,11 @@ fn find_relocated_range_in_paths(
     // When the anchored path is gone from HEAD (committed `git mv` /
     // deletion), a HEAD-present path is a valid relocation target only
     // if it is new as of the rename commit — see
-    // `rename_target_predicate`. This excludes a coincidental match in
-    // an unrelated pre-existing file.
-    let is_rename_target = if anchored_absent_at_head {
-        Some(super::rename_target_predicate(repo, exclude))
-    } else {
-        None
-    };
+    // `ResolveSession::is_rename_target`. This excludes a coincidental
+    // match in an unrelated pre-existing file. The before-commit walk and
+    // per-candidate tree probe are session-memoized: every deleted anchor
+    // sharing `exclude` (the anchored path) reuses the same walk, and every
+    // repeated `(before_commit, candidate)` probe reuses its cached verdict.
     for en in entries {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
@@ -243,9 +242,10 @@ fn find_relocated_range_in_paths(
         // A path absent from HEAD is always a candidate. A HEAD-present
         // path qualifies only via the committed-rename predicate.
         if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
-            match &is_rename_target {
-                Some(pred) if pred(repo, &en.path) => {}
-                _ => continue,
+            let is_target =
+                anchored_absent_at_head && state.session.is_rename_target(repo, exclude, &en.path);
+            if !is_target {
+                continue;
             }
         }
         // Session-scoped memo: the same `(path, layer)` is rescanned by
@@ -277,7 +277,15 @@ fn find_relocated_range_in_paths(
                 }
             }
         };
-        if let Some((s, e)) = find_relocated_range(&text, extent, stored_hash, 1) {
+        // Tier 2: reuse (or build) the session's per-`(path, layer)` line
+        // index instead of re-scanning raw bytes — the same amortization
+        // `resolve_anchor_inner`'s in-place freshness check already relies
+        // on, now shared with the cross-path relocation scan.
+        let cached_idx = state
+            .session
+            .get_or_build_line_index(text.into_bytes(), &en.path, deepest);
+        let file_idx: &LineIndex = cached_idx.get();
+        if let Some((s, e)) = find_relocated_range_indexed(file_idx, extent, stored_hash, 1) {
             return Some((en.path, s, e));
         }
     }
@@ -298,8 +306,12 @@ const FUZZY_NOISE_FLOOR: f64 = 0.50;
 /// Candidate paths come from the git index (tracked files excluding
 /// `exclude`), capped at [`FUZZY_SCAN_MAX_CANDIDATES`]. Each candidate file
 /// is read (from the session text memo or fresh) and every window of
-/// `extent_lines` lines is scored via [`jaccard_similarity`]. Returns results
-/// sorted by confidence descending, then by path for determinism.
+/// `extent_lines` lines is scored via [`jaccard_window_scan`] — an
+/// incremental sliding-window Jaccard scan that normalizes each line once
+/// instead of re-normalizing and re-hashing every window from scratch, while
+/// producing bit-identical confidences to the naive per-window computation.
+/// Returns results sorted by confidence descending, then by path for
+/// determinism.
 fn find_similar_ranges(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -323,12 +335,7 @@ fn find_similar_ranges(
     let head_sha = state.head_sha.clone();
     state.session.warm_head_blob_memo(repo, &head_sha);
 
-    // Pre-normalize the anchored lines (once, reused for every window).
     let anchored_bytes = anchored_text.as_bytes();
-    let extent = AnchorExtent::LineRange {
-        start: 1,
-        end: extent_lines as u32,
-    };
     let mut results: Vec<FuzzySuccessor> = Vec::new();
     let mut candidates_scanned = 0usize;
 
@@ -375,19 +382,15 @@ fn find_similar_ranges(
             continue;
         }
 
-        let win_max = candidate_lines.len() - extent_lines;
-        for win_start in 0..=win_max {
-            let win_bytes = candidate_lines[win_start..win_start + extent_lines].join("\n");
-            let confidence = jaccard_similarity(anchored_bytes, win_bytes.as_bytes(), &extent);
-
-            if confidence >= FUZZY_NOISE_FLOOR {
-                results.push(FuzzySuccessor {
-                    path: en.path.clone(),
-                    start: (win_start as u32) + 1,
-                    end: (win_start as u32) + extent_lines as u32,
-                    confidence,
-                });
-            }
+        let hits =
+            jaccard_window_scan(anchored_bytes, &candidate_lines, extent_lines, FUZZY_NOISE_FLOOR);
+        for (win_start, confidence) in hits {
+            results.push(FuzzySuccessor {
+                path: en.path.clone(),
+                start: (win_start as u32) + 1,
+                end: (win_start as u32) + extent_lines as u32,
+                confidence,
+            });
         }
     }
 

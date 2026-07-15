@@ -614,6 +614,182 @@ fn normalize_lines_jaccard(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Intern `s` into `interner`, returning its stable `u32` id (assigning the
+/// next id on first sight). Shared by [`jaccard_window_scan`] so the
+/// anchored and candidate line sets are compared by exact-equality integer
+/// id rather than by re-hashing/re-comparing strings per window.
+fn intern_line(interner: &mut std::collections::HashMap<String, u32>, s: String) -> u32 {
+    let next = interner.len() as u32;
+    *interner.entry(s).or_insert(next)
+}
+
+/// Incremental sliding-window Jaccard scan: for every window of `extent`
+/// lines in `candidate_lines`, computes **exactly** the confidence
+/// [`jaccard_similarity`] would return for `(anchored, window_lines.join("\n"))`,
+/// but in amortized O(1) per window slide instead of re-normalizing and
+/// re-hashing the whole window every time.
+///
+/// Returns `(win_start, confidence)` pairs (0-based window start) for every
+/// window whose confidence is `>= noise_floor`, in ascending `win_start`
+/// order.
+///
+/// ## Why this is exact, not approximate
+///
+/// Both the anchored text and every candidate line are whitespace-normalized
+/// once (matching [`normalize_lines_jaccard`]'s per-line transform) and
+/// interned so line identity becomes exact integer equality. The window
+/// then slides by maintaining a running per-id `window_count` and the
+/// multiset intersection size `intersection = Σ min(anchored_count[id],
+/// window_count[id])`:
+/// - a line entering the window increments `window_count[id]`; the
+///   intersection grows by 1 iff the pre-increment count was still under
+///   the anchored budget (`window_count[id] < anchored_count[id]`);
+/// - a line leaving the window decrements `window_count[id]` first; the
+///   intersection shrinks by 1 iff the post-decrement count is under budget.
+///
+/// The multiset union size is `anchored_total + extent - intersection`
+/// (inclusion-exclusion over multisets, since the window always has exactly
+/// `extent` lines), and `confidence = intersection / union` — dividing the
+/// **same two integers** [`jaccard_similarity`]'s from-scratch computation
+/// would produce for that window, so the `f64` result is bit-identical.
+///
+/// Joining a window's lines with `"\n"` and re-splitting via `str::lines()`
+/// (what the naive per-window path does before normalizing) reproduces the
+/// original `candidate_lines` entries verbatim **with one exception**:
+/// `str::lines()` (via `split_terminator('\n')`) drops a trailing empty
+/// segment produced by the string ending in the separator, so when a
+/// window's *last* raw line is the empty string, the `"\n"`-join makes the
+/// joined text end in `"\n"` and that final empty line silently vanishes
+/// from the naive multiset — no other position is affected (interior and
+/// leading empty lines round-trip intact; only a genuinely trailing one is
+/// special-cased by `str::lines()`). `str::lines()` otherwise only ever
+/// splits on `\n` and strips one trailing `\r` per resulting piece, and
+/// every `candidate_lines` entry already went through that same split once
+/// so it can never itself end in `\r`, and whitespace normalization
+/// (`split_whitespace().join(" ")`) collapses any interior `\r` as
+/// whitespace regardless — so aside from the trailing-empty-line quirk,
+/// normalizing `candidate_lines[i]` directly is equivalent to the
+/// rejoin-and-resplit-then-normalize the naive path performs.
+/// `jaccard_window_scan_matches_naive_reference` below cross-checks this
+/// against the naive per-window computation, including empty lines and
+/// lone/interior/trailing `\r` inputs.
+pub fn jaccard_window_scan(
+    anchored: &[u8],
+    candidate_lines: &[&str],
+    extent: usize,
+    noise_floor: f64,
+) -> Vec<(usize, f64)> {
+    if extent == 0 || candidate_lines.len() < extent {
+        return Vec::new();
+    }
+
+    let mut interner: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    let anchored_ids: Vec<u32> = normalize_lines_jaccard(anchored)
+        .into_iter()
+        .map(|l| intern_line(&mut interner, l))
+        .collect();
+    let a_total = anchored_ids.len();
+    let mut anchored_count: std::collections::HashMap<u32, usize> =
+        std::collections::HashMap::new();
+    for &id in &anchored_ids {
+        *anchored_count.entry(id).or_default() += 1;
+    }
+
+    let candidate_ids: Vec<u32> = candidate_lines
+        .iter()
+        .map(|l| {
+            let norm = l.split_whitespace().collect::<Vec<&str>>().join(" ");
+            intern_line(&mut interner, norm)
+        })
+        .collect();
+
+    // Confidence for the window currently described by `intersection` /
+    // `window_count`, whose last line is `candidate_lines[last_idx]`.
+    // Reproduces the trailing-empty-line drop documented above: when that
+    // raw line is `""`, the naive multiset excludes it, so this virtually
+    // removes one occurrence of its id (without touching the persistent
+    // sliding-window state, since that same line is a normal interior
+    // member of every other window it participates in) and unions over
+    // `extent - 1` lines instead of `extent`.
+    let window_confidence = |intersection: usize,
+                              window_count: &std::collections::HashMap<u32, usize>,
+                              last_idx: usize|
+     -> f64 {
+        if !candidate_lines[last_idx].is_empty() {
+            let union = a_total + extent - intersection;
+            return if union == 0 {
+                0.0
+            } else {
+                intersection as f64 / union as f64
+            };
+        }
+        let last_id = candidate_ids[last_idx];
+        let ac = anchored_count.get(&last_id).copied().unwrap_or(0);
+        let wc = window_count.get(&last_id).copied().unwrap_or(0);
+        // Post-(virtual)-decrement check, matching the real leave-step rule.
+        let adjustment = usize::from(wc.saturating_sub(1) < ac);
+        let adj_intersection = intersection - adjustment;
+        let adj_extent = extent - 1;
+        let union = a_total + adj_extent - adj_intersection;
+        if union == 0 {
+            0.0
+        } else {
+            adj_intersection as f64 / union as f64
+        }
+    };
+
+    let mut window_count: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut intersection: usize = 0;
+    let mut results: Vec<(usize, f64)> = Vec::new();
+
+    // Initialize the first window [0, extent) by "entering" every line.
+    for &id in &candidate_ids[0..extent] {
+        let ac = anchored_count.get(&id).copied().unwrap_or(0);
+        let wc = window_count.entry(id).or_insert(0);
+        if *wc < ac {
+            intersection += 1;
+        }
+        *wc += 1;
+    }
+    let conf0 = window_confidence(intersection, &window_count, extent - 1);
+    if conf0 >= noise_floor {
+        results.push((0, conf0));
+    }
+
+    let win_max = candidate_ids.len() - extent;
+    for win_start in 1..=win_max {
+        // The line leaving the window: decrement first, then check.
+        let leaving = candidate_ids[win_start - 1];
+        {
+            let ac = anchored_count.get(&leaving).copied().unwrap_or(0);
+            let wc = window_count
+                .get_mut(&leaving)
+                .expect("leaving id was inserted when it entered the window");
+            *wc -= 1;
+            if *wc < ac {
+                intersection -= 1;
+            }
+        }
+        // The line entering the window: check first, then increment.
+        let entering = candidate_ids[win_start + extent - 1];
+        {
+            let ac = anchored_count.get(&entering).copied().unwrap_or(0);
+            let wc = window_count.entry(entering).or_insert(0);
+            if *wc < ac {
+                intersection += 1;
+            }
+            *wc += 1;
+        }
+        let conf = window_confidence(intersection, &window_count, win_start + extent - 1);
+        if conf >= noise_floor {
+            results.push((win_start, conf));
+        }
+    }
+
+    results
+}
+
 /// Exhaustive, fail-closed match set — the **same** return contract as
 /// [`scan_indexed`] (all matches, same `near` ordering, ≥2 ⇒ ambiguous) —
 /// reached cheaply via a fingerprint prefilter.
@@ -719,6 +895,55 @@ pub fn scan_indexed_rk64(
                 },
                 &mut out,
             );
+            if let Some(near) = near {
+                sort_near(&mut out, near);
+            }
+            out
+        }
+    }
+}
+
+/// [`scan_indexed_rk64`] against a single already-built [`LineIndex`], taken
+/// by reference. Same match/ordering contract, restricted to one file.
+///
+/// Exists so a caller holding one cached [`LineIndex`] (e.g. a session-scoped
+/// per-`(path, layer)` cache) doesn't have to satisfy `scan_indexed_rk64`'s
+/// `&[(String, LineIndex)]` shape by cloning the index — `LineIndex::clone`
+/// duplicates its `starts`/`ends` offset vectors (O(line count)), which is
+/// pure waste when there is only one file to scan and it is already indexed.
+/// `path` is used only to label returned [`Location`]s.
+pub fn scan_indexed_rk64_one(
+    path: &str,
+    idx: &LineIndex,
+    cheap_fp: u64,
+    extent: AnchorExtent,
+    near: Option<u32>,
+) -> Vec<Location> {
+    match extent {
+        AnchorExtent::WholeFile => {
+            if horner(idx.bytes) == cheap_fp {
+                vec![Location {
+                    path: path.to_string(),
+                    start_line: 0,
+                    end_line: 0,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        AnchorExtent::LineRange { start, end } => {
+            let extent = line_range_extent(start, end);
+            if extent == 0 {
+                return Vec::new();
+            }
+            let n = idx.line_count();
+            if n < extent {
+                return Vec::new();
+            }
+            let mut out: Vec<Location> = Vec::new();
+            // No SHA verify: a matching fingerprint is the match (mirrors
+            // `scan_indexed_rk64`'s per-file body exactly).
+            scan_one_file_fp_filtered(path, idx, extent, (0, n - extent), cheap_fp, |_| true, &mut out);
             if let Some(near) = near {
                 sort_near(&mut out, near);
             }
@@ -1982,5 +2207,174 @@ mod tests {
             (score - 1.0).abs() < 1e-9,
             "whitespace-only differences should score 1.0, got {score}"
         );
+    }
+
+    // --- jaccard_window_scan: parity with the naive per-window reference ---
+
+    /// The pre-optimization per-window computation: slide a window, join
+    /// with `"\n"`, and call [`jaccard_similarity`] fresh each time. This is
+    /// what `find_similar_ranges` did before `jaccard_window_scan` and is
+    /// the oracle the incremental scan must agree with bit-for-bit.
+    fn naive_window_scan(
+        anchored: &[u8],
+        candidate_lines: &[&str],
+        extent: usize,
+        noise_floor: f64,
+    ) -> Vec<(usize, f64)> {
+        if extent == 0 || candidate_lines.len() < extent {
+            return Vec::new();
+        }
+        let extent_marker = AnchorExtent::LineRange { start: 1, end: extent as u32 };
+        let win_max = candidate_lines.len() - extent;
+        let mut out = Vec::new();
+        for w in 0..=win_max {
+            let joined = candidate_lines[w..w + extent].join("\n");
+            let confidence = jaccard_similarity(anchored, joined.as_bytes(), &extent_marker);
+            if confidence >= noise_floor {
+                out.push((w, confidence));
+            }
+        }
+        out
+    }
+
+    /// Cross-checks `jaccard_window_scan` against `naive_window_scan` with
+    /// `noise_floor = 0.0` (every window kept) so full result vectors —
+    /// including exact `f64` confidences — must match, plus a second pass at
+    /// the real `0.50` noise floor to confirm the filter behaves the same.
+    fn assert_window_scan_matches_naive(anchored: &[u8], candidate_lines: &[&str], extent: usize) {
+        for noise_floor in [0.0, 0.50] {
+            let got = jaccard_window_scan(anchored, candidate_lines, extent, noise_floor);
+            let want = naive_window_scan(anchored, candidate_lines, extent, noise_floor);
+            assert_eq!(
+                got, want,
+                "jaccard_window_scan drifted from naive reference: anchored={anchored:?} \
+                 candidate_lines={candidate_lines:?} extent={extent} noise_floor={noise_floor}"
+            );
+        }
+    }
+
+    #[test]
+    fn jaccard_window_scan_matches_naive_reference() {
+        // Repeated lines (multiset counting, not set counting).
+        assert_window_scan_matches_naive(
+            b"x\ny\nx\n",
+            &["x", "y", "x", "z", "x", "y", "x"],
+            3,
+        );
+        // Whitespace variants collapse to the same normalized line.
+        assert_window_scan_matches_naive(
+            b"hello   world\nfoo\n",
+            &["hello world", "foo", "bar", "hello     world", "foo"],
+            2,
+        );
+        // Empty lines participate as their own (empty-string) identity.
+        assert_window_scan_matches_naive(
+            b"a\n\nb\n",
+            &["a", "", "b", "", "a", "", "c"],
+            3,
+        );
+        // Unicode content (multi-byte chars, combining marks).
+        assert_window_scan_matches_naive(
+            "café\n日本語\n".as_bytes(),
+            &["café", "日本語", "other", "café", "日本語"],
+            2,
+        );
+        // A lone '\r' inside a line (not a line terminator) — split_whitespace
+        // treats it as whitespace on both the naive rejoin-then-resplit path
+        // and the direct-normalize path.
+        assert_window_scan_matches_naive(
+            b"a\rb\nc\n",
+            &["a\rb", "c", "d", "a\rb"],
+            2,
+        );
+        // A trailing '\r' on a line — cannot arise from a real `str::lines()`
+        // split, but the function must still agree with the naive rejoin
+        // path if handed one directly (defensive equivalence check).
+        assert_window_scan_matches_naive(
+            b"x\n",
+            &["x\r", "y", "x\r"],
+            2,
+        );
+        // extent larger than the candidate file: both sides return empty.
+        assert_window_scan_matches_naive(b"a\nb\n", &["a", "b"], 5);
+        // extent == 1: every single line is its own window.
+        assert_window_scan_matches_naive(b"a\n", &["a", "b", "a", "c", "a"], 1);
+        // extent == 0: degenerate, both sides empty.
+        assert_eq!(jaccard_window_scan(b"a\n", &["a", "b"], 0, 0.0), Vec::new());
+    }
+
+    #[test]
+    fn jaccard_window_scan_property_fuzz_matches_naive() {
+        let mut state = 0xabad1deaabad1deau64;
+        let alphabet = ["foo", "bar", "baz  qux", "  spaced  out ", "", "foo\rbar", "unicode 日本"];
+        for _ in 0..500 {
+            let a_len = 1 + (lcg(&mut state) as usize) % 5;
+            let anchored_lines: Vec<&str> = (0..a_len)
+                .map(|_| alphabet[(lcg(&mut state) as usize) % alphabet.len()])
+                .collect();
+            let anchored = anchored_lines.join("\n").into_bytes();
+
+            let c_len = (lcg(&mut state) as usize) % 12;
+            let candidate_lines: Vec<&str> = (0..c_len)
+                .map(|_| alphabet[(lcg(&mut state) as usize) % alphabet.len()])
+                .collect();
+            let extent = 1 + (lcg(&mut state) as usize) % 5;
+
+            assert_window_scan_matches_naive(&anchored, &candidate_lines, extent);
+        }
+    }
+
+    // --- scan_indexed_rk64_one: parity with scan_indexed_rk64 on one file ---
+
+    #[test]
+    fn scan_indexed_rk64_one_matches_scan_indexed_rk64() {
+        let mut state = 0x0ddc0ffee0ddc0ffu64;
+        for _ in 0..2000 {
+            let bytes = random_bytes(&mut state, 40);
+            let idx = LineIndex::build(&bytes);
+            let start = 1 + (lcg(&mut state) % 6) as u32;
+            let end = start + (lcg(&mut state) % 4) as u32;
+            let extent = AnchorExtent::LineRange { start, end };
+            let extent_lines = line_range_extent(start, end);
+
+            let fp = if lcg(&mut state).is_multiple_of(4) || extent_lines == 0 {
+                lcg(&mut state)
+            } else {
+                let text = String::from_utf8_lossy(&bytes);
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() < extent_lines {
+                    continue;
+                }
+                let w = (lcg(&mut state) as usize) % (lines.len() - extent_lines + 1);
+                cheap_fingerprint_with_extent(
+                    lines[w..w + extent_lines].join("\n").as_bytes(),
+                    &AnchorExtent::WholeFile,
+                )
+            };
+            let near = if lcg(&mut state).is_multiple_of(2) {
+                None
+            } else {
+                Some((lcg(&mut state) % 12) as u32)
+            };
+
+            let indexed = [("f.txt".to_string(), idx.clone())];
+            let expected = scan_indexed_rk64(&indexed, fp, extent, near);
+            let got = scan_indexed_rk64_one("f.txt", &idx, fp, extent, near);
+            assert_eq!(got, expected, "scan_indexed_rk64_one drift: bytes={bytes:?} {extent:?} near={near:?}");
+        }
+
+        // Whole-file extent.
+        let files = vec![
+            ("yes.txt".to_string(), b"whole\ncontent\n".to_vec()),
+            ("no.txt".to_string(), b"other\n".to_vec()),
+        ];
+        let fp = cheap_fingerprint_with_extent(b"whole\ncontent\n", &AnchorExtent::WholeFile);
+        for (path, bytes) in &files {
+            let idx = LineIndex::build(bytes);
+            let indexed = [(path.clone(), idx.clone())];
+            let expected = scan_indexed_rk64(&indexed, fp, AnchorExtent::WholeFile, None);
+            let got = scan_indexed_rk64_one(path, &idx, fp, AnchorExtent::WholeFile, None);
+            assert_eq!(got, expected);
+        }
     }
 }

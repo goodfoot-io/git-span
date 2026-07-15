@@ -76,11 +76,6 @@ fn find_relocated_whole_file(
     anchored_absent_at_head: bool,
 ) -> Option<String> {
     let entries = git::index_entries(repo).ok()?;
-    let is_rename_target = if anchored_absent_at_head {
-        Some(super::rename_target_predicate(repo, exclude))
-    } else {
-        None
-    };
     for en in entries {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
@@ -90,12 +85,15 @@ fn find_relocated_whole_file(
         }
         // A path absent from HEAD is always a candidate. A HEAD-present
         // path qualifies only when it is new as of the committed rename
-        // (see `rename_target_predicate`), so a coincidental content
-        // match in an unrelated pre-existing file is not a relocation.
+        // (see `ResolveSession::is_rename_target`), so a coincidental
+        // content match in an unrelated pre-existing file is not a
+        // relocation. The before-commit walk and per-candidate probe are
+        // session-memoized (see `is_rename_target`'s doc comment).
         if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
-            match &is_rename_target {
-                Some(pred) if pred(repo, &en.path) => {}
-                _ => continue,
+            let is_target =
+                anchored_absent_at_head && state.session.is_rename_target(repo, exclude, &en.path);
+            if !is_target {
+                continue;
             }
         }
         let gitlink = en.mode.is_commit();

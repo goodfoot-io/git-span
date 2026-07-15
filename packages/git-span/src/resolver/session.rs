@@ -378,6 +378,18 @@ pub(crate) struct ResolveSession {
     /// Counter: line-index cache misses (first anchor on a path+layer,
     /// i.e. the file read + index build).
     pub(crate) line_index_misses: u64,
+    /// Session-scoped memo for [`rename_before_commit`](Self::rename_before_commit),
+    /// keyed by the anchored (deleted) path. Every deleted anchor sharing
+    /// the same anchored path performed an identical reverse-chronological
+    /// HEAD walk before this memo existed; now the walk runs once per
+    /// distinct anchored path per session.
+    pub(crate) rename_before_commit_memo: HashMap<String, Option<String>>,
+    /// Session-scoped memo for [`is_rename_target`](Self::is_rename_target),
+    /// keyed by `(before_commit, candidate_path)`. The same candidate is
+    /// probed by every deleted anchor that shares an anchored path (and
+    /// therefore a `before_commit`), and the tree-entry probe is pure given
+    /// the commit, so this collapses repeated probes to one per pair.
+    pub(crate) rename_target_memo: HashMap<(String, String), bool>,
 }
 
 impl ResolveSession {
@@ -418,6 +430,8 @@ impl ResolveSession {
             line_index_cache: HashMap::new(),
             line_index_hits: 0,
             line_index_misses: 0,
+            rename_before_commit_memo: HashMap::new(),
+            rename_target_memo: HashMap::new(),
         }
     }
 
@@ -517,6 +531,87 @@ impl ResolveSession {
     ) -> Option<&mut CachedLineIndex> {
         let key = (path.to_string(), layer);
         self.line_index_cache.get_mut(&key).map(|b| &mut **b)
+    }
+
+    /// The commit-ish whose tree still had `anchored_path` (the state
+    /// before a committed rename/deletion) — the "before" reference
+    /// [`is_rename_target`](Self::is_rename_target) probes candidates
+    /// against. Memoized per `anchored_path`: the reverse-chronological
+    /// HEAD walk is identical for every candidate scanned against the same
+    /// deleted anchored path within a session (previously four deleted
+    /// anchors sharing one path each repeated the full walk).
+    ///
+    /// Implementation: walk HEAD ancestors reverse-chronologically and find
+    /// the first commit whose tree still contains `anchored_path`. `None`
+    /// when the path is found nowhere in reachable history (defensive) —
+    /// callers then treat every HEAD-present candidate as pre-existing,
+    /// which fails closed to no relocation.
+    pub(crate) fn rename_before_commit(
+        &mut self,
+        repo: &gix::Repository,
+        anchored_path: &str,
+    ) -> Option<String> {
+        if let Some(cached) = self.rename_before_commit_memo.get(anchored_path) {
+            return cached.clone();
+        }
+        let before: Option<String> = (|| {
+            let head = git::head_oid(repo).ok()?;
+            let head_oid = gix::ObjectId::from_hex(head.as_bytes()).ok()?;
+            let walk = repo
+                .rev_walk([head_oid])
+                .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                    gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+                ))
+                .all()
+                .ok()?;
+            for info in walk {
+                let info = info.ok()?;
+                let cid = info.id.to_string();
+                if git::tree_entry_at(repo, &cid, std::path::Path::new(anchored_path))
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    return Some(cid);
+                }
+            }
+            None
+        })();
+        self.rename_before_commit_memo
+            .insert(anchored_path.to_string(), before.clone());
+        before
+    }
+
+    /// True when `candidate` is a valid committed-rename target for
+    /// `anchored_path`: a HEAD-present candidate is only a rename target
+    /// when it did **not** exist at
+    /// [`rename_before_commit`](Self::rename_before_commit)'s reference
+    /// commit — i.e. it is new as of the rename commit (the `git mv`
+    /// shape). A file that already existed alongside the anchored path
+    /// (e.g. an unrelated file that happens to share generic lines) is
+    /// excluded, so a coincidental content match never masquerades as a
+    /// relocation. Memoized per `(before_commit, candidate)`: the same
+    /// candidate is probed by every deleted anchor that shares
+    /// `anchored_path`, and the tree probe is pure given the commit.
+    pub(crate) fn is_rename_target(
+        &mut self,
+        repo: &gix::Repository,
+        anchored_path: &str,
+        candidate: &str,
+    ) -> bool {
+        let Some(before) = self.rename_before_commit(repo, anchored_path) else {
+            return false;
+        };
+        let key = (before.clone(), candidate.to_string());
+        if let Some(&cached) = self.rename_target_memo.get(&key) {
+            return cached;
+        }
+        let is_target = git::tree_entry_at(repo, &before, std::path::Path::new(candidate))
+            .ok()
+            .flatten()
+            .is_none();
+        self.rename_target_memo.insert(key, is_target);
+        is_target
     }
 
     pub(crate) fn anchors_total(&self) -> u64 {
@@ -1020,6 +1115,8 @@ mod tests {
             line_index_cache: HashMap::new(),
             line_index_hits: 0,
             line_index_misses: 0,
+            rename_before_commit_memo: HashMap::new(),
+            rename_target_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();
@@ -1078,6 +1175,8 @@ mod tests {
             line_index_cache: HashMap::new(),
             line_index_hits: 0,
             line_index_misses: 0,
+            rename_before_commit_memo: HashMap::new(),
+            rename_target_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();
