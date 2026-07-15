@@ -20,6 +20,7 @@ description: Use with `git span` or spans.
 - **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for spans, or about registering the optional `.span/` merge driver**: Read `./sections/git-hook-setup.md`
 - **A question is about where spans/anchors are stored, whether git-span uses refs, or how span names map to files**: Read `./sections/storage-model.md`
 - **A span should be hidden from the hooks for certain paths, or a `.span/.hookignore` file / per-path span suppression is in play**: Read `./sections/hookignore.md`
+- **A question is about installing the git-span plugin under OpenAI Codex, the `codex plugin marketplace add` / `codex plugin add` flow, or trusting Codex hooks via the `/hooks` prompt**: Read `./sections/codex-install-and-trust.md`
 
 **Note that full codebase validation is not required for span-only changes.**
 </instructions>
