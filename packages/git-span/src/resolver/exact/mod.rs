@@ -36,7 +36,12 @@
 //!   once; the result is projected, revalidated, and (only if the snapshot
 //!   still holds) published in one transaction. A publish failure fails closed
 //!   on the *cache*, never on the command — the already-computed result is
-//!   rendered regardless.
+//!   rendered regardless. The "exactly one build" guarantee holds *across
+//!   concurrent callers too*: after the unlocked exact read misses, the miss
+//!   tail ([`stale_spans_new_store_inner`]) serializes same-key rebuilders on
+//!   the key's build-lock shard and rechecks the store under it, so N
+//!   simultaneous cold callers for one missing key collapse to a single build
+//!   and the losers render the winner's published generation.
 //!
 //! ## Revalidate-mismatch decision
 //!
@@ -67,6 +72,7 @@ use crate::resolver::engine::{
     capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
 };
 use crate::resolver::store::dto::SpanResolvedDto;
+use crate::resolver::store::lock::{acquire_build_shard, shard_index};
 use crate::resolver::store::{CacheStore, GcStats, GenerationInput, GetOutcome};
 use crate::types::{CopyDetection, EngineOptions, LayerSet, SpanResolved};
 use std::sync::Arc;
@@ -454,36 +460,45 @@ fn stale_spans_new_store_inner(
         crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
     }
 
-    // ── Exact hit ──────────────────────────────────────────────────────────
+    // ── Exact hit (unlocked fast path) ───────────────────────────────────────
     //
     // The whole warm cost is this branch: capture the state token (above), read
     // and integrity-verify the one compact summary, decode it, render. No
-    // baseline row regroup, no `.span` corpus reload, no anchored-blob scan.
-    match store.get_generation(&key, SUMMARY_VERSION) {
-        Ok(GetOutcome::Hit(g)) => match decode_summary(&g.summary) {
-            Ok(rr) => {
-                let _ = store.touch(&key);
-                let rr = Arc::new(rr);
-                memo_put(key, Arc::clone(&rr));
-                emit_hit_class("exact");
-                incr_exact_hits();
-                crate::perf::counter("cache-path.exact-hit", 1);
-                return Ok(rr.to_attempt());
-            }
-            // A verified-but-undecodable summary is a corrupt hit: treat as a
-            // miss and rebuild (fail closed on trust, not on the command).
-            Err(()) => {
-                crate::perf::note("cache-path.bypass-reason: summary-decode");
-            }
-        },
-        Ok(GetOutcome::Miss) => {}
-        Ok(GetOutcome::Rejected(reason)) => {
-            crate::perf::note(&format!("cache-path.bypass-reason: rejected-{reason:?}"));
-        }
+    // baseline row regroup, no `.span` corpus reload, no anchored-blob scan. A
+    // verified hit here returns without ever touching the build-lock shard, so a
+    // warm read never contends with (or blocks behind) a concurrent cold builder.
+    if let Some(attempt) = exact_hit_read(&mut store, &key)? {
+        return Ok(attempt);
+    }
+
+    // ── Singleflight the miss tail on the key's build-lock shard ─────────────
+    //
+    // The exact read missed, so this call is a (potentially expensive) rebuild.
+    // Serialize every same-key rebuilder on the key's shard so exactly ONE runs
+    // the resolve + publish while the rest block, then recheck below and read the
+    // sibling's published result — the singleflight discipline the store already
+    // encapsulates in `build_or_get`, replicated inline here because the miss
+    // tail is a tiered flow (incremental → dirty → cold), not a single builder
+    // closure. Distinct keys hash to distinct shards and rebuild concurrently.
+    //
+    // A shard-acquire fault is a fail-closed bypass to the authoritative
+    // resolver, never a command failure — exactly like every other store fault
+    // on this path.
+    let shard = shard_index(&key, store.shard_count());
+    let _build_guard = match acquire_build_shard(store.dir(), shard) {
+        Ok(g) => g,
         Err(e) => {
-            crate::perf::note(&format!("cache-path.bypass-reason: get: {e}"));
+            crate::perf::note(&format!("cache-path.bypass-reason: build-shard: {e}"));
             return Ok(ExactAttempt::Bypass);
         }
+    };
+
+    // Recheck the exact generation under the lock: a sibling rebuilder may have
+    // published it while we waited for the shard. This is what collapses N
+    // simultaneous cold callers to one build — the losers of the lock race find
+    // the winner's published generation here and render straight from it.
+    if let Some(attempt) = exact_hit_read(&mut store, &key)? {
+        return Ok(attempt);
     }
 
     // ── Incremental miss: reuse an ancestor generation ──────────────────────
@@ -493,7 +508,8 @@ fn stale_spans_new_store_inner(
     // span's stored `SpanCore`, re-resolving only the spans a committed/dirty
     // path change (or the global-widen union) can affect. A `None` means no
     // usable ancestor / nothing reusable — fall through to the authoritative
-    // one-build cold path unchanged.
+    // one-build cold path unchanged. Re-attempted under the shard lock, so a
+    // sibling's just-published baseline is visible to it.
     if let Some(attempt) =
         incremental::attempt(repo, span_root, options, token, &key, &mut store)?
     {
@@ -516,6 +532,45 @@ fn stale_spans_new_store_inner(
 
     // ── Cold miss: exactly one build ────────────────────────────────────────
     cold_miss(repo, span_root, options, token, &key, &mut store)
+}
+
+/// The exact-generation read, shared by the unlocked fast path and the
+/// under-lock recheck in [`stale_spans_new_store_inner`].
+///
+/// On a verified, decodable hit it touches, memoizes, and returns the rendered
+/// [`ExactAttempt::Resolved`]. A store fault (a `get` error) returns
+/// [`ExactAttempt::Bypass`] — fail closed to the authoritative resolver. `None`
+/// means a plain miss / integrity rejection / undecodable summary, so the caller
+/// continues down the reconstruction tiers to the one cold build.
+fn exact_hit_read(store: &mut CacheStore, key: &[u8; 32]) -> Result<Option<ExactAttempt>> {
+    match store.get_generation(key, SUMMARY_VERSION) {
+        Ok(GetOutcome::Hit(g)) => match decode_summary(&g.summary) {
+            Ok(rr) => {
+                let _ = store.touch(key);
+                let rr = Arc::new(rr);
+                memo_put(*key, Arc::clone(&rr));
+                emit_hit_class("exact");
+                incr_exact_hits();
+                crate::perf::counter("cache-path.exact-hit", 1);
+                Ok(Some(rr.to_attempt()))
+            }
+            // A verified-but-undecodable summary is a corrupt hit: treat as a
+            // miss and rebuild (fail closed on trust, not on the command).
+            Err(()) => {
+                crate::perf::note("cache-path.bypass-reason: summary-decode");
+                Ok(None)
+            }
+        },
+        Ok(GetOutcome::Miss) => Ok(None),
+        Ok(GetOutcome::Rejected(reason)) => {
+            crate::perf::note(&format!("cache-path.bypass-reason: rejected-{reason:?}"));
+            Ok(None)
+        }
+        Err(e) => {
+            crate::perf::note(&format!("cache-path.bypass-reason: get: {e}"));
+            Ok(Some(ExactAttempt::Bypass))
+        }
+    }
 }
 
 /// The one-build cold-miss path. Resolves a single [`ResolutionCore`], projects

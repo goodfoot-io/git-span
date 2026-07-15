@@ -214,6 +214,72 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
     assert_eq!(warm, cold, "exact-hit output equals the cold-miss output");
 }
 
+// ── Singleflight: N concurrent cold callers build once ───────────────────────
+
+/// Card main-157 finding F5: concurrent cold callers for one missing key must
+/// perform EXACTLY ONE build, not N. This exercises the real production seam
+/// (`stale_spans_new_store`) — the same entry point the CLI drives — not the
+/// store's `build_or_get` in isolation.
+///
+/// N threads each open their own repo handle and race, released together by a
+/// barrier, into the miss path for the same (content-derived) canonical key.
+/// The first to win the key's build-lock shard runs the one resolve+publish;
+/// the rest block on the shard, then find the winner's published generation in
+/// the recheck-under-lock and render straight from it. The `cold-miss-build`
+/// counter is thread-local, so the total across all callers is the sum of each
+/// thread's count — and that total must be 1.
+#[test]
+fn concurrent_cold_callers_build_exactly_once() {
+    reset_test_state();
+    clear_memo();
+    let (td, _repo) = drifted_repo("concurrent");
+    enable_store();
+    let repo_path = td.path().to_path_buf();
+
+    const CALLERS: usize = 4;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(CALLERS));
+
+    let handles: Vec<_> = (0..CALLERS)
+        .map(|_| {
+            let repo_path = repo_path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                // A fresh repo handle per caller, exactly as N independent CLI
+                // invocations would each open the repo.
+                let repo = gix::open(&repo_path).expect("gix open");
+                // Release all callers into the miss path at the same instant so
+                // they genuinely contend on the shard.
+                barrier.wait();
+                let attempt = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full())
+                    .expect("attempt");
+                // The build counter is thread-local; report this thread's count
+                // so the caller can sum the true total across all threads.
+                (test_cold_miss_builds(), resolved(attempt))
+            })
+        })
+        .collect();
+
+    let mut total_builds = 0u64;
+    let mut outputs: Vec<Vec<SpanResolved>> = Vec::new();
+    for h in handles {
+        let (builds, spans) = h.join().expect("caller thread panicked");
+        total_builds += builds;
+        outputs.push(spans);
+    }
+
+    assert_eq!(
+        total_builds, 1,
+        "N simultaneous cold callers for one missing key must build exactly once, not N times"
+    );
+    // Every caller renders an identical reportable set: the winner built it, the
+    // losers read the winner's published generation.
+    for out in &outputs {
+        assert_eq!(out, &outputs[0], "all concurrent callers must agree byte-for-byte");
+        assert_eq!(out.len(), 1, "the drifted span is reportable");
+        assert_eq!(out[0].name, "alpha");
+    }
+}
+
 // ── Bounded in-process memo ──────────────────────────────────────────────────
 
 #[test]
