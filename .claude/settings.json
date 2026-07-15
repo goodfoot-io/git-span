@@ -5,7 +5,7 @@
     "GIT_SPAN_ADVICE_DEBUG": "1",
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "100000",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_API_HOOKS_LOG_FILE": "/workspace/.cards/logs/claude-code-cards-api-hooks.log"
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "250000"
   },
   "permissions": {
     "allow": [],
@@ -51,25 +51,19 @@
     ]
   },
   "enabledPlugins": {
-    "typescript-lsp@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": true,
     "typescript-hooks@goodfoot": true,
     "typescript-claude-code-for-web-setup@goodfoot": false,
     "project@goodfoot": false,
     "vscode@goodfoot": true,
     "goodfoot@goodfoot": true,
     "jsdoczoom@goodfoot": true,
-    "expansion@goodfoot": true,
-    "browser@goodfoot": true,
-    "github@goodfoot": false,
     "code-simplifier@claude-plugins-official": true,
-    "impeccable@impeccable": false,
     "frontend-design@claude-plugins-official": true,
     "plugin-dev@claude-plugins-official": true,
     "claude-code-hooks@goodfoot": true,
-    "last30days@last30days-skill": true,
     "git-span@git-span": true,
-    "wiki@goodfoot-wiki": true,
-    "cards@cards.management": true
+    "wiki@goodfoot-wiki": true
   },
   "extraKnownMarketplaces": {
     "git-span": {
@@ -94,12 +88,6 @@
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
-      }
-    },
-    "cards.management": {
-      "source": {
-        "source": "directory",
-        "path": "/home/node/.vscode-server/data/User/globalStorage/goodfoot.cards/marketplace"
       }
     }
   }
