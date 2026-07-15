@@ -1,0 +1,29 @@
+{
+  "name": "git-span",
+  "version": "1.0.134",
+  "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
+  "author": {
+    "name": "goodfoot",
+    "url": "https://github.com/goodfoot-io"
+  },
+  "homepage": "https://github.com/goodfoot-io/git-span",
+  "repository": "https://github.com/goodfoot-io/git-span",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "span",
+    "dependencies",
+    "semantic",
+    "coupling",
+    "documentation",
+    "drift",
+    "audit"
+  ],
+  "interface": {
+    "displayName": "git-span",
+    "capabilities": "Journals apply_patch edits as they land, surfaces coupled spans inline, and drains a pre-commit record for the background reconciler to keep implicit semantic dependencies from silently drifting.",
+    "defaultPrompt": "Check `git span stale` for drifted spans and help me reconcile them.",
+    "brandColor": "#6E56CF",
+    "composerIcon": "link"
+  }
+}

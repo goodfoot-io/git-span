@@ -1,0 +1,28 @@
+#!/bin/sh
+# git-span post-rewrite hook -- thin trigger.
+# Spawns the dispatcher detached with --post-rewrite and returns 0 immediately.
+# The old->new SHA mapping from git is passed through stdin to the dispatcher.
+# All real work happens in the background; failures log to .span/dispatcher.log.
+#
+# Installation: symlink into .git/hooks/post-rewrite.
+# If a post-rewrite hook already exists, append the nohup line to it.
+# For best results, place the span hook first in the chain so the SHA mapping
+# is consumed before any downstream script transforms stdin. Correctness never
+# depends on ordering, however.
+
+set -e
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+
+# Resolve dispatcher relative to this script's own location on disk.
+# Works when this hook is symlinked from its plugin directory.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+DISPATCHER="${SCRIPT_DIR}/../bin/dispatcher.mjs"
+
+# Capture stdin (old->new SHA mapping from git post-rewrite) before
+# backgrounding.  nohup and & can close the pipe before the dispatcher reads it.
+INPUT=$(cat)
+echo "$INPUT" | nohup node "${DISPATCHER}" --repo-root "${REPO_ROOT}" --post-rewrite \
+  > /dev/null 2>&1 &
+
+exit 0

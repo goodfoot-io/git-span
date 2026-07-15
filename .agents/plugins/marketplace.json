@@ -1,0 +1,9 @@
+{
+  "name": "git-span",
+  "plugins": [
+    {
+      "name": "git-span",
+      "source": { "source": "local", "path": "./plugins-codex/git-span" }
+    }
+  ]
+}
