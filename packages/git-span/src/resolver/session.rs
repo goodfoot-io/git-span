@@ -404,6 +404,66 @@ pub(crate) struct ResolveSession {
     /// blob) pays for one ODB decompress-and-decode. Failed reads are not
     /// cached, matching `worktree_bytes_memo`'s policy.
     pub(crate) blob_text_memo: HashMap<String, Arc<str>>,
+    /// Lazily-built, session-scoped first-parent ancestor chain from HEAD,
+    /// used by [`first_parent_ancestor`](Self::first_parent_ancestor).
+    /// `chain[i - 1]` is `HEAD~i`. Built incrementally: extended only as far
+    /// as the deepest index any caller has asked for so far, and never
+    /// re-walked from HEAD on a later request.
+    pub(crate) first_parent_chain: Option<Vec<gix::ObjectId>>,
+    /// Session-scoped memo for [`history_path_blob`](Self::history_path_blob),
+    /// keyed by `(commit_oid, path)`. The history walk in
+    /// [`find_original_line_slice_in_history`](crate::resolver::engine::anchor::find_original_line_slice_in_history)
+    /// probes `path_blob_at` at every ancestor commit it visits; when
+    /// multiple anchors share a path (or converge on the same ancestor after
+    /// diverging), those probes repeat. `None` caches a failed lookup (any
+    /// `path_blob_at` error — not found, unparsable commit, missing tree),
+    /// which is safe because blob presence at a fixed commit is immutable
+    /// within a session.
+    pub(crate) history_blob_memo: HashMap<(String, String), Option<String>>,
+    /// Session-scoped memo for
+    /// [`history_fingerprint`](Self::history_fingerprint), keyed by
+    /// `(blob_oid, start, end)`. The history walk recomputes the cheap
+    /// rolling-hash fingerprint of the same line range at every ancestor;
+    /// this collapses repeats (e.g. two anchors sharing a path and range
+    /// that walk through the same untouched blob) to one computation per
+    /// distinct `(blob, start, end)`.
+    pub(crate) history_fingerprint_memo: HashMap<(String, u32, u32), u64>,
+    /// Session-scoped shared Jaccard interner and per-`(path, layer)`
+    /// interned-candidate-line cache, used by
+    /// [`jaccard_candidate_ids`](Self::jaccard_candidate_ids) /
+    /// [`jaccard_anchored_ids`](Self::jaccard_anchored_ids). See
+    /// [`JaccardCorpus`].
+    pub(crate) jaccard_corpus: JaccardCorpus,
+}
+
+/// Session-scoped Jaccard interner and per-`(path, layer)` interned-line
+/// cache, shared across every anchor's fuzzy-similarity scan
+/// (`find_similar_ranges`) within one `stale` run.
+///
+/// [`git_span_core::jaccard_window_scan`] normalizes and interns a candidate
+/// file's lines from scratch on every call. `find_similar_ranges` already
+/// reuses the same cached candidate text (`relocation_text_memo`) across
+/// every drifted anchor in a run, but was still paying to re-normalize and
+/// re-intern that same candidate's lines once per anchor that scanned it.
+/// This cache normalizes+interns each `(path, layer)` at most once per
+/// session and reuses the resulting ids for every subsequent anchor.
+///
+/// All ids handed to
+/// [`jaccard_window_scan_interned`](git_span_core::jaccard_window_scan_interned)
+/// together — both a candidate's cached ids and an anchor's freshly-interned
+/// anchored-side ids — must come from THIS SAME `interner`, since id
+/// equality (not value) is what encodes line equality; ids minted by an
+/// unrelated interner are not comparable.
+/// A candidate's interned line ids paired with its raw-empty bitmap
+/// (`Arc`-shared so a cache hit is a cheap clone, not a copy) — see
+/// [`JaccardCorpus`].
+type JaccardCandidateIds = (Arc<[u32]>, Arc<[bool]>);
+
+#[derive(Default)]
+pub(crate) struct JaccardCorpus {
+    interner: HashMap<String, u32>,
+    /// Per-`(path, layer)` interned candidate ids + raw-empty bitmap.
+    candidates: HashMap<(String, DriftSource), JaccardCandidateIds>,
 }
 
 impl ResolveSession {
@@ -448,6 +508,10 @@ impl ResolveSession {
             before_tree_paths_memo: HashMap::new(),
             worktree_bytes_memo: HashMap::new(),
             blob_text_memo: HashMap::new(),
+            first_parent_chain: None,
+            history_blob_memo: HashMap::new(),
+            history_fingerprint_memo: HashMap::new(),
+            jaccard_corpus: JaccardCorpus::default(),
         }
     }
 
@@ -551,6 +615,128 @@ impl ResolveSession {
         let text: Arc<str> = git::read_git_text(repo, oid)?.into();
         self.blob_text_memo.insert(oid.to_string(), text.clone());
         Ok(text)
+    }
+
+    /// `HEAD~i`'s commit OID, via a session-scoped first-parent ancestor
+    /// chain extended (never re-walked) on demand — memoized equivalent of
+    /// `git::resolve_commit(repo, &format!("HEAD~{i}")).ok()`.
+    ///
+    /// Equivalence argument: `HEAD~i` resolution (`gix-revision`'s
+    /// `NthAncestor(i)`) walks strictly by first parent, exactly as this
+    /// chain does by repeatedly taking `commit.parent_ids().next()`. A chain
+    /// that runs out of parents before reaching depth `i` reproduces the
+    /// identical failure point textual resolution would hit ("HEAD has
+    /// fewer than i ancestors") — both fail the first time depth `i` exceeds
+    /// the first-parent history's length, and neither succeeds beyond that
+    /// point for any larger `i`, so returning `None` here is exactly the
+    /// case the original `.ok()?` handled.
+    ///
+    /// `chain[i - 1]` holds `HEAD~i` once resolved. The `while` loop below
+    /// extends the chain by exactly the entries missing to answer `i`; a
+    /// chain that already reached its natural end (root commit) stops
+    /// growing and every subsequent call for an equal-or-deeper `i` returns
+    /// `None` in O(1) without re-walking.
+    pub(crate) fn first_parent_ancestor(
+        &mut self,
+        repo: &gix::Repository,
+        i: u32,
+    ) -> Option<gix::ObjectId> {
+        let chain = self.first_parent_chain.get_or_insert_with(Vec::new);
+        while (chain.len() as u32) < i {
+            let current = match chain.last() {
+                Some(oid) => *oid,
+                None => {
+                    let head = git::head_oid(repo).ok()?;
+                    gix::ObjectId::from_hex(head.as_bytes()).ok()?
+                }
+            };
+            let commit = repo.find_commit(current).ok()?;
+            let parent = commit.parent_ids().next()?;
+            chain.push(parent.detach());
+        }
+        chain.get((i - 1) as usize).copied()
+    }
+
+    /// `git::path_blob_at(repo, commit_oid, path).ok()`, memoized per
+    /// session by `(commit_oid, path)`.
+    ///
+    /// A dedicated memo — NOT a reuse of [`head_blob_oid`](Self::head_blob_oid)
+    /// — is required here: `head_blob_oid` treats `PathNotInTree` as `Ok(None)`
+    /// but propagates every OTHER error as `Err`, whereas
+    /// `find_original_line_slice_in_history`'s original blanket `.ok()?`
+    /// collapses ANY `path_blob_at` failure (path absent, unparsable commit,
+    /// missing tree — all of them) into "stop here, this ancestor doesn't
+    /// have it". Reusing `head_blob_oid` would turn non-`PathNotInTree`
+    /// failures into a hard command-level `Err`, an observable behavior
+    /// change. Failed lookups ARE cached as `None` here (unlike
+    /// `worktree_bytes_memo`/`blob_text_memo`'s policy): `path_blob_at`'s
+    /// outcome for a fixed `(commit_oid, path)` is deterministic — git
+    /// objects are immutable — so there is no "transient failure, retry
+    /// later" case to keep uncached.
+    pub(crate) fn history_path_blob(
+        &mut self,
+        repo: &gix::Repository,
+        commit_oid: &str,
+        path: &str,
+    ) -> Option<String> {
+        let key = (commit_oid.to_string(), path.to_string());
+        if let Some(cached) = self.history_blob_memo.get(&key) {
+            return cached.clone();
+        }
+        let blob = git::path_blob_at(repo, commit_oid, path).ok();
+        self.history_blob_memo.insert(key, blob.clone());
+        blob
+    }
+
+    /// `cheap_fingerprint_with_extent(text.as_bytes(), &AnchorExtent::LineRange { start, end })`,
+    /// memoized per session by `(blob_oid, start, end)`. Same computed value
+    /// as the unmemoized call for the same inputs — the fingerprint is a
+    /// pure function of the blob's bytes and the line range — so caching by
+    /// blob identity plus range is exact, not approximate.
+    pub(crate) fn history_fingerprint(&mut self, oid: &str, text: &str, start: u32, end: u32) -> u64 {
+        let key = (oid.to_string(), start, end);
+        if let Some(&fp) = self.history_fingerprint_memo.get(&key) {
+            return fp;
+        }
+        let fp = git_span_core::cheap_fingerprint_with_extent(
+            text.as_bytes(),
+            &crate::types::AnchorExtent::LineRange { start, end },
+        );
+        self.history_fingerprint_memo.insert(key, fp);
+        fp
+    }
+
+    /// Interned ids + raw-empty bitmap for candidate `path`'s lines at
+    /// `layer`, building and caching them on first request against the
+    /// session's shared Jaccard interner. See [`JaccardCorpus`].
+    pub(crate) fn jaccard_candidate_ids(
+        &mut self,
+        path: &str,
+        layer: DriftSource,
+        lines: &[&str],
+    ) -> JaccardCandidateIds {
+        let key = (path.to_string(), layer);
+        if let Some(cached) = self.jaccard_corpus.candidates.get(&key) {
+            return cached.clone();
+        }
+        let (ids, raw_empty) =
+            git_span_core::intern_normalized_lines(lines, &mut self.jaccard_corpus.interner);
+        let value: JaccardCandidateIds = (ids.into(), raw_empty.into());
+        self.jaccard_corpus.candidates.insert(key, value.clone());
+        value
+    }
+
+    /// Interned ids for the anchored side of a fuzzy scan, against the same
+    /// shared corpus interner used by
+    /// [`jaccard_candidate_ids`](Self::jaccard_candidate_ids) — required for
+    /// the resulting ids to compare meaningfully against a candidate's
+    /// cached ids. Not itself cached: the anchored text is different on
+    /// every call (it's the anchor's own drifted content), so there is
+    /// nothing to reuse beyond the interner's accumulated id assignments.
+    pub(crate) fn jaccard_anchored_ids(&mut self, anchored_lines: &[&str]) -> Vec<u32> {
+        let (ids, _raw_empty) =
+            git_span_core::intern_normalized_lines(anchored_lines, &mut self.jaccard_corpus.interner);
+        ids
     }
 
     /// Get or build a [`CachedLineIndex`] for `(path, layer)`, building it
@@ -1201,6 +1387,10 @@ mod tests {
             before_tree_paths_memo: HashMap::new(),
             worktree_bytes_memo: HashMap::new(),
             blob_text_memo: HashMap::new(),
+            first_parent_chain: None,
+            history_blob_memo: HashMap::new(),
+            history_fingerprint_memo: HashMap::new(),
+            jaccard_corpus: JaccardCorpus::default(),
         };
 
         let total = session.anchors_total();
@@ -1263,6 +1453,10 @@ mod tests {
             before_tree_paths_memo: HashMap::new(),
             worktree_bytes_memo: HashMap::new(),
             blob_text_memo: HashMap::new(),
+            first_parent_chain: None,
+            history_blob_memo: HashMap::new(),
+            history_fingerprint_memo: HashMap::new(),
+            jaccard_corpus: JaccardCorpus::default(),
         };
 
         let total = session.anchors_total();

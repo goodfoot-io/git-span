@@ -17,8 +17,8 @@ use crate::types::{
 };
 use crate::{Error, Result};
 use git_span_core::{
-    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_window_scan, rk64_from_hex,
-    rk64_to_hex, RK64_ALGORITHM,
+    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_window_scan_interned,
+    rk64_from_hex, rk64_to_hex, RK64_ALGORITHM,
 };
 use git_span_core::{LineIndex, scan_indexed_rk64_one};
 use std::path::PathBuf;
@@ -66,26 +66,32 @@ const HISTORY_WALK_LIMIT: u32 = 64;
 /// blob text does not outlive this scan). `None` on a rename, deletion, or
 /// hash mismatch anywhere in the walk, or once [`HISTORY_WALK_LIMIT`] is
 /// exhausted — every such case leaves the caller fail-closed.
+///
+/// Walk state (the first-parent ancestor chain, each ancestor's blob at
+/// `path`, and each visited blob's fingerprint at `[start, end]`) is
+/// memoized on `state.session` so that repeated walks — across anchors
+/// sharing a path, or a re-walk converging on already-visited ancestors —
+/// reuse prior work instead of re-resolving `HEAD~i` and re-hashing text
+/// from scratch every time. See `ResolveSession::first_parent_ancestor`,
+/// `history_path_blob`, and `history_fingerprint` for the equivalence
+/// argument for each memo.
 fn find_original_line_slice_in_history(
     repo: &gix::Repository,
+    state: &mut EngineState,
     path: &str,
     start: u32,
     end: u32,
     stored_hash: &str,
 ) -> Option<Vec<String>> {
     for i in 1..=HISTORY_WALK_LIMIT {
-        let commit_oid = git::resolve_commit(repo, &format!("HEAD~{i}")).ok()?;
-        let blob_oid = git::path_blob_at(repo, &commit_oid, path).ok()?;
-        let Ok(text) = git::read_git_text(repo, &blob_oid) else {
+        let commit_oid = state.session.first_parent_ancestor(repo, i)?;
+        let commit_oid_hex = commit_oid.to_string();
+        let blob_oid = state.session.history_path_blob(repo, &commit_oid_hex, path)?;
+        let Ok(text) = state.session.blob_text(repo, &blob_oid) else {
             continue;
         };
-        let computed = format!(
-            "{RK64_ALGORITHM}:{}",
-            rk64_to_hex(cheap_fingerprint_with_extent(
-                text.as_bytes(),
-                &AnchorExtent::LineRange { start, end },
-            ))
-        );
+        let fp = state.session.history_fingerprint(&blob_oid, &text, start, end);
+        let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(fp));
         if computed == stored_hash {
             let lines: Vec<&str> = text.lines().collect();
             let lo = (start as usize).saturating_sub(1);
@@ -307,12 +313,16 @@ const FUZZY_NOISE_FLOOR: f64 = 0.50;
 /// Candidate paths come from the git index (tracked files excluding
 /// `exclude`), capped at [`FUZZY_SCAN_MAX_CANDIDATES`]. Each candidate file
 /// is read (from the session text memo or fresh) and every window of
-/// `extent_lines` lines is scored via [`jaccard_window_scan`] — an
-/// incremental sliding-window Jaccard scan that normalizes each line once
-/// instead of re-normalizing and re-hashing every window from scratch, while
-/// producing bit-identical confidences to the naive per-window computation.
-/// Returns results sorted by confidence descending, then by path for
-/// determinism.
+/// `extent_lines` lines is scored via
+/// [`jaccard_window_scan_interned`] — an incremental sliding-window Jaccard
+/// scan that normalizes each line once instead of re-normalizing and
+/// re-hashing every window from scratch, while producing bit-identical
+/// confidences to the naive per-window computation. Candidate lines are
+/// normalized and interned at most once per `(path, layer)` per session
+/// (`ResolveSession::jaccard_candidate_ids`) rather than once per anchor
+/// that scans them, since many drifted anchors in a run scan the same
+/// candidate corpus. Returns results sorted by confidence descending, then
+/// by path for determinism.
 fn find_similar_ranges(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -336,7 +346,12 @@ fn find_similar_ranges(
     let head_sha = state.head_sha.clone();
     state.session.warm_head_blob_memo(repo, &head_sha);
 
-    let anchored_bytes = anchored_text.as_bytes();
+    // Interned once against the session's shared Jaccard corpus interner —
+    // every candidate this anchor is scanned against below shares that same
+    // interner, so id equality between the two sides still means line
+    // equality (see `JaccardCorpus`'s doc comment).
+    let anchored_lines: Vec<&str> = anchored_text.lines().collect();
+    let anchored_ids = state.session.jaccard_anchored_ids(&anchored_lines);
     let mut results: Vec<FuzzySuccessor> = Vec::new();
     let mut candidates_scanned = 0usize;
 
@@ -383,8 +398,17 @@ fn find_similar_ranges(
             continue;
         }
 
-        let hits =
-            jaccard_window_scan(anchored_bytes, &candidate_lines, extent_lines, FUZZY_NOISE_FLOOR);
+        let (candidate_ids, candidate_raw_empty) =
+            state
+                .session
+                .jaccard_candidate_ids(&en.path, deepest, &candidate_lines);
+        let hits = jaccard_window_scan_interned(
+            &anchored_ids,
+            &candidate_ids,
+            &candidate_raw_empty,
+            extent_lines,
+            FUZZY_NOISE_FLOOR,
+        );
         for (win_start, confidence) in hits {
             results.push(FuzzySuccessor {
                 path: en.path.clone(),
@@ -1362,6 +1386,7 @@ pub(crate) fn resolve_anchor_inner(
                     // anchor drifting exactly as before — fail-closed.
                     find_original_line_slice_in_history(
                         repo,
+                        state,
                         &t.path,
                         anchored_start,
                         anchored_end,

@@ -623,6 +623,36 @@ fn intern_line(interner: &mut std::collections::HashMap<String, u32>, s: String)
     *interner.entry(s).or_insert(next)
 }
 
+/// Whitespace-normalize and intern every line of `lines` into `interner`,
+/// returning the per-line interned ids alongside a parallel bitmap of
+/// whether each line was RAW-empty (`""`) before normalization.
+///
+/// Exists so a caller that scans the SAME candidate lines against many
+/// different anchored texts (e.g. one Jaccard scan per drifted anchor over a
+/// shared corpus of candidate files) can normalize and intern each candidate
+/// file's lines exactly once and reuse the result — see
+/// [`jaccard_window_scan_interned`]. `interner` must be the SAME map across
+/// every call whose resulting ids are compared against each other (ids from
+/// independently-built interners are not meaningfully comparable).
+///
+/// The raw-empty bitmap is required by [`jaccard_window_scan_interned`]'s
+/// trailing-window special case (see that function's doc comment): a
+/// whitespace-only line normalizes to `""` too, but is not raw-empty, and
+/// the two cases are not distinguishable from the normalized id alone.
+pub fn intern_normalized_lines(
+    lines: &[&str],
+    interner: &mut std::collections::HashMap<String, u32>,
+) -> (Vec<u32>, Vec<bool>) {
+    let mut ids = Vec::with_capacity(lines.len());
+    let mut raw_empty = Vec::with_capacity(lines.len());
+    for &l in lines {
+        raw_empty.push(l.is_empty());
+        let norm = l.split_whitespace().collect::<Vec<&str>>().join(" ");
+        ids.push(intern_line(interner, norm));
+    }
+    (ids, raw_empty)
+}
+
 /// Incremental sliding-window Jaccard scan: for every window of `extent`
 /// lines in `candidate_lines`, computes **exactly** the confidence
 /// [`jaccard_similarity`] would return for `(anchored, window_lines.join("\n"))`,
@@ -685,38 +715,78 @@ pub fn jaccard_window_scan(
 
     let mut interner: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
-    let anchored_ids: Vec<u32> = normalize_lines_jaccard(anchored)
-        .into_iter()
-        .map(|l| intern_line(&mut interner, l))
-        .collect();
+    let anchored_text = String::from_utf8_lossy(anchored);
+    let anchored_lines: Vec<&str> = anchored_text.lines().collect();
+    let (anchored_ids, _anchored_raw_empty) =
+        intern_normalized_lines(&anchored_lines, &mut interner);
+    let (candidate_ids, candidate_raw_empty) =
+        intern_normalized_lines(candidate_lines, &mut interner);
+
+    jaccard_window_scan_interned(
+        &anchored_ids,
+        &candidate_ids,
+        &candidate_raw_empty,
+        extent,
+        noise_floor,
+    )
+}
+
+/// [`jaccard_window_scan`] over PRE-NORMALIZED, PRE-INTERNED line ids.
+///
+/// `anchored_ids` and `candidate_ids` must have been produced by
+/// [`intern_normalized_lines`] against the SAME interner (directly, or
+/// transitively via any other call sharing that interner) — this is what
+/// lets a caller intern each candidate file's lines once and reuse them
+/// across many anchored-side scans (each anchor's content differs, but its
+/// ids must be looked up in the same corpus interner for id equality to
+/// mean line equality).
+///
+/// `candidate_raw_empty[i]` records whether the ORIGINAL (pre-normalization)
+/// line that `candidate_ids[i]` was interned from was the raw empty string
+/// `""`. This is required, not derivable from `candidate_ids` alone, because
+/// a whitespace-only line normalizes to `""` too but is not raw-empty — see
+/// [`jaccard_window_scan`]'s doc comment for why the trailing-window special
+/// case hinges on raw emptiness specifically.
+///
+/// Produces bit-identical `(win_start, confidence)` pairs to
+/// `jaccard_window_scan` when its inputs are the corresponding pre-interned
+/// form of the same `anchored`/`candidate_lines`.
+pub fn jaccard_window_scan_interned(
+    anchored_ids: &[u32],
+    candidate_ids: &[u32],
+    candidate_raw_empty: &[bool],
+    extent: usize,
+    noise_floor: f64,
+) -> Vec<(usize, f64)> {
+    if extent == 0 || candidate_ids.len() < extent {
+        return Vec::new();
+    }
+    debug_assert_eq!(
+        candidate_ids.len(),
+        candidate_raw_empty.len(),
+        "candidate_ids and candidate_raw_empty must be parallel arrays"
+    );
+
     let a_total = anchored_ids.len();
     let mut anchored_count: std::collections::HashMap<u32, usize> =
         std::collections::HashMap::new();
-    for &id in &anchored_ids {
+    for &id in anchored_ids {
         *anchored_count.entry(id).or_default() += 1;
     }
 
-    let candidate_ids: Vec<u32> = candidate_lines
-        .iter()
-        .map(|l| {
-            let norm = l.split_whitespace().collect::<Vec<&str>>().join(" ");
-            intern_line(&mut interner, norm)
-        })
-        .collect();
-
     // Confidence for the window currently described by `intersection` /
-    // `window_count`, whose last line is `candidate_lines[last_idx]`.
-    // Reproduces the trailing-empty-line drop documented above: when that
-    // raw line is `""`, the naive multiset excludes it, so this virtually
-    // removes one occurrence of its id (without touching the persistent
-    // sliding-window state, since that same line is a normal interior
-    // member of every other window it participates in) and unions over
-    // `extent - 1` lines instead of `extent`.
+    // `window_count`, whose last line is at `last_idx`. Reproduces the
+    // trailing-empty-line drop documented above: when that RAW line was
+    // `""`, the naive multiset excludes it, so this virtually removes one
+    // occurrence of its id (without touching the persistent sliding-window
+    // state, since that same line is a normal interior member of every
+    // other window it participates in) and unions over `extent - 1` lines
+    // instead of `extent`.
     let window_confidence = |intersection: usize,
                               window_count: &std::collections::HashMap<u32, usize>,
                               last_idx: usize|
      -> f64 {
-        if !candidate_lines[last_idx].is_empty() {
+        if !candidate_raw_empty[last_idx] {
             let union = a_total + extent - intersection;
             return if union == 0 {
                 0.0
@@ -2322,6 +2392,94 @@ mod tests {
 
             assert_window_scan_matches_naive(&anchored, &candidate_lines, extent);
         }
+    }
+
+    /// Simulates the session-scoped usage pattern `jaccard_window_scan_interned`
+    /// is designed for: a single candidate corpus interned ONCE into a shared
+    /// interner, then scanned against several *different* anchored texts (as
+    /// if each were a separate drifted anchor in the same resolve session).
+    /// Each interned-path result must exactly match calling the byte-based
+    /// `jaccard_window_scan` fresh for that same (anchored, candidate) pair —
+    /// proving that reusing ids assigned across unrelated prior calls (here,
+    /// prior anchored-side interning) doesn't perturb the multiset math,
+    /// since only id *equality*, never id *value*, is ever inspected.
+    #[test]
+    fn jaccard_window_scan_interned_matches_fresh_scan_across_shared_corpus() {
+        let candidate_lines: Vec<&str> = vec![
+            "alpha", "beta", "gamma", "alpha", "delta", "beta", "gamma", "epsilon", "alpha",
+            "beta",
+        ];
+        let extent = 3;
+        let noise_floor = 0.0;
+
+        let mut interner: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let (candidate_ids, candidate_raw_empty) =
+            intern_normalized_lines(&candidate_lines, &mut interner);
+
+        let anchored_texts: &[&[u8]] = &[
+            b"alpha\nbeta\ngamma\n",
+            b"zzz\nalpha\nbeta\n",
+            b"gamma\nepsilon\nalpha\n",
+            b"nothing\nmatches\nhere\n",
+        ];
+
+        for anchored in anchored_texts {
+            // Interning this anchored text's lines mutates the SHARED interner
+            // (assigning fresh ids for any word not already seen by a
+            // previous iteration or by the candidate corpus above) — exactly
+            // as a real session would accumulate ids across anchors.
+            let anchored_text = String::from_utf8_lossy(anchored);
+            let anchored_lines: Vec<&str> = anchored_text.lines().collect();
+            let (anchored_ids, _) = intern_normalized_lines(&anchored_lines, &mut interner);
+
+            let got = jaccard_window_scan_interned(
+                &anchored_ids,
+                &candidate_ids,
+                &candidate_raw_empty,
+                extent,
+                noise_floor,
+            );
+            let want = jaccard_window_scan(anchored, &candidate_lines, extent, noise_floor);
+            assert_eq!(
+                got, want,
+                "interned scan drifted from fresh byte-based scan: anchored={anchored:?}"
+            );
+        }
+    }
+
+    /// A whitespace-only line (e.g. `"   "`) normalizes to the same `""` id
+    /// as a genuinely raw-empty line, but [`intern_normalized_lines`] must
+    /// still report it as NOT raw-empty in its bitmap — this is what lets
+    /// [`jaccard_window_scan_interned`]'s trailing-window special case tell
+    /// the two apart (only a truly raw-empty trailing line triggers the
+    /// naive-reference's "drop the empty line" adjustment).
+    #[test]
+    fn intern_normalized_lines_distinguishes_raw_empty_from_whitespace_only() {
+        let lines = ["a", "", "   ", "\t", "b"];
+        let mut interner: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let (ids, raw_empty) = intern_normalized_lines(&lines, &mut interner);
+
+        assert_eq!(raw_empty, vec![false, true, false, false, false]);
+        // "", "   ", and "\t" all normalize to the same empty-string id.
+        assert_eq!(ids[1], ids[2]);
+        assert_eq!(ids[1], ids[3]);
+        // But that shared normalized id is distinct from "a" and "b".
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[4], ids[1]);
+
+        // And this distinction changes real scan results: a candidate whose
+        // trailing line is whitespace-only must NOT get the empty-line-drop
+        // adjustment that a truly-raw-empty trailing line gets.
+        let anchored = b"a\nb\n";
+        let candidate_whitespace_trailing = ["a", "b", "   "];
+        let candidate_raw_empty_trailing = ["a", "b", ""];
+        let with_whitespace =
+            jaccard_window_scan(anchored, &candidate_whitespace_trailing, 3, 0.0);
+        let with_raw_empty = jaccard_window_scan(anchored, &candidate_raw_empty_trailing, 3, 0.0);
+        assert_ne!(
+            with_whitespace, with_raw_empty,
+            "whitespace-only trailing line must not be treated as raw-empty"
+        );
     }
 
     // --- scan_indexed_rk64_one: parity with scan_indexed_rk64 on one file ---

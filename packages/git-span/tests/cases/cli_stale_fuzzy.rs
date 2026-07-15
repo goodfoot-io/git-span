@@ -485,3 +485,104 @@ fn fuzzy_porcelain_below_threshold_comment() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Test 9: Two anchors' fuzzy scans share the same candidate corpus without
+// cross-contaminating each other's matches — regression test for the
+// session-shared Jaccard interner (`ResolveSession::jaccard_candidate_ids` /
+// `jaccard_anchored_ids`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fuzzy_shared_candidate_corpus_resolves_each_anchor_independently() -> Result<()> {
+    let repo = TestRepo::new()?;
+
+    // Two unrelated candidate files coexist in the index — both are
+    // scanned as fuzzy candidates for EVERY drifted anchor in the run, so
+    // their normalized/interned lines are cached once in the session's
+    // shared `JaccardCorpus` and reused across both anchors below. Anchor A
+    // and anchor B's own anchored-side lines are also interned into that
+    // SAME shared map (just at different times, interleaved with each
+    // other's resolution) — if ids ever collided or leaked across anchors,
+    // one anchor would spuriously match the other's unrelated candidate.
+    // 50 lines with 1 changed -> Jaccard 49/51 ~ 0.961, comfortably above
+    // the default 0.95 MOVED threshold (matching the ratio already proven
+    // in `fuzzy_above_threshold_moved`).
+    let lines_a = generate_unique_lines(50);
+    let content_a = to_content(&lines_a);
+    let near_a = generate_modified_lines(50, &[24]);
+    let content_near_a = to_content(&near_a);
+
+    let lines_b: Vec<String> = (1..=50)
+        .map(|i| format!("struct Widget{i:02} {{ id: u64, tag: String }}"))
+        .collect();
+    let content_b = to_content(&lines_b);
+    let mut near_b = lines_b.clone();
+    near_b[24] = "struct Widget25 { id: u128, tag: String }".to_string(); // 1 of 50 changed
+    let content_near_b = to_content(&near_b);
+
+    repo.write_file("candidateA.txt", &content_a)?;
+    repo.write_file("candidateB.txt", &content_b)?;
+    repo.write_file("sourceA.txt", &content_near_a)?;
+    repo.write_file("sourceB.txt", &content_near_b)?;
+    repo.commit_all("seed shared candidate corpus")?;
+    repo.write_commit_graph()?;
+
+    seed_span(&repo, "ma", "sourceA.txt#L1-L50", "anchor A over shared corpus")?;
+    repo.write_commit_graph()?;
+    seed_span(&repo, "mb", "sourceB.txt#L1-L50", "anchor B over shared corpus")?;
+    repo.write_commit_graph()?;
+
+    // Staged deletion of both anchored sources — HEAD blobs stay alive for
+    // `anchored_text`, and both spans' `find_similar_ranges` scan the SAME
+    // index (candidateA.txt, candidateB.txt, and each other's now-deleted
+    // source) as candidates.
+    repo.run_git(["rm", "sourceA.txt"])?;
+    repo.run_git(["rm", "sourceB.txt"])?;
+
+    let out = repo.run_span(["stale", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Each anchor must move to its OWN near-duplicate candidate, never the
+    // other's — cross-contamination would show up as the wrong destination
+    // or as no match at all (ids from the wrong anchor polluting a shared
+    // window count).
+    assert!(
+        stdout.contains("moved to candidateA.txt#L1-L50"),
+        "anchor A must resolve to its own near-duplicate candidate; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("moved to candidateB.txt#L1-L50"),
+        "anchor B must resolve to its own near-duplicate candidate; stdout:\n{stdout}"
+    );
+
+    // JSON cross-check: confirm the (span, destination) pairing is correct,
+    // not merely that both destinations appear somewhere in the output.
+    let json_out = repo.run_span(["stale", "--format", "json", "--no-exit-code"])?;
+    let v: Value = serde_json::from_slice(&json_out.stdout)?;
+    let findings = v["findings"].as_array().unwrap();
+    let mut found_a_to_a = false;
+    let mut found_b_to_b = false;
+    for f in findings {
+        let span = f["span"].as_str().unwrap_or_default();
+        let dest = f["moved_to"]["path"].as_str().unwrap_or_default();
+        if span == "ma" && dest == "candidateA.txt" {
+            found_a_to_a = true;
+        }
+        if span == "mb" && dest == "candidateB.txt" {
+            found_b_to_b = true;
+        }
+        assert!(
+            !(span == "ma" && dest == "candidateB.txt"),
+            "anchor A must not cross-match candidate B; finding={f}"
+        );
+        assert!(
+            !(span == "mb" && dest == "candidateA.txt"),
+            "anchor B must not cross-match candidate A; finding={f}"
+        );
+    }
+    assert!(found_a_to_a, "expected ma -> candidateA.txt in JSON findings: {findings:?}");
+    assert!(found_b_to_b, "expected mb -> candidateB.txt in JSON findings: {findings:?}");
+
+    Ok(())
+}

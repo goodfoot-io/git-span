@@ -309,6 +309,103 @@ fn fix_reanchors_whitespace_only_changed_at_head_layer() -> Result<()> {
 }
 
 #[test]
+fn fix_reanchors_whitespace_only_changed_several_commits_back_at_head_layer() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // Three successive whitespace-only reshapes of line 1, each a distinct
+    // indentation from the last and from the genuine original — so only the
+    // very first commit (three commits back) still hashes to `stored_hash`.
+    // This forces `find_original_line_slice_in_history`'s walk past
+    // `HEAD~1` and `HEAD~2` (neither matches) before it finds the original
+    // at `HEAD~3`, exercising the first-parent ancestor chain, the
+    // per-(commit,path) blob memo, and the per-(blob,start,end) fingerprint
+    // memo across multiple distinct ancestors rather than just the first.
+    let v1 = "\tline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", v1)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "reindent v1"])?;
+
+    let v2 = "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", v2)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "reindent v2"])?;
+
+    let v3 = "      line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", v3)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "reindent v3"])?;
+
+    repo.run_span(["stale", "--fix", "--no-exit-code"])?;
+
+    let span = read_span(&repo, "m")?;
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let reanchored = line_slice_hash(v3, 1, 5);
+    assert!(
+        !span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "multi-commit-back whitespace-only change must not keep the stale original hash; got:\n{span}"
+    );
+    assert!(
+        span.contains(&format!("file1.txt#L1-L5 rk64:{reanchored}")),
+        "multi-commit-back whitespace-only change must be re-anchored to current content; got:\n{span}"
+    );
+
+    let out = repo.run_span(["stale", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("0 stale"),
+        "anchor must be clean after re-anchoring; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_leaves_changed_anchor_when_history_walk_is_exhausted() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // A meaning-changing HEAD-layer edit never hash-matches `stored_hash` at
+    // ANY ancestor, so `find_original_line_slice_in_history`'s walk runs
+    // all the way past the last real commit and off the root — exhausting
+    // the first-parent ancestor chain (this repo has only a handful of
+    // commits, far short of `HISTORY_WALK_LIMIT`). The walk must fail
+    // closed (leave the anchor `Changed`, keep the original hash) rather
+    // than panicking or hanging when the chain runs out of parents.
+    let new_content =
+        "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    repo.write_file("file1.txt", new_content)?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "meaning-changing edit"])?;
+
+    let out = repo.run_span(["stale", "--fix", "--no-exit-code"])?;
+    assert!(
+        out.status.success() || out.status.code() == Some(0),
+        "fix run must complete without crashing once the history walk is exhausted; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let span = read_span(&repo, "m")?;
+    let original = line_slice_hash(ORIGINAL, 1, 5);
+    let broken = line_slice_hash(new_content, 1, 5);
+    assert!(
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "exhausted-walk anchor must keep its original hash; got:\n{span}"
+    );
+    assert!(
+        !span.contains(&broken),
+        "exhausted-walk anchor must NOT be re-anchored; got:\n{span}"
+    );
+
+    let out2 = repo.run_span(["stale", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out2.stdout);
+    assert!(
+        stdout.contains("## m"),
+        "anchor must still surface as stale after an exhausted walk; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn fix_rewrites_moved_anchor_at_worktree_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
