@@ -23,6 +23,7 @@ use git_span_core::{
 use git_span_core::{LineIndex, scan_indexed_rk64_one};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
     gix::ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
@@ -451,7 +452,13 @@ pub(crate) fn resolve_anchor_inner(
         });
     }
 
-    if r.anchor_sha == state.head_sha {
+    // `clean_head_fast_path` succeeds only when `head_blob == r.blob`; a
+    // file-backed anchor's `r.blob` is always empty and `head_blob_at`
+    // never resolves to the empty string, so the comparison always trips
+    // and the call is provably futile. Gate both attempts (here and the
+    // second below) on `!r.blob.is_empty()` so file-backed anchors skip
+    // the wasted attribute/blob-OID lookups entirely.
+    if r.anchor_sha == state.head_sha && !r.blob.is_empty() {
         let head_loc = Some(Tracked {
             path: r.path.clone(),
             start: anchored_start,
@@ -506,16 +513,21 @@ pub(crate) fn resolve_anchor_inner(
         }
     }
 
-    if let Some(resolved) = clean_head_fast_path(
-        repo,
-        state,
-        anchor_id,
-        &r,
-        anchored.clone(),
-        &head_loc,
-        anchored_start,
-        anchored_end,
-    )? {
+    // See the first `clean_head_fast_path` call above: file-backed anchors
+    // (`r.blob` empty) can never pass its `head_blob == r.blob` check, so
+    // skip the second attempt for them too.
+    if !r.blob.is_empty()
+        && let Some(resolved) = clean_head_fast_path(
+            repo,
+            state,
+            anchor_id,
+            &r,
+            anchored.clone(),
+            &head_loc,
+            anchored_start,
+            anchored_end,
+        )?
+    {
         return Ok(resolved);
     }
 
@@ -710,8 +722,17 @@ pub(crate) fn resolve_anchor_inner(
     if !r.stored_hash.is_empty() && r.blob.is_empty()
         && let Some((ref t, _, _)) = current
     {
-        let wt_bytes =
-            read_worktree_normalized(repo, &mut state.custom_filters, &t.path)?;
+        // Both reads below are session-memoized: `t.path`'s worktree bytes
+        // and the HEAD blob's decoded text are each read at most once per
+        // session regardless of how many anchors share the path/blob (the
+        // worktree and HEAD are both constant for the duration of one
+        // `stale` run). The hash computations themselves are byte-for-byte
+        // identical to the un-memoized form — only the disk/ODB reads are
+        // cached, so the fingerprints below match exactly what a fresh
+        // `read_worktree_normalized` / `read_git_text` pair would produce.
+        let wt_bytes = state
+            .session
+            .worktree_bytes(repo, &mut state.custom_filters, &t.path)?;
         let extent = AnchorExtent::LineRange {
             start: anchored_start,
             end: anchored_end,
@@ -724,7 +745,7 @@ pub(crate) fn resolve_anchor_inner(
 
         let head_matches = match state.head_blob_at(repo, &r.path)? {
             Some(oid) => {
-                let head_txt = match git::read_git_text(repo, &oid) {
+                let head_txt = match state.session.blob_text(repo, &oid) {
                     Ok(t) => t,
                     Err(_) if crate::git::promisor_active(repo) => {
                         if wt_matches {
@@ -735,7 +756,7 @@ pub(crate) fn resolve_anchor_inner(
                                 UnavailableReason::PromisorMissing,
                             ));
                         }
-                        String::new()
+                        Arc::from("")
                     },
                     Err(e) => return Err(e),
                 };

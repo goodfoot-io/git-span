@@ -393,6 +393,36 @@ pub(crate) fn tree_blob_paths(tree: &gix::Tree<'_>) -> Result<Vec<(String, Strin
     Ok(out)
 }
 
+/// Collect every entry path present in `tree` — blobs, directories,
+/// symlinks, and gitlinks alike — via one breadth-first traversal.
+///
+/// Entry-universe proof: `crate::git::tree_entry_at` resolves through
+/// `gix`'s per-component tree lookup (`Tree::lookup_entry_by_path` ->
+/// `gix_object::tree::next_entry`), which returns `Some(entry)` for the
+/// final path component once the component iterator is exhausted,
+/// regardless of that entry's `EntryMode` — a directory-only path is a
+/// legitimate `Some`. The `gix_traverse::tree::Recorder` used here (via
+/// `.breadthfirst.files()`, whose name is misleading — it does not filter
+/// by kind) records every entry the same way: `visit_tree` and
+/// `visit_nontree` both push to `records`. So this function's output set
+/// has exactly the same membership as `tree_entry_at(tree, path).is_some()`
+/// for every path reachable from `tree`: a path that names a directory in
+/// this tree is "taken" here just as it would be via a direct probe, so a
+/// candidate that later becomes a file is still correctly excluded from
+/// being treated as unclaimed.
+pub(crate) fn tree_all_paths(tree: &gix::Tree<'_>) -> Result<std::collections::HashSet<String>> {
+    let mut out = std::collections::HashSet::new();
+    tree.traverse()
+        .breadthfirst
+        .files()
+        .map_err(|e| Error::Git(format!("tree traverse: {e}")))?
+        .into_iter()
+        .for_each(|entry| {
+            out.insert(entry.filepath.to_string());
+        });
+    Ok(out)
+}
+
 /// Collect all blob paths from every ref's tree, deduped by blob OID.
 /// Returns `(path, blob_oid)` pairs with unique blob OIDs.
 fn all_ref_blob_paths(repo: &gix::Repository) -> Result<Vec<(String, String)>> {

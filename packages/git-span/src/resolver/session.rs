@@ -12,6 +12,7 @@ use crate::Result;
 use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
+use crate::resolver::layers::{CustomFilters, read_worktree_normalized};
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection, DriftSource};
@@ -385,11 +386,24 @@ pub(crate) struct ResolveSession {
     /// distinct anchored path per session.
     pub(crate) rename_before_commit_memo: HashMap<String, Option<String>>,
     /// Session-scoped memo for [`is_rename_target`](Self::is_rename_target),
-    /// keyed by `(before_commit, candidate_path)`. The same candidate is
-    /// probed by every deleted anchor that shares an anchored path (and
-    /// therefore a `before_commit`), and the tree-entry probe is pure given
-    /// the commit, so this collapses repeated probes to one per pair.
-    pub(crate) rename_target_memo: HashMap<(String, String), bool>,
+    /// keyed by `before_commit`. Holds every path present in that commit's
+    /// tree (any entry kind — see [`before_tree_paths`](Self::before_tree_paths)),
+    /// enumerated once via a breadth-first traversal instead of probing each
+    /// candidate with its own root-to-leaf `tree_entry_at` walk.
+    pub(crate) before_tree_paths_memo: HashMap<String, Arc<HashSet<String>>>,
+    /// Session-scoped memo for normalized worktree bytes, keyed by path.
+    /// The worktree does not change during a `stale` run, so every reader
+    /// of the same path — the deepest-layer `current` read and the
+    /// `ResolvedPendingCommit` detection in `resolve_anchor_inner` alike —
+    /// shares one disk-plus-filter read. Failed reads are not cached; the
+    /// rare failing path is simply retried by the next caller.
+    pub(crate) worktree_bytes_memo: HashMap<String, Arc<[u8]>>,
+    /// Session-scoped memo for decoded blob text, keyed by blob OID hex.
+    /// HEAD is constant for the run, so the same OID read by multiple
+    /// anchors (e.g. anchors sharing a path, all pointing at the same HEAD
+    /// blob) pays for one ODB decompress-and-decode. Failed reads are not
+    /// cached, matching `worktree_bytes_memo`'s policy.
+    pub(crate) blob_text_memo: HashMap<String, Arc<str>>,
 }
 
 impl ResolveSession {
@@ -431,7 +445,9 @@ impl ResolveSession {
             line_index_hits: 0,
             line_index_misses: 0,
             rename_before_commit_memo: HashMap::new(),
-            rename_target_memo: HashMap::new(),
+            before_tree_paths_memo: HashMap::new(),
+            worktree_bytes_memo: HashMap::new(),
+            blob_text_memo: HashMap::new(),
         }
     }
 
@@ -498,6 +514,43 @@ impl ResolveSession {
                 .or_insert(Some(oid));
         }
         self.head_blob_memo_warmed_for = Some(head_sha.to_string());
+    }
+
+    /// Get or read the normalized worktree bytes at `path`, memoized for
+    /// the session's lifetime. The worktree is constant for one `stale`
+    /// run, so every anchor that needs `path`'s worktree content — whether
+    /// through the deepest-layer `current` read or the
+    /// `ResolvedPendingCommit` detection in `resolve_anchor_inner` — shares
+    /// one disk-plus-filter read instead of repeating it. A failing read
+    /// (rare: filter failure, I/O error) is propagated but not cached, so
+    /// the next caller for the same path retries rather than being pinned
+    /// to a stale failure.
+    pub(crate) fn worktree_bytes(
+        &mut self,
+        repo: &gix::Repository,
+        custom_filters: &mut CustomFilters,
+        path: &str,
+    ) -> Result<Arc<[u8]>> {
+        if let Some(cached) = self.worktree_bytes_memo.get(path) {
+            return Ok(cached.clone());
+        }
+        let bytes: Arc<[u8]> = read_worktree_normalized(repo, custom_filters, path)?.into();
+        self.worktree_bytes_memo.insert(path.to_string(), bytes.clone());
+        Ok(bytes)
+    }
+
+    /// Get or read blob `oid`'s decoded text, memoized by OID for the
+    /// session's lifetime. HEAD is constant for the run, so anchors sharing
+    /// a HEAD blob (typically: anchors sharing a path) pay for one ODB
+    /// decompress-and-decode. Like [`worktree_bytes`](Self::worktree_bytes),
+    /// a failing read is propagated but not cached.
+    pub(crate) fn blob_text(&mut self, repo: &gix::Repository, oid: &str) -> Result<Arc<str>> {
+        if let Some(cached) = self.blob_text_memo.get(oid) {
+            return Ok(cached.clone());
+        }
+        let text: Arc<str> = git::read_git_text(repo, oid)?.into();
+        self.blob_text_memo.insert(oid.to_string(), text.clone());
+        Ok(text)
     }
 
     /// Get or build a [`CachedLineIndex`] for `(path, layer)`, building it
@@ -582,6 +635,43 @@ impl ResolveSession {
         before
     }
 
+    /// Every path present in `before_commit`'s tree (any entry kind — see
+    /// [`crate::resolver::walker::tree_all_paths`] for the entry-universe
+    /// proof), memoized per commit for the session's lifetime.
+    ///
+    /// [`is_rename_target`](Self::is_rename_target) previously ran one
+    /// `tree_entry_at` root-to-leaf ODB probe per candidate; every candidate
+    /// scanned for anchors that share an `anchored_path` probes the same
+    /// `before_commit`, so one breadth-first enumeration here (mirroring
+    /// [`warm_head_blob_memo`](Self::warm_head_blob_memo)'s HEAD
+    /// enumeration) replaces up to thousands of point probes with a single
+    /// tree walk plus O(1) `HashSet` membership checks.
+    ///
+    /// Enumeration failure (unparsable commit, missing tree — defensive)
+    /// yields an empty set, matching `is_rename_target`'s existing
+    /// fail-closed posture: an empty "before" universe treats every
+    /// HEAD-present candidate as new, i.e. a rename target.
+    pub(crate) fn before_tree_paths(
+        &mut self,
+        repo: &gix::Repository,
+        before_commit: &str,
+    ) -> Arc<HashSet<String>> {
+        if let Some(set) = self.before_tree_paths_memo.get(before_commit) {
+            return set.clone();
+        }
+        let set = (|| -> Option<HashSet<String>> {
+            let oid = gix::ObjectId::from_hex(before_commit.as_bytes()).ok()?;
+            let commit = repo.find_commit(oid).ok()?;
+            let tree = commit.tree().ok()?;
+            walker::tree_all_paths(&tree).ok()
+        })()
+        .unwrap_or_default();
+        let set = Arc::new(set);
+        self.before_tree_paths_memo
+            .insert(before_commit.to_string(), set.clone());
+        set
+    }
+
     /// True when `candidate` is a valid committed-rename target for
     /// `anchored_path`: a HEAD-present candidate is only a rename target
     /// when it did **not** exist at
@@ -590,9 +680,10 @@ impl ResolveSession {
     /// shape). A file that already existed alongside the anchored path
     /// (e.g. an unrelated file that happens to share generic lines) is
     /// excluded, so a coincidental content match never masquerades as a
-    /// relocation. Memoized per `(before_commit, candidate)`: the same
-    /// candidate is probed by every deleted anchor that shares
-    /// `anchored_path`, and the tree probe is pure given the commit.
+    /// relocation. Backed by [`before_tree_paths`](Self::before_tree_paths),
+    /// which enumerates the whole "before" tree once per commit instead of
+    /// probing each candidate individually — set-membership subsumes the
+    /// old per-`(before_commit, candidate)` memo.
     pub(crate) fn is_rename_target(
         &mut self,
         repo: &gix::Repository,
@@ -602,16 +693,7 @@ impl ResolveSession {
         let Some(before) = self.rename_before_commit(repo, anchored_path) else {
             return false;
         };
-        let key = (before.clone(), candidate.to_string());
-        if let Some(&cached) = self.rename_target_memo.get(&key) {
-            return cached;
-        }
-        let is_target = git::tree_entry_at(repo, &before, std::path::Path::new(candidate))
-            .ok()
-            .flatten()
-            .is_none();
-        self.rename_target_memo.insert(key, is_target);
-        is_target
+        !self.before_tree_paths(repo, &before).contains(candidate)
     }
 
     pub(crate) fn anchors_total(&self) -> u64 {
@@ -1116,7 +1198,9 @@ mod tests {
             line_index_hits: 0,
             line_index_misses: 0,
             rename_before_commit_memo: HashMap::new(),
-            rename_target_memo: HashMap::new(),
+            before_tree_paths_memo: HashMap::new(),
+            worktree_bytes_memo: HashMap::new(),
+            blob_text_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();
@@ -1176,7 +1260,9 @@ mod tests {
             line_index_hits: 0,
             line_index_misses: 0,
             rename_before_commit_memo: HashMap::new(),
-            rename_target_memo: HashMap::new(),
+            before_tree_paths_memo: HashMap::new(),
+            worktree_bytes_memo: HashMap::new(),
+            blob_text_memo: HashMap::new(),
         };
 
         let total = session.anchors_total();
