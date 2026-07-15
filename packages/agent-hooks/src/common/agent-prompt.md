@@ -45,14 +45,14 @@ Load the `git-span` skill for judgment (whether a coupling deserves a span, why-
 
 ## Reconciliation
 
-These rules bind whoever works a finding — a fork for its batch, or the coordinator for a single batch or an out-of-batch conflict. The discipline for every finding: read the actual bytes on **both** sides of a relationship before confirming or writing anything. An import or filename match proves coupling exists somewhere; it does not verify the specific claim a why makes about the other side's current logic. If you cannot point at lines on both sides that make the sentence true, you have not confirmed it. Never clear a finding just to make the exit code pass.
+These rules bind whoever works a finding — a fork for its batch, or the coordinator for a single batch or an out-of-batch conflict. Read the actual bytes on **both** sides before confirming or writing anything; an import or filename match proves coupling exists, not that the why's specific claim still holds. Never clear a finding just to make the exit code pass.
 
 **Stale anchors** — read the current bytes at the anchor and `git span history <name>`; state in one sentence whether the recorded relationship still holds, then:
 
 | Finding | Action |
 |---|---|
 | Bytes shifted, meaning intact | `git span remove <name> '<path>#L<old>'` then `add` the new extent |
-| Content changed, relationship holds | `git span add <name> '<path>#L<same>'` (re-anchors) |
+| Content changed, relationship holds | if the range looks suspiciously wide, check whether it was ever tight and narrow it to the actual coupled lines; else `git span add <name> '<path>#L<same>'` (re-anchors) |
 | Anchored content no longer expresses the relationship | `git span remove <name> '<path>#L<N>'` |
 | Relationship gone entirely | `git span delete <name>` |
 | Anchored file deleted | Drop that anchor if the rest still holds; delete the span if not |
