@@ -31,6 +31,7 @@ pub(crate) fn drift_locus(
     resolved: &AnchorResolved,
     session: &mut ResolveSession,
 ) -> Result<Option<DriftLocus>> {
+    let _perf = crate::perf::span("attribution.drift-locus");
     // The walk applies to (a) HEAD-attributed drift (Changed-in-HEAD) and
     // (b) Orphaned anchors, where the caller (`populate_drift_locus`) asks
     // us to describe the orphaning commit (rename or deletion) when the
