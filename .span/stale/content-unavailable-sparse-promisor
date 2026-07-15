@@ -1,5 +1,5 @@
 packages/git-span/src/git.rs#L877-L889 rk64:5984d188eb367df5
-packages/git-span/src/resolver/engine/anchor.rs#L485-L784 rk64:19aa44e8b0893fe4
+packages/git-span/src/resolver/engine/anchor.rs#L612-L705 rk64:40ff9816fd4ab329
 packages/git-span/tests/cases/mod.rs#L50-L50 rk64:99b2d70273f3a7cd
 packages/git-span/tests/cases/promisor_missing_reproduction.rs rk64:dfc34d0d3c63f8b2
 packages/git-span/tests/cases/stale_sparse_checkout.rs#L7-L92 rk64:da49405637e4cda3

@@ -1,3 +1,3 @@
-packages/git-span/src/resolver/session.rs#L11-L990 rk64:d2a2061247660d8d
+packages/git-span/src/resolver/session.rs#L11-L990 rk64:8dbab2f5989e409c
 
 Engine-wide shared session state that powers one stale run: the reverse-indexed HEAD walk, the Tier 2 amortized LineIndex per-file cache for rk64 freshness hashing, and per-run anchor-status and perf counters threaded through every anchor resolution.
