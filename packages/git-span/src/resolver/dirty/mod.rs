@@ -174,7 +174,17 @@ pub(crate) fn attempt(
 /// The map covers the *whole* HEAD tree; a relevant path absent from it (a
 /// newly-staged/untracked file with no HEAD blob) resolves to `None`, exactly
 /// as `incremental::head_blob_oid` returns `None` for a path absent at HEAD.
-fn relevant_dirty_paths(repo: &gix::Repository, token: &StateToken) -> Result<HashSet<String>> {
+///
+/// `pub(crate)` (card main-157 F4): the exact path's warm-hit dirty-tree
+/// withhold guard ([`exact::withhold_whole_result_for_dirty_tree`]) reuses this
+/// function too — it runs on EVERY `Resolved{whole_result: Some}` attempt
+/// (exact hit, memo hit, or a fresh build), so the same O(R) → O(1)-traversal
+/// fix this module made for the dirty-reconstruction path applies there, not
+/// just here.
+pub(crate) fn relevant_dirty_paths(
+    repo: &gix::Repository,
+    token: &StateToken,
+) -> Result<HashSet<String>> {
     use crate::resolver::core::token::PathState;
     use std::collections::HashMap;
 

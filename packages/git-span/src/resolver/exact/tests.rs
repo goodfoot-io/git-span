@@ -364,6 +364,92 @@ fn revalidate_discard_publishes_nothing_and_falls_back() {
     );
 }
 
+// ── Warm-hit dirty-tree withhold check (card main-157 F4) ───────────────────
+
+/// A clean repo with `n` spans, each anchoring its own file in one flat
+/// directory (`flat/`) — the corpus shape that makes a per-relevant-path HEAD
+/// walk visibly O(R): every anchored path and every span file lives in the
+/// same root tree, so a per-path `tree_entry_at` re-peel/re-navigate is not
+/// masked by directory fan-out. The tree is fully clean (worktree == index ==
+/// HEAD), so the withhold check must find nothing dirty.
+fn flat_repo(tag: &str, n: usize) -> (tempfile::TempDir, gix::Repository) {
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    git(dir, &["init", "--initial-branch=main"]);
+    git(dir, &["config", "user.name", "Test User"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir_all(dir.join("flat")).expect("mkdir flat");
+    for i in 0..n {
+        let path = format!("flat/f{i}.txt");
+        std::fs::write(dir.join(&path), format!("{tag}-{i}-l1\nl2\nl3\n")).expect("write file");
+        write_span(dir, &format!("s{i}"), &[(path.as_str(), 1, 2)], "why");
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-m", "init"]);
+    git(dir, &["commit-graph", "write", "--reachable", "--changed-paths"]);
+    let repo = gix::open(dir).expect("gix open");
+    (td, repo)
+}
+
+/// Card main-157 F4: [`withhold_whole_result_for_dirty_tree`] runs on EVERY
+/// `Resolved{whole_result: Some}` attempt — including a plain warm exact/memo
+/// hit, where it is the entire per-call cost. Pre-fix it called
+/// `incremental::relevant_dirty_paths`, which re-walks the HEAD tree
+/// (`crate::git::tree_entry_at`: `rev_parse_single` + `.object()` +
+/// `.peel_to_tree()` + `lookup_entry_by_path`) once per relevant path — O(R)
+/// HEAD re-walks on a corpus with R relevant (span-file + anchored) paths, on
+/// EVERY clean warm hit. This asserts the fixed check performs ZERO
+/// `tree_entry_at` calls on a 40-span flat corpus (80 relevant paths), proving
+/// it now reads the HEAD tree via the batched
+/// [`crate::resolver::dirty::relevant_dirty_paths`] /
+/// [`crate::resolver::dirty::head_blob_path_map`] traversal instead.
+#[test]
+fn withhold_check_does_not_walk_head_tree_per_relevant_path() {
+    let (_td, repo) = flat_repo("flatwithhold", 40);
+    let opts = EngineOptions::full();
+
+    let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
+    assert!(
+        token.staged_state.len() + token.worktree_state.len() >= 80,
+        "flat corpus must actually produce a large relevant-path set: {} staged + {} worktree",
+        token.staged_state.len(),
+        token.worktree_state.len()
+    );
+
+    let attempt = ExactAttempt::Resolved {
+        spans: Vec::new(),
+        whole_result: Some(WholeResult {
+            spans: Vec::new(),
+            span_anchor_totals: Vec::new(),
+        }),
+    };
+
+    crate::git::reset_tree_entry_at_call_count();
+    let out = withhold_whole_result_for_dirty_tree(&repo, &token, attempt).expect("withhold");
+    let calls = crate::git::tree_entry_at_call_count();
+
+    assert!(
+        matches!(
+            out,
+            ExactAttempt::Resolved {
+                whole_result: Some(_),
+                ..
+            }
+        ),
+        "a genuinely clean flat corpus must not withhold the whole-result"
+    );
+    assert_eq!(
+        calls, 0,
+        "the withhold check must not re-walk the HEAD tree once per relevant path \
+         (got {calls} tree_entry_at calls on an 80-relevant-path corpus)"
+    );
+}
+
 // ── Phase 4A: per-span reuse rows round-trip ─────────────────────────────────
 
 #[test]

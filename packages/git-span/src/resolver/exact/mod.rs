@@ -409,6 +409,17 @@ fn withhold_whole_result_for_interior_anchor(
 /// CLI's conflict report. Withhold the whole-result whenever any relevant path
 /// (committed span file or anchored source) differs from HEAD, forcing the CLI
 /// to run its full corpus scans exactly as it did against the old dirty path.
+///
+/// This guard runs on EVERY `Resolved{whole_result: Some}` attempt — including
+/// a plain warm exact/memo hit, where it is otherwise the whole per-call cost.
+/// It therefore reuses [`dirty::relevant_dirty_paths`] (card main-157 F4),
+/// which reads the HEAD tree once via [`dirty::head_blob_path_map`] rather than
+/// [`incremental::relevant_dirty_paths`]'s per-relevant-path
+/// [`crate::git::tree_entry_at`] walk — the same batching the dirty
+/// reconstruction tier already uses, now shared here instead of duplicating
+/// the N-HEAD-peel cost on every clean warm hit. Both functions compute the
+/// identical set (same per-path clean predicates), so this changes only how
+/// much git I/O the check performs, never its output.
 fn withhold_whole_result_for_dirty_tree(
     repo: &gix::Repository,
     token: &crate::resolver::core::token::StateToken,
@@ -419,7 +430,7 @@ fn withhold_whole_result_for_dirty_tree(
             spans,
             whole_result: Some(wr),
         } => {
-            let dirty = incremental::relevant_dirty_paths(repo, token)?;
+            let dirty = dirty::relevant_dirty_paths(repo, token)?;
             let whole_result = if dirty.is_empty() { Some(wr) } else { None };
             Ok(ExactAttempt::Resolved {
                 spans,
