@@ -4,7 +4,7 @@
 //! Phase 1 froze the *shape* of [`StateToken`] (`super::token`); this module
 //! is the first code that builds a real one from an actual `git span stale`
 //! invocation's live git/filesystem/option state, and the companion
-//! [`revalidate`] that re-reads every mutable component after computation and
+//! `revalidate` that re-reads every mutable component after computation and
 //! reports whether the snapshot still holds. Together they implement the
 //! `notes/correctness-contract.md` "Snapshot Rules":
 //!
@@ -17,10 +17,11 @@
 //!
 //! This module deliberately does **no** storage, no env switch, and no wiring
 //! into [`stale_spans_retaining_source_layers`](crate::resolver::engine)
-//! — that is sibling task 3C, which calls [`capture_state_token`] before
-//! resolution and [`revalidate`] before publication. Every git read reuses the
-//! existing plumbing layer ([`crate::git`], [`crate::span_file_reader`],
-//! [`crate::resolver::walker::rename_budget`]) rather than reinventing it.
+//! — that is sibling task 3C, which calls `capture_state_token_with_memo`
+//! before resolution and `revalidate_with_memo` before publication. Every git
+//! read reuses the existing plumbing layer ([`crate::git`],
+//! [`crate::span_file_reader`], [`crate::resolver::walker::rename_budget`])
+//! rather than reinventing it.
 //!
 //! ## Filter dependency identity (real, proven)
 //!
@@ -86,6 +87,7 @@
 //!   revalidation needs); normalized-content identity is a key-precision
 //!   refinement for a later phase.
 
+use super::exe_digest::{ExeDigestMemo, ExeStatIdentity};
 use super::token::{
     AvailabilityProof, FilterDependency, PathState, PathStateEntry, SpanBlobIdentity, StateToken,
 };
@@ -118,10 +120,33 @@ const EMPTY_TREE_HEX: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 ///
 /// `options` is the caller's [`EngineOptions`]; `span_root` is the already
 /// precedence-resolved span root (as `stale_spans_cached` receives it).
+///
+/// Equivalent to [`capture_state_token_with_memo`] with no digest memo (every
+/// filter executable is hashed directly). The one production call site
+/// (`resolver::exact::stale_spans_new_store`) always has an open `CacheStore`
+/// to offer and uses [`capture_state_token_with_memo`] directly; this plain
+/// entry point survives only as the convenience the many in-process tests
+/// (which have no store handle to thread through) call instead — hence
+/// `cfg(test)`.
+#[cfg(test)]
 pub(crate) fn capture_state_token(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
+) -> Result<StateToken> {
+    capture_state_token_with_memo(repo, span_root, options, None)
+}
+
+/// Like `capture_state_token` (the test-only, memo-less convenience above),
+/// but lets the caller supply a persistent [`ExeDigestMemo`] (typically the
+/// already-open `CacheStore`) that [`filters`] consults before mmap+hashing a
+/// configured filter driver's resolved executable. `None` behaves identically
+/// to a memo-less capture.
+pub(crate) fn capture_state_token_with_memo(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Result<StateToken> {
     let committed = {
         let _perf = crate::perf::span("cache.capture.committed");
@@ -221,7 +246,7 @@ pub(crate) fn capture_state_token(
         },
         filters: {
             let _perf = crate::perf::span("cache.capture.filters");
-            filters(repo)
+            filters(repo, memo)
         },
         attributes_digest: {
             let _perf = crate::perf::span("cache.capture.attributes");
@@ -271,13 +296,37 @@ pub(crate) enum Revalidation {
 /// incremental-parent derivation hint even when the exact key is unchanged, so
 /// revalidation must still surface it (`notes/correctness-contract.md`
 /// "Explicit Decisions").
+///
+/// Equivalent to [`revalidate_with_memo`] with no digest memo. The one
+/// production call site (`resolver::exact::project_revalidate_publish_impl`)
+/// always has the open `CacheStore` used for the original capture on hand and
+/// calls [`revalidate_with_memo`] directly; this plain entry point survives
+/// only for in-process tests — hence `cfg(test)`.
+#[cfg(test)]
 pub(crate) fn revalidate(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
     original: &StateToken,
 ) -> Result<Revalidation> {
-    let fresh = capture_state_token(repo, span_root, options)?;
+    revalidate_with_memo(repo, span_root, options, original, None)
+}
+
+/// Like `revalidate` (the test-only, memo-less convenience above), but
+/// threads a digest memo through the fresh [`capture_state_token_with_memo`]
+/// re-read, so the pre-publish revalidation
+/// capture reuses whatever the original capture already recorded (or
+/// records) for each configured filter executable instead of re-hashing it —
+/// closing the "hashed twice on every cold build" cost the memo exists to
+/// remove.
+pub(crate) fn revalidate_with_memo(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    original: &StateToken,
+    memo: Option<&mut dyn ExeDigestMemo>,
+) -> Result<Revalidation> {
+    let fresh = capture_state_token_with_memo(repo, span_root, options, memo)?;
     Ok(diff_tokens(original, &fresh))
 }
 
@@ -361,9 +410,9 @@ fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSp
 ///
 /// These spans are part of the resolved output — `list_span_names` /
 /// `capture_resolution_core` read the 3-layer effective view — but invisible to
-/// `span_blobs` (HEAD-only). [`capture_state_token`] folds them into the token's
-/// relevant paths and copy-detection so they become keyed inputs (card main-157
-/// F6), rather than an all-or-nothing store bypass.
+/// `span_blobs` (HEAD-only). [`capture_state_token_with_memo`] folds them into
+/// the token's relevant paths and copy-detection so they become keyed inputs
+/// (card main-157 F6), rather than an all-or-nothing store bypass.
 struct UncommittedSpans {
     /// Repo-relative `<span_root>/<name>` path of every uncommitted span file.
     file_paths: Vec<String>,
@@ -490,11 +539,32 @@ fn replace_refs(repo: &gix::Repository) -> Vec<String> {
 /// is deterministic.
 const FILTER_COMMAND_KEYS: [&str; 3] = ["clean", "process", "smudge"];
 
+/// Reborrow an `Option<&mut dyn ExeDigestMemo>` for a single call, leaving the
+/// caller's `memo` binding usable on the next loop iteration.
+///
+/// Writing this inline as a closure (`memo.as_mut().map(|m| &mut **m)` passed
+/// to `.and_then(...)` or to a function call inside a `for` loop) fails to
+/// borrow-check: a closure's captures are fixed once for the closure's whole
+/// type, so the borrow checker unifies the reborrow's lifetime with the
+/// enclosing `memo` binding's *entire* remaining scope — which conflicts with
+/// the next iteration's reborrow of the same binding (E0499/E0597). A plain
+/// function has ordinary per-call-site lifetime inference (an early-bound
+/// lifetime parameter, not a closure's late-bound one), so each call produces
+/// an independent, short-lived reborrow tied only to that call's argument.
+fn reborrow_memo<'a, 'm: 'a>(
+    memo: &'a mut Option<&'m mut dyn ExeDigestMemo>,
+) -> Option<&'a mut dyn ExeDigestMemo> {
+    match memo {
+        Some(m) => Some(&mut **m),
+        None => None,
+    }
+}
+
 /// Every configured `filter.<driver>` as a [`FilterDependency`] with real,
 /// proven executable and environment identity when resolvable (see module docs).
 /// Mirrors the config inputs of `cache_v2::schema::filter_config_hash`, promoted
 /// to structured entries whose persistence eligibility is gated on proof.
-fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
+fn filters(repo: &gix::Repository, mut memo: Option<&mut dyn ExeDigestMemo>) -> Vec<FilterDependency> {
     let snap = repo.config_snapshot();
     let file = snap.plumbing();
     // driver -> (value-name -> value)
@@ -532,26 +602,32 @@ fn filters(repo: &gix::Repository) -> Vec<FilterDependency> {
     let workdir = crate::git::work_dir(repo).ok().map(Path::to_path_buf);
     let mut content_cache: HashMap<PathBuf, Option<[u8; 32]>> = HashMap::new();
 
-    by_driver
-        .into_iter()
-        .map(|(driver, kv)| {
-            let command = kv
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let executable_digest = workdir
-                .as_deref()
-                .and_then(|wd| filter_executable_digest(&kv, wd, &mut content_cache));
-            let env_digest = Some(filter_env_digest(&driver, &kv));
-            FilterDependency {
-                driver,
-                command,
-                executable_digest,
-                env_digest,
-            }
-        })
-        .collect()
+    // A plain `.map().collect()` can't reborrow `memo: Option<&mut dyn
+    // ExeDigestMemo>` across iterations (each closure call would need to move
+    // it), so this is an explicit loop. The reborrow itself goes through
+    // `reborrow_memo` (a plain fn, not a closure) — see that function's doc
+    // comment for why a closure-based `.as_mut().map(|m| &mut **m)` fails to
+    // borrow-check here.
+    let mut out = Vec::with_capacity(by_driver.len());
+    for (driver, kv) in by_driver {
+        let command = kv
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let executable_digest = match workdir.as_deref() {
+            Some(wd) => filter_executable_digest(&kv, wd, &mut content_cache, reborrow_memo(&mut memo)),
+            None => None,
+        };
+        let env_digest = Some(filter_env_digest(&driver, &kv));
+        out.push(FilterDependency {
+            driver,
+            command,
+            executable_digest,
+            env_digest,
+        });
+    }
+    out
 }
 
 /// BLAKE3 digest binding every executable-invoking command of one filter driver
@@ -562,6 +638,7 @@ fn filter_executable_digest(
     kv: &BTreeMap<String, String>,
     workdir: &Path,
     content_cache: &mut HashMap<PathBuf, Option<[u8; 32]>>,
+    mut memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Option<[u8; 32]> {
     let mut h = Hasher::new();
     h.update(b"gm.core.filter-exe\0");
@@ -579,7 +656,7 @@ fn filter_executable_digest(
         // failure here fails the whole dependency closed.
         let program = first_program(cmdline)?;
         let resolved = resolve_executable(&program, workdir)?;
-        let content = executable_content_digest(&resolved, content_cache)?;
+        let content = executable_content_digest(&resolved, content_cache, reborrow_memo(&mut memo))?;
         write_prefixed(&mut h, cmd_key.as_bytes());
         h.update(&content);
     }
@@ -647,30 +724,70 @@ fn is_executable_file(p: &Path) -> bool {
 
 /// BLAKE3 digest of a resolved executable's bytes, memoized by resolved path so
 /// a binary shared by several commands (git-lfs `clean`/`smudge`/`process`) is
-/// read and hashed once. `None` when the file cannot be read.
+/// read and hashed once per `filters()` call. `None` when the file cannot be
+/// read.
+///
+/// Beyond the per-call `content_cache`, a supplied `memo` (the persistent
+/// stat-keyed store — see [`super::exe_digest`]) is consulted first: when the
+/// resolved file's current stat identity matches a previously recorded row,
+/// the stored digest is reused with no read of the file at all. This is what
+/// removes the repeated mmap+hash of a large filter binary (e.g. an ~11 MiB
+/// git-lfs install) across separate `git span stale` invocations — the
+/// per-call `content_cache` alone only dedupes *within* one call's several
+/// filter commands sharing one binary.
 fn executable_content_digest(
     resolved: &Path,
     content_cache: &mut HashMap<PathBuf, Option<[u8; 32]>>,
+    memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Option<[u8; 32]> {
     if let Some(cached) = content_cache.get(resolved) {
         return *cached;
     }
-    // Hash through BLAKE3's mmap path. `std::fs::read` first allocated and
-    // copied the entire executable into a `Vec`, then made a second full pass
-    // to hash it; even streaming through `Read` retains an avoidable copy from
-    // the page cache. Filter programs are often large static binaries (git-lfs
-    // is 12 MiB in the standard installation), so mapping lets BLAKE3 hash the
-    // cached pages directly while preserving the same content identity.
-    let digest = {
-        let mut hasher = Hasher::new();
-        if hasher.update_mmap(resolved).is_ok() {
-            Some(*hasher.finalize().as_bytes())
-        } else {
-            None
-        }
-    };
+    let digest = compute_or_reuse_digest(resolved, memo);
     content_cache.insert(resolved.to_path_buf(), digest);
     digest
+}
+
+/// Reuse a persistent stat-keyed digest when `memo` is supplied and the
+/// resolved file's current stat identity matches a recorded row; otherwise
+/// hash directly and (when a memo is supplied) record the fresh digest
+/// against the stat identity observed just before hashing. `None` when the
+/// file cannot be stat'd/read — identical to the pre-memo behavior other than
+/// the possible cache reuse.
+fn compute_or_reuse_digest(
+    resolved: &Path,
+    memo: Option<&mut dyn ExeDigestMemo>,
+) -> Option<[u8; 32]> {
+    let Some(memo) = memo else {
+        return hash_executable(resolved);
+    };
+    let stat = ExeStatIdentity::read(resolved);
+    if let Some(stat) = &stat
+        && let Some(digest) = memo.lookup(resolved, stat)
+    {
+        return Some(digest);
+    }
+    let digest = hash_executable(resolved)?;
+    if let Some(stat) = &stat {
+        memo.upsert(resolved, stat, digest);
+    }
+    Some(digest)
+}
+
+/// Hash a resolved executable's bytes through BLAKE3's mmap path.
+/// `std::fs::read` first allocates and copies the entire executable into a
+/// `Vec`, then makes a second full pass to hash it; even streaming through
+/// `Read` retains an avoidable copy from the page cache. Filter programs are
+/// often large static binaries (git-lfs is 12 MiB in the standard
+/// installation), so mapping lets BLAKE3 hash the cached pages directly while
+/// preserving the same content identity. `None` when the file cannot be read.
+fn hash_executable(resolved: &Path) -> Option<[u8; 32]> {
+    let mut hasher = Hasher::new();
+    if hasher.update_mmap(resolved).is_ok() {
+        Some(*hasher.finalize().as_bytes())
+    } else {
+        None
+    }
 }
 
 /// Environment digest for one filter driver, computed by driver *class* so a

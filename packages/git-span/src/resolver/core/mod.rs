@@ -32,6 +32,7 @@
 //!   digest)` identity, never an address-keyed map.
 
 pub(crate) mod capture;
+pub(crate) mod exe_digest;
 pub(crate) mod project;
 pub(crate) mod resolution;
 pub(crate) mod token;

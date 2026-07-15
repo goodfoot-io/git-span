@@ -646,3 +646,203 @@ fn cross_worktree_exact_hit_with_lfs_filter() {
         std::env::remove_var("TERM_SESSION_ID");
     }
 }
+
+// -- Round 2: persistent exe-digest memo wiring ---------------------------
+//
+// These tests exercise `capture_state_token_with_memo`'s call into
+// `ExeDigestMemo` directly (a fake, in-memory implementation standing in for
+// `CacheStore`), rather than going through SQLite — `store::tests` covers the
+// SQLite-backed `exe_digest_lookup`/`exe_digest_upsert` round trip and
+// stat-mismatch behavior at that layer. What matters here is that
+// `capture.rs` actually *trusts* a memo hit instead of re-hashing (proven by
+// planting a deliberately wrong digest and observing it come back), and
+// re-hashes (and overwrites the memo) the moment any stat field changes.
+
+use crate::resolver::core::exe_digest::{ExeDigestMemo, ExeStatIdentity};
+use std::collections::HashMap;
+
+/// In-memory stand-in for `CacheStore`'s `ExeDigestMemo` impl: same
+/// exact-stat-match trust rule, plus call counters so a test can assert
+/// whether a lookup was served from the memo or fell through to a fresh
+/// hash-and-upsert.
+#[derive(Default)]
+struct FakeExeMemo {
+    rows: HashMap<std::path::PathBuf, (ExeStatIdentity, [u8; 32])>,
+    lookups: usize,
+    hits: usize,
+    upserts: usize,
+}
+
+impl ExeDigestMemo for FakeExeMemo {
+    fn lookup(&mut self, path: &Path, stat: &ExeStatIdentity) -> Option<[u8; 32]> {
+        self.lookups += 1;
+        let (stored_stat, digest) = self.rows.get(path)?;
+        if stored_stat == stat {
+            self.hits += 1;
+            Some(*digest)
+        } else {
+            None
+        }
+    }
+
+    fn upsert(&mut self, path: &Path, stat: &ExeStatIdentity, digest: [u8; 32]) {
+        self.upserts += 1;
+        self.rows.insert(path.to_path_buf(), (*stat, digest));
+    }
+}
+
+/// Replicate `filter_executable_digest`'s wrapping formula for a filter
+/// configured with exactly one command key (`clean`): the
+/// `FilterDependency::executable_digest` field is not the resolved
+/// executable's raw content digest — it is
+/// `BLAKE3("gm.core.filter-exe\0" || len-prefixed(cmd_key) || content_digest)`.
+/// A test that primes a fake memo with a sentinel "content digest" must wrap
+/// the sentinel through this same formula to predict the resulting
+/// `FilterDependency` field, exactly as production code does.
+fn expected_single_command_digest(cmd_key: &str, content_digest: [u8; 32]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(b"gm.core.filter-exe\0");
+    write_prefixed(&mut h, cmd_key.as_bytes());
+    h.update(&content_digest);
+    *h.finalize().as_bytes()
+}
+
+// A cold capture (empty memo) hashes the executable directly and records the
+// result; a second capture with the executable's stat unchanged must reuse
+// the memoized digest rather than re-hashing — proven decisively by planting
+// a wrong sentinel "content digest" into the memo's row and observing the
+// captured `FilterDependency::executable_digest` come back wrapping the
+// *sentinel*, not a fresh hash of the executable's real bytes.
+#[test]
+fn exe_digest_memo_is_reused_when_stat_is_unchanged() {
+    // Isolate from any ambient global `filter.lfs.*` (e.g. a machine with
+    // `git lfs install` run) — otherwise its driver contributes an extra
+    // memo lookup/upsert alongside the one under test here.
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("memo.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.memo.clean",
+            &format!("{} %f", exe.display()),
+        ],
+    );
+
+    let opts = EngineOptions::full();
+    let mut memo = FakeExeMemo::default();
+
+    let repo = reopen(&td);
+    let t1 = capture_state_token_with_memo(&repo, SPAN_ROOT, opts, Some(&mut memo))
+        .expect("capture with empty memo");
+    let real_digest = filter_dep(&t1, "memo")
+        .executable_digest
+        .expect("resolvable executable is digested");
+    assert_eq!(memo.lookups, 1, "one command key configured => one lookup");
+    assert_eq!(memo.hits, 0, "memo starts empty => no hit on first capture");
+    assert_eq!(memo.upserts, 1, "a fresh digest must be memoized");
+    let real_content_digest = *blake3::Hasher::new()
+        .update(&std::fs::read(&exe).expect("read executable"))
+        .finalize()
+        .as_bytes();
+    assert_eq!(
+        real_digest,
+        expected_single_command_digest("clean", real_content_digest),
+        "sanity: the captured field wraps the executable's real content digest"
+    );
+
+    // Corrupt the memoized row in place (same stat, wrong "content digest") so
+    // a second capture can only reproduce this exact wrapped value by
+    // trusting the memo instead of re-hashing the executable's real bytes.
+    let sentinel = [0xEEu8; 32];
+    let stored = memo
+        .rows
+        .get_mut(&exe)
+        .expect("row memoized after first capture");
+    stored.1 = sentinel;
+
+    let repo = reopen(&td);
+    let t2 = capture_state_token_with_memo(&repo, SPAN_ROOT, opts, Some(&mut memo))
+        .expect("capture with primed memo");
+    assert_eq!(
+        filter_dep(&t2, "memo").executable_digest,
+        Some(expected_single_command_digest("clean", sentinel)),
+        "unchanged stat identity must serve the memoized (sentinel) digest without re-hashing"
+    );
+    assert_eq!(memo.lookups, 2, "second capture also looks up the memo once");
+    assert_eq!(
+        memo.hits, 1,
+        "second capture's lookup must match the unchanged stat"
+    );
+    assert_eq!(memo.upserts, 1, "a served memo hit must not re-upsert");
+}
+
+// Once the executable's mtime changes (content unchanged), its stat identity
+// no longer matches the memoized row, so capture must re-hash — proven by
+// priming the memo with a wrong sentinel digest under the *old* stat and
+// observing the real content digest (not the sentinel) after the mtime bump.
+#[test]
+fn exe_digest_memo_recomputes_when_mtime_changes() {
+    isolate_global_git_config();
+    let (td, _repo) = repo_with_span();
+    let exe_dir = tempfile::tempdir().expect("exe tempdir");
+    let exe = exe_dir.path().join("touched.sh");
+    write_executable(&exe, "#!/bin/sh\ncat\n");
+    git(
+        td.path(),
+        &[
+            "config",
+            "filter.touched.clean",
+            &format!("{} %f", exe.display()),
+        ],
+    );
+
+    let opts = EngineOptions::full();
+    let mut memo = FakeExeMemo::default();
+
+    let repo = reopen(&td);
+    let t1 = capture_state_token_with_memo(&repo, SPAN_ROOT, opts, Some(&mut memo))
+        .expect("capture with empty memo");
+    let real_digest = filter_dep(&t1, "touched")
+        .executable_digest
+        .expect("resolvable executable is digested");
+    assert_eq!(memo.upserts, 1);
+
+    // Prime a wrong sentinel under the row's *current* (pre-touch) stat, so a
+    // stale-stat reuse would surface as the sentinel, not the real digest.
+    let sentinel = [0x11u8; 32];
+    memo.rows.get_mut(&exe).expect("row present").1 = sentinel;
+
+    // Bump mtime without touching content: same bytes, different stat identity.
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+    std::fs::File::open(&exe)
+        .expect("open executable")
+        .set_modified(future)
+        .expect("set mtime");
+
+    let repo = reopen(&td);
+    let t2 = capture_state_token_with_memo(&repo, SPAN_ROOT, opts, Some(&mut memo))
+        .expect("capture after mtime bump");
+    assert_eq!(
+        filter_dep(&t2, "touched").executable_digest,
+        Some(real_digest),
+        "a changed stat identity must be re-hashed, not served from the stale memo row"
+    );
+    assert_eq!(
+        memo.lookups, 2,
+        "both captures perform exactly one memo lookup for the single command key"
+    );
+    assert_eq!(
+        memo.hits, 0,
+        "neither lookup counts as a hit: the first finds no row at all, and the \
+         second finds a row but rejects it on stat mismatch — the important \
+         signal is the digest recomputation asserted above"
+    );
+    assert_eq!(
+        memo.upserts, 2,
+        "the recomputed digest must overwrite the stale row"
+    );
+}

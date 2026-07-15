@@ -151,6 +151,12 @@ smaller than `state-observe-us` because token assembly and relevant-path set
 construction remain in the parent measurement. These spans make a slow state
 proof attributable without requiring kernel sampling access.
 
+Within the `filters` phase, a resolved `filter.<driver>` executable's content
+digest is served from a persistent, stat-keyed memo (`exe_digest` table) when
+the file's full stat identity is unchanged since it was last hashed — this is
+what keeps a large filter binary (a standard git-lfs install is ~11 MiB) from
+being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-lookup-failed: <err>` / `cache-path.exe-digest-memo-upsert-failed: <err>` report a fail-closed SQL fault in that memo (lookup or upsert); either one simply falls back to hashing the executable directly for that call, never failing the command or changing its output.
+
 **Incremental / dirty reuse counts** (work proportional to what changed):
 
 | Line | Meaning |

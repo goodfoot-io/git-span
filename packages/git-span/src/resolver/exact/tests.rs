@@ -12,6 +12,7 @@
 //! environment writes below cannot leak across tests.
 
 use super::*;
+use crate::resolver::core::capture::capture_state_token;
 use crate::types::EngineOptions;
 use std::path::Path;
 use std::process::Command;

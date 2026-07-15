@@ -29,7 +29,13 @@ pub(crate) const APPLICATION_ID: i32 = 0x6773_706e;
 /// (table/column/index). A non-zero value other than this triggers
 /// quarantine-and-recreate (never a silent partial migration) —
 /// `notes/correctness-contract.md` "Fail-Closed Meaning".
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+///
+/// `2`: added `exe_digest` (Round 2 performance work — a persistent,
+/// stat-keyed memo of filter-executable content digests; see
+/// `crate::resolver::core::exe_digest`). An old-shape (version 1) database
+/// lacks the table, so it is quarantined and recreated rather than served
+/// against — never a silent "table doesn't exist" failure on first use.
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// Semantic epoch stored in `meta`. Bump when the *meaning* of stored rows
 /// changes even though the DDL does not (e.g. a `StateToken`/`ResolutionCore`
@@ -111,6 +117,27 @@ CREATE TABLE IF NOT EXISTS span_path_index (
 
 CREATE INDEX IF NOT EXISTS span_path_index_by_path
   ON span_path_index (source_path);
+
+-- Persistent, stat-keyed memo of a resolved filter executable's BLAKE3
+-- content digest (Round 2 performance work; see
+-- `crate::resolver::core::exe_digest`). One row per resolved executable
+-- path, unkeyed by generation: the digest is a fact about a file on disk,
+-- not about any one `stale` invocation, so it is shared and reused across
+-- every generation/key. A row is trusted only when every stat field matches
+-- the file's current metadata exactly (the same trust git's own index places
+-- in stat identity); on any mismatch the caller re-hashes and overwrites the
+-- row.
+CREATE TABLE IF NOT EXISTS exe_digest (
+  path     TEXT PRIMARY KEY,
+  size     INTEGER NOT NULL,
+  mtime_s  INTEGER NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  ctime_s  INTEGER NOT NULL,
+  ctime_ns INTEGER NOT NULL,
+  ino      INTEGER NOT NULL,
+  dev      INTEGER NOT NULL,
+  digest   BLOB NOT NULL
+) STRICT;
 "#;
 
 /// Outcome of probing an opened connection: usable, or must be quarantined.

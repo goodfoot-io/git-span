@@ -10,8 +10,8 @@
 //! * [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
 //!   resolves a span set *once* into a layer-neutral
 //!   [`ResolutionCore`](crate::resolver::core::resolution::ResolutionCore).
-//! * [`capture_state_token`] / [`revalidate`] snapshot and re-read the
-//!   complete invocation state.
+//! * [`capture_state_token_with_memo`] / [`revalidate_with_memo`] snapshot and
+//!   re-read the complete invocation state.
 //! * [`CacheStore`] stores and integrity-verifies one atomic generation per
 //!   canonical key.
 //!
@@ -27,11 +27,14 @@
 //!   `GIT_SPAN_CACHE_STORE_V3` switches no longer exist.
 //! * **Exact hit reads only the compact summary.** A verified generation is
 //!   decoded and projected in memory (no baseline row regroup, no anchored-blob
-//!   availability scan, no full anchored-source resolution). The only git I/O
-//!   is the unavoidable `O(N + S)` external state proof
-//!   [`capture_state_token`] performs to key the read — reading `.git/index`,
-//!   the relevant worktree paths, and the small committed `.span` sidecars,
-//!   never resolving anchors.
+//!   availability scan, no full anchored-source resolution, and — since Round
+//!   2 — no `generation_row` read at all: [`exact_hit_read`] calls
+//!   [`CacheStore::get_generation_summary`], not the row-materializing
+//!   [`CacheStore::get_generation`]). The only git I/O is the unavoidable
+//!   `O(N + S)` external state proof [`capture_state_token_with_memo`]
+//!   performs to key the read — reading `.git/index`, the relevant worktree
+//!   paths, and the small committed `.span` sidecars, never resolving
+//!   anchors.
 //! * **Cold miss does exactly one build.** [`capture_resolution_core`] runs
 //!   once; the result is projected, revalidated, and (only if the snapshot
 //!   still holds) published in one transaction. A publish failure fails closed
@@ -45,7 +48,8 @@
 //!
 //! ## Revalidate-mismatch decision
 //!
-//! When [`revalidate`] reports the snapshot moved between capture and publish:
+//! When [`revalidate_with_memo`] reports the snapshot moved between capture
+//! and publish:
 //!
 //! * a **`head`-only** move leaves the canonical key (which excludes HEAD while
 //!   output is content-only — see `notes/correctness-contract.md` "Explicit
@@ -65,7 +69,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::resolver::WholeResult;
-use crate::resolver::core::capture::{Revalidation, capture_state_token, revalidate};
+use crate::resolver::core::capture::{Revalidation, capture_state_token_with_memo, revalidate_with_memo};
 use crate::resolver::core::project::project_effective;
 use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
@@ -317,11 +321,34 @@ pub(crate) fn stale_spans_new_store(
 
     let _perf = crate::perf::span("resolver.store");
 
+    // Open the store BEFORE capturing the state token (the reverse of the
+    // pre-Round-2 order): the open `CacheStore` is also the persistent,
+    // stat-keyed executable-digest memo `capture::filters()` consults instead
+    // of mmap+hashing a configured filter driver's resolved executable on
+    // every call (`core::exe_digest::ExeDigestMemo`). A store-open failure is
+    // a fail-closed bypass exactly as before — only earlier now, so a broken
+    // store also skips the token capture it would otherwise have paid for and
+    // then discarded.
+    let mut store = match CacheStore::open(repo) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::perf::note(&format!("cache-path.bypass-reason: store-open: {e}"));
+            return Ok(ExactAttempt::Bypass);
+        }
+    };
+
+    // Surface a corruption/schema-mismatch recovery this open performed as a
+    // diagnostics event regardless of whether a later quota pass runs (6A's
+    // `maintain` only folds it into `GcStats` when the store is over cap).
+    if let Some(reason) = store.recovered_on_open() {
+        crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
+    }
+
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
     // A capture failure is a fail-closed bypass to the authoritative path.
     let t_observe = crate::perf::enabled().then(std::time::Instant::now);
-    let token = match capture_state_token(repo, span_root, options) {
+    let token = match capture_state_token_with_memo(repo, span_root, options, Some(&mut store)) {
         Ok(t) => t,
         Err(e) => {
             crate::perf::note(&format!("cache-path.bypass-reason: capture-token: {e}"));
@@ -332,7 +359,7 @@ pub(crate) fn stale_spans_new_store(
         crate::perf::counter("cache-path.state-observe-us", t.elapsed().as_micros() as u64);
     }
 
-    let attempt = stale_spans_new_store_inner(repo, span_root, options, &token)?;
+    let attempt = stale_spans_new_store_inner(repo, span_root, options, &token, &mut store)?;
     // Two whole-result short-circuit guards `run_stale` depends on. Both keep
     // the reportable `spans` intact; only the whole-result (which lets the CLI
     // skip its per-invocation corpus scans) is withheld.
@@ -426,6 +453,7 @@ fn stale_spans_new_store_inner(
     span_root: &str,
     options: EngineOptions,
     token: &crate::resolver::core::token::StateToken,
+    store: &mut CacheStore,
 ) -> Result<ExactAttempt> {
     let key = token.canonical_key_digest();
 
@@ -436,20 +464,8 @@ fn stale_spans_new_store_inner(
         return Ok(rr.to_attempt());
     }
 
-    let mut store = match CacheStore::open(repo) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::perf::note(&format!("cache-path.bypass-reason: store-open: {e}"));
-            return Ok(ExactAttempt::Bypass);
-        }
-    };
-
-    // Surface a corruption/schema-mismatch recovery this open performed as a
-    // diagnostics event regardless of whether a later quota pass runs (6A's
-    // `maintain` only folds it into `GcStats` when the store is over cap).
-    if let Some(reason) = store.recovered_on_open() {
-        crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
-    }
+    // The store is already open (and was used as the executable-digest memo
+    // for the state-token capture above) — see `stale_spans_new_store`.
 
     // ── Exact hit (unlocked fast path) ───────────────────────────────────────
     //
@@ -458,7 +474,7 @@ fn stale_spans_new_store_inner(
     // baseline row regroup, no `.span` corpus reload, no anchored-blob scan. A
     // verified hit here returns without ever touching the build-lock shard, so a
     // warm read never contends with (or blocks behind) a concurrent cold builder.
-    if let Some(attempt) = exact_hit_read(&mut store, &key)? {
+    if let Some(attempt) = exact_hit_read(store, &key)? {
         return Ok(attempt);
     }
 
@@ -488,7 +504,7 @@ fn stale_spans_new_store_inner(
     // published it while we waited for the shard. This is what collapses N
     // simultaneous cold callers to one build — the losers of the lock race find
     // the winner's published generation here and render straight from it.
-    if let Some(attempt) = exact_hit_read(&mut store, &key)? {
+    if let Some(attempt) = exact_hit_read(store, &key)? {
         return Ok(attempt);
     }
 
@@ -501,9 +517,7 @@ fn stale_spans_new_store_inner(
     // usable ancestor / nothing reusable — fall through to the authoritative
     // one-build cold path unchanged. Re-attempted under the shard lock, so a
     // sibling's just-published baseline is visible to it.
-    if let Some(attempt) =
-        incremental::attempt(repo, span_root, options, token, &key, &mut store)?
-    {
+    if let Some(attempt) = incremental::attempt(repo, span_root, options, token, &key, store)? {
         return Ok(attempt);
     }
 
@@ -517,12 +531,12 @@ fn stale_spans_new_store_inner(
     // same-HEAD baseline / nothing reusable — fall through to the authoritative
     // cold path, which resolves the live dirty state correctly (just not
     // proportionally).
-    if let Some(attempt) = dirty::attempt(repo, span_root, options, token, &key, &mut store)? {
+    if let Some(attempt) = dirty::attempt(repo, span_root, options, token, &key, store)? {
         return Ok(attempt);
     }
 
     // ── Cold miss: exactly one build ────────────────────────────────────────
-    cold_miss(repo, span_root, options, token, &key, &mut store)
+    cold_miss(repo, span_root, options, token, &key, store)
 }
 
 /// The exact-generation read, shared by the unlocked fast path and the
@@ -534,7 +548,15 @@ fn stale_spans_new_store_inner(
 /// means a plain miss / integrity rejection / undecodable summary, so the caller
 /// continues down the reconstruction tiers to the one cold build.
 fn exact_hit_read(store: &mut CacheStore, key: &[u8; 32]) -> Result<Option<ExactAttempt>> {
-    match store.get_generation(key, SUMMARY_VERSION) {
+    // `get_generation_summary` (not the row-materializing `get_generation`):
+    // an exact hit renders exclusively from `g.summary` below and never reads
+    // `g.rows`, so verifying and decoding every stored reuse row here — one
+    // full committed generation can carry a row per span — would be pure
+    // O(rows) waste on this hottest path. See its doc comment for the
+    // integrity-coverage rationale (the summary's envelope digest still
+    // covers the declared row count; only the physical-row-completeness
+    // cross-check is skipped, and only here, where rows are never consulted).
+    match store.get_generation_summary(key, SUMMARY_VERSION) {
         Ok(GetOutcome::Hit(g)) => match decode_summary(&g.summary) {
             Ok(rr) => {
                 let _ = store.touch(key);
@@ -654,7 +676,14 @@ fn project_revalidate_publish_impl(
 ) -> Result<ExactAttempt> {
     let rr = Arc::new(RenderReady::from_core(core, options.layers));
 
-    match revalidate(repo, span_root, options, token)? {
+    // Thread the same open `store` through as the revalidation re-capture's
+    // executable-digest memo: this is the pre-publish re-read of the state
+    // token, and any filter executable it re-hashes was, on the ordinary cold
+    // path, already hashed and recorded by the initial capture in
+    // `stale_spans_new_store` moments ago — reusing that row here is what
+    // removes the "hashed twice on every cold build" cost the memo exists to
+    // close.
+    match revalidate_with_memo(repo, span_root, options, token, Some(&mut *store))? {
         Revalidation::Unchanged => {
             publish_if_eligible(repo, store, token, key, &rr, core, store_rows);
             let attempt = rr.to_attempt();

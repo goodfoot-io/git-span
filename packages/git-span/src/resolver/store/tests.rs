@@ -1955,3 +1955,169 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
     }
 }
 
+// -- 9. Exe-digest memo & summary-only read (Round 2 performance work) ----
+
+fn exe_stat(size: u64, mtime_s: i64) -> ExeStatIdentity {
+    ExeStatIdentity {
+        size,
+        mtime_s,
+        mtime_ns: 0,
+        ctime_s: mtime_s,
+        ctime_ns: 0,
+        ino: 1,
+        dev: 1,
+    }
+}
+
+// A digest memoized under one stat identity is returned as-is when looked up
+// again under the *same* stat identity (the `CacheStore`-backed
+// `ExeDigestMemo` impl, exercised directly via SQLite rather than through a
+// fake — `core::capture::tests` covers the wiring into `filters()` with a
+// fake memo and a real executable file).
+#[test]
+fn exe_digest_memo_reused_when_stat_unchanged() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let path = Path::new("/opt/git-lfs/git-lfs");
+    let stat = exe_stat(11 * 1024 * 1024, 1_700_000_000);
+    let digest = [7u8; 32];
+
+    assert_eq!(
+        ExeDigestMemo::lookup(&mut store, path, &stat),
+        None,
+        "empty memo is a miss"
+    );
+    ExeDigestMemo::upsert(&mut store, path, &stat, digest);
+    assert_eq!(
+        ExeDigestMemo::lookup(&mut store, path, &stat),
+        Some(digest),
+        "unchanged stat identity must serve the memoized digest"
+    );
+}
+
+// Any stat field changing (mtime, in this case) invalidates the memoized row:
+// a lookup under the new stat is a miss, not a stale hit.
+#[test]
+fn exe_digest_memo_invalidated_when_mtime_changes() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let path = Path::new("/opt/git-lfs/git-lfs");
+    let original_stat = exe_stat(11 * 1024 * 1024, 1_700_000_000);
+    let digest = [7u8; 32];
+    ExeDigestMemo::upsert(&mut store, path, &original_stat, digest);
+
+    let touched_stat = exe_stat(11 * 1024 * 1024, 1_700_000_500);
+    assert_eq!(
+        ExeDigestMemo::lookup(&mut store, path, &touched_stat),
+        None,
+        "a changed mtime must miss even though every other stat field matches"
+    );
+
+    // Overwriting under the new stat then serves cleanly.
+    let new_digest = [9u8; 32];
+    ExeDigestMemo::upsert(&mut store, path, &touched_stat, new_digest);
+    assert_eq!(
+        ExeDigestMemo::lookup(&mut store, path, &touched_stat),
+        Some(new_digest)
+    );
+    assert_eq!(
+        ExeDigestMemo::lookup(&mut store, path, &original_stat),
+        None,
+        "the row is now keyed on the new stat; the stale stat no longer matches"
+    );
+}
+
+// `get_generation_summary` returns the identical header/summary as
+// `get_generation` (key digest, head, payload version, summary bytes) for
+// every row-count shape, but always with empty `rows` — proving it never
+// materializes `generation_row` at all while remaining a faithful summary
+// view of the same generation.
+#[test]
+fn get_generation_summary_matches_get_generation_header_and_summary() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+
+    for (k, rows) in [(key(50), 0usize), (key(51), 3), (key(52), 50)] {
+        store
+            .publish_generation(&make_input(k, V1, b"summary-bytes", rows))
+            .unwrap();
+        let full = store.get_generation(&k, V1).unwrap().hit().expect("full hit");
+        let summary_only = store
+            .get_generation_summary(&k, V1)
+            .unwrap()
+            .hit()
+            .expect("summary-only hit");
+
+        assert_eq!(summary_only.key_digest, full.key_digest);
+        assert_eq!(summary_only.head, full.head);
+        assert_eq!(summary_only.payload_version, full.payload_version);
+        assert_eq!(summary_only.summary, full.summary);
+        assert!(
+            summary_only.rows.is_empty(),
+            "summary-only read must never materialize generation_row"
+        );
+        assert_eq!(full.rows.len(), rows);
+    }
+
+    // Absent key: both a plain Miss.
+    assert_eq!(store.get_generation(&key(99), V1).unwrap(), GetOutcome::Miss);
+    assert_eq!(
+        store.get_generation_summary(&key(99), V1).unwrap(),
+        GetOutcome::Miss
+    );
+    // Wrong version: both reject identically (this check happens before any
+    // row access, so it is identical on both paths).
+    store
+        .publish_generation(&make_input(key(53), V1, b"s", 2))
+        .unwrap();
+    assert_eq!(
+        store.get_generation(&key(53), V2).unwrap(),
+        GetOutcome::Rejected(IntegrityReason::Version)
+    );
+    assert_eq!(
+        store.get_generation_summary(&key(53), V2).unwrap(),
+        GetOutcome::Rejected(IntegrityReason::Version)
+    );
+}
+
+// `get_generation_summary` skips the physical `SELECT count(*) FROM
+// generation_row` cross-check that `get_generation` performs — but the
+// summary's envelope digest already covers the declared `row_count` (folded
+// in as `envelope_digest`'s cardinality input), so tampering the `row_count`
+// column alone, with `generation_row` left completely untouched, must still
+// be caught as a rejection on both paths — just via a different specific
+// check on each: `get_generation` catches it as a physical `Count` mismatch
+// before it ever reaches digest verification, while `get_generation_summary`
+// has no such physical check and catches it only when the recomputed
+// envelope digest (over the tampered cardinality) fails to match the
+// summary_digest sealed at publish time under the true row count.
+#[test]
+fn get_generation_summary_still_rejects_tampered_row_count_via_envelope_digest() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let k = key(60);
+    store
+        .publish_generation(&make_input(k, V1, b"summary", 5))
+        .unwrap();
+
+    let hex = hex32(&k);
+    raw(&store)
+        .execute(
+            "UPDATE generation SET row_count = row_count + 1 WHERE key_digest = ?1",
+            [&hex],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store.get_generation(&k, V1).unwrap(),
+        GetOutcome::Rejected(IntegrityReason::Count),
+        "get_generation's physical row-count cross-check catches this first"
+    );
+    assert_eq!(
+        store.get_generation_summary(&k, V1).unwrap(),
+        GetOutcome::Rejected(IntegrityReason::Digest),
+        "get_generation_summary has no physical count check, but the tampered \
+         cardinality still fails envelope-digest verification"
+    );
+}
+
