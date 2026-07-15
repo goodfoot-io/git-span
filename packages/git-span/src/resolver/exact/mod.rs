@@ -624,9 +624,44 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore) {
     if size <= cap {
         return;
     }
+    // Over the high-water mark: first reconcile liveness so superseded
+    // generations become evictable, then run the bounded quota pass. Publish
+    // always marks the new generation `live`; without this step nothing ever
+    // demotes a superseded one, every generation stays permanently live, and
+    // `maintain`'s `WHERE live = 0` candidate filter reclaims nothing — the
+    // measured quota defeat this fixes (card main-157 Phase 6C). This runs only
+    // above the cap, so its worktree enumeration is off the hot read path.
+    reconcile_liveness(repo, store);
     match store.maintain(cap) {
         Ok(stats) => emit_gc_stats(cap, &stats),
         Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
+    }
+}
+
+/// Recompute the genuinely-live HEAD set from the repository's active worktrees
+/// and demote every stored generation whose publish-time HEAD is no longer
+/// checked out anywhere, making superseded generations eligible for quota
+/// eviction.
+///
+/// Fails closed on any uncertainty: if the live-HEAD set cannot be computed in
+/// full (a linked worktree is inaccessible, a HEAD will not resolve), or the
+/// demotion query itself faults, nothing is demoted. That preserves
+/// correctness — a genuinely-live generation is never demoted on a partial set,
+/// so the current worktree's active state, and every sibling worktree's, stays
+/// findable — at the cost of deferring reclamation to a later, cleaner pass.
+/// `maintain` (called next) still runs regardless; it simply finds fewer (or
+/// no) candidates when reconciliation was skipped.
+fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore) {
+    let live_heads = match crate::git::live_worktree_heads(repo) {
+        Ok(h) => h,
+        Err(e) => {
+            crate::perf::note(&format!("cache-path.reconcile-skipped: live-heads: {e}"));
+            return;
+        }
+    };
+    match store.reconcile_live_heads(&live_heads) {
+        Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
+        Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),
     }
 }
 

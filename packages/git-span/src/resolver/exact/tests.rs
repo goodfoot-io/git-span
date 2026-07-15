@@ -507,3 +507,107 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
         "a live generation is never evicted, even under a 1-byte cap"
     );
 }
+
+/// End-to-end proof that repeated current-version commits cannot grow the store
+/// without bound (card main-157 Phase 6C's measured gap, now fixed), exercising
+/// the *real* wiring: [`maybe_maintain`]'s liveness reconciliation resolves the
+/// active worktree HEADs from the actual repository. Each iteration commits
+/// fresh tracked content — a new HEAD, a new canonical key, a fresh `live`
+/// generation, exactly the "sequence of trivial commits each triggering a fresh
+/// generation" sub-case the exit gate names — then runs the real `stale` path.
+///
+/// The store footprint is flat across the whole sequence — bounded by the
+/// single live generation the current commit references, not by the commit
+/// count — because reconciliation demotes every prior commit's generation (its
+/// HEAD is no longer checked out) and the quota pass evicts them. The unfixed
+/// behavior grew linearly with the commit count and reclaimed nothing
+/// (`store::tests::superseded_generations_reconciled_and_evicted` pins the
+/// before/after at the store layer with a realistic cap). Here the first
+/// commit's generation is reclaimed while the current one stays findable.
+#[test]
+fn repeated_commits_cannot_grow_store_unbounded() {
+    reset_test_state();
+    clear_memo();
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    git(dir, &["init", "--initial-branch=main"]);
+    git(dir, &["config", "user.name", "Test User"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
+    std::fs::write(dir.join("src/a.txt"), "seed\nl2\nl3\nl4\nl5\n").expect("seed");
+    write_span(dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha");
+
+    enable_v3();
+    // A 1-byte cap forces the quota pass to run on every publish: after
+    // reconciliation demotes the superseded generations, `maintain` evicts
+    // every non-live one, so the store holds only the current live generation —
+    // a footprint independent of the commit count. (The current generation is
+    // live, so it is never evicted, exactly as `tiny_cap_...` asserts.)
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
+    }
+
+    let iters = 12usize;
+    let mut sizes = Vec::with_capacity(iters);
+    let mut keys = Vec::with_capacity(iters);
+    for n in 0..iters {
+        // Distinct tracked content each commit: a new tree => new HEAD and a
+        // new canonical key => a fresh generation published `live`.
+        let body = format!("commit-{n}\nl2\nl3\nl4\nl5\n");
+        std::fs::write(dir.join("src/a.txt"), &body).expect("write src");
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-m", &format!("c{n}")]);
+
+        let repo = gix::open(dir).expect("gix open");
+        let opts = EngineOptions::full();
+        let key = capture_state_token(&repo, SPAN_ROOT, opts)
+            .expect("token")
+            .canonical_key_digest();
+        keys.push(key);
+
+        clear_memo();
+        let _ = stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("stale");
+
+        let store = CacheStore::open(&repo).expect("open");
+        sizes.push(store.database_size_bytes().unwrap());
+    }
+
+    let first = sizes[0];
+    let last = *sizes.last().unwrap();
+    let max = *sizes.iter().max().unwrap();
+    eprintln!("GROWTH repeated-commits n={iters} first={first} last={last} max={max}");
+
+    // Flat: the footprint after the last commit is within one generation's
+    // slack of the first — it does not grow with the commit count. Under the
+    // unfixed all-live semantics this climbed monotonically instead.
+    assert!(
+        max <= first + 64 * 1024,
+        "store grew with commit count: first={first} max={max} (unbounded)",
+    );
+
+    let repo = gix::open(dir).expect("gix open");
+    let store = CacheStore::open(&repo).expect("open");
+    // Every superseded commit's generation was demoted and reclaimed...
+    for (n, key) in keys.iter().enumerate().take(iters - 1) {
+        assert_eq!(
+            store.get_generation(key, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Miss,
+            "superseded generation from commit {n} must have been reclaimed",
+        );
+    }
+    // ...while the current worktree's active generation stays live and findable.
+    assert!(
+        matches!(
+            store
+                .get_generation(keys.last().unwrap(), SUMMARY_VERSION)
+                .expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "the current worktree's active generation must remain findable",
+    );
+}

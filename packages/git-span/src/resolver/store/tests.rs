@@ -1266,25 +1266,93 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
     );
 }
 
-/// MEASURED GAP (honest characterization of current behavior). Models 6B's
-/// production wiring literally: [`super::super::exact`]`::publish_if_eligible`
-/// always publishes `live: true`, and NOTHING ever demotes a superseded
-/// generation back to non-live. `maintain` never evicts a live generation
-/// (`eviction_candidates` filters `WHERE live = 0`), so a sequence of distinct
-/// current-version states — a developer iterating with genuinely different
-/// dirty content, each a fresh canonical key — grows the store without bound;
-/// the quota trigger reclaims nothing.
-///
-/// This test PINS that behavior (it does not paper over it): it asserts the
-/// store sails past the cap and `maintain` removes zero generations. It is a
-/// tripwire — when the follow-up liveness-reconciliation fix lands (recompute
-/// which generations are truly live from current worktrees/refs, demote the
-/// rest), this test must be updated to assert a plateau. The exit-gate
-/// criterion "repeated current-version commits cannot grow without bound" is
-/// therefore MISSED under production semantics today; see
-/// `notes/phase-6-lifecycle-measurement.md`.
+/// Faithful in-test model of 6B's PRODUCTION trigger *after the liveness fix*
+/// (card main-157 Phase 6C's measured gap, now closed):
+/// [`super::super::exact`]`::maybe_maintain` — size probe, then, only above the
+/// high-water mark, [`CacheStore::reconcile_live_heads`] against the active
+/// worktree HEAD set followed by [`CacheStore::maintain`]. `live_head` stands in
+/// for the git worktree enumeration [`super::super::exact`]`::reconcile_liveness`
+/// performs in production: the single commit currently checked out.
+fn run_maybe_maintain_reconciled(store: &mut CacheStore, cap: u64, live_head: &str) -> GcStats {
+    if store.database_size_bytes().unwrap() <= cap {
+        return GcStats::default();
+    }
+    let live: HashSet<String> = std::iter::once(live_head.to_string()).collect();
+    store.reconcile_live_heads(&live).unwrap();
+    store.maintain(cap).unwrap()
+}
+
+/// The stored `live` flag for a key (raw column read, test-only).
+fn live_flag(store: &CacheStore, k: &[u8; 32]) -> i64 {
+    store
+        .conn
+        .query_row(
+            "SELECT live FROM generation WHERE key_digest = ?1",
+            [hex32(k)],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// [`CacheStore::reconcile_live_heads`] demotes exactly the generations whose
+/// HEAD is not in the live set, leaving live-HEAD generations — including a
+/// second, concurrently-checked-out worktree's — untouched. This is the precise
+/// retention semantics the quota depends on: a superseded generation becomes
+/// evictable while every active worktree's current generation stays live.
 #[test]
-fn every_live_generation_defeats_the_quota_measured_gap() {
+fn reconcile_live_heads_demotes_only_superseded() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+
+    for (n, head) in [(0u8, "head-a"), (1, "head-b"), (2, "head-c")] {
+        let mut input = make_input(key(n), V1, b"s", 1);
+        input.head = head.to_string();
+        input.live = true;
+        store.publish_generation(&input).unwrap();
+    }
+
+    // head-a and head-c are checked out (two active worktrees); head-b is a
+    // superseded commit no worktree sits on.
+    let live: HashSet<String> = ["head-a".to_string(), "head-c".to_string()]
+        .into_iter()
+        .collect();
+    let demoted = store.reconcile_live_heads(&live).unwrap();
+    assert_eq!(demoted, 1, "exactly the head-b generation is demoted");
+
+    assert_eq!(live_flag(&store, &key(0)), 1, "head-a stays live");
+    assert_eq!(
+        live_flag(&store, &key(1)),
+        0,
+        "head-b demoted (now an eviction candidate)"
+    );
+    assert_eq!(
+        live_flag(&store, &key(2)),
+        1,
+        "head-c (a sibling worktree's HEAD) stays live"
+    );
+
+    // Idempotent: reconciling again against the same set demotes nothing more.
+    assert_eq!(store.reconcile_live_heads(&live).unwrap(), 0);
+}
+
+/// FIXED: repeated current-version commits cannot grow the store without bound.
+/// Models 6B's production wiring literally — [`super::super::exact`]`::publish_
+/// if_eligible` always publishes `live: true` at the current HEAD — and adds the
+/// missing production step this card wires in: before the quota pass,
+/// [`CacheStore::reconcile_live_heads`] demotes every generation whose HEAD is
+/// no longer checked out (a superseded commit), so [`CacheStore::maintain`]'s
+/// `WHERE live = 0` candidate filter finally has something to reclaim.
+///
+/// A sequence of distinct current-version states — a developer committing
+/// repeatedly, each commit a fresh HEAD and a fresh canonical key — now
+/// plateaus under a small multiple of the cap instead of climbing linearly with
+/// the commit count. This is the direct before/after of the measured gap that
+/// `phase-6-lifecycle-measurement.md` documented: the same 16 KiB-per-generation
+/// live-publish sequence that reached 10.8x the cap with zero reclamation now
+/// bounds itself, because reconciliation feeds `maintain` the superseded
+/// generations the unfixed wiring never demoted.
+#[test]
+fn superseded_generations_reconciled_and_evicted() {
     let dir = tmp();
     let mut store = open(dir.path());
     let cap = 256 * 1024;
@@ -1292,35 +1360,48 @@ fn every_live_generation_defeats_the_quota_measured_gap() {
     let mut sizes = Vec::new();
     let mut removed_total = 0u64;
     for n in 0..160u32 {
-        // Exactly what publish_if_eligible does: a distinct key, live = true.
+        // Exactly what publish_if_eligible does: a distinct key, live = true,
+        // at the just-committed HEAD.
+        let head = format!("head-{n}");
         let mut input = make_big_input(key_u32(n), 16 * 1024, 1);
+        input.head = head.clone();
         input.live = true;
         store.publish_generation(&input).unwrap();
-        let stats = run_maybe_maintain(&mut store, cap);
+
+        // The production trigger, faithfully ordered: reconcile against the one
+        // checked-out HEAD (the prior commits are no longer live), then run the
+        // bounded quota pass.
+        let stats = run_maybe_maintain_reconciled(&mut store, cap, &head);
         removed_total += stats.generations_removed;
         sizes.push(store.database_size_bytes().unwrap());
     }
 
     let last = *sizes.last().unwrap();
+    let steady_max = sizes[80..].iter().copied().max().unwrap();
     eprintln!(
-        "GROWTH all-live-gap n=160 cap={cap} at20={} at40={} at80={} at160={last} removed_total={removed_total}",
+        "GROWTH reconciled-live n=160 cap={cap} at20={} at40={} at80={} at160={last} steady_max={steady_max} removed_total={removed_total}",
         sizes[20], sizes[40], sizes[80],
     );
+    // Bounded: past the cap the first time, the footprint stays within a small
+    // multiple of the cap — no linear growth with commit count. (Unfixed, this
+    // reached 10.8x the cap and kept climbing.)
     assert!(
-        last > cap,
-        "expected unbounded growth past the cap under all-live semantics; got {last} <= cap {cap}",
+        steady_max <= 2 * cap,
+        "reconciled-live footprint grew unbounded: steady-state max {steady_max} exceeds 2x cap ({cap})",
     );
-    assert_eq!(
-        removed_total, 0,
-        "maintain must not evict any live generation (it evicted {removed_total})",
-    );
-    // Linear in iteration count: the second-half footprint strictly exceeds the
-    // first-half footprint — the live set never stops growing.
+    // A true plateau, not a slow climb: iteration 159 is no larger than
+    // iteration 80.
     assert!(
-        sizes[159] > sizes[79],
-        "live-set footprint is not monotonically growing: [79]={} [159]={}",
-        sizes[79],
+        sizes[159] <= sizes[80] + 64 * 1024,
+        "footprint still climbing with commit count: [80]={} [159]={}",
+        sizes[80],
         sizes[159],
+    );
+    // Reconciliation actually fed the quota: superseded generations were
+    // reclaimed (unfixed, this was exactly zero).
+    assert!(
+        removed_total > 0,
+        "reconciliation must let maintain reclaim superseded generations (removed {removed_total})",
     );
 }
 

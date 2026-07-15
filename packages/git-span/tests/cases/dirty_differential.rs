@@ -596,8 +596,9 @@ fn whole_file_multilayer_drift_blocked_upstream() -> Result<()> {
 }
 
 // ── Small cross-platform mtime helpers (integration tests must not reference
-//    std::os::unix directly — see scripts/validate.sh guardrail; these mirror
-//    the pattern in tests/support/mod.rs). ──────────────────────────────────
+//    the platform-specific unix extension traits directly — see
+//    scripts/validate.sh guardrail; these mirror the pattern in
+//    tests/support/mod.rs). ──────────────────────────────────────────────────
 
 fn filetime_of(meta: &std::fs::Metadata) -> std::time::SystemTime {
     meta.modified().expect("mtime")

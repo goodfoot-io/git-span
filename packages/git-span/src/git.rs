@@ -5,6 +5,7 @@
 //! typed results via [`crate::Result`].
 
 use crate::{Error, Result};
+use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -54,6 +55,56 @@ pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
         .head_id()
         .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?;
     Ok(id.detach().to_string())
+}
+
+/// The set of commit OIDs currently checked out by an *active worktree* — this
+/// repository's own HEAD, the main worktree's HEAD (this repo may itself be a
+/// linked worktree), and every linked worktree's HEAD.
+///
+/// These are the "live" heads GC retains generations for
+/// (`notes/architecture-and-complexity.md` GC: "Retain generations used by
+/// active worktrees/refs"). The store keys each cached generation by its
+/// publish-time HEAD hint, so a generation whose HEAD is absent from this set
+/// is backed by no active worktree — it has been superseded and is eligible
+/// for quota eviction.
+///
+/// **Fails closed.** A generation is demoted only against a *complete* live
+/// set: enumerating the linked worktrees, or resolving any one of their HEADs,
+/// is a hard error here so the caller skips liveness reconciliation entirely
+/// rather than demote a possibly-live generation on a partial set. The one
+/// tolerated gap is the main worktree's HEAD when the main repo is bare or
+/// unborn (no checked-out state to keep alive) — that is not an error, just an
+/// absent contribution.
+pub(crate) fn live_worktree_heads(repo: &gix::Repository) -> Result<HashSet<String>> {
+    let mut heads = HashSet::new();
+    // This worktree's own HEAD — always present, always the generation we just
+    // published with.
+    heads.insert(head_oid(repo)?);
+
+    // The main worktree, reached from a linked worktree. A bare/unborn main has
+    // no live checkout, so an unresolvable HEAD there is tolerated, not fatal.
+    if let Ok(main) = repo.main_repo()
+        && let Ok(id) = main.head_id()
+    {
+        heads.insert(id.detach().to_string());
+    }
+
+    // Every linked worktree. Any failure to enumerate or resolve is fatal so
+    // the caller fails closed (skips reconciliation) rather than act on a
+    // partial live set.
+    let proxies = repo
+        .worktrees()
+        .map_err(|e| Error::Git(format!("enumerate worktrees: {e}")))?;
+    for proxy in proxies {
+        let wt = proxy
+            .into_repo()
+            .map_err(|e| Error::Git(format!("open linked worktree: {e}")))?;
+        let id = wt
+            .head_id()
+            .map_err(|e| Error::Git(format!("resolve linked worktree HEAD: {e}")))?;
+        heads.insert(id.detach().to_string());
+    }
+    Ok(heads)
 }
 
 // ---------------------------------------------------------------------------

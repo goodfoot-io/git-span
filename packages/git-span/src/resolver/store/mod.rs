@@ -677,6 +677,67 @@ impl CacheStore {
         Ok(())
     }
 
+    /// Reconcile stored liveness against the genuinely-live HEAD set: demote to
+    /// non-live every generation whose publish-time HEAD hint is not one of
+    /// `live_heads` (the commit OIDs currently checked out by an active
+    /// worktree, per [`crate::git::live_worktree_heads`]). Returns the number
+    /// of generations demoted.
+    ///
+    /// This is the missing production step that makes 6A's quota
+    /// [`Self::maintain`] able to reclaim anything: publish always marks the
+    /// new generation `live` ("the current worktree references it now"), but a
+    /// later commit/checkout supersedes it and *nothing else ever demotes it*.
+    /// Without reconciliation every generation ever published stays permanently
+    /// live, and [`Self::eviction_candidates`]' `WHERE live = 0` filter yields
+    /// nothing — the quota is silently defeated (card main-157 Phase 6C's
+    /// measured gap). A generation at a HEAD no worktree currently sits on is
+    /// backed by no active worktree; demoting it lets `maintain` evict it by
+    /// recency/value, while a generation at a live HEAD (including a sibling
+    /// worktree's) is retained.
+    ///
+    /// The eviction mechanism itself is unchanged: this only flips the `live`
+    /// flag the existing candidate query already reads. Each demotion is a
+    /// single indexed `UPDATE ... WHERE head = ?` (the `generation_by_head`
+    /// index), touching only rows currently marked live.
+    pub(crate) fn reconcile_live_heads(
+        &mut self,
+        live_heads: &HashSet<String>,
+    ) -> StoreResult<u64> {
+        // The distinct HEAD hints currently marked live. Demoting per-head
+        // (rather than per-row) keeps the scan small and lets each UPDATE ride
+        // the `generation_by_head` index.
+        let live_gen_heads: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT DISTINCT head FROM generation WHERE live = 1")
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(map_sqlite)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(map_sqlite)?);
+            }
+            out
+        };
+
+        let mut demoted = 0u64;
+        for head in live_gen_heads {
+            if live_heads.contains(&head) {
+                continue;
+            }
+            let n = self
+                .conn
+                .execute(
+                    "UPDATE generation SET live = 0 WHERE live = 1 AND head = ?1",
+                    [&head],
+                )
+                .map_err(map_sqlite)?;
+            demoted += n as u64;
+        }
+        Ok(demoted)
+    }
+
     /// Singleflight build: return the verified generation for `key_digest`,
     /// building it exactly once across concurrent same-key callers.
     ///
