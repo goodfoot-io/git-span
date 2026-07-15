@@ -105,15 +105,14 @@ fn discovery_clean_head_pinned_span_uses_fast_path() -> Result<()> {
         !stdout.trim().is_empty(),
         "stdout should have summary line when clean, got: stdout={stdout}"
     );
-    // cache_v2: a clean tree takes the warm-clean path — a committed
-    // baseline hit with no dirty overlay needed.
+    // The new store serves a clean pinned span from the whole-result
+    // warm short-circuit — the fast path that returns the full cached
+    // result without re-resolving any anchor (the direct successor of the
+    // old `cache_v2.warm-clean`/`baseline-hit` fast path). The `resolve-*`
+    // negatives below prove no full resolution ran behind it.
     assert!(
-        stderr.contains("git-span perf: cache_v2.baseline-hit 1"),
-        "expected cache_v2 baseline hit: {stderr}"
-    );
-    assert!(
-        stderr.contains("git-span perf: cache_v2.warm-clean 1"),
-        "expected cache_v2 warm-clean path: {stderr}"
+        stderr.contains("git-span perf: cache-path.whole-result-hit 1"),
+        "expected a whole-result warm-clean hit: {stderr}"
     );
     assert!(
         !stderr.contains("git-span perf: resolver.resolve-stale-spans"),

@@ -1,17 +1,20 @@
-//! Regression: `git span stale` served deleted spans from the
-//! file-backed `cache_v2` baseline because the baseline was enumerated
-//! from the raw worktree filesystem (untracked + gitignored span files
-//! included) while the cache key (`span_tree_key` = HEAD tree of the
-//! span root) and dirty detection (`git status -uno`, which skips
-//! untracked and ignored paths) only observed git-tracked state.
+//! Regression (originally a `cache_v2` bug, guards the new store): a deleted
+//! untracked/gitignored span file must not keep being served from the cache.
 //!
-//! A span file living only in the worktree — e.g. a `.span/.../build`
-//! file matched by a `.gitignore` `build` pattern — was baked into the
-//! committed baseline on the cold build, but deleting it changed
-//! neither the HEAD tree (it was never committed) nor `git status`
-//! (it is ignored). The warm-clean path then replayed the pre-deletion
-//! baseline, listing the deleted span and exiting non-zero — a CI
-//! false positive with no cache-bypass flag.
+//! The deleted `cache_v2` baseline was enumerated from the raw worktree
+//! filesystem (untracked + gitignored span files included) while its key
+//! (`span_tree_key` = HEAD tree of the span root) and dirty detection
+//! (`git status -uno`, which skips untracked and ignored paths) only observed
+//! git-tracked state. A span file living only in the worktree — e.g. a
+//! `.span/.../build` file matched by a `.gitignore` `build` pattern — was baked
+//! into the committed baseline on the cold build, but deleting it changed
+//! neither the HEAD tree (never committed) nor `git status` (ignored), so the
+//! warm-clean path replayed the pre-deletion baseline, listing the deleted span
+//! and exiting non-zero — a CI false positive with no cache-bypass flag.
+//!
+//! These tests run against the new (and only) store to pin that a deleted
+//! untracked/gitignored span disappears from `git span stale` without a manual
+//! cache clear.
 
 use crate::support;
 

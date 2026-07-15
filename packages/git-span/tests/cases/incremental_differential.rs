@@ -1,6 +1,6 @@
 //! Card main-157 Phase 4, sub-scope 4C: CLI-level differential parity for the
-//! incremental-miss execution path (`GIT_SPAN_CACHE_STORE_V3` + an ancestor
-//! generation).
+//! incremental-miss execution path (the store — default, no switch — plus an
+//! ancestor generation).
 //!
 //! Phase 4B proved the incremental affected-set/reuse logic white-box, in
 //! process, against `capture_resolution_core` directly (see
@@ -15,17 +15,17 @@
 //! 1. Build a Fresh multi-span corpus at commit **A** (some Fresh spans that
 //!    the incremental path can reuse, plus one committed-drifted span so the
 //!    oracle output is non-empty and parity is meaningful).
-//! 2. Publish an ancestor generation at A under `GIT_SPAN_CACHE_STORE_V3=1`,
-//!    then snapshot the store so every later run starts from an **A-only**
-//!    store (no B generation) — forcing the exact read to miss and the
-//!    incremental path to engage on every format, not just the first.
+//! 2. Publish an ancestor generation at A via the store, then snapshot the
+//!    store so every later run starts from an **A-only** store (no B
+//!    generation) — forcing the exact read to miss and the incremental path
+//!    to engage on every format, not just the first.
 //! 3. Apply the scenario's transition to reach commit/state **B**.
 //! 4. For each of human / porcelain / JSON: restore the A-only store, run
 //!    `git span stale` under the cache-off oracle and under the new store, and
 //!    assert byte-identical stdout AND identical process exit code.
 //!
 //! Every subprocess isolates global/system git config to `/dev/null` (as in
-//! `store_v3_differential`) so an installed `filter.lfs` cannot make the token
+//! `store_differential`) so an installed `filter.lfs` cannot make the token
 //! persistence-ineligible and suppress the ancestor publish.
 //!
 //! ## A real divergence this suite surfaced (committed rename)
@@ -75,11 +75,8 @@ fn run(repo: &Path, args: &[&str], mode: Mode, perf: bool) -> (String, String, i
     match mode {
         Mode::Disabled => {
             cmd.env("GIT_SPAN_CACHE", "0");
-            cmd.env("GIT_SPAN_CACHE_V2", "0");
         }
-        Mode::NewStore => {
-            cmd.env("GIT_SPAN_CACHE_STORE_V3", "1");
-        }
+        Mode::NewStore => {}
     }
     if perf {
         cmd.env("GIT_SPAN_PERF", "1");

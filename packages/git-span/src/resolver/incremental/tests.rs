@@ -82,11 +82,11 @@ fn init_repo(dir: &Path) {
     git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
-fn enable_v3() {
+fn enable_store() {
+    // The SQLite store is unconditional; `GIT_SPAN_CACHE=0` is the only
+    // disable switch. Clear it so this run engages the store.
     unsafe {
-        std::env::set_var("GIT_SPAN_CACHE_STORE_V3", "1");
         std::env::remove_var("GIT_SPAN_CACHE");
-        std::env::remove_var("GIT_SPAN_CACHE_V2");
     }
 }
 
@@ -137,7 +137,7 @@ fn commit_unrelated(dir: &Path) {
 
 /// Publish an ancestor generation at the current HEAD via the real seam.
 fn publish_ancestor(dir: &Path) {
-    enable_v3();
+    enable_store();
     let repo = reopen(dir);
     let _ = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
 }
@@ -148,7 +148,7 @@ fn publish_ancestor(dir: &Path) {
 fn no_ancestor_degrades_to_full() {
     reset_incremental_test_state();
     let (_td, dir) = fresh_two_span_repo("noanc");
-    enable_v3();
+    enable_store();
     let repo = reopen(&dir);
     let opts = EngineOptions::full();
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");

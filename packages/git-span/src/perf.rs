@@ -86,16 +86,6 @@ static GIX_OPEN_CALLS: AtomicU64 = AtomicU64::new(0);
 /// stack; the underlying `gix::index::File` is loaded from disk at most once
 /// per `gix::Repository` instance, so this counter does not measure disk I/O.
 static ATTR_FOR_CALLS: AtomicU64 = AtomicU64::new(0);
-static IS_ANCESTOR_SUBPROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
-static IS_ANCESTOR_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
-static L1_HITS: AtomicU64 = AtomicU64::new(0);
-static L1_MISSES: AtomicU64 = AtomicU64::new(0);
-static L2_HITS: AtomicU64 = AtomicU64::new(0);
-static L2_MISSES: AtomicU64 = AtomicU64::new(0);
-static L2_READ_NS: AtomicU64 = AtomicU64::new(0);
-static L2_WRITE_NS: AtomicU64 = AtomicU64::new(0);
-static L2_BYTES_READ: AtomicU64 = AtomicU64::new(0);
-static L2_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 // ── `git span list` corpus-load counters ────────────────────────────────────
 //
@@ -144,88 +134,6 @@ pub fn record_attr_for_call() {
         return;
     }
     ATTR_FOR_CALLS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_is_ancestor_subprocess() {
-    if !enabled() {
-        return;
-    }
-    IS_ANCESTOR_SUBPROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_is_ancestor_memo_hit() {
-    if !enabled() {
-        return;
-    }
-    IS_ANCESTOR_MEMO_HITS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_l1_hit() {
-    if !enabled() {
-        return;
-    }
-    L1_HITS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_l1_miss() {
-    if !enabled() {
-        return;
-    }
-    L1_MISSES.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_l2_hit() {
-    if !enabled() {
-        return;
-    }
-    L2_HITS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_l2_miss() {
-    if !enabled() {
-        return;
-    }
-    L2_MISSES.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_l2_bytes_read(n: u64) {
-    if !enabled() {
-        return;
-    }
-    L2_BYTES_READ.fetch_add(n, Ordering::Relaxed);
-}
-
-pub fn record_l2_bytes_written(n: u64) {
-    if !enabled() {
-        return;
-    }
-    L2_BYTES_WRITTEN.fetch_add(n, Ordering::Relaxed);
-}
-
-pub fn time_l2_read<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    if !enabled() {
-        return f();
-    }
-    let t = Instant::now();
-    let r = f();
-    L2_READ_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    r
-}
-
-pub fn time_l2_write<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    if !enabled() {
-        return f();
-    }
-    let t = Instant::now();
-    let r = f();
-    L2_WRITE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    r
 }
 
 /// Time the 3-layer span-name discovery phase of a corpus load and record
@@ -443,36 +351,6 @@ pub fn gix_open_calls() -> u64 {
 pub fn attr_for_calls() -> u64 {
     ATTR_FOR_CALLS.load(Ordering::Relaxed)
 }
-pub fn is_ancestor_subprocess_calls() -> u64 {
-    IS_ANCESTOR_SUBPROCESS_CALLS.load(Ordering::Relaxed)
-}
-pub fn is_ancestor_memo_hits() -> u64 {
-    IS_ANCESTOR_MEMO_HITS.load(Ordering::Relaxed)
-}
-pub fn l1_hits() -> u64 {
-    L1_HITS.load(Ordering::Relaxed)
-}
-pub fn l1_misses() -> u64 {
-    L1_MISSES.load(Ordering::Relaxed)
-}
-pub fn l2_hits() -> u64 {
-    L2_HITS.load(Ordering::Relaxed)
-}
-pub fn l2_misses() -> u64 {
-    L2_MISSES.load(Ordering::Relaxed)
-}
-pub fn l2_read_us() -> u64 {
-    L2_READ_NS.load(Ordering::Relaxed) / 1_000
-}
-pub fn l2_write_us() -> u64 {
-    L2_WRITE_NS.load(Ordering::Relaxed) / 1_000
-}
-pub fn l2_bytes_read() -> u64 {
-    L2_BYTES_READ.load(Ordering::Relaxed)
-}
-pub fn l2_bytes_written() -> u64 {
-    L2_BYTES_WRITTEN.load(Ordering::Relaxed)
-}
 /// One row of per-anchor trace data emitted when `--perf-trace <path>` is set.
 pub struct TraceRow {
     pub span: String,
@@ -489,14 +367,4 @@ pub struct TraceRow {
 pub fn reset_subroutine_counters() {
     GIX_OPEN_CALLS.store(0, Ordering::Relaxed);
     ATTR_FOR_CALLS.store(0, Ordering::Relaxed);
-    IS_ANCESTOR_SUBPROCESS_CALLS.store(0, Ordering::Relaxed);
-    IS_ANCESTOR_MEMO_HITS.store(0, Ordering::Relaxed);
-    L1_HITS.store(0, Ordering::Relaxed);
-    L1_MISSES.store(0, Ordering::Relaxed);
-    L2_HITS.store(0, Ordering::Relaxed);
-    L2_MISSES.store(0, Ordering::Relaxed);
-    L2_READ_NS.store(0, Ordering::Relaxed);
-    L2_WRITE_NS.store(0, Ordering::Relaxed);
-    L2_BYTES_READ.store(0, Ordering::Relaxed);
-    L2_BYTES_WRITTEN.store(0, Ordering::Relaxed);
 }

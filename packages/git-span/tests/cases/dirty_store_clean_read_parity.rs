@@ -1,20 +1,21 @@
-//! Regression: the `cache_v2` whole-result entry rendered phantom anchors
-//! on a CLEAN worktree after a dirty cold build.
+//! Regression (guards the new store): a whole-result entry must never
+//! render phantom anchors on a CLEAN worktree after a dirty cold build.
 //!
-//! The whole-result entry is keyed by COMMITTED identity
-//! (`source_tree_key`/`span_tree_key`), which uncommitted worktree edits to
-//! a committed `.span/<name>` file do NOT change. The entry's content used
-//! to be derived from the worktree-effective corpus
-//! (`load_all_spans_in`). So a cold build performed while a committed span
-//! file carried uncommitted worktree edits froze worktree-only anchors into
-//! a committed-keyed entry. After the worktree was reverted to clean WITHOUT
-//! an intervening commit, the warm-clean path replayed those poisoned
-//! worktree anchors — phantom anchors that exist in no commit — diverging
-//! from the `GIT_SPAN_CACHE_V2=0` ground truth.
+//! A whole-result entry is keyed by COMMITTED identity, which uncommitted
+//! worktree edits to a committed `.span/<name>` file do NOT change. The
+//! deleted `cache_v2` derived the entry's content from the worktree-effective
+//! corpus, so a cold build performed while a committed span file carried
+//! uncommitted worktree edits froze worktree-only anchors into a
+//! committed-keyed entry. After the worktree was reverted to clean WITHOUT an
+//! intervening commit, the warm-clean path replayed those poisoned worktree
+//! anchors — phantom anchors that exist in no commit — diverging from the
+//! cache-off ground truth. The new store gates the whole result against
+//! uncommitted `.span/` edits (`withhold_whole_result_for_dirty_tree` /
+//! `has_uncommitted_span_files`), so the frozen-phantom shape cannot recur.
 //!
-//! The fix builds the whole-result content from COMMITTED span reads so the
-//! stored entry matches its committed key. Cache-on must be byte-identical
-//! to cache-off on the dirty-store -> revert-to-clean -> warm-read path.
+//! This pins the guarantee: on the dirty-store -> revert-to-clean ->
+//! warm-read path, the new store must be byte-identical to the
+//! `GIT_SPAN_CACHE=0` cache-off ground truth.
 
 use crate::support;
 
@@ -53,7 +54,7 @@ fn cache_matches_cache_off_after_dirty_store_then_clean_read() -> Result<()> {
     seed_committed_drift(&repo)?;
 
     // Ground truth on the CLEAN committed tree: cache fully disabled.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE_V2", "0")?;
+    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
     // The committed corpus has no anchor on d.txt — a phantom anchor would
     // show `d.txt`.

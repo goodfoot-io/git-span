@@ -103,12 +103,12 @@ fn drifted_repo(tag: &str) -> (tempfile::TempDir, gix::Repository) {
     (td, repo)
 }
 
-fn enable_v3() {
+fn enable_store() {
+    // The SQLite store is unconditional; `GIT_SPAN_CACHE=0` is the only
+    // disable switch. Clear it so this run engages the store.
     // Safe under nextest's process-per-test isolation.
     unsafe {
-        std::env::set_var("GIT_SPAN_CACHE_STORE_V3", "1");
         std::env::remove_var("GIT_SPAN_CACHE");
-        std::env::remove_var("GIT_SPAN_CACHE_V2");
     }
 }
 
@@ -134,40 +134,42 @@ fn resolved(attempt: ExactAttempt) -> Vec<SpanResolved> {
     }
 }
 
-// ── Switch inertness ─────────────────────────────────────────────────────────
+// ── Cache-disable switch ─────────────────────────────────────────────────────
 
 #[test]
-fn switch_unset_is_bypass() {
+fn store_engages_by_default() {
     reset_test_state();
     clear_memo();
-    let (_td, repo) = drifted_repo("unset");
-    unsafe {
-        std::env::remove_var("GIT_SPAN_CACHE_STORE_V3");
-    }
+    let (_td, repo) = drifted_repo("default");
+    // Default env (cache enabled): the store is unconditional and engages.
+    enable_store();
     let out = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
     assert!(
-        matches!(out, ExactAttempt::Bypass),
-        "with the switch unset the new path must be fully inert"
+        matches!(out, ExactAttempt::Resolved { .. }),
+        "with the cache enabled the store must engage"
     );
-    assert_eq!(test_cold_miss_builds(), 0, "no build when switch is unset");
+    assert_eq!(
+        test_cold_miss_builds(),
+        1,
+        "the default engaged path performs the one cold build"
+    );
 }
 
 #[test]
-fn all_off_bypasses_new_path() {
+fn cache_disabled_bypasses_store() {
     reset_test_state();
     clear_memo();
-    let (_td, repo) = drifted_repo("alloff");
+    let (_td, repo) = drifted_repo("disabled");
+    // `GIT_SPAN_CACHE=0` is the single disable switch: it bypasses every tier.
     unsafe {
-        std::env::set_var("GIT_SPAN_CACHE_STORE_V3", "1");
         std::env::set_var("GIT_SPAN_CACHE", "0");
-        std::env::set_var("GIT_SPAN_CACHE_V2", "0");
     }
     let out = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
     assert!(
         matches!(out, ExactAttempt::Bypass),
-        "both legacy switches off must bypass the new path too"
+        "GIT_SPAN_CACHE=0 must bypass the store"
     );
-    assert_eq!(test_cold_miss_builds(), 0, "all-off must do no build");
+    assert_eq!(test_cold_miss_builds(), 0, "a disabled cache must do no build");
 }
 
 #[test]
@@ -175,7 +177,7 @@ fn ineligible_options_bypass() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("inelig");
-    enable_v3();
+    enable_store();
     // committed_only() has a non-full layer set → ineligible.
     let out =
         stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::committed_only()).expect("attempt");
@@ -190,7 +192,7 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("coldone");
-    enable_v3();
+    enable_store();
     let opts = EngineOptions::full();
 
     // Cold miss: exactly one resolver build, no exact hit, and a finding.
@@ -219,7 +221,7 @@ fn memo_serves_repeat_without_store_read() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("memo");
-    enable_v3();
+    enable_store();
     let opts = EngineOptions::full();
 
     let first = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("first"));
@@ -260,7 +262,7 @@ fn revalidate_discard_publishes_nothing_and_falls_back() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("reval");
-    enable_v3();
+    enable_store();
     let opts = EngineOptions::full();
     let dir = repo.workdir().expect("workdir").to_path_buf();
 
@@ -346,7 +348,7 @@ fn clean_run_publishes_and_is_eligible() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("cleanpub");
-    enable_v3();
+    enable_store();
     let opts = EngineOptions::full();
 
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
@@ -485,7 +487,7 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("capstale");
-    enable_v3();
+    enable_store();
     unsafe {
         std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
     }
@@ -542,7 +544,7 @@ fn repeated_commits_cannot_grow_store_unbounded() {
     std::fs::write(dir.join("src/a.txt"), "seed\nl2\nl3\nl4\nl5\n").expect("seed");
     write_span(dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha");
 
-    enable_v3();
+    enable_store();
     // A 1-byte cap forces the quota pass to run on every publish: after
     // reconciliation demotes the superseded generations, `maintain` evicts
     // every non-live one, so the store holds only the current live generation —

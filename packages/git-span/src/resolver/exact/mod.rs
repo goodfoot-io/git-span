@@ -1,33 +1,30 @@
-//! Temporary execution seam wiring the Phase 1 `core` contract and the Phase 2
-//! `store` engine into the live `git span stale` path (card main-157 Phase 3,
-//! sub-scope 3C).
+//! Execution seam wiring the `core` resolution contract and the `store` engine
+//! into the live `git span stale` path (card main-157).
 //!
-//! Phases 1/2 and sub-tasks 3A/3B built every piece this module needs but never
-//! called them from a real invocation:
+//! This is THE cache path for `git span stale`: the greenfield cutover
+//! (Phase 7) deleted both legacy caches (`resolver::cache`, `resolver::cache_v2`),
+//! so an [`ExactAttempt::Bypass`] falls straight through to the uncached
+//! authoritative resolver ([`stale_spans_inner`](crate::resolver::engine)) with
+//! no intervening legacy tier. The pieces this seam drives:
 //!
-//! * 3A's [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
+//! * [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
 //!   resolves a span set *once* into a layer-neutral
-//!   [`ResolutionCore`](crate::resolver::core::resolution::ResolutionCore),
-//!   closing the `cache_v2` double-resolve (`build_committed_spans` +
-//!   `build_clean_whole_result`) traced in `notes/investigation-question-log.md`
-//!   Step 4.
-//! * 3B's [`capture_state_token`] / [`revalidate`] snapshot and re-read the
+//!   [`ResolutionCore`](crate::resolver::core::resolution::ResolutionCore).
+//! * [`capture_state_token`] / [`revalidate`] snapshot and re-read the
 //!   complete invocation state.
-//! * Phase 2's [`CacheStore`] stores and integrity-verifies one atomic
-//!   generation per canonical key.
+//! * [`CacheStore`] stores and integrity-verifies one atomic generation per
+//!   canonical key.
 //!
-//! This module is the seam that finally exercises them, behind ONE temporary
-//! opt-in development switch (`GIT_SPAN_CACHE_STORE_V3`). It is deliberately
-//! thin and disposable: Phase 7 deletes it (and the switch) once the new store
-//! is the only path. Its correctness contract:
+//! Its correctness contract:
 //!
-//! * **Inert by default.** With the switch unset the entry point returns
-//!   [`ExactAttempt::Bypass`] before touching any state, and the caller runs
-//!   exactly today's `cache_v2`/`cache` path — byte-for-byte unchanged.
-//! * **All-off means all-off.** When the two legacy switches together select
-//!   the Phase 0 oracle's "every persistent tier disabled" mode
-//!   (`GIT_SPAN_CACHE=0` AND `GIT_SPAN_CACHE_V2=0`), the new path is bypassed
-//!   too — no cache work of any kind, old or new.
+//! * **Unconditional by default.** The store engages on every eligible run.
+//!   There is no opt-in switch to enable it.
+//! * **One disable control.** `GIT_SPAN_CACHE=0` bypasses every cache tier;
+//!   the entry point returns [`ExactAttempt::Bypass`] before touching any
+//!   state, and the caller runs the uncached authoritative resolver — no cache
+//!   work of any kind. This is the single "disable all caching" switch
+//!   (`notes/correctness-contract.md`); the pre-cutover `GIT_SPAN_CACHE_V2` /
+//!   `GIT_SPAN_CACHE_STORE_V3` switches no longer exist.
 //! * **Exact hit reads only the compact summary.** A verified generation is
 //!   decoded and projected in memory (no baseline row regroup, no anchored-blob
 //!   availability scan, no full anchored-source resolution). The only git I/O
@@ -63,13 +60,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::resolver::WholeResult;
-use crate::resolver::cache_v2::dto::SpanResolvedDto;
 use crate::resolver::core::capture::{Revalidation, capture_state_token, revalidate};
 use crate::resolver::core::project::project_effective;
 use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
     capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
 };
+use crate::resolver::store::dto::SpanResolvedDto;
 use crate::resolver::store::{CacheStore, GcStats, GenerationInput, GetOutcome};
 use crate::types::{CopyDetection, EngineOptions, LayerSet, SpanResolved};
 use std::sync::Arc;
@@ -105,17 +102,17 @@ pub(crate) const SUMMARY_VERSION: u32 = 2;
 /// library run (e.g. tests, or a long-lived embedding), not a persistence tier.
 const MEMO_CAP: usize = 32;
 
-/// Outcome of the new-store attempt.
+/// Outcome of the store attempt.
 pub(crate) enum ExactAttempt {
-    /// The new path produced the reportable span set. The caller renders this
-    /// directly and does not touch the legacy caches.
+    /// The store produced the reportable span set. The caller renders this
+    /// directly.
     ///
     /// `whole_result` carries the render-ready full command result (every
     /// committed span with every anchor in stored order, plus per-span anchor
-    /// totals) — the exact `cache_v2` warm-clean shape. Handing it back lets
+    /// totals) — the warm-clean shape. Handing it back lets
     /// [`run_stale`](crate::cli::stale_output) skip the per-invocation corpus
     /// reload (`load_all_spans_in` for count-totals, the Fresh-anchor backfill,
-    /// and the interior-anchor scan) that the legacy warm path also skips. It is
+    /// and the interior-anchor scan). It is
     /// `Some` whenever the summary is available (exact hit, memo hit, or the
     /// one-build cold miss) — the warm read is then a single compact-summary
     /// decode with no anchored-blob or `.span` corpus work.
@@ -123,9 +120,9 @@ pub(crate) enum ExactAttempt {
         spans: Vec<SpanResolved>,
         whole_result: Option<WholeResult>,
     },
-    /// The new path did not engage (switch unset, all-off, ineligible options,
-    /// a store fault, or a torn-read fallback). The caller runs the existing
-    /// `cache_v2`/`cache` path exactly as before.
+    /// The store did not engage (cache disabled, ineligible options, a store
+    /// fault, or a torn-read fallback). The caller runs the uncached
+    /// authoritative resolver directly.
     Bypass,
 }
 
@@ -138,18 +135,14 @@ pub(crate) enum ExactAttempt {
 /// `spans` is the full effective set (every committed span, every anchor in
 /// stored order, Fresh siblings included) so an exact hit reconstructs both the
 /// reportable discovery set (`reportable` filter) and the whole-result the CLI
-/// short-circuits on, without re-reading the `.span` corpus. Shape-compatible
-/// with the legacy `cache_v2` whole-result blob it replaces, so the size
-/// comparison in this card's report is apples-to-apples.
+/// short-circuits on, without re-reading the `.span` corpus.
 ///
-/// Forward-compatibility (Phase 4/5, out of scope here): the incremental and
-/// dirty paths will additionally need the per-layer `ResolutionCore` detail
-/// persisted (as normalized reuse rows + the reverse path index — already
-/// carried by `GenerationInput::rows`/`path_index`, empty in Phase 3). The
-/// compact summary is additive to those, not a replacement, so those phases add
-/// rows without reshaping this summary. It reuses `cache_v2::dto::SpanResolvedDto`
-/// today; Phase 7 (which deletes `cache_v2`) must relocate that DTO into the
-/// store/core layer alongside this type.
+/// The incremental and dirty paths additionally persist the per-layer
+/// `ResolutionCore` detail (as normalized reuse rows + the reverse path index,
+/// carried by `GenerationInput::rows`/`path_index`). The compact summary is
+/// additive to those, not a replacement, so those paths add rows without
+/// reshaping this summary. It serializes through
+/// [`SpanResolvedDto`](crate::resolver::store::dto::SpanResolvedDto).
 #[derive(Serialize, Deserialize)]
 struct StaleSummary {
     /// Full effective set: every committed span with every anchor in stored
@@ -217,26 +210,22 @@ impl RenderReady {
     }
 }
 
-/// Whether the two legacy switches together select the Phase 0 oracle's
-/// "every persistent tier disabled" ground-truth mode. In that mode the new
-/// path must also be fully bypassed.
-fn env_all_off() -> bool {
+/// Whether the single cache-disable switch is set. `GIT_SPAN_CACHE=0` disables
+/// every cache tier: the store is bypassed and the caller runs the uncached
+/// authoritative resolver directly.
+///
+/// Note the semantic shift from the pre-cutover world: `GIT_SPAN_CACHE=0` once
+/// meant "disable the filesystem drift-locus tier only, leave SQLite on". After
+/// the greenfield cutover there is exactly ONE cache (this store) and exactly
+/// one disable control, so `GIT_SPAN_CACHE=0` now means "disable everything"
+/// (`notes/correctness-contract.md`: "one cache-disable control bypasses every
+/// memory and disk tier").
+fn cache_disabled() -> bool {
     std::env::var("GIT_SPAN_CACHE").as_deref() == Ok("0")
-        && std::env::var("GIT_SPAN_CACHE_V2").as_deref() == Ok("0")
 }
 
-/// Whether the temporary development switch explicitly selects the new store.
-fn v3_selected() -> bool {
-    matches!(
-        std::env::var("GIT_SPAN_CACHE_STORE_V3")
-            .as_deref()
-            .map(str::trim),
-        Ok("1") | Ok("true") | Ok("on") | Ok("yes")
-    )
-}
-
-/// Eligibility gate. Mirrors `cache_v2::ineligible_reason` (full layer set, no
-/// `--since`) and additionally requires the default fuzzy threshold, because
+/// Eligibility gate: full layer set, no `--since`, and additionally the default
+/// fuzzy threshold, because
 /// [`capture_resolution_core`] resolves with a fixed `0.95` threshold; any
 /// other value must fall back so the projected result cannot silently diverge.
 fn eligible(options: &EngineOptions) -> bool {
@@ -292,21 +281,43 @@ pub(crate) fn global_copy_widen(token: &crate::resolver::core::token::StateToken
     )
 }
 
-/// The temporary new-store execution path for `git span stale` discovery.
+/// The store execution path for `git span stale` discovery.
 ///
 /// Returns [`ExactAttempt::Resolved`] with the reportable span set on an exact
-/// hit or a one-build cold miss, or [`ExactAttempt::Bypass`] when the new path
-/// is not selected / not eligible / faulted, in which case the caller runs the
-/// legacy path unchanged.
+/// hit or a one-build cold miss, or [`ExactAttempt::Bypass`] when the cache is
+/// disabled / the run is ineligible / a store fault occurs, in which case the
+/// caller runs the uncached authoritative resolver.
 pub(crate) fn stale_spans_new_store(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
 ) -> Result<ExactAttempt> {
-    if !v3_selected() || env_all_off() || !eligible(&options) {
+    if cache_disabled() || !eligible(&options) {
         return Ok(ExactAttempt::Bypass);
     }
-    let _perf = crate::perf::span("resolver.store_v3");
+
+    // Uncommitted (worktree-only) span files are NOT part of the canonical key
+    // — the token keys only committed span identities (`span_blobs`). Their
+    // creation or deletion is therefore invisible to the store, so a deleted
+    // untracked/gitignored span could be replayed from a stale generation. Fail
+    // closed: bypass to the authoritative resolver whenever any span file exists
+    // only in the worktree, exactly the state the pre-cutover cache routed
+    // through its dirty overlay.
+    match has_uncommitted_span_files(repo, span_root) {
+        Ok(false) => {}
+        Ok(true) => {
+            crate::perf::note("cache-path.bypass-reason: uncommitted-span-files");
+            return Ok(ExactAttempt::Bypass);
+        }
+        Err(e) => {
+            crate::perf::note(&format!(
+                "cache-path.bypass-reason: uncommitted-span-scan: {e}"
+            ));
+            return Ok(ExactAttempt::Bypass);
+        }
+    }
+
+    let _perf = crate::perf::span("resolver.store");
 
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
@@ -322,6 +333,103 @@ pub(crate) fn stale_spans_new_store(
     if let Some(t) = t_observe {
         crate::perf::counter("cache-path.state-observe-us", t.elapsed().as_micros() as u64);
     }
+
+    let attempt = stale_spans_new_store_inner(repo, span_root, options, &token)?;
+    // Two whole-result short-circuit guards `run_stale` depends on. Both keep
+    // the reportable `spans` intact; only the whole-result (which lets the CLI
+    // skip its per-invocation corpus scans) is withheld.
+    let attempt = withhold_whole_result_for_interior_anchor(span_root, attempt);
+    withhold_whole_result_for_dirty_tree(repo, &token, attempt)
+}
+
+/// Whether any span file exists in the worktree but not at `HEAD` — an
+/// untracked or gitignored span the canonical key cannot observe.
+fn has_uncommitted_span_files(repo: &gix::Repository, span_root: &str) -> Result<bool> {
+    let reader = crate::span_file_reader::SpanFileReader::new(repo, span_root.to_string());
+    let committed: std::collections::HashSet<String> =
+        reader.committed_span_names()?.into_iter().collect();
+    Ok(reader
+        .worktree_span_names()?
+        .into_iter()
+        .any(|name| !committed.contains(&name)))
+}
+
+/// Whether any anchor in the resolved full set points inside the span root — a
+/// poisoned "interior anchor" that `run_stale` must surface as a loud,
+/// fail-closed violation report.
+fn full_set_has_interior_anchor(span_root: &str, spans: &[SpanResolved]) -> bool {
+    spans.iter().any(|m| {
+        m.anchors.iter().any(|a| {
+            let path = a.anchored.path.to_string_lossy();
+            crate::span_root::classify_interior_anchor(span_root, &path).is_some()
+        })
+    })
+}
+
+/// Drop the render-ready whole-result when the corpus carries a span-root
+/// interior anchor.
+///
+/// `run_stale` skips its interior-anchor scan whenever the store hands back a
+/// whole-result (`use_whole_result`), trusting that a persisted result was
+/// interior-clean. The store makes no such guarantee, so — exactly as the
+/// pre-cutover path did by withholding the whole-result for a poisoned corpus —
+/// we return `whole_result: None` here. The reportable `spans` are unaffected;
+/// only the short-circuit is suppressed, so the CLI re-scans the live corpus
+/// and emits the interior-anchor report (and drives its fail-closed exit).
+fn withhold_whole_result_for_interior_anchor(
+    span_root: &str,
+    attempt: ExactAttempt,
+) -> ExactAttempt {
+    match attempt {
+        ExactAttempt::Resolved {
+            spans,
+            whole_result: Some(wr),
+        } if full_set_has_interior_anchor(span_root, &wr.spans) => ExactAttempt::Resolved {
+            spans,
+            whole_result: None,
+        },
+        other => other,
+    }
+}
+
+/// Drop the render-ready whole-result when the tree is dirty.
+///
+/// `run_stale` skips its conflict detection and interior-anchor scans on a
+/// whole-result hit, trusting (as the pre-cutover cache guaranteed by only
+/// returning a whole-result on the warm-CLEAN path) that a dirty or conflicted
+/// span could not be hidden behind one. The store's dirty and incremental tiers
+/// return correct reportable `spans` for a dirty tree, but they still hand back
+/// a whole-result — so a conflicted span file would silently short-circuit the
+/// CLI's conflict report. Withhold the whole-result whenever any relevant path
+/// (committed span file or anchored source) differs from HEAD, forcing the CLI
+/// to run its full corpus scans exactly as it did against the old dirty path.
+fn withhold_whole_result_for_dirty_tree(
+    repo: &gix::Repository,
+    token: &crate::resolver::core::token::StateToken,
+    attempt: ExactAttempt,
+) -> Result<ExactAttempt> {
+    match attempt {
+        ExactAttempt::Resolved {
+            spans,
+            whole_result: Some(wr),
+        } => {
+            let dirty = incremental::relevant_dirty_paths(repo, token)?;
+            let whole_result = if dirty.is_empty() { Some(wr) } else { None };
+            Ok(ExactAttempt::Resolved {
+                spans,
+                whole_result,
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+fn stale_spans_new_store_inner(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    token: &crate::resolver::core::token::StateToken,
+) -> Result<ExactAttempt> {
     let key = token.canonical_key_digest();
 
     // In-process memo: a repeated same-key call within this process renders
@@ -387,7 +495,7 @@ pub(crate) fn stale_spans_new_store(
     // usable ancestor / nothing reusable — fall through to the authoritative
     // one-build cold path unchanged.
     if let Some(attempt) =
-        incremental::attempt(repo, span_root, options, &token, &key, &mut store)?
+        incremental::attempt(repo, span_root, options, token, &key, &mut store)?
     {
         return Ok(attempt);
     }
@@ -402,12 +510,12 @@ pub(crate) fn stale_spans_new_store(
     // same-HEAD baseline / nothing reusable — fall through to the authoritative
     // cold path, which resolves the live dirty state correctly (just not
     // proportionally).
-    if let Some(attempt) = dirty::attempt(repo, span_root, options, &token, &key, &mut store)? {
+    if let Some(attempt) = dirty::attempt(repo, span_root, options, token, &key, &mut store)? {
         return Ok(attempt);
     }
 
     // ── Cold miss: exactly one build ────────────────────────────────────────
-    cold_miss(repo, span_root, options, &token, &key, &mut store)
+    cold_miss(repo, span_root, options, token, &key, &mut store)
 }
 
 /// The one-build cold-miss path. Resolves a single [`ResolutionCore`], projects

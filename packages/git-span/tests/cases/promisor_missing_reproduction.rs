@@ -127,9 +127,9 @@ fn promisor_missing_blob_misclassified_as_deleted() -> Result<()> {
     std::fs::remove_file(&blob_path)?;
     assert!(!blob_path.exists(), "blob object should have been deleted");
 
-    // Create the promisor marker file that `cache_v2::promisor_active()`
-    // looks for (`objects/info/` entries starting with "promisor") and that
-    // a real partial clone would have.  The marker signals that the object
+    // Create the promisor marker file that `git::promisor_active()` looks
+    // for (`objects/info/` entries starting with "promisor") and that a
+    // real partial clone would have.  The marker signals that the object
     // store is incomplete by design (partial clone), not corrupted.
     let info_dir = repo.path().join(".git").join("objects").join("info");
     if !info_dir.exists() {

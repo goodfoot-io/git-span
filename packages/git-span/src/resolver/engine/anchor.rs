@@ -1493,7 +1493,7 @@ pub(crate) fn resolve_anchor_captured(
     // The resolver leaves `locus` unset; the live path fills it afterwards in
     // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
     // committed projection carries the same locus as a direct committed run.
-    super::populate_drift_locus(repo, &mut head_run, &mut state.session, cfg.copy_detection);
+    super::populate_drift_locus(repo, &mut head_run, &mut state.session);
 
     // `anchored` is layer-independent (computed identically at every depth), so
     // reading it from the HEAD run matches the value a full-depth run produces.

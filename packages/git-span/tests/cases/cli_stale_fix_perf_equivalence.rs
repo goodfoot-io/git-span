@@ -12,7 +12,7 @@
 //!    only run-to-run determinism. Run-to-run identity alone compares HEAD
 //!    against itself and so cannot catch a divergence from the intended
 //!    baseline output; the golden cases lock the intended result. Coverage the
-//!    run-to-run cases lack: the cold cache_v2-miss path (retained
+//!    run-to-run cases lack: the cold cache-miss path (retained
 //!    `SourceLayers`), the intended single-warning named-scope stderr, the
 //!    interior-anchor fallback (Finding 2), and the closest-to-tie post-fix
 //!    ordering (Finding 3).
@@ -39,9 +39,10 @@ fn read_span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
 
 /// Run `git span stale --fix` (with optional extra args) and return
 /// `(stdout_bytes, stderr_bytes, exit_code)`.
-/// Disables the cache_v2 overlay so consecutive runs with a reverted
-/// index produce byte-identical output (apply_fix stages span files,
-/// and the cache_v2 overlay key does not capture the index change).
+/// Disables the cache so consecutive runs with a reverted index produce
+/// byte-identical output independent of cache-path behavior (apply_fix
+/// stages span files; this guard is about `--fix` output equivalence, not
+/// the cache).
 fn run_fix<'a>(
     repo: &TestRepo,
     extra: impl IntoIterator<Item = &'a str>,
@@ -50,7 +51,7 @@ fn run_fix<'a>(
     for a in extra {
         args.push(a);
     }
-    let out = repo.run_span_with_env(args, "GIT_SPAN_CACHE_V2", "0")?;
+    let out = repo.run_span_with_env(args, "GIT_SPAN_CACHE", "0")?;
     Ok((out.stdout, out.stderr, out.status.code()))
 }
 

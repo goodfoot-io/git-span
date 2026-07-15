@@ -1,17 +1,16 @@
-//! Regression: the `cache_v2` warm-clean path dropped the fresh anchors
-//! of a partially-drifted span.
+//! Regression (originally a `cache_v2` bug, guards the new store): the warm
+//! render of a partially-drifted span must keep its fresh anchors.
 //!
 //! For a span with some drifted and some fresh anchors, `git span stale`
-//! renders the drifted anchors as findings and the fresh siblings as
-//! bare bullets. The row-level committed baseline persists only the
-//! non-`Fresh` finding rows; the full anchor set lives in the separate
-//! whole-result entry. The warm-clean render path used the non-`Fresh`
-//! baseline as its render input and skipped the fresh-anchor backfill
-//! (because a whole result was present), so the fresh siblings vanished
-//! from cached output while the cache-off path still listed them.
+//! renders the drifted anchors as findings and the fresh siblings as bare
+//! bullets. The deleted `cache_v2` persisted only the non-`Fresh` finding rows
+//! and, on the warm path, skipped the fresh-anchor backfill when a whole result
+//! was present, so the fresh siblings vanished from cached output while the
+//! cache-off path still listed them.
 //!
-//! The cache must produce output byte-identical to the cache-off ground
-//! truth for clean, fully-drifted, and partially-drifted spans alike.
+//! The new store must produce output byte-identical to the `GIT_SPAN_CACHE=0`
+//! cache-off ground truth for clean, fully-drifted, and partially-drifted
+//! spans alike.
 
 use crate::support;
 
@@ -49,7 +48,7 @@ fn cache_matches_cache_off_for_partial_drift() -> Result<()> {
     seed_partial_drift(&repo)?;
 
     // Ground truth: cache fully disabled.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE_V2", "0")?;
+    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
 
     // Sanity: the partially-drifted span shows the drifted anchor *and*

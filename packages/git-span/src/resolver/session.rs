@@ -12,7 +12,6 @@ use crate::Result;
 use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
-use crate::resolver::cache::Cache;
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection, DriftSource};
@@ -281,13 +280,10 @@ pub(crate) struct ResolveSession {
     /// distinct path). On a warm `stale` run, this equals the number of
     /// distinct paths probed across all anchors in the session.
     pub(crate) filter_attr_misses: u64,
-    /// Content-addressed FS cache (BLAKE3-keyed) shared across all anchors
-    /// in this resolver run.
-    pub(crate) cache: Cache,
     /// Per-session set of commit ObjectIds known to be ancestors of HEAD.
-    /// Populated by (a) successful `is_ancestor` checks in `drift_locus` wiring
-    /// and (b) every commit observed during a miss-path `rev_walk` (those are
-    /// ancestors of HEAD by construction since the walk runs `HEAD..anchor`).
+    /// Populated by every commit observed during a `drift_locus` `rev_walk`
+    /// (those are ancestors of HEAD by construction since the walk runs
+    /// `HEAD..anchor`). An in-memory, per-run memo — never persisted.
     pub(crate) known_head_ancestors:
         std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
     /// Session-scoped blob OID memo: `(commit_sha, path) → blob_oid`.
@@ -385,11 +381,7 @@ pub(crate) struct ResolveSession {
 }
 
 impl ResolveSession {
-    pub(crate) fn new(repo: &gix::Repository) -> Self {
-        let cache = Cache::open(repo).unwrap_or_else(|_| {
-            // Cache failures degrade silently to a disabled cache.
-            Cache::open_disabled()
-        });
+    pub(crate) fn new(_repo: &gix::Repository) -> Self {
         Self {
             reverse_walk_output: None,
             bloom_memo: None,
@@ -397,7 +389,6 @@ impl ResolveSession {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            cache,
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
@@ -1000,7 +991,6 @@ mod tests {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            cache: crate::resolver::cache::Cache::open_disabled(),
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
@@ -1059,7 +1049,6 @@ mod tests {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            cache: crate::resolver::cache::Cache::open_disabled(),
             known_head_ancestors: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,

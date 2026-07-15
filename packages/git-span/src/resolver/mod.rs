@@ -17,8 +17,6 @@
 
 pub mod attribution;
 pub(crate) mod bloom;
-pub(crate) mod cache;
-pub(crate) mod cache_v2;
 pub(crate) mod core;
 pub(crate) mod dirty;
 pub(crate) mod engine;
@@ -34,7 +32,7 @@ pub(crate) mod walker;
 pub use engine::{
     resolve_anchor, resolve_span, resolve_span_at, stale_spans, stale_spans_with_trace,
 };
-pub(crate) use cache_v2::WholeResult;
+pub(crate) use store::WholeResult;
 pub(crate) use engine::{
     SourceLayers, build_source_layers, span_is_reportable_in_stale_discovery, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,

@@ -1,11 +1,11 @@
-//! Card main-157 Phase 3, sub-scope 3C: differential parity for the temporary
-//! new-store execution path (`GIT_SPAN_CACHE_STORE_V3`).
+//! Card main-157 Phase 3: differential parity for the store execution path
+//! (now the default and only cache — no legacy path, no development switch).
 //!
-//! The new store must be byte-identical to BOTH the legacy cache path and the
-//! fully-disabled ground truth across every output format, on the clean /
-//! exact-cold / exact-warm states this phase lands. It must also actually
-//! ENGAGE (a `--perf` trace proves a one-build cold miss and an exact warm
-//! hit), so a silent bypass-to-legacy cannot make this pass trivially.
+//! The store must be byte-identical to the fully-disabled ground truth across
+//! every output format, on the clean / exact-cold / exact-warm states this
+//! phase landed. It must also actually ENGAGE (a `--perf` trace proves a
+//! one-build cold miss and an exact warm hit), so a silent bypass cannot make
+//! this pass trivially.
 //!
 //! Every subprocess runs with global/system git config isolated
 //! (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` → `/dev/null`) so a globally
@@ -26,11 +26,9 @@ const FORMATS: &[&str] = &["human", "porcelain", "json"];
 
 #[derive(Clone, Copy)]
 enum Mode {
-    /// Every persistent tier disabled — the ground-truth oracle.
+    /// The store disabled — the ground-truth oracle.
     Disabled,
-    /// Today's default (legacy `cache_v2`/`cache`).
-    Legacy,
-    /// The temporary new store.
+    /// The store (default, no switch needed).
     NewStore,
 }
 
@@ -45,12 +43,8 @@ fn run(repo: &Path, args: &[&str], mode: Mode, perf: bool) -> (String, String) {
     match mode {
         Mode::Disabled => {
             cmd.env("GIT_SPAN_CACHE", "0");
-            cmd.env("GIT_SPAN_CACHE_V2", "0");
         }
-        Mode::Legacy => {}
-        Mode::NewStore => {
-            cmd.env("GIT_SPAN_CACHE_STORE_V3", "1");
-        }
+        Mode::NewStore => {}
     }
     if perf {
         cmd.env("GIT_SPAN_PERF", "1");
@@ -107,7 +101,7 @@ fn seed(repo: &TestRepo) -> Result<PathBuf> {
 }
 
 #[test]
-fn store_v3_matches_legacy_and_disabled_across_formats() -> Result<()> {
+fn store_matches_disabled_across_formats() -> Result<()> {
     let repo = TestRepo::new()?;
     let path = seed(&repo)?;
     let stale = ["stale", "--no-exit-code"];
@@ -125,28 +119,21 @@ fn store_v3_matches_legacy_and_disabled_across_formats() -> Result<()> {
             "[{fmt}] ground truth is empty — corpus does not exercise findings"
         );
 
-        // Legacy cold + warm.
-        clear_all_caches(&path);
-        let (legacy_cold, _) = run(&path, &args, Mode::Legacy, false);
-        let (legacy_warm, _) = run(&path, &args, Mode::Legacy, false);
-
-        // New store cold + warm.
+        // Store cold + warm.
         clear_all_caches(&path);
         let (new_cold, _) = run(&path, &args, Mode::NewStore, false);
         let (new_warm, _) = run(&path, &args, Mode::NewStore, false);
 
-        assert_eq!(legacy_cold, disabled, "[{fmt}] legacy cold != disabled");
-        assert_eq!(legacy_warm, disabled, "[{fmt}] legacy warm != disabled");
-        assert_eq!(new_cold, disabled, "[{fmt}] new-store cold != disabled");
-        assert_eq!(new_warm, disabled, "[{fmt}] new-store warm != disabled");
+        assert_eq!(new_cold, disabled, "[{fmt}] store cold != disabled");
+        assert_eq!(new_warm, disabled, "[{fmt}] store warm != disabled");
     }
     Ok(())
 }
 
-/// Prove the new path actually engaged — a one-build exact-cold followed by an
-/// exact warm hit — rather than silently bypassing to legacy.
+/// Prove the store actually engaged — a one-build exact-cold followed by an
+/// exact warm hit — rather than silently bypassing.
 #[test]
-fn store_v3_engages_with_one_build_then_exact_hit() -> Result<()> {
+fn store_engages_with_one_build_then_exact_hit() -> Result<()> {
     let repo = TestRepo::new()?;
     let path = seed(&repo)?;
     let args = ["stale", "--no-exit-code"];

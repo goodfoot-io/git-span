@@ -7,11 +7,12 @@
 //! Conversion is total: every runtime instance has exactly one DTO
 //! representation and vice versa.
 //!
-//! Payload framing: every Phase 3 SQLite payload is
+//! These DTOs back the compact, render-ready generation summary the store
+//! persists (`resolver::exact::StaleSummary`): the summary is
 //! `bincode::serialize`(DTO). A `format_version: u8` field is the first
-//! field of every top-level DTO so a future shape change can be
-//! detected as a deserialization failure (and reported as a miss). The
-//! `KEY_SALT` namespace bump is the primary invalidation mechanism;
+//! field of every top-level DTO so a future shape change can be detected as
+//! a deserialization failure (and reported as a miss). The store's
+//! canonical-key digest is the primary invalidation mechanism;
 //! `format_version` is a belt-and-braces second line of defense.
 
 use crate::types::{
@@ -75,7 +76,7 @@ impl TryFrom<AnchorLocationDto> for AnchorLocation {
     fn try_from(dto: AnchorLocationDto) -> Result<Self, Self::Error> {
         let blob = match dto.blob {
             Some(s) => Some(gix::ObjectId::from_str(&s).map_err(|e| {
-                crate::Error::Git(format!("cache_v2 dto: parse blob oid `{s}`: {e}"))
+                crate::Error::Git(format!("store dto: parse blob oid `{s}`: {e}"))
             })?),
             None => None,
         };
@@ -219,12 +220,12 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
         Ok(match dto {
             DriftLocusDto::ChangedAt(s) => {
                 DriftLocus::ChangedAt(gix::ObjectId::from_str(&s).map_err(|e| {
-                    crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}"))
+                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
                 })?)
             }
             DriftLocusDto::OrphanedAt(s) => {
                 DriftLocus::OrphanedAt(gix::ObjectId::from_str(&s).map_err(|e| {
-                    crate::Error::Git(format!("cache_v2 dto: parse locus oid: {e}"))
+                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
                 })?)
             }
         })
@@ -354,7 +355,7 @@ impl TryFrom<SpanResolvedDto> for SpanResolved {
     fn try_from(d: SpanResolvedDto) -> Result<Self, Self::Error> {
         if d.format_version != FORMAT_VERSION {
             return Err(crate::Error::Git(format!(
-                "cache_v2 dto: format_version {} != expected {}",
+                "store dto: format_version {} != expected {}",
                 d.format_version, FORMAT_VERSION
             )));
         }

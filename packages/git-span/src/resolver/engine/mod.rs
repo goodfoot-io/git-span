@@ -578,12 +578,7 @@ fn resolve_loaded_span_with_state(
                     status: status_label(&resolved.status),
                 });
             }
-            populate_drift_locus(
-                repo,
-                &mut resolved,
-                &mut state.session,
-                span.config.copy_detection,
-            );
+            populate_drift_locus(repo, &mut resolved, &mut state.session);
             anchors.push(resolved);
         }
     }
@@ -610,23 +605,18 @@ pub(crate) fn populate_drift_locus(
     repo: &gix::Repository,
     resolved: &mut AnchorResolved,
     session: &mut super::session::ResolveSession,
-    copy_detection: crate::types::CopyDetection,
 ) {
     use crate::types::DriftSource;
     match resolved.status {
         AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
-            if let Ok(locus) =
-                super::attribution::drift_locus(repo, resolved, session, copy_detection)
-            {
+            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, session) {
                 resolved.locus = locus;
             }
         }
         AnchorStatus::Deleted if resolved.locus.is_none() => {
             // Ask the walk to describe an orphaning commit when the anchor
             // is reachable but the path is absent from HEAD.
-            if let Ok(Some(locus)) =
-                super::attribution::drift_locus(repo, resolved, session, copy_detection)
-            {
+            if let Ok(Some(locus)) = super::attribution::drift_locus(repo, resolved, session) {
                 resolved.locus = Some(locus);
             }
         }
@@ -1158,18 +1148,8 @@ fn stale_spans_inner(
     //                          `strace -e openat -f -- ... | grep .git/index`)
     //                          is unrelated to this counter and typically far
     //                          smaller.
-    //   `is-ancestor-*`      — out-of-process `git merge-base --is-ancestor`
-    //                          subprocess invocations and in-process memo hits.
     crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
     crate::perf::counter("session.attr-for-calls", crate::perf::attr_for_calls());
-    crate::perf::counter(
-        "session.is-ancestor-subprocess-calls",
-        crate::perf::is_ancestor_subprocess_calls(),
-    );
-    crate::perf::counter(
-        "session.is-ancestor-memo-hits",
-        crate::perf::is_ancestor_memo_hits(),
-    );
     // Category 2: anchor-set decomposition.
     let anchors_total = state.session.anchors_total();
     crate::perf::counter("session.anchors-total", anchors_total);
@@ -1199,16 +1179,7 @@ fn stale_spans_inner(
             .saturating_sub(state.session.anchors_fast_path_hits)
             .saturating_sub(state.session.anchors_skipped_clean_head),
     );
-    // Category 3: cache L1/L2 hit/miss counts, L2 wall-clock (microseconds),
-    // L2 byte volume, and per-anchor resolution distribution.
-    crate::perf::counter("cache.l1-hits", crate::perf::l1_hits());
-    crate::perf::counter("cache.l1-misses", crate::perf::l1_misses());
-    crate::perf::counter("cache.l2-hits", crate::perf::l2_hits());
-    crate::perf::counter("cache.l2-misses", crate::perf::l2_misses());
-    crate::perf::counter("cache.l2-read-us", crate::perf::l2_read_us());
-    crate::perf::counter("cache.l2-write-us", crate::perf::l2_write_us());
-    crate::perf::counter("cache.l2-bytes-read", crate::perf::l2_bytes_read());
-    crate::perf::counter("cache.l2-bytes-written", crate::perf::l2_bytes_written());
+    // Category 3: per-anchor resolution distribution.
     {
         let mut per_anchor = std::mem::take(&mut state.session.per_anchor_us);
         per_anchor.sort_unstable();
@@ -1223,12 +1194,12 @@ fn stale_spans_inner(
         crate::perf::counter("resolve-anchor.p50-ms", percentile(0.50));
         crate::perf::counter("resolve-anchor.p95-ms", percentile(0.95));
     }
-    // Legend: cache traffic is summarized by `cache.l1-*` / `cache.l2-*`;
-    // per-kind hit/miss counters (`session.grouped-walk-*`, `session.rename-trail-*`,
-    // `session.drift-locus-*`) decompose the cache calls by `Kind`.
+    // Legend: `session.*` counts in-process state and subroutine calls;
+    // `resolve-anchor.*` names the per-anchor distribution. Cache-tier traffic
+    // for the SQLite store is reported separately under `cache-path.*` (emitted
+    // by `resolver::exact`).
     crate::perf::note(
         "session.group-legend: session.* counts in-process state and subroutine calls; \
-         cache.* names L1/L2 hit/miss, wall-clock (us), and byte volume; \
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.session.per_anchor_trace.take().unwrap_or_default();
@@ -1249,97 +1220,47 @@ pub fn stale_spans(
     span_root: &str,
     options: EngineOptions,
 ) -> Result<Vec<SpanResolved>> {
-    use crate::resolver::cache_v2::{CacheAttempt, stale_spans_cached};
-    // Card main-157 Phase 3 (sub-scope 3C): temporary opt-in new-store path.
-    // Fully inert unless `GIT_SPAN_CACHE_STORE_V3` selects it; a `Bypass`
-    // leaves today's behavior byte-identical.
+    // The SQLite store is the only cache path. On [`ExactAttempt::Resolved`] it
+    // rendered the reportable set (already reportable-filtered and sorted). A
+    // [`ExactAttempt::Bypass`] — cache disabled, ineligible run, or store fault
+    // — falls through to the uncached authoritative resolver directly; there is
+    // no legacy cache tier to fall back on.
     if let crate::resolver::exact::ExactAttempt::Resolved { spans, .. } =
         crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
     {
         return Ok(spans);
     }
-    match stale_spans_cached(repo, span_root, options)? {
-        CacheAttempt::Resolved {
-            mut spans,
-            whole_result: _,
-        } => {
-            if spans.len() > 1 {
-                sort_spans_by_anchor_path(&mut spans);
-            }
-            return Ok(spans);
-        }
-        CacheAttempt::Fallback(reason) => {
-            crate::perf::counter("cache_v2.fallback", 1);
-            crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
-            // Card main-157 Phase 0: normalized cache-path hit-class and
-            // bypass-reason labels — see the `exact`/`dirty` notes in
-            // `resolver/cache_v2/mod.rs` for why these are additive and do
-            // not force full resolution. "miss" here covers every fallback
-            // outcome (ineligible run, cache-open failure, or a genuine
-            // cold/invalidated key); `bypass-reason` carries the same text
-            // as `cache_v2.fallback-reason` under the future single-store
-            // label this card's later phases converge on.
-            crate::perf::note("cache-path.hit-class: miss");
-            crate::perf::note(&format!("cache-path.bypass-reason: {reason}"));
-        }
-    }
     let (spans, _, _) = stale_spans_inner(repo, span_root, options, false, false)?;
     Ok(spans)
 }
 
-/// Like `stale_spans`, but on the cold path (cache_v2 miss → an
+/// Like `stale_spans`, but on the uncached cold path (store bypass → an
 /// `EngineState` is built) it retains the source-layer state so the post-fix
 /// re-resolve in `stale --fix` can skip a second `read-worktree-layer`.
 ///
-/// Returns `(spans, Some(source_layers), Option<whole_result>)` on the cold
-/// path and `(spans, None, Option<whole_result>)` on a warm cache_v2 hit.
-/// `whole_result` is `Some` on a warm-clean hit with a stored whole-result
-/// entry; it carries the full backfilled anchor set and anchor totals so
-/// `run_stale` can skip its per-invocation phases.
+/// Returns `(spans, Some(source_layers), None)` on the uncached cold path and
+/// `(spans, None, Option<whole_result>)` on a store hit. `whole_result` is
+/// `Some` whenever the store rendered from its compact summary; it carries the
+/// full anchor set and anchor totals so `run_stale` can skip its per-invocation
+/// phases.
 pub(crate) fn stale_spans_retaining_source_layers(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
-) -> Result<(Vec<SpanResolved>, Option<SourceLayers>, Option<crate::resolver::cache_v2::baseline::WholeResult>)> {
-    use crate::resolver::cache_v2::{CacheAttempt, stale_spans_cached};
-    // Card main-157 Phase 3 (sub-scope 3C): temporary opt-in new-store path.
-    // On a `Resolved` outcome the new store rendered the reportable set and
-    // hands back the render-ready whole-result so `run_stale` skips its
-    // per-invocation corpus reload (count-totals / Fresh-anchor backfill /
-    // interior-anchor scan) — exactly as the legacy warm-clean hit does. There
-    // is no retained `SourceLayers` (a `--fix` post-pass rebuilds them). A
-    // `Bypass` runs today's path byte-identically.
+) -> Result<(Vec<SpanResolved>, Option<SourceLayers>, Option<crate::resolver::WholeResult>)> {
+    // The SQLite store is the only cache path. On a `Resolved` outcome the store
+    // rendered the reportable set and hands back the render-ready whole-result
+    // so `run_stale` skips its per-invocation corpus reload (count-totals /
+    // Fresh-anchor backfill / interior-anchor scan). There is no retained
+    // `SourceLayers` (a `--fix` post-pass rebuilds them). A `Bypass` — cache
+    // disabled, ineligible run, or store fault — runs the uncached authoritative
+    // resolver, retaining its source layers.
     if let crate::resolver::exact::ExactAttempt::Resolved {
         spans,
         whole_result,
     } = crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
     {
         return Ok((spans, None, whole_result));
-    }
-    match stale_spans_cached(repo, span_root, options)? {
-        CacheAttempt::Resolved {
-            mut spans,
-            whole_result,
-        } => {
-            if spans.len() > 1 {
-                sort_spans_by_anchor_path(&mut spans);
-            }
-            return Ok((spans, None, whole_result));
-        }
-        CacheAttempt::Fallback(reason) => {
-            crate::perf::counter("cache_v2.fallback", 1);
-            crate::perf::note(&format!("cache_v2.fallback-reason: {reason}"));
-            // Card main-157 Phase 0: normalized cache-path hit-class and
-            // bypass-reason labels — see the `exact`/`dirty` notes in
-            // `resolver/cache_v2/mod.rs` for why these are additive and do
-            // not force full resolution. "miss" here covers every fallback
-            // outcome (ineligible run, cache-open failure, or a genuine
-            // cold/invalidated key); `bypass-reason` carries the same text
-            // as `cache_v2.fallback-reason` under the future single-store
-            // label this card's later phases converge on.
-            crate::perf::note("cache-path.hit-class: miss");
-            crate::perf::note(&format!("cache-path.bypass-reason: {reason}"));
-        }
     }
     let (spans, _, source_layers) = stale_spans_inner(repo, span_root, options, false, true)?;
     Ok((spans, source_layers, None))

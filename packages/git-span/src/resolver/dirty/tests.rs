@@ -92,11 +92,11 @@ fn init_repo(dir: &Path) {
     git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
-fn enable_v3() {
+fn enable_store() {
+    // The SQLite store is unconditional; `GIT_SPAN_CACHE=0` is the only
+    // disable switch. Clear it so this run engages the store.
     unsafe {
-        std::env::set_var("GIT_SPAN_CACHE_STORE_V3", "1");
         std::env::remove_var("GIT_SPAN_CACHE");
-        std::env::remove_var("GIT_SPAN_CACHE_V2");
     }
 }
 
@@ -141,7 +141,7 @@ fn fresh_three_span_repo(tag: &str) -> (tempfile::TempDir, PathBuf) {
 
 /// Publish a clean baseline generation at the current HEAD via the real seam.
 fn publish_baseline(dir: &Path) {
-    enable_v3();
+    enable_store();
     let repo = reopen(dir);
     let _ = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
 }
@@ -292,7 +292,7 @@ fn proportional_one_dirty_of_three() {
 fn unrelated_gitignore_dirt_served_by_exact_hit() {
     reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("gitig");
-    enable_v3();
+    enable_store();
 
     // Clean run: publishes and returns the clean discovery set.
     let repo = reopen(&dir);
@@ -458,7 +458,7 @@ fn repeated_identical_dirty_state_becomes_exact_hit() {
     // Dirty a relevant source and run the full seam — the dirty tier builds and
     // publishes a generation under the dirty canonical key.
     std::fs::write(dir.join("src/a.txt"), "repeat-CHANGED\na2r\na3r\n").expect("dirty a");
-    enable_v3();
+    enable_store();
     let repo = reopen(&dir);
     let first = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("first");
     assert!(matches!(first, ExactAttempt::Resolved { .. }), "dirty tier resolves");

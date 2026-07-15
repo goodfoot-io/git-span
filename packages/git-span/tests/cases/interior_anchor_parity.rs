@@ -1,20 +1,19 @@
-//! Regression (F2): the `cache_v2` warm-clean render diverged from the
-//! effective cache-off resolver for an interior-anchor corpus.
+//! Regression (originally F2, guards the new store): a corpus carrying an
+//! interior anchor must render byte-identical to the cache-off resolver.
 //!
 //! When the corpus carries an interior anchor (an anchor whose path is under
-//! `span_root`), the whole-result store is skipped (fail-closed, so run_stale
-//! keeps its interior-anchor scan). The warm-clean render then used to fall
-//! back to the row-level committed baseline (`reportable(baseline.spans)`),
-//! resolved with `committed_only`. `committed_only` labels an interior
-//! anchor's drift "changed" (HEAD) while the effective resolver labels it
-//! "changed in the working tree" — so cache-on diverged from cache-off in
-//! Human output for any corpus mixing a normal drifted span with an
-//! interior-anchor span.
+//! `span_root`), the whole-result store is withheld (fail-closed — the new
+//! store's `withhold_whole_result_for_interior_anchor` gate keeps `run_stale`'s
+//! interior-anchor scan). The deleted `cache_v2` then fell back to a
+//! `committed_only` render that labeled an interior anchor's drift "changed"
+//! (HEAD) while the effective resolver labels it "changed in the working tree",
+//! so cache-on diverged from cache-off in Human output for any corpus mixing a
+//! normal drifted span with an interior-anchor span. The new store instead
+//! resolves the withheld case through the shared effective path, so the drift
+//! labels match cache-off regardless of the interior-anchor store gate.
 //!
-//! The fix builds the warm-clean render from the EFFECTIVE resolution even
-//! when the whole result is not stored, so the rendered drift labels match
-//! cache-off regardless of the interior-anchor store gate. The cache must be
-//! byte-identical to the `GIT_SPAN_CACHE_V2=0` ground truth.
+//! This pins the guarantee: the new store must be byte-identical to the
+//! `GIT_SPAN_CACHE=0` cache-off ground truth across every format.
 
 use crate::support;
 
@@ -56,7 +55,7 @@ fn seed_interior_anchor_corpus(repo: &TestRepo) -> Result<()> {
 fn assert_format_parity(repo: &TestRepo, format: &str) -> Result<()> {
     let off = repo.run_span_with_env(
         ["stale", "--no-exit-code", "--format", format],
-        "GIT_SPAN_CACHE_V2",
+        "GIT_SPAN_CACHE",
         "0",
     )?;
     let off_text = stdout(&off);
@@ -84,7 +83,7 @@ fn cache_matches_cache_off_for_interior_anchor_corpus() -> Result<()> {
 
     // Sanity: the ground truth surfaces the drifted normal span — otherwise
     // this test would not exercise the render path.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE_V2", "0")?;
+    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
     assert!(
         off_text.contains("a.txt#L1-L3"),

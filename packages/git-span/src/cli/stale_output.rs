@@ -390,7 +390,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             .collect();
         let span_count = totals.len();
         let anchor_count: usize = totals.values().sum();
-        crate::perf::counter("cache_v2.whole-result-hit", 1);
+        crate::perf::counter("cache-path.whole-result-hit", 1);
         (span_count, anchor_count, totals)
     } else {
         let _perf = crate::perf::span("stale.count-totals");

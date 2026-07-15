@@ -157,7 +157,7 @@ impl TestRepo {
     }
 
     /// Run the `git-span` binary in this repo's directory with one extra
-    /// environment variable set. Used to drive the `GIT_SPAN_CACHE_V2=0`
+    /// environment variable set. Used to drive the `GIT_SPAN_CACHE=0`
     /// off-switch for cache vs cache-off parity assertions.
     #[allow(dead_code)]
     pub fn run_span_with_env<I, S>(&self, args: I, key: &str, val: &str) -> Result<Output>

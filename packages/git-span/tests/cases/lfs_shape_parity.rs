@@ -1,18 +1,18 @@
-//! Regression (F4): the `cache_v2` availability key bit for LFS was derived
-//! from the ROOT `HEAD:.gitattributes` only.
+//! Regression (originally F4, guards the new store): LFS availability must be
+//! probed from the actual anchored corpus, not the ROOT `.gitattributes` only.
 //!
 //! LFS configured via a SUBDIRECTORY `.gitattributes` (or an LFS-pointer blob
-//! committed with no root attributes) left `corpus_has_lfs=false`, so the
-//! `git lfs version` availability probe never ran and the availability key
-//! bit was pinned — a cached `ContentUnavailable` could survive an LFS
-//! install, diverging from the cache-off ground truth.
+//! committed with no root attributes) once left `corpus_has_lfs=false`, so the
+//! `git lfs version` availability probe never ran and the availability key bit
+//! was pinned — a cached `ContentUnavailable` could survive an LFS install,
+//! diverging from the cache-off ground truth. The availability identity now
+//! scans the anchored corpus: a `.gitattributes` declaring `filter=lfs` in any
+//! ancestor directory of an anchored path, or an anchored file whose committed
+//! blob is itself an LFS pointer, forces the probe.
 //!
-//! The fix scans the actual anchored corpus: a `.gitattributes` declaring
-//! `filter=lfs` in any ancestor directory of an anchored path, or an anchored
-//! file whose committed blob is itself an LFS pointer, forces the probe. This
-//! test exercises the subdirectory-`.gitattributes` shape (the case the old
-//! root-only check missed) and asserts cache-on is byte-identical to cache-off
-//! across all formats.
+//! This test exercises the subdirectory-`.gitattributes` shape (the case the
+//! old root-only check missed) and asserts the new store is byte-identical to
+//! the `GIT_SPAN_CACHE=0` cache-off ground truth across all formats.
 
 use crate::support;
 
@@ -47,7 +47,7 @@ fn seed_subdir_lfs_corpus(repo: &TestRepo) -> Result<()> {
 fn assert_format_parity(repo: &TestRepo, format: &str) -> Result<()> {
     let off = repo.run_span_with_env(
         ["stale", "--no-exit-code", "--format", format],
-        "GIT_SPAN_CACHE_V2",
+        "GIT_SPAN_CACHE",
         "0",
     )?;
     let off_text = stdout(&off);

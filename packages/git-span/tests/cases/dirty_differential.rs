@@ -1,6 +1,6 @@
 //! Card main-157 Phase 5, sub-scope 5B: CLI-level differential parity for the
-//! dirty-overlay execution path (`GIT_SPAN_CACHE_STORE_V3` + a same-HEAD
-//! baseline generation).
+//! dirty-overlay execution path (the store — default, no switch — plus a
+//! same-HEAD baseline generation).
 //!
 //! Phase 5A proved the dirty affected-set / reuse logic white-box, in process,
 //! against `capture_resolution_core` directly (see
@@ -16,8 +16,8 @@
 //!
 //! 1. Build a Fresh multi-span corpus and commit it, committing a drift to one
 //!    span's source so the oracle output is non-empty and parity is meaningful.
-//! 2. Publish a baseline generation at the current HEAD under
-//!    `GIT_SPAN_CACHE_STORE_V3=1` (the dirty tier's `load_head_baseline` is a
+//! 2. Publish a baseline generation at the current HEAD via the store (the
+//!    dirty tier's `load_head_baseline` is a
 //!    HEAD-*inclusive* lookup — it reuses a generation at the SAME HEAD), then
 //!    snapshot the store so every later run starts from that baseline-only
 //!    store, forcing the exact read to miss and the dirty tier to engage on
@@ -87,11 +87,8 @@ fn run(repo: &Path, args: &[&str], mode: Mode, perf: bool) -> (String, String, i
     match mode {
         Mode::Disabled => {
             cmd.env("GIT_SPAN_CACHE", "0");
-            cmd.env("GIT_SPAN_CACHE_V2", "0");
         }
-        Mode::NewStore => {
-            cmd.env("GIT_SPAN_CACHE_STORE_V3", "1");
-        }
+        Mode::NewStore => {}
     }
     if perf {
         cmd.env("GIT_SPAN_PERF", "1");

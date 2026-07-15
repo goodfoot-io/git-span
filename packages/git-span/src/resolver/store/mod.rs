@@ -32,6 +32,7 @@
 //! violation (`notes/architecture-and-complexity.md` "Concurrency And
 //! Recovery": "Compute outside the database transaction").
 
+pub(crate) mod dto;
 pub(crate) mod error;
 pub(crate) mod lock;
 pub(crate) mod payload;
@@ -39,6 +40,20 @@ pub(crate) mod schema;
 
 #[cfg(test)]
 mod tests;
+
+/// The complete command-level result for a warm exact hit: the full anchor
+/// set (Fresh + non-Fresh) in stored order, plus per-span anchor counts.
+///
+/// This is the render-ready shape `run_stale` short-circuits on — handing it
+/// back lets the CLI skip its per-invocation corpus reload (count-totals, the
+/// Fresh-anchor backfill, and the interior-anchor scan). It carries runtime
+/// [`SpanResolved`](crate::types::SpanResolved) values directly; its persisted
+/// form is the compact summary the exact seam encodes through [`dto`].
+#[derive(Clone, Debug)]
+pub(crate) struct WholeResult {
+    pub(crate) spans: Vec<crate::types::SpanResolved>,
+    pub(crate) span_anchor_totals: Vec<(String, usize)>,
+}
 
 use std::cell::Cell;
 use std::collections::HashSet;
