@@ -1,4 +1,4 @@
-packages/agent-hooks/package.json#L7-L7 rk64:161cd50131c89d0e
+packages/agent-hooks/package.json#L9-L9 rk64:161cd50131c89d0e
 packages/agent-hooks/vitest.config.ts#L3-L8 rk64:a17602f0099fd488
 
 The esbuild build:dispatcher loader and the vitest mdPlugin both treat .md imports as raw text, so PROMPT_TEMPLATE resolves to the same markdown string whether dispatcher.ts is bundled or tested.

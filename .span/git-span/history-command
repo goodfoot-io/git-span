@@ -3,6 +3,6 @@ packages/git-span/docs/history-example-output.md rk64:4e658c42d7d34e90
 packages/git-span/src/cli/history.rs rk64:52bd70716985cd29
 packages/git-span/src/cli/mod.rs#L348-L364 rk64:3bfaa6c3b4a59ad7
 packages/git-span/tests/cases/cli_history.rs rk64:6194a29ba4cf5624
-packages/git-span/tests/cases/mod.rs#L17-L18 rk64:9a8c9ce10afc19cf
+packages/git-span/tests/cases/mod.rs#L18-L19 rk64:9a8c9ce10afc19cf
 
 Git span history command: argument definitions, handler implementation, integration tests, and output contract documentation that must evolve together.
