@@ -1,4 +1,4 @@
-packages/agent-hooks/src/claude/stop.ts#L191-L197 rk64:8d19584bd2fc4fb4
 packages/agent-hooks/src/common/agent-hooks-common.ts#L449-L462 rk64:ddd0ace1f8f8cf34
+packages/agent-hooks/src/common/stop-core.ts#L242-L250 rk64:fcf317eed00cb9cd
 
 Stop-hook dispatch suppression depends on the active-subagent count reading fail-closed: readSubagentCount throws on any ambiguous count state and Step 0.5 treats a throw as suppress, so the hook never dispatches a span review while subagents are still mutating the touch journal.

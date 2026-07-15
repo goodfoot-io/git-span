@@ -4,18 +4,18 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import hook, {
+import hook, { createHandler } from '../../src/claude/pre-tool-use.js';
+import { type HookIgnoreLoader, parseHookIgnore } from '../../src/common/span-ignore.js';
+import {
   createDefaultSpanExecutor,
   createDiskMemoStore,
-  createHandler,
   type MemoFactory,
   type MemoLogger,
   type MemoStore,
   type SpanExecutor,
   type StaleExecutor
-} from '../../src/claude/pre-tool-use.js';
-import { journalPath, loadJournal } from '../../src/claude/stop.js';
-import { type HookIgnoreLoader, parseHookIgnore } from '../../src/common/span-ignore.js';
+} from '../../src/common/span-surface.js';
+import { journalPath, loadJournal } from '../../src/common/stop-core.js';
 import { makeTempRepo } from '../helpers.js';
 
 const logger = new Logger();

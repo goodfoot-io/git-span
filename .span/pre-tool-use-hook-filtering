@@ -1,3 +1,3 @@
-packages/agent-hooks/src/claude/pre-tool-use.ts#L407-L414 rk64:3d7db9105d62e11e
+packages/agent-hooks/src/common/span-surface.ts#L176-L179 rk64:c4c3d8f27377ba1c
 
 PreToolUse resolves the span root and drops any touch whose path is inside it, so files under the span root never enter the touch journal (matching the gitignore precedent) and the Stop hook never flags a span document as a read, write, or uncovered write. Relies on resolveSpanRoot/isInsideSpanRoot from agent-hooks-common.ts, whose isInsideSpanRoot takes (path, root) — the reverse of the Rust signature.
