@@ -33,6 +33,7 @@
 
 pub(crate) mod capture;
 pub(crate) mod exe_digest;
+pub(crate) mod exe_digest_store;
 pub(crate) mod project;
 pub(crate) mod resolution;
 pub(crate) mod token;

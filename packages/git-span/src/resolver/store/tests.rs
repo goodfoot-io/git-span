@@ -1955,77 +1955,12 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
     }
 }
 
-// -- 9. Exe-digest memo & summary-only read (Round 2 performance work) ----
-
-fn exe_stat(size: u64, mtime_s: i64) -> ExeStatIdentity {
-    ExeStatIdentity {
-        size,
-        mtime_s,
-        mtime_ns: 0,
-        ctime_s: mtime_s,
-        ctime_ns: 0,
-        ino: 1,
-        dev: 1,
-    }
-}
-
-// A digest memoized under one stat identity is returned as-is when looked up
-// again under the *same* stat identity (the `CacheStore`-backed
-// `ExeDigestMemo` impl, exercised directly via SQLite rather than through a
-// fake — `core::capture::tests` covers the wiring into `filters()` with a
-// fake memo and a real executable file).
-#[test]
-fn exe_digest_memo_reused_when_stat_unchanged() {
-    let dir = tmp();
-    let mut store = open(dir.path());
-    let path = Path::new("/opt/git-lfs/git-lfs");
-    let stat = exe_stat(11 * 1024 * 1024, 1_700_000_000);
-    let digest = [7u8; 32];
-
-    assert_eq!(
-        ExeDigestMemo::lookup(&mut store, path, &stat),
-        None,
-        "empty memo is a miss"
-    );
-    ExeDigestMemo::upsert(&mut store, path, &stat, digest);
-    assert_eq!(
-        ExeDigestMemo::lookup(&mut store, path, &stat),
-        Some(digest),
-        "unchanged stat identity must serve the memoized digest"
-    );
-}
-
-// Any stat field changing (mtime, in this case) invalidates the memoized row:
-// a lookup under the new stat is a miss, not a stale hit.
-#[test]
-fn exe_digest_memo_invalidated_when_mtime_changes() {
-    let dir = tmp();
-    let mut store = open(dir.path());
-    let path = Path::new("/opt/git-lfs/git-lfs");
-    let original_stat = exe_stat(11 * 1024 * 1024, 1_700_000_000);
-    let digest = [7u8; 32];
-    ExeDigestMemo::upsert(&mut store, path, &original_stat, digest);
-
-    let touched_stat = exe_stat(11 * 1024 * 1024, 1_700_000_500);
-    assert_eq!(
-        ExeDigestMemo::lookup(&mut store, path, &touched_stat),
-        None,
-        "a changed mtime must miss even though every other stat field matches"
-    );
-
-    // Overwriting under the new stat then serves cleanly.
-    let new_digest = [9u8; 32];
-    ExeDigestMemo::upsert(&mut store, path, &touched_stat, new_digest);
-    assert_eq!(
-        ExeDigestMemo::lookup(&mut store, path, &touched_stat),
-        Some(new_digest)
-    );
-    assert_eq!(
-        ExeDigestMemo::lookup(&mut store, path, &original_stat),
-        None,
-        "the row is now keyed on the new stat; the stale stat no longer matches"
-    );
-}
+// -- 9. Summary-only read ---------------------------------------------------
+//
+// The exe-digest memo that used to live here (Round 2 performance work) moved
+// to a shared per-user store in Round 5 — see
+// `crate::resolver::core::exe_digest_store` for its tests. `CacheStore` no
+// longer implements `ExeDigestMemo`.
 
 // `get_generation_summary` returns the identical header/summary as
 // `get_generation` (key digest, head, payload version, summary bytes) for

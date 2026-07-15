@@ -68,8 +68,6 @@ use payload::{
 };
 use schema::{DB_BASENAME, DEFAULT_BUSY_TIMEOUT_MS, ProbeOutcome, probe_and_init, set_busy_timeout};
 
-use crate::resolver::core::exe_digest::{ExeDigestMemo, ExeStatIdentity};
-
 /// Width of an access bucket, in seconds. Warm reads only rewrite
 /// `access_bucket` when the bucket changes, so a hot read does not become a
 /// write on every hit (`notes/architecture-and-complexity.md` GC section:
@@ -1173,117 +1171,6 @@ impl CacheStore {
         Ok(())
     }
 
-    /// Look up a memoized executable content digest for `path`, trusting it
-    /// only when every stat field in `stat` matches the stored row exactly.
-    /// `Ok(None)` on a plain miss or a stat mismatch; `Err` on any SQL fault
-    /// (the caller — [`ExeDigestMemo::lookup`] — swallows it fail-closed).
-    fn exe_digest_lookup(
-        &self,
-        path: &Path,
-        stat: &ExeStatIdentity,
-    ) -> StoreResult<Option<[u8; 32]>> {
-        // (size, mtime_s, mtime_ns, ctime_s, ctime_ns, ino, dev, digest)
-        type ExeDigestRow = (i64, i64, i64, i64, i64, i64, i64, Vec<u8>);
-        let path_key = path.to_string_lossy().into_owned();
-        let row: Option<ExeDigestRow> = self
-            .conn
-            .query_row(
-                "SELECT size, mtime_s, mtime_ns, ctime_s, ctime_ns, ino, dev, digest \
-                 FROM exe_digest WHERE path = ?1",
-                [&path_key],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(map_sqlite)?;
-        let Some((size, mtime_s, mtime_ns, ctime_s, ctime_ns, ino, dev, digest)) = row else {
-            return Ok(None);
-        };
-        // Every stat field must match exactly — the same trust git's own
-        // index places in stat identity to skip re-reading unchanged content.
-        let matches = size as u64 == stat.size
-            && mtime_s == stat.mtime_s
-            && mtime_ns == stat.mtime_ns
-            && ctime_s == stat.ctime_s
-            && ctime_ns == stat.ctime_ns
-            && ino as u64 == stat.ino
-            && dev as u64 == stat.dev;
-        if !matches || digest.len() != 32 {
-            return Ok(None);
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&digest);
-        Ok(Some(out))
-    }
-
-    /// Upsert the memoized digest row for `path` at `stat`. `Err` on any SQL
-    /// fault (the caller — [`ExeDigestMemo::upsert`] — swallows it
-    /// fail-closed: this cache is best-effort, never load-bearing).
-    fn exe_digest_upsert(
-        &mut self,
-        path: &Path,
-        stat: &ExeStatIdentity,
-        digest: [u8; 32],
-    ) -> StoreResult<()> {
-        let path_key = path.to_string_lossy().into_owned();
-        self.conn
-            .execute(
-                "INSERT INTO exe_digest \
-                 (path, size, mtime_s, mtime_ns, ctime_s, ctime_ns, ino, dev, digest) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-                 ON CONFLICT(path) DO UPDATE SET \
-                   size = excluded.size, \
-                   mtime_s = excluded.mtime_s, \
-                   mtime_ns = excluded.mtime_ns, \
-                   ctime_s = excluded.ctime_s, \
-                   ctime_ns = excluded.ctime_ns, \
-                   ino = excluded.ino, \
-                   dev = excluded.dev, \
-                   digest = excluded.digest",
-                params![
-                    &path_key,
-                    stat.size as i64,
-                    stat.mtime_s,
-                    stat.mtime_ns,
-                    stat.ctime_s,
-                    stat.ctime_ns,
-                    stat.ino as i64,
-                    stat.dev as i64,
-                    &digest[..],
-                ],
-            )
-            .map_err(map_sqlite)?;
-        Ok(())
-    }
-}
-
-/// Fail-closed [`ExeDigestMemo`] wiring: any SQL fault on lookup or upsert is
-/// swallowed here and reported as "no memo" / "not recorded" respectively —
-/// `capture::filters()` re-hashes directly rather than trusting (or failing
-/// the command over) a broken memo.
-impl ExeDigestMemo for CacheStore {
-    fn lookup(&mut self, path: &Path, stat: &ExeStatIdentity) -> Option<[u8; 32]> {
-        self.exe_digest_lookup(path, stat).unwrap_or_else(|e| {
-            crate::perf::note(&format!("cache-path.exe-digest-memo-lookup-failed: {e}"));
-            None
-        })
-    }
-
-    fn upsert(&mut self, path: &Path, stat: &ExeStatIdentity, digest: [u8; 32]) {
-        if let Err(e) = self.exe_digest_upsert(path, stat, digest) {
-            crate::perf::note(&format!("cache-path.exe-digest-memo-upsert-failed: {e}"));
-        }
-    }
 }
 
 /// One non-live generation selected for quota eviction.

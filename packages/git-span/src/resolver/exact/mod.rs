@@ -321,14 +321,6 @@ pub(crate) fn stale_spans_new_store(
 
     let _perf = crate::perf::span("resolver.store");
 
-    // Open the store BEFORE capturing the state token (the reverse of the
-    // pre-Round-2 order): the open `CacheStore` is also the persistent,
-    // stat-keyed executable-digest memo `capture::filters()` consults instead
-    // of mmap+hashing a configured filter driver's resolved executable on
-    // every call (`core::exe_digest::ExeDigestMemo`). A store-open failure is
-    // a fail-closed bypass exactly as before — only earlier now, so a broken
-    // store also skips the token capture it would otherwise have paid for and
-    // then discarded.
     let mut store = match CacheStore::open(repo) {
         Ok(s) => s,
         Err(e) => {
@@ -347,8 +339,20 @@ pub(crate) fn stale_spans_new_store(
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
     // A capture failure is a fail-closed bypass to the authoritative path.
+    //
+    // `capture::filters()` consults the shared per-user executable-digest
+    // memo (`core::exe_digest_store::SharedExeDigestMemo`, Round 5) instead
+    // of mmap+hashing a configured filter driver's resolved executable on
+    // every call. It is no longer backed by this per-repo `CacheStore` (that
+    // was the Round 2 shape) — the digest is a fact about a file on the local
+    // machine, not about any one repository.
     let t_observe = crate::perf::enabled().then(std::time::Instant::now);
-    let token = match capture_state_token_with_memo(repo, span_root, options, Some(&mut store)) {
+    let token = match capture_state_token_with_memo(
+        repo,
+        span_root,
+        options,
+        Some(&mut crate::resolver::core::exe_digest_store::SharedExeDigestMemo),
+    ) {
         Ok(t) => t,
         Err(e) => {
             crate::perf::note(&format!("cache-path.bypass-reason: capture-token: {e}"));
@@ -676,14 +680,21 @@ fn project_revalidate_publish_impl(
 ) -> Result<ExactAttempt> {
     let rr = Arc::new(RenderReady::from_core(core, options.layers));
 
-    // Thread the same open `store` through as the revalidation re-capture's
-    // executable-digest memo: this is the pre-publish re-read of the state
-    // token, and any filter executable it re-hashes was, on the ordinary cold
-    // path, already hashed and recorded by the initial capture in
-    // `stale_spans_new_store` moments ago — reusing that row here is what
+    // Thread the same shared per-user executable-digest memo through as the
+    // revalidation re-capture's memo: this is the pre-publish re-read of the
+    // state token, and any filter executable it re-hashes was, on the
+    // ordinary cold path, already hashed and recorded by the initial capture
+    // in `stale_spans_new_store` moments ago — reusing that row here is what
     // removes the "hashed twice on every cold build" cost the memo exists to
-    // close.
-    match revalidate_with_memo(repo, span_root, options, token, Some(&mut *store))? {
+    // close. `store` itself is no longer involved (Round 5 moved the memo out
+    // of the per-repo store).
+    match revalidate_with_memo(
+        repo,
+        span_root,
+        options,
+        token,
+        Some(&mut crate::resolver::core::exe_digest_store::SharedExeDigestMemo),
+    )? {
         Revalidation::Unchanged => {
             publish_if_eligible(repo, store, token, key, &rr, core, store_rows);
             let attempt = rr.to_attempt();
