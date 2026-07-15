@@ -657,7 +657,7 @@ fn publish_if_eligible(
     // every dirty call is pure O(corpus) waste.
     let (rows, path_index) = if store_rows {
         let widen = reuse::compute_widen(core, global_copy_widen(token));
-        reuse::core_to_reuse_rows(core, &widen)
+        reuse::core_to_reuse_rows(core, &widen, &token.config_fingerprint())
     } else {
         (Vec::new(), Vec::new())
     };

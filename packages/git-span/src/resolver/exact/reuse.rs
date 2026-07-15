@@ -53,6 +53,7 @@ use std::collections::{BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::resolver::core::resolution::{ResolutionCore, SpanCore};
+use crate::resolver::core::token::StateToken;
 use crate::resolver::store::{GenerationRow, PathIndexEntry};
 use crate::types::AnchorStatus;
 
@@ -60,6 +61,19 @@ use crate::types::AnchorStatus;
 /// future row kind (e.g. an immutable parsed span blob) can coexist and be
 /// filtered on read.
 pub(crate) const ROW_KIND_SPAN_CORE: u32 = 1;
+
+/// Row-kind discriminant for the single config-fingerprint row a rows-bearing
+/// generation carries (card main-157). The reuse tiers locate a baseline by
+/// HEAD alone — which the canonical key excludes — so before trusting any
+/// stored per-span core they must prove the current invocation's
+/// config-sensitive inputs still match the baseline's
+/// ([`StateToken::config_fingerprint`](crate::resolver::core::token::StateToken::config_fingerprint)).
+/// This row carries that 32-byte digest; a distinct kind so span-core
+/// reconstruction and widen recovery skip it.
+pub(crate) const ROW_KIND_CONFIG_FINGERPRINT: u32 = 2;
+
+/// The stable `row_key` of the single config-fingerprint row.
+const CONFIG_FINGERPRINT_ROW_KEY: &str = "config-fingerprint";
 
 /// The persisted per-span reuse payload: the layer-neutral [`SpanCore`] plus
 /// the derived global-widen bit. `SpanCore` round-trips byte-identically
@@ -100,20 +114,34 @@ pub(crate) fn compute_widen(core: &ResolutionCore, global_copy_widen: bool) -> H
         .collect()
 }
 
-/// Normalize a resolved [`ResolutionCore`] into the store's row model: one
-/// `span-core` row per span (in `core.spans` order, which is the canonical
-/// stored order) plus the reverse `(source_path -> span name)` index. `widen`
-/// is the set of span names for which `needs_widen` is stored `true`.
+/// Normalize a resolved [`ResolutionCore`] into the store's row model: the
+/// single config-fingerprint row (ordinal 0), one `span-core` row per span (in
+/// `core.spans` order, which is the canonical stored order), plus the reverse
+/// `(source_path -> span name)` index. `widen` is the set of span names for
+/// which `needs_widen` is stored `true`; `config_fingerprint` is the baseline's
+/// config-sensitive identity the reuse tiers validate against on read (see
+/// [`ROW_KIND_CONFIG_FINGERPRINT`]).
 pub(crate) fn core_to_reuse_rows(
     core: &ResolutionCore,
     widen: &HashSet<String>,
+    config_fingerprint: &[u8; 32],
 ) -> (Vec<GenerationRow>, Vec<PathIndexEntry>) {
-    let mut rows = Vec::with_capacity(core.spans.len());
+    let mut rows = Vec::with_capacity(core.spans.len() + 1);
     let mut path_index = Vec::new();
     // Dedup (path, span) pairs so a span anchoring the same path twice yields
     // one index entry (publish also `INSERT OR IGNORE`s, but keep the input
     // clean and deterministic).
     let mut seen_index: BTreeSet<(String, String)> = BTreeSet::new();
+
+    // The config-fingerprint row leads the generation. Its ordinal is
+    // irrelevant to span-core reconstruction (both `reuse_rows_to_core` and
+    // `reuse_rows_widen` filter on `ROW_KIND_SPAN_CORE`, preserving span order),
+    // so placing it first keeps its lookup trivial without reshaping the rest.
+    rows.push(GenerationRow {
+        row_kind: ROW_KIND_CONFIG_FINGERPRINT,
+        row_key: CONFIG_FINGERPRINT_ROW_KEY.to_string(),
+        payload: config_fingerprint.to_vec(),
+    });
 
     for span in &core.spans {
         let payload = bincode::serialize(&ReuseSpanRow {
@@ -155,6 +183,27 @@ pub(crate) fn reuse_rows_to_core(rows: &[GenerationRow]) -> ResolutionCore {
         .map(|r| r.core)
         .collect();
     ResolutionCore { spans }
+}
+
+/// The baseline's stored config fingerprint, if present and well-formed. The
+/// reuse tiers compare this against the current invocation's
+/// [`StateToken::config_fingerprint`](crate::resolver::core::token::StateToken::config_fingerprint)
+/// and degrade to a full cold resolve on any mismatch — or, fail-closed, on any
+/// absent/malformed row (a generation that could not prove its config identity
+/// is never a safe reuse baseline).
+pub(crate) fn reuse_rows_config_fingerprint(rows: &[GenerationRow]) -> Option<[u8; 32]> {
+    rows.iter()
+        .find(|r| r.row_kind == ROW_KIND_CONFIG_FINGERPRINT)
+        .and_then(|r| <[u8; 32]>::try_from(r.payload.as_slice()).ok())
+}
+
+/// Whether a baseline generation's stored config fingerprint matches the
+/// current invocation's config-sensitive inputs. Fail-closed: an absent or
+/// malformed fingerprint (`None`) never matches, so such a generation is never
+/// reused as a baseline. The incremental and dirty tiers call this before
+/// trusting any stored per-span core.
+pub(crate) fn config_matches(rows: &[GenerationRow], token: &StateToken) -> bool {
+    reuse_rows_config_fingerprint(rows) == Some(token.config_fingerprint())
 }
 
 /// The set of span names whose stored `needs_widen` bit is `true`. Used by the

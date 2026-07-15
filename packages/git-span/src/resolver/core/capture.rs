@@ -118,6 +118,13 @@ pub(crate) fn capture_state_token(
         .max()
         .unwrap_or(CopyDetection::Off);
 
+    // Load the index once; both the whole-index identity and the per-path
+    // staged states derive from this one snapshot. An unreadable index makes
+    // both fail closed (`Unreadable`).
+    let index = crate::git::index_entries(repo);
+    let index_entries: Option<&[crate::git::IndexEntrySnapshot]> =
+        index.as_ref().ok().map(Vec::as_slice);
+
     Ok(StateToken {
         semantic_epoch: SEMANTIC_EPOCH,
         layers: options.layers.into(),
@@ -136,8 +143,8 @@ pub(crate) fn capture_state_token(
         filters: filters(repo),
         attributes_digest: attributes_digest(repo, &anchored),
         normalization_digest: normalization_digest(repo),
-        index_identity: index_identity(repo),
-        staged_state: staged_states(repo, &relevant),
+        index_identity: index_identity(index_entries),
+        staged_state: staged_states(index_entries, &relevant),
         worktree_state: worktree_states(repo, &relevant)?,
         availability: availability(repo),
     })
@@ -599,31 +606,91 @@ fn normalization_digest(repo: &gix::Repository) -> [u8; 32] {
 // Index / staged / worktree identities
 // ---------------------------------------------------------------------------
 
-/// Typed whole-index identity from `.git/index`'s trailer checksum. Never a
-/// wall-clock fallback: an unreadable/too-short index is `Unreadable`, a
-/// missing index file (synthesized from HEAD) is `Absent`. This is the exact
-/// defect `cache_v2::keys::index_checksum_bytes` (wall-clock-seeded on an
-/// unreadable trailer) must not repeat.
-fn index_identity(repo: &gix::Repository) -> PathState {
-    let index_path = crate::git::git_dir(repo).join("index");
-    match std::fs::read(&index_path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => PathState::Absent,
-        Err(_) => PathState::Unreadable,
-        Ok(bytes) if bytes.len() >= 20 => PathState::Tracked {
-            blob: hex_bytes(&bytes[bytes.len() - 20..]),
-        },
-        Ok(_) => PathState::Unreadable,
+/// Content-based whole-index identity: a digest over every index entry's
+/// `(stage, mode, path, blob-oid)`, sorted by path/stage, with per-entry stat
+/// fields (ctime/mtime/ino/dev/size) deliberately excluded. `Unreadable` when
+/// the index could not be loaded (fail closed) — never a wall-clock fallback,
+/// the defect `cache_v2::keys::index_checksum_bytes` embodied.
+///
+/// The former implementation digested `.git/index`'s last-20-byte trailer
+/// checksum — a SHA over the *entire* index file INCLUDING every entry's stat
+/// data. Two linked worktrees keep separate index files (`.git/index` vs
+/// `.git/worktrees/<name>/index`), each written with its own checkout-time
+/// stat, so their trailers never matched even at byte-identical staged content;
+/// the differing `index_identity` forced a differing `canonical_key_digest`,
+/// making a cross-worktree exact hit structurally impossible even on a clean
+/// tree at the identical commit (card main-157). Keying off content identity
+/// alone (mode + path + blob OID) makes the digest identical across worktrees
+/// with the same staged content while still detecting any real staged change —
+/// a mode flip or a blob-OID change moves it.
+fn index_identity(entries: Option<&[crate::git::IndexEntrySnapshot]>) -> PathState {
+    let Some(entries) = entries else {
+        return PathState::Unreadable;
+    };
+    // Sort by (path, stage) so index-entry order — which is not semantic and can
+    // differ across worktrees — cannot perturb the digest.
+    let mut items: Vec<(&str, u8, u8, String)> = entries
+        .iter()
+        .map(|e| {
+            (
+                e.path.as_str(),
+                stage_byte(e.stage),
+                index_mode_byte(e.mode),
+                e.oid.to_string(),
+            )
+        })
+        .collect();
+    items.sort();
+
+    let mut h = Hasher::new();
+    h.update(b"gm.core.index-identity\0");
+    h.update(&(items.len() as u64).to_le_bytes());
+    for (path, stage, mode, oid) in &items {
+        write_prefixed(&mut h, path.as_bytes());
+        h.update(&[*stage, *mode]);
+        write_prefixed(&mut h, oid.as_bytes());
+    }
+    PathState::Tracked {
+        blob: hex_bytes(h.finalize().as_bytes()),
     }
 }
 
-/// Typed staged identity for every relevant path, read from the index once.
-/// A path with any unmerged (stage 1/2/3) entry is `Conflict`; a normal entry
-/// is `Tracked{blob}`; a relevant path absent from the index is `Absent`. An
-/// unreadable index makes every relevant path `Unreadable` (fail-closed).
-fn staged_states(repo: &gix::Repository, relevant: &BTreeSet<String>) -> Vec<PathStateEntry> {
-    let entries = match crate::git::index_entries(repo) {
-        Ok(e) => e,
-        Err(_) => {
+/// Stable one-byte discriminant for an index entry's conflict stage.
+fn stage_byte(stage: gix::index::entry::Stage) -> u8 {
+    use gix::index::entry::Stage;
+    match stage {
+        Stage::Unconflicted => 0,
+        Stage::Base => 1,
+        Stage::Ours => 2,
+        Stage::Theirs => 3,
+    }
+}
+
+/// Stable one-byte discriminant for an index entry's mode — enough to detect
+/// the mode flips git tracks (an exec-bit toggle, blob↔symlink↔gitlink).
+fn index_mode_byte(mode: gix::objs::tree::EntryMode) -> u8 {
+    use gix::objs::tree::EntryKind;
+    match mode.kind() {
+        EntryKind::Tree => 0,
+        EntryKind::Blob => 1,
+        EntryKind::BlobExecutable => 2,
+        EntryKind::Link => 3,
+        EntryKind::Commit => 4,
+    }
+}
+
+/// Typed staged identity for every relevant path, from the already-loaded index
+/// snapshot. A path with any unmerged (stage 1/2/3) entry is `Conflict`; a
+/// normal entry is `Tracked{blob}`; a relevant path absent from the index is
+/// `Absent`. An unreadable index (`None`) makes every relevant path
+/// `Unreadable` (fail-closed).
+fn staged_states(
+    entries: Option<&[crate::git::IndexEntrySnapshot]>,
+    relevant: &BTreeSet<String>,
+) -> Vec<PathStateEntry> {
+    let entries = match entries {
+        Some(e) => e,
+        None => {
             return relevant
                 .iter()
                 .map(|p| PathStateEntry {
@@ -634,7 +701,7 @@ fn staged_states(repo: &gix::Repository, relevant: &BTreeSet<String>) -> Vec<Pat
         }
     };
     let mut by_path: BTreeMap<&str, PathState> = BTreeMap::new();
-    for e in &entries {
+    for e in entries {
         let slot = by_path.entry(e.path.as_str()).or_insert(PathState::Absent);
         if e.stage == gix::index::entry::Stage::Unconflicted {
             // A real stage-0 entry, unless a conflict stage already claimed it.

@@ -167,6 +167,18 @@ fn build_incremental_core(
         crate::perf::note("cache-path.bypass-reason: incremental-empty-ancestor");
         return Ok(None);
     }
+    // Config-sensitive canonical-key guard. The ancestor was located by HEAD
+    // alone, which the canonical key excludes; reusing its resolved cores is
+    // sound only if the current invocation's config-sensitive inputs
+    // (normalization, filters, replace-refs, rename budget, copy detection,
+    // attributes, availability, ...) are byte-identical to the ancestor's. If
+    // config drifted, those cores are stale under the new config — degrade to
+    // the authoritative cold resolve rather than reuse or re-publish them.
+    if !reuse::config_matches(&ancestor.generation.rows, token) {
+        crate::perf::note("cache-path.bypass-reason: incremental-config-drift");
+        return Ok(None);
+    }
+
     let widen_names = reuse::reuse_rows_widen(&ancestor.generation.rows);
     let ancestor_by_name: HashMap<&str, &SpanCore> = ancestor_core
         .spans

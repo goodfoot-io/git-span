@@ -312,10 +312,11 @@ fn reuse_rows_round_trip_core_through_store() {
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
     let core = capture_resolution_core(&repo, SPAN_ROOT, &names).expect("core");
     let widen = reuse::compute_widen(&core, false);
-    let (rows, path_index) = reuse::core_to_reuse_rows(&core, &widen);
+    let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
+    let (rows, path_index) =
+        reuse::core_to_reuse_rows(&core, &widen, &token.config_fingerprint());
     assert!(!rows.is_empty(), "a non-empty corpus yields reuse rows");
 
-    let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
     let key = token.canonical_key_digest();
     let mut store = CacheStore::open(&repo).expect("store");
     let input = GenerationInput {

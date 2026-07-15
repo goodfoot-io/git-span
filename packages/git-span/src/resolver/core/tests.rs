@@ -98,6 +98,67 @@ fn assert_field_changes_digest(base: &StateToken, mutate: impl Fn(&mut StateToke
     );
 }
 
+/// `config_fingerprint` (card main-157 F1) keys exactly the resolution-config
+/// inputs that determine the layer-neutral per-span cores the reuse tiers store
+/// and replay: it MUST move for each of those, and MUST stay stable across both
+/// the content fields and the output/projection options the reuse tiers
+/// legitimately reuse across. The stability half is the regression guard — a
+/// naive "whole non-content canonical key" fingerprint folded in
+/// `needs_all_layers` (true only for the Human renderer) and spuriously rejected
+/// reuse across an output-format change.
+#[test]
+fn config_fingerprint_keys_resolution_config_only() {
+    let base = sample_token();
+    let sensitive = |mutate: &dyn Fn(&mut StateToken), what: &str| {
+        let mut t = base.clone();
+        mutate(&mut t);
+        assert_ne!(
+            base.config_fingerprint(),
+            t.config_fingerprint(),
+            "{what} must change the config fingerprint"
+        );
+    };
+    let stable = |mutate: &dyn Fn(&mut StateToken), what: &str| {
+        let mut t = base.clone();
+        mutate(&mut t);
+        assert_eq!(
+            base.config_fingerprint(),
+            t.config_fingerprint(),
+            "{what} must NOT change the config fingerprint"
+        );
+    };
+
+    // Resolution-config inputs → sensitive.
+    sensitive(&|t| t.semantic_epoch += 1, "semantic_epoch");
+    sensitive(&|t| t.span_root = "spans".to_string(), "span_root");
+    sensitive(&|t| t.rename_budget += 1, "rename_budget");
+    sensitive(&|t| t.copy_detection = CopyDetection::Off, "copy_detection");
+    sensitive(&|t| t.replace_refs.push("x:y".to_string()), "replace_refs");
+    sensitive(&|t| t.filters.push(sample_filter()), "filters");
+    sensitive(&|t| t.attributes_digest[0] ^= 0xFF, "attributes_digest");
+    sensitive(&|t| t.normalization_digest[0] ^= 0xFF, "normalization_digest");
+    sensitive(&|t| t.availability.sparse_active = true, "availability.sparse");
+
+    // Output/projection options → stable (cores are layer/format-neutral).
+    stable(&|t| t.needs_all_layers = !t.needs_all_layers, "needs_all_layers");
+    stable(&|t| t.layers.worktree = !t.layers.worktree, "layers.worktree");
+    stable(&|t| t.ignore_unavailable = !t.ignore_unavailable, "ignore_unavailable");
+    stable(&|t| t.fuzzy_threshold_bps += 1, "fuzzy_threshold_bps");
+    stable(&|t| t.since = Some("f".repeat(40)), "since");
+
+    // Content identity → stable (the commit/dirty changes reuse rides across).
+    stable(&|t| t.head = "a".repeat(40), "head");
+    stable(&|t| t.source_tree = "c".repeat(40), "source_tree");
+    stable(&|t| t.span_subtree = "d".repeat(40), "span_subtree");
+    stable(&|t| t.span_blobs.clear(), "span_blobs");
+    stable(
+        &|t| t.index_identity = PathState::Tracked { blob: "9".repeat(40) },
+        "index_identity",
+    );
+    stable(&|t| t.staged_state.clear(), "staged_state");
+    stable(&|t| t.worktree_state.clear(), "worktree_state");
+}
+
 // ── Category 1: canonical key sensitivity ────────────────────────────────
 
 /// Every semantic `StateToken` field must distinguish the canonical key.

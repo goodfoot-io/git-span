@@ -275,6 +275,19 @@ fn build_dirty_core(
         crate::perf::note("cache-path.bypass-reason: dirty-empty-baseline");
         return Ok(None);
     }
+    // Config-sensitive canonical-key guard. The baseline was located by HEAD
+    // alone, which the canonical key excludes; a same-HEAD baseline can carry a
+    // different config than the current invocation (a changed `core.autocrlf`,
+    // filter binary, replace-ref, rename budget, sparse-checkout, ...). Reusing
+    // its resolved cores under the new config would silently re-serve — and
+    // re-publish under the new key — a stale result. A widen-free clean corpus
+    // is the exact case that otherwise reuses every baseline core verbatim, so
+    // this guard must precede that reuse. Mismatch ⇒ degrade to cold.
+    if !reuse::config_matches(&baseline.generation.rows, token) {
+        crate::perf::note("cache-path.bypass-reason: dirty-config-drift");
+        return Ok(None);
+    }
+
     let widen_names = reuse::reuse_rows_widen(&baseline.generation.rows);
     let baseline_by_name: HashMap<&str, &SpanCore> = baseline_core
         .spans

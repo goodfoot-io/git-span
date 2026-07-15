@@ -343,6 +343,76 @@ impl StateToken {
         *h.finalize().as_bytes()
     }
 
+    /// Digest over only the *resolution-config* inputs of this token: the
+    /// subset of [`Self::canonical_key_digest`] that actually determines the
+    /// layer-neutral per-span cores the incremental and dirty reuse tiers store
+    /// and replay.
+    ///
+    /// The reuse tiers locate a baseline generation by HEAD alone
+    /// (`find_ancestor` / `find_generation_by_head`), and HEAD is excluded from
+    /// the canonical key. A baseline published at the same HEAD can therefore
+    /// carry a DIFFERENT config than the current invocation — a changed
+    /// `core.autocrlf`/`core.eol` normalization, a different filter
+    /// executable/env identity, an added `replace` ref, a changed rename budget
+    /// or copy-detection mode, an activated sparse-checkout — every one of which
+    /// changes what
+    /// [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
+    /// resolves, while none of them moves HEAD. Reusing the baseline's stored
+    /// cores under the new config would silently re-serve (and re-publish) a
+    /// stale result under the new key. Persisting this fingerprint alongside a
+    /// baseline's reuse rows lets the reuse tiers prove the resolution config
+    /// still matches before trusting any stored core, and fall through to a full
+    /// cold resolve when it does not (fail closed).
+    ///
+    /// Two field classes are deliberately EXCLUDED:
+    ///
+    /// * **Content identity** — `head`, `source_tree`, `span_subtree`,
+    ///   `span_blobs`, and the index/staged/worktree identities. These carry the
+    ///   very commit/dirty changes the reuse tiers reuse across.
+    /// * **Output/projection shaping** — `layers`, `needs_all_layers`,
+    ///   `ignore_unavailable`, `fuzzy_threshold_bps`, and `since`. None of these
+    ///   reach [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core),
+    ///   which always resolves the FULL layer set at a fixed `0.95` threshold
+    ///   with no `--since` bound; they only select layers / shape findings at
+    ///   projection time, so the stored layer-neutral cores are independent of
+    ///   them. Folding them in would spuriously reject a legitimate reuse across
+    ///   an output-format change (e.g. `needs_all_layers` is `true` only for the
+    ///   Human renderer), the exact false positive this exclusion prevents.
+    pub(crate) fn config_fingerprint(&self) -> [u8; 32] {
+        let mut h = Hasher::new();
+        h.update(b"gm.core.state-token.config\0");
+        h.update(&self.semantic_epoch.to_le_bytes());
+
+        write_prefixed(&mut h, self.span_root.as_bytes());
+
+        h.update(&self.rename_budget.to_le_bytes());
+        h.update(&[copy_detection_byte(self.copy_detection)]);
+        h.update(&(self.replace_refs.len() as u64).to_le_bytes());
+        for r in &self.replace_refs {
+            write_prefixed(&mut h, r.as_bytes());
+        }
+
+        h.update(&(self.filters.len() as u64).to_le_bytes());
+        for f in &self.filters {
+            f.write(&mut h);
+        }
+        h.update(&self.attributes_digest);
+        h.update(&self.normalization_digest);
+
+        h.update(&[
+            u8::from(self.availability.lfs_installed),
+            u8::from(self.availability.sparse_active),
+            u8::from(self.availability.promisor_active),
+        ]);
+        h.update(&(self.availability.paths.len() as u64).to_le_bytes());
+        for p in &self.availability.paths {
+            write_prefixed(&mut h, p.path.as_bytes());
+            h.update(&[u8::from(p.available)]);
+        }
+
+        *h.finalize().as_bytes()
+    }
+
     /// Fail-closed persistence eligibility: `false` unless every filter
     /// dependency carries a complete identity and the index/staged/
     /// worktree states are all readable (no `Unreadable`/wall-clock

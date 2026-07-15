@@ -4,6 +4,8 @@ pub mod add_gitignored_anchor_reject;
 pub mod add_index_loaded_once;
 pub mod anchor_inside_span_root_reject;
 pub mod anchor_path_portability;
+pub mod config_reuse_invalidation;
+pub mod cross_worktree_exact_hit;
 pub mod dirty_source_content_key;
 pub mod dirty_store_clean_read_parity;
 pub mod interior_anchor_parity;
