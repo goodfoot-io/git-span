@@ -3,10 +3,10 @@
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
+use crate::resolver::session::BlobOidMemo;
 use crate::types::CopyDetection;
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
-use std::collections::HashMap;
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
@@ -48,7 +48,7 @@ pub(crate) fn advance_with_entries(
     commit: &str,
     loc: &Tracked,
     entries: &[NS],
-    blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
+    blob_oid_memo: Option<&mut BlobOidMemo>,
 ) -> Result<Change> {
     let mut next_path: Option<String> = None;
     let mut deleted = false;
@@ -111,15 +111,16 @@ fn blob_oid_at(
     repo: &gix::Repository,
     commit: &str,
     path: &str,
-    memo: Option<&mut HashMap<(String, String), Option<String>>>,
+    memo: Option<&mut BlobOidMemo>,
 ) -> Option<String> {
-    let key = (commit.to_string(), path.to_string());
     if let Some(m) = memo {
-        if let Some(cached) = m.get(&key) {
+        if let Some(cached) = m.get(commit).and_then(|by_path| by_path.get(path)) {
             return cached.clone();
         }
         let oid = git::path_blob_at(repo, commit, path).ok();
-        m.insert(key, oid.clone());
+        m.entry(commit.to_string())
+            .or_default()
+            .insert(path.to_string(), oid.clone());
         oid
     } else {
         git::path_blob_at(repo, commit, path).ok()
@@ -132,7 +133,7 @@ pub(crate) fn compute_new_range(
     commit: &str,
     loc: &Tracked,
     new_path: &str,
-    mut blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
+    mut blob_oid_memo: Option<&mut BlobOidMemo>,
 ) -> Result<(u32, u32)> {
     // Resolve blob OIDs, using the session-scoped memo when available to
     // avoid redundant tree traversals when multiple anchors share the same

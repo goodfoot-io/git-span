@@ -16,7 +16,7 @@
 use crate::git;
 use crate::perf;
 use crate::resolver::linemap::LineMap;
-use crate::resolver::session::CommitDelta;
+use crate::resolver::session::{BlobOidMemo, CommitDelta};
 use crate::resolver::walker::{Tracked, apply_hunks_to_range, compute_hunks};
 use crate::types::CopyDetection;
 use crate::{Error, Result};
@@ -259,7 +259,7 @@ pub(crate) fn build_timeline(
     head_blob_oid: Option<gix::ObjectId>,
     copy_detection: CopyDetection,
     interner: &mut PathInterner,
-    blob_oid_memo: &mut HashMap<(String, String), Option<String>>,
+    blob_oid_memo: &mut BlobOidMemo,
 ) -> Result<PathTimeline> {
     let _span = perf::span("timeline.build");
     let start_path_arc = interner.intern(start_path);
@@ -404,15 +404,16 @@ fn blob_oid_at(
     repo: &gix::Repository,
     commit: &str,
     path: &str,
-    memo: Option<&mut HashMap<(String, String), Option<String>>>,
+    memo: Option<&mut BlobOidMemo>,
 ) -> Option<String> {
-    let key = (commit.to_string(), path.to_string());
     if let Some(m) = memo {
-        if let Some(cached) = m.get(&key) {
+        if let Some(cached) = m.get(commit).and_then(|by_path| by_path.get(path)) {
             return cached.clone();
         }
         let oid = git::path_blob_at(repo, commit, path).ok();
-        m.insert(key, oid.clone());
+        m.entry(commit.to_string())
+            .or_default()
+            .insert(path.to_string(), oid.clone());
         oid
     } else {
         git::path_blob_at(repo, commit, path).ok()

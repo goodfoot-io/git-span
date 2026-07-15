@@ -62,6 +62,12 @@ impl CachedLineIndex {
 
 }
 
+/// Nested `commit_sha → path → blob_oid` memo shape shared by
+/// [`ResolveSession::blob_oid_memo`] and the `blob_oid_at` helpers in
+/// `walker` and `timeline` — see `blob_oid_memo`'s doc comment for why the
+/// nesting (vs. a flat tuple-keyed map) matters.
+pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
+
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Produced by the reverse-indexed walk once per
 /// commit that touches a tracked path. The hunk math
@@ -287,14 +293,24 @@ pub(crate) struct ResolveSession {
     /// `HEAD..anchor`). An in-memory, per-run memo — never persisted.
     pub(crate) known_head_ancestors:
         std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
-    /// Session-scoped blob OID memo: `(commit_sha, path) → blob_oid`.
+    /// Session-scoped blob OID memo: `commit_sha → path → blob_oid`.
     ///
     /// `path_blob_at` requires a tree traversal for every `(commit, path)`
     /// pair. Many anchors in a span share the same underlying files and
     /// commit history, so the same pair is requested repeatedly across
     /// anchors. This memo eliminates the redundant traversals within a
     /// single `stale` run; it does not persist across invocations.
-    pub(crate) blob_oid_memo: HashMap<(String, String), Option<String>>,
+    ///
+    /// Nested by `commit_sha` then `path` (rather than a flat
+    /// `HashMap<(String, String), _>`) so a repeated probe against the same
+    /// commit — the overwhelmingly common case, since `head_blob_oid` always
+    /// probes `state.head_sha` — looks up both levels via `Borrow<str>`
+    /// without allocating a search key. A flat tuple-keyed map requires
+    /// building an owned `(String, String)` on *every* probe just to call
+    /// `.get()`, even on a hit; `find_relocated_range_in_paths` calls
+    /// `head_blob_at` once per tracked path per anchor needing a relocation
+    /// scan, so that allocation was the dominant cost of the scan.
+    pub(crate) blob_oid_memo: BlobOidMemo,
     /// HEAD sha whose tree has been bulk-enumerated into `blob_oid_memo`
     /// by [`warm_head_blob_memo`](Self::warm_head_blob_memo). `None`
     /// until the first relocation scan asks for it.
@@ -530,8 +546,16 @@ impl ResolveSession {
         head_sha: &str,
         path: &str,
     ) -> Result<Option<String>> {
-        let key = (head_sha.to_string(), path.to_string());
-        if let Some(blob) = self.blob_oid_memo.get(&key) {
+        // Both levels probe via `Borrow<str>` — no owned key is built on a
+        // hit. `find_relocated_range_in_paths` calls this once per tracked
+        // path per anchor needing a relocation scan, so avoiding the
+        // per-probe `(String, String)` allocation here is the whole point of
+        // the nested shape (see `blob_oid_memo`'s doc comment).
+        if let Some(blob) = self
+            .blob_oid_memo
+            .get(head_sha)
+            .and_then(|by_path| by_path.get(path))
+        {
             return Ok(blob.clone());
         }
         let blob = match git::path_blob_at(repo, head_sha, path) {
@@ -539,7 +563,10 @@ impl ResolveSession {
             Err(crate::Error::PathNotInTree { .. }) => None,
             Err(e) => return Err(e),
         };
-        self.blob_oid_memo.insert(key, blob.clone());
+        self.blob_oid_memo
+            .entry(head_sha.to_string())
+            .or_default()
+            .insert(path.to_string(), blob.clone());
         Ok(blob)
     }
 
@@ -572,10 +599,9 @@ impl ResolveSession {
         let Ok(pairs) = pairs else {
             return;
         };
+        let by_path = self.blob_oid_memo.entry(head_sha.to_string()).or_default();
         for (path, oid) in pairs {
-            self.blob_oid_memo
-                .entry((head_sha.to_string(), path))
-                .or_insert(Some(oid));
+            by_path.entry(path).or_insert(Some(oid));
         }
         self.head_blob_memo_warmed_for = Some(head_sha.to_string());
     }

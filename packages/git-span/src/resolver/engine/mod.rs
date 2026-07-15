@@ -252,10 +252,11 @@ impl EngineState {
         path: &str,
     ) -> Result<Option<String>> {
         // Delegate to the single session-scoped `blob_oid_memo` (keyed by
-        // `(commit_sha, path)`) so there is exactly one source of truth for
-        // HEAD blob OIDs. `head_sha` is constant for the run.
-        let head_sha = self.head_sha.clone();
-        self.session.head_blob_oid(repo, &head_sha, path)
+        // `commit_sha -> path`) so there is exactly one source of truth for
+        // HEAD blob OIDs. `head_sha` is constant for the run; borrowing it
+        // directly (disjoint from `self.session`) avoids a per-call String
+        // clone on this hot path.
+        self.session.head_blob_oid(repo, &self.head_sha, path)
     }
 
     fn finish(mut self, repo: &gix::Repository) {
