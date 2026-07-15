@@ -76,23 +76,34 @@ if [ -f "$cli_json" ]; then
   fi
 fi
 
-# Update packages/extension/package.json
-ext_json="$REPO_ROOT/packages/extension/package.json"
-if [ -f "$ext_json" ]; then
-  current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$ext_json','utf8')).version)")
-  if [ "$current" != "$VERSION" ]; then
-    node -e "
-      const fs = require('fs');
-      const pkg = JSON.parse(fs.readFileSync('$ext_json', 'utf8'));
-      pkg.version = '$VERSION';
-      fs.writeFileSync('$ext_json', JSON.stringify(pkg, null, 2) + '\n');
-    "
-    echo "Updated: $ext_json ($current -> $VERSION)"
-    updated=$((updated + 1))
-  else
-    echo "OK:      $ext_json (already $VERSION)"
+# Update the "version" field of every workspace package.json that tracks the
+# release version. The source of truth (packages/git-span) is excluded because
+# it *defines* VERSION. For git-span-core this syncs the Node workspace
+# package only; its Rust crate carries an independent version that is
+# intentionally left untouched.
+for rel in \
+  package.json \
+  packages/extension/package.json \
+  packages/website/package.json \
+  packages/agent-hooks/package.json \
+  packages/git-span-core/package.json; do
+  pkg_json="$REPO_ROOT/$rel"
+  if [ -f "$pkg_json" ]; then
+    current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$pkg_json','utf8')).version)")
+    if [ "$current" != "$VERSION" ]; then
+      node -e "
+        const fs = require('fs');
+        const pkg = JSON.parse(fs.readFileSync('$pkg_json', 'utf8'));
+        pkg.version = '$VERSION';
+        fs.writeFileSync('$pkg_json', JSON.stringify(pkg, null, 2) + '\n');
+      "
+      echo "Updated: $pkg_json ($current -> $VERSION)"
+      updated=$((updated + 1))
+    else
+      echo "OK:      $pkg_json (already $VERSION)"
+    fi
   fi
-fi
+done
 
 # Update packages/git-span/Cargo.toml so the compiled binary's --version matches.
 cargo_toml="$REPO_ROOT/packages/git-span/Cargo.toml"
