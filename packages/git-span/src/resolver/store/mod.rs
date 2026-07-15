@@ -695,32 +695,51 @@ impl CacheStore {
     /// Reconcile stored liveness against the genuinely-live HEAD set: demote to
     /// non-live every generation whose publish-time HEAD hint is not one of
     /// `live_heads` (the commit OIDs currently checked out by an active
-    /// worktree, per [`crate::git::live_worktree_heads`]). Returns the number
-    /// of generations demoted.
+    /// worktree, per [`crate::git::live_worktree_heads`]), and — for the
+    /// current worktree's `(head, key)`, when supplied — demote the stale
+    /// summary-only overlays that accumulate at a *single* live HEAD. Returns
+    /// the number of generations demoted.
     ///
     /// This is the missing production step that makes 6A's quota
     /// [`Self::maintain`] able to reclaim anything: publish always marks the
-    /// new generation `live` ("the current worktree references it now"), but a
-    /// later commit/checkout supersedes it and *nothing else ever demotes it*.
-    /// Without reconciliation every generation ever published stays permanently
-    /// live, and [`Self::eviction_candidates`]' `WHERE live = 0` filter yields
-    /// nothing — the quota is silently defeated (card main-157 Phase 6C's
-    /// measured gap). A generation at a HEAD no worktree currently sits on is
-    /// backed by no active worktree; demoting it lets `maintain` evict it by
-    /// recency/value, while a generation at a live HEAD (including a sibling
-    /// worktree's) is retained.
+    /// new generation `live` ("the current worktree references it now"), but
+    /// nothing else ever demotes a superseded one. Without reconciliation every
+    /// generation ever published stays permanently live, and
+    /// [`Self::eviction_candidates`]' `WHERE live = 0` filter yields nothing —
+    /// the quota is silently defeated (card main-157 Phase 6C's measured gap).
+    ///
+    /// Two demotion rules run, each closing one leak:
+    ///
+    /// 1. **Superseded HEAD (moving-HEAD churn).** A generation at a HEAD no
+    ///    worktree currently sits on is backed by no active worktree; demote
+    ///    every live generation at such a head. A head that is live — including
+    ///    a sibling worktree's — is retained. Per-head so each `UPDATE ... WHERE
+    ///    head = ?` rides the `generation_by_head` index.
+    ///
+    /// 2. **Same-HEAD dirty-state churn (card main-157 F2).** Liveness scoped to
+    ///    the HEAD alone leaves *every* generation published at the current HEAD
+    ///    permanently live, so a developer (or an editor extension running
+    ///    `git span stale` on save) sitting on one commit and producing many
+    ///    distinct dirty worktree states accumulates one live summary-only
+    ///    overlay per state, unbounded, none ever an eviction candidate. When
+    ///    `current` is supplied, demote every live *summary-only* overlay
+    ///    (`row_count = 0`) at the current head other than the current key. The
+    ///    current overlay stays live; the rows-bearing clean baseline
+    ///    (`row_count > 0`) the overlays reuse from stays live and warm;
+    ///    abandoned prior overlays become evictable. Narrowing applies only to
+    ///    the current head — a sibling worktree's head is left whole because we
+    ///    cannot know its current key from here.
     ///
     /// The eviction mechanism itself is unchanged: this only flips the `live`
-    /// flag the existing candidate query already reads. Each demotion is a
-    /// single indexed `UPDATE ... WHERE head = ?` (the `generation_by_head`
-    /// index), touching only rows currently marked live.
+    /// flag the existing candidate query already reads.
     pub(crate) fn reconcile_live_heads(
         &mut self,
         live_heads: &HashSet<String>,
+        current: Option<(&str, &[u8; 32])>,
     ) -> StoreResult<u64> {
-        // The distinct HEAD hints currently marked live. Demoting per-head
-        // (rather than per-row) keeps the scan small and lets each UPDATE ride
-        // the `generation_by_head` index.
+        // Rule 1: superseded heads. The distinct HEAD hints currently marked
+        // live — demoting per-head (rather than per-row) keeps the scan small
+        // and lets each UPDATE ride the `generation_by_head` index.
         let live_gen_heads: Vec<String> = {
             let mut stmt = self
                 .conn
@@ -746,6 +765,20 @@ impl CacheStore {
                 .execute(
                     "UPDATE generation SET live = 0 WHERE live = 1 AND head = ?1",
                     [&head],
+                )
+                .map_err(map_sqlite)?;
+            demoted += n as u64;
+        }
+
+        // Rule 2: same-head dirty-state churn at the current worktree's head.
+        if let Some((head, key)) = current {
+            let key_hex = hex32(key);
+            let n = self
+                .conn
+                .execute(
+                    "UPDATE generation SET live = 0 \
+                     WHERE live = 1 AND head = ?1 AND row_count = 0 AND key_digest <> ?2",
+                    params![head, &key_hex],
                 )
                 .map_err(map_sqlite)?;
             demoted += n as u64;

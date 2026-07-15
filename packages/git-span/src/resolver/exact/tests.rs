@@ -510,7 +510,7 @@ fn maybe_maintain_evicts_non_live_over_cap() {
     unsafe {
         std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
     }
-    maybe_maintain(&repo, &mut store);
+    maybe_maintain(&repo, &mut store, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key);
 
     assert!(
         matches!(
@@ -534,7 +534,7 @@ fn maybe_maintain_keeps_generation_under_cap() {
         // Default 256 MiB — far above a tiny fresh store.
         std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
     }
-    maybe_maintain(&repo, &mut store);
+    maybe_maintain(&repo, &mut store, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key);
 
     assert!(
         matches!(
@@ -678,5 +678,139 @@ fn repeated_commits_cannot_grow_store_unbounded() {
             GetOutcome::Hit(_)
         ),
         "the current worktree's active generation must remain findable",
+    );
+}
+
+/// Capture a git command's trimmed stdout (for reading resolved OIDs).
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+}
+
+/// Publish a `live` generation at an arbitrary head hint (empty rows, so
+/// row_count = 0 keeps the same-head rule from touching it unless it is the
+/// current head+key). Models a generation an active — or superseded — worktree
+/// left behind.
+fn publish_live_at(store: &mut CacheStore, key: [u8; 32], head: &str) {
+    let input = GenerationInput {
+        key_digest: key,
+        head: head.to_string(),
+        payload_version: SUMMARY_VERSION,
+        summary: vec![9, 9, 9, 9, 9],
+        rows: Vec::new(),
+        path_index: Vec::new(),
+        live: true,
+    };
+    store.publish_generation(&input).expect("publish");
+}
+
+/// Card main-157 F3: one broken/prunable linked worktree (its working directory
+/// deleted without `git worktree prune`) must not permanently disable quota
+/// reclamation. [`crate::git::live_worktree_heads`] fails closed only on
+/// *blindness* (enumeration failing) — a single worktree whose HEAD will not
+/// resolve is skipped, not fatal — so reconciliation still demotes stale heads
+/// that no *resolvable* worktree sits on.
+///
+/// Pre-fix, `into_repo()` on the broken worktree returned `Err`, `live_worktree_
+/// heads` propagated it, and [`reconcile_liveness`] returned before demoting
+/// anything: the stale-head generation stayed permanently live and the quota
+/// reclaimed nothing. This asserts both halves — the live set is the resolvable
+/// subset (healthy worktree included, broken skipped, no error), and the stale
+/// generation is demoted and evicted while the live worktrees' generations
+/// survive.
+#[test]
+fn broken_worktree_does_not_disable_reconciliation() {
+    reset_test_state();
+    clear_memo();
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    git(dir, &["init", "--initial-branch=main"]);
+    git(dir, &["config", "user.name", "Test User"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(dir.join("a.txt"), "seed\n").expect("seed");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-m", "init"]);
+    let h_main = git_out(dir, &["rev-parse", "HEAD"]);
+
+    // A healthy linked worktree on its own branch, advanced to a distinct commit
+    // so its HEAD differs from main's — proving it is actually resolved (not
+    // merely equal to main by coincidence).
+    let healthy = td.path().join("healthy-wt");
+    git(dir, &["worktree", "add", "-b", "healthy", healthy.to_str().unwrap()]);
+    std::fs::write(healthy.join("a.txt"), "healthy-change\n").expect("healthy write");
+    git(&healthy, &["add", "-A"]);
+    git(&healthy, &["commit", "-m", "healthy commit"]);
+    let h_healthy = git_out(&healthy, &["rev-parse", "HEAD"]);
+    assert_ne!(h_main, h_healthy, "healthy worktree must be at a distinct commit");
+
+    // A broken/prunable linked worktree: created, then its working directory
+    // deleted without `git worktree prune`. Its admin dir (and `gitdir` file)
+    // remain, so `worktrees()` still enumerates it, but `into_repo()` fails on
+    // the missing checkout — the persistent state F3 is about.
+    let broken = td.path().join("broken-wt");
+    git(dir, &["worktree", "add", "-b", "broken", broken.to_str().unwrap()]);
+    std::fs::remove_dir_all(&broken).expect("delete broken worktree checkout");
+
+    let repo = gix::open(dir).expect("gix open");
+
+    // Half 1: the live set is the resolvable subset — main + healthy, broken
+    // skipped — and it did NOT error despite the broken worktree.
+    let live = crate::git::live_worktree_heads(&repo).expect("partial live set, not an error");
+    assert!(live.contains(&h_main), "main worktree HEAD present");
+    assert!(live.contains(&h_healthy), "healthy linked worktree HEAD present");
+
+    // Half 2: reconciliation demotes a stale head no resolvable worktree sits
+    // on, while both live worktrees' generations survive. A 1-byte cap makes the
+    // quota pass evict every demoted (non-live) generation.
+    enable_store();
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
+    }
+    let mut store = CacheStore::open(&repo).expect("open store");
+    let k_main = [1u8; 32];
+    let k_healthy = [2u8; 32];
+    let k_stale = [3u8; 32];
+    let h_stale = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    publish_live_at(&mut store, k_main, &h_main);
+    publish_live_at(&mut store, k_healthy, &h_healthy);
+    publish_live_at(&mut store, k_stale, h_stale);
+
+    // The production trigger, with the current worktree's (head, key).
+    maybe_maintain(&repo, &mut store, &h_main, &k_main);
+
+    assert!(
+        matches!(
+            store.get_generation(&k_stale, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Miss
+        ),
+        "a generation at a stale head (no resolvable worktree) must be demoted and evicted",
+    );
+    assert!(
+        matches!(
+            store.get_generation(&k_main, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "the main worktree's live generation must survive",
+    );
+    assert!(
+        matches!(
+            store.get_generation(&k_healthy, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "the healthy linked worktree's live generation must survive",
     );
 }

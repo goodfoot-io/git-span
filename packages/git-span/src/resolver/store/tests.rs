@@ -1278,7 +1278,9 @@ fn run_maybe_maintain_reconciled(store: &mut CacheStore, cap: u64, live_head: &s
         return GcStats::default();
     }
     let live: HashSet<String> = std::iter::once(live_head.to_string()).collect();
-    store.reconcile_live_heads(&live).unwrap();
+    // Moving-HEAD model: rule 1 (superseded-head demotion) alone drives this
+    // helper, so no current (head, key) narrowing is supplied.
+    store.reconcile_live_heads(&live, None).unwrap();
     store.maintain(cap).unwrap()
 }
 
@@ -1316,7 +1318,7 @@ fn reconcile_live_heads_demotes_only_superseded() {
     let live: HashSet<String> = ["head-a".to_string(), "head-c".to_string()]
         .into_iter()
         .collect();
-    let demoted = store.reconcile_live_heads(&live).unwrap();
+    let demoted = store.reconcile_live_heads(&live, None).unwrap();
     assert_eq!(demoted, 1, "exactly the head-b generation is demoted");
 
     assert_eq!(live_flag(&store, &key(0)), 1, "head-a stays live");
@@ -1332,7 +1334,7 @@ fn reconcile_live_heads_demotes_only_superseded() {
     );
 
     // Idempotent: reconciling again against the same set demotes nothing more.
-    assert_eq!(store.reconcile_live_heads(&live).unwrap(), 0);
+    assert_eq!(store.reconcile_live_heads(&live, None).unwrap(), 0);
 }
 
 /// FIXED: repeated current-version commits cannot grow the store without bound.
@@ -1402,6 +1404,130 @@ fn superseded_generations_reconciled_and_evicted() {
     assert!(
         removed_total > 0,
         "reconciliation must let maintain reclaim superseded generations (removed {removed_total})",
+    );
+}
+
+/// FIXED (card main-157 F2): dirty-state churn at a *single, unchanging* HEAD
+/// cannot grow the store without bound. The moving-HEAD test above supersedes
+/// each generation by moving to a fresh commit; this one never moves — it holds
+/// one HEAD fixed and publishes many distinct summary-only overlays, exactly a
+/// developer (or an editor extension running `git span stale` on save) sitting
+/// on one commit and producing many distinct dirty worktree states.
+///
+/// Head-scoped liveness alone leaves every same-head overlay permanently live,
+/// so [`CacheStore::eviction_candidates`]' `WHERE live = 0` filter never sees
+/// them and the store climbs linearly with the churn count (the measured 496%
+/// -of-cap, still-climbing gap). The same-head demotion rule
+/// [`CacheStore::reconcile_live_heads`] now applies when a current `(head, key)`
+/// is supplied — demote every live summary-only overlay at the current head
+/// other than the current key — bounds the working set: the current overlay and
+/// the rows-bearing clean baseline the overlays reuse from stay live; abandoned
+/// prior overlays become evictable.
+#[test]
+fn same_head_dirty_churn_reconciled_and_evicted() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let cap = 256 * 1024;
+    let head = "fixedheadcommitoiddeadbeefcafef00dfixedhead";
+
+    // The warm clean baseline at the fixed head: rows-bearing (row_count > 0),
+    // published live. Dirty overlays reuse from it, so the same-head rule must
+    // never demote it.
+    let baseline = key_u32(0);
+    {
+        let mut input = make_big_input(baseline, 8 * 1024, 4);
+        input.head = head.to_string();
+        input.live = true;
+        store.publish_generation(&input).unwrap();
+    }
+
+    let mut sizes = Vec::new();
+    let mut removed_total = 0u64;
+    let mut last_overlay = baseline;
+    // Dirty-state churn: the HEAD never moves. Each iteration is a distinct
+    // dirty worktree state -> a distinct canonical key -> a summary-only overlay
+    // published `live` at the *same* head (exactly the dirty path of
+    // `exact::publish_if_eligible`).
+    for n in 1..=200u32 {
+        let overlay = key_u32(n);
+        last_overlay = overlay;
+        let mut input = make_big_input(overlay, 16 * 1024, 0);
+        input.head = head.to_string();
+        input.live = true;
+        store.publish_generation_summary_only(&input).unwrap();
+
+        // The production trigger, faithfully ordered: above the high-water mark,
+        // reconcile against the (unchanged) single live head — scoped to the
+        // just-published current (head, key) — then the bounded quota pass.
+        if store.database_size_bytes().unwrap() > cap {
+            let live: HashSet<String> = std::iter::once(head.to_string()).collect();
+            store
+                .reconcile_live_heads(&live, Some((head, &overlay)))
+                .unwrap();
+            let stats = store.maintain(cap).unwrap();
+            removed_total += stats.generations_removed;
+        }
+        sizes.push(store.database_size_bytes().unwrap());
+    }
+
+    let last = *sizes.last().unwrap();
+    let steady_max = sizes[100..].iter().copied().max().unwrap();
+    eprintln!(
+        "GROWTH same-head-churn n=200 cap={cap} at20={} at50={} at100={} at200={last} steady_max={steady_max} removed_total={removed_total}",
+        sizes[20], sizes[50], sizes[100],
+    );
+    // Bounded: HEAD held constant, the footprint stays within a small multiple
+    // of the cap instead of climbing linearly with the churn count. (Unfixed —
+    // head-scoped liveness only — this reached ~5x the cap and kept climbing,
+    // reclaiming nothing.)
+    assert!(
+        steady_max <= 2 * cap,
+        "same-head-churn footprint grew unbounded: steady-state max {steady_max} exceeds 2x cap ({cap})",
+    );
+    // A true plateau, not a slow climb: the last iteration is no larger than
+    // iteration 100.
+    assert!(
+        sizes[199] <= sizes[100] + 64 * 1024,
+        "footprint still climbing with churn count: [100]={} [199]={}",
+        sizes[100],
+        sizes[199],
+    );
+    // Reconciliation actually fed the quota (unfixed, this was exactly zero).
+    assert!(
+        removed_total > 0,
+        "same-head reconciliation must let maintain reclaim abandoned overlays (removed {removed_total})",
+    );
+
+    // Correct retained set. The current overlay stays live and findable...
+    assert_eq!(
+        live_flag(&store, &last_overlay),
+        1,
+        "the current dirty overlay must stay live",
+    );
+    assert!(
+        store
+            .get_generation(&last_overlay, V1)
+            .unwrap()
+            .hit()
+            .is_some(),
+        "the current dirty overlay must remain findable",
+    );
+    // ...the rows-bearing clean baseline the overlays reuse from is never
+    // demoted (row_count > 0 is exempt) and never evicted...
+    assert_eq!(
+        live_flag(&store, &baseline),
+        1,
+        "the rows-bearing clean baseline must stay live",
+    );
+    assert!(
+        store.get_generation(&baseline, V1).unwrap().hit().is_some(),
+        "the clean baseline must remain findable",
+    );
+    // ...while an early abandoned overlay was demoted and reclaimed.
+    assert_eq!(
+        store.get_generation(&key_u32(1), V1).unwrap(),
+        GetOutcome::Miss,
+        "an abandoned prior overlay must have been reclaimed",
     );
 }
 

@@ -59,17 +59,28 @@ pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
 /// is backed by no active worktree — it has been superseded and is eligible
 /// for quota eviction.
 ///
-/// **Fails closed.** A generation is demoted only against a *complete* live
-/// set: enumerating the linked worktrees, or resolving any one of their HEADs,
-/// is a hard error here so the caller skips liveness reconciliation entirely
-/// rather than demote a possibly-live generation on a partial set. The one
-/// tolerated gap is the main worktree's HEAD when the main repo is bare or
-/// unborn (no checked-out state to keep alive) — that is not an error, just an
-/// absent contribution.
+/// **Fails closed on blindness, not on a single prunable worktree.** The
+/// distinction is deliberate (card main-157 F3). *Enumerating* the linked
+/// worktrees is a hard error: if we cannot list them we may be blind to an
+/// entire live worktree, so the caller must skip reconciliation rather than
+/// demote against a set that silently omits one. But once enumeration succeeds,
+/// a *single* worktree that cannot be opened or whose HEAD will not resolve —
+/// the ordinary, persistent state of a linked worktree whose working directory
+/// was deleted without `git worktree remove`/`prune` — is skipped, not fatal:
+/// its head is simply excluded from the live set. Its failure is never treated
+/// as proof of non-liveness for any *other* head, and the resolvable heads
+/// (this worktree's, the main worktree's, every healthy linked worktree's) are
+/// still a sound basis for demoting a head that no resolvable worktree sits on.
+/// Failing the whole reconcile on that one entry instead would let a prunable
+/// worktree permanently disable quota reclamation. This worktree's own HEAD
+/// must resolve — if it does not we are in no state to reason about liveness,
+/// so that one is fatal. The main worktree's HEAD when the main repo is bare or
+/// unborn (no checked-out state to keep alive) is a tolerated absent
+/// contribution, not an error.
 pub(crate) fn live_worktree_heads(repo: &gix::Repository) -> Result<HashSet<String>> {
     let mut heads = HashSet::new();
     // This worktree's own HEAD — always present, always the generation we just
-    // published with.
+    // published with. Fatal if unresolvable.
     heads.insert(head_oid(repo)?);
 
     // The main worktree, reached from a linked worktree. A bare/unborn main has
@@ -80,19 +91,19 @@ pub(crate) fn live_worktree_heads(repo: &gix::Repository) -> Result<HashSet<Stri
         heads.insert(id.detach().to_string());
     }
 
-    // Every linked worktree. Any failure to enumerate or resolve is fatal so
-    // the caller fails closed (skips reconciliation) rather than act on a
-    // partial live set.
+    // Enumerating the linked worktrees must succeed — a failure here means we
+    // cannot see the full set and might miss a live worktree entirely, so we
+    // fail closed and the caller skips reconciliation.
     let proxies = repo
         .worktrees()
         .map_err(|e| Error::Git(format!("enumerate worktrees: {e}")))?;
+    // A single linked worktree that will not open or whose HEAD will not
+    // resolve is skipped, not fatal (see the fail-closed-on-blindness note
+    // above): its head is excluded from the live set, never treated as proof of
+    // non-liveness for another head.
     for proxy in proxies {
-        let wt = proxy
-            .into_repo()
-            .map_err(|e| Error::Git(format!("open linked worktree: {e}")))?;
-        let id = wt
-            .head_id()
-            .map_err(|e| Error::Git(format!("resolve linked worktree HEAD: {e}")))?;
+        let Ok(wt) = proxy.into_repo() else { continue };
+        let Ok(id) = wt.head_id() else { continue };
         heads.insert(id.detach().to_string());
     }
     Ok(heads)

@@ -753,8 +753,11 @@ fn publish_if_eligible(
             crate::perf::counter("cache-path.publish-ok", 1);
             // The one production trigger for 6A's quota maintenance: bounded
             // foreground work, gated by a cheap high-water check (see
-            // [`maybe_maintain`]), right after a generation lands.
-            maybe_maintain(repo, store);
+            // [`maybe_maintain`]), right after a generation lands. The just-
+            // published `(head, key)` is the current worktree's live generation
+            // — passed through so reconciliation can demote the stale same-head
+            // overlays dirty-state churn leaves behind (card main-157 F2).
+            maybe_maintain(repo, store, &token.head, key);
         }
         Err(e) => {
             incr_publish_failures();
@@ -775,7 +778,7 @@ fn publish_if_eligible(
 ///
 /// This is the sole production caller of `maintain`: 6A landed the mechanism
 /// inert (a callable API nobody called); 6B wires it here.
-fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore) {
+fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
     let cap = store_max_bytes(repo);
     let size = match store.database_size_bytes() {
         Ok(n) => n,
@@ -794,7 +797,7 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore) {
     // `maintain`'s `WHERE live = 0` candidate filter reclaims nothing — the
     // measured quota defeat this fixes (card main-157 Phase 6C). This runs only
     // above the cap, so its worktree enumeration is off the hot read path.
-    reconcile_liveness(repo, store);
+    reconcile_liveness(repo, store, head, key);
     match store.maintain(cap) {
         Ok(stats) => emit_gc_stats(cap, &stats),
         Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
@@ -814,7 +817,12 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore) {
 /// findable — at the cost of deferring reclamation to a later, cleaner pass.
 /// `maintain` (called next) still runs regardless; it simply finds fewer (or
 /// no) candidates when reconciliation was skipped.
-fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore) {
+///
+/// `head`/`key` are the just-published current generation. They scope the
+/// same-head demotion rule (card main-157 F2): among the summary-only overlays
+/// dirty-state churn leaves at the current HEAD, only the current key stays
+/// live. See [`CacheStore::reconcile_live_heads`].
+fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
     let live_heads = match crate::git::live_worktree_heads(repo) {
         Ok(h) => h,
         Err(e) => {
@@ -822,7 +830,7 @@ fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore) {
             return;
         }
     };
-    match store.reconcile_live_heads(&live_heads) {
+    match store.reconcile_live_heads(&live_heads, Some((head, key))) {
         Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
         Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),
     }
