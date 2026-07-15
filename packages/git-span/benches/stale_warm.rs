@@ -1,12 +1,10 @@
 //! Phase 3 step 8: warm-run SLA benchmark for `git span stale`.
 //!
 //! Two scenarios:
-//!   cold — clear EVERY persistent cache tier before each iteration: both
-//!          the filesystem cache (`<git_dir>/span/cache/`, gated by
-//!          `GIT_SPAN_CACHE`) and the SQLite cache
-//!          (`<git_dir>/span/stale-cache.db[-wal|-shm]`, gated by
-//!          `GIT_SPAN_CACHE_V2`). Deleting only one tier leaves the other
-//!          warm and the "cold" measurement is not actually cold.
+//!   cold — clear the one persistent cache before each iteration: the SQLite
+//!          store (`<git_dir>/span/store.db[-wal|-shm]`), the only cache after
+//!          the Phase 7 cutover deleted both legacy tiers. Deleting the store
+//!          (plus its WAL/SHM sidecars) is a genuine cold start.
 //!   warm — measure subsequent runs after a priming cold run
 //!
 //! The warm mean must be `< 40 ms` before the SLA appears in user-facing copy.
@@ -128,29 +126,17 @@ fn build_fixture() -> Fixture {
     }
 }
 
-/// Path to the filesystem cache directory (`resolver/cache`, gated by
-/// `GIT_SPAN_CACHE`) inside a repo's `.git`.
-fn fs_cache_dir(repo_path: &std::path::Path) -> PathBuf {
-    repo_path.join(".git").join("span").join("cache")
+/// Path to the one active SQLite store (`resolver/store`) inside a repo's
+/// `.git`. This is the sole persistent cache after the Phase 7 cutover.
+fn store_db(repo_path: &std::path::Path) -> PathBuf {
+    repo_path.join(".git").join("span").join("store.db")
 }
 
-/// Path to the SQLite cache database (`resolver/cache_v2`, gated by
-/// `GIT_SPAN_CACHE_V2`) inside a repo's `.git`. Sibling to, NOT inside,
-/// `fs_cache_dir()` — see `git::cache_dir` and `cache_v2::schema::db_path`.
-fn sqlite_cache_db(repo_path: &std::path::Path) -> PathBuf {
-    repo_path.join(".git").join("span").join("stale-cache.db")
-}
-
-/// Clear EVERY persistent cache tier to simulate a cold start: the
-/// filesystem cache directory and the SQLite database (plus its WAL/SHM
-/// sidecar files). Clearing only one tier while the other stays warm would
-/// silently measure a mixed cold/warm state, not a true cold start.
+/// Clear the one persistent cache to simulate a cold start: the SQLite store
+/// database plus its WAL/SHM sidecar files. There is a single tier now (the
+/// cutover deleted both legacy caches), so this is a true cold start.
 fn clear_cache(repo_path: &std::path::Path) {
-    let dir = fs_cache_dir(repo_path);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("remove filesystem cache");
-    }
-    let db = sqlite_cache_db(repo_path);
+    let db = store_db(repo_path);
     for suffix in ["", "-wal", "-shm"] {
         let path = PathBuf::from(format!("{}{suffix}", db.display()));
         if path.exists() {
@@ -240,16 +226,15 @@ fn bench_warm(c: &mut Criterion) {
     g.finish();
 }
 
-/// Warm run with the filesystem cache disabled (`GIT_SPAN_CACHE=0`).
+/// Warm run with the cache disabled (`GIT_SPAN_CACHE=0`).
 ///
-/// `GIT_SPAN_CACHE=0` disables ONLY the `resolver/cache` filesystem tier —
-/// it does NOT disable SQLite (`resolver/cache_v2`, gated separately by
-/// `GIT_SPAN_CACHE_V2`). This benchmark therefore still runs with the SQLite
-/// tier live; it documents the filesystem cache's own contribution, not a
-/// fully cache-disabled baseline.
+/// After the Phase 7 cutover `GIT_SPAN_CACHE=0` is the single "disable all
+/// caching" switch: it bypasses the one SQLite store entirely (there is no
+/// longer any separate tier to leave live). This benchmark therefore measures
+/// a genuinely cache-disabled warm path.
 ///
-/// Documents the relative gap between cached and uncached warm paths.
-/// The warm-no-cache mean minus the warm mean is the filesystem cache's
+/// Documents the relative gap between the cached and fully-uncached warm paths.
+/// The warm-no-cache mean minus the warm mean is the store's whole
 /// contribution.
 fn bench_warm_no_cache(c: &mut Criterion) {
     let f = build_fixture();

@@ -102,15 +102,62 @@ The cache-path counters below are a SEPARATE, additive mechanism that does **not
 GIT_SPAN_PERF=1 git span stale --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
 ```
 
+These counters are THE cache diagnostics surface. There is one cache — the
+SQLite store (`<git_dir>/span/store.db`, see [`resolver/store`](../src/resolver/store/mod.rs)) —
+and the `cache-path.*` family reports everything it does: which path a run
+took, why it bypassed, what it published, and what the bounded quota reclaimed.
+The Phase 7 cutover deleted both legacy caches (`resolver/cache`,
+`resolver/cache_v2`) and their `cache.l1-*` / `cache.l2-*` counter families;
+nothing contrasts against this surface anymore.
+
+Every line is emitted via the same [`crate::perf::note`](../src/perf.rs) /
+[`crate::perf::counter`](../src/perf.rs) calls every other `--perf` diagnostic
+uses — plain, gated output — so they cost nothing when `--perf`/`GIT_SPAN_PERF=1`
+is off. `note` lines are free-form text; `counter` lines carry an integer value.
+
+**Routing — which path served the run** (exactly one `hit-class` per run):
+
 | Line | Meaning |
 |------|---------|
-| `git-span perf: cache-path.hit-class: exact` | The committed cache key resolved and the working tree was clean — `resolver/cache_v2`'s warm-clean path. |
-| `git-span perf: cache-path.hit-class: dirty` | The committed cache key resolved but the working tree carried dirty paths — `resolver/cache_v2`'s warm-dirty (affected-set) path. |
-| `git-span perf: cache-path.hit-class: miss` | `resolver/cache_v2` did not serve this run (ineligible options, cache-open failure, or a genuine cold/invalidated key); the uncached resolver ran instead. |
-| `git-span perf: cache-path.bypass-reason: <reason>` | Only emitted alongside `hit-class: miss`; the same text as `cache_v2.fallback-reason`, naming why the cache did not serve this run (e.g. `disabled-by-env`, `dirty-set-requires-full-scan`, `open-cache: <err>`). |
+| `cache-path.hit-class: exact` | The committed cache key resolved and the working tree was clean; the compact summary was decoded and projected in memory (the warm-clean exact hit). |
+| `cache-path.hit-class: exact-memo` | An exact hit served from the bounded in-process memo (a repeat within the same process), before any store read. |
+| `cache-path.hit-class: incremental` | No exact generation, but a cached ancestor generation was found; only the changed span blobs/affected definitions were re-resolved and the rest reused. |
+| `cache-path.hit-class: dirty` | The committed key resolved but the working tree carried dirty paths; unaffected spans were rendered from the committed baseline and only the affected set was resolved. |
+| `cache-path.hit-class: miss` | The store did not serve this run (ineligible options, store-open failure, a torn-read revalidation, or a genuine cold/invalidated key); the uncached resolver ran instead. |
+| `cache-path.bypass-reason: <reason>` | Emitted alongside a miss/bypass, naming why the store did not serve — e.g. `capture-token: <err>`, `uncommitted-span-files`, `store-open: <err>`, `summary-decode`, `rejected-<reason>`, `revalidate-torn-read`, `dirty-no-baseline`, `dirty-no-reuse`, `incremental-no-ancestor`, `incremental-no-reuse`. |
 
-There is no `incremental` hit class yet — the ancestor-reuse path these counters will report on is built in a later card main-157 phase (Phase 4). There is no build-lock-wait counter yet either, because the current code has no lock-shard/build-lock concept (Phase 2 introduces it); once that concept exists, its wait time is added here rather than replacing this section's mechanism.
+`GIT_SPAN_CACHE=0` is reported as an ordinary bypass: the entry point returns before touching the store, so a disabled run simply shows no `cache-path.*` routing beyond its bypass.
 
-These three lines are emitted via the same [`crate::perf::note`](../src/perf.rs) call every other free-form `--perf` diagnostic uses — a plain, gated `eprintln!` — so enabling them costs nothing when `--perf`/`GIT_SPAN_PERF=1` is off, and adding them required no new plumbing.
+**Cold miss and publish** (a miss that resolves and stores a new generation):
 
-The pre-existing L1/L2 counters (`cache.l1-hits`, `cache.l1-misses`, `cache.l2-hits`, `cache.l2-misses`, and friends — see [`src/perf.rs`](../src/perf.rs)) cover the SEPARATE `resolver/cache` filesystem tier (`GIT_SPAN_CACHE`) at a finer grain; the `cache-path.*` lines above are the `resolver/cache_v2` SQLite tier's (`GIT_SPAN_CACHE_V2`) top-level routing decision. Both tiers, and both counter families, are replaced by the new store's single hit-class/bypass-reason emission in a later phase.
+| Line | Meaning |
+|------|---------|
+| `cache-path.cold-miss-builds` | Resolver builds this run performed (exactly `1` for a well-behaved cold miss — the single-pass guarantee). |
+| `cache-path.state-observe-us` | Microseconds spent capturing the external state token (`.git/index`, worktree paths, committed `.span` sidecars) that keys the read. |
+| `cache-path.revalidate-discarded` (+ `: <field>`) | The snapshot moved mid-build on a non-HEAD field, so the single-pass core was discarded as a possible torn read. |
+| `cache-path.publish-rows` | Reuse rows written in the publish transaction. |
+| `cache-path.publish-summary-bytes` | Byte size of the compact render-ready summary persisted. |
+| `cache-path.publish-dependency-fanout` | Distinct dependency identities the generation records. |
+| `cache-path.publish-us` | Microseconds spent in the publish transaction. |
+| `cache-path.publish-ok` / `cache-path.publish-failed` (+ `: <err>`) | Publish outcome. A failure fails closed on the *cache*, never the command — the already-computed result still renders. |
+| `cache-path.publish-skipped: ineligible` | The token was persistence-ineligible (e.g. an incomplete filter dependency identity), so nothing was stored. |
+
+**Incremental / dirty reuse counts** (work proportional to what changed):
+
+| Line | Meaning |
+|------|---------|
+| `cache-path.incremental-anchor-resolutions` / `cache-path.incremental-reused-spans` / `cache-path.incremental-resolved-spans` | Anchors re-resolved, spans reused unchanged, and spans rebuilt on the incremental ancestor-reuse path. |
+| `cache-path.dirty-anchor-resolutions` / `cache-path.dirty-reused-spans` / `cache-path.dirty-resolved-spans` | The same three counts on the dirty affected-set path. |
+
+**Integrity, corruption recovery, and bounded lifecycle** (emitted when a maintenance pass runs — only above the quota high-water mark, off the hot read path):
+
+| Line | Meaning |
+|------|---------|
+| `cache-path.corruption-recovered: <reason>` | The store quarantined and recreated an incompatible-schema or `SQLITE_CORRUPT` database on open; a silent recovery made reportable. |
+| `cache-path.reconcile-demoted` | Superseded generations demoted from `live` after reconciling against the repository's active worktree HEADs, making them evictable. |
+| `cache-path.reconcile-skipped: live-heads: <err>` / `cache-path.reconcile-failed: <err>` | Liveness reconciliation could not run in full (fail closed: nothing is demoted, correctness preserved). |
+| `cache-path.store-cap-bytes` | The configured byte ceiling (default 256 MiB; overridable via `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`). |
+| `cache-path.gc-bytes-before` / `cache-path.gc-bytes-after` | Store size on disk before and after the bounded eviction + WAL truncate. |
+| `cache-path.gc-generations-removed` / `cache-path.gc-rows-removed` | Non-live generations and rows the quota pass evicted. |
+| `cache-path.gc-corruption-recovered: true` | A corruption recovery folded into this maintenance pass. |
+| `cache-path.maintain-skipped: size: <err>` / `cache-path.maintain-failed: <err>` | The maintenance pass could not size or complete (the command still succeeds). |

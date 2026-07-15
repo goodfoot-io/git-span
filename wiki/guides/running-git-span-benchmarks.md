@@ -1,6 +1,6 @@
 ---
 title: Running the git-span benchmarks
-summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-stale SLA gate, the synthetic size-sweep and its deterministic corpus generator, the true cache-off oracle (GIT_SPAN_CACHE plus GIT_SPAN_CACHE_V2 both disabled), and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
+summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-stale SLA gate, the synthetic size-sweep and its deterministic corpus generator, the one active SQLite store and its single GIT_SPAN_CACHE=0 disable switch, the quota/GC/diagnostics surface, and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
 aliases: [git-span benchmarks, bench:check, yarn bench, size sweep, perf-baseline, real_corpus]
 ---
 
@@ -26,28 +26,33 @@ The benches build their fixtures from **library symbols** (`SpanFile`, `AnchorRe
 
 ## `yarn bench` — the real-corpus scoreboard
 
-[real_corpus.rs](../../packages/git-span/benches/real_corpus.rs) drives the **actual `git-span` binary** (`env!("CARGO_BIN_EXE_git-span")`) over the repository's own [.span/](../../.span) corpus, so the numbers include process startup, repo discovery, and corpus parse — the real cost a developer feels. It clones the workspace into a tempdir (`git clone --local`, with a `--no-hardlinks` fallback for cross-device `/tmp`) so it never mutates the developer's real `stale-cache.db`.
+[real_corpus.rs](../../packages/git-span/benches/real_corpus.rs) drives the **actual `git-span` binary** (`env!("CARGO_BIN_EXE_git-span")`) over the repository's own [.span/](../../.span) corpus, so the numbers include process startup, repo discovery, and corpus parse — the real cost a developer feels. It clones the workspace into a tempdir (`git clone --local`, with a `--no-hardlinks` fallback for cross-device `/tmp`) so it never mutates the developer's real `store.db`.
 
-Per-operation cells: `list`, `tree`, `show`, `history`, `stale-cold`, `stale-warm`, and a `dirty-tree-stale-cold` cell.
+Per-operation cells: `list`, `tree`, `show`, `history`, `stale-cold`, `stale-warm`, `dirty-tree-stale-cold`, `dirty-tree-stale-warm`, the interior-anchor cell, `list <glob>` variants, and `stale-fix`.
 
 ### The byte-identical correctness oracle
 
-Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **every currently-existing persistent cache tier disabled** (`GIT_SPAN_CACHE=0` AND `GIT_SPAN_CACHE_V2=0`, the genuine ground truth) and once with the cache live — and asserts all three are identical, across **all five `stale` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
+Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **the one cache disabled** (`GIT_SPAN_CACHE=0`, the single "disable all caching" switch, hence the genuine ground truth) and once with the store live — and asserts all three are identical, across **all five `stale` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
 
-Setting only `GIT_SPAN_CACHE_V2=0` is **not** a valid oracle by itself: it disables the SQLite `resolver/cache_v2` tier but leaves the filesystem `resolver/cache` tier (gated by `GIT_SPAN_CACHE`) live, so a "cache-disabled" run can still be served partly from cache. This was a real gap — see `notes/investigation-question-log.md` Step 2, "Does the documented cache-off oracle provide ground truth?" (card main-157) — fixed by disabling both switches together everywhere this guide's oracle is described.
+`GIT_SPAN_CACHE=0` is a genuine ground truth on its own: after the Phase 7 cutover there is a single cache — the SQLite store — and that switch bypasses it entirely. No sibling tier can leave a "cache-disabled" run partly warm, because both legacy tiers (`resolver/cache`, `resolver/cache_v2`) were deleted. Historically this was a real gap — a two-tier era where disabling only one tier left the other live, see `notes/investigation-question-log.md` Step 2, "Does the documented cache-off oracle provide ground truth?" (card main-157) — which the collapse to one store and one switch closes structurally.
 
 ### Per-op budgets and the no-regression rule
 
 Each operation has its own hard latency ceiling — never a single composite score, so a win on one command cannot mask a regression on another. Cells accumulate raw samples; a final report computes a robust **median** per op (warmup discarded), prints the full scoreboard, and evaluates every ceiling and the baseline-relative rule in one end-of-run pass (so one noisy op never aborts the rest). The no-regression rule — `median > baseline_median * 1.35 + noise_floor` — reads its baselines from [perf-baseline.json](../../packages/git-span/benches/perf-baseline.json); when that file is absent (a fresh checkout) the regression check is skipped and only ceilings + the oracle run.
 
-### The cache-off switches
+### The one active store
 
-Two switches exist today, and BOTH must be set to produce a genuine ground-truth run:
+There is exactly one persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` / `-shm` sidecars), owned by [resolver/store](../../packages/git-span/src/resolver/store/mod.rs). The Phase 7 cutover (card main-157) deleted both legacy caches — the `resolver/cache` filesystem tier and the `resolver/cache_v2` SQLite tier — so this store is the whole on-disk cache footprint. To clear it for a genuine cold run, remove `store.db*`; the benches and the [bench-span.sh](../../scripts/bench-span.sh) / [bench-span-scale.sh](../../scripts/bench-span-scale.sh) harnesses do exactly this in their cache-clearing helpers.
 
-- `GIT_SPAN_CACHE_V2=0` disables the cross-invocation SQLite stale cache ([cache_v2](../../packages/git-span/src/resolver/cache_v2/mod.rs)).
-- `GIT_SPAN_CACHE=0` disables the filesystem content cache ([cache](../../packages/git-span/src/resolver/cache/mod.rs)) — this is a SEPARATE persistent tier, not merely a "within-run" cache; it persists on disk across invocations at `<git_dir>/span/cache`.
+**Sharing boundary.** The store lives in the Git *common* directory, so it is shared across **linked worktrees of one clone on one host** — a build in any worktree reuses generations published by its siblings. It is explicitly **not** shared cross-host or cross-clone: same-host linked-worktree sharing is a design constraint, cross-host is a stated non-goal (see `notes/architecture-and-complexity.md`, card main-157). Each clone keeps its own store.
 
-Only the exact string `"0"` disables either switch; anything else leaves that tier on (fail-closed). The oracle sets both together — setting only `GIT_SPAN_CACHE_V2=0` leaves the filesystem tier live and is **not** a valid cache-off comparison (see the correctness-oracle section above). Card main-157 replaces both switches with a single new-store disable switch; when that lands, update this section to name the one switch rather than two.
+### The cache-off switch
+
+One switch disables the one cache: `GIT_SPAN_CACHE=0`. It is the single "disable all caching" control — the entry point returns before touching the store, and the command runs the uncached authoritative resolver. Only the exact string `"0"` disables it; anything else leaves the store on (fail-closed). This switch alone is a genuine ground-truth run — there is no second tier to leave live. Its history is worth knowing: it once named only the (now-deleted) `resolver/cache` filesystem tier while a separate `GIT_SPAN_CACHE_V2` gated the SQLite tier; the cutover removed `GIT_SPAN_CACHE_V2` (and the development-only `GIT_SPAN_CACHE_STORE_V3` selector) and repurposed `GIT_SPAN_CACHE=0` as the sole disable switch over the sole store.
+
+### Quota, GC, and diagnostics
+
+The store is bounded by a byte high-water mark (default **256 MiB**), overridable via `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`. Maintenance runs only when a publish pushes the database over the cap — off the hot read path: it reconciles generation liveness against the repository's active worktree HEADs (so superseded generations become evictable), evicts non-live generations cheapest-to-rebuild first, cleans orphan rows, and checkpoints/truncates the WAL. A `SQLITE_CORRUPT` or schema-incompatible database is quarantined and recreated on open. Every step is observable through the `cache-path.*` perf counters (hit class, bypass reason, publish rows/bytes/fanout/duration, corruption-recovery, liveness reconciliation, and GC bytes/generations/rows) — see [docs/profiling.md](../../packages/git-span/docs/profiling.md) for the full family. `GIT_SPAN_PERF=1` (or `--perf`) turns them on; they cost nothing when off.
 
 ### The in-process warm SLA
 
@@ -55,7 +60,7 @@ Only the exact string `"0"` disables either switch; anything else leaves that ti
 
 ## `size_sweep` — scaling-cliff detection
 
-[size_sweep.rs](../../packages/git-span/benches/size_sweep.rs) answers the question the fixed real corpus cannot: does cost stay linear as a repo grows? It generates corpora at 25 / 150 / 600 / 2000 spans in both commit-graph-present and commit-graph-absent variants, forces the cold uncached resolver (`GIT_SPAN_CACHE_V2=0` and `GIT_SPAN_CACHE=0`), takes a robust median per size (warmup discarded), and computes the scaling exponent `log(t_B/t_A)/log(size_B/size_A)` for each adjacent size pair. Any exponent above the significance band (1.65) panics, naming the offending pair — catching a reintroduced super-linear regression (the historical hazard being the relocation scan and reverse-walk bookkeeping in [session.rs](../../packages/git-span/src/resolver/session.rs)).
+[size_sweep.rs](../../packages/git-span/benches/size_sweep.rs) answers the question the fixed real corpus cannot: does cost stay linear as a repo grows? It generates corpora at 25 / 150 / 600 / 2000 spans in both commit-graph-present and commit-graph-absent variants, forces the cold uncached resolver (`GIT_SPAN_CACHE=0`, the single disable switch), takes a robust median per size (warmup discarded), and computes the scaling exponent `log(t_B/t_A)/log(size_B/size_A)` for each adjacent size pair. Any exponent above the significance band (1.65) panics, naming the offending pair — catching a reintroduced super-linear regression (the historical hazard being the relocation scan and reverse-walk bookkeeping in [session.rs](../../packages/git-span/src/resolver/session.rs)).
 
 It carries `required-features = ["bench-corpus"]`, is invisible to the default build, and runs only via `cargo bench --bench size_sweep --features bench-corpus`. A full 2000-span cold sweep takes minutes — expected, not a hang.
 

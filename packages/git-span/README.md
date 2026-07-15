@@ -4,11 +4,11 @@
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git span stale --help` for flag reference.
 
-### Upgrading from the sqlite cache
+### The stale cache
 
-The trail cache now lives at `<common_dir>/span/cache/v1/` as a BLAKE3-keyed content-addressed filesystem store. The previous sqlite-backed cache at `<common_dir>/span/cache/span_cache.sqlite` (or `<git_dir>/span/cache/span_cache.sqlite` on older per-worktree installations), along with its `-shm` and `-wal` companions, is unused and can be removed with a single `rm -f <common_dir>/span/cache/span_cache.sqlite*` (and the `<git_dir>` variant if present). Nothing reads those files anymore.
+`git span stale` (and related resolution paths) are backed by a single persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` and `-shm` companions), implemented in `src/resolver/store/`. This is the whole on-disk cache footprint — remove `store.db*` to reset it. Setting `GIT_SPAN_CACHE=0` disables it for a run.
 
-Separately, and unrelated to the sqlite cache above, `git span stale` (and related resolution paths) are backed by a second, currently-active cache: a SQLite database at `<common_dir>/span/stale-cache.db` (see `src/resolver/cache_v2/schema.rs`). Cleanup of the on-disk footprint needs to account for both stores — the `cache/v1/` filesystem store and `stale-cache.db` (plus its `-shm`/`-wal` companions) — not just one.
+The store is bounded by a byte high-water mark (256 MiB by default; override with `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`), with transactional GC that runs only when a publish crosses the cap. It lives in the Git *common* directory, so it is shared across linked worktrees of one clone on one host; it is not shared cross-host or cross-clone. Earlier releases kept two separate caches (a `cache/v1/` filesystem trail store and a `stale-cache.db`); both were replaced by this one store and leave no files behind on a fresh clone.
 
 ## Profiling
 

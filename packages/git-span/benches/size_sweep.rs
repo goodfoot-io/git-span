@@ -3,11 +3,12 @@
 //!
 //! ## What is measured
 //!
-//! `stale_spans` called with `EngineOptions::full()` and both
-//! `GIT_SPAN_CACHE_V2=0` and `GIT_SPAN_CACHE=0` set, so every iteration
-//! exercises the cold algorithmic path (`stale_spans_inner`).  A warm cache
-//! hit would measure cache machinery rather than the relocation scan and
-//! reverse-walk bookkeeping that are the historical super-linear hazards.
+//! `stale_spans` called with `EngineOptions::full()` and `GIT_SPAN_CACHE=0`
+//! set — the single "disable all caching" switch the Phase 7 cutover left as
+//! the only cache control — so every iteration exercises the cold algorithmic
+//! path (`stale_spans_inner`).  A warm store hit would measure cache machinery
+//! rather than the relocation scan and reverse-walk bookkeeping that are the
+//! historical super-linear hazards.
 //!
 //! ## Sizes
 //!
@@ -122,8 +123,8 @@ fn build_fixture(span_count: usize, with_commit_graph: bool) -> Fixture {
 
 /// Time a single cold `stale_spans` call.
 ///
-/// Both `GIT_SPAN_CACHE_V2` and `GIT_SPAN_CACHE` must be `"0"` in the
-/// environment before calling this (set once in `sweep_group`).
+/// `GIT_SPAN_CACHE` must be `"0"` in the environment before calling this
+/// (set once in `sweep_group`) so the store is disabled and the cold path runs.
 fn time_cold_stale(repo_path: &std::path::Path) -> Duration {
     let repo = gix::open(repo_path).expect("gix::open");
     let t0 = Instant::now();
@@ -202,14 +203,13 @@ fn check_exponents(label: &str, sizes: &[usize], medians_ms: &[f64]) {
 
 fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
     // Force cold uncached resolver path for every stale_spans() call in this
-    // process.  Both switches must be set:
-    //   GIT_SPAN_CACHE_V2=0  — disables the SQLite v2 cache
-    //   GIT_SPAN_CACHE=0     — disables the older in-memory cache
+    // process. One switch disables the one cache:
+    //   GIT_SPAN_CACHE=0  — the single "disable all caching" control; bypasses
+    //                       the SQLite store entirely (Phase 7 cutover).
     // Safety: this bench is single-threaded (criterion runs one bench at a
-    // time) and these vars are set once before any timing begins.
+    // time) and this var is set once before any timing begins.
     #[allow(deprecated)]
     unsafe {
-        std::env::set_var("GIT_SPAN_CACHE_V2", "0");
         std::env::set_var("GIT_SPAN_CACHE", "0");
     }
 

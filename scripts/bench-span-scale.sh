@@ -31,12 +31,12 @@ PACK_REFS=0
 # ----------------------------- Cache-mode controls -----------------------------
 #
 # Same seven named cache states as `bench-span.sh` — see that script's
-# "Cache-mode controls" section for the full rationale. Repointing at the
-# future single disable switch (once card main-157 lands it) means editing
-# only the `export GIT_SPAN_CACHE...` lines below; state setup
-# (delete/prime/commit/dirty) is unchanged.
+# "Cache-mode controls" section for the full rationale. There is one cache and
+# one switch: `GIT_SPAN_CACHE=0` disables the single SQLite store
+# (`<git_dir>/span/store.db`); every other mode reaches its named state by
+# ACTIONS (delete/prime/commit/dirty) against that one store.
 #
-#   all-off              -- every persistent tier disabled (ground truth / oracle)
+#   all-off              -- the one store disabled (ground truth / oracle)
 #   exact-cold            -- persistent tiers live, but cache deleted before each sample
 #   exact-warm              -- persistent tiers live, cache primed once before sampling
 #   incremental-ancestor    -- warm cache, then an unrelated commit lands before sampling
@@ -106,7 +106,6 @@ esac
 # below is a shell FUNCTION and `env` cannot see shell functions.
 if [[ "$CACHE_MODE" == "all-off" ]]; then
   export GIT_SPAN_CACHE=0
-  export GIT_SPAN_CACHE_V2=0
 fi
 
 if [[ ${#EDGE_ANCHORS[@]} -gt 0 ]]; then
@@ -177,22 +176,16 @@ timed() {
   awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }'
 }
 
-# Delete every persistent cache tier: the legacy filesystem tier
-# (`<git_dir>/span/cache`), the legacy SQLite tier
-# (`<git_dir>/span/stale-cache.db` plus WAL/SHM sidecars), and the Phase 2/3
-# new-store SQLite tier (`<git_dir>/span/store.db` plus WAL/SHM sidecars,
-# `GIT_SPAN_CACHE_STORE_V3` — card main-157 Phase 3). Deleting only some tiers
-# leaves a "cold" state that is not actually cold — see
-# `notes/investigation-question-log.md` Step 2 (card main-157). Phase 3
-# sub-scope 3D measurement note: `store.db` was missing here, which would have
-# left the new-store path silently warm during every nominal "cold" sample.
+# Delete the one persistent cache: the SQLite store
+# (`<git_dir>/span/store.db` plus its WAL/SHM sidecars). This is the whole
+# cache footprint — the Phase 7 cutover deleted both legacy tiers (the
+# `resolver/cache` filesystem dir and the `resolver/cache_v2` `stale-cache.db`),
+# so there is nothing else to clear. Deleting the store makes the next sample a
+# genuine cold start (the historical "cold" hazard — a sibling tier left warm,
+# `notes/investigation-question-log.md` Step 2 — cannot recur with one tier).
 clear_all_cache_tiers() {
   local repo="$1"
-  rm -rf "$repo/.git/span/cache"
-  rm -f "$repo/.git/span/stale-cache.db" \
-        "$repo/.git/span/stale-cache.db-wal" \
-        "$repo/.git/span/stale-cache.db-shm" \
-        "$repo/.git/span/store.db" \
+  rm -f "$repo/.git/span/store.db" \
         "$repo/.git/span/store.db-wal" \
         "$repo/.git/span/store.db-shm"
 }
@@ -293,8 +286,8 @@ apply_cache_mode_state() {
   local repo="$1" hit_anchor="$2"
   case "$CACHE_MODE" in
     all-off)
-      # No further setup needed; the exported GIT_SPAN_CACHE/GIT_SPAN_CACHE_V2
-      # above disable both tiers for every invocation in this script run.
+      # No further setup needed; the exported GIT_SPAN_CACHE=0 above disables
+      # the one store for every invocation in this script run.
       clear_all_cache_tiers "$repo"
       ;;
     exact-cold)
@@ -317,15 +310,10 @@ apply_cache_mode_state() {
           && git commit --quiet -m "bench: unrelated ancestor commit" )
       ;;
     dirty-exact)
-      # Card main-157 Phase 5C wiring fix: `dirty-exact`/`dirty-affected` name
-      # the Phase 5 dirty-overlay tier, but that tier is fully inert unless
-      # `GIT_SPAN_CACHE_STORE_V3` selects the new store (see
-      # `resolver/exact/mod.rs::v3_selected()`) — without this export both
-      # modes silently ran the legacy `cache_v2` path this benchmark cell
-      # exists to move past. `export` (not per-invocation `env`) matches this
-      # script's existing `all-off` pattern: `timed()` is a shell function,
-      # invisible to a plain `env KEY=VAL` prefix.
-      export GIT_SPAN_CACHE_STORE_V3=1
+      # `dirty-exact`/`dirty-affected` exercise the store's dirty-overlay
+      # path. The store is the only cache and is always active (no selector
+      # switch — the Phase 7 cutover removed the development `GIT_SPAN_CACHE_STORE_V3`
+      # selector), so priming warm and then dirtying is all these modes need.
       clear_all_cache_tiers "$repo"
       ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
       # Dirty exactly the anchored source of the reader-glob anchor.
@@ -333,8 +321,7 @@ apply_cache_mode_state() {
       ( cd "$repo" && printf '\n// bench dirty-exact marker\n' >>"$target" )
       ;;
     dirty-affected)
-      # See the `dirty-exact` case above for why this export is required.
-      export GIT_SPAN_CACHE_STORE_V3=1
+      # Same store dirty-overlay path as `dirty-exact`; no selector switch.
       clear_all_cache_tiers "$repo"
       ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
       # Dirty a tracked file NO span anchors, so the affected-set stays small

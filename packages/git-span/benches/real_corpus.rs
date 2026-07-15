@@ -4,13 +4,13 @@
 //!
 //! ## Corpus isolation
 //! The bench clones the workspace via `git clone --local` into a `tempfile::TempDir`
-//! so the developer's live `stale-cache.db` is never touched.  Cold iterations
+//! so the developer's live `store.db` is never touched.  Cold iterations
 //! delete only the clone's cache; warm iterations prime only the clone's cache.
 //!
 //! ## Oracle
-//! Before the hot loop each cell runs the command twice: once with EVERY
-//! persistent cache tier disabled (`GIT_SPAN_CACHE=0` AND
-//! `GIT_SPAN_CACHE_V2=0` — ground truth) and once with the cache enabled.
+//! Before the hot loop each cell runs the command twice: once with the single
+//! SQLite store disabled (`GIT_SPAN_CACHE=0` — the one "disable all caching"
+//! switch, hence the ground truth) and once with the store enabled.
 //! The oracle asserts byte-identical stdout, a matching stderr contract, and
 //! a matching exit status. This runs outside the timed window.
 //!
@@ -160,7 +160,7 @@ fn list_span_names(repo: &Path) -> Vec<String> {
         .unwrap_or_else(|e| panic!("read_dir .span: {e}"))
         .filter_map(|e| {
             let e = e.expect("dir entry");
-            // Skip hidden files and the stale-cache dir; span names are plain files
+            // Skip hidden files and any subdirectory; span names are plain files
             if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 e.file_name().to_str().map(|s| s.to_string())
             } else {
@@ -392,25 +392,19 @@ fn restore_fix_baseline(repo: &Path, baseline: &FixBaseline) {
 // Cache helpers
 // ---------------------------------------------------------------------------
 
-/// `<git_dir>/span/stale-cache.db` inside the clone — the `resolver/cache_v2`
-/// SQLite tier, gated by `GIT_SPAN_CACHE_V2`.
+/// `<git_dir>/span/store.db` inside the clone — the one active SQLite store
+/// (`resolver/store`), the only persistent cache after the Phase 7 cutover.
 fn cache_db_path(repo: &Path) -> PathBuf {
-    repo.join(".git").join("span").join("stale-cache.db")
+    repo.join(".git").join("span").join("store.db")
 }
 
-/// `<git_dir>/span/cache` inside the clone — the `resolver/cache` filesystem
-/// tier, gated by `GIT_SPAN_CACHE`. Sibling to, NOT inside, `cache_db_path()`.
-fn fs_cache_dir(repo: &Path) -> PathBuf {
-    repo.join(".git").join("span").join("cache")
-}
-
-/// Delete EVERY persistent cache tier so a subsequent run is genuinely cold:
-/// the SQLite database (plus WAL/SHM sidecars) and the filesystem cache
-/// directory. Deleting only the SQLite file (the historical behavior here)
-/// left the filesystem tier warm and any "cold" measurement or oracle run
-/// downstream of it was not actually cold — see
-/// `notes/investigation-question-log.md` Step 2, "Does the documented
-/// cache-off oracle provide ground truth?".
+/// Delete the one persistent cache — the SQLite store `store.db` plus its
+/// WAL/SHM sidecars — so a subsequent run is genuinely cold. There is only
+/// one tier now: the greenfield cutover (Phase 7) deleted both legacy caches
+/// (`resolver/cache` filesystem tier, `resolver/cache_v2` SQLite tier), so the
+/// store file is the whole cache footprint. (The historical hazard this guards
+/// against — a "cold" run left warm by an undeleted sibling tier, see
+/// `notes/investigation-question-log.md` Step 2 — cannot recur with one tier.)
 fn delete_cache(repo: &Path) {
     let db = cache_db_path(repo);
     for suffix in ["", "-wal", "-shm"] {
@@ -418,10 +412,6 @@ fn delete_cache(repo: &Path) {
         if path.exists() {
             fs::remove_file(&path).unwrap_or_else(|e| panic!("delete {}: {e}", path.display()));
         }
-    }
-    let fs_dir = fs_cache_dir(repo);
-    if fs_dir.exists() {
-        fs::remove_dir_all(&fs_dir).unwrap_or_else(|e| panic!("delete {}: {e}", fs_dir.display()));
     }
 }
 
@@ -454,19 +444,16 @@ struct OracleOutput {
 }
 
 /// Run a command against the clone. When `cache_off` is set, ground truth
-/// MUST disable every currently-existing persistent cache tier — both
-/// `GIT_SPAN_CACHE` (the `resolver/cache` filesystem tier) and
-/// `GIT_SPAN_CACHE_V2` (the `resolver/cache_v2` SQLite tier). Setting only
-/// `GIT_SPAN_CACHE_V2=0` (the historical behavior here) left the filesystem
-/// tier live, so a "cache-disabled" run could still be served partly from
-/// cache — see `notes/investigation-question-log.md` Step 2, "Does the
-/// documented cache-off oracle provide ground truth?".
+/// disables the one persistent cache with the single `GIT_SPAN_CACHE=0`
+/// switch — the "disable all caching" control the Phase 7 cutover left as the
+/// only cache switch. It bypasses the store entirely, so the run is genuine
+/// ground truth (no legacy sibling tier can leave it partly warm — both were
+/// deleted).
 fn run_oracle(repo: &Path, args: &[&str], cache_off: bool) -> OracleOutput {
     let mut cmd = Command::new(SPAN_BIN);
     cmd.current_dir(repo).args(args);
     if cache_off {
         cmd.env("GIT_SPAN_CACHE", "0");
-        cmd.env("GIT_SPAN_CACHE_V2", "0");
     }
     let out = cmd.output().unwrap_or_else(|e| panic!("spawn git-span {args:?}: {e}"));
     // Some commands exit non-zero when there is drift; that is fine for the oracle
@@ -539,9 +526,8 @@ fn list_block_names(stdout: &[u8]) -> std::collections::BTreeSet<String> {
 /// Oracle for a `git span list <glob>` cell.
 ///
 /// 1. DETERMINISM (the required part, mirroring the bare-`list` oracle): the
-///    command's stdout is byte-identical with the cache live vs every
-///    persistent cache tier disabled (`GIT_SPAN_CACHE=0` AND
-///    `GIT_SPAN_CACHE_V2=0`). For `list` this is a determinism check, which is
+///    command's stdout is byte-identical with the cache live vs the store
+///    disabled (`GIT_SPAN_CACHE=0`). For `list` this is a determinism check, which is
 ///    exactly what the existing `list` cell asserts.
 /// 2. SUBSET CONSISTENCY (cheap, span-name level): the spans a glob reports are
 ///    a subset of the bare-`list` corpus. `expect_proper_nonempty` additionally
