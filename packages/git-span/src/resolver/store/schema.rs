@@ -163,7 +163,19 @@ pub(crate) fn probe_and_init(conn: &Connection) -> Result<ProbeOutcome, StoreErr
     };
 
     // Only now — after the file is proven to be a database — set the write
-    // pragmas.
+    // pragmas. On a fresh database, `auto_vacuum` must be set *before* WAL:
+    // switching to WAL writes the header page (page 1), and SQLite only honors
+    // an `auto_vacuum` change while the database is still empty of any page
+    // content. INCREMENTAL mode moves a deleted generation's pages onto a
+    // freelist that `PRAGMA incremental_vacuum` reclaims into a smaller file
+    // during quota maintenance — without it, quota GC frees rows but the file
+    // never shrinks below the cap (card main-157 Phase 6A).
+    if table_count == 0 {
+        // `2` is INCREMENTAL; the integer form is unambiguous where a quoted
+        // keyword string can be silently parsed as NONE.
+        conn.pragma_update(None, "auto_vacuum", 2i64)
+            .map_err(map_sqlite)?;
+    }
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(map_sqlite)?;
     if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {

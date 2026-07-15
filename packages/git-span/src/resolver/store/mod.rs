@@ -158,11 +158,28 @@ pub(crate) struct RetentionPolicy {
     pub(crate) keep_access_bucket_from: i64,
 }
 
-/// What one GC pass removed.
+/// What one GC/maintenance pass did. The eviction counters are populated by
+/// both [`CacheStore::gc`] (policy-driven) and [`CacheStore::maintain`]
+/// (quota-driven); the byte and corruption-recovery fields are populated by
+/// [`CacheStore::maintain`] and left at their defaults by [`CacheStore::gc`]
+/// (which does not measure size). Carries enough for 6B's diagnostics surface
+/// and 6C's measured exit gates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GcStats {
+    /// Generations deleted (each in its own bounded transaction).
     pub(crate) generations_removed: u64,
+    /// Reuse rows deleted across those generations.
     pub(crate) rows_removed: u64,
+    /// On-disk footprint (main file + WAL) before the pass, in bytes.
+    /// [`CacheStore::maintain`] only.
+    pub(crate) bytes_before: u64,
+    /// On-disk footprint after the pass (post reclaim + WAL truncate), in
+    /// bytes. [`CacheStore::maintain`] only.
+    pub(crate) bytes_after: u64,
+    /// Whether this store recovered from a quarantined (corrupt or
+    /// schema-incompatible) database on open — a corruption-recovery event 6B's
+    /// diagnostics surface reports. [`CacheStore::maintain`] only.
+    pub(crate) corruption_recovered: bool,
 }
 
 pub(crate) type StoreResult<T> = Result<T, StoreError>;
@@ -171,13 +188,17 @@ pub(crate) type StoreResult<T> = Result<T, StoreError>;
 pub(crate) struct CacheStore {
     conn: Connection,
     dir: PathBuf,
-    #[allow(dead_code)]
     path: PathBuf,
     shard_count: usize,
     /// True only while a publish/GC write transaction is open. Read by
     /// [`Self::is_in_write_txn`] so a test can assert resolver work never runs
     /// inside a write transaction.
     in_write_txn: Cell<bool>,
+    /// Set when this open quarantined-and-recreated a corrupt or
+    /// schema-incompatible database (the reason it was quarantined). Surfaced
+    /// through [`GcStats::corruption_recovered`] by [`Self::maintain`] so a
+    /// silent recovery becomes a reportable diagnostics event.
+    recovered_on_open: Option<BypassReason>,
 }
 
 impl CacheStore {
@@ -211,7 +232,9 @@ impl CacheStore {
         let path = dir.join(DB_BASENAME);
 
         // At most one quarantine before giving up: recreate once, then the
-        // fresh database must probe Ready or we surface the fault.
+        // fresh database must probe Ready or we surface the fault. If we did
+        // quarantine, remember why so `maintain` can report the recovery.
+        let mut recovered_on_open: Option<BypassReason> = None;
         for attempt in 0..2 {
             let conn = Connection::open(&path).map_err(map_sqlite)?;
             set_busy_timeout(&conn, busy_timeout_ms)?;
@@ -223,6 +246,7 @@ impl CacheStore {
                         path,
                         shard_count,
                         in_write_txn: Cell::new(false),
+                        recovered_on_open,
                     });
                 }
                 Ok(ProbeOutcome::Quarantine(reason)) => {
@@ -232,6 +256,7 @@ impl CacheStore {
                             "database still unusable after quarantine/recreate",
                         ));
                     }
+                    recovered_on_open = Some(reason);
                     drop(conn);
                     quarantine(&path)?;
                     // loop: recreate fresh
@@ -775,6 +800,189 @@ impl CacheStore {
         tx.commit().map_err(map_sqlite)?;
         Ok(())
     }
+
+    /// The corruption/schema-mismatch recovery this open performed, if any. A
+    /// convenience accessor for 6B's diagnostics surface; [`Self::maintain`]
+    /// already folds it into [`GcStats::corruption_recovered`].
+    pub(crate) fn recovered_on_open(&self) -> Option<BypassReason> {
+        self.recovered_on_open
+    }
+
+    /// Actual on-disk footprint of the store: the main database file
+    /// (`page_count * page_size`) plus the live WAL file. WAL bytes are real
+    /// disk usage until a checkpoint truncates them, so the quota must count
+    /// them (`notes/architecture-and-complexity.md` GC section). Cheap header
+    /// reads — safe to call anywhere, but the quota decision that consumes it
+    /// (`maintain`) is never on a hot read path.
+    pub(crate) fn database_size_bytes(&self) -> StoreResult<u64> {
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        let main = (page_count.max(0) as u64).saturating_mul(page_size.max(0) as u64);
+        Ok(main + self.wal_size_bytes())
+    }
+
+    /// Size of the live WAL file on disk, or 0 if it does not exist yet.
+    fn wal_size_bytes(&self) -> u64 {
+        std::fs::metadata(sibling_with_suffix(&self.path, "-wal"))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Projected footprint of the main file *after* the freelist is reclaimed:
+    /// `(page_count - freelist_count) * page_size`. Deleting a generation moves
+    /// its pages onto the freelist (auto-vacuum INCREMENTAL) without shrinking
+    /// the file, so this — not [`Self::database_size_bytes`] — is what the
+    /// eviction loop tests against, so freed-but-not-yet-reclaimed pages do not
+    /// keep it looping. WAL is excluded because the pass truncates it at the
+    /// end.
+    fn reclaimed_main_bytes(&self) -> StoreResult<u64> {
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        let freelist: i64 = self
+            .conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        let live_pages = (page_count - freelist).max(0) as u64;
+        Ok(live_pages.saturating_mul(page_size.max(0) as u64))
+    }
+
+    /// Quota-driven bounded maintenance. Measures the current footprint; if it
+    /// is over `cap_bytes`, evicts non-live generations — cheapest-to-rebuild
+    /// and least-recently-accessed first — in bounded per-generation
+    /// transactions until the projected footprint is under the cap or nothing
+    /// further is evictable. Then, whether or not anything was evicted,
+    /// reclaims freed pages and checkpoint-truncates the WAL so the on-disk
+    /// footprint actually drops.
+    ///
+    /// Retention: a `live` generation is never evicted (it backs an active
+    /// worktree/ref). Among non-live generations, eviction order prefers
+    /// summary-only/dirty generations (`row_count = 0`, cheap to rebuild, no
+    /// reuse value) over full committed generations that carry reuse rows, and
+    /// within each group evicts the oldest access bucket first — so recently
+    /// accessed generations survive as long as evicting older ones frees enough
+    /// space.
+    ///
+    /// Invisibility: each eviction is [`Self::gc_delete_one`]'s single
+    /// transaction (generation row first), so a concurrent reader sees a whole
+    /// generation or a plain miss, never a partial one — the same discipline
+    /// publish and [`Self::gc`] already hold. Page reclamation and the WAL
+    /// checkpoint are transactional and run **only here**, never on any read
+    /// path.
+    ///
+    /// This is a callable mechanism, not a production trigger: 6B invokes it
+    /// from a real high-water-mark path.
+    pub(crate) fn maintain(&mut self, cap_bytes: u64) -> StoreResult<GcStats> {
+        let mut stats = GcStats {
+            corruption_recovered: self.recovered_on_open.is_some(),
+            bytes_before: self.database_size_bytes()?,
+            ..GcStats::default()
+        };
+
+        // Only evict when over the cap. Decide against the reclaimed projection
+        // so freed-but-unreclaimed pages from an earlier deletion don't inflate
+        // the measurement mid-loop.
+        if self.reclaimed_main_bytes()? > cap_bytes {
+            for cand in self.eviction_candidates()? {
+                if self.reclaimed_main_bytes()? <= cap_bytes {
+                    break;
+                }
+                self.in_write_txn.set(true);
+                let result = self.gc_delete_one(&cand.key_hex);
+                self.in_write_txn.set(false);
+                result?;
+                stats.generations_removed += 1;
+                stats.rows_removed += cand.row_count;
+            }
+        }
+
+        // Post-maintenance, always: reclaim freed pages so the file shrinks,
+        // then truncate the WAL. Never triggered by a read path.
+        self.reclaim_and_checkpoint()?;
+
+        stats.bytes_after = self.database_size_bytes()?;
+        Ok(stats)
+    }
+
+    /// Non-live generations in eviction order (worst retention value first):
+    /// summary-only before full, then oldest access bucket, then oldest
+    /// creation. See [`Self::maintain`] for the rationale.
+    fn eviction_candidates(&self) -> StoreResult<Vec<EvictionCandidate>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT key_digest, row_count FROM generation \
+                 WHERE live = 0 \
+                 ORDER BY (row_count > 0) ASC, access_bucket ASC, created_at ASC",
+            )
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(EvictionCandidate {
+                    key_hex: r.get::<_, String>(0)?,
+                    row_count: r.get::<_, i64>(1)?.max(0) as u64,
+                })
+            })
+            .map_err(map_sqlite)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(map_sqlite)?);
+        }
+        Ok(out)
+    }
+
+    /// Reclaim freelist pages into a smaller file (`PRAGMA incremental_vacuum`,
+    /// bounded by the free-page count) and then checkpoint-truncate the WAL
+    /// (`PRAGMA wal_checkpoint(TRUNCATE)`). A concurrent reader can make the
+    /// TRUNCATE checkpoint report "busy" and defer — that is not an error, so
+    /// it is ignored; maintenance never fails just because a reader is mid-read.
+    /// Both run outside any open transaction and only from [`Self::maintain`].
+    fn reclaim_and_checkpoint(&mut self) -> StoreResult<()> {
+        // Materialize freed pages from the WAL into the main file first: in WAL
+        // mode `incremental_vacuum` cannot reclaim pages that are still only
+        // recorded in the WAL, so without this the freelist never shrinks the
+        // file. `wal_checkpoint` returns a (busy, log, checkpointed) row; a
+        // non-zero `busy` means a reader held it back, which we tolerate.
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
+            .map_err(map_sqlite)?;
+        // Reclaim freelist pages into a smaller main file. `incremental_vacuum`
+        // frees one page per stepped result row, so it must be stepped to
+        // completion — `conn.pragma` does that, where a single `query_row`/
+        // `execute_batch` would free only one page. The page count bounds the
+        // work.
+        let freelist: i64 = self
+            .conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .map_err(map_sqlite)?;
+        if freelist > 0 {
+            self.conn
+                .pragma(None, "incremental_vacuum", freelist, |_| Ok(()))
+                .map_err(map_sqlite)?;
+        }
+        // Truncate the WAL the vacuum just produced back to zero bytes.
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(map_sqlite)?;
+        Ok(())
+    }
+}
+
+/// One non-live generation selected for quota eviction.
+struct EvictionCandidate {
+    key_hex: String,
+    row_count: u64,
 }
 
 /// Move a suspect database file aside (best effort: rename, else delete) along

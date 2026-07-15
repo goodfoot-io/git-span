@@ -881,6 +881,211 @@ fn touch_advances_access_bucket_only_across_bucket_boundaries() {
     assert_eq!(b, now_bucket());
 }
 
+// -- 8b. Quota-driven maintenance (card main-157 Phase 6A) ----------------
+
+/// A generation with a large summary, so a handful cross a small artificial
+/// cap. `rows` full reuse rows plus a matching path index.
+fn make_big_input(k: [u8; 32], summary_bytes: usize, rows: usize) -> GenerationInput {
+    let mut input = make_input(k, V1, b"", rows);
+    input.summary = vec![0xABu8; summary_bytes];
+    input
+}
+
+/// Read the on-disk WAL file length directly, bypassing any store method.
+fn wal_len(dir: &Path) -> u64 {
+    let mut wal = dir.join(super::schema::DB_BASENAME).into_os_string();
+    wal.push("-wal");
+    std::fs::metadata(Path::new(&wal))
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+#[test]
+fn maintain_evicts_below_cap_keeping_live_and_recent() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let now = now_bucket();
+
+    // Survivors: live (old bucket) + two recent, all small.
+    store
+        .publish_generation(&make_big_input(key(0), 256, 1))
+        .unwrap();
+    store.set_live(&key(0), true).unwrap();
+    set_bucket(&store, &key(0), now - 100);
+    store
+        .publish_generation(&make_big_input(key(1), 256, 1))
+        .unwrap();
+    store
+        .publish_generation(&make_big_input(key(2), 256, 1))
+        .unwrap();
+    // Eviction fodder: three old, non-live, and large.
+    for n in 3..6u8 {
+        store
+            .publish_generation(&make_big_input(key(n), 512 * 1024, 2))
+            .unwrap();
+        set_bucket(&store, &key(n), now - 100);
+    }
+
+    let before = store.database_size_bytes().unwrap();
+    let cap = 400 * 1024;
+    assert!(before > cap, "corpus ({before}) should exceed cap ({cap})");
+
+    let stats = store.maintain(cap).unwrap();
+
+    // Footprint dropped below the cap.
+    let after = store.database_size_bytes().unwrap();
+    assert!(
+        after <= cap,
+        "size after maintain ({after}) should be <= cap ({cap})",
+    );
+    assert_eq!(stats.bytes_before, before);
+    assert_eq!(stats.bytes_after, after);
+    assert!(after < before);
+
+    // The three large, old, unreferenced generations were evicted.
+    assert_eq!(stats.generations_removed, 3);
+    assert_eq!(stats.rows_removed, 6);
+    for n in 3..6u8 {
+        assert_eq!(store.get_generation(&key(n), V1).unwrap(), GetOutcome::Miss);
+    }
+    // Live and recently-accessed generations survived.
+    assert!(store.get_generation(&key(0), V1).unwrap().hit().is_some());
+    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(store.get_generation(&key(2), V1).unwrap().hit().is_some());
+}
+
+#[test]
+fn maintain_prefers_summary_only_over_full_even_if_newer() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let now = now_bucket();
+
+    // Full committed generation (reuse rows), older access bucket.
+    store
+        .publish_generation(&make_big_input(key(1), 512 * 1024, 3))
+        .unwrap();
+    set_bucket(&store, &key(1), now - 100);
+    // Summary-only (dirty) generation, MORE recent — but cheaper to rebuild and
+    // carrying no reuse value, so it must be evicted first.
+    store
+        .publish_generation_summary_only(&make_big_input(key(2), 512 * 1024, 0))
+        .unwrap();
+    set_bucket(&store, &key(2), now);
+
+    let cap = 700 * 1024;
+    assert!(store.database_size_bytes().unwrap() > cap);
+
+    let stats = store.maintain(cap).unwrap();
+
+    assert_eq!(stats.generations_removed, 1);
+    // Summary-only newer one evicted; full older one survived.
+    assert_eq!(store.get_generation(&key(2), V1).unwrap(), GetOutcome::Miss);
+    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+}
+
+#[test]
+fn maintain_truncates_wal_even_without_eviction() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    // A publish grows the WAL.
+    store
+        .publish_generation(&make_big_input(key(1), 512 * 1024, 4))
+        .unwrap();
+    assert!(wal_len(dir.path()) > 0, "publish should have grown the WAL");
+
+    // A cap far above the corpus: no eviction, but the WAL is still truncated.
+    let huge_cap = 512 * 1024 * 1024;
+    let stats = store.maintain(huge_cap).unwrap();
+    assert_eq!(stats.generations_removed, 0);
+    assert_eq!(
+        wal_len(dir.path()),
+        0,
+        "maintain must checkpoint-truncate the WAL",
+    );
+    // The generation is still fully readable after the checkpoint.
+    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+}
+
+#[test]
+fn maintain_reports_corruption_recovery_event() {
+    let dir = tmp();
+    let path = dir.path().join(super::schema::DB_BASENAME);
+    {
+        let mut store = open(dir.path());
+        store
+            .publish_generation(&make_input(key(1), V1, b"old", 2))
+            .unwrap();
+    }
+    // Corrupt the header so the next open quarantines and recreates.
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(&[0xFFu8; 4096]).unwrap();
+        f.flush().unwrap();
+    }
+
+    let mut recovered = open(dir.path());
+    assert_eq!(recovered.recovered_on_open(), Some(BypassReason::Corrupt));
+    let stats = recovered.maintain(512 * 1024 * 1024).unwrap();
+    assert!(
+        stats.corruption_recovered,
+        "maintain must surface the quarantine/recreate recovery event",
+    );
+
+    // A store that opened cleanly reports no recovery.
+    let clean_dir = tmp();
+    let mut clean = open(clean_dir.path());
+    assert_eq!(clean.recovered_on_open(), None);
+    assert!(!clean.maintain(512 * 1024 * 1024).unwrap().corruption_recovered);
+}
+
+#[test]
+fn reader_never_observes_partial_generation_under_quota_maintenance() {
+    let dir = tmp();
+    // Prime the schema so both threads open cleanly.
+    drop(open(dir.path()));
+
+    const ROWS: usize = 40;
+    let k = key(9);
+    let writer_dir = dir.path().to_path_buf();
+    let reader_dir = dir.path().to_path_buf();
+    let barrier = Arc::new(Barrier::new(2));
+    let wb = barrier.clone();
+
+    let writer = std::thread::spawn(move || {
+        let mut store = open(&writer_dir);
+        wb.wait();
+        for _ in 0..300 {
+            store
+                .publish_generation(&make_input(k, V1, b"complete", ROWS))
+                .unwrap();
+            // A cap of 0 forces eviction of every non-live generation, exactly
+            // like the publish/GC stress test but through the quota path.
+            store.maintain(0).unwrap();
+        }
+    });
+
+    let reader = std::thread::spawn(move || {
+        let store = open(&reader_dir);
+        barrier.wait();
+        for _ in 0..3000 {
+            match store.get_generation(&k, V1).unwrap() {
+                GetOutcome::Hit(g) => {
+                    assert_eq!(g.summary, b"complete");
+                    assert_eq!(g.rows.len(), ROWS);
+                }
+                GetOutcome::Miss => {}
+                GetOutcome::Rejected(r) => {
+                    panic!("reader observed a partial/rejected generation: {r:?}");
+                }
+            }
+        }
+    });
+
+    writer.join().unwrap();
+    reader.join().unwrap();
+}
+
 // -- Transaction-duration invariant --------------------------------------
 
 #[test]
@@ -922,3 +1127,4 @@ fn second_writer_succeeds(db: &Path) -> bool {
     )
     .is_ok()
 }
+
