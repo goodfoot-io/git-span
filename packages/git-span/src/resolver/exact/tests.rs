@@ -365,3 +365,145 @@ fn clean_run_publishes_and_is_eligible() {
         "a clean, unchanged run must publish a verified generation"
     );
 }
+
+// ── Quota-maintenance trigger (sub-scope 6B) ─────────────────────────────────
+
+/// The byte-ceiling config resolves with the documented precedence:
+/// `GIT_SPAN_STORE_MAX_BYTES` env override > `git config git-span.storeMaxBytes`
+/// > [`DEFAULT_STORE_MAX_BYTES`]; an unparseable layer falls through.
+#[test]
+fn store_max_bytes_env_over_config_over_default() {
+    let (_td, repo) = drifted_repo("capcfg");
+    let workdir = repo.workdir().expect("workdir").to_path_buf();
+
+    unsafe {
+        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
+    }
+    assert_eq!(
+        store_max_bytes(&repo),
+        DEFAULT_STORE_MAX_BYTES,
+        "no env, no config => 256 MiB default"
+    );
+
+    // Config alone (re-open so the config snapshot includes the new key).
+    git(&workdir, &["config", "git-span.storeMaxBytes", "4096"]);
+    let repo = gix::open(&workdir).expect("reopen");
+    assert_eq!(store_max_bytes(&repo), 4096, "config value when no env");
+
+    // Env overrides config.
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "8192");
+    }
+    assert_eq!(store_max_bytes(&repo), 8192, "env wins over config");
+
+    // Unparseable env falls through to config.
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "not-a-number");
+    }
+    assert_eq!(
+        store_max_bytes(&repo),
+        4096,
+        "unparseable env falls through to config"
+    );
+}
+
+/// Publish one non-live generation to a store, then craft the input directly.
+fn publish_non_live(store: &mut CacheStore, key: [u8; 32]) {
+    let input = GenerationInput {
+        key_digest: key,
+        head: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
+        payload_version: SUMMARY_VERSION,
+        summary: vec![1, 2, 3, 4, 5],
+        rows: Vec::new(),
+        path_index: Vec::new(),
+        live: false,
+    };
+    store.publish_generation(&input).expect("publish");
+}
+
+/// At the high-water mark the post-publish trigger evicts a non-live
+/// generation: with a 1-byte cap, [`maybe_maintain`] runs `maintain` and the
+/// non-live generation is gone.
+#[test]
+fn maybe_maintain_evicts_non_live_over_cap() {
+    let (_td, repo) = drifted_repo("capevict");
+    let mut store = CacheStore::open(&repo).expect("open");
+    let key = [7u8; 32];
+    publish_non_live(&mut store, key);
+    assert!(
+        matches!(
+            store.get_generation(&key, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "generation must be present before maintenance"
+    );
+
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
+    }
+    maybe_maintain(&repo, &mut store);
+
+    assert!(
+        matches!(
+            store.get_generation(&key, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Miss
+        ),
+        "a non-live generation over the cap must be evicted by the trigger"
+    );
+}
+
+/// Under the cap the trigger is a no-op beyond the cheap size probe: even a
+/// non-live generation survives, since nothing is over the high-water mark.
+#[test]
+fn maybe_maintain_keeps_generation_under_cap() {
+    let (_td, repo) = drifted_repo("capkeep");
+    let mut store = CacheStore::open(&repo).expect("open");
+    let key = [9u8; 32];
+    publish_non_live(&mut store, key);
+
+    unsafe {
+        // Default 256 MiB — far above a tiny fresh store.
+        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
+    }
+    maybe_maintain(&repo, &mut store);
+
+    assert!(
+        matches!(
+            store.get_generation(&key, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "under cap, the trigger must not evict anything"
+    );
+}
+
+/// A real `stale` run with a 1-byte cap still returns the correct result and
+/// leaves the just-published *live* generation intact (a live generation is
+/// never evicted, even at the high-water mark) — the trigger's only effect is
+/// on the store file, never on the command's output.
+#[test]
+fn tiny_cap_run_keeps_output_and_live_generation() {
+    reset_test_state();
+    clear_memo();
+    let (_td, repo) = drifted_repo("capstale");
+    enable_v3();
+    unsafe {
+        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
+    }
+    let opts = EngineOptions::full();
+    let key = capture_state_token(&repo, SPAN_ROOT, opts)
+        .expect("token")
+        .canonical_key_digest();
+
+    let spans = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
+    assert_eq!(spans.len(), 1, "the one drifted span is still reported");
+
+    // The live generation published this run survives the maintenance pass.
+    let store = CacheStore::open(&repo).expect("open");
+    assert!(
+        matches!(
+            store.get_generation(&key, SUMMARY_VERSION).expect("get"),
+            GetOutcome::Hit(_)
+        ),
+        "a live generation is never evicted, even under a 1-byte cap"
+    );
+}

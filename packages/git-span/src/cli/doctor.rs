@@ -72,19 +72,62 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         findings.push(v.report_block(span_root));
     }
 
-    if findings.is_empty() {
+    let exit = if findings.is_empty() {
         println!("span doctor: {n_spans} spans checked, no findings.{IDEMPOTENT_TAG}");
-        return Ok(0);
+        0
+    } else {
+        println!("# span doctor");
+        println!();
+        println!("{n_spans} spans checked, {} findings.", findings.len());
+        println!();
+        println!("## Findings");
+        println!();
+        for f in &findings {
+            println!("- ERROR — {f}");
+        }
+        1
+    };
+
+    println!();
+    report_store_diagnostics(repo);
+    Ok(exit)
+}
+
+/// Report the persistent store's size against its configured quota, plus any
+/// corruption/schema-mismatch recovery this open performed (card main-157
+/// Phase 6B). Health diagnostics only — never changes the doctor exit code.
+///
+/// Reads the store non-invasively: if the database file does not yet exist it
+/// reports that and the configured cap without creating one, so `doctor` never
+/// materializes a store as a side effect. The configured cap comes from the
+/// same precedence chain the production quota trigger uses
+/// ([`crate::resolver::exact::store_max_bytes`]).
+fn report_store_diagnostics(repo: &gix::Repository) {
+    use crate::resolver::store::schema::DB_BASENAME;
+
+    let cap = crate::resolver::exact::store_max_bytes(repo);
+    let db_path = crate::git::common_dir(repo).join("span").join(DB_BASENAME);
+
+    println!("## Store");
+    println!();
+    println!("- Configured cap: {cap} bytes.");
+
+    if !db_path.exists() {
+        println!("- No persistent store yet at `{}`.", db_path.display());
+        return;
     }
 
-    println!("# span doctor");
-    println!();
-    println!("{n_spans} spans checked, {} findings.", findings.len());
-    println!();
-    println!("## Findings");
-    println!();
-    for f in &findings {
-        println!("- ERROR — {f}");
+    match crate::resolver::store::CacheStore::open(repo) {
+        Ok(store) => match store.database_size_bytes() {
+            Ok(size) => {
+                let pct = size.saturating_mul(100).checked_div(cap).unwrap_or(0);
+                println!("- On-disk size: {size} bytes ({pct}% of cap).");
+                if let Some(reason) = store.recovered_on_open() {
+                    println!("- Recovered from a quarantined database on open: {reason:?}.");
+                }
+            }
+            Err(e) => println!("- Size unavailable: {e}."),
+        },
+        Err(e) => println!("- Present but could not be opened: {e}."),
     }
-    Ok(1)
 }

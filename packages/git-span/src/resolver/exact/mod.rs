@@ -70,7 +70,7 @@ use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
     capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
 };
-use crate::resolver::store::{CacheStore, GenerationInput, GetOutcome};
+use crate::resolver::store::{CacheStore, GcStats, GenerationInput, GetOutcome};
 use crate::types::{CopyDetection, EngineOptions, LayerSet, SpanResolved};
 use std::sync::Arc;
 
@@ -245,6 +245,41 @@ fn eligible(options: &EngineOptions) -> bool {
         && (options.fuzzy_threshold - 0.95).abs() < 1e-9
 }
 
+/// Default store byte ceiling: 256 MiB (`notes/architecture-and-complexity.md`
+/// GC section). The bounded quota [`CacheStore::maintain`] enforces after a
+/// publish; overridable per-repo (see [`store_max_bytes`]).
+pub(crate) const DEFAULT_STORE_MAX_BYTES: u64 = 268_435_456;
+
+/// Resolve the configured store byte ceiling for `repo`.
+///
+/// Precedence mirrors the span-dir chain (`GIT_SPAN_DIR` env > `git config
+/// git-span.dir` > default) in [`crate::cli::dispatch`]: the
+/// `GIT_SPAN_STORE_MAX_BYTES` environment override wins over `git config
+/// git-span.storeMaxBytes`, which wins over [`DEFAULT_STORE_MAX_BYTES`]. An
+/// absent or unparseable value at either layer falls through to the next — a
+/// bad override degrades to the bounded default, never to unbounded growth
+/// (fail closed on the quota).
+pub(crate) fn store_max_bytes(repo: &gix::Repository) -> u64 {
+    if let Ok(raw) = std::env::var("GIT_SPAN_STORE_MAX_BYTES")
+        && let Some(n) = parse_byte_ceiling(&raw)
+    {
+        return n;
+    }
+    if let Some(raw) = crate::git::config_string(repo, "git-span.storeMaxBytes")
+        && let Some(n) = parse_byte_ceiling(&raw)
+    {
+        return n;
+    }
+    DEFAULT_STORE_MAX_BYTES
+}
+
+/// Parse a byte-ceiling config/env value: a plain non-negative integer count of
+/// bytes. `None` on any non-numeric input so the caller falls through to the
+/// next precedence layer.
+fn parse_byte_ceiling(raw: &str) -> Option<u64> {
+    raw.trim().parse::<u64>().ok()
+}
+
 /// Whether the whole invocation's effective copy-detection mode is a genuinely
 /// global one (a repo/commit-wide copy pool), in which case EVERY span is
 /// widened to "any tracked path changed" sensitivity (`reuse`). `SameCommit`
@@ -276,6 +311,7 @@ pub(crate) fn stale_spans_new_store(
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
     // A capture failure is a fail-closed bypass to the authoritative path.
+    let t_observe = crate::perf::enabled().then(std::time::Instant::now);
     let token = match capture_state_token(repo, span_root, options) {
         Ok(t) => t,
         Err(e) => {
@@ -283,6 +319,9 @@ pub(crate) fn stale_spans_new_store(
             return Ok(ExactAttempt::Bypass);
         }
     };
+    if let Some(t) = t_observe {
+        crate::perf::counter("cache-path.state-observe-us", t.elapsed().as_micros() as u64);
+    }
     let key = token.canonical_key_digest();
 
     // In-process memo: a repeated same-key call within this process renders
@@ -299,6 +338,13 @@ pub(crate) fn stale_spans_new_store(
             return Ok(ExactAttempt::Bypass);
         }
     };
+
+    // Surface a corruption/schema-mismatch recovery this open performed as a
+    // diagnostics event regardless of whether a later quota pass runs (6A's
+    // `maintain` only folds it into `GcStats` when the store is over cap).
+    if let Some(reason) = store.recovered_on_open() {
+        crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
+    }
 
     // ── Exact hit ──────────────────────────────────────────────────────────
     //
@@ -456,7 +502,7 @@ fn project_revalidate_publish_impl(
 
     match revalidate(repo, span_root, options, token)? {
         Revalidation::Unchanged => {
-            publish_if_eligible(store, token, key, &rr, core, store_rows);
+            publish_if_eligible(repo, store, token, key, &rr, core, store_rows);
             let attempt = rr.to_attempt();
             memo_put(*key, rr);
             Ok(attempt)
@@ -479,6 +525,7 @@ fn project_revalidate_publish_impl(
 /// eligible. A publish failure is recorded and swallowed: fail closed on the
 /// cache, never on the command.
 fn publish_if_eligible(
+    repo: &gix::Repository,
     store: &mut CacheStore,
     token: &crate::resolver::core::token::StateToken,
     key: &[u8; 32],
@@ -506,30 +553,96 @@ fn publish_if_eligible(
     } else {
         (Vec::new(), Vec::new())
     };
+    let summary = encode_summary(rr);
+
+    // Diagnostics: what this generation costs the store. `publish-rows` and
+    // `publish-summary-bytes` are the row/byte counts; `publish-dependency-
+    // fanout` is the number of reverse-index `(source_path -> row_key)` bindings
+    // — the set of source paths a later incremental/dirty reuse can pivot on.
+    crate::perf::counter("cache-path.publish-rows", rows.len() as u64);
+    crate::perf::counter("cache-path.publish-summary-bytes", summary.len() as u64);
+    crate::perf::counter(
+        "cache-path.publish-dependency-fanout",
+        path_index.len() as u64,
+    );
+
     let input = GenerationInput {
         key_digest: *key,
         head: token.head.clone(),
         payload_version: SUMMARY_VERSION,
-        summary: encode_summary(rr),
+        summary,
         rows,
         path_index,
         // The current worktree references this generation at publish time.
         live: true,
     };
+    let t_publish = crate::perf::enabled().then(std::time::Instant::now);
     let published = if store_rows {
         store.publish_generation(&input)
     } else {
         store.publish_generation_summary_only(&input)
     };
+    if let Some(t) = t_publish {
+        crate::perf::counter("cache-path.publish-us", t.elapsed().as_micros() as u64);
+    }
     match published {
         Ok(()) => {
             crate::perf::counter("cache-path.publish-ok", 1);
+            // The one production trigger for 6A's quota maintenance: bounded
+            // foreground work, gated by a cheap high-water check (see
+            // [`maybe_maintain`]), right after a generation lands.
+            maybe_maintain(repo, store);
         }
         Err(e) => {
             incr_publish_failures();
             crate::perf::counter("cache-path.publish-failed", 1);
             crate::perf::note(&format!("cache-path.publish-failed: {e}"));
         }
+    }
+}
+
+/// Run bounded quota maintenance after a successful publish, but only at the
+/// high-water mark. A cheap [`CacheStore::database_size_bytes`] probe
+/// (`PRAGMA page_count`/`page_size` + a WAL stat) gates the expensive pass:
+/// when the store is under `cap`, this returns after the probe and never runs
+/// the eviction loop, page reclaim, or WAL checkpoint. When over `cap`,
+/// [`CacheStore::maintain`] evicts non-live generations and truncates the WAL
+/// as bounded foreground work — no background thread, no deferral, so
+/// maintenance can never be perpetually not-run.
+///
+/// This is the sole production caller of `maintain`: 6A landed the mechanism
+/// inert (a callable API nobody called); 6B wires it here.
+fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore) {
+    let cap = store_max_bytes(repo);
+    let size = match store.database_size_bytes() {
+        Ok(n) => n,
+        Err(e) => {
+            crate::perf::note(&format!("cache-path.maintain-skipped: size: {e}"));
+            return;
+        }
+    };
+    if size <= cap {
+        return;
+    }
+    match store.maintain(cap) {
+        Ok(stats) => emit_gc_stats(cap, &stats),
+        Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
+    }
+}
+
+/// Emit the GC/maintenance-effect diagnostics for one quota pass, following the
+/// existing `cache-path.*` counter/note convention.
+fn emit_gc_stats(cap: u64, stats: &GcStats) {
+    crate::perf::counter("cache-path.store-cap-bytes", cap);
+    crate::perf::counter("cache-path.gc-bytes-before", stats.bytes_before);
+    crate::perf::counter("cache-path.gc-bytes-after", stats.bytes_after);
+    crate::perf::counter(
+        "cache-path.gc-generations-removed",
+        stats.generations_removed,
+    );
+    crate::perf::counter("cache-path.gc-rows-removed", stats.rows_removed);
+    if stats.corruption_recovered {
+        crate::perf::note("cache-path.gc-corruption-recovered: true");
     }
 }
 
