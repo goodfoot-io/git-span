@@ -6,8 +6,8 @@ export {
   lerp,
   phaseIndexAt,
   ramp,
-  STORY_SCROLL_VH,
   TIMELINE,
+  TIMELINE_SCROLL_VH,
   timelineFromScroll
 } from './scene';
 export { TimelineReadout } from './TimelineReadout';

@@ -2,9 +2,9 @@ import { useRef } from 'react';
 import type { MetaFunction } from 'react-router';
 import { Link } from 'react-router';
 import { AutomotiveStub } from '~/components/marketing/story/AutomotiveStub';
-import { CLOSING, HERO, PHASE_COPY, STAGES } from '~/components/marketing/story/copy';
+import { CLOSING, HERO, PHASE_COPY } from '~/components/marketing/story/copy';
 import { deriveScene, TIMELINE, TimelineReadout, useTimeline } from '~/components/marketing/story/index';
-import { TerminalPlayer } from '~/components/marketing/story/TerminalPlayer';
+import { PhaseSpecimen } from '~/components/marketing/story/Specimen';
 
 export const meta: MetaFunction = () => [
   { title: 'git-span -- Semantic code annotations for git' },
@@ -82,9 +82,9 @@ export default function Index() {
   return (
     <div className="bg-ground text-ink-primary">
       {/*
-        Persistent split screen. The left column scrolls: a hero lead-in, then one terminal step
-        per state, each with its prose above it. The right column is pinned and scrubs through the
-        automotive states as those steps scroll past.
+        Persistent split screen. The left column scrolls: a hero lead-in, then one prose step per
+        state. The right column is pinned and scrubs through the automotive states as those steps
+        scroll past.
       */}
       <section className="w-full">
         <div className="grid grid-cols-1 lg:grid-cols-12">
@@ -99,24 +99,29 @@ export default function Index() {
             </div>
 
             {STORY_STEPS.map((phase, index) => {
-              const stageId = PHASE_COPY[phase.id].stage;
-              const stage = stageId ? STAGES[stageId] : null;
+              const prose = PHASE_COPY[phase.id].prose;
               return (
                 <div
                   key={phase.id}
                   ref={index === 0 ? firstStepRef : undefined}
-                  className={`flex flex-col justify-center gap-6 py-12 ${stepHeightClass(phase.scrollVh)}`}
+                  className={`flex flex-col justify-center py-12 ${stepHeightClass(phase.scrollVh)}`}
                 >
-                  <TerminalPlayer state={phase.id} />
-                  {stage && (
+                  {prose && (
                     <div className="max-w-md">
-                      <h2 className="text-2xl font-semibold text-ink-primary sm:text-3xl">{stage.headline}</h2>
-                      <p className="mt-3 text-base leading-relaxed text-ink-secondary">{stage.body}</p>
+                      <h2 className="text-2xl font-semibold text-ink-primary sm:text-3xl">{prose.headline}</h2>
+                      <p className="mt-3 text-base leading-relaxed text-ink-secondary">{prose.body}</p>
+                      <div className="mt-6">
+                        <PhaseSpecimen state={phase.id} />
+                      </div>
                     </div>
                   )}
                 </div>
               );
             })}
+
+            {/* Trailing spacer: (100vh − last step height) / 2. It keeps the sticky media pinned until the
+                final step's content crosses the viewport center — the pin releases exactly at t=100. */}
+            <div aria-hidden className="h-[25vh]" />
           </div>
 
           {/*

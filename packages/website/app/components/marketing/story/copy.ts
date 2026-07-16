@@ -28,10 +28,8 @@ export interface Stage {
   body: string;
 }
 
-export type StageId = 'A' | 'B' | 'C' | 'D';
-
 export interface PhaseCopyEntry {
-  stage: StageId | null;
+  prose: Stage | null;
   caption: string;
 }
 
@@ -60,56 +58,60 @@ export const CLOSING: ClosingCopy = {
   secondaryCta: SECONDARY_CTA
 };
 
-export const STAGES: Record<StageId, Stage> = {
-  A: {
-    headline: 'You change one part of the system.',
-    body: 'The code you touched can be correct while another implementation still depends on the behavior you replaced.'
-  },
-  B: {
-    headline: 'Miss one consequence, and the larger system stops fitting together.',
-    body: 'Every file can still be valid on its own. The failure appears when the pieces try to work together.'
-  },
-  C: {
-    headline: 'A span records which sections belong together and why.',
-    body: 'It stores exact locations and a durable definition of the subsystem they collectively form.'
-  },
-  D: {
-    headline: 'git-span brings those sections into your work.',
-    body: 'You—or your coding agent—can change the whole relationship before the work is considered complete.'
-  }
-};
-
+// Captions are the animation-beat descriptions shown in the media window while that phase is
+// active.
 export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   hero: {
-    stage: null,
-    caption: 'Aligned exploded assembly — every part currently agrees'
+    prose: null,
+    caption: 'An exploded assembly, aligned — every part currently agrees'
   },
   change: {
-    stage: 'A',
-    caption: 'Local change — the lower control arm shifts to a new three-point geometry'
+    prose: {
+      headline: 'You change one part of the system.',
+      body: 'You change one file and commit it. Git records the new lines exactly — and records nothing about the other sections of the repository that were written against the behavior you just replaced.'
+    },
+    caption: 'One part takes a new geometry; nothing else moves'
   },
   failure: {
-    stage: 'B',
-    caption: 'Implosion — three mounting points fail to align'
+    prose: {
+      headline: 'Miss one consequence, and the larger system stops fitting together.',
+      body: 'The dependency that failed was never an import, a type, or a package manifest — nothing a compiler resolves or a diff reveals. It was a shared assumption between distant sections, still sitting in the source, and it broke at integration.'
+    },
+    caption: 'The parts move toward assembly; three mounting points miss'
   },
   traverse: {
-    stage: 'B',
-    caption: 'Re-explosion and traversal — the camera crosses the chassis to a second assembly'
+    prose: {
+      headline: 'Your code is full of relationships it can’t express.',
+      body: 'An API and its clients. A schema and its migrations. A constant and the tests that assume it. Every repository is held together by sections that form one subsystem with nothing connecting them — no import, no reference. Those relationships exist only in someone’s understanding.'
+    },
+    caption: 'The wide shot — the failure recedes; the camera crosses one machine holding many such assemblies'
   },
   second: {
-    stage: 'C',
-    caption: 'Second session — an analogous control arm changes from a clean start'
+    prose: {
+      headline: 'A span records which sections belong together and why.',
+      body: 'A span is a name, two or more exact anchors — file paths with line ranges — and a durable, present-tense definition of the subsystem those sections form. Someone who understood this relationship recorded it — git span add, git span why — and committed it like any other file. It sits quietly in the tree, inert until a recorded section changes.'
+    },
+    caption: 'The same change begins again; nothing looks different'
   },
   span: {
-    stage: 'C',
-    caption: 'Span appears — recorded linkage resolves into shared triangular geometry'
+    prose: {
+      headline: 'Touch one section, and the whole relationship surfaces.',
+      body: 'The moment an anchored section is edited, a hook injects the relationship into your coding agent’s context: the name, the exact locations, the standing definition. The agent now knows what you knew when you recorded it.'
+    },
+    caption: 'Amber linkage connects three parts, resolving into shared geometry'
   },
   related: {
-    stage: 'D',
-    caption: 'Related changes — linkage lines become adjustment guides and mounts morph'
+    prose: {
+      headline: 'git-span brings those sections into your work.',
+      body: 'The agent — or you — reads each surfaced location and changes what the new behavior requires. git-span never edits code; it puts the relationship in front of whoever does, before the work is called complete.'
+    },
+    caption: 'The linkage becomes guides; related interfaces adjust into agreement'
   },
   success: {
-    stage: 'D',
-    caption: 'Successful integration — all three interfaces seat and align'
+    prose: {
+      headline: 'This time, the whole system fits together.',
+      body: 'The change integrates on the first attempt, because every section of the relationship was part of the work. Git tracked the changes; git-span carried the consequences.'
+    },
+    caption: 'The same motion as the failed attempt; every interface seats'
   }
 };

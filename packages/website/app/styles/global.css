@@ -31,6 +31,10 @@
   /* Copper: the recorded-relationship accent from the report's art direction */
   --color-linkage: #b87333;
 
+  /* Diff/outcome accents legible on the eggshell ground */
+  --color-positive: #2e7d43;
+  --color-negative: #b04138;
+
   /* The coding-agent terminal, styled after the Claude Code environment: near-black surface. */
   --color-terminal: #0d0d0d;
   --color-terminal-raised: #1b1b1b;
@@ -66,62 +70,6 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-/*
-  Marketing story terminals: ambient, self-contained animation representing an active session.
-  A blinking cursor and a pulsing status dot — no scroll coupling. Disabled under reduced motion.
-*/
-@keyframes term-blink {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  50.01%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes term-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.term-cursor {
-  animation: term-blink 1.1s steps(1) infinite;
-}
-
-.term-dot {
-  animation: term-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes term-line-in {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.term-line-in {
-  animation: term-line-in 0.28s ease-out both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .term-cursor,
-  .term-dot,
-  .term-line-in {
-    animation: none;
-  }
 }
 
 /*
