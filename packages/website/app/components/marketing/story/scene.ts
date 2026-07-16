@@ -23,9 +23,9 @@ interface PhaseWeight {
 
 const PHASE_WEIGHTS: readonly PhaseWeight[] = [
   { id: 'hero', label: 'Hero', scrollVh: 1 },
+  { id: 'traverse', label: 'Traversal', scrollVh: 1 },
   { id: 'change', label: 'First change', scrollVh: 1.5 },
   { id: 'failure', label: 'Failed integration', scrollVh: 1.5 },
-  { id: 'traverse', label: 'Reset and traversal', scrollVh: 1 },
   { id: 'second', label: 'Second change', scrollVh: 1 },
   { id: 'span', label: 'Span appears', scrollVh: 1 },
   { id: 'related', label: 'Related changes', scrollVh: 1.5 },

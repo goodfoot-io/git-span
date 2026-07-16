@@ -63,7 +63,14 @@ export const CLOSING: ClosingCopy = {
 export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   hero: {
     prose: null,
-    caption: 'An exploded assembly, aligned — every part currently agrees'
+    caption: 'The wide shot — an untouched machine of many linkage assemblies, at rest and in exact agreement'
+  },
+  traverse: {
+    prose: {
+      headline: 'Your code is full of relationships it can’t express.',
+      body: 'An API and its clients. A schema and its migrations. A constant and the tests that assume it. Every repository is held together by sections that form one subsystem with nothing connecting them — no import, no reference. Those relationships exist only in someone’s understanding.'
+    },
+    caption: 'Zoomed in on one assembly — separated parts in silent agreement, nothing visibly connecting them'
   },
   change: {
     prose: {
@@ -79,13 +86,6 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
     },
     caption: 'The parts move toward assembly; three mounting points miss'
   },
-  traverse: {
-    prose: {
-      headline: 'Your code is full of relationships it can’t express.',
-      body: 'An API and its clients. A schema and its migrations. A constant and the tests that assume it. Every repository is held together by sections that form one subsystem with nothing connecting them — no import, no reference. Those relationships exist only in someone’s understanding.'
-    },
-    caption: 'The wide shot — the failure recedes; the camera crosses one machine holding many such assemblies'
-  },
   second: {
     prose: {
       headline: 'A span records which sections belong together and why.',
@@ -98,7 +98,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       headline: 'Touch one section, and the whole relationship surfaces.',
       body: 'The moment an anchored section is edited, a hook injects the relationship into your coding agent’s context: the name, the exact locations, the standing definition. The agent now knows what you knew when you recorded it.'
     },
-    caption: 'Amber linkage connects three parts, resolving into shared geometry'
+    caption: 'Amber linkage connects the two recorded parts, resolving into shared geometry'
   },
   related: {
     prose: {
