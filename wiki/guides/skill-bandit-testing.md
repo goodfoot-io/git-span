@@ -11,7 +11,8 @@ This guide documents the experiment that produced
 and how to run the same kind of experiment again. The complete harness — variant skills
 (including retired ones), scenario environments, runner, bandit, all 69 trial records with
 their session IDs, and every haiku session transcript — is archived in
-[attachments/git-span-skill-bandit.zip](../attachments/git-span-skill-bandit.zip).
+`wiki/attachments/git-span-skill-bandit.zip` (the wiki link checker does not index
+binary files, so this is a plain path, not a link).
 
 ## The method in one pass
 
