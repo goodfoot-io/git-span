@@ -1,0 +1,81 @@
+---
+title: Mine span candidates from history
+description: Find real but unenforced couplings by mining git history for files that change together, then confirm and declare them.
+---
+
+## What you're looking for
+
+A span candidate is a pair of files (or a file and a range) that repeatedly change together in commits, without a compiler, schema, or test forcing that coupling. If a shared type, import, or test already enforces the relationship, it's visible to anyone reading the code — not a good use of a span. You're hunting for the *invisible* ones: the pairs where changing one silently obligates a change in the other, and nothing catches it if you forget.
+
+## Find files that change together
+
+Pick a file you suspect has hidden dependents, and list every commit that touched it:
+
+```bash
+git log --pretty=format:%H -- path/to/file.ts
+```
+
+Then, for each of those commits, list every other file that changed alongside it, and rank by frequency:
+
+```bash
+git log --pretty=format:%H -- path/to/file.ts \
+  | xargs -I{} git show --name-only --pretty=format: {} \
+  | sort | uniq -c | sort -rn | head -20
+```
+
+The top of that list is your co-change ranking for `file.ts`. A file that shows up in a large fraction of `file.ts`'s commits is a candidate. Repeat for other files you're suspicious of, or invert the question and scan broadly — e.g. narrow to a recent window with `--since`:
+
+```bash
+git log --since="6 months ago" --pretty=format:%H -- path/to/file.ts | wc -l
+```
+
+to gauge how much history you're working with before committing to a full pass.
+
+## Filter out couplings that are already visible
+
+Before treating a high-co-change pair as a candidate, check whether the coupling is already enforced or already obvious:
+
+- **Shared type or schema.** If both files import the same interface, generated type, or schema, a compiler or codegen step already keeps them in sync — not a span candidate.
+- **Test and the code it tests.** A file and its own test changing together is expected, not hidden.
+- **Manifest or doc entries.** A file and a line in `package.json`, a changelog, or a README that simply lists it are structurally coupled and visible to any reader — not implicit.
+- **Same author, same sweep.** If one person made both changes together as part of an unrelated refactor (renaming, formatting), that's incidental, not a real dependency. Check `git log --format='%an'` for the commits in question — if it's consistently one author making sweeping changes, discount the pair.
+
+What's left after filtering — pairs with no shared type, no test relationship, no manifest link, touched by more than one author over time — are worth reading.
+
+## Confirm the coupling by reading the code
+
+For a surviving pair, read the actual commits that touched both files together:
+
+```bash
+git log --pretty=format:'%h %ad %an %s' --date=short \
+  --since="1 year ago" -- path/to/fileA.ts path/to/fileB.ts
+```
+
+Read the commit subjects and, where the reason isn't obvious from the subject alone, the diffs (`git show <sha>`). Ask:
+
+- Does one file rely on a contract the other defines, that nothing enforces? (e.g. a hand-maintained mapping, a protocol both sides assume, a numeric constant that has to match)
+- If someone changed the other side of this pair without knowing about the first, what would break silently?
+- Do the commit messages describe the same underlying concern, even though they touch different files?
+
+A pair where every co-occurring commit tells a consistent story — the same feature, the same bug, the same constraint — is a real candidate. A pair where the commits are unrelated changes that happened to land together is a false positive; discard it.
+
+## Declare the span
+
+Once you've confirmed the coupling, anchor both sides and write the why:
+
+```bash
+git span add checkout-flow web/checkout.tsx#L88-L120 api/charge.ts#L30-L76
+git span why checkout-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+```
+
+Anchor the narrowest range that carries the coupling — a whole file if the dependency is diffuse, a line range if you can point at the specific function or block. Write the why as a plain definition of what the anchors form together, not as a warning or changelog entry; see [Concepts](/docs/concepts) for what belongs in the why versus in a code comment.
+
+Stage and commit:
+
+```bash
+git add .span && git commit
+```
+
+<Callout type="info">
+`git span stale`, `show`, `why`, and `history` are the ground truth for a span's current state once it exists. Use those commands to inspect and reconcile spans going forward — see [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for that workflow. Mining git history is only for the discovery step covered here, before a span exists.
+</Callout>

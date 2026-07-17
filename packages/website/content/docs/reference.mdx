@@ -1,0 +1,86 @@
+---
+title: Reference
+description: Span name grammar, anchor syntax, the .span/ storage model, exit codes, and configuration.
+---
+
+## Span names
+
+A span name is one or more kebab-case segments separated by `/`: `<slug>`, `<category>/<slug>`, or `<category>/<subcategory>/<identifier-slug>`. Each segment may contain only lowercase `a-z`, `0-9`, and `-`, and must start with a letter or digit — no uppercase, no leading dot, no underscores.
+
+```
+$ git span add BadName web/f.ts
+error: invalid name: `BadName` segment `BadName` must start with a-z or 0-9 (kebab-case segments separated by `/` (e.g. `<slug>`, `<category>/<slug>`, or `<category>/<subcategory>/<identifier-slug>`); lowercase a-z, 0-9, and `-`; each segment must start with a letter or digit)
+```
+
+A number of names are reserved because they collide with subcommands or other tokens, including `add`, `remove`, `commit`, `why`, `restore`, `revert`, `delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`, `list`, `help`, `pre-commit`, `advice`, `rewrite`, and `hooks`. This list is not exhaustive.
+
+## Anchors
+
+An anchor is either:
+
+- A whole-file anchor: a bare `<path>`.
+- A line-range anchor: `<path>#L<start>-L<end>`, 1-indexed and inclusive.
+
+A line-range anchor whose end exceeds the file's current line count is rejected:
+
+```
+$ git span add wsspan web/f.ts#L100-L200
+error: invalid anchor: end=200 exceeds file line count (7)
+```
+
+The range must be well-formed, with start ≤ end. A reversed range like `#L6-L4` fails anchor parsing with a misleading complaint about a missing `L` prefix — see [Re-anchor after an edit](/docs/guides/re-anchor-after-an-edit).
+
+Before writing any `#L<start>-L<end>` range by hand, run `wc -l <path>` and check the end line against the file's current length. To cover an entire file, prefer the bare-path form over a full-file line range — it stays valid as the file grows.
+
+## The `.span/` directory
+
+<Callout type="info">
+Treat `.span/` as internal. Inspect span state through `git span show`, `list`, `stale`, and `history` — never by reading files under `.span/` directly or reconstructing state from `git log`/`git show`. Those commands are the source of truth for what's current; the raw files are an implementation detail that can change.
+</Callout>
+
+At a high level, the span root holds one file per span, named after its slug — a nested name like `category/slug` creates a subdirectory. Each span file holds one `<path>#L<start>-L<end> <algorithm>:<hash>` line per anchor, a blank line, then the why as trailing prose.
+
+A handful of helper files live alongside the span files:
+
+- `.gitattributes` — forces LF line endings for span files.
+- `.gitignore` — ignores dispatcher runtime artifacts.
+- `.hookignore` — path-scoped suppression rules for the Claude Code agent hooks.
+- `.manual-run` — a presence-only marker, created automatically on the first `add`/`why`, that switches background reconciliation to a runnable script instead of an auto-spawned agent.
+
+`git span show <name>` (and the bare `git span <name>` form) renders a friendlier TOML-style display — `name`, `message`, `[[anchors]]` blocks, a `[config]` block — but that's a display transform, not the on-disk format.
+
+## Exit codes
+
+| Command | Exit code | Meaning |
+|---|---|---|
+| Any subcommand | 0 | Success |
+| `stale` | 0 | No drift found, or `--no-exit-code` passed while drift is present |
+| `stale` | 1 | Drift found (`Changed`/`Moved` anchors), or an interior-anchor integrity violation |
+| `add` / `why` / etc. | 1 | Operational or validation error (invalid name, out-of-range anchor, and similar) |
+| Any command | 2 | A clap usage error — bad flag, missing required argument |
+| `merge-driver` | 0 | Fully resolved |
+| `merge-driver` | 1 | Partial resolution (residue markers written) |
+
+The interior-anchor integrity case is never maskable by `stale --no-exit-code` — it always exits 1, even when no anchor drifted.
+
+## Configuration
+
+**Span root directory.** Resolved with this precedence:
+
+1. `--span-dir <path>` CLI flag
+2. `GIT_SPAN_DIR` environment variable
+3. `git config git-span.dir`
+4. Default: `.span`
+
+**Other environment variables and config:**
+
+| Setting | Effect |
+|---|---|
+| `GIT_SPAN_PERF` | Enables `--perf` timing output to stderr without passing the flag (`1`/`true`/`yes`/`on`, case-insensitive) |
+| `GIT_SPAN_CACHE=0` | Disables the on-disk resolver cache entirely |
+| `GIT_SPAN_STORE_MAX_BYTES` / `git config git-span.storeMaxBytes` | Overrides the cache store's byte ceiling. Falls back from the env var to the git config value, then to the built-in default of 268,435,456 bytes (256 MiB) |
+| `GIT_SPAN_RENAME_BUDGET` | Overrides the rename-detection budget used by history/move tracking. Default `1000` |
+
+The resolver cache lives in the git common directory and is safe to delete.
+
+See [Command reference](/docs/commands) for per-subcommand flags and behavior.

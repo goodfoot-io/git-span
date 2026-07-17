@@ -1,0 +1,173 @@
+---
+title: Command reference
+description: Every git-span subcommand, grouped by task, with flags and exit behavior.
+---
+
+## Global options
+
+Every subcommand accepts:
+
+- `--perf` — emit performance timings for major git-span operation groups to stderr. Can also be enabled with `GIT_SPAN_PERF=1`.
+- `-h`, `--help` — print help (a summary with `-h`, full help with `--help`).
+- `-V`, `--version` — print the version (top-level only).
+
+Bare `git span` with no arguments prints help and exits 0 — it does not list every span. Run `git span list` with no arguments for that. Any clap usage error (bad flag, missing required argument) exits 2.
+
+## Declare and edit
+
+### add
+
+```bash
+git span add <name> <anchors>...
+```
+
+Adds one or more anchors to a span, writing the span file under the span root. Each anchor is either a bare `<path>` (whole-file) or `<path>#L<start>-L<end>` (line range, 1-indexed, inclusive):
+
+```bash
+git span add api-contract src/api.ts#L1-L3 tests/api.test.ts
+```
+
+Key flags:
+
+- `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of `HEAD`.
+
+Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `stale` flagged on a range that didn't move.
+
+Exits 1 on an invalid name or an out-of-range anchor. Does not commit — stage and commit the change yourself with `git add .span && git commit`.
+
+### remove
+
+```bash
+git span remove <name> <anchors>...
+```
+
+Removes anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Does not commit — run `git add .span && git commit` afterward.
+
+### why
+
+```bash
+git span why <name>
+git span why <name> -m "<sentence>"
+```
+
+Reads or stages a span's why — a one-sentence definition of the subsystem, flow, or concern the anchors collectively form. Bare `git span why <name>` prints the current why. `-m "<msg>"` writes a new why into the span file; commit it with `git add .span && git commit`.
+
+The why is evergreen: it's inherited across routine re-anchors, and you only write a new one when the subsystem itself changes.
+
+### delete
+
+```bash
+git span delete <name>
+```
+
+Deletes a span — removes its file under the span root. Destructive. Run `git span list` afterward to confirm it's gone, then commit the change.
+
+## Inspect
+
+### show
+
+```bash
+git span show <name>
+git span <name>
+```
+
+Shows the named span — its anchors, why, and config. The bare `git span <name>` positional form is equivalent to `git span show <name>`.
+
+### list
+
+```bash
+git span list [targets...]
+```
+
+Lists files and anchors currently tracked by a span. `targets` may be file paths, `<path>#L<start>-L<end>` ranges, or bare span names; omit them to list every span.
+
+Key flags:
+
+- `--porcelain` — emit one tab-separated row per anchor instead of human blocks.
+- `--oneline` — one line per anchor: `` `<span-name>` `<canonical-address>` ``.
+- `--offset <N>` — skip the first N spans (after filtering, before `--limit`). Default 0.
+- `--limit <N>` — cap output at N spans (after filtering and `--offset`).
+
+### tree
+
+```bash
+git span tree <globs...>
+```
+
+Traces blast radius: renders a clique-grouped impact tree rooted at the files matched by the given paths/globs. From the matched anchor paths, the tree expands outward through span co-occurrence to the files each could affect; files that all anchor the same span collapse onto a single comma-separated line.
+
+Roots are file paths and globs only — resolved repo-relative, no CWD-relative joining — and unlike `list`/`stale`, `tree` does not accept `#L<start>-L<end>` line-range addresses or bare span names. At least one argument is required; a pattern matching no anchored file is an error.
+
+Key flags:
+
+- `-d`, `--depth <N>` — maximum expansion depth. Default 3; `--depth 0` prints roots only.
+- `--format <human|json>` — `human` (default) prints a nested markdown list; `json` emits the same structure as nested `{ "members": [...], "children": [...] }` nodes.
+
+### history
+
+```bash
+git span history <name>
+```
+
+Shows a chronological timeline of a span file's git history: each commit where the span changed, oldest to newest, with the content of any anchor that was added, modified, or removed, plus an optional `current` entry describing how the working tree has drifted from `HEAD`.
+
+Key flags:
+
+- `--format <xml|json>` — output format. Default `xml`.
+- `-n`, `--limit <N>` — cap the walk at N commits (the newest N are inspected).
+
+## Audit and automate
+
+### stale
+
+```bash
+git span stale [paths...]
+```
+
+Reports anchors whose content has drifted from their anchored state. `paths` may be file paths, globs, or span names; omit them to scan all spans.
+
+Key flags:
+
+- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 stale across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `porcelain` and `json` print **nothing** on a clean scan — no header row, no `{"findings": []}` — empty stdout plus exit 0 is the clean signal.
+- `--no-exit-code` — exit 0 even when drift is found (report-only mode). Does not mask the interior-anchor integrity case below.
+- `--fix` — re-anchors drift in place. See the callout below for what it actually does. Only supported with `--format human`.
+
+<Callout type="warn">
+`--fix` reliably re-anchors whitespace-equivalent `Changed` anchors (indentation-only edits), tagging them `resolved, pending commit — auto-updated` on the run that fixes them. In observed behavior on this build, `Moved` anchors are reported by `--fix` but **not** re-anchored, despite the help text describing unconditional re-anchoring of Moved drift. Meaning-altering `Changed` drift — content differs beyond whitespace — is always left for you to resolve with `git span add`; re-running `--fix` will not touch it. After `--fix`, re-run `git span stale` and re-anchor anything still drifting yourself. `--fix` never commits; it only rewrites `.span/` worktree files — stage and commit with `git add .span && git commit`.
+</Callout>
+
+Exit codes: 0 (no drift, or `--no-exit-code` with drift present), 1 (drift found, or an interior-anchor integrity violation — the latter is never maskable by `--no-exit-code`).
+
+### doctor
+
+```bash
+git span doctor
+```
+
+Audits the local span setup — reports span count and findings, plus store size against its configured cap. Exits 0.
+
+### merge-driver
+
+```bash
+git span merge-driver <base> <ours> <theirs> <marker-len>
+```
+
+Resolves `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files (`%O`/`%A`/`%B`) and the conflict marker length (`%L`) from git, and resolves only what's structurally derivable without trusting the worktree, which may be mid-merge. Same-anchor range/hash divergence is deferred: minimal conflict markers are written and the command exits non-zero so `git span stale --fix` can finish authoritatively.
+
+Register it in `.gitattributes`:
+
+```txt
+.span/** merge=span
+```
+
+Register it in git config:
+
+```ini
+[merge "span"]
+	name = git-span structural span merge driver
+	driver = git span merge-driver %O %A %B %L
+```
+
+Exits 0 when fully resolved, 1 when partial (residue markers written).
+
+See [Reference](/docs/reference) for exit codes across all commands and the `.span/` storage model.

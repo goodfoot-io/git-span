@@ -1,0 +1,80 @@
+---
+title: Reconcile stale spans
+description: Find drifted anchors with git span stale, auto-resolve what's mechanically safe, and manually re-anchor the rest.
+---
+
+## Run the scan
+
+Run `git span stale` to check every span in the repo for drift:
+
+```bash
+git span stale
+```
+
+With no drift, it prints a summary line (`0 stale across N spans (K anchors checked)`) and exits 0. When drift is found, it exits 1 and lists each stale span with its anchors:
+
+```
+## checkout-flow
+- api/charge.ts#L3-L5 — changed in the working tree
+- web/checkout.tsx#L4-L6 — moved to web/checkout.tsx#L6-L8
+
+Checkout submit flow that carries a charge attempt from browser to server.
+```
+
+A stale span's listing includes every anchor on that span, not just the drifted ones — an anchor with no drift is printed with no status suffix — and closes with the span's why. Read each finding before acting: `changed in the working tree` means the anchored content itself differs; `moved to <path>#L<start>-<end>` means the same content shifted to a new range. A whole-file anchor only ever reports `changed` — any edit to the file, including adding or removing lines, counts as a content change.
+
+## Auto-resolve what's safe
+
+Run `git span stale --fix` to re-anchor what's mechanically safe:
+
+```bash
+git span stale --fix
+```
+
+In observed behavior, `--fix` reliably re-anchors whitespace-equivalent `Changed` anchors — cases where the anchored content was reformatted (indentation, whitespace) but is otherwise identical. The equivalence is judged on the whole anchor: if the range mixes a reformat with even one non-whitespace edit, the anchor counts as meaning-altering and `--fix` leaves all of it alone. Those anchors report `resolved, pending commit — auto-updated` on the `--fix` run itself, and `resolved, pending commit` on later `stale` runs until you commit the `.span/` rewrite. That status is not drift — it's tallied with fresh anchors and does not affect the exit code.
+
+<Callout type="warn">
+`--fix` does not reliably re-anchor `Moved` findings, and it never touches meaning-altering `Changed` drift — both are left for you to resolve by hand. Re-running `--fix` again does not help either case. `--fix` only works with `--format human`, and it never commits: it just rewrites `.span/` in the worktree.
+</Callout>
+
+After running `--fix`, re-run `git span stale` and treat anything still listed as drift — including any `Moved` finding — as needing manual re-anchoring. See [Re-anchor after an edit](/docs/guides/re-anchor-after-an-edit) for the `git span add` / `git span remove` steps.
+
+## Resolve what's left by hand
+
+For each anchor still drifting after `--fix`, decide whether the coupling still holds:
+
+- **Coupling still holds.** Re-anchor it with `git span add`. If the content changed in place, re-add the same address — `add` resolves the existing anchor in place ("Added 0 anchors and resolved 1 in place"). If the range moved, add the new address and `git span remove` the stale one. Follow [Re-anchor after an edit](/docs/guides/re-anchor-after-an-edit).
+- **Coupling is gone.** Remove just that anchor with `git span remove`, or delete the whole span with `git span delete` if none of its anchors are still meaningful.
+
+Before deciding, recover the original intent:
+
+```bash
+git span why checkout-flow
+git span history checkout-flow
+```
+
+`why` shows the span's current rationale; `history` walks the span's commit-by-commit timeline, including what each anchor's content looked like when it was added or last modified. Use both to judge whether a meaning-altering edit broke the coupling or just relocated it.
+
+## Commit the result
+
+Review what `--fix` and your manual re-anchors changed, then stage and commit — the `.span/` rewrite together with the source edits that caused the drift, usually in the same commit:
+
+```bash
+git diff .span/
+git add .span <changed source files> && git commit
+```
+
+An anchor that `--fix` resolved keeps showing `resolved, pending commit` until both sides are committed — committing `.span/` alone while the drifted source content stays uncommitted leaves the status in place.
+
+## Merge conflicts in `.span/`
+
+A merge can leave a span file with conflict markers. `git span stale` reports the span itself with a `— conflict` suffix in human output (`CONFLICT` in the machine formats), and `git span show` refuses to render a span in that state.
+
+`git span stale --fix` resolves what it can structurally — splitting the conflict markers into ours/theirs and merging anchors that don't genuinely disagree — but only when every source file the span references is itself free of conflict markers (the clean-source precondition). Two cases stay manual:
+
+- If the span's `why` text diverged between the two sides with no common merge base, `--fix` writes the anchors clean but leaves the why's conflict markers as residue, and the file stays unmerged for you to sort out by hand.
+- Any anchor whose source file still contains live `<<<<<<<` markers is reported as a conflict and left untouched — resolve the source file first, then re-run `--fix`.
+
+<Callout type="warn">
+After a `--fix` during a merge, always re-run `git span stale` — a `--fix` exit code of 0 does not guarantee the span came out fully clean. Also re-check `git span why <name>`: a merge resolution can leave the why empty even when both sides carried the same text; if it's blank, re-set it with `git span why <name> -m "..."`. Git still expects you to finish the merge with `git commit`.
+</Callout>

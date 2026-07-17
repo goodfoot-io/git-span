@@ -1,0 +1,53 @@
+---
+title: Concepts
+description: Precise definitions for spans, anchors, the why, drift, and the trust boundary around git-span's output.
+---
+
+## Span
+
+A span is a named, declared coupling between file or line-range locations — a group of **anchors** that participate in something no schema, type, or test enforces, plus a **why** that says what those anchors collectively form. A span is identified by a kebab-case name (segments separated by `/`, each segment starting with a letter or digit — e.g. `checkout/min-amount`).
+
+## Anchor
+
+An anchor is a single location a span tracks. There are two forms:
+
+- **Whole-file anchor**: a bare path, e.g. `web/checkout.tsx`. Tracks the entire file's content.
+- **Line-range anchor**: `path#Lstart-Lend`, e.g. `api/charge.ts#L4-L6`. Lines are 1-indexed and the range is inclusive — `L4-L6` covers lines 4, 5, and 6.
+
+A span holds one or more anchors, mixing whole-file and line-range forms freely.
+
+## The why
+
+The why is a one-sentence definition of the subsystem, flow, or concern the anchors collectively form — written with `git span why <name> -m "..."`. It's evergreen: write it once, and it's **inherited across routine re-anchors** (moving an anchor to follow code that shifted doesn't require a new why). Only write a new why when the subsystem itself changes, not when its anchors move.
+
+The why is the payload. Everything else — invariants, caveats, ownership, review triggers — belongs in source comments, commit messages, CODEOWNERS, and PR descriptions, not in the why.
+
+## The `.span/` directory
+
+Span data lives in a `.span/` directory at the repo root (or wherever the span root resolves to), committed alongside your code with ordinary git commands: `git add .span && git commit`. It is **managed through the CLI** — `git span add`, `remove`, `why`, `delete` — not hand-edited. The files under `.span/` use an internal storage format, not the TOML-style view `git span show` renders; treat that internal format as private to the tool.
+
+## Drift and staleness
+
+An anchor has drifted when the code it points at no longer matches what was recorded. `git span stale` reports drift with one of these statuses:
+
+- **Changed** — the anchored content differs from what was recorded, in place.
+- **Moved** — the anchored content was found at a different location (a shifted line range).
+- **Resolved, pending commit** — a `--fix` run already rewrote this anchor in the worktree, but the rewrite isn't committed yet. This is a distinct, non-drift state: it's tallied with fresh anchors and doesn't affect `stale`'s exit code. Immediately after the `--fix` run that produced it, it's tagged "— auto-updated"; on later `stale` runs, until you commit, it shows as "resolved, pending commit" with no suffix.
+
+A span with any stale anchor has its **entire anchor list printed**, not just the drifted ones — anchors with no drift appear with no status suffix, alongside their stale siblings.
+
+`git span stale` exits `0` on a clean scan and `1` when it finds drift (or an internal integrity violation, which `--no-exit-code` cannot mask). Reconciling drift is a job for `git span add` (re-anchor deliberately) or `git span stale --fix` (re-anchors whitespace-equivalent Changed anchors automatically, without committing); see the [reconcile guide](/docs/guides/reconcile-stale-spans) for the walkthrough and its limits.
+
+<Callout type="warn">
+Span command output is ground truth. Don't re-derive a span's state by reading raw `git log`, `git show`, or the files under `.span/` directly — use `git span show`, `list`, `stale`, and `history`, which account for staging, worktree state, and internal formatting that raw git output doesn't reflect.
+</Callout>
+
+## Automation lifecycle
+
+Beyond manual use, git-span is meant to run unattended at a few points in a repo's lifecycle:
+
+- **CI and pre-commit**: run `git span stale` and fail the build or block the commit on a non-zero exit — see [Hooks & CI](/docs/hooks-and-ci) for the wiring.
+- **Merge driver**: `.span/` files can conflict like any other tracked file during a merge; git-span registers a merge driver that resolves what's structurally derivable and leaves genuine same-anchor divergence for `git span stale --fix` to finish.
+- **Claude Code hook**: an advisory `PreToolUse` hook surfaces the spans touching the lines an agent is about to read or edit — it never blocks the tool call, it only adds context.
+
+See [Hooks & CI](/docs/hooks-and-ci) for setup details, and the [reference page](/docs/reference) for the storage model and exit codes.

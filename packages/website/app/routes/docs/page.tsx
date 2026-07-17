@@ -1,13 +1,14 @@
 import browserCollections from 'collections/browser';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { DocsBody, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
+import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { LoaderFunctionArgs, MetaFunction } from 'react-router';
 import { redirect, useLoaderData } from 'react-router';
 import { source } from '~/lib/source';
 
 const clientLoader = browserCollections.docs.createClientLoader({
   component({ default: MDX }) {
-    return <MDX />;
+    return <MDX components={defaultMdxComponents} />;
   }
 });
 
@@ -19,7 +20,7 @@ export async function loader({ params }: LoaderFunctionArgs) {
     throw redirect('/docs/overview');
   }
 
-  const page = source.getPage([urlPath]);
+  const page = source.getPage(urlPath.split('/'));
   if (!page) {
     throw new Response('Not found', { status: 404 });
   }

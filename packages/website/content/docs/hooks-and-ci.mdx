@@ -1,0 +1,89 @@
+---
+title: Hooks & CI integration
+description: Wire git span stale into CI, block commits on drift locally, register the merge driver, and use the Claude Code plugin's advisory hook.
+---
+
+## CI checks
+
+`git span stale` exits 1 when it finds drift and 0 on a clean scan, so it drops into any CI pipeline as a plain step:
+
+```yaml
+- uses: actions/checkout@v4
+- run: npm install -g git-span
+- run: git span stale
+```
+
+For a report-only job that should never fail the build, add `--no-exit-code`:
+
+```bash
+git span stale --no-exit-code
+```
+
+<Callout type="warn">
+`--no-exit-code` only suppresses the exit code for ordinary drift. An interior-anchor integrity violation still exits 1 even with `--no-exit-code` set.
+</Callout>
+
+For machine consumption, use `--format json` or `--format porcelain`:
+
+```bash
+git span stale --format json
+git span stale --format porcelain
+```
+
+<Callout type="info">
+Both machine formats print nothing at all to stdout on a clean scan — no `{"findings": []}`, no `# porcelain v2` header. Empty stdout plus exit 0 is the clean signal; a parsing step that expects a JSON envelope on every run will break on the clean case. The human format (the default) prints a summary line on a clean scan.
+</Callout>
+
+See [Command reference](/docs/commands) for the full set of `stale` flags, and [Concepts](/docs/concepts) for what counts as drift.
+
+## Pre-commit hook
+
+To block a local commit on drift before it lands, add a `git span stale` call to `.git/hooks/pre-commit`:
+
+```bash
+#!/bin/sh
+git span stale
+```
+
+Make it executable:
+
+```bash
+chmod +x .git/hooks/pre-commit
+```
+
+With no drift, the hook exits 0 and the commit proceeds. With drift, `git span stale` exits 1, which fails the hook and blocks the commit — fail-closed by default. A developer can still bypass it with `git commit --no-verify`, which is standard git behavior for any hook, not something git-span adds or removes.
+
+## Merge driver
+
+Registering `git span merge-driver` lets `.span/` files merge structurally instead of falling back to a textual diff3 merge. Add the attribute:
+
+```txt
+.span/** merge=span
+```
+
+And the driver in `.git/config`:
+
+```ini
+[merge "span"]
+	name = git-span structural span merge driver
+	driver = git span merge-driver %O %A %B %L
+```
+
+The driver resolves whatever is structurally derivable from the three sides without trusting the worktree. Genuine same-anchor divergence — both sides changed the same anchor's range or hash, or the `why` text diverged with no common merge base — it can't resolve on its own; it writes minimal conflict markers into the span file and exits non-zero so that a later `git span stale --fix` can finish the resolution. Anything still unresolved surfaces in `git span stale` with a `— conflict` suffix in human output (`CONFLICT` in the machine formats).
+
+See the [reconcile stale spans guide](/docs/guides/reconcile-stale-spans) for what to do with a span left in that state.
+
+## Claude Code integration
+
+git-span ships as a Claude Code plugin. Its `PreToolUse` hook watches `Read`, `Edit`, and `Write` tool calls, works out the line range the agent is about to touch, and checks whether that range intersects any span's anchors on that file. When it does, the hook injects the span's name and why as context for the agent.
+
+<Callout type="info">
+This hook is advisory only. It never blocks, denies, or delays the tool call — it adds context alongside it. Nothing about it prevents an edit to anchored code.
+</Callout>
+
+Two things keep the notices from becoming noise:
+
+- `.span/.hookignore` — a gitignore-like file for suppressing notices on a path-scoped basis.
+- Per-session dedup — once a given span/file combination has been surfaced, it isn't announced again in the same session.
+
+See [Concepts](/docs/concepts) for what a span's why is for, and [Command reference](/docs/commands) for the underlying `git span list` and `git span stale` calls the hook makes.

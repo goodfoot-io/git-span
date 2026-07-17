@@ -1,8 +1,35 @@
 ---
-title: Overview
-description: git-span documentation
+title: Introduction
+description: What git-span is, what a span is, and why declared-but-unenforced coupling deserves a tool.
 ---
 
-# Overview
+git-span tracks the dependencies in your codebase that nothing enforces. A **span** is a named, declared coupling between file or line ranges — places that must change together even though no schema, type system, or test says so. git-span records that coupling next to your code, in git, and tells you when the anchored code drifts away from it.
 
-Welcome to the git-span documentation. This is a placeholder -- real documentation content is coming soon.
+## The problem
+
+Every codebase accumulates invisible couplings:
+
+- A serializer and a deserializer that must agree on a wire format.
+- A config default and the three call sites that assume it.
+- A SQL migration and the ORM model it must match.
+- A comment in one file explaining an invariant maintained in another.
+
+None of these are enforced. The compiler doesn't know about them, tests rarely cover the pairing itself, and the knowledge usually lives in one person's head. When someone edits one side without the other, nothing fails — until it does, later, somewhere else.
+
+## What a span does about it
+
+A span makes the coupling explicit without pretending to enforce it:
+
+1. **Declare** it: `git span add` names a group of anchors — whole files or `path#Lstart-Lend` line ranges — that form one subsystem or concern.
+2. **Explain** it: `git span why -m "..."` attaches a sentence saying what the anchors collectively do. The why is the payload; a span without one is just a list of locations.
+3. **Commit** it: span data lives in a `.span/` directory tracked by git, so declarations travel with the code, merge with branches, and appear in history.
+4. **Audit** it: `git span stale` reports every anchor whose code has drifted since it was declared — moved, changed, or gone — so a reviewer or CI job can ask "did you mean to break this coupling?"
+
+git-span never blocks an edit and never claims the coupling still holds. It keeps an honest record of what someone once declared and shows you exactly where reality has diverged from it. Deciding whether drift is fine or a bug stays with you.
+
+## Where to go next
+
+- [Getting started](/docs/getting-started) — install git-span and declare your first span in a toy repository.
+- [Concepts](/docs/concepts) — spans, anchors, drift, and the why, defined precisely.
+- [Command reference](/docs/commands) — every subcommand, grouped by task.
+- [Hooks & CI integration](/docs/hooks-and-ci) — make `git span stale` part of review.

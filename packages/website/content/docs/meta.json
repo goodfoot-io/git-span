@@ -1,4 +1,4 @@
 {
-  "pages": ["overview"],
-  "title": "Documentation"
+  "title": "Documentation",
+  "pages": ["overview", "getting-started", "concepts", "guides", "commands", "hooks-and-ci", "reference"]
 }

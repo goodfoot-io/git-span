@@ -1,0 +1,82 @@
+---
+title: Re-anchor after an edit
+description: Update a span's anchors after a deliberate code change — in place, or to a new range.
+---
+
+## When to use this
+
+Use this when you've deliberately changed the code a span anchors — moved a function, changed its size, or otherwise made its old line range wrong — and `git span stale` now reports it as drifted. This guide covers the manual re-anchor step. If you haven't triaged the drift yet, start with [Reconcile stale spans](/docs/guides/reconcile-stale-spans).
+
+## Find the new range
+
+Open the file and locate the code the span should now point at. Before writing an `#Lstart-Lend` address, check the file's current line count:
+
+```bash
+wc -l path/to/file.ts
+```
+
+Anchor line numbers are 1-indexed and inclusive, and the end line can't exceed the file's line count — `git span add` rejects it:
+
+```
+error: invalid anchor: end=200 exceeds file line count (7)
+```
+
+<Callout type="warn">
+A reversed range (`L6-L4`, end before start) doesn't get a clear "end before start" error. It fails generic anchor parsing instead, with a message that misleadingly claims the address is missing its `L` prefix. If you see that error on an address that looks right, check whether start and end are swapped.
+</Callout>
+
+If the whole file is the right unit to anchor (not a specific range), use the bare path with no `#L` suffix — that's a whole-file anchor.
+
+## Same range, new content
+
+If the code changed in place — the anchor's line range is still right, only the content differs — re-add the same address. `git span add` recognizes the existing anchor and re-hashes it against the current content:
+
+```bash
+git span add checkout-flow web/checkout.tsx#L4-L6
+```
+
+```txt
+Added 0 anchors and resolved 1 in place to span `checkout-flow`.
+
+- resolved in-place: `checkout-flow` `web/checkout.tsx#L4-L6` (hash changed)
+```
+
+"Added 0 anchors" is not a failure — the in-place resolution is the point. The next `git span stale` run reports the anchor clean. This is also how you confirm an intentional content change that `stale` flagged: re-adding the anchor declares "yes, the new content is what the span should track."
+
+## Moved range: add the new anchor, remove the old one
+
+If the code moved to a different range, add the new address and drop the stale one:
+
+```bash
+git span add checkout-flow web/checkout.tsx#L6-L8
+git span remove checkout-flow web/checkout.tsx#L4-L6
+```
+
+`add` stages the new anchor into the span; `remove` drops the stale one. Order doesn't matter — both edit the span file under the span root.
+
+Check the result:
+
+```bash
+git span show checkout-flow
+```
+
+Confirm the span now lists the new range and no longer lists the old one.
+
+## The why is inherited
+
+Re-anchoring doesn't touch the span's `why` — it carries forward unchanged, which is correct for a routine re-anchor where the subsystem's meaning hasn't changed. Only write a new why if the edit changed what the subsystem *is*, not just where it lives:
+
+```bash
+git span why checkout-flow -m "Updated definition of the subsystem, if it actually changed."
+```
+
+## Commit
+
+```bash
+git add .span && git commit
+```
+
+## See also
+
+- [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for the full triage workflow, including when `stale --fix` can do this automatically.
+- [Concepts](/docs/concepts) for the definitions of span, anchor, and why.
