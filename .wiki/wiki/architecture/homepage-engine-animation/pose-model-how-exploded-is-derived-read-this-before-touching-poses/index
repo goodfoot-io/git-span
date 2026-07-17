@@ -1,4 +1,5 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L23-L31 rk64:7a443cbfaa272f34
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L118-L282 rk64:9e3ee4c827069405
-wiki/architecture/homepage-engine-animation.md#L101-L141 rk64:a5efbcfc9c996aa3
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L42-L53 rk64:ba81edc7a91c1e18
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L224-L450 rk64:10b55f45c527e9af
+wiki/architecture/homepage-engine-animation.md#L137-L203 rk64:f97ed3ec163bc16b
 
+How the exploded pose is derived from the base part records; read before touching poses.

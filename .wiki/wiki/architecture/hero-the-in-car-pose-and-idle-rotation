@@ -1,6 +1,7 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L854-L854 rk64:da115002d3bef32d
-packages/website/app/components/marketing/story/engine/beats.ts#L60-L63 rk64:992cdb360a1aca95
-packages/website/app/components/marketing/story/engine/beats.ts#L238-L256 rk64:4910381614800bad
-packages/website/app/components/marketing/story/engine/beats.ts#L262-L270 rk64:bf52a8c0f4e2929d
-wiki/architecture/homepage-engine-animation.md#L413-L454 rk64:67aa1d1b23039ef2
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L874-L879 rk64:2c8f38a33ca0167f
+packages/website/app/components/marketing/story/engine/beats.ts#L73-L75 rk64:3b890daebfd2d52f
+packages/website/app/components/marketing/story/engine/beats.ts#L289-L307 rk64:bca4b1c7401281c7
+packages/website/app/components/marketing/story/engine/beats.ts#L313-L321 rk64:f1e6783b2fbc1436
+wiki/architecture/homepage-engine-animation.md#L523-L571 rk64:ea64dac516f993e1
 
+The hero in-car pose and its idle rotation, replacing the retired upright pose concept.

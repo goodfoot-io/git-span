@@ -1,4 +1,6 @@
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L33-L44 rk64:ba81edc7a91c1e18
 packages/website/app/components/marketing/story/engine/parts.ts#L86-L94 rk64:4c83b9cad4680417
-wiki/architecture/homepage-engine-animation.md#L173-L199 rk64:cd64882edbdef421
+packages/website/app/components/marketing/story/engine/parts.ts#L92-L94 rk64:256dbda0af3e28b2
+wiki/architecture/homepage-engine-animation.md#L204-L229 rk64:efa1234945baebd8
 
+Trap: three.js mesh name collisions get silently deduped with numeric suffixes, breaking part lookup by name.

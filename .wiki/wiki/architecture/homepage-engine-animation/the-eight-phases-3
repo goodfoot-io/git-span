@@ -1,5 +1,6 @@
-packages/website/app/components/marketing/story/engine/beats.ts#L91-L290 rk64:8b08c51869fd2501
-packages/website/app/components/marketing/story/engine/beats.ts#L91-L312 rk64:16f1d319ec86a957
-packages/website/app/components/marketing/story/engine/beats.ts#L291-L312 rk64:b1c1373fd934e7aa
-wiki/architecture/homepage-engine-animation.md#L94-L123 rk64:26fb7e05e52cf5d8
+packages/website/app/components/marketing/story/engine/beats.ts#L104-L377 rk64:ddab61e4f87b33e0
+packages/website/app/components/marketing/story/engine/beats.ts#L175-L189 rk64:1d7607770e23506c
+packages/website/app/components/marketing/story/engine/beats.ts#L379-L402 rk64:d885e05157486624
+wiki/architecture/homepage-engine-animation.md#L97-L135 rk64:dbb72412251f01c7
 
+The eight choreography phases that drive the homepage engine animation timeline.

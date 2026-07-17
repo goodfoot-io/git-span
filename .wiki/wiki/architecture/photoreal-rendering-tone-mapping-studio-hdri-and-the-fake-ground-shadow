@@ -1,0 +1,9 @@
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L183-L196 rk64:e53923128945558f
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L224-L260 rk64:34ba9065c6d5f36d
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L730-L748 rk64:764b2a65c5b4581c
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L755-L779 rk64:3f4ed4435b65545f
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L853-L859 rk64:c330bcc8f2275b91
+packages/website/app/components/marketing/story/engine/beats.ts#L375-L377 rk64:83faf612cdb23968
+wiki/architecture/homepage-engine-animation.md#L279-L331 rk64:fa312a50d862ae6c
+
+Photoreal rendering pass: AgX tone mapping, studio HDRI lighting, and the fake ground-contact shadow.

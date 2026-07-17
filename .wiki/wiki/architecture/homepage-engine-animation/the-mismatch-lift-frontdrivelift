@@ -1,5 +1,8 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L647-L720 rk64:badfc84c43c62d52
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L604-L665 rk64:491d09704b44f335
 packages/website/app/components/marketing/story/engine/beats.ts#L72-L75 rk64:d05d365dbc932606
-packages/website/app/components/marketing/story/engine/beats.ts#L145-L164 rk64:51391133e40dcf9f
-wiki/architecture/homepage-engine-animation.md#L249-L273 rk64:6edd7b15896e31d9
+packages/website/app/components/marketing/story/engine/beats.ts#L88-L91 rk64:ca71935ea91553e1
+packages/website/app/components/marketing/story/engine/beats.ts#L152-L168 rk64:37e0a5761dc720e2
+packages/website/app/components/marketing/story/engine/beats.ts#L175-L189 rk64:1d7607770e23506c
+wiki/architecture/homepage-engine-animation.md#L333-L362 rk64:b81634d7b12a5898
 
+The mismatch between the choreography's frontDriveLift value and how EngineScene applies it.

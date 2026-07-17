@@ -1,5 +1,7 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L711-L754 rk64:4c61924b7f803a0e
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L722-L778 rk64:bac3203793f0b16d
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L756-L778 rk64:a1a80acaa77a36cc
-wiki/architecture/homepage-engine-animation.md#L274-L306 rk64:631155543ed01ed6
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L667-L725 rk64:0b553099c17373e2
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L783-L803 rk64:195835b3d8fcf8fb
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L805-L821 rk64:1221aebdd717a8b5
+packages/website/app/components/marketing/story/engine/beats.ts#L231-L248 rk64:f8906c1700ada93a
+wiki/architecture/homepage-engine-animation.md#L364-L415 rk64:83320124dc781ff0
 
+How highlight shells and linkage lines are built and updated per frame.
