@@ -83,7 +83,7 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
   trust-boundary violations (re-verifying `stale` output via `git log`/`git show`,
   ~50k wasted chars per occurrence), unbatched history calls, and silent router misses in
   multi-file skills. The bred-in countermeasures are visible in the winner's dispatch
-  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md#L71-L77) —
+  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md#L71-L103) —
   which routes on countable conditions with a catch-all else-branch.
 
 ## Outcome
@@ -99,6 +99,14 @@ bred-in anchor discipline (grep the `why`'s symbol before writing line ranges; t
 `stale` output and stop) whose absence killed both retired variants on the identical trap.
 The incumbent [git-span skill](../../plugins-claude/git-span/skills/git-span/SKILL.md)
 remains in place; v2 sits beside it.
+
+After adoption, the incumbent's long-tail sections (hooks, terminal statuses, LFS,
+candidate mining, CI, command reference — content the experiment never exercised) were
+grafted into v2 as additional dispatch routes. Only the *experiment-tested* artifact is
+the core recipes plus the triage/inspect sections; the grafted routes were instead
+verified claim-by-claim against the installed binary, which surfaced real incumbent-doc
+errors (a `MERGE_CONFLICT` status that is actually `CONFLICT`, a falsely claimed
+concurrent-`add` file lock, swapped section numbering in the mining reference).
 
 Every trial's haiku `session_id` is in the archive's `results/trials.jsonl`, and the
 matching transcripts are under `transcripts/` keyed by the encoded env path.
