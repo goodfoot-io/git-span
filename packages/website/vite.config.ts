@@ -19,10 +19,10 @@ const optimizeInclude = [
 ];
 
 export default defineConfig(async ({ command }) => ({
-  // The V8 engine GLB is loaded via a `?url` import from EngineScene.ts; Vite needs to know it's
-  // a static asset (not a module to parse) even though the `?url` suffix already forces URL
-  // handling in dev.
-  assetsInclude: ['**/*.glb'],
+  // The V8 engine GLB and its studio-lighting HDRI are loaded via `?url` imports from
+  // EngineScene.ts; Vite needs to know they're static assets (not modules to parse) even though
+  // the `?url` suffix already forces URL handling in dev.
+  assetsInclude: ['**/*.glb', '**/*.hdr'],
   define: {
     'process.env.NODE_ENV': JSON.stringify(command === 'build' ? 'production' : 'development')
   },

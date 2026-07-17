@@ -73,7 +73,7 @@ export function EngineStage({ scene }: EngineStageProps) {
   const caption = PHASE_COPY[scene.phase.id].caption;
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-rule">
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-lg">
       <div className="relative flex-1" style={{ backgroundColor: STAGE_BACKGROUND }}>
         <div ref={containerRef} aria-hidden className="absolute inset-0" />
 
