@@ -19,6 +19,10 @@ const optimizeInclude = [
 ];
 
 export default defineConfig(async ({ command }) => ({
+  // The V8 engine GLB is loaded via a `?url` import from EngineScene.ts; Vite needs to know it's
+  // a static asset (not a module to parse) even though the `?url` suffix already forces URL
+  // handling in dev.
+  assetsInclude: ['**/*.glb'],
   define: {
     'process.env.NODE_ENV': JSON.stringify(command === 'build' ? 'production' : 'development')
   },

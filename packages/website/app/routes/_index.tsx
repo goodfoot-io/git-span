@@ -1,8 +1,8 @@
 import { useRef } from 'react';
 import type { MetaFunction } from 'react-router';
 import { Link } from 'react-router';
-import { AutomotiveStub } from '~/components/marketing/story/AutomotiveStub';
 import { CLOSING, HERO, PHASE_COPY } from '~/components/marketing/story/copy';
+import { EngineStage } from '~/components/marketing/story/EngineStage';
 import { deriveScene, TIMELINE, TimelineReadout, useTimeline } from '~/components/marketing/story/index';
 import { PhaseSpecimen } from '~/components/marketing/story/Specimen';
 
@@ -19,7 +19,7 @@ export const meta: MetaFunction = () => [
 const STORY_STEPS = TIMELINE.filter((phase) => phase.id !== 'hero');
 
 // Each step is as tall as its phase weight, so the steps sum to the timeline's scroll distance
-// and each step's scroll range lines up with its automotive state.
+// and each step's scroll range lines up with its engine state.
 function stepHeightClass(scrollVh: number): string {
   if (scrollVh === 1.5) return 'min-h-[150vh]';
   if (scrollVh === 0.5) return 'min-h-[50vh]';
@@ -83,7 +83,7 @@ export default function Index() {
     <div className="bg-ground text-ink-primary">
       {/*
         Persistent split screen. The left column scrolls: a hero lead-in, then one prose step per
-        state. The right column is pinned and scrubs through the automotive states as those steps
+        state. The right column is pinned and scrubs through the engine states as those steps
         scroll past.
       */}
       <section className="w-full">
@@ -125,12 +125,13 @@ export default function Index() {
           </div>
 
           {/*
-            Full-bleed media. The column runs to the right viewport edge so the automotive
-            occupies the right side generously, per the report's "cropped technical cutaway".
+            Full-bleed media. The column runs to the right viewport edge so the engine frame
+            occupies the right side generously. The engine itself keeps a clear whitespace margin
+            inside the frame at all times — no part of it is ever cropped or touches the edges.
           */}
           <div className="lg:col-span-7">
             <div className="flex h-[28rem] items-stretch px-6 py-12 lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:px-0 lg:py-6 lg:pr-6">
-              <AutomotiveStub scene={scene} />
+              <EngineStage scene={scene} />
             </div>
           </div>
         </div>
