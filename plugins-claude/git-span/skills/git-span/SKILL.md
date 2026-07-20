@@ -1,28 +1,108 @@
 ---
-name: git-span
-description: Use with `git span` or spans.
+name: git-span-v2
+description: Track, declare, and reconcile implicit semantic couplings between file/line ranges in a git repo via anchored spans.
 ---
 
-<instructions>
-- **`git span stale` output shows span anchors with `[CHANGED]`, `[MOVED]`, `FRESH`, `(ack)`, or `src=…` and the markers need interpreting**: Read `./sections/reading-stale-output.md`
-- **A span anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config or `delete` is in play**: Read `./sections/responding-to-drift.md`
-- **About to add a span whose two sides are already joined by an import, a function call, a shared type, or a test that fails when one side breaks; or whose anchors span whole modules against their own helpers or tests (a frequent trap when bulk-resolving uncovered writes)**: that coupling is already enforced — do not span it. Read `./sections/creating-a-span.md` § "Should this be a span?" to confirm before adding.
-- **A new relationship needs a span, or a span needs a name, why, anchor shape, or commit sequence**: Read `./sections/creating-a-span.md`
-- **Candidates for a new span need discovering by mining git history for implicit semantic dependencies (co-change, SZZ, churn, lagged change, reviewer overlap, etc.)**: Read `./sections/finding-span-candidates.md`
-- **A finding is `DELETED`, `MERGE_CONFLICT`, or `SUBMODULE`; or a `.span/` file carries git conflict markers and needs resolving (`git span stale --fix`)**: Read `./sections/terminal-statuses.md`
-- **A finding is `CONTENT_UNAVAILABLE(...)`, or the failure involves LFS, partial clone, or sparse checkout**: Read `./sections/content-unavailable.md`
-- **The anchor omits `#L…`, or the path is binary, image, symlink, submodule root, or LFS-tracked**: Read `./sections/whole-file-and-lfs.md`
-- **A `git span` command errored or behaved unexpectedly (first why on a new span, an unparseable `.span` file, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
-- **The job is CI wiring, PR gating, syncing spans across remotes, fresh-clone tolerance, or advisory reports**: Read `./sections/ci-and-sync.md`
-- **A question asks what spans exist, what a span currently says, its history, which spans touch a given path/anchor, or how to trace the blast radius / impact tree of a change (`git span tree`)**: Read `./sections/inspecting-spans.md`
-- **A `<git-span>` block appeared in `systemMessage`; or a question is about when the hook fires, why a block appeared or did not appear, or the once-per-session deduplication**: Read `./sections/understanding-hook-output.md`
-- **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
-- **A question is about whether a git hook (`post-commit`, `post-rewrite`) is needed for spans, or about registering the optional `.span/` merge driver**: Read `./sections/git-hook-setup.md`
-- **A question is about where spans/anchors are stored, whether git-span uses refs, or how span names map to files**: Read `./sections/storage-model.md`
-- **A span should be hidden from the hooks for certain paths, or a `.span/.hookignore` file / per-path span suppression is in play**: Read `./sections/hookignore.md`
-- **A question is about installing the git-span plugin under OpenAI Codex, the `codex plugin marketplace add` / `codex plugin add` flow, or trusting Codex hooks via the `/hooks` prompt**: Read `./sections/codex-install-and-trust.md`
+# git-span
 
-**Note that full codebase validation is not required for span-only changes.**
-</instructions>
+```
+git span stale [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
+git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
+git span why <name> [-m "..."]           # bare = read; -m = write, after add/remove
+git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
+git span delete <name>                   # whole span gone; NAME only, no anchor args
+git span list [<target>...] [--oneline]  # positional filter on name or path
+git span show <name>                     # == bare `git span <name>`
+```
+After any `add`/`remove`/`why -m`/`delete`: `git add .span && git commit -m "..."`.
 
+## Trust boundary
+`git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with
+`git log`, `git show <hash>`, or a raw `Read` of a `.span/*` file — act on the CLI's own
+output and stop.
 
+## Core gotchas
+- `stale --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
+  content drift stays reported on purpose — re-anchor directly with `add`; re-running
+  `--fix` again will not change the result.
+- `add` never retires what it supersedes. Moving an anchor to a new path/range is
+  `remove <old-anchor>` then `add <new-anchor>`; skip `remove` and `stale` reports the old
+  one as `Moved` forever.
+- Anchor end-line must equal the file's *current* line count — `add` rejects
+  `end=N exceeds file line count (M)`. Run `wc -l <path>` right before writing
+  `#Lstart-Lend`, especially right after editing that file.
+- Names are kebab-case segments (`a-z0-9`, no leading dot/uppercase); `.github/x.yml` is
+  an invalid name — pick a subsystem slug instead.
+- `stale`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
+  not an error — that is not proof the span doesn't exist; confirm with `git span list`.
+- `stale` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
+
+## Recipes
+
+### Declare a new coupling
+```
+git span add <name> <anchor>...
+git span why <name> -m "one sentence: name the subsystem, what it does across anchors"
+git add .span && git commit -m "..."
+```
+
+### Re-anchor + retire (stale names the drifted anchor; fix is obvious)
+```
+git span stale <name>                     # see which anchor(s) drifted and how
+# Moved (same content, new path):  git span stale --fix <name>   suffices
+# Changed, coupling still holds:   keep the SAME range unless the file's line count moved
+git span remove <name> <old-anchor>       # only if path or range actually changed
+git span add <name> <new-anchor>          # wc -l <path> first
+git span why <name> -m "..."              # only if the relationship itself changed
+git span stale <name>                     # must exit 0 before commit
+git add .span && git commit -m "..."
+```
+
+### Value update, keep spans consistent (a coupled code+doc value changes)
+```
+# edit the code value AND the doc sentence the span couples it to
+git span add <name> <anchor>...           # same anchor(s); refreshes the stored hash
+git span stale <name>                     # must exit 0
+git add .span && git commit -m "..."
+```
+If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
+with `wc -l` and write the new range).
+
+## Where to go next
+Pick the first that fits:
+1. Read-only question, no `.span` mutation intended → `sections/inspect.md`.
+2. A `stale`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →
+   `sections/terminal-statuses.md`.
+3. A finding says `CONTENT_UNAVAILABLE(...)`, or LFS / partial clone / sparse checkout is
+   involved → `sections/content-unavailable.md`.
+4. The anchor target is binary, image, symlink, or LFS-tracked, or a whole-file anchor
+   (no `#L`) is in play → `sections/whole-file-and-lfs.md`.
+5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
+   of the three recipes above → do that, no section read.
+6. A `<git-span>` block appeared — or expectedly didn't — during a `Read`/`Edit`/`Write` →
+   `sections/understanding-hook-output.md`.
+7. The PreToolUse block surfaces spans that are noise for a path class →
+   `sections/hookignore.md`.
+8. Installing or troubleshooting the `post-commit`/`post-rewrite` reconciliation hooks or
+   the optional merge driver → `sections/git-hook-setup.md`.
+9. You were spawned unattended as the dispatcher's standalone reconciler agent →
+   `sections/standalone-reconciler.md`.
+10. Mining git history for undeclared couplings (broad sweep, not one known pair) →
+    `sections/finding-span-candidates.md`.
+11. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
+    `sections/ci-and-sync.md`.
+12. git-span under OpenAI Codex (marketplace install, hook trust) →
+    `sections/codex-install-and-trust.md`.
+13. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
+    `sections/command-reference.md`.
+14. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond
+    the gotchas above → `sections/command-quirks-and-errors.md`.
+15. Where `.span/` data lives, refs, or line-ending guarantees →
+    `sections/storage-model.md`.
+16. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
+    `sections/triage.md`.
+
+## Not in this build — don't burn a `--help` call
+`move` subcommand; `stale --patch/--stat/--worktree/--staged/--head/--search`;
+`why --at/-F/--edit`; `show --patch/--at`; `add --replace`; `list --search/--batch`;
+`doctor --strict`.

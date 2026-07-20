@@ -1,7 +1,7 @@
 packages/website/app/components/marketing/story/EngineStage.tsx#L1-L100 rk64:7e24474dbdae56ad
-packages/website/app/components/marketing/story/copy.ts#L72-L133 rk64:044b308b3c5bc63c
+packages/website/app/components/marketing/story/copy.ts#L77-L138 rk64:0f7be5d88ceeba34
 packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:1155890b65315514
 packages/website/app/routes/_index.tsx#L128-L134 rk64:0cc9cf857fc51159
 packages/website/vite.config.ts#L22-L25 rk64:98d116e237c9e6e7
-wiki/architecture/homepage-engine-animation.md#L27-L75 rk64:6fa9e129f4920fe1
+wiki/architecture/homepage-engine-animation.md#L27-L75 rk64:c9a32ba318f9effd
 

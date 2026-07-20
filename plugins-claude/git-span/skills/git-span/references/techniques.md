@@ -3,7 +3,8 @@
 `mine.mjs` runs 13 independent signals over the git history. Each is a noisy
 predictor on its own; the aggregate ranking in §0 of the report is what matters.
 This document explains what each technique measures, when it is trustworthy, and
-how to read its specific output section.
+how to read its specific output section. Section numbers below match the
+headings `mine.mjs` actually prints — verify against a live run if in doubt.
 
 ## 1. File-level co-change (all commits)
 
@@ -20,12 +21,13 @@ the pair is interesting even if B sometimes travels alone.
 from the same author, the coupling lives in someone's head and is not
 "hidden" — it is just personal context. The interesting case is high
 support × confidence with low author overlap, because nobody currently owns
-the contract.
+the contract. `authors∩ jaccard` itself is computed once per pair and reused
+by §5b below.
 
 **`[structural]` tag**: pairs where one file's basename literally appears in
 the other file's contents (imports, manifest references, doc links). Such
 coupling is real but already explicit, so these pairs are pushed to the
-bottom of §1.
+bottom of §1 and demoted in the §0 aggregate score.
 
 ## 2. File-level co-change (bug-fix commits only)
 
@@ -39,13 +41,7 @@ were specifically forced together by a defect — they are the empirical
 contract surface. If §2 is empty (`fix_commits=0` in the meta), the regex
 does not match the codebase's commit conventions; supply your own.
 
-## 3. Commit-message clustering
-
-Pairs files by shared ticket key (`PROJ-123`) or conventional-commit scope
-(`feat(scope): …`). Useful when teams use rigorous commit conventions; useless
-otherwise (the section will simply be empty).
-
-## 4. Cross-file range pairs (anchored)
+## 3. Cross-file range pairs (anchored)
 
 Like §1 but at sub-file granularity. Each diff hunk is bucketed by its
 enclosing function or heading (extracted from git's `@@` xfuncname output)
@@ -57,18 +53,32 @@ collapses with its own past hunks.
 B repeatedly co-change. Far more actionable than file-level coupling because
 it tells you *where* in each file the contract lives.
 
-## 5. Author divergence (inverse) and 5b. Author clusters (positive)
+## 4. Commit-message clustering
 
-`authors∩ jaccard` is computed on every §1 pair. It feeds two outputs:
+Pairs files by shared ticket key (`PROJ-123`) or conventional-commit scope
+(`feat(scope): …`), falling back to TF-IDF token clustering of commit
+subjects when structured keys produce fewer than 3 clusters. Useful when
+teams use commit conventions (or at least descriptive subjects); the section
+prints empty otherwise.
 
-- **Inverse** — the hidden-coupling rerank in §1 multiplies by `(1 − jaccard)`
-  so pairs nobody jointly owns rise to the top. That is the latent-contract
-  case: the coupling exists and nobody currently holds it in their head.
-- **Positive** — §5b lists pairs with **high** authors∩ jaccard
-  (≥ `--author-jaccard-min`, default 0.7) **and different parent directories**.
-  These are tribal subsystems whose conceptual unit cuts across the directory
-  tree. The directory split prevents pairs that already live in the same
-  module from showing up as "discoveries."
+## 5. Transitive file groups
+
+Greedy union-find clustering over the top §1 pairs (capped at 8 files per
+group): if A↔B and B↔C are both high-ranking pairs, they collapse into one
+group `{A, B, C}`. Surfaces multi-file modules that pairwise coupling alone
+splits into overlapping pairs — read a group as "these files move together,"
+not as one single strongest pair.
+
+## 5b. Author clusters (positive)
+
+Pairs with **high** authors∩ jaccard (≥ `--author-jaccard-min`, default 0.7)
+**and different parent directories**. These are tribal subsystems whose
+conceptual unit cuts across the directory tree — the directory-difference
+filter prevents pairs that already live in the same module from showing up
+as "discoveries." This is the positive counterpart to §1's inverse
+(hidden-coupling) use of the same jaccard value: §1 rewards *low* overlap as
+latent/undocumented coupling, §5b flags *high* overlap as a known-but-tribal
+one.
 
 ## 6. Apriori frequent itemsets and 6b. Association rules
 
@@ -105,7 +115,7 @@ For every merge commit, lists the files touched on the merged-in branch
 between the merge base and the tip. Captures the "what shipped together as
 one feature" grouping that gets flattened by squash merges.
 
-Useful for new-onboarding ("show me what files belong to one logical change")
+Useful for onboarding ("show me what files belong to one logical change")
 and for noticing files that ship together but live in unrelated parts of the
 tree.
 
@@ -121,6 +131,16 @@ A symbol that repeatedly shows up in commits crossing, say, Rust and TS is a
 likely contract surface — an FFI boundary, a serialized type, a wire
 protocol. The cross-language tag tells you *where* to look, not just that the
 symbol is shared.
+
+## 9b. Cross-language SCREAMING_SNAKE / shared constants
+
+§9 only counts symbols *defined* in the diff, missing the case where a
+constant like `MAX_RETRY_COUNT` or a protocol field name appears as a bare
+reference (consumer side) on one language and as a definition or reference
+on the other. §9b relaxes the requirement to "mentioned on +/− lines on
+both sides" but restricts to identifiers that look like protocol constants:
+SCREAMING_SNAKE_CASE or PascalCase with len ≥ 6. Higher recall, more noise
+than §9 — read the examples to filter.
 
 ## 10. Coordinated rename / move chains
 
@@ -148,15 +168,31 @@ shows which view won (`pearson` / `spearman`) and the lag in weeks.
 over all files and is the script's main cost driver if not pruned. The
 script does the prune automatically.
 
-## 9b. Cross-language SCREAMING_SNAKE / shared constants
+## 12. Defect propagation (SZZ)
 
-§9 only counts symbols *defined* in the diff, missing the case where a
-constant like `MAX_RETRY_COUNT` or a protocol field name appears as a bare
-reference (consumer side) on one language and as a definition or reference
-on the other. §9b relaxes the requirement to "mentioned on +/− lines on
-both sides" but restricts to identifiers that look like protocol constants:
-SCREAMING_SNAKE_CASE or PascalCase with len ≥ 6. Higher recall, more noise
-than §9 — read the examples to filter.
+For every fix commit, blame the deleted lines on their introducing commit
+(via `git blame --line-porcelain` against the parent), then connect the
+introducing file to every other file the fix also touched. Edges are counted
+across fixes; pairs with count ≥2 are reported.
+
+The intuition (Śliwerski/Zimmermann/Zeller): if introducing file A is
+repeatedly fixed alongside file B, then a change to A is empirically likely
+to require a corresponding change to B to avoid a regression.
+
+Cost: bounded to the first 50 fix commits per run (`--szz-max`).
+
+## 13. Reviewer overlap
+
+Optional, requires `gh` CLI authenticated against the host. Pulls the last
+200 merged PRs, builds a `file → set<reviewer>` index, and flags pairs with
+jaccard ≥0.5 and ≥2 shared reviewers.
+
+Reviewer overlap is a strong organizational signal: the people who maintain
+this pair already think of them as one unit. If they are also coupled by
+co-change but *not* by structural reference, the contract exists in their
+heads — write it down.
+
+Skipped automatically if `gh` is missing, unauthed, or `--no-gh`.
 
 ## Boundary / sweep filters and aggregator weighting
 
@@ -171,8 +207,9 @@ commits out of the coupling pool:
   is near zero (coefficient of variation < 0.2) are excluded. Formatting
   passes, license-header rewrites, and regex codemods all match.
 
-The aggregator (§0) then weights each technique's contribution rather than
-counting them equally:
+The §0 aggregate then weights each technique's contribution rather than
+counting them equally — only techniques 1, 2, 4, 7, 11, 12, 13 feed the
+aggregate (3, 5, 5b, 6, 6b, 8, 9, 9b, 10 are informational-only sections):
 
 | Technique | Weight | Rationale |
 |---|---|---|
@@ -188,33 +225,6 @@ Pairs flagged `[structural]` (one file textually references the other —
 imports, manifest entries, doc links, distinctive path-segment matches) get
 their score divided by 2 in the aggregate, since the coupling is already
 explicit and the goal is to surface *latent* coupling.
-
-## 12. Defect propagation (SZZ)
-
-For every fix commit, blame the deleted lines on their introducing commit
-(via `git blame --line-porcelain` against the parent), then connect the
-introducing file to every other file the fix also touched. Edges are counted
-across fixes; pairs with count ≥2 are reported.
-
-The intuition (Śliwerski/Zimmermann/Zeller): if introducing file A is
-repeatedly fixed alongside file B, then a change to A is empirically likely
-to require a corresponding change to B to avoid a regression.
-
-Cost: bounded to the first 50 fix commits per run. Increase by editing
-mine.mjs if your repo has many high-quality fix commits.
-
-## 13. Reviewer overlap
-
-Optional, requires `gh` CLI authenticated against the host. Pulls the last
-200 merged PRs, builds a `file → set<reviewer>` index, and flags pairs with
-jaccard ≥0.5 and ≥2 shared reviewers.
-
-Reviewer overlap is a strong organizational signal: the people who maintain
-this pair already think of them as one unit. If they are also coupled by
-co-change but *not* by structural reference, the contract exists in their
-heads — write it down.
-
-Skipped automatically if `gh` is missing, unauthed, or `--no-gh`.
 
 ## Tuning notes
 

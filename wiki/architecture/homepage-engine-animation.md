@@ -32,7 +32,7 @@ All of it is under `packages/website/app/components/marketing/story/`:
   shared scroll timeline: `PHASE_WEIGHTS` (the 8 phases and their relative scroll heights),
   `deriveScene()`, and the easing/ramp helpers every other module reuses. Not engine-specific —
   also drives the left-column prose and terminal specimens.
-- [`copy.ts`](../../packages/website/app/components/marketing/story/copy.ts#L72-L133) —
+- [`copy.ts`](../../packages/website/app/components/marketing/story/copy.ts#L77-L138) —
   `PHASE_COPY`: per-phase prose headline/body and the animation caption shown in the loading
   fallback and read by screen readers.
 - [`EngineStage.tsx`](../../packages/website/app/components/marketing/story/EngineStage.tsx#L1-L100)
