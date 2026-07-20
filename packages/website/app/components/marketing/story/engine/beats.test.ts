@@ -38,6 +38,9 @@ const FAILED_FIT_COLLAPSE_END_T = 43;
 const FAILED_FIT_REEXPLODE_START_T = 48;
 const FAILED_FIT_REEXPLODE_END_T = 58;
 const BOX_IN_START_T = 58;
+const BOX_IN_END_T = 60;
+const BOX_OUT_START_T = 62;
+const BOX_OUT_END_T = 64;
 const FINAL_REASSEMBLY_START_T = 83;
 const FINAL_REASSEMBLY_END_T = 87;
 
@@ -161,8 +164,18 @@ describe('boxWeight', () => {
     expect(frameAt(BOX_IN_START_T).boxWeight).toBe(0);
   });
 
-  it('peaks at exactly 1 at t=60', () => {
-    expect(frameAt(COLOR_LOSS_END_T).boxWeight).toBe(1);
+  it('peaks at exactly 1 at t=60 and holds through t=62', () => {
+    expect(frameAt(BOX_IN_END_T).boxWeight).toBe(1);
+    expect(frameAt(61).boxWeight).toBe(1);
+    expect(frameAt(BOX_OUT_START_T).boxWeight).toBe(1);
+  });
+
+  it('fades back out over its own BOX_OUT window (t62-64), as fast as it fades in, decoupled from RESOLVE_GREEN_START_T..END_T (t60-72)', () => {
+    const mid = (BOX_OUT_START_T + BOX_OUT_END_T) / 2;
+    expect(frameAt(mid).boxWeight).toBeCloseTo(0.5, 10);
+    expect(frameAt(BOX_OUT_END_T).boxWeight).toBe(0);
+    // Gone well before the (unrelated) shared-green resolve window finishes at t72.
+    expect(frameAt(RESOLVE_GREEN_END_T).boxWeight).toBe(0);
   });
 
   it('is 0 at t>=72', () => {
@@ -170,7 +183,7 @@ describe('boxWeight', () => {
     expect(frameAt(100).boxWeight).toBe(0);
   });
 
-  it('never exceeds 1 at any sampled t (color-loss and resolve-green windows hand off cleanly at 60)', () => {
+  it('never exceeds 1 at any sampled t (in/out ramps hand off cleanly)', () => {
     for (let t = 0; t <= 100; t += 0.5) {
       expect(frameAt(t).boxWeight).toBeLessThanOrEqual(1 + 1e-9);
     }

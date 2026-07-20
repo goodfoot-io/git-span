@@ -45,15 +45,17 @@ export interface HighlightStage {
 export interface HighlightRecord {
   mesh: THREE.Mesh;
   stages: HighlightStage[];
-  // The part's own unhighlighted albedo/metalness/roughness (captured once, from its cloned
-  // material -- see the material-cloning comment in EngineScene.ts's load()). Tint is the PRIMARY
-  // highlight signal: updateHighlights drives `color`, `metalness`, and `roughness` all toward a
-  // tinted/matte state as the highlight weight rises, so the part itself reads as unmistakably
-  // amber/blue/red/green rather than merely having a small light of that color added on top of it
-  // (that's what the (much smaller) emissive accent is for -- see EMISSIVE_SCALE below).
+  // The part's own unhighlighted albedo/metalness/roughness/envMapIntensity (captured once, from
+  // its cloned material -- see the material-cloning comment in EngineScene.ts's load()). Tint is
+  // the PRIMARY highlight signal: updateHighlights drives `color`, `metalness`, `roughness`, and
+  // `envMapIntensity` all toward a tinted/matte/darkened state as the highlight weight rises, so
+  // the part itself reads as unmistakably amber/blue/red/green rather than merely having a small
+  // light of that color added on top of it (that's what the (much smaller) emissive accent is for
+  // -- see EMISSIVE_SCALE below).
   baseMaterialColor: THREE.Color;
   baseMetalness: number;
   baseRoughness: number;
+  baseEnvMapIntensity: number;
 }
 
 // --- Highlight heartbeat ------------------------------------------------------------------
@@ -83,16 +85,20 @@ export function pulseWave(cycle: number): number {
 // Emissive is a SMALL ACCENT, not the highlight signal itself -- see the tint constants
 // (TINT_MAX etc.) below and updateHighlights for the primary color/metalness/roughness tint that
 // carries "this part is now amber/blue/red/green". EMISSIVE_SCALE was originally tuned much
-// higher (0.32) back when emissive alone had to carry that identity; now that tint does, it's cut
-// to 0.09 so the heartbeat reads as a gentle breathing highlight on top of a steady tinted state
-// rather than a competing light source. Emissive is still driven directly on each highlightable
-// part's own material (see updateHighlights) rather than through a separate additive-blended
-// overlay mesh whose own diffuse was pinned to black -- there's only one surface, and it's fogged
-// exactly once, the same way as every other part.
+// higher (0.32) back when emissive alone had to carry that identity; once tint took that over it
+// was cut to 0.09, but even 0.09 still pushed a highlighted part's combined luminance (its already
+// tint-brightened base under RoomEnvironment + key + rim, plus this emissive, plus the bloom
+// composer's halo on top) past ACESFilmicToneMapping's highlight shoulder, where the tonemapper
+// desaturates bright pixels toward white regardless of hue -- exactly the "still giving off too
+// much white light" complaint. 0.05 keeps the emissive accent's own contribution well inside the
+// colored range so it reads as a hue-tinted glow, not as white light. Emissive is still driven
+// directly on each highlightable part's own material (see updateHighlights) rather than through a
+// separate additive-blended overlay mesh whose own diffuse was pinned to black -- there's only one
+// surface, and it's fogged exactly once, the same way as every other part.
 const EMISSIVE_TIER_HIGH = 0.55; // red / ringRed / pistonRed
 const EMISSIVE_TIER_MID = 0.45; // blue / finalGreen
 const EMISSIVE_TIER_LOW = 0.5; // orange (shared pre-highlight)
-const EMISSIVE_SCALE = 0.09;
+const EMISSIVE_SCALE = 0.05;
 const HEARTBEAT_HEAT_PEAK_MULTIPLIER = 1.15; // emissiveIntensity multiplier at pulseWeight===1
 // `heat` (see updateHighlights) is capped well short of 1 so a fully-active highlight at pulse
 // peak reads as hot-orange/red, never the near-white top of blackbodyColor's ramp -- every
@@ -121,6 +127,13 @@ const TINT_METALNESS_TARGET = 0.35;
 // -- "this part changed state" -- rather than a paint job sprayed over the same finish.
 const TINT_ROUGHNESS_TARGET = 0.5;
 const TINT_ROUGHNESS_PULL = 0.6;
+// The tint must darken as well as recolor: at a part's full base envMapIntensity, RoomEnvironment
+// keeps pumping reflected light into the tinted surface regardless of hue, washing it back toward
+// white/over-bright no matter how deep or saturated the highlight color itself is. Pulling
+// envMapIntensity down toward 0.45 alongside color/metalness/roughness is what actually lets the
+// deeper highlight hues (see beats.ts's HIGHLIGHT_* comment) read as saturated and vivid rather
+// than bright and washed-out.
+const TINT_ENV_TARGET = 0.45;
 
 // Blackbody-ish color ramp: as `heat` (frame weight combined with the heartbeat pulse, see
 // updateHighlights) rises, the emissive color moves from a dim ember of its own base hue, through
@@ -208,11 +221,19 @@ export function buildHighlightRecords(
     baseColor: new THREE.Color(colorHex)
   });
 
-  // Captures the part's unhighlighted color/metalness/roughness once, before any highlight
-  // mutation, so updateHighlights always has an untouched base to lerp away from and back to.
-  const baseMaterialOf = (mesh: THREE.Mesh): { color: THREE.Color; metalness: number; roughness: number } => {
+  // Captures the part's unhighlighted color/metalness/roughness/envMapIntensity once, before any
+  // highlight mutation, so updateHighlights always has an untouched base to lerp away from and
+  // back to.
+  const baseMaterialOf = (
+    mesh: THREE.Mesh
+  ): { color: THREE.Color; metalness: number; roughness: number; envMapIntensity: number } => {
     const material = mesh.material as THREE.MeshStandardMaterial;
-    return { color: material.color.clone(), metalness: material.metalness, roughness: material.roughness };
+    return {
+      color: material.color.clone(),
+      metalness: material.metalness,
+      roughness: material.roughness,
+      envMapIntensity: material.envMapIntensity
+    };
   };
 
   const records: HighlightRecord[] = [];
@@ -223,6 +244,7 @@ export function buildHighlightRecords(
       baseMaterialColor: base.color,
       baseMetalness: base.metalness,
       baseRoughness: base.roughness,
+      baseEnvMapIntensity: base.envMapIntensity,
       stages: [
         stage('orange', HIGHLIGHT_ORANGE),
         stage('blue', HIGHLIGHT_BLUE),
@@ -241,6 +263,7 @@ export function buildHighlightRecords(
       baseMaterialColor: base.color,
       baseMetalness: base.metalness,
       baseRoughness: base.roughness,
+      baseEnvMapIntensity: base.envMapIntensity,
       stages: [stage('orange', HIGHLIGHT_ORANGE), stage('red', HIGHLIGHT_RED), stage('finalGreen', HIGHLIGHT_GREEN)]
     });
   }
@@ -254,6 +277,7 @@ export function buildHighlightRecords(
       baseMaterialColor: base.color,
       baseMetalness: base.metalness,
       baseRoughness: base.roughness,
+      baseEnvMapIntensity: base.envMapIntensity,
       stages: [
         stage('orange', HIGHLIGHT_ORANGE),
         stage('pistonRed', HIGHLIGHT_RED),
@@ -316,27 +340,30 @@ export function updateHighlights(records: HighlightRecord[], frame: EngineFrame,
     const material = record.mesh.material as THREE.MeshStandardMaterial;
 
     // Tint is the primary highlight signal (see TINT_MAX/TINT_METALNESS_TARGET/
-    // TINT_ROUGHNESS_TARGET above): color moves toward the active stage's hue (weighted by how
-    // many stages are simultaneously active, for the two-stage crossfade case), while metalness
-    // and roughness both move toward a less-metallic, slightly matte state so that color shift
-    // reads from every angle rather than only where a reflection would catch it. `w` -- the
-    // combined raw, pulse-independent stage weight, clamped to 1 -- drives all three identically
-    // so they land in lockstep; it's the same weight the old emissive-only model used for identity
-    // recolor, deliberately held steady (not pulse-scaled) so the tint is a stable state, not a
-    // throb -- only the (much smaller) emissive accent below carries the heartbeat. Each property
-    // is always re-lerped from its untouched base (record.baseMaterialColor/baseMetalness/
-    // baseRoughness), never mutated in place, so w returning to 0 lands exactly back on base with
-    // no drift.
+    // TINT_ROUGHNESS_TARGET/TINT_ENV_TARGET above): color moves toward the active stage's hue
+    // (weighted by how many stages are simultaneously active, for the two-stage crossfade case),
+    // while metalness and roughness both move toward a less-metallic, slightly matte state so that
+    // color shift reads from every angle rather than only where a reflection would catch it, and
+    // envMapIntensity drops so the environment stops washing the tinted color back toward
+    // white/over-bright regardless of hue. `w` -- the combined raw, pulse-independent stage weight,
+    // clamped to 1 -- drives all four identically so they land in lockstep; it's the same weight
+    // the old emissive-only model used for identity recolor, deliberately held steady (not
+    // pulse-scaled) so the tint is a stable state, not a throb -- only the (much smaller) emissive
+    // accent below carries the heartbeat. Each property is always re-lerped from its untouched base
+    // (record.baseMaterialColor/baseMetalness/baseRoughness/baseEnvMapIntensity), never mutated in
+    // place, so w returning to 0 lands exactly back on base with no drift.
     if (colorWeight > 0.001) {
       identityColor.multiplyScalar(1 / colorWeight);
       const w = Math.min(colorWeight, 1);
       material.color.copy(record.baseMaterialColor).lerp(identityColor, w * TINT_MAX);
       material.metalness = lerp(record.baseMetalness, TINT_METALNESS_TARGET, w);
       material.roughness = lerp(record.baseRoughness, TINT_ROUGHNESS_TARGET, w * TINT_ROUGHNESS_PULL);
+      material.envMapIntensity = lerp(record.baseEnvMapIntensity, TINT_ENV_TARGET, w);
     } else {
       material.color.copy(record.baseMaterialColor);
       material.metalness = record.baseMetalness;
       material.roughness = record.baseRoughness;
+      material.envMapIntensity = record.baseEnvMapIntensity;
     }
 
     // Small emissive accent on top of the tint -- see EMISSIVE_SCALE's comment above for why this

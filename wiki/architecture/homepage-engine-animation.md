@@ -107,7 +107,7 @@ setHeroIdle((hero || t >= RETURN_TO_NORMAL_START_T) && !reduced-motion) --/
 ```
 
 `EngineFrame` (defined in
-[`beats.ts#L91-L108`](../../packages/website/app/components/marketing/story/engine/beats.ts#L91-L108))
+[`beats.ts#L91-L108`](../../packages/website/app/components/marketing/story/engine/beats.ts#L97-L114))
 is the **entire contract** between the pure and imperative halves — one flat object of numbers,
 computed fresh from `(phase, local, t)` with no memory of the previous call. That's what makes
 scrubbing backwards through the timeline exactly as valid as scrubbing forwards: there is no
@@ -151,7 +151,7 @@ can start or end mid-phase, straddle a phase boundary, or span several phases. O
 still phase-`switch` functions in the classic sense; `mountScale` has since joined the pure-`t`
 group (see [The timeline](#the-timeline-color-scale-and-the-bounding-box)), and `seatAdjust` no
 longer exists — see
-[`beats.ts#L266-L318`](../../packages/website/app/components/marketing/story/engine/beats.ts#L266-L318).
+[`beats.ts#L266-L318`](../../packages/website/app/components/marketing/story/engine/beats.ts#L283-L335).
 
 Phase boundaries (`t`, from `TIMELINE` in `scene.ts`): `hero` 0–6.06, `traverse` 6.06–18.18,
 `change` 18.18–36.36, `failure` 36.36–54.55, `second` 54.55–66.67, `span` 66.67–78.79, `related`
@@ -199,7 +199,7 @@ staging positions (not a clean "pulled back along its axis" pose), and they fly 
 assembled seat one after another as the clip plays. Naively sampling frame 0 as "exploded" and the
 last frame as "assembled" renders a scattered speck cloud, not an engine.
 
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L279-L533)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L330-L584)
 handles this in two steps:
 
 1. **Bake assembled poses from the last frame.** The `AnimationMixer` must be set to
@@ -215,7 +215,7 @@ handles this in two steps:
    axis (what the staging frame reliably carries) and distance is the raw staging distance
    compressed by `rawDistance / (rawDistance + modelRadius)` into
    [`EXPLODE_MIN_FRACTION`, `EXPLODE_MAX_FRACTION`]
-   ([`EngineScene.ts#L56-L57`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L54-L55),
+   ([`EngineScene.ts#L56-L57`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L61-L62),
    currently 0.54–1.89 of the model's bounding radius — the product of two tuning passes: first
    tripled from an original 0.30–1.05 for a wider, more camera-friendly constellation, then reduced
    by roughly 40% in a follow-up pass that tightened the exploded-view zoom). A part listed in
@@ -287,9 +287,9 @@ pan (`#3f4247`, roughness 0.65/metalness 0.8, the darkest — a sand-cast part),
 block, `engineBackCover`, and the unmatched-name fallback (`#4a4d52`, 0.6/0.85), and `castIronLight`
 for the side covers (`#54575d`, 0.55/0.85). All families still share the GLB's normal, roughness,
 and AO detail maps (loaded in
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L285-L299)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L336-L350)
 and wired into each family's material in
-[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L443-L458))
+[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L494-L509))
 for surface realism — only the color layer is synthetic. The studio HDRI environment map (see
 [Rendering](#rendering-tone-mapping-studio-hdri-and-selective-bloom)) is what most recently changed
 how these families actually read on screen, but the family/color assignment itself is unaffected.
@@ -355,7 +355,7 @@ one window and fall for the next without an explicit phase switch — e.g.
 is `ramp(t, MISMATCH_RED_START_T, MISMATCH_RED_END_T) - ramp(t, COLOR_LOSS_START_T,
 COLOR_LOSS_END_T)`: it rises across `t 28-41` and falls back across `t 46-60`, with nothing in
 between needing special-casing. This is the same technique
-[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L124-L126) uses
+[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L130-L132) uses
 to compose the initial explode with the final-reassembly collapse
 (`FINAL_REASSEMBLY_START_T`/`END_T`, `t = 83`/`87`) into one curve. **None of these beats are undone
 by anything earlier than `RETURN_TO_NORMAL_START_T` (`t = 93`)** — once a stage locks in
@@ -375,13 +375,13 @@ beat remapped its seat onto the resized mount; there is no positional beat of an
 unclosed gap the way an earlier version of this system did (see [The eight
 phases](#the-eight-phases)); it moves in unison with the rest of the body for both the initial
 explode and the final reassembly. The oversize beat itself
-([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L233-L240))
+([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L242-L249))
 is four chained `ramp()`s: grow at `RING_BLUE_START_T..END_T` (`t 16-24`), shrink at
 `COLOR_LOSS_START_T..END_T` (`t 46-60`), regrow at `RING_REGROW_START_T..END_T` (`t 72-83`), then
 ease back to 1× for good at `RETURN_TO_NORMAL_START_T..END_T` (`t 93-100`) — the gear's size
 genuinely cycles 1× → `FRONT_SCALE` → 1× → `FRONT_SCALE` → 1× over the story, in lockstep with its
 own color beats. `mountScaleAt`
-([`beats.ts#L258-L262`](../../packages/website/app/components/marketing/story/engine/beats.ts#L258-L262))
+([`beats.ts#L258-L262`](../../packages/website/app/components/marketing/story/engine/beats.ts#L275-L279))
 now composes the same way, purely as a function of `t`: it grows across `MOUNT_GROW_START_T..END_T`
 (derived from `TIMELINE`'s `related`-phase span at local `0.1..0.7`, not hardcoded — see
 [`beats.ts#L249-L251`](../../packages/website/app/components/marketing/story/engine/beats.ts#L249-L251)),
@@ -417,7 +417,7 @@ specular/clearcoat sheen from the scene's HDRI and key light instead of a flat u
 `DoubleSide` lets the box's far faces show through its near ones, which is what sells it as a glass
 volume rather than a solid card. The `EdgesGeometry` outline is still needed on top for legible
 corners, since even a lit fill doesn't give a translucent volume crisp edges on its own.
-[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L123-L133)
+[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L226-L236)
 drives only opacity/visibility per frame: `BOUNDING_BOX_MAX_OPACITY` (0.45) for the fill,
 `BOUNDING_BOX_EDGE_OPACITY` (0.7) for the outline. The box is deliberately never touched by the
 [highlight heartbeat pulse](#highlight-heartbeat-and-the-blackbody-color-ramp) — it's a plain
@@ -443,7 +443,7 @@ bloom](#rendering-tone-mapping-studio-hdri-and-selective-bloom) for the exact se
 ## Rendering: tone mapping, studio HDRI, and selective bloom
 
 **Tone mapping.** The constructor sets
-[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L193-L203)
+[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L240-L250)
 with `toneMappingExposure = 1.15`. This replaced an earlier `AgXToneMapping` pick once the
 emissive/bloom highlight pass (below) existed: AgX rolls off highlights hard by design, which
 crushed exactly the brightness range `UnrealBloomPass`'s threshold needs to read cleanly to tell
@@ -458,7 +458,7 @@ out" bug, and how the fix required both a lower emissive magnitude and direct di
 **Studio HDRI environment.** An equirectangular HDRI —
 [`studio_small_08_1k.hdr`](../../packages/website/app/assets/engine/) (Poly Haven, CC0), loaded via
 `RGBELoader` and converted through `THREE.PMREMGenerator` into a PMREM environment map
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L283-L315)).
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L334-L366)).
 This gives real softbox/rim gradients across the machined faces (ring gear, cylinder-head covers)
 instead of a flat ambient wash. `scene.environmentIntensity` is `1.1` and
 `scene.environmentRotation` is `new THREE.Euler(0, Math.PI * 0.35, 0)` — both tuned against
@@ -479,7 +479,7 @@ The constructor builds two `EffectComposer`s
 `bloomComposer` renders the full scene through the same camera, with every mesh not on
 `BLOOM_LAYER` (`= 1`) temporarily swapped to a flat black `DARK_MATERIAL` (`fog: false`, so
 distant/fogged parts can't accidentally cross the bloom threshold on their own — see
-[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L800-L813)),
+[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L889-L902)),
 through `UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.35, 0.92)` (threshold/strength/radius);
 `composer` does the normal full-scene render and a custom `mixPass` `ShaderPass` adds the bloom
 texture back on top additively, followed by `OutputPass` for the final sRGB conversion.
@@ -513,7 +513,7 @@ request; see the [Related pages](#related-pages) history if reconstructing that 
 
 Highlightable parts (`isFrontDrive || isMount || isOrangeEmphasis`) get their own material clone
 rather than the family's shared instance
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L536-L540))
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L587-L591))
 — `updateHighlights` drives emissive/color directly on each one, and a shared material would leak
 one part's glow onto every other part of the same family.
 [`buildHighlightRecords()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221)
@@ -536,14 +536,14 @@ stage's contribution rather than assuming only one is ever nonzero.
 
 [`updateHighlights()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L229-L283)
 runs once per frame per record. For each active stage (`intensity >= 0.001`, via
-[`intensityForKind`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L162-L177)
+[`intensityForKind`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L175-L190)
 reading the matching `EngineFrame` field) it computes a `heat` value and a `stageIntensity`, both
 scaled by the stage's `tier`
-([`tierForKind`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L179-L191):
+([`tierForKind`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L192-L204):
 `EMISSIVE_TIER_HIGH` 0.55 for the red family, `EMISSIVE_TIER_MID` 0.45 for blue/finalGreen,
 `EMISSIVE_TIER_LOW` 0.5 for orange) and by the [heartbeat pulse](#highlight-heartbeat-and-the-blackbody-color-ramp)'s
 current weight. `heat` feeds
-[`blackbodyColor()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L141-L160),
+[`blackbodyColor()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L154-L173),
 which ramps a stage's cold identity hue toward a hotter, more saturated peak as `heat` rises
 (clamped well under 1 via `HEARTBEAT_HEAT_PEAK_CAP` so a fully-active highlight at pulse peak reads
 as hot-orange/red, never near-white). This is emissive, and used to be the *only* thing driving a
@@ -569,20 +569,20 @@ the full per-stage scaling. `BLOOM_LAYER` is enabled on a part only while its co
 
 Every highlight (all kinds alike, including `orange`) pulses at a steady real-time rate,
 `HEARTBEAT_HZ = 0.75` (~45 BPM,
-[`highlights.ts#L61`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L67-L67)),
+[`highlights.ts#L61`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L69-L69)),
 via
-[`pulseWave()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L72-L74)
+[`pulseWave()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L74-L76)
 — a single continuous `(1 - cos(2π·cycle)) / 2` breathe with no flat rest segment or hard corner,
 so scrubbing/wrapping never pops. This is layered on top of whatever intensity `EngineFrame`
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L669-L723)),
+[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L744-L798)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
 [`EngineScene.ts#L552-L561`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L611-L620)).
-[`blackbodyColor(base, heat)`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L141-L160)
+[`blackbodyColor(base, heat)`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L154-L173)
 is the color ramp itself: for `heat` in `[0, 0.5]` it rises from a dim ember of `base`'s own hue
 toward that hue's natural lightness with only a mild warm-hue nudge (so each kind's identity reads
 clearly through the first half); for `[0.5, 1]` it lightens/saturates further toward a vivid hot
@@ -595,15 +595,15 @@ glow reads as a vivid hot color rather than washing out.
 The page's framing rule is that the engine must never touch the media frame's edges, at any beat,
 including fully exploded (when the model's footprint is largest). This is solved mathematically
 rather than by hand-tuning per-beat camera shots:
-[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L756-L794)
+[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L845-L883)
 computes the union bounding sphere of every part's current world position each frame
 (`sphereUnion`, a standard two-sphere merge,
-[`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L100-L115)),
+[`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L107-L122)),
 then places the camera at the distance that fits that sphere plus a margin, accounting for aspect
 ratio via `fitFov = min(fovY/2, atan(tan(fovY/2) * aspect))`. `frame.margin` is the one per-beat
 tuning knob; everything else in the shot is derived, not staged.
 
-[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L291-L299) is
+[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L308-L316) is
 now simpler than it once was: it only has two cases. For `hero`/`traverse`, it `lerp`s continuously
 from `MARGIN_ASSEMBLED` (0.896) to `MARGIN_EXPLODED` (0.68) over `heroTraverseProgress(t)` — the
 same shared curve driving explode and the azimuth/elevation approach — so the camera pull-back
@@ -657,7 +657,7 @@ anywhere in the current source.)
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`,
-[`EngineScene.ts#L77-L80`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L77-L80))
+[`EngineScene.ts#L77-L80`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L84-L87))
 from pointer movement. The signs are inverted from the raw pointer delta so the interaction reads as
 grabbing the object itself rather than panning a camera around it: azimuth offset *subtracts* `dx *
 DRAG_SENSITIVITY` (dragging left rotates the engine clockwise), and the elevation sign is likewise
@@ -707,10 +707,10 @@ as the engine would present mounted in a car — instead of `CANONICAL_AZIMUTH`/
 (35°/18°, the three-quarter technical-drawing angle every later phase holds).
 
 **The hero → traverse camera move.** `azimuthBaseAt`/`elevationAt`
-([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L293-L311))
+([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L310-L328))
 `lerp` from the hero angle to the canonical angle across `hero` and `traverse` together, riding
 `heroTraverseProgress(t)`
-([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L83-L85)) —
+([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L89-L91)) —
 one continuous, monotonic curve spanning from the top of `hero` (`t = 0`, fully assembled, hero
 angle) to `CAMERA_SETTLE_T` (`t = 12.3`, fully exploded, canonical angle), where it settles and
 holds flat, rather than the actual end of `traverse` (`t = 18.18`) it once rode all the way to. The
@@ -736,7 +736,7 @@ driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn pe
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable
 resumes right where the engine ends up fully assembled again) blends that accumulated offset into
 the camera azimuth
-([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L773))
+([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L862-L862))
 so the first scroll movement smoothly absorbs whatever rotation had accumulated instead of snapping
 the camera back to the base azimuth — this is distinct from (and narrower than) the drag-to-orbit
 offset, which is *not* weighted by `idleWeight` and applies in every phase. `EngineStage.tsx` calls

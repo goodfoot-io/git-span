@@ -9,13 +9,19 @@ import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, TIMELINE } fr
 export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch beat is active
 export const MOUNT_SCALE = 1.15; // FRONT_MOUNT's (engineBackCover's) scale at the top of `related`
 
-export const HIGHLIGHT_GREEN = '#34d399'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
-export const HIGHLIGHT_RED = '#ef4444';
-export const HIGHLIGHT_BLUE = '#3b82f6'; // the ring gear's own first-stage transition color
+// One to two steps deeper/more saturated than the original Tailwind-500 picks (emerald-400,
+// red-500, blue-500, orange-500): under the bright RoomEnvironment + key + rim lighting rig, the
+// highlight tint (see highlights.ts) reads over-bright and washed-out at those paler values -- the
+// green especially read as a pale, minty tint rather than a vivid, saturated green. Deeper starting
+// hues leave more headroom before ACESFilmicToneMapping's highlight shoulder desaturates them
+// toward white once lit and tinted onto the metal.
+export const HIGHLIGHT_GREEN = '#059669'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
+export const HIGHLIGHT_RED = '#dc2626';
+export const HIGHLIGHT_BLUE = '#2563eb'; // the ring gear's own first-stage transition color
 // A pre-highlight pulse on the gear + pistons + engineBackCover right around when the camera
 // settles into its canonical framing (see CAMERA_SETTLE_T), fading directly into the mismatch
 // beat's red -- a distinct hue so it doesn't read as the later resolution beat.
-export const HIGHLIGHT_ORANGE = '#f97316';
+export const HIGHLIGHT_ORANGE = '#ea580c';
 
 // The fit is bounding-sphere based, which already over-estimates the model's visual footprint —
 // these margins stay modest so the engine reads generously while still never touching the frame.
@@ -163,8 +169,11 @@ function frontDriveExplodeAt(t: number): number {
 //   t 46-60    every highlighted part fades to no color at all and the gear shrinks back to 1x
 //   t 58-60    a translucent green bounding box fades in around the ring/pistons/back plate, only
 //              once the re-explode has finished
-//   t 60-72    the bounding box fades back out as gear + pistons + engineBackCover + the mount
-//              all fade up to the same shared green
+//   t 60-62    the box holds at full opacity
+//   t 62-64    the box fades back out, as fast as it appeared (see boxWeightAt)
+//   t 60-72    gear + pistons + engineBackCover + the mount all separately fade up to the same
+//              shared green (see finalGreenAt) -- this window overlaps but no longer drives the
+//              box's fade-out; the two are deliberately decoupled (see boxWeightAt's comment)
 //   t 72-83    the gear grows back to FRONT_SCALE
 //   t 83-87    the whole engine reassembles (see explodeAt above)
 //   t 93-100   RETURN_TO_NORMAL: every mismatch part loses its green, the gear and mount ease back
@@ -242,13 +251,21 @@ function finalGreenAt(t: number): number {
 }
 
 // The translucent bounding box: fades in only once the FAILED_FIT re-explode has finished (t58,
-// well after color has mostly drained off the parts), peaks at t60, then fades back out exactly
-// as the shared green fades in (RESOLVE_GREEN window) -- the box and the green highlight are
-// never both fully on, they hand off at t60.
+// well after color has mostly drained off the parts), peaks at t60, holds through t62, then fades
+// back out over its own BOX_OUT window -- as fast as it appeared (same 2-unit width as
+// BOX_IN_START_T..END_T). This is deliberately decoupled from RESOLVE_GREEN_START_T..END_T (t60-72,
+// which still separately drives the parts' shared-green fade-in, see finalGreenAt above): an
+// earlier version reused the RESOLVE_GREEN window for the box's fade-out too, which made the box
+// linger, slowly dissolving over 12 units in lockstep with the green ramp, rather than snapping
+// away the way it snapped in.
+//   t:     58   60   62   64
+//   box:   in-> peak hold out->gone
 const BOX_IN_START_T = 58;
 const BOX_IN_END_T = 60;
+const BOX_OUT_START_T = 62;
+const BOX_OUT_END_T = 64;
 function boxWeightAt(t: number): number {
-  return ramp(t, BOX_IN_START_T, BOX_IN_END_T) - ramp(t, RESOLVE_GREEN_START_T, RESOLVE_GREEN_END_T);
+  return ramp(t, BOX_IN_START_T, BOX_IN_END_T) - ramp(t, BOX_OUT_START_T, BOX_OUT_END_T);
 }
 
 // The gear's own oversize weight: grows to FRONT_SCALE on its own window just after the first

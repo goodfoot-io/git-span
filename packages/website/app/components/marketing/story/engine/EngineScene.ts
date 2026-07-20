@@ -21,7 +21,14 @@ import {
   pulseWave,
   updateHighlights
 } from './highlights';
-import { buildMismatchBoxes, computeMismatchBoxBounds, updateBoundingBox } from './mismatchBox';
+import {
+  assembledGeometricCenter,
+  assembledWorldBox,
+  buildMismatchBoxes,
+  computeMismatchBoxBounds,
+  updateBoundingBox,
+  type WorldLine
+} from './mismatchBox';
 import {
   EXPLODE_DIRECTION_REFERENCE,
   EXPLODE_DIRECTION_REFERENCE_FRONT,
@@ -123,6 +130,28 @@ bloomLayerTest.set(BLOOM_LAYER);
 // that has nothing to do with any real highlight.
 const DARK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false });
 
+// --- Ambient drift: whole-engine positional wander, independent of scroll ---------------------
+// Gives the model depth/presence even while scroll is idle, in both collapsed and exploded states.
+// Three sines with incommensurate periods/phases (no shared factor, so the combined motion never
+// visibly repeats on a human timescale) summed into an absolute (never accumulated) offset from an
+// elapsed-time clock -- see driftOffset below and its use in applyFrame/fitCameraToFrame. Amplitudes
+// are a taste call, expressed as a fraction of the assembled bounding-sphere radius so the drift
+// scales sensibly with the model rather than being a fixed world-unit constant; z (toward/away from
+// camera) is deliberately the largest since depth read was the explicit goal. Raised ~2.5x from the
+// original pass (0.012/0.01/0.02) after user feedback that the drift read as too subtle to notice --
+// same unhurried pace (periods/phases untouched below), just more travel per cycle.
+const DRIFT_AMPLITUDE_X = 0.03; // fraction of assembled radius
+const DRIFT_AMPLITUDE_Y = 0.025;
+const DRIFT_AMPLITUDE_Z = 0.05;
+const DRIFT_PERIOD_X = 13; // seconds -- incommensurate with Y/Z so the combined path doesn't repeat
+const DRIFT_PERIOD_Y = 17;
+const DRIFT_PERIOD_Z = 11;
+// Phase offsets so all three don't start in lockstep at t=0 (which would read as one straight-line
+// diagonal motion for the first few seconds instead of a lazy wander).
+const DRIFT_PHASE_X = 0;
+const DRIFT_PHASE_Y = (2 * Math.PI) / 3;
+const DRIFT_PHASE_Z = (4 * Math.PI) / 3;
+
 export class EngineScene {
   private readonly container: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
@@ -157,6 +186,24 @@ export class EngineScene {
   private orangeEmphasisParts: PartRecord[] = [];
   private highlights: HighlightRecord[] = [];
   private boundingBox: THREE.Group | null = null;
+
+  // `group.position`'s resting (undrifted) value -- the recenter offset computed once in load() so
+  // the assembled bounding-sphere center sits at the world origin. Ambient drift (see driftOffset
+  // below) is applied on top of this every frame; group.position is never itself the source of
+  // truth, so drift can never accumulate.
+  private recenterOffset = new THREE.Vector3();
+  // Assembled bounding-sphere radius, set once in load() -- ambient drift's amplitude is a fraction
+  // of this (see DRIFT_AMPLITUDE_X/Y/Z) so it scales sensibly with the model instead of being a
+  // fixed world-unit constant.
+  private assembledRadius = 1;
+  // Ambient whole-engine positional drift (see the DRIFT_* constants above and motionTick below):
+  // recomputed absolutely from elapsed time every frame in motionTick, never accumulated, active
+  // independent of scroll/explode state, and pinned to zero under prefers-reduced-motion.
+  private driftOffset = new THREE.Vector3();
+  // The crank centerline (see mismatchBox.ts's WorldLine), derived once in load() from the
+  // crankshaft's own geometry -- feeds computeMismatchBoxBounds's bore-axis-relative box
+  // orientation (see mismatchBox.ts's computeBoreAxis).
+  private crankLine: WorldLine | null = null;
 
   private currentFrame: EngineFrame | null = null;
   private heroIdle = false;
@@ -268,13 +315,17 @@ export class EngineScene {
     // "genuinely hot" once the input was the mesh's full lit render. Pop-free fade-in as a
     // highlight ramps up is guaranteed by bloomGate's continuous 0..1 scaling of the emissive
     // input (see darkenNonBloomed), not by this threshold, which is why threshold 0 is safe.
-    // Strength 0.5 (down from 0.8) reflects the highlight redesign where tint (color/metalness/
-    // roughness, see highlights.ts) carries the highlight's identity and emissive is only a small
-    // decorative accent (EMISSIVE_SCALE cut from 0.32 to 0.09) -- bloom is now a soft, local
-    // flourish on top of that accent rather than a major part of how the highlight reads, so it no
-    // longer needs strength 0.8's more assertive halo. Radius stays 0.35 -- spread, not intensity,
-    // and unaffected by any of the changes above.
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.35, 0.0);
+    // Strength 0.25 (down from 0.5, originally 0.8) reflects the highlight redesign where tint
+    // (color/metalness/roughness, see highlights.ts) carries the highlight's identity and emissive
+    // is only a small decorative accent (EMISSIVE_SCALE cut 0.32 -> 0.09 -> 0.05) -- bloom is now a
+    // soft, local flourish on top of that accent rather than a major part of how the highlight
+    // reads. 0.5 was still too strong: this pass adds its halo additively on top of the base render
+    // in linear HDR, before tone mapping, so on top of the already-bright tinted metal (RoomEnvironment
+    // + key + rim) it kept pushing highlighted pixels' combined luminance past ACESFilmicToneMapping's
+    // shoulder, where the tonemapper desaturates toward white -- the halo also composites over the
+    // near-white cream page background, compounding the effect. Radius stays 0.35 -- spread, not
+    // intensity, and unaffected by any of the changes above.
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.25, 0.35, 0.0);
     this.bloomComposer.addPass(this.bloomPass);
 
     const mixPass = new ShaderPass(
@@ -559,14 +610,19 @@ export class EngineScene {
 
     // Recenter so the assembled bounding-sphere center sits at the world origin; camera-fit
     // math and the never-cropped rule both assume the rig's resting pose is centered.
+    // `group.position` itself is set from `recenterOffset` (not computed inline) since ambient
+    // drift (see applyDrift/motionTick) is layered on top of this same base position every frame.
     const assembledBox = new THREE.Box3().setFromObject(group);
     const assembledSphere = assembledBox.getBoundingSphere(new THREE.Sphere());
-    group.position.copy(assembledSphere.center).negate();
+    this.recenterOffset.copy(assembledSphere.center).negate();
+    this.assembledRadius = Math.max(assembledSphere.radius, 0.001);
+    group.position.copy(this.recenterOffset);
 
     this.parts = parts;
     this.frontDriveParts = parts.filter((part) => part.isFrontDrive);
     this.mountPart = parts.find((part) => part.isMount) ?? null;
     this.orangeEmphasisParts = parts.filter((part) => part.isOrangeEmphasis);
+    this.crankLine = this.deriveCrankLine(parts);
 
     this.group = group;
     this.scene.add(group);
@@ -582,8 +638,21 @@ export class EngineScene {
     const pistonParts = this.orangeEmphasisParts.filter((part) =>
       stripDedupSuffix(part.mesh.name).toLowerCase().startsWith('piston')
     );
-    this.boundingBox = buildMismatchBoxes(computeMismatchBoxBounds({ ring: ringParts, pistons: pistonParts }, group));
-    this.scene.add(this.boundingBox);
+    // this.crankLine is set by deriveCrankLine above whenever there's a crankshaft mesh to derive
+    // it from; falls back to a world-Y line through the origin only in the (untested-in-practice)
+    // case the GLB is missing a crankshaft mesh entirely, so this call never throws.
+    const crankLine = this.crankLine ?? { point: new THREE.Vector3(), axis: new THREE.Vector3(0, 1, 0) };
+    this.boundingBox = buildMismatchBoxes(
+      computeMismatchBoxBounds({ ring: ringParts, pistons: pistonParts }, group, crankLine)
+    );
+    // Parented under the engine `group`, NOT `scene` -- computeMismatchBoxBounds now measures every
+    // part in GROUP-LOCAL space (part.mesh.matrix, not matrixWorld -- see mismatchBox.ts's
+    // orientedBankBounds/axisAlignedBounds), so the containers' centers are group-local too. Parenting
+    // here means the containers automatically inherit `group.position` (recenterOffset + the ambient
+    // drift applied every frame in applyFrame) instead of standing still in world space while the
+    // engine wanders -- previously the drift caused the end pistons to cyclically poke through the
+    // (world-space, static) box ends.
+    group.add(this.boundingBox);
 
     this.resize();
     this.ensureMotionLoop(); // starts the highlight heartbeat (see motionTick); settles on its own if reduced-motion is on and nothing else is animating
@@ -611,6 +680,10 @@ export class EngineScene {
     this.reducedMotion = on;
     if (on) {
       this.pulseWeight = 0;
+      // Ambient drift is fully disabled under reduced motion too, the same "settle" behavior the
+      // heartbeat/idle-spin already had -- pinning driftOffset at zero (rather than leaving it
+      // wherever it stopped) guarantees the group settles back to exactly its resting recenterOffset.
+      this.driftOffset.set(0, 0, 0);
       if (this.currentFrame) this.applyFrame(this.currentFrame);
     } else {
       this.ensureMotionLoop();
@@ -659,6 +732,10 @@ export class EngineScene {
 
   private applyFrame(frame: EngineFrame): void {
     if (!this.group || !this.mountPart) return;
+    // Ambient drift (see the DRIFT_* constants and motionTick) is layered on top of the resting
+    // recenterOffset every frame -- recomputed absolutely from this.driftOffset, never accumulated
+    // into group.position directly, so it can never drift away from its intended amplitude.
+    this.group.position.copy(this.recenterOffset).add(this.driftOffset);
     this.updatePartTransforms(frame);
     this.group.updateMatrixWorld(true);
     updateHighlights(this.highlights, frame, this.pulseWeight);
@@ -735,6 +812,20 @@ export class EngineScene {
       // beating at HEARTBEAT_HZ regardless of scroll position, direction, or scrub speed.
       this.pulseCycle = (this.pulseCycle + HEARTBEAT_HZ * dt) % 1;
       this.pulseWeight = pulseWave(this.pulseCycle);
+
+      // Ambient drift -- entirely independent of scroll/EngineFrame state, same as the heartbeat
+      // above and for the same reason: it should read as "alive" regardless of scroll position or
+      // explode state. Computed as an ABSOLUTE offset from the rAF timestamp (never accumulated,
+      // unlike pulseCycle/idleAzimuthOffset above) via three summed sines of incommensurate period
+      // -- see the DRIFT_* constants' header comment. This loop already never settles while
+      // !reducedMotion (the heartbeat above keeps it alive -- see the `settled` check below), so no
+      // separate keep-alive is needed for this to run perpetually.
+      const t = time / 1000;
+      this.driftOffset.set(
+        Math.sin(t * ((2 * Math.PI) / DRIFT_PERIOD_X) + DRIFT_PHASE_X) * DRIFT_AMPLITUDE_X * this.assembledRadius,
+        Math.sin(t * ((2 * Math.PI) / DRIFT_PERIOD_Y) + DRIFT_PHASE_Y) * DRIFT_AMPLITUDE_Y * this.assembledRadius,
+        Math.sin(t * ((2 * Math.PI) / DRIFT_PERIOD_Z) + DRIFT_PHASE_Z) * DRIFT_AMPLITUDE_Z * this.assembledRadius
+      );
     }
 
     if (this.heroIdle) {
@@ -813,6 +904,60 @@ export class EngineScene {
     }
   }
 
+  // Derives the crank centerline from the crankshaft's own geometry, at load() time. This is the
+  // one piece of the old running-engine rig this scene still needs: mismatchBox.ts's
+  // computeBoreAxis uses it to orient each cylinder bank's glass box along the true bore direction
+  // (see load()'s computeMismatchBoxBounds call site). Everything else the old setup used to
+  // precompute here -- rotor pivots, piston bore axes/travel, rocker/spring bank assignment -- was
+  // for the continuous running motion, which has been removed; only the crank line itself survives.
+  //
+  // The axis derived below comes from actual GEOMETRY (the crankshaft's world-space assembled
+  // bounding box -- see mismatchBox.ts's assembledWorldBox/assembledGeometricCenter and its header
+  // comment for why), never from the mesh's own `assembled.position` (its baked FBX pivot, which is
+  // arbitrary and not reliably at the part's physical center) or from rotating a fixed local axis by
+  // the mesh's own quaternion (most of these meshes carry a near-identity rotation regardless of
+  // their visible tilt -- the tilt lives in the vertex data).
+  private deriveCrankLine(parts: readonly PartRecord[]): WorldLine | null {
+    const nameOf = (part: PartRecord) => stripDedupSuffix(part.mesh.name).toLowerCase();
+    const byName = (name: string): PartRecord | undefined => parts.find((part) => nameOf(part) === name);
+
+    const crankshaft = byName('crankshaft');
+    const crankshaftSprocket = byName('crankshaftsprocket');
+
+    if (!crankshaft) return null; // nothing to derive the crank line from
+
+    // Crank axis: the crankshaft's own world-space assembled bounding box's DOMINANT axis (whichever
+    // of world x/y/z has the largest extent, as a unit vector on that axis) -- NOT sprocket-origin-
+    // minus-cover-origin (the previous derivation). That measured the vector between two mesh
+    // ORIGINS -- arbitrary baked FBX pivots that aren't guaranteed to sit exactly on the crank's true
+    // axis -- and any error there showed up directly as an off-axis tilt in every part rotating with
+    // it. A long thin shaft's bounding box is overwhelmingly dominated by its length, so "largest
+    // world-axis extent" reliably recovers the true shaft direction regardless of where its mesh
+    // origin sits. This assumes the crankshaft's world bbox is genuinely longest along one clean
+    // world axis rather than diagonal -- true for this rig, which bakes all part-to-part tilt into
+    // vertex data rather than into any overall rig rotation (see mismatchBox.ts's geometry-derived-
+    // centers header comment). Sign is then oriented toward the crank sprocket's geometric center, so
+    // "positive" consistently means "toward the front of the engine."
+    // Sanity expectation (recorded here since no runtime validation is permitted this session): per
+    // parts.ts's measured coordinates (crankshaftSprocket, the front end, at Z≈-67; engineBackCover/
+    // gear, the rear end, at Z≈+65..72), this should come out as ≈(0, 0, -1) -- i.e. ≈-Z, front-ward.
+    const crankSize = new THREE.Vector3();
+    assembledWorldBox(crankshaft).getSize(crankSize);
+    const worldCrankAxis = new THREE.Vector3(
+      crankSize.x >= crankSize.y && crankSize.x >= crankSize.z ? 1 : 0,
+      crankSize.y >= crankSize.x && crankSize.y >= crankSize.z ? 1 : 0,
+      crankSize.z >= crankSize.x && crankSize.z >= crankSize.y ? 1 : 0
+    ).normalize();
+
+    const crankshaftCenter = assembledGeometricCenter(crankshaft);
+    if (crankshaftSprocket) {
+      const towardSprocket = assembledGeometricCenter(crankshaftSprocket).sub(crankshaftCenter);
+      if (towardSprocket.dot(worldCrankAxis) < 0) worldCrankAxis.negate();
+    }
+
+    return { point: crankshaftCenter, axis: worldCrankAxis };
+  }
+
   private fitCameraToFrame(frame: EngineFrame): void {
     if (this.parts.length === 0) return;
 
@@ -822,6 +967,15 @@ export class EngineScene {
       worldSphere.copy(part.localSphere).applyMatrix4(part.mesh.matrixWorld);
       sphereUnion(sphere, worldSphere);
     }
+    // part.mesh.matrixWorld inherits group.position, which includes the current ambient drift (see
+    // applyFrame/motionTick) on top of recenterOffset -- so the union sphere's center above is
+    // itself drifting every frame. If the fit below used it as-is, the camera would re-center on
+    // the drifted model every frame and the drift would never be visible (worst case: a jittery
+    // camera chasing its own fit target). Subtracting the current drift vector here makes the fit
+    // "drift-blind": it always frames the engine's undrifted resting pose, so this.driftOffset
+    // (applied to group.position, not to the camera) reads as genuine on-screen motion instead of
+    // being canceled out.
+    sphere.center.sub(this.driftOffset);
     const radius = Math.max(sphere.radius, 0.001);
 
     const fovY = THREE.MathUtils.degToRad(this.camera.fov);

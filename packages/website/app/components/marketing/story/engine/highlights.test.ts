@@ -171,14 +171,16 @@ describe('buildHighlightRecords', () => {
     expect(record.baseMaterialColor.equals(material.color)).toBe(false);
   });
 
-  it('baseMetalness/baseRoughness equal the material values at build time', () => {
+  it('baseMetalness/baseRoughness/baseEnvMapIntensity equal the material values at build time', () => {
     const gear = makePartRecord(0x4a4d52);
     const material = gear.mesh.material as THREE.MeshStandardMaterial;
     material.metalness = 0.9;
     material.roughness = 0.2;
+    material.envMapIntensity = 1.3;
     const [record] = buildHighlightRecords([gear], null, []);
     expect(record.baseMetalness).toBe(0.9);
     expect(record.baseRoughness).toBe(0.2);
+    expect(record.baseEnvMapIntensity).toBe(1.3);
   });
 
   it('mountPart null yields no mount record', () => {
@@ -190,11 +192,12 @@ describe('buildHighlightRecords', () => {
 });
 
 describe('updateHighlights', () => {
-  it('an all-zero EngineFrame (t=0) returns material to base color/metalness/roughness, emissive black, BLOOM_LAYER disabled', () => {
+  it('an all-zero EngineFrame (t=0) returns material to base color/metalness/roughness/envMapIntensity, emissive black, BLOOM_LAYER disabled', () => {
     const gear = makePartRecord(0x4a4d52);
     const material = gear.mesh.material as THREE.MeshStandardMaterial;
     material.metalness = 0.9;
     material.roughness = 0.2;
+    material.envMapIntensity = 1.3;
     const records = buildHighlightRecords([gear], null, []);
     const frame = engineFrame(deriveScene(0));
 
@@ -203,15 +206,17 @@ describe('updateHighlights', () => {
     expect(material.color.equals(records[0].baseMaterialColor)).toBe(true);
     expect(material.metalness).toBe(records[0].baseMetalness);
     expect(material.roughness).toBe(records[0].baseRoughness);
+    expect(material.envMapIntensity).toBe(records[0].baseEnvMapIntensity);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(true);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(false);
   });
 
-  it('frame.finalGreen = 1 (t=80, inside the held green plateau) tints toward green (base lerped 0.85 toward the green identity), pulls metalness/roughness toward their tint targets, lights emissive, enables BLOOM_LAYER', () => {
+  it('frame.finalGreen = 1 (t=80, inside the held green plateau) tints toward green (base lerped 0.85 toward the green identity), pulls metalness/roughness/envMapIntensity toward their tint targets, lights emissive, enables BLOOM_LAYER', () => {
     const gear = makePartRecord(0x4a4d52);
     const material = gear.mesh.material as THREE.MeshStandardMaterial;
     material.metalness = 0.9;
     material.roughness = 0.2;
+    material.envMapIntensity = 1.3;
     const records = buildHighlightRecords([gear], null, []);
     // t=80 sits inside the RESOLVE_GREEN_END_T (72) .. RETURN_TO_NORMAL_START_T (93) plateau where
     // finalGreen holds at 1 -- t=100 no longer works as this fixture since the return-to-normal
@@ -230,10 +235,11 @@ describe('updateHighlights', () => {
     // is the base lerped 0.85 of the way to HIGHLIGHT_GREEN.
     const expectedColor = records[0].baseMaterialColor.clone().lerp(new THREE.Color(HIGHLIGHT_GREEN), 0.85);
     expect(material.color.equals(expectedColor)).toBe(true);
-    // Metalness/roughness both moved toward their tint targets (0.35 / 0.5, the latter scaled by
-    // the 0.6 roughness pull) at full weight (w=1).
+    // Metalness/roughness/envMapIntensity all moved toward their tint targets (0.35 / 0.5, the
+    // latter scaled by the 0.6 roughness pull / 0.45) at full weight (w=1).
     expect(material.metalness).toBeCloseTo(0.35, 5);
     expect(material.roughness).toBeCloseTo(0.2 + (0.5 - 0.2) * 0.6, 5);
+    expect(material.envMapIntensity).toBeCloseTo(0.45, 5);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(false);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(true);
   });
