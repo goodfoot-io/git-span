@@ -3,11 +3,9 @@
 # old->new SHA mapping git supplies on stdin. Advisory: a sub-script failure
 # is reported but never aborts. Edit PARTS to add/reorder concerns.
 #
-# Each sub-script is independently runnable and bash -n clean; run one by
-# hand (e.g. echo "$OLD $NEW" | .githooks/post-rewrite.git-span.sh) to debug it.
+# Each sub-script is independently runnable and bash -n clean.
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARTS=(
-    post-rewrite.git-span.sh
 )
 INPUT="$(cat)"
 for part in "${PARTS[@]}"; do

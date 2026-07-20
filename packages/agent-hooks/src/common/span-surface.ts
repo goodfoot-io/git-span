@@ -33,7 +33,11 @@ import {
   toPosix
 } from './agent-hooks-common.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
-import type { CoreLogger } from './stop-core.js';
+
+/** Minimal logger surface this module uses; both SDK loggers satisfy it. */
+export interface CoreLogger {
+  warn(message: string, context?: Record<string, unknown>): void;
+}
 
 // ---------------------------------------------------------------------------
 // Span executor abstraction
@@ -92,9 +96,9 @@ export interface MemoStore {
 }
 
 // Lives under the shared per-session state directory (agent-hooks-common.ts's
-// sessionDir), alongside the subagent counter — relocated from
-// os.tmpdir()/agent-hooks-git-span/ so per-session state has one home and is
-// covered by pruneStaleSessions's opportunistic >30-day pruning.
+// sessionDir) — relocated from os.tmpdir()/agent-hooks-git-span/ so
+// per-session state has one home and is covered by pruneStaleSessions's
+// opportunistic >30-day pruning.
 function memoFilePath(sessionId: string): string {
   return nodePath.join(sessionDir(sessionId), 'touch-memo.json');
 }
@@ -175,7 +179,7 @@ export function resolveTouchScope(cwd: string, absPath: string): TouchScope | nu
   const repoRelPath = relativeToRepo(repoRoot, absPath);
 
   // Skip gitignored files entirely. Build output, caches, and logs are not
-  // span-relevant: they must never enter the journal nor surface span overlaps.
+  // span-relevant: they must never surface span overlaps.
   if (isGitIgnored(repoRoot, repoRelPath)) return null;
 
   // Skip span documents entirely. Files under the resolved span root are managed

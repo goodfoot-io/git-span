@@ -4,11 +4,9 @@
 # reported but never aborts (you cannot un-commit from post-commit). Edit
 # PARTS to add/reorder concerns.
 #
-# Each sub-script is independently runnable and bash -n clean; run one by
-# hand (e.g. .githooks/post-commit.git-span.sh) to debug it.
+# Each sub-script is independently runnable and bash -n clean.
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARTS=(
-    post-commit.git-span.sh
 )
 for part in "${PARTS[@]}"; do
     script="$HOOK_DIR/$part"

@@ -4,11 +4,10 @@
  * agent-hooks-common.ts's sessionDir/pruneStaleSessions).
  *
  * The store was relocated from os.tmpdir()/agent-hooks-git-span/ to
- * ~/.cache/git-span/session/<id>/ so all per-session state (the memo, the
- * subagent counter) shares one home and is covered by opportunistic
- * >30-day pruning. These tests write real files under the real per-session
- * base dir (as the existing subagent-count tests already do) and clean up
- * after themselves via unique, timestamped session ids.
+ * ~/.cache/git-span/session/<id>/ so all per-session state shares one home
+ * and is covered by opportunistic >30-day pruning. These tests write real
+ * files under the real per-session base dir and clean up after themselves
+ * via unique, timestamped session ids.
  */
 
 import * as fs from 'node:fs';

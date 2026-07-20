@@ -61,10 +61,10 @@ Same dispatcher model as `pre-commit`, but a sub-script failure is reported
 (to stderr) and never aborts -- you cannot un-commit from `post-commit`, and
 `post-rewrite` has already rewritten history by the time it fires.
 
-| Sub-script                     | Purpose                                                                                     |
-| ------------------------------- | --------------------------------------------------------------------------------------------- |
-| `post-commit.git-span.sh`       | Spawns the git-span dispatcher detached to promote pre-commit anchor records and reconcile stale spans in the background. Logs to `.span/dispatcher.log`. |
-| `post-rewrite.git-span.sh`      | Spawns the git-span dispatcher detached with `--post-rewrite`, passing git's old->new SHA mapping through stdin, so rewritten commits get re-detected. |
+Neither router currently has any sub-scripts registered -- git-span
+reconciliation moved off this commit-triggered path onto in-session
+PostToolUse/PreToolUse hooks (see `packages/agent-hooks`), so `PARTS` is
+empty in both.
 
 ## Adding a concern
 

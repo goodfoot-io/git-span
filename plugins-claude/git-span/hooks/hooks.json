@@ -1,34 +1,15 @@
 {
   "hooks": {
-    "SubagentStop": [
+    "PostToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-stop.mjs"
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/post-tool-use.mjs",
+            "timeout": 10000
           }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/subagent-count-start.mjs"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/stop.mjs",
-            "timeout": 30000
-          }
-        ]
+        ],
+        "matcher": "Read|Edit|Write"
       }
     ],
     "PreToolUse": [
@@ -36,21 +17,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/pre-tool-use.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/gate.mjs",
             "timeout": 10000
           }
         ],
-        "matcher": "Read|Edit|Write"
+        "matcher": "Bash"
       }
     ]
   },
   "__generated": {
     "files": [
-      "subagent-count-stop.mjs",
-      "subagent-count-start.mjs",
-      "stop.mjs",
-      "pre-tool-use.mjs"
+      "post-tool-use.mjs",
+      "gate.mjs"
     ],
-    "timestamp": "2026-06-23T18:49:22.620Z"
+    "timestamp": "2026-07-20T20:44:54.298Z"
   }
 }

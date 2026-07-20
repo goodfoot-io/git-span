@@ -2,11 +2,11 @@
  * Codex `apply_patch` envelope parser.
  *
  * Turns a Codex `apply_patch` `tool_input.command` patch string into the
- * `AnchorSpec[]` shape the shared journal already consumes — the one genuinely
- * new algorithm the Codex adapter needs. It replaces the structured
- * `file_path`/`old_string`/`offset` reading the Claude PreToolUse hook does,
- * because Codex delivers every edit as a single apply_patch envelope rather
- * than a typed tool input.
+ * `AnchorSpec[]` shape the shared touch core already consumes — the one
+ * genuinely new algorithm the Codex adapter needs. It replaces the structured
+ * `file_path`/`old_string`/`offset` reading the Claude PostToolUse touch hook
+ * does, because Codex delivers every edit as a single apply_patch envelope
+ * rather than a typed tool input.
  *
  * The module is pure: it imports only the kernel anchor types and never touches
  * the Codex SDK, so it is DI-testable exactly like the porcelain parsers in the
@@ -16,8 +16,8 @@
  * on-disk file. That file read is injected (`readPreEditFile`) so the function
  * stays pure and testable. On ANY ambiguity (no reader, file missing, context
  * not found, fuzzy/duplicate match) the parser degrades to a whole-file anchor
- * rather than throwing — whole-file anchors are first-class and journaling must
- * never be blocked.
+ * rather than throwing — whole-file anchors are first-class and touch tracking
+ * must never be blocked.
  *
  * The grammar is cross-checked against Codex's own apply_patch crate
  * (codex-rs/apply-patch/src/{parser,streaming_parser}.rs). Two subtleties are

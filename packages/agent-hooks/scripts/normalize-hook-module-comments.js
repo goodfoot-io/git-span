@@ -208,9 +208,6 @@ function normalizeFile(filePath) {
 
 function collectMjsFiles(dir, results = []) {
   for (const entry of readdirSync(dir)) {
-    // dispatcher.mjs is built by a separate esbuild invocation that never
-    // crosses node_modules; leave its build path untouched.
-    if (entry === 'dispatcher.mjs') continue;
     const full = join(dir, entry);
     const stats = statSync(full);
     if (stats.isDirectory()) {
@@ -223,8 +220,7 @@ function collectMjsFiles(dir, results = []) {
 }
 
 /**
- * Normalizes every `.mjs` file (recursively, excluding `dispatcher.mjs`)
- * under each of `dirs` in place.
+ * Normalizes every `.mjs` file (recursively) under each of `dirs` in place.
  * @param {string[]} dirs
  * @returns {{ scanned: number, changed: number }}
  */
