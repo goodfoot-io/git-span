@@ -1,6 +1,6 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L862-L862 rk64:65968bc5d1e63b18
-packages/website/app/components/marketing/story/engine/beats.ts#L89-L91 rk64:3b890daebfd2d52f
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L1059-L1059 rk64:65968bc5d1e63b18
+packages/website/app/components/marketing/story/engine/beats.ts#L94-L96 rk64:3b890daebfd2d52f
 packages/website/app/components/marketing/story/engine/beats.ts#L293-L301 rk64:63aa4e0f3851326e
-packages/website/app/components/marketing/story/engine/beats.ts#L310-L328 rk64:bca4b1c7401281c7
-wiki/architecture/homepage-engine-animation.md#L697-L747 rk64:7d4f1d79071e01f6
+packages/website/app/components/marketing/story/engine/beats.ts#L422-L440 rk64:bca4b1c7401281c7
+wiki/architecture/homepage-engine-animation.md#L697-L747 rk64:c1e5497ebbbe65ce
 

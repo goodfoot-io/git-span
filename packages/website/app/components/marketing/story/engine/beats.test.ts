@@ -5,10 +5,10 @@ import {
   CANONICAL_AZIMUTH,
   CANONICAL_ELEVATION,
   engineFrame,
+  FRONT_DRIVE_SCALE_OVERSHOOT,
   FRONT_SCALE,
   MARGIN_ASSEMBLED,
   MARGIN_EXPLODED,
-  MOUNT_SCALE,
   RETURN_TO_NORMAL_END_T,
   RETURN_TO_NORMAL_START_T
 } from './beats';
@@ -22,17 +22,20 @@ const ORANGE_IN_END_T = 8;
 const ORANGE_OUT_START_T = 16;
 const ORANGE_OUT_END_T = 20;
 const RING_BLUE_START_T = 16;
-const RING_BLUE_END_T = 20;
+const RING_BLUE_END_T = 17.5;
 const RING_RESIZE_START_T = 22;
+const RING_RESIZE_PEAK_T = 24;
 const RING_RESIZE_END_T = 27;
-const MISMATCH_RED_START_T = 30;
-const MISMATCH_RED_END_T = 34;
+const MISMATCH_RED_START_T = 41;
+// Sudden, not gradual (see beats.ts's own comment on this constant) -- a wider 41-45 window left
+// the ring visibly mid-crossfade (blue+red blend reads as purple, not red) at t42.
+const MISMATCH_RED_END_T = 42;
 const COLOR_LOSS_START_T = 46;
 const COLOR_LOSS_END_T = 60;
 const RESOLVE_GREEN_START_T = 60;
-const RESOLVE_GREEN_END_T = 72;
-const RING_REGROW_START_T = 72;
-const RING_REGROW_END_T = 83;
+const RESOLVE_GREEN_END_T = 68.5;
+const RING_REGROW_START_T = 68;
+const RING_REGROW_END_T = 72;
 const FAILED_FIT_COLLAPSE_START_T = 32;
 const FAILED_FIT_COLLAPSE_END_T = 43;
 const FAILED_FIT_REEXPLODE_START_T = 48;
@@ -47,7 +50,6 @@ const FINAL_REASSEMBLY_END_T = 87;
 const frameAt = (t: number) => engineFrame(deriveScene(t));
 
 const traversePhase = TIMELINE.find((phase) => phase.id === 'traverse')!;
-const relatedPhase = TIMELINE.find((phase) => phase.id === 'related')!;
 const successPhase = TIMELINE.find((phase) => phase.id === 'success')!;
 
 const tAtLocal = (phase: { start: number; end: number }, local: number) =>
@@ -76,20 +78,77 @@ describe('preHighlightOrange', () => {
   });
 });
 
+describe("ringPreHighlightOrange (the ring gear's own, faster crossfade)", () => {
+  it('is 0 before the in-ramp starts', () => {
+    expect(frameAt(ORANGE_IN_START_T).ringPreHighlightOrange).toBe(0);
+  });
+
+  it('is 1 across the held plateau, up through the moment the ring-blue window starts', () => {
+    expect(frameAt(ORANGE_IN_END_T).ringPreHighlightOrange).toBe(1);
+    expect(frameAt(15).ringPreHighlightOrange).toBe(1);
+    expect(frameAt(RING_BLUE_START_T).ringPreHighlightOrange).toBe(1);
+  });
+
+  it("is 0 once the ring's own (now faster, 16-17.5) blue-in completes, and stays 0", () => {
+    expect(frameAt(RING_BLUE_END_T).ringPreHighlightOrange).toBe(0);
+    expect(frameAt(50).ringPreHighlightOrange).toBe(0);
+    expect(frameAt(100).ringPreHighlightOrange).toBe(0);
+  });
+
+  it('crossfades in lockstep with blue: their sum is exactly 1 across the whole 16-17.5 window', () => {
+    for (let t = RING_BLUE_START_T; t <= RING_BLUE_END_T; t += 0.25) {
+      const frame = frameAt(t);
+      expect(frame.ringPreHighlightOrange + frame.blue, `sum at t=${t}`).toBeCloseTo(1, 10);
+    }
+  });
+
+  it('differs from the shared preHighlightOrange once the two ramp-out windows diverge (t>17.5)', () => {
+    const frame = frameAt(18.5);
+    expect(frame.ringPreHighlightOrange).toBe(0);
+    expect(frame.preHighlightOrange).toBeGreaterThan(0);
+  });
+});
+
+describe('partAdjust (pistons re-seating outward while the ring gear regrows)', () => {
+  it('is 0 before RING_REGROW_START_T (t68)', () => {
+    expect(frameAt(0).partAdjust).toBe(0);
+    expect(frameAt(COLOR_LOSS_END_T).partAdjust).toBe(0);
+    expect(frameAt(RING_REGROW_START_T).partAdjust).toBe(0);
+  });
+
+  it('ramps linearly across t68-72, reaching 1 at RING_REGROW_END_T', () => {
+    const mid = (RING_REGROW_START_T + RING_REGROW_END_T) / 2;
+    expect(frameAt(mid).partAdjust).toBeCloseTo(0.5, 10);
+    expect(frameAt(RING_REGROW_END_T).partAdjust).toBe(1);
+  });
+
+  it('holds at 1 for the rest of the timeline -- there is no release window for this beat', () => {
+    expect(frameAt(80).partAdjust).toBe(1);
+    expect(frameAt(100).partAdjust).toBe(1);
+  });
+
+  it("shares its exact window with the ring gear's own regrow (scaleWeightAt's RING_REGROW term)", () => {
+    // Both partAdjustAt and the regrow term of scaleWeightAt read RING_REGROW_START_T..END_T
+    // directly -- verify the two beats land together at their shared start/end.
+    expect(frameAt(RING_REGROW_START_T).frontDriveScale).toBeCloseTo(1, 10);
+    expect(frameAt(RING_REGROW_END_T).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
+  });
+});
+
 describe('blue (ring gear first stage)', () => {
   it('is 0 before the ring-blue window starts', () => {
     expect(frameAt(RING_BLUE_START_T).blue).toBe(0);
   });
 
-  it('is 1 from t=20 through t=30', () => {
+  it('is 1 from t=17.5 through t=41 -- a long hold, now that the crossfade in and out are both sudden', () => {
     expect(frameAt(RING_BLUE_END_T).blue).toBe(1);
     expect(frameAt(26).blue).toBe(1);
     expect(frameAt(MISMATCH_RED_START_T).blue).toBe(1);
   });
 
-  it('is 0 at t>=34', () => {
+  it('is 0 at t>=42', () => {
     expect(frameAt(MISMATCH_RED_END_T).blue).toBe(0);
-    expect(frameAt(40).blue).toBe(0);
+    expect(frameAt(50).blue).toBe(0);
     expect(frameAt(100).blue).toBe(0);
   });
 });
@@ -99,9 +158,8 @@ describe('ringRed (ring gear second stage)', () => {
     expect(frameAt(MISMATCH_RED_START_T).ringRed).toBe(0);
   });
 
-  it('is 1 at t=34..46', () => {
+  it('is 1 at t=42..46 -- a 4-unit hold before COLOR_LOSS starts draining it', () => {
     expect(frameAt(MISMATCH_RED_END_T).ringRed).toBe(1);
-    expect(frameAt(40).ringRed).toBe(1);
     expect(frameAt(COLOR_LOSS_START_T).ringRed).toBe(1);
   });
 
@@ -119,9 +177,9 @@ describe('red / pistonRed (shared pistonRedAt)', () => {
     }
   });
 
-  it('ramps in with the ring-blue window, not the ring-red window', () => {
-    expect(frameAt(RING_BLUE_START_T).red).toBe(0);
-    expect(frameAt(RING_BLUE_END_T).red).toBe(1);
+  it("ramps in with the shared orange-out window (16-20), independent of the ring gear's own (now faster, 16-17.5) blue-in", () => {
+    expect(frameAt(ORANGE_OUT_START_T).red).toBe(0);
+    expect(frameAt(ORANGE_OUT_END_T).red).toBe(1);
     expect(frameAt(COLOR_LOSS_START_T).red).toBe(1);
   });
 
@@ -137,7 +195,7 @@ describe('finalGreen', () => {
     expect(frameAt(0).finalGreen).toBe(0);
   });
 
-  it('is 1 across the held plateau, t=72..93', () => {
+  it('is 1 across the held plateau, t=68.5..93', () => {
     expect(frameAt(RESOLVE_GREEN_END_T).finalGreen).toBe(1);
     expect(frameAt(80).finalGreen).toBe(1);
     expect(frameAt(RETURN_TO_NORMAL_START_T).finalGreen).toBe(1);
@@ -170,16 +228,18 @@ describe('boxWeight', () => {
     expect(frameAt(BOX_OUT_START_T).boxWeight).toBe(1);
   });
 
-  it('fades back out over its own BOX_OUT window (t62-64), as fast as it fades in, decoupled from RESOLVE_GREEN_START_T..END_T (t60-72)', () => {
+  it('fades back out over its own BOX_OUT window (t62-64), as fast as it fades in, decoupled from RESOLVE_GREEN_START_T..END_T (t60-68.5)', () => {
     const mid = (BOX_OUT_START_T + BOX_OUT_END_T) / 2;
     expect(frameAt(mid).boxWeight).toBeCloseTo(0.5, 10);
     expect(frameAt(BOX_OUT_END_T).boxWeight).toBe(0);
-    // Gone well before the (unrelated) shared-green resolve window finishes at t72.
+    // Gone well before the (unrelated) shared-green resolve window finishes at t68.5, and well
+    // before RING_REGROW_START_T (t68) begins the parallel-adjust beat.
     expect(frameAt(RESOLVE_GREEN_END_T).boxWeight).toBe(0);
+    expect(frameAt(RING_REGROW_START_T).boxWeight).toBe(0);
   });
 
-  it('is 0 at t>=72', () => {
-    expect(frameAt(RING_REGROW_START_T).boxWeight).toBe(0);
+  it('is 0 at t>=72, and stays 0', () => {
+    expect(frameAt(RING_REGROW_END_T).boxWeight).toBe(0);
     expect(frameAt(100).boxWeight).toBe(0);
   });
 
@@ -191,19 +251,27 @@ describe('boxWeight', () => {
 });
 
 describe('frontDriveScale', () => {
-  it('cycles 1 -> 1.25 (t27-46) -> 1 (t60-72) -> 1.25 (t83..93)', () => {
+  it('cycles 1 -> overshoots to 1.35 at t24 -> settles to 1.25 by t27 -> 1 (t60-68) -> 1.25 (t72..93)', () => {
     expect(frameAt(0).frontDriveScale).toBe(1);
     expect(frameAt(RING_RESIZE_START_T).frontDriveScale).toBe(1);
-    expect(frameAt(RING_RESIZE_END_T).frontDriveScale).toBe(FRONT_SCALE);
-    expect(frameAt(COLOR_LOSS_START_T).frontDriveScale).toBe(FRONT_SCALE);
-    expect(frameAt(RESOLVE_GREEN_START_T).frontDriveScale).toBe(1);
-    expect(frameAt(RING_REGROW_START_T).frontDriveScale).toBe(1);
-    expect(frameAt(RING_REGROW_END_T).frontDriveScale).toBe(FRONT_SCALE);
-    expect(frameAt(93).frontDriveScale).toBe(FRONT_SCALE);
+    expect(frameAt(RING_RESIZE_PEAK_T).frontDriveScale).toBeCloseTo(FRONT_DRIVE_SCALE_OVERSHOOT, 10);
+    expect(frameAt(RING_RESIZE_END_T).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(COLOR_LOSS_START_T).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(RESOLVE_GREEN_START_T).frontDriveScale).toBeCloseTo(1, 10);
+    expect(frameAt(RING_REGROW_START_T).frontDriveScale).toBeCloseTo(1, 10);
+    expect(frameAt(RING_REGROW_END_T).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(93).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
   });
 
   it('shrinks back to 1x during the color-loss window', () => {
-    expect(frameAt(COLOR_LOSS_END_T).frontDriveScale).toBe(1);
+    expect(frameAt(COLOR_LOSS_END_T).frontDriveScale).toBeCloseTo(1, 10);
+  });
+
+  it('overshoots past FRONT_SCALE only within the resize window (t22-27), nowhere else on the timeline', () => {
+    for (let t = 0; t <= 100; t += 0.5) {
+      if (t > RING_RESIZE_START_T && t < RING_RESIZE_END_T) continue;
+      expect(frameAt(t).frontDriveScale, `frontDriveScale at t=${t}`).toBeLessThanOrEqual(FRONT_SCALE + 1e-9);
+    }
   });
 
   it('holds 1x through the whole blue window -- the resize is its own later beat (t22-27)', () => {
@@ -329,30 +397,52 @@ describe('idleWeight', () => {
   });
 });
 
-describe('mountScale (pure function of t)', () => {
-  it('mountScale is 1 for every phase before `related`', () => {
+describe('mountScale (own beat: flat through the first resize, grows with the t68-72 regrow, shrinks back over t82-87)', () => {
+  const MOUNT_SHRINK_START_T = 82;
+  const MOUNT_SHRINK_END_T = 87;
+
+  it('is 1 for the entire first resize window (t22-27) -- it no longer rides frontDriveScale', () => {
+    expect(frameAt(RING_RESIZE_START_T).mountScale).toBe(1);
+    expect(frameAt(RING_RESIZE_PEAK_T).mountScale).toBe(1);
+    expect(frameAt(RING_RESIZE_END_T).mountScale).toBe(1);
+    // frontDriveScale genuinely overshoots here -- confirms the two are no longer coupled at t24.
+    expect(frameAt(RING_RESIZE_PEAK_T).frontDriveScale).toBeCloseTo(FRONT_DRIVE_SCALE_OVERSHOOT, 10);
+  });
+
+  it('is 1 through the whole mismatch story up to RING_REGROW_START_T (t68)', () => {
     expect(frameAt(0).mountScale).toBe(1);
-    expect(frameAt(traversePhase.end - 0.001).mountScale).toBe(1);
+    expect(frameAt(COLOR_LOSS_START_T).mountScale).toBe(1);
+    expect(frameAt(COLOR_LOSS_END_T).mountScale).toBe(1);
+    expect(frameAt(RING_REGROW_START_T).mountScale).toBe(1);
   });
 
-  it('mountScale ramps 1 -> MOUNT_SCALE across local 0.1..0.7 of `related`', () => {
-    expect(frameAt(tAtLocal(relatedPhase, 0.1)).mountScale).toBeCloseTo(1, 10);
-    expect(frameAt(tAtLocal(relatedPhase, 0.4)).mountScale).toBeCloseTo(1 + (MOUNT_SCALE - 1) * 0.5, 10);
-    expect(frameAt(tAtLocal(relatedPhase, 0.7)).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
+  it('ramps plainly (no overshoot) from 1 to FRONT_SCALE across t68-72, in lockstep with the gear', () => {
+    const mid = (RING_REGROW_START_T + RING_REGROW_END_T) / 2;
+    expect(frameAt(mid).mountScale).toBeCloseTo(lerp(1, FRONT_SCALE, 0.5), 10);
+    expect(frameAt(RING_REGROW_END_T).mountScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(RING_REGROW_END_T).mountScale).toBeCloseTo(frameAt(RING_REGROW_END_T).frontDriveScale, 10);
   });
 
-  it('mountScale holds at MOUNT_SCALE from the end of its growth window up to RETURN_TO_NORMAL_START_T', () => {
-    // `related` ends at ~96.97, well after RETURN_TO_NORMAL_START_T (93) -- the whole of `success`
-    // (96.97..100) falls inside the return-to-normal window, so the plateau is only observable
-    // from the growth window's end (~91.5, still inside `related`) through t=93.
-    expect(frameAt(tAtLocal(relatedPhase, 0.7)).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
-    expect(frameAt(RETURN_TO_NORMAL_START_T).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
+  it('holds at FRONT_SCALE from t72 through the start of its own shrink window (t82)', () => {
+    expect(frameAt(RING_REGROW_END_T).mountScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(80).mountScale).toBeCloseTo(FRONT_SCALE, 10);
+    expect(frameAt(MOUNT_SHRINK_START_T).mountScale).toBeCloseTo(FRONT_SCALE, 10);
+    // FINAL_REASSEMBLY_START_T (83) sits just inside the shrink window (82-87): 1/5 down.
+    expect(frameAt(FINAL_REASSEMBLY_START_T).mountScale).toBeCloseTo(lerp(FRONT_SCALE, 1, 1 / 5), 10);
   });
 
-  it('eases back to exactly 1 by t=100', () => {
-    const mid = (RETURN_TO_NORMAL_START_T + RETURN_TO_NORMAL_END_T) / 2;
-    expect(frameAt(mid).mountScale).toBeCloseTo(lerp(1, MOUNT_SCALE, 0.5), 10);
-    expect(frameAt(RETURN_TO_NORMAL_END_T).mountScale).toBe(1);
+  it('eases back to exactly 1 by t=87 -- as reassembly lands, well before RETURN_TO_NORMAL_START_T (93), unlike frontDriveScale', () => {
+    const mid = (MOUNT_SHRINK_START_T + MOUNT_SHRINK_END_T) / 2;
+    expect(frameAt(mid).mountScale).toBeCloseTo(lerp(FRONT_SCALE, 1, 0.5), 10);
+    expect(frameAt(MOUNT_SHRINK_END_T).mountScale).toBe(1);
+    expect(frameAt(FINAL_REASSEMBLY_END_T).mountScale).toBe(1);
+    // The gear, by contrast, is still at FRONT_SCALE here -- a known, deliberate consequence of the
+    // mount's independent shrink timing (see beats.ts's mountScaleWeightAt comment).
+    expect(frameAt(MOUNT_SHRINK_END_T).frontDriveScale).toBeCloseTo(FRONT_SCALE, 10);
+  });
+
+  it('stays at 1 for the rest of the timeline, including through RETURN_TO_NORMAL and t=100', () => {
+    expect(frameAt(RETURN_TO_NORMAL_START_T).mountScale).toBe(1);
     expect(frameAt(100).mountScale).toBe(1);
   });
 });
@@ -371,6 +461,8 @@ describe('invariant sweep over the whole timeline (t=0..100, step 0.5)', () => {
     'finalGreen',
     'boxWeight',
     'preHighlightOrange',
+    'ringPreHighlightOrange',
+    'partAdjust',
     'idleWeight'
   ] as const;
 
@@ -382,19 +474,19 @@ describe('invariant sweep over the whole timeline (t=0..100, step 0.5)', () => {
     }
   });
 
-  it('frontDriveScale stays within [1, FRONT_SCALE]', () => {
+  it("frontDriveScale stays within [1, FRONT_DRIVE_SCALE_OVERSHOOT] (the resize beat's real upper bound, not just FRONT_SCALE)", () => {
     for (const t of samples) {
       const value = frameAt(t).frontDriveScale;
       expect(value, `frontDriveScale at t=${t}`).toBeGreaterThanOrEqual(1 - 1e-9);
-      expect(value, `frontDriveScale at t=${t}`).toBeLessThanOrEqual(FRONT_SCALE + 1e-9);
+      expect(value, `frontDriveScale at t=${t}`).toBeLessThanOrEqual(FRONT_DRIVE_SCALE_OVERSHOOT + 1e-9);
     }
   });
 
-  it('mountScale stays within [1, MOUNT_SCALE]', () => {
+  it('mountScale stays within [1, FRONT_SCALE] (never overshoots, unlike frontDriveScale)', () => {
     for (const t of samples) {
       const value = frameAt(t).mountScale;
       expect(value, `mountScale at t=${t}`).toBeGreaterThanOrEqual(1 - 1e-9);
-      expect(value, `mountScale at t=${t}`).toBeLessThanOrEqual(MOUNT_SCALE + 1e-9);
+      expect(value, `mountScale at t=${t}`).toBeLessThanOrEqual(FRONT_SCALE + 1e-9);
     }
   });
 

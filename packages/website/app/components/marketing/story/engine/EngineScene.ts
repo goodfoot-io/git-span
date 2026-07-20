@@ -26,6 +26,7 @@ import {
   assembledWorldBox,
   buildMismatchBoxes,
   computeMismatchBoxBounds,
+  computePistonBoreAxes,
   updateBoundingBox,
   type WorldLine
 } from './mismatchBox';
@@ -152,6 +153,71 @@ const DRIFT_PHASE_X = 0;
 const DRIFT_PHASE_Y = (2 * Math.PI) / 3;
 const DRIFT_PHASE_Z = (4 * Math.PI) / 3;
 
+// The t68-72 parallel-adjust beat (beats.ts's partAdjustAt / EngineFrame.partAdjust): each piston
+// re-seats outward along its own bank's bore axis (see mismatchBox.ts's computePistonBoreAxes) by
+// this fraction of the assembled bounding-sphere radius, at full partAdjust/explode weight --
+// same "fraction of assembledRadius" convention as DRIFT_AMPLITUDE_X/Y/Z and WOBBLE_AMPLITUDE
+// above, so it scales sensibly with the model instead of being a fixed world-unit constant. Kept
+// small (2.5%) since this is a subtle "the parts are re-seating" cue riding alongside the ring
+// regrow, not a second explode beat.
+const PISTON_ADJUST_FRACTION = 0.025;
+
+// --- Per-part wobble: free-floating jitter layered on top of the whole-group drift above ------
+// Drift moves the whole assembly as one rigid body; this gives each of the ~129 parts its own tiny
+// independent bob so the exploded constellation reads as loose, suspended debris rather than a
+// single object wandering in place -- every part looks like it's individually adrift, not just
+// riding along with its neighbors. Deterministic, not random: each part's phases and period
+// multipliers are derived from its index in `this.parts` via a golden-angle scatter (irrational
+// step per index, so no two parts ever land on the same phase/period and the pattern never visibly
+// repeats), which means the exact same wobble plays out on every page load -- there is nothing here
+// for a seeded RNG to buy over deriving straight from the index. Gated by the current frame's
+// `explode` progress (0 at rest, full once fully exploded) so assembled metal stays perfectly rigid
+// through the hero, the failed-fit collapsed hold, and the final reassembly from t87 on, and the
+// float fades in exactly as parts separate -- this doubles as the "suspended parts float free" cue
+// with no separate state to track. Position-only, deliberately no rotation: these meshes carry the
+// GLB's baked (and frequently off-center) pivots, so even a cheap rotational wobble would visibly
+// swing a part on an invisible arm around its pivot instead of reading as a gentle bob. No special-
+// casing for the camera fit (fitCameraToFrame) or the mismatch glass boxes either: WOBBLE_AMPLITUDE
+// is small enough that the fit's frame-to-frame sphere variation from it is negligible, and the
+// glass-box padding is treated as this system's amplitude budget -- if a part is ever seen grazing
+// its box, the fix is turning WOBBLE_AMPLITUDE down, not teaching the wobble about box bounds.
+const WOBBLE_AMPLITUDE = 0.004; // fraction of assembled radius, same on all three axes
+const WOBBLE_PERIOD_MIN = 5; // seconds -- per-part/per-axis period is scattered across this range
+const WOBBLE_PERIOD_MAX = 9;
+// Depth (radians) of the second-harmonic phase warp summed into each axis's primary sine below --
+// enough to break the metronome feel of a single sine without the motion reading as erratic.
+const WOBBLE_WARP = 0.7;
+// The second harmonic's frequency/phase ride on the primary's via this multiplier -- the golden
+// ratio is irrational, so the two harmonics never settle into a simple repeating beat.
+const WOBBLE_HARMONIC_RATIO = 1.618033988749895;
+// Golden angle: an irrational fraction of a full turn, so `index * WOBBLE_GOLDEN_ANGLE` scatters
+// every part to a distinct, non-repeating phase as index increases -- the same trick as phyllotaxis
+// (sunflower seed spirals) for even, non-clumping angular coverage of ~129 samples.
+const WOBBLE_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const WOBBLE_GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
+// Arbitrary prime-ish index offsets so x/y/z each read a different point along the same golden-angle
+// scatter instead of all three axes sharing one phase/period (which would collapse the bob to a
+// single diagonal axis instead of a genuinely 3D float).
+const WOBBLE_AXIS_INDEX_STRIDE_Y = 41;
+const WOBBLE_AXIS_INDEX_STRIDE_Z = 83;
+
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+// One axis's wobble value for a given part index at a given wall-clock time, in roughly [-1, 1] --
+// the caller scales by WOBBLE_AMPLITUDE * assembledRadius * explodeProgress. `axisIndex` is the
+// part's own index shifted by one of the WOBBLE_AXIS_INDEX_STRIDE_* constants (or left as-is for
+// x) so each axis samples a different point on the same deterministic scatter.
+function wobbleAxisValue(axisIndex: number, time: number): number {
+  const phase = axisIndex * WOBBLE_GOLDEN_ANGLE;
+  const periodMultiplier = fract(axisIndex * WOBBLE_GOLDEN_RATIO_CONJUGATE);
+  const period = WOBBLE_PERIOD_MIN + periodMultiplier * (WOBBLE_PERIOD_MAX - WOBBLE_PERIOD_MIN);
+  const omega = (2 * Math.PI) / period;
+  const warpPhase = phase * WOBBLE_HARMONIC_RATIO;
+  return Math.sin(time * omega + phase + WOBBLE_WARP * Math.sin(time * omega * WOBBLE_HARMONIC_RATIO + warpPhase));
+}
+
 export class EngineScene {
   private readonly container: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
@@ -200,10 +266,37 @@ export class EngineScene {
   // recomputed absolutely from elapsed time every frame in motionTick, never accumulated, active
   // independent of scroll/explode state, and pinned to zero under prefers-reduced-motion.
   private driftOffset = new THREE.Vector3();
+  // Wall-clock time (seconds) driving the per-part wobble (see the WOBBLE_* constants and
+  // wobbleAxisValue above): updated alongside driftOffset in motionTick, from the same rAF
+  // timestamp -- kept as its own field rather than reusing driftOffset's local `t` since wobble is
+  // read later, per-part, inside updatePartTransforms rather than at the point drift is computed.
+  // Frozen (not advanced) under prefers-reduced-motion; updatePartTransforms also gates its use on
+  // `this.reducedMotion` directly so a frozen-but-stale clock value can never leak into the scene.
+  private wobbleClock = 0;
+  // Scratch vector for the per-part wobble offset in updatePartTransforms -- reused every part,
+  // every frame, so laying out ~129 parts' wobble never allocates a Vector3 per part per frame.
+  private readonly wobbleScratch = new THREE.Vector3();
   // The crank centerline (see mismatchBox.ts's WorldLine), derived once in load() from the
   // crankshaft's own geometry -- feeds computeMismatchBoxBounds's bore-axis-relative box
   // orientation (see mismatchBox.ts's computeBoreAxis).
   private crankLine: WorldLine | null = null;
+  // Per-piston bore axes (see mismatchBox.ts's computePistonBoreAxes), populated once in load()
+  // alongside the glass-box bounds -- reused every frame in updatePartTransforms to offset each
+  // piston outward along its own bank's bore axis during the t68-72 partAdjust beat (see
+  // beats.ts's partAdjustAt).
+  private pistonBoreAxes: Map<PartRecord, THREE.Vector3> = new Map();
+  // Shared crank-axis pivot the gear+mount rigid pair scales about in updatePartTransforms,
+  // instead of each part's own local center -- see load()'s computation and updatePartTransforms's
+  // use for the full rationale. Null only in the (untested-in-practice) case there's no crank line
+  // to derive it from, in which case updatePartTransforms falls back to the old per-part behavior.
+  private frontDriveScalePivot: THREE.Vector3 | null = null;
+  // Parts with a parts.ts `rideWith` coupling (currently the two cylinder-head covers riding
+  // throttleBody) must sample the SAME wobble value as their base part, not their own independent
+  // `this.parts` index -- otherwise the two visibly shear against each other even though their
+  // explode poses are now rigidly coupled (see load()'s rideWith pass above). Maps each such
+  // PartRecord to the `this.parts` index its wobble should be sampled from instead of its own,
+  // populated once in load().
+  private wobbleIndexOverrides: Map<PartRecord, number> = new Map();
 
   private currentFrame: EngineFrame | null = null;
   private heroIdle = false;
@@ -535,6 +628,32 @@ export class EngineScene {
       });
     }
 
+    // Rigid-coupling pass (parts.ts's `rideWith`, currently the two cylinder-head covers riding
+    // `throttleBody`): a part with `rideWith` set discards whatever exploded pose the loop above
+    // computed for it and instead inherits its base part's exploded DISPLACEMENT (assembled ->
+    // exploded delta) verbatim, applied on top of its OWN assembled position -- so the pair's
+    // assembled-relative arrangement is identical before and after explode; they can never cross
+    // or separate. A second pass, not folded into the loop above, because a `rideWith` target's
+    // own exploded pose (itself possibly overridden, though not in today's data) must already be
+    // finalized before it can be copied from -- nothing guarantees `meshes` iterates in dependency
+    // order.
+    for (const mesh of meshes) {
+      const override = EXPLODE_OVERRIDES[stripDedupSuffix(mesh.name)];
+      if (!override?.rideWith) continue;
+      const assembled = assembledPoses.get(mesh.uuid);
+      if (!assembled) continue;
+      const base = meshes.find((candidate) => stripDedupSuffix(candidate.name) === override.rideWith);
+      const baseAssembled = base && assembledPoses.get(base.uuid);
+      const baseExploded = base && explodedPoses.get(base.uuid);
+      if (!base || !baseAssembled || !baseExploded) continue;
+      const baseDisplacement = baseExploded.position.clone().sub(baseAssembled.position);
+      explodedPoses.set(mesh.uuid, {
+        position: assembled.position.clone().add(baseDisplacement),
+        quaternion: assembled.quaternion.clone(),
+        scale: assembled.scale.clone()
+      });
+    }
+
     // Flatten: fresh meshes sharing the original geometries, positioned at their baked
     // assembled world pose, materials assigned by family. The imported gltf.scene (and its
     // `$AssimpFbx$` pivot chain) is discarded from here on.
@@ -624,6 +743,74 @@ export class EngineScene {
     this.orangeEmphasisParts = parts.filter((part) => part.isOrangeEmphasis);
     this.crankLine = this.deriveCrankLine(parts);
 
+    // Wobble-coupling (see wobbleIndexOverrides's own comment): resolved here, once PartRecords
+    // (and hence stable `this.parts` indices) exist, by re-reading each part's own `rideWith`
+    // override and pointing it at its base part's index instead.
+    this.wobbleIndexOverrides = new Map();
+    for (let index = 0; index < parts.length; index++) {
+      const part = parts[index];
+      const override = EXPLODE_OVERRIDES[stripDedupSuffix(part.mesh.name)];
+      if (!override?.rideWith) continue;
+      const baseIndex = parts.findIndex((candidate) => stripDedupSuffix(candidate.mesh.name) === override.rideWith);
+      if (baseIndex >= 0) this.wobbleIndexOverrides.set(part, baseIndex);
+    }
+
+    // Fix: the gear's baked exploded pose (EXPLODE_OVERRIDES's `reference`-direction
+    // healthyDirection substitute, see parts.ts's comment on the `gear` entry) carries an off-axis
+    // (upward) component -- reported as "the ring gear shifts up instead of staying aligned with
+    // the crankshaft" whenever the engine is exploded. Reproject its exploded displacement onto the
+    // crank axis alone (discarding the perpendicular component) so it slides straight off the
+    // crank's own end instead of drifting sideways/upward. The mount (engineBackCover) gets the
+    // SAME treatment for the same reason: it's the gear's rigid mating pair (see mountScaleAt's
+    // comment in beats.ts) -- even though its own `direction: 'own'` axis (parts.ts's
+    // EXPLODE_OVERRIDES) wasn't reported as visibly wrong, leaving it unprojected while the gear is
+    // forced onto the crank axis alone is exactly the kind of asymmetric treatment that can reopen
+    // the "pair drifts apart / clips" failure mode this whole fix exists to prevent -- projecting
+    // both keeps their relative arrangement concentric on the crank axis at every explode weight,
+    // not just verified-by-eye at one. The ordering invariant this preserves (see parts.ts's
+    // `engineBackCover` EXPLODE_OVERRIDES comment: gear stays outboard of the cover at every blend
+    // weight) becomes a pure 1-D comparison once both are projected onto the same axis: assembled
+    // Z is engineBackCover ~= +65.6, gear ~= +72.3 (gear already further along +crankAxis at rest),
+    // and the cover's `maxDistanceFraction: 0.63` cap keeps its along-axis exploded travel below
+    // the gear's own -- so the ordering holds at every explode weight, not just at the endpoints.
+    // Also: `this.crankLine.axis` (deriveCrankLine, above) can never carry a "stray" off-axis
+    // component to begin with -- it's built as a one-hot unit vector on whichever single world axis
+    // (x, y, or z) the crankshaft's bbox is longest along, so it is always EXACTLY axis-aligned by
+    // construction, never a diagonal needing a snap/normalize pass.
+    // Done here, right after the crank line is derived and BEFORE
+    // the ring glass box bounds are computed below, so the box (and everything else keyed off
+    // this.parts/this.frontDriveParts) sees the corrected pose. NOT done in parts.ts's
+    // EXPLODE_OVERRIDES mechanism: that mechanism runs during the raw staging->assembled pose pass,
+    // which happens before any PartRecord (and hence before the crank line, itself derived from the
+    // crankshaft's own already-built PartRecord geometry via deriveCrankLine) exists -- a chicken-
+    // and-egg ordering constraint that only resolves here, post-parts-construction. FRONT_DRIVE is
+    // exactly ['gear'] (see parts.ts), so frontDriveParts[0] is unambiguously the gear.
+    const gear = this.frontDriveParts[0];
+    if (this.crankLine) {
+      for (const part of [gear, this.mountPart]) {
+        if (!part) continue;
+        const displacement = part.exploded.position.clone().sub(part.assembled.position);
+        const along = displacement.dot(this.crankLine.axis);
+        part.exploded.position.copy(part.assembled.position).addScaledVector(this.crankLine.axis, along);
+      }
+    }
+
+    // Shared scale pivot for the gear+mount rigid pair (see updatePartTransforms's use of
+    // frontDriveScalePivot, and mountScaleWeightAt's comment in beats.ts for when the two do and
+    // don't share a scale factor): the assembled midpoint of the two parts' own geometric centers
+    // (mismatchBox.ts's assembledGeometricCenter -- real geometry, not baked mesh origins, same
+    // rule as deriveCrankLine above), projected onto the crank axis so the pivot itself sits on the
+    // engine's centerline rather than off to one side. Computed once here, at load time, from the
+    // ASSEMBLED pose only -- not recomputed per-frame or re-derived from the (already crank-axis-
+    // projected) exploded pose -- so it's a single fixed reference point the pair scales about
+    // consistently across the whole timeline, exploded or not.
+    if (gear && this.mountPart && this.crankLine) {
+      const midpoint = assembledGeometricCenter(gear).add(assembledGeometricCenter(this.mountPart)).multiplyScalar(0.5);
+      const toMidpoint = midpoint.clone().sub(this.crankLine.point);
+      const along = toMidpoint.dot(this.crankLine.axis);
+      this.frontDriveScalePivot = this.crankLine.point.clone().addScaledVector(this.crankLine.axis, along);
+    }
+
     this.group = group;
     this.scene.add(group);
 
@@ -645,6 +832,11 @@ export class EngineScene {
     this.boundingBox = buildMismatchBoxes(
       computeMismatchBoxBounds({ ring: ringParts, pistons: pistonParts }, group, crankLine)
     );
+    // Same bank split/bore-axis derivation the glass boxes above use (see mismatchBox.ts's
+    // computePistonBoreAxes) -- reused every frame in updatePartTransforms for the t68-72
+    // partAdjust beat (beats.ts's partAdjustAt). Populated here, not per-frame: the exploded pose
+    // (and hence each bank's centroid/bore axis) is fixed at load time.
+    this.pistonBoreAxes = computePistonBoreAxes(pistonParts, crankLine);
     // Parented under the engine `group`, NOT `scene` -- computeMismatchBoxBounds now measures every
     // part in GROUP-LOCAL space (part.mesh.matrix, not matrixWorld -- see mismatchBox.ts's
     // orientedBankBounds/axisAlignedBounds), so the containers' centers are group-local too. Parenting
@@ -826,6 +1018,11 @@ export class EngineScene {
         Math.sin(t * ((2 * Math.PI) / DRIFT_PERIOD_Y) + DRIFT_PHASE_Y) * DRIFT_AMPLITUDE_Y * this.assembledRadius,
         Math.sin(t * ((2 * Math.PI) / DRIFT_PERIOD_Z) + DRIFT_PHASE_Z) * DRIFT_AMPLITUDE_Z * this.assembledRadius
       );
+
+      // Per-part wobble's clock (see the WOBBLE_* constants and wobbleAxisValue) -- same rAF
+      // timestamp as drift above, advanced only while motion is on so it freezes (rather than
+      // resets) the instant reduced-motion engages.
+      this.wobbleClock = t;
     }
 
     if (this.heroIdle) {
@@ -877,7 +1074,8 @@ export class EngineScene {
     const mount = this.mountPart;
     if (!mount) return;
 
-    for (const part of this.parts) {
+    for (let index = 0; index < this.parts.length; index++) {
+      const part = this.parts[index];
       const k = part.isFrontDrive ? frame.frontDriveExplode : frame.explode;
       const basePos = part.assembled.position.clone().lerp(part.exploded.position, k);
       const baseQuat = part.assembled.quaternion.clone().slerp(part.exploded.quaternion, k);
@@ -886,11 +1084,29 @@ export class EngineScene {
       const scaleFactor = part.isFrontDrive ? frame.frontDriveScale : part.isMount ? frame.mountScale : 1;
       const finalScale = baseScale.clone().multiplyScalar(scaleFactor);
 
-      if (scaleFactor !== 1) {
-        // Scale is always applied about the mesh's local origin; FBX pivots rarely sit at the
-        // part's geometric center, so compensate position for every resized part (mount and
-        // front drive alike) — the resize must read as growth about the part's own center,
-        // not as a translation.
+      if (scaleFactor !== 1 && this.frontDriveScalePivot) {
+        // scaleFactor is only ever non-1 for isFrontDrive/isMount parts (see its computation
+        // above) -- the gear and mount are a rigid mating pair (see mountScaleWeightAt's comment in
+        // beats.ts) that must move AS ONE whenever either one is scaling (they don't always scale
+        // together -- e.g. only the gear moves during t22-27 -- but whenever the mount DOES scale,
+        // t68-72, it's on the exact same window/target as the gear). Scaling each about its own
+        // local center
+        // independently (the old behavior, still kept below as a fallback) can let their facing
+        // surfaces converge/interpenetrate as they grow, since the two local centers sit at
+        // different distances from the seam between them. Scaling both about ONE shared pivot on
+        // the crank axis instead (frontDriveScalePivot, computed once in load()) makes the pair
+        // scale as a single rigid body: newPos = pivot + scaleFactor * (basePos - pivot) -- derived
+        // from first-principles vertex-transform algebra, this produces the exact same result as
+        // scaling every vertex of the part about that world pivot, regardless of where the part's
+        // own local origin sits. Their separation from the shared pivot -- and hence from each
+        // other -- therefore grows by exactly scaleFactor, never converging faster on one side.
+        part.mesh.position
+          .copy(this.frontDriveScalePivot)
+          .addScaledVector(basePos.clone().sub(this.frontDriveScalePivot), scaleFactor);
+      } else if (scaleFactor !== 1) {
+        // Fallback for the untested-in-practice case there's no crank line (and hence no shared
+        // pivot) to derive -- scale about the mesh's own local origin instead, compensating so the
+        // resize reads as growth about the part's own center rather than a translation.
         const center = part.localSphere.center;
         const centerScaled = new THREE.Vector3(center.x * baseScale.x, center.y * baseScale.y, center.z * baseScale.z);
         const offset = centerScaled.multiplyScalar(1 - scaleFactor).applyQuaternion(baseQuat);
@@ -901,6 +1117,43 @@ export class EngineScene {
 
       part.mesh.quaternion.copy(baseQuat);
       part.mesh.scale.copy(finalScale);
+
+      // Parallel-adjust beat (item 5 / beats.ts's partAdjustAt, t68-72): while the ring gear
+      // regrows, every piston visibly re-seats outward along its own bank's bore axis in the same
+      // window -- the story beat is every coupled part adjusting in parallel with the change, not
+      // one part moving at a time. Position-only, added on top of the beat pose just written above,
+      // exactly like wobble below. Scaled by frame.explode (not a fixed 1) so the shift is a
+      // fraction of the *live* separation, not a fixed world-space nudge -- it therefore vanishes
+      // naturally through the t83-87 final reassembly (explode -> 0) with zero extra bookkeeping,
+      // the same trick frontDriveExplode/wobble already lean on. Only parts with a bore axis (the 8
+      // pistons, see load()'s computePistonBoreAxes call) are affected.
+      const boreAxis = this.pistonBoreAxes.get(part);
+      if (boreAxis) {
+        part.mesh.position.addScaledVector(
+          boreAxis,
+          frame.partAdjust * PISTON_ADJUST_FRACTION * this.assembledRadius * frame.explode
+        );
+      }
+
+      // Per-part wobble (see the WOBBLE_* constants above): position-only, added on top of the beat
+      // pose just written above, recomputed absolutely from this.wobbleClock every call -- never
+      // accumulated, so it composes cleanly with drift (which moves the group) without either one
+      // fighting the other. Skipped outright under reduced motion (rather than relying on a frozen
+      // clock alone) so a stale wobbleClock value can never leak into the scene. `frame.explode`
+      // (not frontDriveExplode) gates every part uniformly, including front-drive ones -- the two
+      // track each other exactly (see EngineFrame's frontDriveExplode comment in beats.ts), and
+      // wobble is meant to read as "how separated is this part," which `explode` already answers.
+      if (!this.reducedMotion) {
+        // Rigidly-coupled parts (parts.ts's `rideWith`, see wobbleIndexOverrides's comment) sample
+        // their BASE part's wobble index instead of their own, so the pair never shears against
+        // each other even though wobble is otherwise per-part-independent.
+        const wobbleIndex = this.wobbleIndexOverrides.get(part) ?? index;
+        const wx = wobbleAxisValue(wobbleIndex, this.wobbleClock);
+        const wy = wobbleAxisValue(wobbleIndex + WOBBLE_AXIS_INDEX_STRIDE_Y, this.wobbleClock);
+        const wz = wobbleAxisValue(wobbleIndex + WOBBLE_AXIS_INDEX_STRIDE_Z, this.wobbleClock);
+        this.wobbleScratch.set(wx, wy, wz);
+        part.mesh.position.addScaledVector(this.wobbleScratch, WOBBLE_AMPLITUDE * this.assembledRadius * frame.explode);
+      }
     }
   }
 

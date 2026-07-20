@@ -7,7 +7,8 @@ import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, TIMELINE } fr
 
 // --- Tunable constants -------------------------------------------------------------------
 export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch beat is active
-export const MOUNT_SCALE = 1.15; // FRONT_MOUNT's (engineBackCover's) scale at the top of `related`
+// (No separate MOUNT_SCALE -- the mount/FRONT_MOUNT grows to this same FRONT_SCALE target, just on
+// its OWN later/shorter window than the gear's; see mountScaleWeightAt's comment below.)
 
 // One to two steps deeper/more saturated than the original Tailwind-500 picks (emerald-400,
 // red-500, blue-500, orange-500): under the bright RoomEnvironment + key + rim lighting rig, the
@@ -20,8 +21,12 @@ export const HIGHLIGHT_RED = '#dc2626';
 export const HIGHLIGHT_BLUE = '#2563eb'; // the ring gear's own first-stage transition color
 // A pre-highlight pulse on the gear + pistons + engineBackCover right around when the camera
 // settles into its canonical framing (see CAMERA_SETTLE_T), fading directly into the mismatch
-// beat's red -- a distinct hue so it doesn't read as the later resolution beat.
-export const HIGHLIGHT_ORANGE = '#ea580c';
+// beat's red -- a distinct hue so it doesn't read as the later resolution beat. '#ea580c'
+// (orange-600) still sat close enough to HIGHLIGHT_RED's hue to read as an early version of the
+// failure red rather than its own distinct warning state; '#d97706' (amber-600) keeps the same
+// deepened-palette luminance discipline while moving clearly toward yellow, away from the red
+// family, so the pre-highlight reads as a genuinely different, warning-amber state.
+export const HIGHLIGHT_ORANGE = '#d97706';
 
 // The fit is bounding-sphere based, which already over-estimates the model's visual footprint —
 // these margins stay modest so the engine reads generously while still never touching the frame.
@@ -99,14 +104,16 @@ export interface EngineFrame {
   explode: number; // 0..1, all parts except front drive
   frontDriveExplode: number; // 0..1 -- tracks `explode` exactly (unison motion, no separate stall)
   frontDriveScale: number; // 1..FRONT_SCALE -- the gear's own oversize beat; see scaleWeightAt
-  mountScale: number; // 1..MOUNT_SCALE, back to 1 by t100; see mountScaleAt
-  blue: number; // 0..1 -- the ring gear's first-stage orange->blue weight, ~t16-20, fading as `ringRed` ramps in
-  ringRed: number; // 0..1 -- the ring gear's second-stage blue->red weight, ~t30-34; see mismatchRedAt
-  red: number; // 0..1 -- engineBackCover's orange->red weight, in lockstep with the pistons and the gear's blue, ~t16-20; see pistonRedAt
-  pistonRed: number; // 0..1 -- pistons' orange->red weight, in lockstep with the gear's blue, ~t16-20; see pistonRedAt
-  finalGreen: number; // 0..1 -- gear + pistons + engineBackCover + mount all settle to this shared green, ~t60-72, then released over RETURN_TO_NORMAL_START_T..END_T (~t93-100)
+  mountScale: number; // 1..FRONT_SCALE -- the mount's own, later/shorter oversize beat (grows with the gear's t68-72 regrow, shrinks back to 1x over t82-87); see mountScaleWeightAt
+  blue: number; // 0..1 -- the ring gear's first-stage orange->blue weight, ~t16-17.5, fading as `ringRed` ramps in
+  ringRed: number; // 0..1 -- the ring gear's second-stage blue->red weight, ~t41-45; see mismatchRedAt
+  red: number; // 0..1 -- engineBackCover's orange->red weight, in lockstep with the pistons on the shared orange-out window, ~t16-20; see pistonRedAt
+  pistonRed: number; // 0..1 -- pistons' orange->red weight, on the shared orange-out window, ~t16-20; see pistonRedAt
+  finalGreen: number; // 0..1 -- gear + pistons + engineBackCover + mount all settle to this shared green, ~t60-68.5, then released over RETURN_TO_NORMAL_START_T..END_T (~t93-100)
   boxWeight: number; // 0..1 -- the translucent bounding-box's opacity while color is off the parts, ~t58-72 (peaks at 60)
-  preHighlightOrange: number; // 0..1 -- orange pulse on gear + pistons + engineBackCover, ~t 7.5-20
+  preHighlightOrange: number; // 0..1 -- orange pulse on pistons + engineBackCover, ~t 7.5-20
+  ringPreHighlightOrange: number; // 0..1 -- the ring gear's own orange pulse, crossfading directly into its (now faster) blue-in, ~t 7.5-17.5; see ringPreHighlightOrangeAt
+  partAdjust: number; // 0..1 -- pistons re-seating outward along their bore axis while the ring gear regrows, ~t68-72; see partAdjustAt
   azimuth: number;
   elevation: number;
   margin: number;
@@ -156,13 +163,28 @@ function frontDriveExplodeAt(t: number): number {
 // Every beat below is a pure function of `t` (never gated on phase), so each is pinned to an exact
 // scroll position regardless of which phase boundary it happens to fall in:
 //
-//   t 7.5-8    orange pre-highlight ramps in on gear + pistons + engineBackCover
-//   t 16-20    the gear turns orange -> blue; the pistons and engineBackCover go straight
-//              orange -> red on the same window (see pistonRedAt), and the orange pre-highlight
-//              fades out underneath, crossfading directly into the arriving blue/red
-//   t 22-27    the gear grows to FRONT_SCALE as its own beat, after the color story has landed
-//   t 30-34    the gear (only) goes blue -> red, resolving to the same red the pistons and
-//              engineBackCover already locked in at t20
+//   t 7.5-8    orange pre-highlight ramps in on the gear (its own window, see
+//              ringPreHighlightOrangeAt), the pistons, and engineBackCover
+//   t 16-17.5  the gear turns orange -> blue, sudden and tight: its own orange-out crossfades in
+//              lockstep with its blue-in on this exact window (see ringPreHighlightOrangeAt), no
+//              dead gap, no double-color
+//   t 16-20    the pistons and engineBackCover separately go straight orange -> red on their own
+//              (unchanged, wider) shared window (see pistonRedAt) -- decoupled from the ring's own
+//              now-faster blue-in
+//   t 22-24    the gear overshoots to FRONT_DRIVE_SCALE_OVERSHOOT (135%) as its own beat, after the
+//              color story has landed -- the mount (engineBackCover) does NOT move on this beat: it
+//              stays flat at 1x through the whole first resize (t22-27), and only picks up its own
+//              oversize beat later, in lockstep with the gear's t68-72 regrow (see below and
+//              mountScaleWeightAt) -- an earlier version coupled the mount to this exact curve
+//              (including this overshoot), which the user explicitly asked reverted: "The back
+//              plate should not change size at ~t22. Only the second time at t68."
+//   t 24-27    the gear settles back from the overshoot to FRONT_SCALE (125%); the mount is still
+//              flat at 1x throughout
+//   t 41-42    the gear (only) goes blue -> red, sudden like the earlier orange -> blue crossfade,
+//              resolving to the same red the pistons and engineBackCover already locked in at t20
+//              -- this completes 4 full units before COLOR_LOSS_START_T (46), so the red has a
+//              real hold before the drain begins (an earlier pass ended this at t45, which left
+//              the ring visibly mid-crossfade, reading as purple, at t42)
 //   t 32-43    FAILED_FIT: the engine draws fully back together around the oversized red gear --
 //              the attempted reassembly that demonstrates the parts no longer fit (see explodeAt)
 //   t 48-58    FAILED_FIT: the engine pulls back apart into the exploded view
@@ -171,39 +193,83 @@ function frontDriveExplodeAt(t: number): number {
 //              once the re-explode has finished
 //   t 60-62    the box holds at full opacity
 //   t 62-64    the box fades back out, as fast as it appeared (see boxWeightAt)
-//   t 60-72    gear + pistons + engineBackCover + the mount all separately fade up to the same
-//              shared green (see finalGreenAt) -- this window overlaps but no longer drives the
-//              box's fade-out; the two are deliberately decoupled (see boxWeightAt's comment)
-//   t 72-83    the gear grows back to FRONT_SCALE
+//   t 60-68.5  gear + pistons + engineBackCover + the mount all separately fade up to the same
+//              shared green (see finalGreenAt), fully settled by 68.5 -- this window overlaps but
+//              no longer drives the box's fade-out; the two are deliberately decoupled (see
+//              boxWeightAt's comment)
+//   t 68-72    the gear grows back to FRONT_SCALE, AND -- for the first time on the timeline -- the
+//              mount now ALSO grows to FRONT_SCALE, in lockstep on this exact window (see
+//              mountScaleWeightAt); every piston re-seats outward along its own bank's bore axis in
+//              parallel too (see partAdjustAt / PISTON_ADJUST_FRACTION in EngineScene.ts) -- the
+//              story beat is every coupled part visibly adjusting together as the ring gear
+//              regrows, not one part moving at a time. Ordering dependency: the bank glass boxes
+//              are already gone by t64 (BOX_OUT_END_T), well before partAdjust starts at t68, so
+//              the piston shift never needs to stay inside the (now-absent) box bounds -- do not
+//              re-tighten these windows without re-checking that gap.
 //   t 83-87    the whole engine reassembles (see explodeAt above)
-//   t 93-100   RETURN_TO_NORMAL: every mismatch part loses its green, the gear and mount ease back
-//              to 1x scale, and the idle-orbit weight fades back in -- the engine ends this window
-//              looking exactly as it does at the top of `hero`, slowly turning
+//   t 82-87    the mount (only) eases back down to 1x, as the engine visibly collapses onto it --
+//              deliberately NOT tied to RETURN_TO_NORMAL (93-100) below, so the back plate never
+//              resizes relative to the other parts after the reassembly lands at t87. NOTE: the
+//              gear stays at FRONT_SCALE (125%) through this window and doesn't ease back until
+//              RETURN_TO_NORMAL_START_T (93) -- for t87-93 the gear is oversized against a mount
+//              that's already back to 1x, the same size-mismatch/clipping risk the gear+mount
+//              coupling elsewhere in this file exists to prevent. This is a direct, explicit
+//              consequence of the mount's retimed shrink (the user's own instruction: shrink from
+//              ~t82, no resizing after ~t87, gear's ease-back explicitly left unchanged) -- flagged
+//              here rather than silently resolved by moving the gear's schedule too.
+//   t 93-100   RETURN_TO_NORMAL: every mismatch part loses its green, the gear eases back to 1x
+//              scale (the mount already has, by t87, see above), and the idle-orbit weight fades
+//              back in -- the engine ends this window looking exactly as it does at the top of
+//              `hero`, slowly turning
 //
 // None of these are undone by anything earlier than RETURN_TO_NORMAL_START_T -- once a stage locks
-// in, it holds until that final release window. RETURN_TO_NORMAL (t93-100) is the one deliberate
-// exception: it is a shared subtractive ramp composed into finalGreen, scaleWeight, and mountScale
-// (and an additive one composed into idleWeight) exactly the way every other multi-stage beat in
-// this file composes ramps, undoing the "permanent" mismatch-story state on purpose so the engine
-// can end at rest.
+// in, it holds until that final release window -- with one exception: mountScale, which releases
+// early on its own t82-87 window (see mountScaleWeightAt) rather than waiting for
+// RETURN_TO_NORMAL, since the mount's shrink is tied to the visible moment the engine reassembles
+// around it, not to the shared end-of-timeline release. RETURN_TO_NORMAL (t93-100) is the shared
+// release for everything else: a subtractive ramp composed into finalGreen and scaleWeight (and an
+// additive one composed into idleWeight) exactly the way every other multi-stage beat in this file
+// composes ramps, undoing the "permanent" mismatch-story state on purpose so the engine can end at
+// rest.
 const ORANGE_IN_START_T = 7.5;
 const ORANGE_IN_END_T = 8;
+// Pistons + engineBackCover's own orange-out window -- unchanged, wider than the ring's own
+// (see RING_BLUE_START_T..END_T below), decoupled per pistonRedAt's comment.
 const ORANGE_OUT_START_T = 16;
 const ORANGE_OUT_END_T = 20;
+// The ring's own orange->blue crossfade is deliberately tighter/more sudden than the pistons'/
+// cover's shared 16-20 window above -- see ringPreHighlightOrangeAt, which reads these same two
+// constants directly so the ring's orange-out and blue-in always stay in lockstep.
 const RING_BLUE_START_T = 16;
-const RING_BLUE_END_T = 20;
+const RING_BLUE_END_T = 17.5;
 // The gear's oversize beat runs on its own window, just after the color story lands: the gear
-// turns blue over t16-20, then grows to FRONT_SCALE over t22-27 as a separate, readable beat.
+// turns blue over t16-17.5, then overshoots to FRONT_DRIVE_SCALE_OVERSHOOT and settles to
+// FRONT_SCALE over t22-27 as a separate, readable beat (see scaleWeightAt).
 const RING_RESIZE_START_T = 22;
+// The overshoot's peak: weight ramps 0 -> OVERSHOOT_WEIGHT over [RING_RESIZE_START_T,
+// RING_RESIZE_PEAK_T] (scale 1x -> FRONT_DRIVE_SCALE_OVERSHOOT), then falls back down to exactly 1
+// (scale -> FRONT_SCALE) over [RING_RESIZE_PEAK_T, RING_RESIZE_END_T].
+const RING_RESIZE_PEAK_T = 24;
 const RING_RESIZE_END_T = 27;
-const MISMATCH_RED_START_T = 30;
-const MISMATCH_RED_END_T = 34;
+// Sudden, not gradual -- same "fast crossfade" treatment as the ring's own orange->blue window
+// (RING_BLUE_START_T..END_T, 16-17.5): a wider window here left the ring visibly mid-blend (blue
+// + red = a purple that reads as neither color) at t42, which the user flagged directly.
+const MISMATCH_RED_START_T = 41;
+const MISMATCH_RED_END_T = 42;
 const COLOR_LOSS_START_T = 46;
 const COLOR_LOSS_END_T = 60;
 const RESOLVE_GREEN_START_T = 60;
-const RESOLVE_GREEN_END_T = 72;
-const RING_REGROW_START_T = 72;
-const RING_REGROW_END_T = 83;
+const RESOLVE_GREEN_END_T = 68.5;
+const RING_REGROW_START_T = 68;
+const RING_REGROW_END_T = 72;
+// The mount's own shrink window -- back to 1x as the engine visibly collapses onto it (t83-87
+// FINAL_REASSEMBLY), completing by t87 so the plate never resizes relative to the other parts
+// after the reassembly lands (user-tuned from an earlier 85-88 window that visibly ran past the
+// collapse). Deliberately NOT RETURN_TO_NORMAL_START_T..END_T (93-100): see mountScaleWeightAt
+// and the timeline comment above ("t 82-87") for why, and for the resulting t87-93 window where
+// the gear (unchanged, still at FRONT_SCALE) is oversized against an already-1x mount.
+const MOUNT_SHRINK_START_T = 82;
+const MOUNT_SHRINK_END_T = 87;
 
 // The final release: over this window (inside `success`, t 96.97-100, but expressed purely in `t`
 // like everything else in this file) every mismatch part loses its green, the gear and mount ease
@@ -213,8 +279,20 @@ const RING_REGROW_END_T = 83;
 export const RETURN_TO_NORMAL_START_T = 93;
 export const RETURN_TO_NORMAL_END_T = 100;
 
+// The pistons' + engineBackCover's shared pre-highlight: rides their own (unchanged) orange-out
+// window, ORANGE_OUT_START_T..END_T (16-20) -- independent of the ring's own, now-faster, orange
+// crossfade below.
 function preHighlightOrangeAt(t: number): number {
   return Math.min(ramp(t, ORANGE_IN_START_T, ORANGE_IN_END_T), 1 - ramp(t, ORANGE_OUT_START_T, ORANGE_OUT_END_T));
+}
+
+// The ring gear's own pre-highlight: identical ramp-in to the shared preHighlightOrangeAt above,
+// but its ramp-out reads RING_BLUE_START_T..END_T directly (16-17.5) rather than the pistons'/
+// cover's wider ORANGE_OUT window, so the ring's orange-out and its own blue-in (ringBlueAt below)
+// always crossfade in lockstep -- no dead gap, no double-color -- no matter how that window is
+// retimed later.
+function ringPreHighlightOrangeAt(t: number): number {
+  return Math.min(ramp(t, ORANGE_IN_START_T, ORANGE_IN_END_T), 1 - ramp(t, RING_BLUE_START_T, RING_BLUE_END_T));
 }
 
 // The gear's first-stage color: ramps in over RING_BLUE_START_T..END_T (its resize follows on
@@ -233,11 +311,12 @@ function mismatchRedAt(t: number): number {
 }
 
 // Shared by the pistons (pistonRed) and engineBackCover (red): both go straight from orange to
-// red the moment the ring turns blue (RING_BLUE_START_T..END_T), not in lockstep with
-// the ring's own later blue -> red stage. Holds until COLOR_LOSS_START_T, then fades out with
-// everything else.
+// red over their own shared orange-out window, ORANGE_OUT_START_T..END_T (16-20) -- deliberately
+// decoupled from the ring gear's own (now faster, 16-17.5) blue-in above, so retiming the ring's
+// crossfade never moves the pistons'/cover's red. Holds until COLOR_LOSS_START_T, then fades out
+// with everything else.
 function pistonRedAt(t: number): number {
-  return ramp(t, RING_BLUE_START_T, RING_BLUE_END_T) - ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T);
+  return ramp(t, ORANGE_OUT_START_T, ORANGE_OUT_END_T) - ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T);
 }
 
 // The shared "resolved" color every mismatch part (gear, pistons, engineBackCover) and the mount
@@ -268,15 +347,34 @@ function boxWeightAt(t: number): number {
   return ramp(t, BOX_IN_START_T, BOX_IN_END_T) - ramp(t, BOX_OUT_START_T, BOX_OUT_END_T);
 }
 
-// The gear's own oversize weight: grows to FRONT_SCALE on its own window just after the first
-// color stage lands (RING_RESIZE_START_T..END_T), shrinks back to 1x during the color-loss window
-// (in lockstep with the box appearing), then grows back to FRONT_SCALE once the parts have
+// The gear overshoots past FRONT_SCALE before settling: FRONT_DRIVE_SCALE_OVERSHOOT is the peak
+// scale reached at RING_RESIZE_PEAK_T (135%), before easing back down to FRONT_SCALE (125%) by
+// RING_RESIZE_END_T. The mount does NOT share this overshoot (see mountScaleWeightAt -- it stays
+// flat at 1x through the whole t22-27 resize and only grows, plainly to FRONT_SCALE with no
+// overshoot, later on its own t68-72 window). Exported to match FRONT_SCALE's convention --
+// beats.test.ts's invariant sweep needs it as the timeline's real upper bound on frontDriveScale
+// (mountScale's own upper bound is plain FRONT_SCALE, since it never overshoots).
+export const FRONT_DRIVE_SCALE_OVERSHOOT = 1.35;
+// scaleWeightAt feeds frontDriveScaleAt's lerp(1, FRONT_SCALE, weight): solving that formula
+// directly for the weight that lands exactly on FRONT_DRIVE_SCALE_OVERSHOOT (rather than
+// hand-tuning a number) keeps the peak scale and the constant above always in sync.
+const OVERSHOOT_WEIGHT = (FRONT_DRIVE_SCALE_OVERSHOOT - 1) / (FRONT_SCALE - 1); // = 1.4
+// How far the weight falls back from OVERSHOOT_WEIGHT to exactly 1 (FRONT_SCALE) between
+// RING_RESIZE_PEAK_T and RING_RESIZE_END_T.
+const SETTLE_WEIGHT_DELTA = OVERSHOOT_WEIGHT - 1; // = 0.4
+
+// The gear's own oversize weight: overshoots to FRONT_DRIVE_SCALE_OVERSHOOT at RING_RESIZE_PEAK_T,
+// settles back to FRONT_SCALE by RING_RESIZE_END_T, shrinks back to 1x during the color-loss
+// window (in lockstep with the box appearing), then grows back to FRONT_SCALE once the parts have
 // resolved to green, then eases back to 1x for good over RETURN_TO_NORMAL_START_T..END_T.
-// Composed as four chained ramps rather than a single curve, the same additive/subtractive
-// technique `explodeAt` and the rest of this file already use for multi-stage `t`-only beats.
+// Composed as chained ramps rather than a single curve, the same additive/subtractive technique
+// `explodeAt` and the rest of this file already use for multi-stage `t`-only beats -- the weight
+// itself is allowed to transiently exceed 1 (that's what produces the overshoot); only the final
+// lerp output is a physical scale.
 function scaleWeightAt(t: number): number {
   return (
-    ramp(t, RING_RESIZE_START_T, RING_RESIZE_END_T) -
+    ramp(t, RING_RESIZE_START_T, RING_RESIZE_PEAK_T) * OVERSHOOT_WEIGHT -
+    ramp(t, RING_RESIZE_PEAK_T, RING_RESIZE_END_T) * SETTLE_WEIGHT_DELTA -
     ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T) +
     ramp(t, RING_REGROW_START_T, RING_REGROW_END_T) -
     ramp(t, RETURN_TO_NORMAL_START_T, RETURN_TO_NORMAL_END_T)
@@ -287,22 +385,36 @@ function frontDriveScaleAt(t: number): number {
   return lerp(1, FRONT_SCALE, scaleWeightAt(t));
 }
 
-// The window `related` grows the mount across, derived from TIMELINE rather than hardcoded so it
-// stays correct if the phase geometry (scrollVh weights) ever changes: local 0.1..0.7 of `related`'s
-// own [start, end) span.
-const RELATED_PHASE = TIMELINE.find((phase) => phase.id === 'related')!;
-const MOUNT_GROW_START_T = lerp(RELATED_PHASE.start, RELATED_PHASE.end, 0.1);
-const MOUNT_GROW_END_T = lerp(RELATED_PHASE.start, RELATED_PHASE.end, 0.7);
+// The mount's (FRONT_MOUNT/engineBackCover) own oversize beat -- deliberately NOT the gear's full
+// curve. Three revisions landed on this shape:
+//   1. Originally the mount grew on its own separate, much later window (the first 0.1..0.7 of
+//      `related`, to its own MOUNT_SCALE) while the gear resized/overshot/regrew on an entirely
+//      disjoint earlier schedule -- for most of the mismatch story the gear was oversized while
+//      the cover it seats against sat at its unscaled 1x, reading as the gear clipping through its
+//      own mount.
+//   2. That was "fixed" by making the mount ride the gear's full scale curve exactly, including
+//      the t22-24 overshoot -- but the user explicitly corrected this: "The back plate should not
+//      change size at ~t22. Only the second time at t68." The mount was never supposed to move on
+//      the FIRST resize beat at all.
+//   3. This version: the mount stays flat at 1x through the whole t22-27 resize (matching the
+//      user's correction), then grows plainly (no overshoot) from 1x to FRONT_SCALE in lockstep
+//      with the gear's own t68-72 regrow -- "the back plate should scale to 125% with the ring
+//      gear at the transition around t68" -- and eases back down to 1x on its own t82-87 window as
+//      the engine visibly reassembles around it -- shrink "at ~t82", no resizing relative to the
+//      other parts "after ~t87" -- rather than waiting for RETURN_TO_NORMAL_START_T like the gear
+//      does. See the timeline header comment (t82-87) for the resulting t87-93 gap where the gear
+//      is still oversized against an already-1x mount -- a known, explicitly-flagged consequence of
+//      this retiming, not an oversight.
+// (EngineScene.ts still scales the gear+mount pair about one shared crank-axis pivot rather than
+// each part's own local center whenever they DO share a scale factor -- e.g. through t68-72 -- so
+// their relative arrangement scales as a single rigid body and doesn't converge/interpenetrate at
+// the pivot-to-surface distance either; see updatePartTransforms.)
+function mountScaleWeightAt(t: number): number {
+  return ramp(t, RING_REGROW_START_T, RING_REGROW_END_T) - ramp(t, MOUNT_SHRINK_START_T, MOUNT_SHRINK_END_T);
+}
 
-// The mount's own oversize weight: grows across MOUNT_GROW_START_T..END_T (the first 0.1..0.7 of
-// `related`), holds at 1 through the rest of the mismatch story, then eases back to 1x in lockstep
-// with the gear (frontDriveScale) and the green release (finalGreen) over
-// RETURN_TO_NORMAL_START_T..END_T -- the same additive/subtractive pure-`t` composition as
-// scaleWeightAt, not a phase switch.
 function mountScaleAt(t: number): number {
-  const weight =
-    ramp(t, MOUNT_GROW_START_T, MOUNT_GROW_END_T) - ramp(t, RETURN_TO_NORMAL_START_T, RETURN_TO_NORMAL_END_T);
-  return lerp(1, MOUNT_SCALE, weight);
+  return lerp(1, FRONT_SCALE, mountScaleWeightAt(t));
 }
 
 // Shares heroTraverseProgress with explode so the camera's approach to the canonical angle rides
@@ -361,6 +473,15 @@ function marginAt(t: number): number {
   return lerp(MARGIN_ASSEMBLED, MARGIN_EXPLODED, explodeAt(t));
 }
 
+// Pistons re-seat outward along their own bank's bore axis while the ring gear regrows, in the
+// same RING_REGROW_START_T..END_T window (t68-72) -- the parallel-adjust beat: every coupled part
+// visibly moves together as the ring changes, not one at a time. See EngineScene.ts's
+// updatePartTransforms for how this weight is applied (scaled by PISTON_ADJUST_FRACTION and the
+// live explode factor, so the shift vanishes naturally through the t83-87 reassembly).
+function partAdjustAt(t: number): number {
+  return ramp(t, RING_REGROW_START_T, RING_REGROW_END_T);
+}
+
 export function engineFrame(scene: SceneState): EngineFrame {
   const { phase, t } = scene;
   const id = phase.id;
@@ -378,6 +499,8 @@ export function engineFrame(scene: SceneState): EngineFrame {
     finalGreen: finalGreenAt(t),
     boxWeight: boxWeightAt(t),
     preHighlightOrange: preHighlightOrangeAt(t),
+    ringPreHighlightOrange: ringPreHighlightOrangeAt(t),
+    partAdjust: partAdjustAt(t),
     azimuth: azimuthBaseAt(id, t) + drift,
     elevation: elevationAt(id, t),
     margin: marginAt(t),

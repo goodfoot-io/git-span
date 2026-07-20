@@ -130,11 +130,11 @@ describe('blackbodyColor', () => {
 });
 
 describe('buildHighlightRecords', () => {
-  it('gear (frontDrive) records carry stages orange -> blue -> ringRed -> finalGreen, in order', () => {
+  it('gear (frontDrive) records carry stages ringOrange -> blue -> ringRed -> finalGreen,in order', () => {
     const gear = makePartRecord(0x123456);
     const records = buildHighlightRecords([gear], null, []);
     expect(records).toHaveLength(1);
-    expect(records[0].stages.map((s) => s.kind)).toEqual(['orange', 'blue', 'ringRed', 'finalGreen']);
+    expect(records[0].stages.map((s) => s.kind)).toEqual(['ringOrange', 'blue', 'ringRed', 'finalGreen']);
   });
 
   it('mount records carry stages orange -> red -> finalGreen, in order', () => {
@@ -236,10 +236,10 @@ describe('updateHighlights', () => {
     const expectedColor = records[0].baseMaterialColor.clone().lerp(new THREE.Color(HIGHLIGHT_GREEN), 0.85);
     expect(material.color.equals(expectedColor)).toBe(true);
     // Metalness/roughness/envMapIntensity all moved toward their tint targets (0.35 / 0.5, the
-    // latter scaled by the 0.6 roughness pull / 0.45) at full weight (w=1).
+    // latter scaled by the 0.85 roughness pull / 0.30) at full weight (w=1).
     expect(material.metalness).toBeCloseTo(0.35, 5);
-    expect(material.roughness).toBeCloseTo(0.2 + (0.5 - 0.2) * 0.6, 5);
-    expect(material.envMapIntensity).toBeCloseTo(0.45, 5);
+    expect(material.roughness).toBeCloseTo(0.2 + (0.5 - 0.2) * 0.85, 5);
+    expect(material.envMapIntensity).toBeCloseTo(0.3, 5);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(false);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(true);
   });

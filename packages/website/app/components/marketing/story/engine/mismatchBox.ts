@@ -376,6 +376,26 @@ function axisAlignedBounds(parts: readonly PartRecord[], crankAxis: THREE.Vector
   return { center, size, quaternion: new THREE.Quaternion() };
 }
 
+// Per-piston bore axes for the t68-72 "parallel adjust" beat (beats.ts's partAdjustAt):
+// EngineScene.ts offsets each piston outward along its own bank's bore axis while the ring gear
+// regrows. Reuses the same bank split (splitPistonBanks) and bore-axis derivation
+// (computeBoreAxis) the glass boxes already use, so the adjust direction is guaranteed to agree
+// with "away from the crank line" exactly the way the boxes are oriented -- one definition of
+// "outward" for this rig, not two independently-derived ones. Returns a Map keyed by PartRecord
+// (not mesh.uuid) since EngineScene already indexes its own per-part state that way.
+export function computePistonBoreAxes(
+  pistons: readonly PartRecord[],
+  crankLine: WorldLine
+): Map<PartRecord, THREE.Vector3> {
+  const [leftBank, rightBank] = splitPistonBanks(pistons);
+  const axes = new Map<PartRecord, THREE.Vector3>();
+  const leftBore = computeBoreAxis(leftBank, crankLine);
+  const rightBore = computeBoreAxis(rightBank, crankLine);
+  for (const part of leftBank) axes.set(part, leftBore);
+  for (const part of rightBank) axes.set(part, rightBore);
+  return axes;
+}
+
 // Computes bounds for all three containers from the parts' *exploded* pose (position/quaternion/
 // scale, no live mesh state needed) since explode is held flat at 1 for this entire window (see
 // beats.ts's explodeAt) -- nothing any of the three containers encloses moves. Temporarily snaps

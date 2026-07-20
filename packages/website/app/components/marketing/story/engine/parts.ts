@@ -132,6 +132,14 @@ export interface ExplodeOverride {
   readonly direction: 'reference' | 'frontReference' | 'own';
   readonly minDistanceFraction?: number;
   readonly maxDistanceFraction?: number;
+  // Rigid coupling, for a part that is bolted directly to another and must never separate from it
+  // during explode: when set, this part's own `direction`/`*DistanceFraction` above are IGNORED,
+  // and its exploded pose is instead derived from `rideWith`'s (a part name, post
+  // `stripDedupSuffix`) own exploded pose -- assembled-relative offset preserved, riding the base
+  // part's exploded DISPLACEMENT verbatim (same vector, so the pair's assembled-relative
+  // arrangement can never diverge). Interpreted by EngineScene.load() as a second pass over every
+  // part's already-computed exploded pose, so `rideWith` may target a plain, un-overridden part.
+  readonly rideWith?: string;
 }
 
 export const EXPLODE_OVERRIDES: Readonly<Record<string, ExplodeOverride>> = {
@@ -227,7 +235,22 @@ export const EXPLODE_OVERRIDES: Readonly<Record<string, ExplodeOverride>> = {
   // (~7.6 units short of `crankshaft`'s tip, the tightest case), preserving "the plate stays
   // interior to everything mounted on it" at every explode weight -- the same ordering-invariant
   // technique as `engineBackCover`/`gear`, just applied to the other end of the engine.
-  engineBlockFront: { direction: 'own', maxDistanceFraction: 0.55 }
+  engineBlockFront: { direction: 'own', maxDistanceFraction: 0.55 },
+  // The visually topmost assembly (closest to where the hood would be): `throttleBody` sits
+  // directly above, and bolted to, the intake side of both cylinder head covers, with genuinely
+  // overlapping Y-ranges -- measured from the GLB's assembled geometry (world-space vertex bounds,
+  // not mesh origins, per this rig's geometry-over-pivots rule): `throttleBody` Y ~= 34.4..64.7
+  // (center ~49.6, the single topmost part in the whole model), `cylinderHeadCoverLeft`/`Right` Y
+  // ~= 40.5..55.0 (center ~47.7, tied for 2nd). Before this override, both covers used the fully
+  // generic per-part explode (their own independently-computed raw axis/distance, uncapped) --
+  // independent axes for parts that are bolted together is exactly the mid-transition
+  // crossing/clipping pattern documented throughout this table, and was reported directly as
+  // clipping between "the top two shapes" during explode. `throttleBody` itself is NOT overridden
+  // (it's already a member of EXPLODE_DIRECTION_REFERENCE -- its own axis is reliable, see that
+  // list's comment), so `rideWith: 'throttleBody'` makes each cover inherit that already-reliable
+  // part's exploded displacement instead of computing (and risking a diverging) axis of its own.
+  cylinderHeadCoverLeft: { direction: 'own', rideWith: 'throttleBody' },
+  cylinderHeadCoverRight: { direction: 'own', rideWith: 'throttleBody' }
 };
 
 // Parts orange-emphasized alongside FRONT_DRIVE (gear) during the pre-highlight pulse

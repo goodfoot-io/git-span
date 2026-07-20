@@ -19,13 +19,15 @@ import type { PartRecord } from './types';
 // not for camera-layer exclusion -- see that method's comment for why.
 export const BLOOM_LAYER = 1;
 
-// 'orange' is the shared pre-highlight pulse (frame.preHighlightOrange) on the gear, pistons, and
-// engineBackCover. 'blue' and 'ringRed' are the gear's own two-stage transition (frame.blue, then
+// 'orange' is the shared pre-highlight pulse (frame.preHighlightOrange) on the pistons and
+// engineBackCover only. 'ringOrange' is the gear's own pre-highlight (frame.ringPreHighlightOrange),
+// which crossfades in lockstep with the gear's own (faster) 'blue' rather than the shared 16-20
+// window. 'blue' and 'ringRed' are the gear's own two-stage transition (frame.blue, then
 // frame.ringRed). 'red' is engineBackCover's mismatch beat (frame.red); 'pistonRed' is the
-// pistons' (frame.pistonRed) -- both ramp in lockstep with the gear's 'ringRed'. 'finalGreen' is
-// the shared resolved color every one of these parts (plus the mount) settles into
-// (frame.finalGreen).
-export type HighlightKind = 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen';
+// pistons' (frame.pistonRed) -- both ramp in on their own shared orange-out window, independent of
+// the gear's 'ringRed'. 'finalGreen' is the shared resolved color every one of these parts (plus
+// the mount) settles into (frame.finalGreen).
+export type HighlightKind = 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'ringOrange' | 'finalGreen';
 
 export interface HighlightStage {
   kind: HighlightKind;
@@ -122,18 +124,23 @@ const TINT_MAX = 0.85;
 // the tint rises (toward a much less metallic 0.35) makes the tint color show up as genuine
 // diffuse shading from every orientation, not just the ones catching a reflection.
 const TINT_METALNESS_TARGET = 0.35;
-// A slight matte shift (roughness up toward 0.5, scaled by TINT_ROUGHNESS_PULL so it moves less
-// aggressively than color/metalness) makes the tinted state read as a distinct surface condition
-// -- "this part changed state" -- rather than a paint job sprayed over the same finish.
+// A slight matte shift (roughness up toward 0.5, scaled by TINT_ROUGHNESS_PULL) makes the tinted
+// state read as a distinct surface condition -- "this part changed state" -- rather than a paint
+// job sprayed over the same finish. TINT_ROUGHNESS_PULL was raised from 0.6 to 0.85 (moving nearly
+// as aggressively as color/metalness now, not "less aggressively") because upward-facing surfaces
+// -- the piston crowns, facing straight into RoomEnvironment's bright ceiling panel -- still had a
+// tight, un-diffused specular hot-spot at 0.6's more modest matte shift; breaking that hot spot up
+// with more roughness at full tint is what keeps the crowns from clipping past the ACES shoulder.
 const TINT_ROUGHNESS_TARGET = 0.5;
-const TINT_ROUGHNESS_PULL = 0.6;
+const TINT_ROUGHNESS_PULL = 0.85;
 // The tint must darken as well as recolor: at a part's full base envMapIntensity, RoomEnvironment
 // keeps pumping reflected light into the tinted surface regardless of hue, washing it back toward
-// white/over-bright no matter how deep or saturated the highlight color itself is. Pulling
-// envMapIntensity down toward 0.45 alongside color/metalness/roughness is what actually lets the
-// deeper highlight hues (see beats.ts's HIGHLIGHT_* comment) read as saturated and vivid rather
-// than bright and washed-out.
-const TINT_ENV_TARGET = 0.45;
+// white/over-bright no matter how deep or saturated the highlight color itself is. 0.45 wasn't low
+// enough for upward-facing surfaces (piston crowns) staring straight into RoomEnvironment's bright
+// ceiling panel -- those still clipped to white at full tint -- so this was lowered to 0.30
+// (alongside the roughness change above) to keep even the most exposed orientation inside the
+// colored range.
+const TINT_ENV_TARGET = 0.3;
 
 // Blackbody-ish color ramp: as `heat` (frame weight combined with the heartbeat pulse, see
 // updateHighlights) rises, the emissive color moves from a dim ember of its own base hue, through
@@ -185,7 +192,9 @@ function intensityForKind(kind: HighlightKind, frame: EngineFrame): number {
     case 'finalGreen':
       return frame.finalGreen;
     case 'orange':
-      return frame.preHighlightOrange; // one shared weight across the gear + pistons + cover
+      return frame.preHighlightOrange; // shared weight across the pistons + cover only
+    case 'ringOrange':
+      return frame.ringPreHighlightOrange; // the gear's own, faster-crossfading pre-highlight
   }
 }
 
@@ -199,6 +208,7 @@ function tierForKind(kind: HighlightKind): number {
     case 'finalGreen':
       return EMISSIVE_TIER_MID;
     case 'orange':
+    case 'ringOrange':
       return EMISSIVE_TIER_LOW;
   }
 }
@@ -246,7 +256,7 @@ export function buildHighlightRecords(
       baseRoughness: base.roughness,
       baseEnvMapIntensity: base.envMapIntensity,
       stages: [
-        stage('orange', HIGHLIGHT_ORANGE),
+        stage('ringOrange', HIGHLIGHT_ORANGE),
         stage('blue', HIGHLIGHT_BLUE),
         stage('ringRed', HIGHLIGHT_RED),
         stage('finalGreen', HIGHLIGHT_GREEN)
