@@ -1,7 +1,0 @@
-plugins-claude/git-span/hooks/bin/post-commit rk64:38ae774002ab2530
-plugins-claude/git-span/hooks/bin/post-rewrite rk64:4333a3a336635961
-plugins-claude/git-span/hooks/git-hooks/post-commit rk64:2077bd7ad1780a5a
-plugins-claude/git-span/hooks/git-hooks/post-rewrite rk64:4ad5bcfaa549491f
-plugins-claude/git-span/skills/git-span.legacy/sections/git-hook-setup.md#L18-L36 rk64:b568bb48fdc193e7
-
-The post-commit and post-rewrite thin triggers ship as parallel installable copies under hooks/bin and hooks/git-hooks that implement one contract — resolve dispatcher.mjs relative to the script's real on-disk location, capture HEAD or the rewrite stdin before backgrounding, spawn the dispatcher detached, and exit 0 without propagating failures — which the git-hook-setup handbook section documents for installers.

@@ -1,4 +1,0 @@
-plugins-claude/git-span/skills/git-span.legacy/sections/creating-a-span.md#L83-L83 rk64:3a7ddfe0532ae52f
-plugins-claude/git-span/skills/git-span.legacy/sections/responding-to-drift.md#L60-L60 rk64:e3e24793d33c42c3
-
-Two handbook sections carry the born-stale-prevention rule: commit a span only once every file it anchors is committed (clean against HEAD, verified with a git status --short check), because git span add hashes each anchor against HEAD; both sections must state the same rule.
