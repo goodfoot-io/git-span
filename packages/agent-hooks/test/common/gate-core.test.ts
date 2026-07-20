@@ -16,6 +16,8 @@
  * work around.
  */
 
+import * as fs from 'node:fs';
+import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import {
@@ -27,6 +29,7 @@ import {
   parseGitCommand,
   resolveChangeset
 } from '../../src/common/gate-core.js';
+import { makeTempRepo } from '../helpers.js';
 
 const REPO_ROOT = '/repo';
 
@@ -278,6 +281,68 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       // Identical paths/executor results and the same memoState — consider-once.
       const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
+    });
+
+    it('a `.span/.gateignore` match drops the sole uncovered path, resolving to allow/silent', async () => {
+      const repo = makeTempRepo();
+      try {
+        fs.mkdirSync(nodePath.join(repo.root, '.span'), { recursive: true });
+        fs.writeFileSync(nodePath.join(repo.root, '.span', '.gateignore'), 'src/generated\n');
+
+        const memo = createMemoryGateMemoState();
+        const executors = createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+
+        const result = await evaluateGate(['src/generated/out.ts'], repo.root, executors, memo);
+
+        expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('a `.span/.gateignore` present but not matching the uncovered path still denies', async () => {
+      const repo = makeTempRepo();
+      try {
+        fs.mkdirSync(nodePath.join(repo.root, '.span'), { recursive: true });
+        fs.writeFileSync(nodePath.join(repo.root, '.span', '.gateignore'), 'src/generated\n');
+
+        const memo = createMemoryGateMemoState();
+        const executors = createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+
+        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+
+        expect(result.decision).toBe('deny');
+        expect(result.kind).toBe('uncovered-writes');
+        if (result.kind === 'uncovered-writes') {
+          expect(result.uncovered).toEqual(['src/uncovered.ts']);
+        }
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('a missing `.span/.gateignore` fails open — no additional exclusion — and still denies the uncovered path', async () => {
+      const repo = makeTempRepo();
+      try {
+        const memo = createMemoryGateMemoState();
+        const executors = createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+
+        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+
+        expect(result.decision).toBe('deny');
+        expect(result.kind).toBe('uncovered-writes');
+      } finally {
+        repo.cleanup();
+      }
     });
 
     it('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {

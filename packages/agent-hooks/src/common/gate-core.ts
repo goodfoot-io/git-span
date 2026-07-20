@@ -43,6 +43,7 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
+import { isGateIgnored, loadGateIgnore } from './gate-ignore.js';
 
 // ---------------------------------------------------------------------------
 // Command parsing
@@ -358,7 +359,8 @@ export interface GateExecutors {
    * Run a scoped `git span list --porcelain <paths>` and return the covering
    * anchors. Used to compute *uncovered writes*: a changed path with zero
    * covering rows here (minus `.span/**`, gitignored paths, and
-   * `.span/.gateignore`-excluded paths) is an uncovered write.
+   * `.span/.gateignore`-excluded paths — see {@link file://./gate-ignore.ts})
+   * is an uncovered write.
    */
   list(paths: string[], cwd: string): Promise<PorcelainRow[]>;
 }
@@ -410,13 +412,15 @@ export type GateResult =
  * Evaluate the gate for a resolved changeset and decide whether to hold the
  * command.
  *
- * The eventual implementation: run `executors.fix` (scoped belt-and-braces
- * `stale --fix`), then read `executors.stale` and classify each row via
- * `isDebt()`. Semantic staleness → `deny`/`semantic-staleness`, re-blocking
- * until the findings digest changes. Uncovered writes (changed paths with zero
- * coverage from `executors.list`, minus `.span/**`, gitignored, and
- * `.gateignore`-excluded paths) → `deny`/`uncovered-writes` the first time that
- * state is seen, then `allow`/`already-presented` on retry. `MOVED` and
+ * Runs `executors.fix` (scoped belt-and-braces `stale --fix`), then reads
+ * `executors.stale` and classifies each row via `isDebt()`. Semantic staleness
+ * → `deny`/`semantic-staleness`, re-blocking until the findings digest
+ * changes. Uncovered writes (changed paths with zero coverage from
+ * `executors.list`, minus `.span/**`, and paths matched by the repo's
+ * `.span/.gateignore` — see {@link file://./gate-ignore.ts}, loaded directly
+ * from disk via `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
+ * `deny`/`uncovered-writes` the first time that state is seen, then
+ * `allow`/`already-presented` on retry. `MOVED` and
  * `RESOLVED_PENDING_COMMIT` never contribute to either and never deny. The
  * distinct-debt-state digest (sorted findings + sorted uncovered paths) is
  * checked and recorded through `memoState`. Any internal error resolves to
@@ -454,11 +458,16 @@ export async function evaluateGate(
     }
 
     // Uncovered writes: changed paths with zero covering span, minus `.span/**`
-    // (span repairs ride the same commit and must never self-trigger the gate).
-    // Gitignored paths never reach here — git does not stage/publish them.
+    // (span repairs ride the same commit and must never self-trigger the gate)
+    // and paths the repo's user-owned `.span/.gateignore` excludes. Gitignored
+    // paths never reach here — git does not stage/publish them.
     const covering = await executors.list(paths, cwd);
     const covered = new Set(covering.map((row) => row.path));
-    const uncovered = paths.filter((path) => !covered.has(path) && !isInsideSpanRoot(path));
+    const repoRoot = resolveRepoRoot(cwd);
+    const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
+    const uncovered = paths.filter(
+      (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path)
+    );
     if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
 
     // Consider-once: deny the first time this exact debt state is seen, then

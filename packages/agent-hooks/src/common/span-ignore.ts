@@ -84,11 +84,16 @@ function ancestorPaths(path: string): string[] {
 }
 
 /**
- * Compile a single pattern into a path predicate. A pattern matches a file when
- * it matches the file's path or any ancestor directory of it, so a directory
+ * Compile a single gitignore-style pattern (this module's grammar — see the
+ * module doc comment) into a path predicate. A pattern matches a file when it
+ * matches the file's path or any ancestor directory of it, so a directory
  * pattern suppresses everything beneath it.
+ *
+ * Exported so other path-scoped ignore-file conventions (e.g. `.gateignore`
+ * in `gate-ignore.ts`) can reuse the exact matching semantics rather than
+ * reimplementing them.
  */
-function compilePattern(pattern: string): (repoRelPath: string) => boolean {
+export function compilePattern(pattern: string): (repoRelPath: string) => boolean {
   let pat = pattern;
   let dirOnly = false;
   if (pat.endsWith('/')) {
