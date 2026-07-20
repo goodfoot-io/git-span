@@ -90,76 +90,76 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('parseGitCommand', () => {
-    it.skip('recognizes a plain `git commit -m "..."` as kind: commit', () => {
+    it('recognizes a plain `git commit -m "..."` as kind: commit', () => {
       const result = parseGitCommand('git commit -m "wip"');
 
       expect(result.kind).toBe('commit');
     });
 
-    it.skip('recognizes a plain `git push` as kind: push', () => {
+    it('recognizes a plain `git push` as kind: push', () => {
       const result = parseGitCommand('git push');
 
       expect(result.kind).toBe('push');
     });
 
-    it.skip('recognizes a chained `&&` form: `cd /repo && git commit -m "wip"`', () => {
+    it('recognizes a chained `&&` form: `cd /repo && git commit -m "wip"`', () => {
       const result = parseGitCommand('cd /repo && git commit -m "wip"');
 
       expect(result.kind).toBe('commit');
     });
 
-    it.skip('recognizes a chained `;` form: `echo done; git push`', () => {
+    it('recognizes a chained `;` form: `echo done; git push`', () => {
       const result = parseGitCommand('echo done; git push');
 
       expect(result.kind).toBe('push');
     });
 
-    it.skip('recognizes a piped form: `git commit -m "wip" | cat`', () => {
+    it('recognizes a piped form: `git commit -m "wip" | cat`', () => {
       const result = parseGitCommand('git commit -m "wip" | cat');
 
       expect(result.kind).toBe('commit');
     });
 
-    it.skip('recognizes `git -C <dir> commit -m "..."`', () => {
+    it('recognizes `git -C <dir> commit -m "..."`', () => {
       const result = parseGitCommand('git -C /repo/sub commit -m "wip"');
 
       expect(result.kind).toBe('commit');
     });
 
-    it.skip('recognizes a trailing pathspec after `--` and populates paths', () => {
+    it('recognizes a trailing pathspec after `--` and populates paths', () => {
       const result = parseGitCommand('git commit -m "wip" -- src/app.ts src/util.ts');
 
       expect(result.kind).toBe('commit');
       expect(result.paths).toEqual(['src/app.ts', 'src/util.ts']);
     });
 
-    it.skip('recognizes the `-a` form as kind: commit (the `all` signal is not carried on ParsedGitCommand)', () => {
+    it('recognizes the `-a` form as kind: commit (the `all` signal is not carried on ParsedGitCommand)', () => {
       const result = parseGitCommand('git commit -a -m "wip"');
 
       expect(result.kind).toBe('commit');
       expect(result).not.toHaveProperty('all');
     });
 
-    it.skip('recognizes the `-am` form as kind: commit (the `all` signal is not carried on ParsedGitCommand)', () => {
+    it('recognizes the `-am` form as kind: commit (the `all` signal is not carried on ParsedGitCommand)', () => {
       const result = parseGitCommand('git commit -am "wip"');
 
       expect(result.kind).toBe('commit');
       expect(result).not.toHaveProperty('all');
     });
 
-    it.skip('treats a command whose message merely contains the substring "git commit" as kind: none', () => {
+    it('treats a command whose message merely contains the substring "git commit" as kind: none', () => {
       const result = parseGitCommand('echo "please git commit later"');
 
       expect(result.kind).toBe('none');
     });
 
-    it.skip('treats an unrecognized/unfamiliar shape (alias) as kind: none', () => {
+    it('treats an unrecognized/unfamiliar shape (alias) as kind: none', () => {
       const result = parseGitCommand('git ci -m "wip"');
 
       expect(result.kind).toBe('none');
     });
 
-    it.skip('treats a dynamically-built command as kind: none', () => {
+    it('treats a dynamically-built command as kind: none', () => {
       const result = parseGitCommand('eval "git $ACTION"');
 
       expect(result.kind).toBe('none');
@@ -171,7 +171,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('resolveChangeset', () => {
-    it.skip('commit, all: false → staged paths only, excluding tracked-modified paths', async () => {
+    it('commit, all: false → staged paths only, excluding tracked-modified paths', async () => {
       const git = createFakeGitExecutor({
         stagedPaths: async (): Promise<string[]> => ['src/staged.ts'],
         trackedModifiedPaths: async (): Promise<string[]> => ['src/unstaged-modified.ts']
@@ -183,7 +183,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result).not.toContain('src/unstaged-modified.ts');
     });
 
-    it.skip('commit, all: true → staged paths plus tracked-modified paths, deduplicated', async () => {
+    it('commit, all: true → staged paths plus tracked-modified paths, deduplicated', async () => {
       const git = createFakeGitExecutor({
         stagedPaths: async (): Promise<string[]> => ['src/staged.ts', 'src/both.ts'],
         trackedModifiedPaths: async (): Promise<string[]> => ['src/both.ts', 'src/modified.ts']
@@ -195,7 +195,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.filter((p) => p === 'src/both.ts')).toHaveLength(1);
     });
 
-    it.skip('push → the outgoing range paths, ignoring `all`', async () => {
+    it('push → the outgoing range paths, ignoring `all`', async () => {
       const git = createFakeGitExecutor({
         stagedPaths: async (): Promise<string[]> => ['src/staged.ts'],
         trackedModifiedPaths: async (): Promise<string[]> => ['src/modified.ts'],
@@ -213,7 +213,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('evaluateGate', () => {
-    it.skip('empty paths → allow/silent, and the injected executors are never invoked', async () => {
+    it('empty paths → allow/silent, and the injected executors are never invoked', async () => {
       const memo = createMemoryGateMemoState();
       let calls = 0;
       const executors = createFakeGateExecutors({
@@ -236,7 +236,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(calls).toBe(0);
     });
 
-    it.skip('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings, and re-denies on an unchanged memoState', async () => {
+    it('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings, and re-denies on an unchanged memoState', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -259,7 +259,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second.kind).toBe('semantic-staleness');
     });
 
-    it.skip('uncovered writes only → denies once and records state, then resolves to allow/already-presented on retry with unchanged memoState', async () => {
+    it('uncovered writes only → denies once and records state, then resolves to allow/already-presented on retry with unchanged memoState', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         // Zero covering rows for the changed path — an uncovered write.
@@ -280,7 +280,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
-    it.skip('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {
+    it('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {
       const freshMemo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -302,7 +302,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second.decision).toBe('allow');
     });
 
-    it.skip('an executor rejecting (internal/CLI error) resolves to allow/silent rather than throwing', async () => {
+    it('an executor rejecting (internal/CLI error) resolves to allow/silent rather than throwing', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {

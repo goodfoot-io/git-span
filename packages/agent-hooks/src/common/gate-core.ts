@@ -28,9 +28,21 @@
  * doc comment for the rationale).
  */
 
-import type { PorcelainRow, StalePorcelainRow } from './agent-hooks-common.js';
-
-const NOT_IMPLEMENTED = 'Not Implemented';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as nodePath from 'node:path';
+import {
+  gateMemoDir,
+  isDebt,
+  isInsideSpanRoot,
+  type PorcelainRow,
+  parsePorcelain,
+  parseStalePorcelain,
+  resolveRepoRoot,
+  type StalePorcelainRow,
+  toPosix
+} from './agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
 // Command parsing
@@ -81,8 +93,166 @@ export interface ParsedGitCommand {
  * @param command The raw shell command string from the hook's tool input.
  */
 export function parseGitCommand(command: string): ParsedGitCommand {
-  void command;
-  throw new Error(NOT_IMPLEMENTED);
+  for (const segment of splitSegments(command)) {
+    const inv = matchGitInvocation(tokenize(segment));
+    if (!inv) continue;
+    if (inv.subcommand === 'commit') {
+      const dashDash = inv.args.indexOf('--');
+      const paths = dashDash >= 0 ? inv.args.slice(dashDash + 1).filter((p) => p.length > 0) : [];
+      return paths.length > 0 ? { kind: 'commit', paths } : { kind: 'commit' };
+    }
+    if (inv.subcommand === 'push') {
+      return { kind: 'push' };
+    }
+    // A recognized `git` invocation that is neither commit nor push (e.g.
+    // `git add . && git commit …`): keep scanning later segments.
+  }
+  return { kind: 'none' };
+}
+
+/**
+ * Whether a `git commit` in the command is an `-a`/`-am`/`--all` form — the
+ * "stage all tracked-modified files" variant whose changeset {@link resolveChangeset}
+ * must widen beyond the already-staged set.
+ *
+ * The `all` signal is deliberately *not* carried on {@link ParsedGitCommand}
+ * (see that type's doc): the adapter derives it here from the same command text
+ * and threads it into {@link resolveChangeset} explicitly. Conservative: only a
+ * short-flag group containing `a` (`-a`, `-am`, `-ma`) or an explicit `--all`,
+ * scanned before any `--` pathspec separator, counts.
+ */
+export function commitStagesAll(command: string): boolean {
+  for (const segment of splitSegments(command)) {
+    const inv = matchGitInvocation(tokenize(segment));
+    if (!inv || inv.subcommand !== 'commit') continue;
+    const dashDash = inv.args.indexOf('--');
+    const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
+    for (const arg of flagArgs) {
+      if (arg === '--all') return true;
+      if (!arg.startsWith('--') && /^-[A-Za-z]*a[A-Za-z]*$/.test(arg)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+// Shell control operators that separate one simple command from the next.
+// Splitting on these (outside quotes) isolates each command so a `git commit`/
+// `git push` chained after `&&`/`;`/`|` is found, while text inside a quoted
+// argument (`echo "git commit"`) stays within its own non-git segment.
+const TWO_CHAR_OPERATORS = new Set(['&&', '||']);
+const ONE_CHAR_SEPARATORS = new Set([';', '|', '\n', '&', '(', ')']);
+
+/** Split a shell command into simple-command segments, respecting quotes. */
+function splitSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (TWO_CHAR_OPERATORS.has(command.slice(i, i + 2))) {
+      segments.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (ONE_CHAR_SEPARATORS.has(ch)) {
+      segments.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
+/**
+ * Tokenize one segment into shell words, respecting single/double quotes and
+ * stripping the quote characters. Deliberately minimal (no expansion, no
+ * escape handling beyond quotes): the goal is confident recognition of a
+ * `git commit`/`push` shape, not a full shell parser.
+ */
+function tokenize(segment: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let has = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      has = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t') {
+      if (has) {
+        tokens.push(current);
+        current = '';
+        has = false;
+      }
+      continue;
+    }
+    current += ch;
+    has = true;
+  }
+  if (has) tokens.push(current);
+  return tokens;
+}
+
+/** Git global options that consume a separate following value token. */
+const GIT_VALUE_OPTIONS = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--super-prefix',
+  '--exec-path',
+  '--attr-source',
+  '--config-env'
+]);
+
+interface GitInvocation {
+  subcommand: string;
+  args: string[];
+}
+
+/**
+ * If a segment's tokens are a `git <subcommand> …` invocation, return the
+ * subcommand and its remaining args; otherwise `null`. Leading `VAR=value`
+ * environment assignments and `git` global options (including the value-taking
+ * ones) are skipped so the subcommand is correctly located.
+ */
+function matchGitInvocation(tokens: string[]): GitInvocation | null {
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  if (i >= tokens.length || tokens[i] !== 'git') return null;
+  i++;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (t === '--') return null; // a `--` before any subcommand is not a shape we recognize
+    if (!t.startsWith('-')) break;
+    i += GIT_VALUE_OPTIONS.has(t) ? 2 : 1;
+  }
+  if (i >= tokens.length) return null;
+  return { subcommand: tokens[i], args: tokens.slice(i + 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,17 +306,26 @@ export interface GitExecutor {
  * @param cwd The working directory the git command ran in.
  * @param git The injected git surface backing the resolution.
  */
-export function resolveChangeset(
+export async function resolveChangeset(
   kind: 'commit' | 'push',
   all: boolean,
   cwd: string,
   git: GitExecutor
 ): Promise<string[]> {
-  void kind;
-  void all;
-  void cwd;
-  void git;
-  throw new Error(NOT_IMPLEMENTED);
+  if (kind === 'push') {
+    return git.outgoingPaths(cwd);
+  }
+  const staged = await git.stagedPaths(cwd);
+  if (!all) return staged;
+  const tracked = await git.trackedModifiedPaths(cwd);
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const path of [...staged, ...tracked]) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    merged.push(path);
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,17 +433,94 @@ export type GateResult =
  * @param executors The injected `fix`/`stale`/`list` surface.
  * @param memoState The per-changeset debt-state memo.
  */
-export function evaluateGate(
+export async function evaluateGate(
   paths: string[],
   cwd: string,
   executors: GateExecutors,
   memoState: GateMemoState
 ): Promise<GateResult> {
-  void paths;
-  void cwd;
-  void executors;
-  void memoState;
-  throw new Error(NOT_IMPLEMENTED);
+  if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
+  try {
+    // Belt-and-braces heal, then classify against the healed state.
+    await executors.fix(paths, cwd);
+    const staleRows = await executors.stale(paths, cwd);
+
+    // Semantic staleness is hard-until-resolved: deny every time until the
+    // findings themselves change. `isDebt()` is the single source of truth —
+    // `MOVED`/`RESOLVED_PENDING_COMMIT` are never debt and never contribute.
+    const findings = staleRows.filter((row) => isDebt(row.status));
+    if (findings.length > 0) {
+      return { decision: 'deny', kind: 'semantic-staleness', findings, reason: renderStalenessReason(findings) };
+    }
+
+    // Uncovered writes: changed paths with zero covering span, minus `.span/**`
+    // (span repairs ride the same commit and must never self-trigger the gate).
+    // Gitignored paths never reach here — git does not stage/publish them.
+    const covering = await executors.list(paths, cwd);
+    const covered = new Set(covering.map((row) => row.path));
+    const uncovered = paths.filter((path) => !covered.has(path) && !isInsideSpanRoot(path));
+    if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+
+    // Consider-once: deny the first time this exact debt state is seen, then
+    // pass the retry with an unchanged state.
+    const digest = gateStateDigest(findings, uncovered);
+    if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
+    memoState.record(digest);
+    return { decision: 'deny', kind: 'uncovered-writes', uncovered, reason: renderUncoveredReason(uncovered) };
+  } catch {
+    // Fail open: any internal/CLI error resolves to allow. The gate must never
+    // brick a commit on its own failure.
+    return { decision: 'allow', kind: 'silent' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Debt-state digest and reason rendering
+// ---------------------------------------------------------------------------
+
+/** `path#Lstart-Lend`, or a bare path for a whole-file anchor. */
+function anchorText(row: StalePorcelainRow): string {
+  if (row.start === 0 && row.end === 0) return row.path;
+  return `${row.path}#L${row.start}-L${row.end}`;
+}
+
+/**
+ * The distinct-debt-state digest (design-decisions.md #9): a stable hash of the
+ * sorted staleness findings plus the sorted uncovered paths. Presence in the
+ * memo means "this exact state was already presented once."
+ */
+function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): string {
+  const findingKeys = findings.map((row) => `${row.status}\t${row.name}\t${row.path}\t${row.start}\t${row.end}`).sort();
+  const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
+  return createHash('sha256').update(payload).digest('hex');
+}
+
+/** The `GIT_SPAN_GATE=skip` escape-hatch line appended to every deny reason. */
+const ESCAPE_HATCH_LINE =
+  'To proceed anyway (requires explicit user approval): prefix the command with `GIT_SPAN_GATE=skip`.';
+
+/** The checklist a semantic-staleness deny renders into `reason`. */
+function renderStalenessReason(findings: StalePorcelainRow[]): string {
+  const lines = findings.map((row) => `  - ${row.name} (${row.status}): ${anchorText(row)}`);
+  return [
+    'This changeset carries span debt — resolve it before this lands:',
+    ...lines,
+    '',
+    "Update each span's anchors/why in this same change, or tell the user why the described coupling no longer holds, then retry.",
+    ESCAPE_HATCH_LINE
+  ].join('\n');
+}
+
+/** The one-time list an uncovered-writes deny renders into `reason`. */
+function renderUncoveredReason(uncovered: string[]): string {
+  const lines = uncovered.map((path) => `  - ${path}`);
+  return [
+    'These changed files are covered by no span — consider whether they need one:',
+    ...lines,
+    '',
+    'Declare a coupling with `git span add` if one genuinely exists, or just retry the command to proceed (this is a one-time check).',
+    ESCAPE_HATCH_LINE
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -288,4 +544,174 @@ export function evaluateGate(
  */
 export function isGateSkipped(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
   return env['GIT_SPAN_GATE'] === 'skip';
+}
+
+// ---------------------------------------------------------------------------
+// Default subprocess/disk-backed dependencies
+// ---------------------------------------------------------------------------
+//
+// The production surfaces both adapters inject by default, following
+// touch-core.ts's `createDefaultTouchExecutors` style: each captures stdout even
+// on a non-zero exit where the CLI still emits useful output, and every failure
+// mode (absent binary, timeout, no repo) surfaces as an empty/clean result so
+// the gate's fail-open contract holds without the adapter adding its own.
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Run a git command at `cwd`, returning trimmed non-empty POSIX output lines (empty on any failure). */
+function gitLines(args: string[], cwd: string, timeoutMs: number): string[] {
+  try {
+    const out = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs
+    });
+    return out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map(toPosix);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Like {@link gitLines} but distinguishes a *failed* invocation (`null` — e.g.
+ * `@{u}` with no upstream configured) from a *successful but empty* result
+ * (`[]`), so the outgoing-range resolution knows when to try the merge-base
+ * fallback rather than mistaking "no upstream" for "nothing to push".
+ */
+function gitLinesOrNull(args: string[], cwd: string, timeoutMs: number): string[] | null {
+  try {
+    const out = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs
+    });
+    return out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map(toPosix);
+  } catch {
+    return null;
+  }
+}
+
+/** The production {@link GitExecutor}: `git diff` reads scoped to the CWD repo. */
+export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS): GitExecutor {
+  return {
+    stagedPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      return gitLines(['-C', repoRoot, 'diff', '--cached', '--name-only'], repoRoot, timeoutMs);
+    },
+    trackedModifiedPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      return gitLines(['-C', repoRoot, 'diff', '--name-only'], repoRoot, timeoutMs);
+    },
+    outgoingPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      const upstream = gitLinesOrNull(['-C', repoRoot, 'diff', '--name-only', '@{u}..HEAD'], repoRoot, timeoutMs);
+      if (upstream !== null) return upstream;
+      // No upstream configured: fall back to the merge-base with the default
+      // remote branch (`origin/HEAD`). If that too is unresolvable, fail open.
+      const base = gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs)[0];
+      if (!base) return [];
+      return gitLines(['-C', repoRoot, 'diff', '--name-only', `${base}..HEAD`], repoRoot, timeoutMs);
+    }
+  };
+}
+
+/** The production {@link GateExecutors}: scoped `git span` fix/stale/list at the repo root. */
+export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): GateExecutors {
+  return {
+    fix: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return;
+      try {
+        execFileSync('git', ['span', 'stale', ...paths, '--fix'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs
+        });
+      } catch {
+        // `git span stale` exits 1 on drift even after healing, and non-zero on
+        // genuine failure; either way the subsequent `stale` read is the source
+        // of truth, so the exit code is ignored here.
+      }
+    },
+    stale: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      let out: string;
+      try {
+        out = execFileSync('git', ['span', 'stale', '--format', 'porcelain', ...paths], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs
+        });
+      } catch (err) {
+        const captured = (err as { stdout?: string }).stdout;
+        if (typeof captured === 'string') out = captured;
+        else return [];
+      }
+      return parseStalePorcelain(out);
+    },
+    list: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      try {
+        const out = execFileSync('git', ['span', 'list', '--porcelain', ...paths], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs
+        });
+        return parsePorcelain(out);
+      } catch {
+        return [];
+      }
+    }
+  };
+}
+
+/**
+ * The production disk-backed {@link GateMemoState}: one marker file per debt-state
+ * digest under {@link gateMemoDir} (`<git-common-dir>/git-span/gate/`), following
+ * span-surface.ts's file-backed `MemoStore` pattern. The digest is a hex sha256,
+ * a safe filename. Best-effort and non-throwing: a memo whose repo cannot be
+ * resolved degrades to a no-op store (never persists → uncovered would re-deny,
+ * but an unresolvable repo yields an empty changeset upstream anyway).
+ */
+export function createDiskGateMemoState(cwd: string): GateMemoState {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot) {
+    return { has: () => false, record: () => {} };
+  }
+  const dir = gateMemoDir(repoRoot);
+  return {
+    has: (digest) => {
+      try {
+        return fs.existsSync(nodePath.join(dir, digest));
+      } catch {
+        return false;
+      }
+    },
+    record: (digest) => {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(nodePath.join(dir, digest), '');
+      } catch {
+        // Best-effort: a failed memo write must never brick the commit.
+      }
+    }
+  };
 }
