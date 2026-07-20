@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/agent-hooks-common.ts#L60-L107 rk64:33c19939b12ced61
+packages/agent-hooks/src/common/agent-hooks-common.ts#L59-L106 rk64:33c19939b12ced61
 packages/git-span/src/span_root.rs#L25-L41 rk64:c82813a434bc42cf
 
 TypeScript resolveSpanRoot mirrors the Rust CLI span-root precedence (GIT_SPAN_DIR, then git config git-span.dir, then default .span) minus the --span-dir flag that file-write hooks cannot see; isInsideSpanRoot reimplements the Rust containment predicate. Both are unenforced cross-language mirrors of packages/git-span/src/span_root.rs — if the Rust precedence or containment rule changes, this copy must change too, and isInsideSpanRoot's (path, root) argument order is the reverse of the Rust signature.

@@ -1,5 +1,6 @@
 CLAUDE.md#L97-L118 rk64:4ded508266bcb8ce
 README.md#L18-L55 rk64:a8db05db9c1321c3
-wiki/meta/git-span-documentation-touchpoints.md#L22-L32 rk64:e03121b4e6ebaf89
+wiki/meta/git-span-documentation-touchpoints.md#L22-L32 rk64:fe6452ee14537a3b
+
 
 Operator-facing documentation surfaces (README CLI section and CLAUDE.md's git-span instructions) that the touchpoints page names as the reader/agent-facing pages most likely to drift when the CLI contract changes, and that must be checked whenever a documentation update changes the recommended workflow.

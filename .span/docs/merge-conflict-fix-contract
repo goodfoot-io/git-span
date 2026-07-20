@@ -1,4 +1,2 @@
-plugins-claude/git-span/skills/git-span.legacy/sections/command-reference.md#L139-L197 rk64:34aa9a93460f768c
-plugins-claude/git-span/skills/git-span.legacy/sections/terminal-statuses.md#L61-L85 rk64:4baedd07c130f335
-
-Two handbook entry points stating the same git span stale --fix merge-conflict resolution contract: the terminal-status MERGE_CONFLICT remediation and the command-reference Merge conflict resolution section. Both assert the clean-source precondition, structural union/re-anchor against the resolved worktree, and the two fail-closed cases (source still markered, or --why diverged with no merge base); they must restate identical rules.
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L164-L237 rk64:983c180e7783d71b
+plugins-claude/git-span/skills/git-span/references/terminal-statuses.md#L50-L71 rk64:fc06d7d74df5777b

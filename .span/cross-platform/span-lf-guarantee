@@ -1,5 +1,5 @@
 .gitattributes#L12-L12 rk64:9859ab4aa6c9973f
-packages/git-span/src/span/structural.rs#L164-L171 rk64:98d2aadc39e6ef9b
-plugins-claude/git-span/skills/git-span.legacy/sections/storage-model.md#L34-L38 rk64:fa7aad1229267bad
+packages/git-span/src/span/structural.rs#L164-L170 rk64:3e12401e05ba7769
+plugins-claude/git-span/skills/git-span/references/storage-model.md#L38-L41 rk64:021a93497ea82250
 
 Two-level LF pin guaranteeing .span/ files check out with LF on every platform: the root .gitattributes rule covers files already committed in this repo, ensure_span_dir() carries the same pin into every downstream repo on scaffold, and the handbook documents it as a zero-setup property requiring no core.autocrlf.
