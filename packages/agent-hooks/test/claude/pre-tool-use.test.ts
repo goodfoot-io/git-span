@@ -118,7 +118,7 @@ function porcelainLine(name: string, path: string, start: number, end: number): 
 // `list --porcelain`: a `# porcelain v2` header followed by
 // `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` rows.
 function stalePorcelainLine(name: string, path: string, start: number, end: number): string {
-  return `# porcelain v2\nChanged\tW\t${name}\t${path}\t${start}\t${end}`;
+  return `# porcelain v2\nCHANGED\tW\t${name}\t${path}\t${start}\t${end}`;
 }
 
 // ---------------------------------------------------------------------------

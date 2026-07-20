@@ -16,7 +16,6 @@
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import {
   isGitIgnored,
@@ -25,11 +24,12 @@ import {
   type PorcelainRow,
   parsePorcelain,
   parseStalePorcelain,
+  pruneStaleSessions,
   rangesIntersect,
   relativeToRepo,
   resolveRepoRoot,
   resolveSpanRoot,
-  sanitizeSessionId,
+  sessionDir,
   toPosix
 } from './agent-hooks-common.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
@@ -91,10 +91,12 @@ export interface MemoStore {
   addSurfaced(sessionId: string, names: string[]): void;
 }
 
-const MEMO_DIR = nodePath.join(os.tmpdir(), 'agent-hooks-git-span');
-
+// Lives under the shared per-session state directory (agent-hooks-common.ts's
+// sessionDir), alongside the subagent counter — relocated from
+// os.tmpdir()/agent-hooks-git-span/ so per-session state has one home and is
+// covered by pruneStaleSessions's opportunistic >30-day pruning.
 function memoFilePath(sessionId: string): string {
-  return nodePath.join(MEMO_DIR, `${sanitizeSessionId(sessionId)}.json`);
+  return nodePath.join(sessionDir(sessionId), 'touch-memo.json');
 }
 
 export type MemoLogger = CoreLogger;
@@ -102,6 +104,7 @@ export type MemoLogger = CoreLogger;
 export function createDiskMemoStore(logger: MemoLogger): MemoStore {
   return {
     getSurfaced(sessionId) {
+      pruneStaleSessions();
       try {
         const raw = fs.readFileSync(memoFilePath(sessionId), 'utf8');
         const parsed = JSON.parse(raw) as { surfaced?: unknown };
@@ -114,12 +117,14 @@ export function createDiskMemoStore(logger: MemoLogger): MemoStore {
       return new Set();
     },
     addSurfaced(sessionId, names) {
+      pruneStaleSessions();
       const existing = this.getSurfaced(sessionId);
       for (const n of names) existing.add(n);
+      const memoDir = sessionDir(sessionId);
       const memoPath = memoFilePath(sessionId);
       const tmpPath = `${memoPath}.tmp`;
       try {
-        fs.mkdirSync(MEMO_DIR, { recursive: true });
+        fs.mkdirSync(memoDir, { recursive: true });
         fs.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), 'utf8');
         fs.renameSync(tmpPath, memoPath);
       } catch (err) {

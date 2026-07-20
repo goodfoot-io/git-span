@@ -192,23 +192,91 @@ export function parsePorcelain(stdout: string): PorcelainRow[] {
 }
 
 /**
+ * The full `git span stale --format porcelain` status token vocabulary (the
+ * git-span CLI's porcelain contract): `FRESH`/`MOVED`/`RESOLVED_PENDING_COMMIT`
+ * are positional-or-clean and never debt; every other token is semantic drift
+ * or a terminal/error condition and is debt. See {@link isDebt} for the
+ * single source of truth on that split.
+ */
+export const PORCELAIN_STATUSES = [
+  'FRESH',
+  'RESOLVED_PENDING_COMMIT',
+  'MOVED',
+  'CHANGED',
+  'DELETED',
+  'CONFLICT',
+  'SUBMODULE',
+  'LFS_NOT_FETCHED',
+  'LFS_NOT_INSTALLED',
+  'PROMISOR_MISSING',
+  'SPARSE_EXCLUDED',
+  'FILTER_FAILED',
+  'IO_ERROR'
+] as const;
+
+export type PorcelainStatus = (typeof PORCELAIN_STATUSES)[number];
+
+const PORCELAIN_STATUS_SET: ReadonlySet<string> = new Set(PORCELAIN_STATUSES);
+
+function parsePorcelainStatus(raw: string): PorcelainStatus | null {
+  return PORCELAIN_STATUS_SET.has(raw) ? (raw as PorcelainStatus) : null;
+}
+
+/** A `parseStalePorcelain` row: a {@link PorcelainRow} plus its status token. */
+export interface StalePorcelainRow extends PorcelainRow {
+  status: PorcelainStatus;
+}
+
+/**
+ * The debt invariant (system-wide; consumed by both the future touch-core and
+ * gate-core): only semantic statuses are debt. `CHANGED` and `DELETED` are
+ * semantic drift; the remaining non-FRESH/MOVED/RESOLVED_PENDING_COMMIT tokens
+ * are terminal/error conditions and are treated as debt too (they block on
+ * their own merits — the CLI could not resolve the anchor at all). `FRESH`,
+ * `MOVED`, and `RESOLVED_PENDING_COMMIT` are never debt: positional drift the
+ * CLI can heal (or already has) is invisible, and a pending-commit resolution
+ * is not outstanding debt.
+ *
+ * Note: the porcelain vocabulary does not currently distinguish
+ * content-equivalent `CHANGED` (e.g. whitespace-only drift `--fix` can heal)
+ * from genuinely semantic `CHANGED` — that classification is not present in
+ * `git span stale --format porcelain` output today. Until the CLI exposes it,
+ * every `CHANGED` row is treated as debt.
+ */
+export function isDebt(status: PorcelainStatus): boolean {
+  switch (status) {
+    case 'FRESH':
+    case 'MOVED':
+    case 'RESOLVED_PENDING_COMMIT':
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
  * `git span stale --format porcelain` emits a different shape than
  * `list --porcelain`: a `# porcelain v2` header, `# fuzzy N` comment lines,
  * and one `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` row per drifted
  * anchor (whole-file anchors carry `(whole)`/`-` in place of the line columns).
+ * Rows whose status token is not in {@link PORCELAIN_STATUSES} are skipped —
+ * an unrecognized token from a newer CLI is treated the same as a malformed
+ * line rather than guessed at.
  */
-export function parseStalePorcelain(stdout: string): PorcelainRow[] {
-  const rows: PorcelainRow[] = [];
+export function parseStalePorcelain(stdout: string): StalePorcelainRow[] {
+  const rows: StalePorcelainRow[] = [];
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const parts = trimmed.split('\t');
     if (parts.length < 6) continue;
-    const [, , name, path, startCol, endCol] = parts;
+    const [statusCol, , name, path, startCol, endCol] = parts;
+    const status = parsePorcelainStatus(statusCol);
+    if (!status) continue;
     const start = startCol === '(whole)' ? 0 : parseInt(startCol, 10);
     const end = endCol === '-' ? 0 : parseInt(endCol, 10);
     if (Number.isNaN(start) || Number.isNaN(end)) continue;
-    rows.push({ name, path, start, end });
+    rows.push({ name, path, start, end, status });
   }
   return rows;
 }
@@ -231,18 +299,58 @@ export function sanitizeSessionId(sessionId: string): string {
 // Per-session base directory
 // ---------------------------------------------------------------------------
 
-// Base dir shared with the Stop hook's touch journal. Each session gets one
-// directory; the subagent counter lives alongside the journal so the
-// SubagentStart/SubagentStop hooks (writers) and the Stop hook (reader) agree on
-// its location.
-const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
+// Base dir shared by all per-session state: the Stop hook's touch journal, the
+// subagent counter, and the touch-hook session memo (span-surface.ts's
+// MemoStore). Each session gets one subdirectory keyed by its sanitized id, so
+// every writer/reader for a given session agrees on its location.
+export const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
+
+/** The per-session state directory for a given session id. */
+export function sessionDir(sessionId: string): string {
+  return nodePath.join(SESSION_BASE_DIR, sanitizeSessionId(sessionId));
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Opportunistically prune per-session state directories under
+ * {@link SESSION_BASE_DIR} whose mtime is older than `maxAgeMs` (default 30
+ * days). A directory's mtime advances whenever an entry inside it is
+ * created/renamed/removed, so an active session (memo writes, count
+ * increments) stays fresh; only genuinely abandoned sessions age out.
+ *
+ * Best-effort and non-throwing: called opportunistically from hook read/write
+ * paths, not a separate cron-like mechanism, so a failure here must never
+ * block the caller's actual work.
+ */
+export function pruneStaleSessions(now: number = Date.now(), maxAgeMs: number = THIRTY_DAYS_MS): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(SESSION_BASE_DIR, { withFileTypes: true });
+  } catch {
+    return; // base dir absent or unreadable — nothing to prune
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = nodePath.join(SESSION_BASE_DIR, entry.name);
+    try {
+      const stat = fs.statSync(dirPath);
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      }
+    } catch {
+      // Vanished between readdir and stat, or removal failed — skip it. A
+      // best-effort prune must never throw into the caller's hot path.
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Per-session subagent counter
 // ---------------------------------------------------------------------------
 
 export function subagentCountPath(sessionId: string): string {
-  return nodePath.join(SESSION_BASE_DIR, sanitizeSessionId(sessionId), 'subagent-count');
+  return nodePath.join(sessionDir(sessionId), 'subagent-count');
 }
 
 // Lock constants
@@ -561,6 +669,17 @@ export function claimDirFor(repoRoot: string, claimId: string): string {
 /** Directory for scratch worktrees created by the dispatcher. */
 export function scratchDir(repoRoot: string): string {
   return nodePath.join(queueRoot(repoRoot), 'scratch');
+}
+
+/**
+ * Directory for the gate's per-changeset state memos (digest of sorted
+ * findings + uncovered paths), under the git common dir so it is shared
+ * across worktrees. Path resolution only — the gate itself (reading/writing
+ * these memos) is built in a later phase; this constant exists in one place
+ * so that phase and any future consumer agree on the location.
+ */
+export function gateMemoDir(repoRoot: string): string {
+  return nodePath.join(queueRoot(repoRoot), 'gate');
 }
 
 // ---------------------------------------------------------------------------
