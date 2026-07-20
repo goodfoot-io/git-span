@@ -6,6 +6,11 @@ import * as THREE from 'three';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { lerp } from '../scene';
 import {
   type EngineFrame,
@@ -35,6 +40,14 @@ import engineNormalUrl from '~/assets/engine/engine-normal.webp?url';
 import engineRoughnessUrl from '~/assets/engine/engine-roughness.webp?url';
 import studioHdrUrl from '~/assets/engine/studio_small_08_1k.hdr?url';
 
+// Selective bloom: only objects on this layer ever contribute to the bloom pass. A highlightable
+// part enables this layer on itself (see updateHighlights) only while its own combined emissive
+// contribution is actually nonzero -- so ordinary specular highlights on lit metal parts (from the
+// key light/HDR environment) never cross the bloom threshold, only genuine "just got hot" glow
+// does. Used as a lookup marker for the darken-non-bloomed technique in render(), not for
+// camera-layer exclusion -- see that method's comment for why.
+const BLOOM_LAYER = 1;
+
 interface Pose {
   position: THREE.Vector3;
   quaternion: THREE.Quaternion;
@@ -57,19 +70,39 @@ interface PartRecord {
   localSphere: THREE.Sphere; // geometry-local, unscaled -- transformed by matrixWorld per frame
 }
 
-interface ShellRecord {
-  mesh: THREE.Mesh;
-  // 'orange' is the shared pre-highlight pulse (frame.preHighlightOrange) on the gear, pistons,
-  // and engineBackCover. 'blue' and 'ringRed' are the gear's own two-stage transition
-  // (frame.blue, then frame.ringRed). 'red' is engineBackCover's mismatch beat (frame.red);
-  // 'pistonRed' is the pistons' (frame.pistonRed) -- both ramp in lockstep with the gear's
-  // 'ringRed'. 'finalGreen' is the shared resolved color every one of these parts (plus the
-  // mount) settles into (frame.finalGreen).
-  kind: 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen';
-  // The heartbeat pulse's two endpoints, cached once at shell-build time (see vividVariant) so
-  // updateHighlights only ever does a per-frame lerp, never a color-space conversion.
+// 'orange' is the shared pre-highlight pulse (frame.preHighlightOrange) on the gear, pistons, and
+// engineBackCover. 'blue' and 'ringRed' are the gear's own two-stage transition (frame.blue, then
+// frame.ringRed). 'red' is engineBackCover's mismatch beat (frame.red); 'pistonRed' is the
+// pistons' (frame.pistonRed) -- both ramp in lockstep with the gear's 'ringRed'. 'finalGreen' is
+// the shared resolved color every one of these parts (plus the mount) settles into
+// (frame.finalGreen).
+type HighlightKind = 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen';
+
+interface HighlightStage {
+  kind: HighlightKind;
+  // This kind's cold-state color identity (see beats.ts's HIGHLIGHT_* hexes) -- blackbodyColor
+  // (see below) modulates FROM this hue toward a hotter/whiter emissive color as this frame's
+  // weight and the heartbeat pulse rise; it's never mutated after buildHighlightRecords.
   baseColor: THREE.Color;
-  vividColor: THREE.Color;
+}
+
+// A highlightable part can carry more than one possible stage (e.g. the gear cycles through
+// orange -> blue -> ringRed -> finalGreen over the timeline) and, during a crossfade where one
+// stage's intensity ramps down exactly as the next ramps up (see beats.ts -- ringBlue and
+// mismatchRed(ringRed) sum to 1 across t28-41), more than one stage can be simultaneously active.
+// updateHighlights sums every active stage's emissive contribution directly onto this part's own
+// material rather than layering separate meshes, so a two-stage crossfade blends as true additive
+// light mixing on one surface instead of two coincident overlays.
+interface HighlightRecord {
+  mesh: THREE.Mesh;
+  stages: HighlightStage[];
+  // The part's own unhighlighted albedo (captured once, from its cloned material -- see the
+  // material-cloning comment in load()). Emissive alone, added on top of this part's real (often
+  // near-neutral gray metal) diffuse+specular shading, reads as a pale tint rather than a vivid
+  // color -- the achromatic base dominates the sum. updateHighlights also drives `color` itself,
+  // mixing from this identity toward the active stage's hue, so the surface actually reads as that
+  // color rather than merely having light of that color added on top of it.
+  baseMaterialColor: THREE.Color;
 }
 
 const POSE_EPSILON = 1e-6;
@@ -110,31 +143,22 @@ const DRAG_AZIMUTH_LIMIT = 0.9; // rad, offset-only
 const DRAG_ELEVATION_TOTAL_LIMIT = 1.2; // rad, frame.elevation + offset stays within this
 const DRAG_SNAP_BACK_RATE = 4; // 1/s, exponential ease back to zero after release
 
-// --- Fake contact shadow -------------------------------------------------------------------
-// A flat, unlit "blob" shadow under the assembled engine -- not a real shadow map (the scene has
-// no shadow-casting light rig), just a soft radial-gradient plane that reads as contact shadow at
-// a fraction of the cost. Sized and positioned once at load time from the *assembled* (rest-pose)
-// bounding box, never recomputed from live per-frame bounds, so it doesn't jitter or resize as
-// parts explode -- it's a fixed prop pinned to the resting pose, faded via frame.groundShadow.
-const GROUND_SHADOW_FOOTPRINT_SCALE = 1.6; // plane size relative to the assembled footprint
-const GROUND_SHADOW_DROP_FRACTION = 0.08; // fraction of modelRadius the plane sits below the oil pan -- a visible gap, so the engine reads as hovering just above the ground rather than resting on it
-const GROUND_SHADOW_TEXTURE_SIZE = 256;
-
 // --- Mismatch bounding box -----------------------------------------------------------------
 // A translucent green box that fades in around just the mismatch story's own parts (gear,
-// pistons, engineBackCover -- not the whole engine) while every highlight shell is dark
+// pistons, engineBackCover -- not the whole engine) while every highlight is dark
 // (frame.boxWeight, ~t46-60 peaking at 60), and fades back out as those parts resolve to the
-// shared green (~t60-72). A fixed prop like the ground shadow: sized/positioned once at load time
-// from those parts' exploded pose (see computeMismatchBoxBounds) rather than tracked live, since
-// explode is held flat for this entire window -- nothing it encloses moves.
+// shared green (~t60-72). A fixed prop: sized/positioned once at load time from those parts'
+// exploded pose (see computeMismatchBoxBounds) rather than tracked live, since explode is held
+// flat for this entire window -- nothing it encloses moves.
 const BOUNDING_BOX_MAX_OPACITY = 0.16;
+const BOUNDING_BOX_EDGE_OPACITY = 0.85;
 
 // --- Highlight heartbeat ------------------------------------------------------------------
-// Every highlight shell (buildHighlightShells/updateHighlights) -- every kind alike, including
+// Every highlight (buildHighlightRecords/updateHighlights) -- every kind alike, including
 // 'orange' -- pulses at a steady real-time rate, ~45 BPM (one full cycle a bit faster than every
 // two seconds). This is layered on top of whatever intensity the EngineFrame already computed
 // (frame.blue/ringRed/red/pistonRed/finalGreen/preHighlightOrange); it never changes *whether* a
-// shell is showing, only how it looks while it is. The bounding box (updateBoundingBox) is
+// part is glowing, only how hot it glows while it is. The bounding box (updateBoundingBox) is
 // deliberately never touched by this pulse -- it's a plain static/steady prop, not part of the
 // pulsing highlight set.
 const HEARTBEAT_HZ = 0.75; // ~45 BPM
@@ -146,25 +170,67 @@ function pulseWave(cycle: number): number {
   return (1 - Math.cos(2 * Math.PI * cycle)) / 2;
 }
 
-// Saturation pushed all the way to 1, AND lightness pulled to 0.5 -- the point of maximum chroma
-// for any hue in HSL -- rather than just boosting saturation at the base color's own lightness.
-const HEARTBEAT_VIVID_SATURATION = 1;
-const HEARTBEAT_VIVID_LIGHTNESS = 0.5;
+// Emissive intensity ("how hot the part's glow reads") is `frame`-weight times a per-kind base
+// tier (red-family beats read hotter than blue/green) times a pulse-driven multiplier that only
+// exceeds the bloom pass's threshold (see the composer built in the constructor) at the peak of
+// the heartbeat on an already fully-active highlight -- never at rest, never on a
+// half-transitioned one. This is what makes UnrealBloomPass's halo read as "this part just got
+// hot", a real-time accent, rather than a permanent glow baked into every highlight.
+//
+// Emissive is now driven directly on each highlightable part's own material (see updateHighlights)
+// rather than through a separate additive-blended overlay mesh whose own diffuse was pinned to
+// black. That isolation is gone: this material's real diffuse+specular (under the key light/HDR
+// environment) is already nonzero before emissive adds on top, so EMISSIVE_SCALE has to stay low
+// enough that the sum doesn't cross into ACESFilmicToneMapping's highlight rolloff -- past that
+// point the tonemapper desaturates bright pixels toward white regardless of the source hue, which
+// is what "not saturated enough" actually was (not a hue problem -- an overexposure one).
+const EMISSIVE_TIER_HIGH = 0.55; // red / ringRed / pistonRed
+const EMISSIVE_TIER_MID = 0.45; // blue / finalGreen
+const EMISSIVE_TIER_LOW = 0.5; // orange (shared pre-highlight)
+const EMISSIVE_SCALE = 0.32;
+const HEARTBEAT_HEAT_PEAK_MULTIPLIER = 1.15; // emissiveIntensity multiplier at pulseWeight===1
+// `heat` (see updateHighlights) is capped well short of 1 so a fully-active highlight at pulse
+// peak reads as hot-orange/red, never the near-white top of blackbodyColor's ramp -- every
+// highlight kind pulsing to white at ~45 BPM read as the whole engine flashing white/overexposed
+// rather than a warm, localized "just got hot" accent.
+const HEARTBEAT_HEAT_PEAK_CAP = 0.62;
 
-function vividVariant(color: THREE.Color): THREE.Color {
+// Blackbody-ish color ramp: as `heat` (frame weight combined with the heartbeat pulse, see
+// updateHighlights) rises, the emissive color moves from a dim ember of its own base hue, through
+// a slightly warmer/brighter version of that hue, to a saturated hot peak -- real thermal glow
+// shifts hue and (up to a point) lightens with temperature rather than just getting brighter at a
+// fixed hue. `heat` is clamped to 0..1 by the caller; the two segments below split that range at
+// its midpoint so every kind still visibly holds its own color identity through the first half
+// before the temperature shift takes over.
+const BLACKBODY_WARM_HUE = 30 / 360; // orange -- the shared "hotter" hue every kind trends toward
+const BLACKBODY_EMBER_LIGHTNESS = 0.14;
+// Peak values are what `heat` reaches at HEARTBEAT_HEAT_PEAK_CAP, not a literal 1.0 -- tuned to
+// read as hot-orange/red-hot, not the paper-white a true blackbody curve would hit at its extreme.
+// Saturation is kept high all the way to peak (unlike a literal blackbody curve, which would
+// desaturate toward white) so the glow reads as a vivid hot color rather than washing out.
+const BLACKBODY_PEAK_LIGHTNESS = 0.52;
+const BLACKBODY_PEAK_SATURATION = 0.92;
+
+function blackbodyColor(base: THREE.Color, heat: number): THREE.Color {
   const hsl = { h: 0, s: 0, l: 0 };
-  color.getHSL(hsl);
-  return new THREE.Color().setHSL(hsl.h, HEARTBEAT_VIVID_SATURATION, HEARTBEAT_VIVID_LIGHTNESS);
-}
+  base.getHSL(hsl);
+  const clamped = THREE.MathUtils.clamp(heat, 0, 1);
 
-// Several of the highlight hex values (see beats.ts, especially HIGHLIGHT_ORANGE) already sit
-// very close to full HSL saturation at l~0.5 -- vividVariant's color shift alone barely moves
-// them, so a hue-only pulse reads as strong on blue/red/green but nearly invisible on orange.
-// Opacity has no such ceiling: boosting it at the peak of the pulse (within the material's 0..1
-// range, still well short of full-alpha at every shell's base opacity -- see updateHighlights) is
-// visible on every hue equally, orange included, and stacks with the color shift for hues that do
-// have chroma headroom.
-const HEARTBEAT_OPACITY_BOOST = 1.7;
+  // First half (0..0.5): rise out of a dim ember of the base hue up to that hue's own natural
+  // lightness, with only a mild hue nudge toward warm -- this is where each kind's identity reads
+  // most clearly.
+  const emberT = Math.min(clamped / 0.5, 1);
+  const hue = lerp(hsl.h, BLACKBODY_WARM_HUE, emberT * 0.4);
+  const emberLightness = lerp(BLACKBODY_EMBER_LIGHTNESS, Math.max(hsl.l, 0.45), emberT);
+
+  // Second half (0.5..1): lighten and saturate further toward a vivid hot peak as heat approaches
+  // its cap -- the point where bloom picks the highlight up.
+  const whiteT = Math.max((clamped - 0.5) / 0.5, 0);
+  const lightness = lerp(emberLightness, BLACKBODY_PEAK_LIGHTNESS, whiteT);
+  const saturation = lerp(Math.max(hsl.s, 0.6), BLACKBODY_PEAK_SATURATION, whiteT);
+
+  return new THREE.Color().setHSL(hue, saturation, lightness);
+}
 
 function clampSigned(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
@@ -196,30 +262,48 @@ function sphereUnion(target: THREE.Sphere, addition: THREE.Sphere): void {
   target.radius = newRadius;
 }
 
+const bloomLayerTest = new THREE.Layers();
+bloomLayerTest.set(BLOOM_LAYER);
+// fog: false is required here, not cosmetic -- with fog on (the default), this "black" stand-in
+// would still blend toward the scene's cream fog color at distance during the bloom-only pass
+// (see render()'s darkenNonBloomed), which could push distant/heavily-exploded parts bright enough
+// to cross UnrealBloomPass's threshold and bloom on their own, contaminating the pass with light
+// that has nothing to do with any real highlight.
+const DARK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false });
+
 export class EngineScene {
   private readonly container: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly pmrem: THREE.PMREMGenerator;
+  // bloomComposer renders the full scene (real depth, so opaque parts still occlude glowing parts
+  // behind them) but with every non-glowing mesh darkened to black first (see render()'s
+  // darkenNonBloomed), into an offscreen texture; composer does the normal full-scene render and
+  // mixes that bloom texture back in additively (mixPass) -- see the constructor and render() for
+  // the sequence.
+  private readonly bloomComposer: EffectComposer;
+  private readonly composer: EffectComposer;
+  private readonly bloomPass: UnrealBloomPass;
+  // Materials swapped out by darkenNonBloomed for the duration of the bloom pass, keyed by mesh so
+  // restoreMaterial (right after) can put each one back exactly as it was.
+  private readonly darkenedMaterials = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
 
   private group: THREE.Group | null = null;
   private parts: PartRecord[] = [];
   private frontDriveParts: PartRecord[] = [];
   private mountPart: PartRecord | null = null;
   private orangeEmphasisParts: PartRecord[] = [];
-  private shells: ShellRecord[] = [];
-  private groundShadow: THREE.Mesh | null = null;
-  private boundingBox: THREE.Mesh | null = null;
-  private modelRadius = 1;
+  private highlights: HighlightRecord[] = [];
+  private boundingBox: THREE.Group | null = null;
 
   private currentFrame: EngineFrame | null = null;
   private heroIdle = false;
   private idleAzimuthOffset = 0;
 
-  // Highlight heartbeat: an independent wall-clock pulse (see pulseWave above) layered onto
-  // every highlight shell's color (orange/blue/ringRed/red/pistonRed/finalGreen alike -- see
-  // buildHighlightShells/updateHighlights), entirely decoupled from the scroll-driven EngineFrame
+  // Highlight heartbeat: an independent wall-clock pulse (see pulseWave above) layered onto every
+  // highlight color (orange/blue/ringRed/red/pistonRed/finalGreen alike -- see
+  // buildHighlightRecords/updateHighlights), entirely decoupled from the scroll-driven EngineFrame
   // -- it keeps beating at a constant real-time rate regardless of scroll position or scrub
   // direction. Off (pulseWeight pinned to 0, no accumulation) under prefers-reduced-motion.
   private reducedMotion = false;
@@ -245,13 +329,15 @@ export class EngineScene {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setClearColor(0x000000, 0);
-    // AgX over Neutral/ACESFilmic: A/B'd via screenshots at t=0 (hero, gray metal end-on) and
-    // t=48 (failure, red highlight legibility) -- see EngineScene's wiki doc for the writeup. AgX
-    // reads with more filmic contrast on the unlit gray-metal families (castIron/aluminum) without
-    // crushing shadow detail on the machined faces; Neutral looked flatter/washed on the same
-    // frames. Exposure bumped slightly above AgX's own default to keep the cream page composition
-    // light and airy rather than moody, since AgX's contrast curve darkens midtones a touch.
-    this.renderer.toneMapping = THREE.AgXToneMapping;
+    // ACESFilmic over the earlier AgX pick: AgX was A/B'd in before the emissive/bloom highlight
+    // pass existed (see EngineScene's wiki doc for that original writeup) and rolls off highlights
+    // hard by design -- exactly the range UnrealBloomPass's threshold needs to read cleanly to tell
+    // "hot" emissive pixels from ordinary lit metal. ACES keeps the same filmic shoulder on the
+    // gray-metal families while letting genuinely bright emissive values clear the bloom threshold
+    // instead of being pre-crushed toward the AgX gamut boundary. Exposure kept at the same tuned
+    // value; ACES's own contrast curve is close enough to AgX's here that the cream-page brightness
+    // balance didn't need re-tuning.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block;touch-action:pan-y;cursor:grab;';
@@ -277,6 +363,67 @@ export class EngineScene {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.15));
 
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
+
+    // Bloom postprocessing -- SELECTIVE, via the classic "darken non-bloomed materials" technique
+    // (not camera-layer exclusion -- an earlier version of this restricted the bloom pass's camera
+    // to BLOOM_LAYER only, which meant opaque parts were never drawn at all in that pass, so
+    // glowing parts never depth-tested against them and their glow bled through parts that should
+    // have occluded them). Instead, darkenNonBloomed/restoreMaterial (see render()) swap every
+    // non-glowing mesh's material to a flat black one for the bloom pass only -- the FULL scene,
+    // with real depth, still draws every frame, so opaque parts correctly occlude glowing parts
+    // behind them; those parts just contribute nothing to the bloom pass's brightness, since black
+    // is always under threshold. Only parts with a nonzero highlight (updateHighlights enables
+    // BLOOM_LAYER on them per-frame, used here purely as a lookup marker, not for camera/render
+    // exclusion) keep their real material, emissive contribution included.
+    //
+    // bloomComposer's RenderPass renders that darkened scene through the same camera; UnrealBloomPass
+    // then blurs/thresholds it into bloomPass's render target.
+    //
+    // composer is the normal full-scene render (camera restored to its default layer before this
+    // runs), with mixPass adding the bloom texture back on top additively, and OutputPass applying
+    // the final sRGB conversion last. Sizes are placeholders here -- resize() (called at the end of
+    // this constructor, and on every container resize) is the single source of truth for
+    // composer/pass dimensions, matching the renderer.
+    this.bloomComposer = new EffectComposer(this.renderer);
+    this.bloomComposer.renderToScreen = false;
+    this.bloomComposer.addPass(new RenderPass(this.scene, this.camera));
+    // Threshold/strength/radius are tuned to stay a restrained, local accent on the hottest
+    // highlights at pulse peak -- see the "Highlight heartbeat" constants above for how
+    // emissiveIntensity is kept under this threshold outside of pulse peaks on a fully-active
+    // highlight.
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.35, 0.92);
+    this.bloomComposer.addPass(this.bloomPass);
+
+    const mixPass = new ShaderPass(
+      new THREE.ShaderMaterial({
+        uniforms: {
+          baseTexture: { value: null },
+          bloomTexture: { value: this.bloomComposer.renderTarget2.texture }
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D baseTexture;
+          uniform sampler2D bloomTexture;
+          varying vec2 vUv;
+          void main() {
+            gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv);
+          }
+        `
+      }),
+      'baseTexture'
+    );
+    mixPass.needsSwap = true;
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(mixPass);
+    this.composer.addPass(new OutputPass());
 
     this.resize();
   }
@@ -358,7 +505,6 @@ export class EngineScene {
       const assembled = assembledPoses.get(mesh.uuid);
       if (assembled) modelRadius = Math.max(modelRadius, assembled.position.distanceTo(centroid));
     }
-    this.modelRadius = modelRadius;
 
     // Raw staging -> assembled axis and distance per mesh, ahead of the exploded-pose pass below
     // -- kept separate because EXPLODE_OVERRIDES needs the *reference* parts' own raw axes
@@ -482,7 +628,16 @@ export class EngineScene {
       const localSphere = geometry.boundingSphere?.clone() ?? new THREE.Sphere();
 
       const family = familyOf(mesh.name);
-      const partMesh = new THREE.Mesh(geometry, materialFor(family));
+      const strippedName = stripDedupSuffix(mesh.name);
+      const isFrontDrive = frontDriveSet.has(strippedName);
+      const isMount = frontMountSet.has(strippedName);
+      const isOrangeEmphasis = orangeEmphasisSet.has(strippedName);
+      // Highlightable parts (front-drive, mount, orange-emphasis) get their own material clone
+      // rather than the family's shared instance -- updateHighlights drives emissive directly on
+      // each one, and a shared material would leak one part's glow onto every other part of the
+      // same family.
+      const material = isFrontDrive || isMount || isOrangeEmphasis ? materialFor(family).clone() : materialFor(family);
+      const partMesh = new THREE.Mesh(geometry, material);
       partMesh.name = mesh.name;
       partMesh.position.copy(assembled.position);
       partMesh.quaternion.copy(assembled.quaternion);
@@ -494,10 +649,10 @@ export class EngineScene {
         assembled,
         exploded,
         family,
-        isFrontDrive: frontDriveSet.has(stripDedupSuffix(mesh.name)),
-        isMount: frontMountSet.has(stripDedupSuffix(mesh.name)),
-        isSeatAdjust: seatAdjustSet.has(stripDedupSuffix(mesh.name)),
-        isOrangeEmphasis: orangeEmphasisSet.has(stripDedupSuffix(mesh.name)),
+        isFrontDrive,
+        isMount,
+        isSeatAdjust: seatAdjustSet.has(strippedName),
+        isOrangeEmphasis,
         localSphere
       });
     }
@@ -508,14 +663,6 @@ export class EngineScene {
     const assembledSphere = assembledBox.getBoundingSphere(new THREE.Sphere());
     group.position.copy(assembledSphere.center).negate();
 
-    // Fake contact shadow: sized/positioned once from the *assembled* (rest-pose) bounding box --
-    // never recomputed from live per-frame bounds, so it stays a fixed prop under the resting
-    // engine rather than tracking the exploded constellation's much larger, shifting footprint.
-    // Added as a child of `group` (pre-recenter) so it inherits the same recenter offset as every
-    // part.
-    this.groundShadow = this.buildGroundShadow(assembledBox);
-    group.add(this.groundShadow);
-
     this.parts = parts;
     this.frontDriveParts = parts.filter((part) => part.isFrontDrive);
     this.mountPart = parts.find((part) => part.isMount) ?? null;
@@ -524,7 +671,7 @@ export class EngineScene {
     this.group = group;
     this.scene.add(group);
 
-    this.buildHighlightShells();
+    this.buildHighlightRecords();
     this.boundingBox = this.buildBoundingBox(this.computeMismatchBoxBounds());
     this.scene.add(this.boundingBox);
 
@@ -548,7 +695,7 @@ export class EngineScene {
 
   // Gates the highlight heartbeat (see the "Highlight heartbeat" constants above). Off entirely
   // under prefers-reduced-motion: pulseCycle stops accumulating and pulseWeight is pinned to 0,
-  // so shells sit at their base (non-vivid) color with no per-frame flashing.
+  // so highlights sit at their base (non-vivid) color with no per-frame flashing.
   setReducedMotion(on: boolean): void {
     if (on === this.reducedMotion) return;
     this.reducedMotion = on;
@@ -563,11 +710,18 @@ export class EngineScene {
   resize(): void {
     const width = this.container.clientWidth || 1;
     const height = this.container.clientHeight || 1;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.renderer.setPixelRatio(Math.max(1, dpr));
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    // Both composers own their own render targets (bloom's mip chain included) sized off the
+    // renderer's pixel ratio -- all three must be kept in lockstep with the renderer or bloom's
+    // halo resamples at the wrong resolution and either smears or clips at the canvas edge.
+    this.bloomComposer.setPixelRatio(dpr);
+    this.bloomComposer.setSize(width, height);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(width, height);
     if (this.currentFrame) this.applyFrame(this.currentFrame);
     else this.render();
   }
@@ -584,6 +738,9 @@ export class EngineScene {
     canvas.removeEventListener('pointercancel', this.onPointerEnd);
     canvas.removeEventListener('pointerleave', this.onPointerLeave);
     canvas.remove();
+    this.bloomPass.dispose();
+    this.bloomComposer.dispose();
+    this.composer.dispose();
     this.renderer.dispose();
     this.pmrem.dispose();
   }
@@ -596,7 +753,6 @@ export class EngineScene {
     this.group.updateMatrixWorld(true);
     this.updateHighlights(frame);
     this.updateBoundingBox(frame);
-    this.updateGroundShadow(frame);
     this.fitCameraToFrame(frame);
     this.render();
   }
@@ -760,116 +916,59 @@ export class EngineScene {
     }
   }
 
-  private buildHighlightShells(): void {
-    // Every highlight shell here is an ordinary depth-tested overlay: both FRONT_DRIVE (blue)
-    // and FRONT_MOUNT (red/green) parts are externally visible from the canonical camera angles,
-    // so there's no need for the depthTest:false "x-ray" treatment an earlier, buried mount
-    // (`engineBlockFront`) required to read through the parts in front of it.
-    const shellMaterial = (color: string): THREE.MeshBasicMaterial =>
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        depthTest: true,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-        fog: false // unlit story UI, not part of the physical scene -- must not veil with depth
-      });
+  // Highlight color/intensity is driven directly on each highlightable part's own (per-part-cloned
+  // -- see the material-cloning comment in load()) material, not through a separate overlay mesh.
+  // An earlier version added slightly-oversized additive-blended "shell" meshes as children of
+  // each part instead; those read as a visible separate glowing container around the part rather
+  // than the part's own surface glowing, and needed their own independent fog handling that never
+  // quite matched the real part underneath. Driving emissive on the real material sidesteps both:
+  // there's only one surface, and it's fogged exactly once, the same way as every other part.
+  private buildHighlightRecords(): void {
+    const stage = (kind: HighlightKind, colorHex: string): HighlightStage => ({
+      kind,
+      baseColor: new THREE.Color(colorHex)
+    });
 
-    const shells: ShellRecord[] = [];
-    const addShell = (host: THREE.Mesh, colorHex: string, scale: number, kind: ShellRecord['kind']): void => {
-      const baseColor = new THREE.Color(colorHex);
-      const shell = new THREE.Mesh(host.geometry, shellMaterial(colorHex));
-      shell.scale.setScalar(scale);
-      shell.visible = false;
-      host.add(shell);
-      shells.push({ mesh: shell, kind, baseColor, vividColor: vividVariant(baseColor) });
-    };
+    const baseColorOf = (mesh: THREE.Mesh): THREE.Color => (mesh.material as THREE.MeshStandardMaterial).color.clone();
 
+    const records: HighlightRecord[] = [];
     for (const part of this.frontDriveParts) {
-      addShell(part.mesh, HIGHLIGHT_ORANGE, 1.03, 'orange');
-      // Each successive shell is a touch larger than the last so stacked shells never z-fight
-      // while crossfading through simultaneous low opacity.
-      addShell(part.mesh, HIGHLIGHT_BLUE, 1.04, 'blue');
-      addShell(part.mesh, HIGHLIGHT_RED, 1.05, 'ringRed');
-      addShell(part.mesh, HIGHLIGHT_GREEN, 1.06, 'finalGreen');
+      records.push({
+        mesh: part.mesh,
+        baseMaterialColor: baseColorOf(part.mesh),
+        stages: [
+          stage('orange', HIGHLIGHT_ORANGE),
+          stage('blue', HIGHLIGHT_BLUE),
+          stage('ringRed', HIGHLIGHT_RED),
+          stage('finalGreen', HIGHLIGHT_GREEN)
+        ]
+      });
     }
     if (this.mountPart) {
-      // Slightly larger shell scale than the front-drive parts': FRONT_MOUNT (engineBackCover) is
-      // a thin flat plate seen edge-on from some camera angles, so its shell needs a touch more
-      // clearance than a rounder part to read clearly at `failure`/`related`. engineBackCover
-      // shares the pistons' pre-highlight orange (frame.preHighlightOrange), flips to red in
-      // lockstep with the gear's ringRed and the pistons' pistonRed (frame.red), then settles to
-      // the same shared green as the rest of the mismatch story (frame.finalGreen).
-      addShell(this.mountPart.mesh, HIGHLIGHT_ORANGE, 1.05, 'orange');
-      addShell(this.mountPart.mesh, HIGHLIGHT_RED, 1.06, 'red');
-      addShell(this.mountPart.mesh, HIGHLIGHT_GREEN, 1.07, 'finalGreen');
+      // engineBackCover shares the pistons' pre-highlight orange (frame.preHighlightOrange), flips
+      // to red in lockstep with the gear's ringRed and the pistons' pistonRed (frame.red), then
+      // settles to the same shared green as the rest of the mismatch story (frame.finalGreen).
+      records.push({
+        mesh: this.mountPart.mesh,
+        baseMaterialColor: baseColorOf(this.mountPart.mesh),
+        stages: [stage('orange', HIGHLIGHT_ORANGE), stage('red', HIGHLIGHT_RED), stage('finalGreen', HIGHLIGHT_GREEN)]
+      });
     }
     // ORANGE_EMPHASIS parts (piston001-008): the same pre-highlight glow as the gear (frame.
     // preHighlightOrange), then their own red beat (frame.pistonRed) in lockstep with the gear's
     // ringRed, then the same shared final green (frame.finalGreen).
     for (const part of this.orangeEmphasisParts) {
-      addShell(part.mesh, HIGHLIGHT_ORANGE, 1.03, 'orange');
-      addShell(part.mesh, HIGHLIGHT_RED, 1.04, 'pistonRed');
-      addShell(part.mesh, HIGHLIGHT_GREEN, 1.05, 'finalGreen');
+      records.push({
+        mesh: part.mesh,
+        baseMaterialColor: baseColorOf(part.mesh),
+        stages: [
+          stage('orange', HIGHLIGHT_ORANGE),
+          stage('pistonRed', HIGHLIGHT_RED),
+          stage('finalGreen', HIGHLIGHT_GREEN)
+        ]
+      });
     }
-    this.shells = shells;
-  }
-
-  // A soft radial-gradient canvas texture: dark, semi-opaque at center, fading fully transparent
-  // at the edge. Cheap stand-in for a real contact shadow (the scene has no shadow-casting light
-  // rig to bake one from).
-  private buildGroundShadowTexture(): THREE.CanvasTexture {
-    const size = GROUND_SHADOW_TEXTURE_SIZE;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const center = size / 2;
-      const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
-      gradient.addColorStop(0, 'rgba(0,0,0,0.2)');
-      gradient.addColorStop(0.6, 'rgba(0,0,0,0.1)');
-      gradient.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, size, size);
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.NoColorSpace; // grayscale alpha mask, not display-referred color
-    return texture;
-  }
-
-  // Flat, horizontal blob shadow just below the assembled engine's lowest point -- sized ~1.6x the
-  // assembled footprint (in the box's larger of X/Z extent) so it reads as a grounded contact
-  // shadow rather than a tight silhouette outline. `box` is the assembled (rest-pose) bounding box
-  // computed once at load time, pre-recenter, in the same space the returned mesh is later added
-  // to `group` in -- so its position needs no further adjustment for the recenter translation.
-  private buildGroundShadow(box: THREE.Box3): THREE.Mesh {
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-
-    const footprint = Math.max(size.x, size.z);
-    const planeSize = footprint * GROUND_SHADOW_FOOTPRINT_SCALE;
-    const drop = this.modelRadius * GROUND_SHADOW_DROP_FRACTION;
-
-    const geometry = new THREE.PlaneGeometry(planeSize, planeSize);
-    const material = new THREE.MeshBasicMaterial({
-      map: this.buildGroundShadowTexture(),
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-      fog: false // unlit story UI standing in for a shadow, not part of the physical scene
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(center.x, box.min.y - drop, center.z);
-    mesh.visible = false;
-    mesh.renderOrder = -1; // draw before the opaque parts so it never fights the oil pan's depth
-    return mesh;
+    this.highlights = records;
   }
 
   // The box only encloses the mismatch story's own parts (gear, pistons, engineBackCover), not
@@ -894,8 +993,17 @@ export class EngineScene {
       part.mesh.scale.copy(part.exploded.scale);
     }
     this.group?.updateMatrixWorld(true);
+    // Bounds come from each part's own geometry + matrixWorld, computed directly rather than via
+    // Box3.expandByObject(part.mesh) -- expandByObject also traverses children, which (before
+    // highlights moved onto the parts' own materials) used to include oversized highlight overlay
+    // meshes and inflate this box well past the parts' real silhouette.
     const bounds = new THREE.Box3();
-    for (const part of relevant) bounds.expandByObject(part.mesh);
+    const partBounds = new THREE.Box3();
+    for (const part of relevant) {
+      part.mesh.geometry.computeBoundingBox();
+      partBounds.copy(part.mesh.geometry.boundingBox!).applyMatrix4(part.mesh.matrixWorld);
+      bounds.union(partBounds);
+    }
 
     for (const part of relevant) {
       part.mesh.position.copy(part.assembled.position);
@@ -912,14 +1020,20 @@ export class EngineScene {
   // enclosed part's own highlight shell is dark (~t46-60). Static: only its opacity/visibility
   // change per frame (see updateBoundingBox), since the parts it encloses don't move during the
   // window it's shown in.
-  private buildBoundingBox(bounds: THREE.Box3): THREE.Mesh {
+  //
+  // A flat translucent fill alone reads as a uniform-color smear -- MeshBasicMaterial doesn't
+  // shade differently by face orientation, so there's no depth cue telling the eye where the box's
+  // faces/edges actually are. An EdgesGeometry outline drawn on top of the fill gives it crisp,
+  // legible corners so it reads as a bounded volume rather than a blob. The group's first child is
+  // always the fill mesh, the second the edge outline -- see updateBoundingBox.
+  private buildBoundingBox(bounds: THREE.Box3): THREE.Group {
     const size = new THREE.Vector3();
     bounds.getSize(size);
     const center = new THREE.Vector3();
     bounds.getCenter(center);
 
     // A touch of padding so the box comfortably encloses the parts rather than hugging their
-    // exact silhouette, matching the padding pattern the highlight shells already use.
+    // exact silhouette.
     const geometry = new THREE.BoxGeometry(
       Math.max(size.x, 1e-3) * 1.08,
       Math.max(size.y, 1e-3) * 1.08,
@@ -933,57 +1047,132 @@ export class EngineScene {
       side: THREE.DoubleSide,
       fog: false // unlit story UI, not part of the physical scene -- must not veil with depth
     });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(center);
-    mesh.visible = false;
-    return mesh;
+    const fill = new THREE.Mesh(geometry, material);
+
+    const edgesMaterial = new THREE.LineBasicMaterial({
+      color: HIGHLIGHT_GREEN,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: false
+    });
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), edgesMaterial);
+
+    const group = new THREE.Group();
+    group.add(fill, edges);
+    group.position.copy(center);
+    group.visible = false;
+    return group;
   }
 
+  private intensityForKind(kind: HighlightKind, frame: EngineFrame): number {
+    switch (kind) {
+      case 'blue':
+        return frame.blue;
+      case 'ringRed':
+        return frame.ringRed;
+      case 'red':
+        return frame.red;
+      case 'pistonRed':
+        return frame.pistonRed;
+      case 'finalGreen':
+        return frame.finalGreen;
+      case 'orange':
+        return frame.preHighlightOrange; // one shared weight across the gear + pistons + cover
+    }
+  }
+
+  private tierForKind(kind: HighlightKind): number {
+    switch (kind) {
+      case 'red':
+      case 'ringRed':
+      case 'pistonRed':
+        return EMISSIVE_TIER_HIGH;
+      case 'blue':
+      case 'finalGreen':
+        return EMISSIVE_TIER_MID;
+      case 'orange':
+        return EMISSIVE_TIER_LOW;
+    }
+  }
+
+  // Sums every one of a part's active stages (see HighlightRecord's doc comment on why more than
+  // one can be simultaneously active) into a single emissive contribution on that part's own
+  // material -- true additive light mixing on one surface, rather than layering separate meshes.
+  // Only enables BLOOM_LAYER on the part while that sum is actually nonzero, so a highlightable
+  // part's ordinary lit shading (specular off the key light/HDR environment) never itself
+  // contributes to the bloom pass -- only genuine "just got hot" glow does.
   private updateHighlights(frame: EngineFrame): void {
-    for (const shell of this.shells) {
-      const intensity =
-        shell.kind === 'blue'
-          ? frame.blue
-          : shell.kind === 'ringRed'
-            ? frame.ringRed
-            : shell.kind === 'red'
-              ? frame.red
-              : shell.kind === 'pistonRed'
-                ? frame.pistonRed
-                : shell.kind === 'finalGreen'
-                  ? frame.finalGreen
-                  : frame.preHighlightOrange; // 'orange' -- one shared weight across the gear + pistons + cover
-      const baseOpacity =
-        intensity *
-        (shell.kind === 'red' || shell.kind === 'ringRed' || shell.kind === 'pistonRed'
-          ? 0.55
-          : shell.kind === 'blue' || shell.kind === 'finalGreen'
-            ? 0.45
-            : 0.5);
-      const material = shell.mesh.material as THREE.MeshBasicMaterial;
-      material.opacity = Math.min(1, baseOpacity * lerp(1, HEARTBEAT_OPACITY_BOOST, this.pulseWeight));
-      material.color.copy(shell.baseColor).lerp(shell.vividColor, this.pulseWeight);
-      shell.mesh.visible = baseOpacity >= 0.01;
+    const stageColor = new THREE.Color();
+    const identityColor = new THREE.Color();
+    for (const record of this.highlights) {
+      const total = new THREE.Color(0, 0, 0);
+      identityColor.setRGB(0, 0, 0);
+      let magnitude = 0;
+      let colorWeight = 0;
+
+      for (const highlightStage of record.stages) {
+        const intensity = this.intensityForKind(highlightStage.kind, frame);
+        if (intensity < 0.001) continue;
+        const tier = this.tierForKind(highlightStage.kind);
+
+        // `heat` drives the blackbody color ramp: at pulseWeight 0 it never exceeds `tier` itself
+        // (~0.45-0.55, well short of hot); only a fully-active stage (intensity===1) at the
+        // pulse's peak reaches HEARTBEAT_HEAT_PEAK_CAP, never a full 1 -- see that constant's doc
+        // comment for why the cap exists.
+        const heat = intensity * lerp(tier, HEARTBEAT_HEAT_PEAK_CAP, this.pulseWeight);
+        const stageIntensity =
+          intensity * tier * EMISSIVE_SCALE * lerp(1, HEARTBEAT_HEAT_PEAK_MULTIPLIER, this.pulseWeight);
+
+        stageColor.copy(blackbodyColor(highlightStage.baseColor, heat)).multiplyScalar(stageIntensity);
+        total.add(stageColor);
+        magnitude += stageIntensity;
+
+        // Identity recolor uses the stage's raw intensity (not tier/heat/pulse-scaled) -- "this
+        // part is now the red one" is a state, independent of how hot the heartbeat happens to be
+        // reading at this instant.
+        stageColor.copy(highlightStage.baseColor).multiplyScalar(intensity);
+        identityColor.add(stageColor);
+        colorWeight += intensity;
+      }
+
+      const material = record.mesh.material as THREE.MeshStandardMaterial;
+
+      // Emissive alone, added on top of this part's real (often near-neutral gray metal)
+      // diffuse+specular, reads as a pale wash rather than a vivid color -- the achromatic base
+      // dominates the sum. Recoloring the diffuse itself toward the active stage's hue (weighted
+      // by how many stages are simultaneously active, for the two-stage crossfade case) is what
+      // makes the surface actually read as that color; emissive on top is then just the hot pulse
+      // accent, not the sole source of the color.
+      if (colorWeight > 0.001) {
+        identityColor.multiplyScalar(1 / colorWeight);
+        material.color.copy(record.baseMaterialColor).lerp(identityColor, Math.min(colorWeight, 1));
+      } else {
+        material.color.copy(record.baseMaterialColor);
+      }
+
+      material.emissive.copy(total);
+      material.emissiveIntensity = 1; // total already carries the full per-stage intensity scaling
+
+      if (magnitude >= 0.01) record.mesh.layers.enable(BLOOM_LAYER);
+      else record.mesh.layers.disable(BLOOM_LAYER);
     }
   }
 
   // The box is a fixed prop (see computeMismatchBoxBounds/buildBoundingBox) -- only its
   // opacity/visibility respond to the frame. Deliberately untouched by pulseWeight/pulseWave --
-  // the mismatch box is a steady static prop, not one of the pulsing highlight shells.
+  // the mismatch box is a steady static prop, not one of the pulsing highlights.
   private updateBoundingBox(frame: EngineFrame): void {
     const box = this.boundingBox;
     if (!box) return;
-    const material = box.material as THREE.MeshBasicMaterial;
-    material.opacity = frame.boxWeight * BOUNDING_BOX_MAX_OPACITY;
+    const [fill, edges] = box.children as [THREE.Mesh, THREE.LineSegments];
+    const fillMaterial = fill.material as THREE.MeshBasicMaterial;
+    const edgesMaterial = edges.material as THREE.LineBasicMaterial;
+    fillMaterial.opacity = frame.boxWeight * BOUNDING_BOX_MAX_OPACITY;
+    // The outline reads clearly at a much lower opacity than the fill needs for its wash -- pushed
+    // well above the fill's own weight so the box's edges stay crisp even while the fill is faint.
+    edgesMaterial.opacity = frame.boxWeight * BOUNDING_BOX_EDGE_OPACITY;
     box.visible = frame.boxWeight >= 0.01;
-  }
-
-  private updateGroundShadow(frame: EngineFrame): void {
-    const shadow = this.groundShadow;
-    if (!shadow) return;
-    const material = shadow.material as THREE.MeshBasicMaterial;
-    material.opacity = frame.groundShadow;
-    shadow.visible = frame.groundShadow >= 0.01;
   }
 
   private fitCameraToFrame(frame: EngineFrame): void {
@@ -1026,7 +1215,34 @@ export class EngineScene {
     }
   }
 
+  // Swaps every mesh NOT on BLOOM_LAYER (i.e. everything not currently glowing -- see
+  // updateHighlights) to a flat black material -- see the bloom pipeline comment in the
+  // constructor for why this, rather than camera-layer exclusion, is what keeps opaque parts
+  // correctly occluding glowing parts behind them during the bloom-only pass.
+  private darkenNonBloomed = (object: THREE.Object3D): void => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || bloomLayerTest.test(mesh.layers)) return;
+    this.darkenedMaterials.set(mesh, mesh.material);
+    mesh.material = DARK_MATERIAL;
+  };
+
+  private restoreMaterial = (object: THREE.Object3D): void => {
+    const mesh = object as THREE.Mesh;
+    const material = this.darkenedMaterials.get(mesh);
+    if (!material) return;
+    mesh.material = material;
+    this.darkenedMaterials.delete(mesh);
+  };
+
   private render(): void {
-    this.renderer.render(this.scene, this.camera);
+    // Pass 1: bloom-only, full scene/depth, but every non-glowing mesh temporarily flat black so
+    // it contributes nothing to the bloom threshold while still occluding glowing parts behind it
+    // correctly.
+    this.scene.traverse(this.darkenNonBloomed);
+    this.bloomComposer.render();
+    this.scene.traverse(this.restoreMaterial);
+    // Pass 2: normal full-scene render with every material restored; mixPass adds the bloom
+    // texture from pass 1 back in additively.
+    this.composer.render();
   }
 }

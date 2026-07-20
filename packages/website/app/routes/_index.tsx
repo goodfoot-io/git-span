@@ -130,7 +130,7 @@ export default function Index() {
             inside the frame at all times — no part of it is ever cropped or touches the edges.
           */}
           <div className="lg:col-span-7">
-            <div className="flex h-[28rem] items-stretch px-6 py-12 lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:px-0 lg:py-6 lg:pr-6">
+            <div className="flex h-[calc(100vh-4rem)] items-stretch lg:sticky lg:top-16">
               <EngineStage scene={scene} />
             </div>
           </div>

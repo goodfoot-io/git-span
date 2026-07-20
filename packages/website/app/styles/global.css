@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "fumadocs-ui/css/lib/default-colors.css";
+@import "fumadocs-ui/css/preset.css";
 
 /*
   The site is light. The palette follows the warm-white / pale-stone / graphite art

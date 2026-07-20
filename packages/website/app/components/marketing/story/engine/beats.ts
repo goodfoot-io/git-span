@@ -105,7 +105,6 @@ export interface EngineFrame {
   elevation: number;
   margin: number;
   idleWeight: number; // 0..1 -- how much of the accumulated hero idle rotation the camera keeps
-  groundShadow: number; // 0..1 -- fake contact-shadow plane opacity; see groundShadowAt below
 }
 
 // The final reassembly (exploded -> assembled) is expressed directly in `t`: FINAL_REASSEMBLY_
@@ -299,14 +298,6 @@ function marginAt(phase: PhaseId, t: number): number {
   }
 }
 
-// The fake ground-contact-shadow plane's opacity. Mirrors explodeAt exactly: 1 (assembled) at
-// t=0, fading to 0 as the initial explode ramps in, held at 0 through the whole mismatch story
-// (still fully exploded), then rising back to 1 over the FINAL_REASSEMBLY window as the body
-// reassembles.
-function groundShadowAt(t: number): number {
-  return 1 - explodeAt(t);
-}
-
 export function engineFrame(scene: SceneState): EngineFrame {
   const { phase, local: l, t } = scene;
   const id = phase.id;
@@ -328,7 +319,6 @@ export function engineFrame(scene: SceneState): EngineFrame {
     azimuth: azimuthBaseAt(id, t) + drift,
     elevation: elevationAt(id, t),
     margin: marginAt(id, t),
-    idleWeight: idleWeightAt(id, t),
-    groundShadow: groundShadowAt(t)
+    idleWeight: idleWeightAt(id, t)
   };
 }
