@@ -1,6 +1,6 @@
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L131-L147 rk64:bdf64eb8d0434d75
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L861-L899 rk64:58f4cfa5580535ae
 packages/website/app/components/marketing/story/engine/beats.ts#L341-L364 rk64:54d0457a43430c60
-wiki/architecture/homepage-engine-animation.md#L417-L481 rk64:a2b34c0945387d8d
+wiki/architecture/homepage-engine-animation.md#L417-L481 rk64:abaacd985a98bce7
 
 Camera framing keeps the exploded rig inside a never-cropped safe frame across the animation phases.

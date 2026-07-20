@@ -6,24 +6,26 @@ import * as THREE from 'three';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
-import { lerp, ramp } from '../scene';
+import { lerp } from '../scene';
 import {
   type EngineFrame,
   HERO_IDLE_RATE,
+  HIGHLIGHT_BLUE,
   HIGHLIGHT_GREEN,
   HIGHLIGHT_ORANGE,
   HIGHLIGHT_RED,
-  LINK_AMBER,
   MOUNT_SCALE
 } from './beats';
 import {
   EXPLODE_DIRECTION_REFERENCE,
+  EXPLODE_DIRECTION_REFERENCE_FRONT,
   EXPLODE_OVERRIDES,
   FAMILY_MATERIAL,
   FRONT_DRIVE,
   FRONT_DRIVE_SEAT_ADJUST,
   FRONT_MOUNT,
   familyOf,
+  ORANGE_EMPHASIS,
   type PartFamily,
   stripDedupSuffix
 } from './parts';
@@ -49,14 +51,25 @@ interface PartRecord {
   // FRONT_DRIVE_SEAT_ADJUST subset -- only `gear` is physically adjacent to FRONT_MOUNT, so only
   // it remaps its seat target onto the resized mount in `updatePartTransforms`; see parts.ts.
   isSeatAdjust: boolean;
+  // ORANGE_EMPHASIS subset -- the pistons get the same pre-highlight orange pulse as FRONT_DRIVE
+  // (gear) without joining that list (no resize/lift/green/red). See parts.ts.
+  isOrangeEmphasis: boolean;
   localSphere: THREE.Sphere; // geometry-local, unscaled -- transformed by matrixWorld per frame
 }
 
 interface ShellRecord {
   mesh: THREE.Mesh;
-  // 'orange'/'coverOrange' are the gear's / engineBackCover's shared pre-highlight pulse
-  // (frame.preHighlightOrange) -- two shell instances (one per part) driven by one frame field.
-  kind: 'green' | 'red' | 'mountGreen' | 'orange' | 'coverOrange';
+  // 'orange' is the shared pre-highlight pulse (frame.preHighlightOrange) on the gear, pistons,
+  // and engineBackCover. 'blue' and 'ringRed' are the gear's own two-stage transition
+  // (frame.blue, then frame.ringRed). 'red' is engineBackCover's mismatch beat (frame.red);
+  // 'pistonRed' is the pistons' (frame.pistonRed) -- both ramp in lockstep with the gear's
+  // 'ringRed'. 'finalGreen' is the shared resolved color every one of these parts (plus the
+  // mount) settles into (frame.finalGreen).
+  kind: 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen';
+  // The heartbeat pulse's two endpoints, cached once at shell-build time (see vividVariant) so
+  // updateHighlights only ever does a per-frame lerp, never a color-space conversion.
+  baseColor: THREE.Color;
+  vividColor: THREE.Color;
 }
 
 const POSE_EPSILON = 1e-6;
@@ -72,15 +85,6 @@ const POSE_EPSILON = 1e-6;
 // every part hangs near the engine with clear space (and the camera fit stays sane).
 const EXPLODE_MIN_FRACTION = 0.54;
 const EXPLODE_MAX_FRACTION = 1.89;
-
-// The gear's "mismatch" lift: frame.frontDriveLift (0..1, beats.ts) is scaled by the gear's own
-// bounding-sphere radius so the offset reads proportionally regardless of model scale. Applied
-// along world +Y in the natural assembled/exploded pose space every part's position is already
-// expressed in -- so it reads as "up off the cover's face" consistently in every phase that shows
-// it (hero/early-traverse never show it since frontDriveLift is still 0 there). ~0.18 puts the
-// mismatch clearly off-seat without detaching the gear from the assembly.
-const FRONT_LIFT_FRACTION = 0.18;
-const FRONT_LIFT_AXIS = new THREE.Vector3(0, 1, 0);
 
 // The page's stage background (see EngineStage's containing div and root.tsx) -- the canvas
 // itself is transparent (`alpha: true`, clear alpha 0, `scene.background = null`), so fogging to
@@ -115,6 +119,52 @@ const DRAG_SNAP_BACK_RATE = 4; // 1/s, exponential ease back to zero after relea
 const GROUND_SHADOW_FOOTPRINT_SCALE = 1.6; // plane size relative to the assembled footprint
 const GROUND_SHADOW_DROP_FRACTION = 0.08; // fraction of modelRadius the plane sits below the oil pan -- a visible gap, so the engine reads as hovering just above the ground rather than resting on it
 const GROUND_SHADOW_TEXTURE_SIZE = 256;
+
+// --- Mismatch bounding box -----------------------------------------------------------------
+// A translucent green box that fades in around just the mismatch story's own parts (gear,
+// pistons, engineBackCover -- not the whole engine) while every highlight shell is dark
+// (frame.boxWeight, ~t46-60 peaking at 60), and fades back out as those parts resolve to the
+// shared green (~t60-72). A fixed prop like the ground shadow: sized/positioned once at load time
+// from those parts' exploded pose (see computeMismatchBoxBounds) rather than tracked live, since
+// explode is held flat for this entire window -- nothing it encloses moves.
+const BOUNDING_BOX_MAX_OPACITY = 0.16;
+
+// --- Highlight heartbeat ------------------------------------------------------------------
+// Every highlight shell (buildHighlightShells/updateHighlights) -- every kind alike, including
+// 'orange' -- pulses at a steady real-time rate, ~45 BPM (one full cycle a bit faster than every
+// two seconds). This is layered on top of whatever intensity the EngineFrame already computed
+// (frame.blue/ringRed/red/pistonRed/finalGreen/preHighlightOrange); it never changes *whether* a
+// shell is showing, only how it looks while it is. The bounding box (updateBoundingBox) is
+// deliberately never touched by this pulse -- it's a plain static/steady prop, not part of the
+// pulsing highlight set.
+const HEARTBEAT_HZ = 0.75; // ~45 BPM
+
+// One continuous sine per cycle rather than a snappy attack/decay -- a single smooth breathe with
+// no flat "rest" segment or hard corner anywhere in the cycle. pulseCycle is a 0..1 fraction of
+// one HEARTBEAT_HZ period; the waveform is 2*pi-periodic in it, so scrubbing/wrapping never pops.
+function pulseWave(cycle: number): number {
+  return (1 - Math.cos(2 * Math.PI * cycle)) / 2;
+}
+
+// Saturation pushed all the way to 1, AND lightness pulled to 0.5 -- the point of maximum chroma
+// for any hue in HSL -- rather than just boosting saturation at the base color's own lightness.
+const HEARTBEAT_VIVID_SATURATION = 1;
+const HEARTBEAT_VIVID_LIGHTNESS = 0.5;
+
+function vividVariant(color: THREE.Color): THREE.Color {
+  const hsl = { h: 0, s: 0, l: 0 };
+  color.getHSL(hsl);
+  return new THREE.Color().setHSL(hsl.h, HEARTBEAT_VIVID_SATURATION, HEARTBEAT_VIVID_LIGHTNESS);
+}
+
+// Several of the highlight hex values (see beats.ts, especially HIGHLIGHT_ORANGE) already sit
+// very close to full HSL saturation at l~0.5 -- vividVariant's color shift alone barely moves
+// them, so a hue-only pulse reads as strong on blue/red/green but nearly invisible on orange.
+// Opacity has no such ceiling: boosting it at the peak of the pulse (within the material's 0..1
+// range, still well short of full-alpha at every shell's base opacity -- see updateHighlights) is
+// visible on every hue equally, orange included, and stacks with the color shift for hues that do
+// have chroma headroom.
+const HEARTBEAT_OPACITY_BOOST = 1.7;
 
 function clampSigned(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
@@ -157,14 +207,24 @@ export class EngineScene {
   private parts: PartRecord[] = [];
   private frontDriveParts: PartRecord[] = [];
   private mountPart: PartRecord | null = null;
+  private orangeEmphasisParts: PartRecord[] = [];
   private shells: ShellRecord[] = [];
-  private links: THREE.Mesh[] = [];
   private groundShadow: THREE.Mesh | null = null;
+  private boundingBox: THREE.Mesh | null = null;
   private modelRadius = 1;
 
   private currentFrame: EngineFrame | null = null;
   private heroIdle = false;
   private idleAzimuthOffset = 0;
+
+  // Highlight heartbeat: an independent wall-clock pulse (see pulseWave above) layered onto
+  // every highlight shell's color (orange/blue/ringRed/red/pistonRed/finalGreen alike -- see
+  // buildHighlightShells/updateHighlights), entirely decoupled from the scroll-driven EngineFrame
+  // -- it keeps beating at a constant real-time rate regardless of scroll position or scrub
+  // direction. Off (pulseWeight pinned to 0, no accumulation) under prefers-reduced-motion.
+  private reducedMotion = false;
+  private pulseCycle = 0; // 0..1, one HEARTBEAT_HZ period
+  private pulseWeight = 0;
 
   // Drag-to-orbit: transient offsets layered onto frame.azimuth/elevation in fitCameraToFrame,
   // never weighted by idleWeight (they apply in every phase) and never fed back into beats.ts.
@@ -331,6 +391,19 @@ export class EngineScene {
     if (healthyDirection.lengthSq() < POSE_EPSILON) healthyDirection.set(0, 0, 1);
     healthyDirection.normalize();
 
+    // A second, independent reference direction for the front-drive end (belt/crankshaftSprocket/
+    // camshaftSprocket) -- their own raw axes point the wrong way (see EXPLODE_OVERRIDES's
+    // comment on those entries), and `healthyDirection` above can't serve both ends of the engine
+    // at once (gear needs +Z-ish outward, these need -Z-ish outward -- averaging would cancel).
+    const frontHealthyDirection = new THREE.Vector3();
+    for (const mesh of meshes) {
+      if (!EXPLODE_DIRECTION_REFERENCE_FRONT.includes(stripDedupSuffix(mesh.name))) continue;
+      const raw = rawExplode.get(mesh.uuid);
+      if (raw) frontHealthyDirection.add(raw.direction);
+    }
+    if (frontHealthyDirection.lengthSq() < POSE_EPSILON) frontHealthyDirection.set(0, 0, -1);
+    frontHealthyDirection.normalize();
+
     // Exploded pose per part: assembled position pushed along the authored assembly axis
     // (staging -> seat, reversed), raw staging distance compressed into
     // [EXPLODE_MIN..EXPLODE_MAX] of the model radius. Orientation and scale stay assembled —
@@ -345,7 +418,12 @@ export class EngineScene {
       if (!assembled || !raw) continue;
 
       const override = EXPLODE_OVERRIDES[stripDedupSuffix(mesh.name)];
-      const direction = override?.direction === 'reference' ? healthyDirection : raw.direction;
+      const direction =
+        override?.direction === 'reference'
+          ? healthyDirection
+          : override?.direction === 'frontReference'
+            ? frontHealthyDirection
+            : raw.direction;
 
       const saturated = raw.rawDistance / (raw.rawDistance + modelRadius); // 0..1, monotonic in rawDistance
       let distance = modelRadius * lerp(EXPLODE_MIN_FRACTION, EXPLODE_MAX_FRACTION, saturated);
@@ -391,6 +469,7 @@ export class EngineScene {
     const frontDriveSet = new Set(FRONT_DRIVE);
     const frontMountSet = new Set(FRONT_MOUNT);
     const seatAdjustSet = new Set(FRONT_DRIVE_SEAT_ADJUST);
+    const orangeEmphasisSet = new Set(ORANGE_EMPHASIS);
     const parts: PartRecord[] = [];
 
     for (const mesh of meshes) {
@@ -418,6 +497,7 @@ export class EngineScene {
         isFrontDrive: frontDriveSet.has(stripDedupSuffix(mesh.name)),
         isMount: frontMountSet.has(stripDedupSuffix(mesh.name)),
         isSeatAdjust: seatAdjustSet.has(stripDedupSuffix(mesh.name)),
+        isOrangeEmphasis: orangeEmphasisSet.has(stripDedupSuffix(mesh.name)),
         localSphere
       });
     }
@@ -439,14 +519,17 @@ export class EngineScene {
     this.parts = parts;
     this.frontDriveParts = parts.filter((part) => part.isFrontDrive);
     this.mountPart = parts.find((part) => part.isMount) ?? null;
+    this.orangeEmphasisParts = parts.filter((part) => part.isOrangeEmphasis);
 
     this.group = group;
     this.scene.add(group);
 
     this.buildHighlightShells();
-    this.buildLinkageLines();
+    this.boundingBox = this.buildBoundingBox(this.computeMismatchBoxBounds());
+    this.scene.add(this.boundingBox);
 
     this.resize();
+    this.ensureMotionLoop(); // starts the highlight heartbeat (see motionTick); settles on its own if reduced-motion is on and nothing else is animating
   }
 
   setFrame(frame: EngineFrame): void {
@@ -461,6 +544,20 @@ export class EngineScene {
     // Turning off doesn't force-cancel the shared loop -- if a snap-back is still in flight, the
     // driver keeps running for it and stops itself once everything (including idle, now off) is
     // settled. See motionTick's settled check.
+  }
+
+  // Gates the highlight heartbeat (see the "Highlight heartbeat" constants above). Off entirely
+  // under prefers-reduced-motion: pulseCycle stops accumulating and pulseWeight is pinned to 0,
+  // so shells sit at their base (non-vivid) color with no per-frame flashing.
+  setReducedMotion(on: boolean): void {
+    if (on === this.reducedMotion) return;
+    this.reducedMotion = on;
+    if (on) {
+      this.pulseWeight = 0;
+      if (this.currentFrame) this.applyFrame(this.currentFrame);
+    } else {
+      this.ensureMotionLoop();
+    }
   }
 
   resize(): void {
@@ -498,7 +595,7 @@ export class EngineScene {
     this.updatePartTransforms(frame);
     this.group.updateMatrixWorld(true);
     this.updateHighlights(frame);
-    this.updateLinkage(frame);
+    this.updateBoundingBox(frame);
     this.updateGroundShadow(frame);
     this.fitCameraToFrame(frame);
     this.render();
@@ -560,12 +657,19 @@ export class EngineScene {
     this.rafId = requestAnimationFrame(this.motionTick);
   }
 
-  // The one rAF driver for every transient (non-choreography) motion: hero idle spin and drag
-  // snap-back. Runs while either is active and stops itself once both have settled, rather than
-  // each maintaining a competing loop.
+  // The one rAF driver for every transient (non-choreography) motion: hero idle spin, drag
+  // snap-back, and the highlight heartbeat. Runs while any of the three is active and stops
+  // itself once all have settled, rather than each maintaining a competing loop.
   private readonly motionTick = (time: number): void => {
     const dt = this.motionLastTime ? Math.min((time - this.motionLastTime) / 1000, 0.1) : 0;
     this.motionLastTime = time;
+
+    if (!this.reducedMotion) {
+      // Wall-clock oscillation, entirely independent of scroll/EngineFrame state -- keeps
+      // beating at HEARTBEAT_HZ regardless of scroll position, direction, or scrub speed.
+      this.pulseCycle = (this.pulseCycle + HEARTBEAT_HZ * dt) % 1;
+      this.pulseWeight = pulseWave(this.pulseCycle);
+    }
 
     if (this.heroIdle) {
       this.idleAzimuthOffset += HERO_IDLE_RATE * dt;
@@ -590,10 +694,20 @@ export class EngineScene {
       if (Math.abs(this.dragElevationOffset) < 1e-4) this.dragElevationOffset = 0;
     }
 
-    if (this.currentFrame) this.applyFrame(this.currentFrame);
-    else this.render();
+    try {
+      if (this.currentFrame) this.applyFrame(this.currentFrame);
+      else this.render();
+    } catch (error) {
+      // A render-path exception must never silently kill this self-perpetuating rAF chain -- if
+      // it did, the highlight heartbeat (and idle spin, and drag snap-back) would stop advancing
+      // entirely, and the scene would only repaint on the next externally-triggered call
+      // (setFrame from scroll, or resize). That would make every one of these loop-driven
+      // animations look like it's tracking scroll instead of running independently of it.
+      console.error('EngineScene motionTick render failed', error);
+    }
 
-    const settled = !this.heroIdle && this.dragAzimuthOffset === 0 && this.dragElevationOffset === 0;
+    const settled =
+      !this.heroIdle && this.reducedMotion && this.dragAzimuthOffset === 0 && this.dragElevationOffset === 0;
     if (settled) {
       this.rafId = null;
       return;
@@ -612,15 +726,6 @@ export class EngineScene {
     // FRONT_DRIVE_SEAT_ADJUST doc comment for why remapping the far-end front-drive parts
     // (belt/sprockets/throttleBody) against a mount ~135 units away would read as nonsense.
     const remapScale = lerp(1, MOUNT_SCALE, frame.seatAdjust);
-
-    // The gear's lift is resolved to world units here (frame.frontDriveLift is a pure 0..1 weight
-    // from beats.ts) as a fraction of the gear's own bounding-sphere radius. FRONT_DRIVE is
-    // exactly one part now (`gear`), so `frontDriveParts[0]` is unambiguous. Held for the mount's
-    // own catch-up below, scaled by `frame.seatAdjust` so the cover only rises to meet the gear
-    // once success remaps the gear's seat target onto the resized mount -- before that (span/
-    // related), the cover only grows, and the lift-induced gap stays visibly open.
-    const liftGear = this.frontDriveParts[0];
-    const liftAmount = liftGear ? frame.frontDriveLift * liftGear.localSphere.radius * FRONT_LIFT_FRACTION : 0;
 
     for (const part of this.parts) {
       const k = part.isFrontDrive ? frame.frontDriveExplode : frame.explode;
@@ -650,22 +755,13 @@ export class EngineScene {
         part.mesh.position.copy(basePos);
       }
 
-      // The mismatch lift: gear rises off its seat (permanent from `change` onward); the mount
-      // catches up to meet it only once `seatAdjust` engages in `success`, so the gap the lift
-      // opened stays visible through span/related and closes cleanly at the end of success.
-      if (part.isFrontDrive) {
-        part.mesh.position.addScaledVector(FRONT_LIFT_AXIS, liftAmount);
-      } else if (part.isMount) {
-        part.mesh.position.addScaledVector(FRONT_LIFT_AXIS, liftAmount * frame.seatAdjust);
-      }
-
       part.mesh.quaternion.copy(baseQuat);
       part.mesh.scale.copy(finalScale);
     }
   }
 
   private buildHighlightShells(): void {
-    // Every highlight shell here is an ordinary depth-tested overlay: both FRONT_DRIVE (green)
+    // Every highlight shell here is an ordinary depth-tested overlay: both FRONT_DRIVE (blue)
     // and FRONT_MOUNT (red/green) parts are externally visible from the canonical camera angles,
     // so there's no need for the depthTest:false "x-ray" treatment an earlier, buried mount
     // (`engineBlockFront`) required to read through the parts in front of it.
@@ -683,43 +779,41 @@ export class EngineScene {
       });
 
     const shells: ShellRecord[] = [];
-    for (const part of this.frontDriveParts) {
-      const shell = new THREE.Mesh(part.mesh.geometry, shellMaterial(HIGHLIGHT_GREEN));
-      shell.scale.setScalar(1.02);
+    const addShell = (host: THREE.Mesh, colorHex: string, scale: number, kind: ShellRecord['kind']): void => {
+      const baseColor = new THREE.Color(colorHex);
+      const shell = new THREE.Mesh(host.geometry, shellMaterial(colorHex));
+      shell.scale.setScalar(scale);
       shell.visible = false;
-      part.mesh.add(shell);
-      shells.push({ mesh: shell, kind: 'green' });
+      host.add(shell);
+      shells.push({ mesh: shell, kind, baseColor, vividColor: vividVariant(baseColor) });
+    };
 
-      // Slightly larger than the green shell so the two don't z-fight when both are near-zero
-      // opacity at once (they're never both fully on -- orange precedes green by ~13 t units --
-      // but both fade through low opacity during the changeover).
-      const orange = new THREE.Mesh(part.mesh.geometry, shellMaterial(HIGHLIGHT_ORANGE));
-      orange.scale.setScalar(1.03);
-      orange.visible = false;
-      part.mesh.add(orange);
-      shells.push({ mesh: orange, kind: 'orange' });
+    for (const part of this.frontDriveParts) {
+      addShell(part.mesh, HIGHLIGHT_ORANGE, 1.03, 'orange');
+      // Each successive shell is a touch larger than the last so stacked shells never z-fight
+      // while crossfading through simultaneous low opacity.
+      addShell(part.mesh, HIGHLIGHT_BLUE, 1.04, 'blue');
+      addShell(part.mesh, HIGHLIGHT_RED, 1.05, 'ringRed');
+      addShell(part.mesh, HIGHLIGHT_GREEN, 1.06, 'finalGreen');
     }
     if (this.mountPart) {
       // Slightly larger shell scale than the front-drive parts': FRONT_MOUNT (engineBackCover) is
       // a thin flat plate seen edge-on from some camera angles, so its shell needs a touch more
-      // clearance than a rounder part to read clearly at `failure`/`related`.
-      const red = new THREE.Mesh(this.mountPart.mesh.geometry, shellMaterial(HIGHLIGHT_RED));
-      red.scale.setScalar(1.04);
-      red.visible = false;
-      this.mountPart.mesh.add(red);
-      shells.push({ mesh: red, kind: 'red' });
-
-      const green = new THREE.Mesh(this.mountPart.mesh.geometry, shellMaterial(HIGHLIGHT_GREEN));
-      green.scale.setScalar(1.04);
-      green.visible = false;
-      this.mountPart.mesh.add(green);
-      shells.push({ mesh: green, kind: 'mountGreen' });
-
-      const orange = new THREE.Mesh(this.mountPart.mesh.geometry, shellMaterial(HIGHLIGHT_ORANGE));
-      orange.scale.setScalar(1.05);
-      orange.visible = false;
-      this.mountPart.mesh.add(orange);
-      shells.push({ mesh: orange, kind: 'coverOrange' });
+      // clearance than a rounder part to read clearly at `failure`/`related`. engineBackCover
+      // shares the pistons' pre-highlight orange (frame.preHighlightOrange), flips to red in
+      // lockstep with the gear's ringRed and the pistons' pistonRed (frame.red), then settles to
+      // the same shared green as the rest of the mismatch story (frame.finalGreen).
+      addShell(this.mountPart.mesh, HIGHLIGHT_ORANGE, 1.05, 'orange');
+      addShell(this.mountPart.mesh, HIGHLIGHT_RED, 1.06, 'red');
+      addShell(this.mountPart.mesh, HIGHLIGHT_GREEN, 1.07, 'finalGreen');
+    }
+    // ORANGE_EMPHASIS parts (piston001-008): the same pre-highlight glow as the gear (frame.
+    // preHighlightOrange), then their own red beat (frame.pistonRed) in lockstep with the gear's
+    // ringRed, then the same shared final green (frame.finalGreen).
+    for (const part of this.orangeEmphasisParts) {
+      addShell(part.mesh, HIGHLIGHT_ORANGE, 1.03, 'orange');
+      addShell(part.mesh, HIGHLIGHT_RED, 1.04, 'pistonRed');
+      addShell(part.mesh, HIGHLIGHT_GREEN, 1.05, 'finalGreen');
     }
     this.shells = shells;
   }
@@ -778,76 +872,110 @@ export class EngineScene {
     return mesh;
   }
 
-  // The linkage is drawn with thin unlit cylinders, not THREE.Line — LineBasicMaterial is a
-  // fixed single pixel wide, which disappears against the pale background at page scale.
-  private buildLinkageLines(): void {
-    const geometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
-    const links: THREE.Mesh[] = [];
-    for (let i = 0; i < this.frontDriveParts.length; i++) {
-      const material = new THREE.MeshBasicMaterial({
-        color: LINK_AMBER,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        depthTest: false,
-        fog: false // unlit story UI, not part of the physical scene -- must not veil with depth
-      });
-      const link = new THREE.Mesh(geometry, material);
-      link.visible = false;
-      link.frustumCulled = false;
-      link.renderOrder = 10;
-      this.scene.add(link);
-      links.push(link);
+  // The box only encloses the mismatch story's own parts (gear, pistons, engineBackCover), not
+  // the whole engine -- a box around every part read as far too large, swallowing parts that
+  // never take part in this beat at all. Computed once, statically, from those parts' *exploded*
+  // pose (position/quaternion/scale, no live mesh state needed) since explode is held flat at 1
+  // for this entire window (see explodeAt) -- nothing it encloses moves. Temporarily snaps the
+  // relevant meshes to their exploded pose to read a world-space Box3 via expandByObject, then
+  // restores them to their construction-time assembled pose (the real pose gets applied by the
+  // first setFrame call regardless, but leaving stale exploded-pose meshes around in the meantime
+  // risks a mismatched flash before that first frame lands).
+  private computeMismatchBoxBounds(): THREE.Box3 {
+    const relevant = [
+      ...this.frontDriveParts,
+      ...this.orangeEmphasisParts,
+      ...(this.mountPart ? [this.mountPart] : [])
+    ];
+
+    for (const part of relevant) {
+      part.mesh.position.copy(part.exploded.position);
+      part.mesh.quaternion.copy(part.exploded.quaternion);
+      part.mesh.scale.copy(part.exploded.scale);
     }
-    this.links = links;
+    this.group?.updateMatrixWorld(true);
+    const bounds = new THREE.Box3();
+    for (const part of relevant) bounds.expandByObject(part.mesh);
+
+    for (const part of relevant) {
+      part.mesh.position.copy(part.assembled.position);
+      part.mesh.quaternion.copy(part.assembled.quaternion);
+      part.mesh.scale.copy(part.assembled.scale);
+    }
+    this.group?.updateMatrixWorld(true);
+
+    return bounds;
+  }
+
+  // A plain unit cube scaled/positioned once to `bounds` (see computeMismatchBoxBounds) --
+  // translucent and unlit, standing in for "something is being measured/flagged" while every
+  // enclosed part's own highlight shell is dark (~t46-60). Static: only its opacity/visibility
+  // change per frame (see updateBoundingBox), since the parts it encloses don't move during the
+  // window it's shown in.
+  private buildBoundingBox(bounds: THREE.Box3): THREE.Mesh {
+    const size = new THREE.Vector3();
+    bounds.getSize(size);
+    const center = new THREE.Vector3();
+    bounds.getCenter(center);
+
+    // A touch of padding so the box comfortably encloses the parts rather than hugging their
+    // exact silhouette, matching the padding pattern the highlight shells already use.
+    const geometry = new THREE.BoxGeometry(
+      Math.max(size.x, 1e-3) * 1.08,
+      Math.max(size.y, 1e-3) * 1.08,
+      Math.max(size.z, 1e-3) * 1.08
+    );
+    const material = new THREE.MeshBasicMaterial({
+      color: HIGHLIGHT_GREEN,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false // unlit story UI, not part of the physical scene -- must not veil with depth
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(center);
+    mesh.visible = false;
+    return mesh;
   }
 
   private updateHighlights(frame: EngineFrame): void {
     for (const shell of this.shells) {
       const intensity =
-        shell.kind === 'green'
-          ? frame.green
-          : shell.kind === 'red'
-            ? frame.red
-            : shell.kind === 'mountGreen'
-              ? frame.mountGreen
-              : frame.preHighlightOrange; // 'orange' | 'coverOrange' -- one shared weight, two parts
-      const opacity =
-        intensity * (shell.kind === 'red' ? 0.55 : shell.kind === 'green' || shell.kind === 'mountGreen' ? 0.45 : 0.5);
+        shell.kind === 'blue'
+          ? frame.blue
+          : shell.kind === 'ringRed'
+            ? frame.ringRed
+            : shell.kind === 'red'
+              ? frame.red
+              : shell.kind === 'pistonRed'
+                ? frame.pistonRed
+                : shell.kind === 'finalGreen'
+                  ? frame.finalGreen
+                  : frame.preHighlightOrange; // 'orange' -- one shared weight across the gear + pistons + cover
+      const baseOpacity =
+        intensity *
+        (shell.kind === 'red' || shell.kind === 'ringRed' || shell.kind === 'pistonRed'
+          ? 0.55
+          : shell.kind === 'blue' || shell.kind === 'finalGreen'
+            ? 0.45
+            : 0.5);
       const material = shell.mesh.material as THREE.MeshBasicMaterial;
-      material.opacity = opacity;
-      shell.mesh.visible = opacity >= 0.01;
+      material.opacity = Math.min(1, baseOpacity * lerp(1, HEARTBEAT_OPACITY_BOOST, this.pulseWeight));
+      material.color.copy(shell.baseColor).lerp(shell.vividColor, this.pulseWeight);
+      shell.mesh.visible = baseOpacity >= 0.01;
     }
   }
 
-  private updateLinkage(frame: EngineFrame): void {
-    const mount = this.mountPart;
-    if (!mount) return;
-    const mountCenter = mount.mesh.localToWorld(mount.localSphere.center.clone());
-    const total = this.frontDriveParts.length;
-    const linkRadius = this.modelRadius * 0.008;
-    const up = new THREE.Vector3(0, 1, 0);
-
-    this.frontDriveParts.forEach((part, index) => {
-      const link = this.links[index];
-      if (!link) return;
-      // Staggered draw-on: link i draws over its own sub-interval of the overall amber ramp.
-      const segmentStart = (index / total) * 0.5;
-      const progress = ramp(frame.amber, segmentStart, segmentStart + 0.5);
-
-      const start = part.mesh.localToWorld(part.localSphere.center.clone());
-      const end = start.clone().lerp(mountCenter, progress);
-      const direction = end.clone().sub(start);
-      const length = Math.max(direction.length(), 1e-4);
-
-      link.position.copy(start).add(end).multiplyScalar(0.5);
-      link.quaternion.setFromUnitVectors(up, direction.normalize());
-      link.scale.set(linkRadius, length, linkRadius);
-
-      const material = link.material as THREE.MeshBasicMaterial;
-      material.opacity = progress * 0.85;
-      link.visible = progress > 0.01;
-    });
+  // The box is a fixed prop (see computeMismatchBoxBounds/buildBoundingBox) -- only its
+  // opacity/visibility respond to the frame. Deliberately untouched by pulseWeight/pulseWave --
+  // the mismatch box is a steady static prop, not one of the pulsing highlight shells.
+  private updateBoundingBox(frame: EngineFrame): void {
+    const box = this.boundingBox;
+    if (!box) return;
+    const material = box.material as THREE.MeshBasicMaterial;
+    material.opacity = frame.boxWeight * BOUNDING_BOX_MAX_OPACITY;
+    box.visible = frame.boxWeight >= 0.01;
   }
 
   private updateGroundShadow(frame: EngineFrame): void {

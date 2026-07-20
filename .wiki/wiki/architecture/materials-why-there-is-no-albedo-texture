@@ -1,9 +1,9 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L230-L244 rk64:f67d8fde410e173e
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L272-L285 rk64:7ba2a63865fa1818
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L371-L386 rk64:2faf8abb7f3b4ee3
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L290-L304 rk64:f67d8fde410e173e
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L449-L464 rk64:2faf8abb7f3b4ee3
 packages/website/app/components/marketing/story/engine/parts.ts#L1-L54 rk64:ead220bb857e159d
 packages/website/app/components/marketing/story/engine/parts.ts#L71-L84 rk64:2a85b31de9dfdcaf
 packages/website/app/components/marketing/story/engine/parts.ts#L96-L117 rk64:35d54029a857c398
-wiki/architecture/homepage-engine-animation.md#L231-L277 rk64:5b959716b8a07e81
+wiki/architecture/homepage-engine-animation.md#L231-L277 rk64:b1f72b15872e2675
 
 Why the engine parts use procedural/PBR materials instead of an albedo texture map.

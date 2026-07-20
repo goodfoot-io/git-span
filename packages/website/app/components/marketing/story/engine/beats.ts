@@ -6,31 +6,40 @@
 import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, TIMELINE } from '../scene';
 
 // --- Tunable constants -------------------------------------------------------------------
-export const FRONT_SCALE = 1.15; // front-drive parts' scale at the top of `change`
+export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch beat is active
 export const MOUNT_SCALE = 1.15; // FRONT_MOUNT's (engineBackCover's) scale at the top of `related`
-export const FAIL_STOP = 0.5; // residual front-drive explode in `failure` — the gap that won't close
 
-export const HIGHLIGHT_GREEN = '#34d399';
+export const HIGHLIGHT_GREEN = '#34d399'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
 export const HIGHLIGHT_RED = '#ef4444';
-export const LINK_AMBER = '#d97706';
-// A pre-highlight pulse on the gear + engineBackCover right around when the camera settles into
-// its canonical framing (see CAMERA_SETTLE_T) -- a distinct hue from LINK_AMBER so it doesn't read
-// as the later linkage beat.
+export const HIGHLIGHT_BLUE = '#3b82f6'; // the ring gear's own first-stage transition color
+// A pre-highlight pulse on the gear + pistons + engineBackCover right around when the camera
+// settles into its canonical framing (see CAMERA_SETTLE_T), fading directly into the mismatch
+// beat's red -- a distinct hue so it doesn't read as the later resolution beat.
 export const HIGHLIGHT_ORANGE = '#f97316';
 
 // The fit is bounding-sphere based, which already over-estimates the model's visual footprint —
 // these margins stay modest so the engine reads generously while still never touching the frame.
 // Margin is a scale-invariant padding ratio on the *current* bounding sphere (fitCameraToFrame
 // recomputes camera distance from whatever sphere is live each frame), so a smaller margin always
-// reads as "more zoomed in," never as cropping -- safe to switch per-phase without blending.
-export const MARGIN_ASSEMBLED = 1.12; // camera margin for hero (idle turntable needs headroom)
-export const MARGIN_EXPLODED = 0.85; // constellation phases (traverse/change/second/span/related)
+// reads as "more zoomed in," never as cropping. MARGIN_EXPLODED holds flat for the entire
+// exploded-view portion of the timeline (see marginAt) -- the apparent size of the constellation
+// never changes on its own; only the live bounding-sphere radius (which shrinks during the final
+// reassembly) moves the camera.
+// Both margins below are the original values x0.8, a deliberate 25%-larger pass (smaller margin
+// => camera sits closer => bigger apparent size, at a fixed FOV/frame size -- see the header
+// comment above). MARGIN_ASSEMBLED landing under 1.0 (0.896) is a real change of character from
+// the original >1.0 "guaranteed headroom" value: the assembled engine's silhouette sits closer to
+// its own bounding sphere than the exploded constellation's does (it's compact and roughly
+// isotropic, without the exploded view's big empty sphere corners), so this is the margin most
+// likely to graze the frame edge on some viewport aspect ratios -- check the hero framing against
+// real screenshots after this change, and back off toward 1.0 if it crops.
+export const MARGIN_ASSEMBLED = 0.896; // camera margin for hero (idle turntable needs headroom)
+export const MARGIN_EXPLODED = 0.68; // held flat from the end of `traverse` onward
 // -- the sphere fit overestimates the constellation's actual silhouette (parts explode along
 // specific directions, not isotropically, so the bounding sphere has empty corners no geometry
 // ever reaches), so this sits below 1.0 to compensate and still lands the visible cluster close
 // to the frame edge; see the header comment above and iterate against real screenshots, not the
 // number in isolation.
-export const MARGIN_FAILURE = 1.06; // tighter margin from `failure` onward (auto push-in)
 
 // Hero holds a level, end-on shot down the crankshaft axis — the front (sprocket/belt) end
 // facing the camera, as the engine would present mounted in a car; `traverse` eases up into the
@@ -81,19 +90,17 @@ const IDLE_FADE_FRACTION = 0.3;
 
 export interface EngineFrame {
   explode: number; // 0..1, all parts except front drive
-  frontDriveExplode: number; // 0..1 (+FAIL_STOP residual in failure)
-  frontDriveScale: number; // 1..FRONT_SCALE
+  frontDriveExplode: number; // 0..1 -- tracks `explode` exactly (unison motion, no separate stall)
+  frontDriveScale: number; // 1..FRONT_SCALE -- the gear's own oversize beat; see scaleWeightAt
   mountScale: number; // 1..MOUNT_SCALE
   seatAdjust: number; // 0..1 -- success-only: FD seats to mount-scaled anchors
-  frontDriveLift: number; // 0..1 -- gear's lift off its seat; EngineScene resolves this into a
-  // world-unit offset (a fraction of the gear's own radius). Ramps in during `change` on the same
-  // curve as frontDriveScale and holds at 1 permanently from the end of `change` onward -- the
-  // lift, like the resize, is a modification the story never undoes.
-  green: number;
-  red: number;
-  amber: number;
-  mountGreen: number;
-  preHighlightOrange: number; // 0..1 -- orange pulse on gear + engineBackCover, ~t 7.5-19
+  blue: number; // 0..1 -- the ring gear's first-stage orange->blue weight, ~t16-24, fading as `ringRed` ramps in
+  ringRed: number; // 0..1 -- the ring gear's second-stage blue->red weight, ~t28-41; see mismatchRedAt
+  red: number; // 0..1 -- engineBackCover's orange->red weight, in lockstep with the pistons and the gear's resize/blue, ~t16-24; see pistonRedAt
+  pistonRed: number; // 0..1 -- pistons' orange->red weight, in lockstep with the gear's resize/blue, ~t16-24; see pistonRedAt
+  finalGreen: number; // 0..1 -- gear + pistons + engineBackCover + mount all settle to this shared green, ~t60-72, permanent after
+  boxWeight: number; // 0..1 -- the translucent bounding-box's opacity while color is off the parts, ~t46-72 (peaks at 60)
+  preHighlightOrange: number; // 0..1 -- orange pulse on gear + pistons + engineBackCover, ~t 7.5-28
   azimuth: number;
   elevation: number;
   margin: number;
@@ -101,91 +108,118 @@ export interface EngineFrame {
   groundShadow: number; // 0..1 -- fake contact-shadow plane opacity; see groundShadowAt below
 }
 
-function explodeAt(phase: PhaseId, l: number, t: number): number {
-  switch (phase) {
-    // hero and traverse share one curve (heroTraverseProgress) so explode starts ramping at the
-    // very first pixel of scroll (t just above 0, still inside `hero`) and reaches 1 exactly at
-    // the end of `traverse`, matching `change`'s held value with no seam.
-    case 'hero':
-    case 'traverse':
-      return heroTraverseProgress(t);
-    case 'change':
-      return 1;
-    case 'failure':
-      return lerp(1, 0, ease(ramp(l, 0, 0.65)));
-    case 'second':
-      return lerp(0, 1, ease(ramp(l, 0, 0.6)));
-    case 'span':
-    case 'related':
-      return 1;
-    case 'success':
-      return lerp(1, 0, ease(ramp(l, 0, 0.7)));
-  }
+// The final reassembly (exploded -> assembled) is expressed directly in `t`: FINAL_REASSEMBLY_
+// START_T (83, inside `related`) to FINAL_REASSEMBLY_END_T (87, still inside `related`, well
+// before `success` begins at ~96.97). Nothing about position moves again after 87 -- explode holds
+// at 0 for the remainder of the timeline. Everything from CAMERA_SETTLE_T (12.3) through 83 stays
+// fully exploded; the color/scale/box beats between 16 and 83 all play out against that held
+// exploded pose, not against any intermediate collapse.
+const FINAL_REASSEMBLY_START_T = 83;
+const FINAL_REASSEMBLY_END_T = 87;
+
+// Pure function of `t`: ramps up with the camera settle (heroTraverseProgress), holds flat at 1
+// through the whole mismatch story (color changes, box, scale cycling -- none of them move
+// anything), then collapses back to 0 over the FINAL_REASSEMBLY window. heroTraverseProgress is
+// already pinned at 1 for every t past CAMERA_SETTLE_T, so multiplying it by the (1 - reassembly
+// ramp) factor composes both ends of the curve without a phase switch.
+function explodeAt(t: number): number {
+  return heroTraverseProgress(t) * (1 - ramp(t, FINAL_REASSEMBLY_START_T, FINAL_REASSEMBLY_END_T));
 }
 
-function frontDriveExplodeAt(phase: PhaseId, l: number, t: number): number {
-  switch (phase) {
-    case 'hero':
-    case 'traverse':
-      return heroTraverseProgress(t); // tracks explode -- unison motion, no separate axis
-    case 'change':
-      return 1;
-    case 'failure':
-      return lerp(1, FAIL_STOP, ease(ramp(l, 0, 0.65)));
-    case 'second':
-      return lerp(FAIL_STOP, 1, ease(ramp(l, 0, 0.6)));
-    case 'span':
-    case 'related':
-      return 1;
-    case 'success':
-      return lerp(1, 0, ease(ramp(l, 0, 0.7)));
-  }
+// Always tracks explodeAt exactly -- the gear no longer stalls at a partial, unclosed gap; it
+// moves in unison with the rest of the body for both the initial explode and the final reassembly.
+function frontDriveExplodeAt(t: number): number {
+  return explodeAt(t);
 }
 
-// Resize/lift ramp window, expressed directly in `t` (not local `l`) so it's pinned to an exact
-// scroll position rather than a phase-relative fraction: both complete by CHANGE_RESIZE_END_T
-// (~28), in step with the green/red highlight window below (GLOW_IN_START_T..GLOW_OUT_END_T,
-// ~23.5-29) rather than change's earlier [0.15,0.75]-local window (~t 20.9-31.8).
-const CHANGE_RESIZE_START_T = 24;
-const CHANGE_RESIZE_END_T = 28;
+// --- The mismatch story: color, scale, and the bounding box -----------------------------------
+// Every beat below is a pure function of `t` (never gated on phase), so each is pinned to an exact
+// scroll position regardless of which phase boundary it happens to fall in:
+//
+//   t 7.5-8    orange pre-highlight ramps in on gear + pistons + engineBackCover
+//   t 16-24    the gear turns orange -> blue and grows to FRONT_SCALE; the pistons and
+//              engineBackCover go straight orange -> red on the same window (see pistonRedAt)
+//   t 20-28    the orange pre-highlight fades out on the gear, crossfading into the window below
+//              rather than into the gear's intermediate blue
+//   t 28-41    the gear (only) goes blue -> red, resolving to the same red the pistons and
+//              engineBackCover already locked in at t24
+//   t 46-60    every highlighted part fades to no color at all, the gear shrinks back to 1x,
+//              and a translucent green bounding box fades in around the ring/pistons/back plate
+//   t 60-72    the bounding box fades back out as gear + pistons + engineBackCover + the mount
+//              all fade up to the same shared green -- permanent from here on
+//   t 72-83    the gear grows back to FRONT_SCALE
+//   t 83-87    the whole engine reassembles (see explodeAt above)
+//
+// None of these are undone by anything later -- once a stage locks in, it holds.
+const ORANGE_IN_START_T = 7.5;
+const ORANGE_IN_END_T = 8;
+const ORANGE_OUT_START_T = 20;
+const ORANGE_OUT_END_T = 28;
+const RING_BLUE_START_T = 16;
+const RING_BLUE_END_T = 24;
+const MISMATCH_RED_START_T = 28;
+const MISMATCH_RED_END_T = 41;
+const COLOR_LOSS_START_T = 46;
+const COLOR_LOSS_END_T = 60;
+const RESOLVE_GREEN_START_T = 60;
+const RESOLVE_GREEN_END_T = 72;
+const RING_REGROW_START_T = 72;
+const RING_REGROW_END_T = 83;
 
-function frontDriveScaleAt(phase: PhaseId, t: number): number {
-  switch (phase) {
-    case 'hero':
-    case 'traverse':
-      return 1;
-    case 'change':
-      return lerp(1, FRONT_SCALE, ramp(t, CHANGE_RESIZE_START_T, CHANGE_RESIZE_END_T));
-    // Holds at FRONT_SCALE from the end of `change` onward -- never respecified, including
-    // through `success`: the resize is a change that sticks, not something the story undoes.
-    case 'failure':
-    case 'second':
-    case 'span':
-    case 'related':
-    case 'success':
-      return FRONT_SCALE;
-  }
+function preHighlightOrangeAt(t: number): number {
+  return Math.min(ramp(t, ORANGE_IN_START_T, ORANGE_IN_END_T), 1 - ramp(t, ORANGE_OUT_START_T, ORANGE_OUT_END_T));
 }
 
-// Mirrors frontDriveScaleAt's ramp shape exactly -- the gear's "growing larger and moving up
-// relative to the engineBackCover" is one modification introduced together in `change` and held
-// together forever after. Kept as a separate field (rather than reusing frontDriveScale directly
-// as the lift weight) so EngineScene can scale it into world units independently of the scale
-// factor's own numeric range.
-function frontDriveLiftAt(phase: PhaseId, t: number): number {
-  switch (phase) {
-    case 'hero':
-    case 'traverse':
-      return 0;
-    case 'change':
-      return lerp(0, 1, ramp(t, CHANGE_RESIZE_START_T, CHANGE_RESIZE_END_T));
-    case 'failure':
-    case 'second':
-    case 'span':
-    case 'related':
-    case 'success':
-      return 1;
-  }
+// The gear's first-stage color: ramps in with its resize, then fades back out over
+// MISMATCH_RED_START_T..END_T as `mismatchRedAt` (below) ramps in -- a direct blue -> red
+// crossfade, not a snap.
+function ringBlueAt(t: number): number {
+  return ramp(t, RING_BLUE_START_T, RING_BLUE_END_T) - ramp(t, MISMATCH_RED_START_T, MISMATCH_RED_END_T);
+}
+
+// The gear's own second stage (ringRed): ramps in over MISMATCH_RED_START_T..END_T, holds until
+// COLOR_LOSS_START_T, then fades out over COLOR_LOSS_START_T..END_T as every highlight goes dark
+// ahead of the bounding box / resolve-green beats.
+function mismatchRedAt(t: number): number {
+  return ramp(t, MISMATCH_RED_START_T, MISMATCH_RED_END_T) - ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T);
+}
+
+// Shared by the pistons (pistonRed) and engineBackCover (red): both go straight from orange to
+// red the moment the ring grows and turns blue (RING_BLUE_START_T..END_T), not in lockstep with
+// the ring's own later blue -> red stage. Holds until COLOR_LOSS_START_T, then fades out with
+// everything else.
+function pistonRedAt(t: number): number {
+  return ramp(t, RING_BLUE_START_T, RING_BLUE_END_T) - ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T);
+}
+
+// The shared "resolved" color every mismatch part (gear, pistons, engineBackCover) and the mount
+// settle into together. Ramps in once, holds permanently -- never undone.
+function finalGreenAt(t: number): number {
+  return ramp(t, RESOLVE_GREEN_START_T, RESOLVE_GREEN_END_T);
+}
+
+// The translucent bounding box: fades in exactly as color fades off the parts (COLOR_LOSS
+// window), peaks at t60, then fades back out exactly as the shared green fades in (RESOLVE_GREEN
+// window) -- the box and the green highlight are never both fully on, they hand off at t60.
+function boxWeightAt(t: number): number {
+  return ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T) - ramp(t, RESOLVE_GREEN_START_T, RESOLVE_GREEN_END_T);
+}
+
+// The gear's own oversize weight: grows to FRONT_SCALE alongside its first color stage, shrinks
+// back to 1x during the color-loss window (in lockstep with the box appearing), then grows back
+// to FRONT_SCALE once the parts have resolved to green. Composed as three chained ramps rather
+// than a single curve, the same additive/subtractive technique `explodeAt` and the rest of this
+// file already use for multi-stage `t`-only beats.
+function scaleWeightAt(t: number): number {
+  return (
+    ramp(t, RING_BLUE_START_T, RING_BLUE_END_T) -
+    ramp(t, COLOR_LOSS_START_T, COLOR_LOSS_END_T) +
+    ramp(t, RING_REGROW_START_T, RING_REGROW_END_T)
+  );
+}
+
+function frontDriveScaleAt(t: number): number {
+  return lerp(1, FRONT_SCALE, scaleWeightAt(t));
 }
 
 function mountScaleAt(phase: PhaseId, l: number): number {
@@ -210,78 +244,6 @@ function seatAdjustAt(phase: PhaseId, l: number): number {
   // once the mount itself has been resized (the beat before).
   if (phase !== 'success') return 0;
   return ease(ramp(l, 0, 0.7));
-}
-
-// Green (gear) / red (cover) glow window, expressed directly in `t`: rises over
-// [GLOW_IN_START_T, GLOW_IN_END_T] (~23.5-24.5, just ahead of the resize/lift ramp above so the
-// highlight cues the change before it visibly starts), holds at 1, falls over
-// [GLOW_OUT_START_T, GLOW_OUT_END_T] (~28-29, fully faded by 29, before failure begins).
-const GLOW_IN_START_T = 23.5;
-const GLOW_IN_END_T = 24.5;
-const GLOW_OUT_START_T = 28;
-const GLOW_OUT_END_T = 29;
-
-function greenAt(phase: PhaseId, t: number): number {
-  if (phase !== 'change') return 0;
-  // ramp() saturates outside its own range, so the min of the in- and out-ramps is the plateau
-  // with no extra state.
-  return Math.min(ramp(t, GLOW_IN_START_T, GLOW_IN_END_T), 1 - ramp(t, GLOW_OUT_START_T, GLOW_OUT_END_T));
-}
-
-function redAt(phase: PhaseId, l: number, t: number): number {
-  switch (phase) {
-    case 'change':
-      // NEW: engineBackCover flags red in the same window the gear glows green (~24-29),
-      // foreshadowing the mismatch that fails to seat in `failure`. Shares greenAt's exact ramp so
-      // the two read as one synchronized beat.
-      return Math.min(ramp(t, GLOW_IN_START_T, GLOW_IN_END_T), 1 - ramp(t, GLOW_OUT_START_T, GLOW_OUT_END_T));
-    case 'failure':
-      // In-then-hold: ramp() saturates at 1 past l=.8, which is the hold. Unchanged from before --
-      // still local (`l`), not `t`, since this beat's timing is phase-relative to `failure`.
-      return ramp(l, 0.6, 0.8);
-    case 'second':
-      // Out-then-hold, continuing from failure's end value of 1.
-      return 1 - ramp(l, 0, 0.25);
-    default:
-      return 0;
-  }
-}
-
-// Pre-highlight pulse: gear + engineBackCover glow orange from mid-explode until just after
-// `change` begins (traverse ~6.06-18.18, change from ~18.18) -- expressed directly in `t`, not
-// gated on phase at all, since a plain function of `t` is trivially continuous and
-// scrub-reversible regardless of where the phase boundaries fall (the window intentionally
-// crosses the traverse->change seam). Fully faded well before the green/red window opens at
-// ~23.5.
-const ORANGE_IN_START_T = 7.5;
-const ORANGE_IN_END_T = 8;
-const ORANGE_OUT_START_T = 18.5;
-const ORANGE_OUT_END_T = 19;
-
-function preHighlightOrangeAt(t: number): number {
-  return Math.min(ramp(t, ORANGE_IN_START_T, ORANGE_IN_END_T), 1 - ramp(t, ORANGE_OUT_START_T, ORANGE_OUT_END_T));
-}
-
-function amberAt(phase: PhaseId, l: number): number {
-  switch (phase) {
-    case 'span':
-      return ramp(l, 0.1, 0.55);
-    case 'related':
-      return 1 - ramp(l, 0.6, 0.9);
-    default:
-      return 0;
-  }
-}
-
-function mountGreenAt(phase: PhaseId, l: number): number {
-  switch (phase) {
-    case 'span':
-      return ramp(l, 0.6, 0.85);
-    case 'related':
-      return 1 - ramp(l, 0.75, 0.95);
-    default:
-      return 0;
-  }
 }
 
 // Shares heroTraverseProgress with explode so the camera's approach to the canonical angle rides
@@ -320,60 +282,29 @@ function idleWeightAt(phase: PhaseId, t: number): number {
   }
 }
 
-// Fraction of each push-in/pull-back phase's own local range the margin eases over at the top of
-// that phase, instead of snapping instantly to the new flat value the moment the phase begins.
-// ROOT CAUSE of the "sudden resize" bug at the change->failure and failure->second phase
-// boundaries (reported at t=~36.3 and ~54.6, which sit right on top of the actual boundaries at
-// t=36.36 and t=54.55): `marginAt` used to return a flat MARGIN_EXPLODED for `change` and a flat
-// MARGIN_FAILURE for `failure` with no blending between them (same step at failure->second and
-// related->success). The bounding sphere radius camera distance is fit to is already continuous
-// across every one of these seams, so an instantaneous margin step is an instantaneous camera-
-// distance step -- a visible pop/"sudden resize" with nothing else in the frame explaining it.
-// Easing the margin in over the first slice of each of these phases' own local range (mirroring
-// how hero/traverse already blend via heroTraverseProgress) removes the step while keeping every
-// other beat identical.
-const MARGIN_PUSH_FRACTION = 0.15;
-
 // Shares heroTraverseProgress too: the camera pulls in from the wide hero margin to the tighter
 // exploded-constellation margin over the same span the explode ramp and azimuth/elevation
 // approach use, so the whole hero -> exploded journey reads as one continuous camera move
-// starting at the first pixel of scroll instead of snapping at the traverse boundary.
-function marginAt(phase: PhaseId, l: number, t: number): number {
+// starting at the first pixel of scroll instead of snapping at the traverse boundary. Holds flat
+// at MARGIN_EXPLODED for every phase after `traverse` -- the exploded view's apparent size never
+// changes again for the rest of the timeline (fitCameraToFrame's own radius-based distance
+// already handles the later reassembly's size change; margin itself stays constant).
+function marginAt(phase: PhaseId, t: number): number {
   switch (phase) {
     case 'hero':
     case 'traverse':
       return lerp(MARGIN_ASSEMBLED, MARGIN_EXPLODED, heroTraverseProgress(t));
-    case 'change':
+    default:
       return MARGIN_EXPLODED;
-    case 'failure':
-      // Push in smoothly at the top of `failure` ("the camera zooms in") instead of snapping the
-      // instant the phase starts.
-      return lerp(MARGIN_EXPLODED, MARGIN_FAILURE, ease(ramp(l, 0, MARGIN_PUSH_FRACTION)));
-    case 'second':
-      // Symmetric pull-back at the top of `second` ("the camera zooms out").
-      return lerp(MARGIN_FAILURE, MARGIN_EXPLODED, ease(ramp(l, 0, MARGIN_PUSH_FRACTION)));
-    case 'span':
-    case 'related':
-      return MARGIN_EXPLODED;
-    case 'success':
-      // Same push-in shape as `failure`'s, for the same reason ("the camera zooms in; the engine
-      // reassembles"). Not one of the two reported pops, but identical root cause -- fixed for
-      // consistency rather than leaving a matching latent glitch at the related->success seam.
-      return lerp(MARGIN_EXPLODED, MARGIN_FAILURE, ease(ramp(l, 0, MARGIN_PUSH_FRACTION)));
   }
 }
 
-// The fake ground-contact-shadow plane's opacity. Deliberately reuses explodeAt's exhaustive
-// switch rather than duplicating a parallel one: `explode` already IS "how far the main body has
-// separated from its assembled rest pose" (0 = assembled, 1 = fully exploded) for every phase --
-// 1 at hero/traverse's start fading to 0 as heroTraverseProgress(t) runs (matching the "1 -
-// heroTraverseProgress(t)" spec exactly), 0 held flat for change/second/span/related (all fully
-// exploded), and a partial value in failure/success as the body reassembles (failure's residual
-// front-drive gap doesn't stop the main body from reading as "reassembled enough" for a shadow;
-// success's ramp reaches 0 = fully assembled, so the shadow returns to full). No separate case
-// analysis needed since the shadow should track the same "how assembled is the body" curve.
-function groundShadowAt(phase: PhaseId, l: number, t: number): number {
-  return 1 - explodeAt(phase, l, t);
+// The fake ground-contact-shadow plane's opacity. Mirrors explodeAt exactly: 1 (assembled) at
+// t=0, fading to 0 as the initial explode ramps in, held at 0 through the whole mismatch story
+// (still fully exploded), then rising back to 1 over the FINAL_REASSEMBLY window as the body
+// reassembles.
+function groundShadowAt(t: number): number {
+  return 1 - explodeAt(t);
 }
 
 export function engineFrame(scene: SceneState): EngineFrame {
@@ -382,21 +313,22 @@ export function engineFrame(scene: SceneState): EngineFrame {
   const drift = AZIMUTH_DRIFT * clamp01(t / 100);
 
   return {
-    explode: explodeAt(id, l, t),
-    frontDriveExplode: frontDriveExplodeAt(id, l, t),
-    frontDriveScale: frontDriveScaleAt(id, t),
+    explode: explodeAt(t),
+    frontDriveExplode: frontDriveExplodeAt(t),
+    frontDriveScale: frontDriveScaleAt(t),
     mountScale: mountScaleAt(id, l),
     seatAdjust: seatAdjustAt(id, l),
-    frontDriveLift: frontDriveLiftAt(id, t),
-    green: greenAt(id, t),
-    red: redAt(id, l, t),
-    amber: amberAt(id, l),
-    mountGreen: mountGreenAt(id, l),
+    blue: ringBlueAt(t),
+    ringRed: mismatchRedAt(t),
+    red: pistonRedAt(t),
+    pistonRed: pistonRedAt(t),
+    finalGreen: finalGreenAt(t),
+    boxWeight: boxWeightAt(t),
     preHighlightOrange: preHighlightOrangeAt(t),
     azimuth: azimuthBaseAt(id, t) + drift,
     elevation: elevationAt(id, t),
-    margin: marginAt(id, l, t),
+    margin: marginAt(id, t),
     idleWeight: idleWeightAt(id, t),
-    groundShadow: groundShadowAt(id, l, t)
+    groundShadow: groundShadowAt(t)
   };
 }

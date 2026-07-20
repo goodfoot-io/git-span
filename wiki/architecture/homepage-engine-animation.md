@@ -244,9 +244,9 @@ three ways so the engine's mass reads as assembled castings rather than one flat
 part), `castIron` for the block, `engineBackCover`, and the unmatched-name fallback (`#4a4d52`,
 0.6/0.85), and `castIronLight` for the side covers (`#54575d`, 0.55/0.85). `frontCover` is
 unchanged. All families still share the GLB's normal, roughness, and AO detail maps (loaded in
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L230-L244)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L290-L304)
 and wired into each family's material in
-[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L371-L386))
+[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L449-L464))
 for surface realism — only the color layer is synthetic. The environment map from the studio HDRI
 (see [Photoreal
 rendering](#photoreal-rendering-tone-mapping-studio-hdri-and-the-fake-ground-shadow)) is what most
@@ -282,7 +282,7 @@ A later pass reworked the renderer's overall look — tone mapping, environment 
 contact shadow — without touching the flat-material-by-family system above.
 
 **Tone mapping.** The constructor now sets
-[`this.renderer.toneMapping = THREE.AgXToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L183-L196)
+[`this.renderer.toneMapping = THREE.AgXToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L243-L256)
 with `toneMappingExposure = 1.15`, replacing an earlier `ACESFilmicToneMapping`. The choice was
 A/B'd against screenshots at `t = 0` (hero, gray metal end-on) and `t = 48` (failure, red highlight
 legibility): AgX reads with more filmic contrast on the unlit gray-metal families (`castIron`/
@@ -295,7 +295,7 @@ darkens midtones a touch on its own.
 equirectangular HDRI —
 [`studio_small_08_1k.hdr`](../../packages/website/app/assets/engine/) (Poly Haven, CC0), loaded via
 `RGBELoader` and converted through `THREE.PMREMGenerator` into a PMREM environment map
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L224-L260)).
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L284-L320)).
 This gives real softbox/rim gradients across the machined faces (ring gear, cylinder-head covers)
 instead of a flat ambient wash. `scene.environmentIntensity` is `1.1` and
 `scene.environmentRotation` is `new THREE.Euler(0, Math.PI * 0.35, 0)` — both tuned against
@@ -310,16 +310,16 @@ never paint over it. `vite.config.ts`'s `assetsInclude` was extended to `**/*.hd
 **Fake ground-contact shadow.** The scene has no shadow-casting light rig, so a real shadow map
 isn't an option; instead, a flat unlit radial-gradient plane stands in for one. It's built once at
 load time from the *assembled* (rest-pose) bounding box —
-[`buildGroundShadowTexture()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L730-L748)
+[`buildGroundShadowTexture()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L824-L842)
 generates a soft dark-center-to-transparent-edge canvas texture, and
-[`buildGroundShadow(box)`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L755-L779)
+[`buildGroundShadow(box)`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L849-L873)
 sizes a horizontal plane to `GROUND_SHADOW_FOOTPRINT_SCALE` (1.6×) the assembled footprint and
 positions it `GROUND_SHADOW_DROP_FRACTION` (0.08, a fraction of `modelRadius`) below the oil pan —
 a deliberate, visible gap, so the engine reads as hovering just above the ground rather than resting
 flush on it. Because it's sized from the *assembled* box once at load time (not recomputed from
 live per-frame bounds), it never jitters or resizes as parts explode — it's a fixed prop pinned to
 the resting pose. Its opacity is driven every frame by
-[`updateGroundShadow()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L853-L859)
+[`updateGroundShadow()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L981-L987)
 from `EngineFrame.groundShadow`, a pure function
 ([`groundShadowAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L375-L377))
 that deliberately reuses `explodeAt`'s exhaustive phase switch instead of duplicating a parallel one:
@@ -419,10 +419,10 @@ false` for the same reason.
 The page's framing rule is that the engine must never touch the media frame's edges, at any beat,
 including fully exploded (when the model's footprint is largest). This is solved mathematically
 rather than by hand-tuning per-beat camera shots:
-[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L861-L899)
+[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L989-L1027)
 computes the union bounding sphere of every part's current world position each frame
 (`sphereUnion`, a standard two-sphere merge,
-[`EngineScene.ts#L131-L147`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L131-L147)),
+[`EngineScene.ts#L131-L147`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L181-L197)),
 then places the camera at the distance that fits that sphere plus a margin, accounting for aspect
 ratio via `fitFov = min(fovY/2, atan(tan(fovY/2) * aspect))`. `frame.margin` is the one per-beat
 tuning knob; everything else in the shot is derived, not staged.
@@ -490,7 +490,7 @@ remaining mention of it anywhere in the current source. If you're looking for it
 screenshot or report, it no longer exists.)
 
 **Drag-to-orbit** (all phases). Pointer events on the canvas
-([`EngineScene.ts#L507-L556`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L507-L556)) —
+([`EngineScene.ts#L507-L556`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L604-L653)) —
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`) from pointer movement. The
@@ -535,10 +535,10 @@ present mounted in a car — instead of `CANONICAL_AZIMUTH`/`CANONICAL_ELEVATION
 three-quarter technical-drawing angle every later phase holds).
 
 **The hero → traverse camera move.** `azimuthBaseAt`/`elevationAt`
-([`beats.ts#L289-L307`](../../packages/website/app/components/marketing/story/engine/beats.ts#L289-L307))
+([`beats.ts#L289-L307`](../../packages/website/app/components/marketing/story/engine/beats.ts#L251-L269))
 `lerp` from the hero angle to the canonical angle across `hero` and `traverse` together, riding
 `heroTraverseProgress(t)`
-([`beats.ts#L73-L75`](../../packages/website/app/components/marketing/story/engine/beats.ts#L73-L75)) —
+([`beats.ts#L73-L75`](../../packages/website/app/components/marketing/story/engine/beats.ts#L82-L84)) —
 one continuous, monotonic curve spanning from the top of `hero` (`t = 0`, fully assembled, hero
 angle) to `CAMERA_SETTLE_T` (`t = 12.3`, fully exploded, canonical angle), where it now settles and
 holds flat, rather than the actual end of `traverse` (`t = 18.18`) it used to ride all the way to.
@@ -558,7 +558,7 @@ together.
 **Idle rotation.** The hero's idle spin itself is unchanged in mechanism: a
 `requestAnimationFrame`-driven `idleAzimuthOffset` (ticked by the shared motion driver) accumulates
 at `HERO_IDLE_RATE` (one turn per 45s) while `setHeroIdle(true)`. `EngineFrame.idleWeight`
-([`idleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L313-L321),
+([`idleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L275-L283),
 1 throughout `hero`, fading to 0 over `IDLE_FADE_FRACTION` (0.3) of the hero+traverse span
 (`TRAVERSE_END_T`) — starting at the first pixel of scroll, not at the top of `traverse`) blends
 that accumulated offset into the camera azimuth

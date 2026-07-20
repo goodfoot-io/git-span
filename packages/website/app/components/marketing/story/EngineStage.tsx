@@ -68,6 +68,7 @@ export function EngineStage({ scene }: EngineStageProps) {
     if (!engine) return;
     engine.setFrame(engineFrame(scene));
     engine.setHeroIdle(scene.phase.id === 'hero' && !prefersReducedMotion());
+    engine.setReducedMotion(prefersReducedMotion());
   }, [status, scene]);
 
   const caption = PHASE_COPY[scene.phase.id].caption;

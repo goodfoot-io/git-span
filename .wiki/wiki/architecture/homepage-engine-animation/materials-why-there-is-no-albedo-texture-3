@@ -4,6 +4,6 @@ packages/website/app/components/marketing/story/engine/parts.ts#L1-L54 rk64:ead2
 packages/website/app/components/marketing/story/engine/parts.ts#L71-L84 rk64:2a85b31de9dfdcaf
 packages/website/app/components/marketing/story/engine/parts.ts#L96-L117 rk64:35d54029a857c398
 packages/website/app/components/marketing/story/engine/parts.ts#L99-L117 rk64:f02463476b4c9fd1
-wiki/architecture/homepage-engine-animation.md#L231-L277 rk64:5b959716b8a07e81
+wiki/architecture/homepage-engine-animation.md#L231-L277 rk64:b1f72b15872e2675
 
 Why the engine parts use procedural/PBR materials instead of an albedo texture map.
