@@ -21,9 +21,12 @@ import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import {
+  commandSkipsGate,
+  commitStagesAll,
   evaluateGate,
   type GateExecutors,
   type GateMemoState,
+  GateScanError,
   type GitExecutor,
   isGateSkipped,
   parseGitCommand,
@@ -44,18 +47,20 @@ function createMemoryGateMemoState(): GateMemoState {
     has(digest: string): boolean {
       return digests.has(digest);
     },
-    record(digest: string): void {
+    record(digest: string): boolean {
       digests.add(digest);
+      return true;
     }
   };
 }
 
-/** A GitExecutor fake with independently overridable staged/tracked/outgoing results. */
+/** A GitExecutor fake with independently overridable staged/tracked/outgoing/pathspec results. */
 function createFakeGitExecutor(overrides: Partial<GitExecutor> = {}): GitExecutor {
   return {
     stagedPaths: async (): Promise<string[]> => [],
     trackedModifiedPaths: async (): Promise<string[]> => [],
     outgoingPaths: async (): Promise<string[]> => [],
+    pathspecPaths: async (): Promise<string[]> => [],
     ...overrides
   };
 }
@@ -208,6 +213,20 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await resolveChangeset('push', true, REPO_ROOT, git);
 
       expect(result).toEqual(['src/outgoing.ts']);
+    });
+
+    it('commit with explicit pathspecs → the pathspec working-tree content only, never the full staged set', async () => {
+      const git = createFakeGitExecutor({
+        // A `git commit -- src/scoped.ts` lands only the pathspec content, not
+        // whatever else happens to be staged.
+        stagedPaths: async (): Promise<string[]> => ['src/staged-elsewhere.ts'],
+        pathspecPaths: async (paths): Promise<string[]> => (paths.includes('src/scoped.ts') ? ['src/scoped.ts'] : [])
+      });
+
+      const result = await resolveChangeset('commit', false, REPO_ROOT, git, ['src/scoped.ts']);
+
+      expect(result).toEqual(['src/scoped.ts']);
+      expect(result).not.toContain('src/staged-elsewhere.ts');
     });
   });
 
@@ -378,6 +397,222 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+    });
+
+    it('a hard scan failure (GateScanError) denies with scan-failed rather than silently allowing, even when a sibling anchor would have carried real CHANGED debt', async () => {
+      // The scoped scan spans two paths; one anchor is unreadable, so the CLI
+      // aborts the entire scoped query (empty stdout + an error on stderr, which
+      // the default executor surfaces as a GateScanError). Had the scan
+      // completed, the sibling anchor would have surfaced CHANGED debt — but it
+      // never ran, so an empty result here must NOT be read as "clean." The gate
+      // must fail closed (deny/scan-failed), never resolve to the silent allow a
+      // genuinely clean scan produces.
+      const memo = createMemoryGateMemoState();
+      let recorded = false;
+      const guardedMemo: GateMemoState = {
+        has: (d) => memo.has(d),
+        record: (d) => {
+          recorded = true;
+          return memo.record(d);
+        }
+      };
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/sibling.ts' })],
+        stale: async (): Promise<StalePorcelainRow[]> => {
+          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+        }
+      });
+
+      const result = await evaluateGate(['src/app.ts', 'src/sibling.ts'], REPO_ROOT, executors, guardedMemo);
+
+      expect(result.decision).toBe('deny');
+      expect(result.kind).toBe('scan-failed');
+      if (result.kind === 'scan-failed') {
+        expect(result.reason).toContain('Permission denied');
+        expect(result.reason).toContain('GIT_SPAN_GATE=skip');
+      }
+      // Not the silent allow a truly-clean scan produces, and not consider-once
+      // suppressed — a scan failure has no debt-state to memoize.
+      expect(result).not.toEqual({ decision: 'allow', kind: 'silent' });
+      expect(recorded).toBe(false);
+    });
+
+    it('a hard scan failure re-denies on retry (no consider-once suppression) until the scan can complete', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        stale: async (): Promise<StalePorcelainRow[]> => {
+          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+        }
+      });
+
+      const first = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const second = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(first.kind).toBe('scan-failed');
+      expect(second.kind).toBe('scan-failed');
+    });
+
+    it('a non-scan internal error (plain Error) still fails OPEN to allow/silent — only a scan failure fails closed', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        stale: async (): Promise<StalePorcelainRow[]> => {
+          throw new Error('spawn git ENOENT');
+        }
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+    });
+
+    it('a terminal/environmental status (SPARSE_EXCLUDED) fails OPEN — allow/environmental with the condition surfaced, never deny', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('environmental');
+      if (result.kind === 'environmental') {
+        expect(result.conditions).toHaveLength(1);
+        expect(result.conditions[0].status).toBe('SPARSE_EXCLUDED');
+        expect(result.reason).toContain('SPARSE_EXCLUDED');
+        expect(result.reason).toContain('billing/checkout-request-flow');
+      }
+    });
+
+    it('an environmental condition does not suppress a genuinely semantic finding in the same changeset (still denies)', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [
+          staleRow({ status: 'LFS_NOT_FETCHED', name: 'infra/anchor' }),
+          staleRow({ status: 'CHANGED', name: 'billing/flow' })
+        ]
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('deny');
+      expect(result.kind).toBe('semantic-staleness');
+      if (result.kind === 'semantic-staleness') {
+        // Only the semantic row is a finding; the environmental row is not.
+        expect(result.findings).toHaveLength(1);
+        expect(result.findings[0].name).toBe('billing/flow');
+      }
+    });
+
+    it('a memo that cannot persist (record returns false) fails OPEN on an uncovered write rather than re-denying forever', async () => {
+      // A memo whose record never persists would turn "deny once, then allow the
+      // identical retry" into "deny every time" — so the gate must fail open.
+      const unwritableMemo: GateMemoState = { has: () => false, record: () => false };
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+
+      const result = await evaluateGate(['src/uncovered.ts'], REPO_ROOT, executors, unwritableMemo);
+
+      expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+    });
+
+    it('a pathspec-scoped commit gates the pathspec content and ignores unrelated staged debt', async () => {
+      // Debt lives in an unrelated staged file; the commit names only a clean
+      // pathspec. Resolving the changeset to the pathspec content, then gating,
+      // must allow — the staged debt is not part of this commit.
+      const parsed = parseGitCommand('git commit -m "wip" -- src/scoped.ts');
+      expect(parsed.paths).toEqual(['src/scoped.ts']);
+
+      const git = createFakeGitExecutor({
+        stagedPaths: async (): Promise<string[]> => ['src/debt.ts'],
+        pathspecPaths: async (): Promise<string[]> => ['src/scoped.ts']
+      });
+      const changeset = await resolveChangeset('commit', false, REPO_ROOT, git, parsed.paths);
+      expect(changeset).toEqual(['src/scoped.ts']);
+
+      const executors = createFakeGateExecutors({
+        // The scoped path is covered and clean; the (unevaluated) debt file is not in scope.
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/scoped.ts' })],
+        stale: async (paths): Promise<StalePorcelainRow[]> =>
+          paths.includes('src/debt.ts') ? [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })] : []
+      });
+
+      const result = await evaluateGate(changeset, REPO_ROOT, executors, createMemoryGateMemoState());
+
+      expect(result.decision).toBe('allow');
+    });
+
+    it('a pathspec-scoped commit denies when the debt-carrying file IS in the pathspec', async () => {
+      const parsed = parseGitCommand('git commit -m "wip" -- src/debt.ts');
+      expect(parsed.paths).toEqual(['src/debt.ts']);
+
+      const git = createFakeGitExecutor({
+        pathspecPaths: async (): Promise<string[]> => ['src/debt.ts']
+      });
+      const changeset = await resolveChangeset('commit', false, REPO_ROOT, git, parsed.paths);
+
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/debt.ts' })],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })]
+      });
+
+      const result = await evaluateGate(changeset, REPO_ROOT, executors, createMemoryGateMemoState());
+
+      expect(result.decision).toBe('deny');
+      expect(result.kind).toBe('semantic-staleness');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // commitStagesAll
+  // -------------------------------------------------------------------------
+
+  describe('commitStagesAll', () => {
+    it('detects `-a` and `-am` and `--all`', () => {
+      expect(commitStagesAll('git commit -a -m "wip"')).toBe(true);
+      expect(commitStagesAll('git commit -am "wip"')).toBe(true);
+      expect(commitStagesAll('git commit --all -m "wip"')).toBe(true);
+    });
+
+    it('does not treat a `-m` message argument that looks like a short-flag cluster as `--all`', () => {
+      // `-analysis` is the message value, not a flag — it must not widen the changeset.
+      expect(commitStagesAll('git commit -m "-analysis"')).toBe(false);
+      expect(commitStagesAll('git commit -m -analysis')).toBe(false);
+    });
+
+    it('is false for a plain staged commit', () => {
+      expect(commitStagesAll('git commit -m "wip"')).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // commandSkipsGate — the inline `GIT_SPAN_GATE=skip git …` prefix
+  // -------------------------------------------------------------------------
+
+  describe('commandSkipsGate', () => {
+    it('detects the literal documented inline-prefix form', () => {
+      expect(commandSkipsGate('GIT_SPAN_GATE=skip git commit -m "x"')).toBe(true);
+      expect(commandSkipsGate('GIT_SPAN_GATE=skip git push')).toBe(true);
+    });
+
+    it('detects it alongside other leading env assignments', () => {
+      expect(commandSkipsGate('FOO=bar GIT_SPAN_GATE=skip git commit -m "x"')).toBe(true);
+    });
+
+    it('is false when the prefix is absent', () => {
+      expect(commandSkipsGate('git commit -m "x"')).toBe(false);
+    });
+
+    it('is false for a near-miss value', () => {
+      expect(commandSkipsGate('GIT_SPAN_GATE=no git commit -m "x"')).toBe(false);
+    });
+
+    it('is false when the assignment does not prefix a git invocation', () => {
+      expect(commandSkipsGate('GIT_SPAN_GATE=skip echo hello')).toBe(false);
+      expect(commandSkipsGate('echo GIT_SPAN_GATE=skip')).toBe(false);
     });
   });
 

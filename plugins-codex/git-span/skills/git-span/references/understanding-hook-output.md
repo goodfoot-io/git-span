@@ -16,7 +16,9 @@ moments. Neither waits for a commit:
   `additionalContext` warning if a live session shows deny doesn't fire. Don't
   assume a blocked command the way you would under Claude; if the same command
   keeps landing after a supposed deny, treat the CI gate recipe
-  (`references/ci-and-sync.md`) as the real backstop.
+  (`references/ci-and-sync.md`) as the real backstop. Either way — blocked or
+  not — the `systemMessage` checklist below is what's shown, so its presence
+  in the transcript is not itself proof the command was stopped.
 
 ## The touch hook: merged block + directive line
 

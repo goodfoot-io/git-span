@@ -24,6 +24,7 @@
 
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
 import {
+  commandSkipsGate,
   commitStagesAll,
   createDefaultGateExecutors,
   createDefaultGitExecutor,
@@ -64,14 +65,18 @@ export function createHandler(
       if (parsed.kind === 'none') return preToolUseOutput({});
 
       // Escape hatch, checked only for an actually-gated command so it never
-      // narrates on unrelated Bash calls. Bypass, but keep it transcript-visible.
-      if (isGateSkipped(env)) {
+      // narrates on unrelated Bash calls. Both forms bypass, kept
+      // transcript-visible: the session-env form (`isGateSkipped`) and the
+      // documented inline-prefix form (`GIT_SPAN_GATE=skip git commit …`), which
+      // never reaches this hook's own env and must be read from the command text
+      // (`commandSkipsGate`).
+      if (isGateSkipped(env) || commandSkipsGate(command)) {
         return preToolUseOutput({ systemMessage: SKIP_NOTICE });
       }
 
       const cwd = input.cwd ?? '';
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
-      const changeset = await resolveChangeset(parsed.kind, all, cwd, git);
+      const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd));
       if (result.decision === 'deny') {
@@ -79,6 +84,12 @@ export function createHandler(
           hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.reason },
           systemMessage: result.reason
         });
+      }
+      // Environmental staleness allows (fail-open), but must not be swallowed:
+      // log it and surface the condition so the unresolvable anchor is visible.
+      if (result.kind === 'environmental') {
+        ctx.logger.warn('git-span gate allowed with unresolvable anchors', { reason: result.reason });
+        return preToolUseOutput({ systemMessage: result.reason });
       }
       return preToolUseOutput({});
     } catch (err) {

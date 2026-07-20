@@ -63,6 +63,19 @@ Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
 
+## Caveat: the gate's deny hasn't been verified live
+
+Trusting the hooks makes the gate active, but whether its
+`permissionDecision: 'deny'` result actually blocks the shell tool under
+Codex has never been confirmed by direct execution in this repo — only by
+documentary evidence from the `@goodfoot/codex-hooks` SDK's own example. The
+gate still surfaces its `systemMessage` checklist either way, so you'll see
+the same span-debt listing whether or not the command is actually stopped.
+Don't treat a trusted gate as a guaranteed in-session block; rely on `git
+span stale` in CI (see `references/ci-and-sync.md`) as the real backstop, and
+see `references/understanding-hook-output.md` for what a denied command
+looks like.
+
 ## Windows caveat
 
 `@goodfoot/codex-hooks` disables hooks entirely on Windows. There is no

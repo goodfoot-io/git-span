@@ -43,10 +43,10 @@ At a high level, the span root holds one file per span, named after its slug —
 A handful of helper files live alongside the span files:
 
 - `.gitattributes` — forces LF line endings for span files.
-- `.gitignore` — ignores generated runtime artifacts (log files and dispatch scripts) from an earlier commit-triggered reconciliation pipeline that has since been retired in favor of the in-session touch hook and gate (see [Hooks & CI integration](/docs/hooks-and-ci)). Still written by `ensure_span_dir` for forward compatibility; nothing in the current agent runtime generates the artifacts it ignores.
+- `.gitignore` — ignores generated runtime artifacts (log files) so they don't get tracked. Still written by `ensure_span_dir`; the current agent runtime (see [Hooks & CI integration](/docs/hooks-and-ci)) is just the in-session touch hook and gate, neither of which writes files under `.span/` that need ignoring, but the file is harmless to keep around.
 - `.hookignore` — path-scoped suppression rules for the touch hook's context injection.
 - `.gateignore` — user-owned (nothing auto-creates it); each non-comment line is a gitignore-style path pattern, same grammar as `.hookignore`, excluding matching paths from the commit gate's uncovered-writes check.
-- `.manual-run` — a presence-only marker, created automatically on the first `add`/`why`. Its original purpose — suspending an auto-spawned background reconciler agent in favor of a runnable script — belonged to the same retired pipeline as `.gitignore` above and currently has no consumer.
+- `.manual-run` — a presence-only marker, created automatically on the first `add`/`why`. It's a legacy artifact with no consumer in the current touch/gate hook model — nothing reads it — and is safe to ignore or gitignore.
 
 `git span show <name>` (and the bare `git span <name>` form) renders a friendlier TOML-style display — `name`, `message`, `[[anchors]]` blocks, a `[config]` block — but that's a display transform, not the on-disk format.
 

@@ -27,6 +27,7 @@ function fakeGit(overrides: Partial<GitExecutor> = {}): GitExecutor {
     stagedPaths: async () => [],
     trackedModifiedPaths: async () => [],
     outgoingPaths: async () => [],
+    pathspecPaths: async () => [],
     ...overrides
   };
 }
@@ -47,6 +48,7 @@ function sharedMemoFactory(): (cwd: string) => GateMemoState {
     has: (d) => digests.has(d),
     record: (d) => {
       digests.add(d);
+      return true;
     }
   };
   return () => state;
@@ -165,6 +167,42 @@ describe('claude gate adapter', () => {
     expect(denied).toBe(false); // evaluation short-circuited by the escape hatch
     expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('bypasses via the inline `GIT_SPAN_GATE=skip git commit …` prefix even when the var is absent from the hook env', async () => {
+    // The documented one-shot gesture: the assignment is inline in the command
+    // string and never reaches the hook's own process.env. On a real
+    // semantic-debt state, it must still allow, transcript-visibly.
+    let denied = false;
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      list: async () => [porcelainRow()],
+      stale: async () => {
+        denied = true;
+        return [staleRow('CHANGED')];
+      }
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory(), {}); // var absent from hook env
+    const result = toResult(
+      await handler(preInput('GIT_SPAN_GATE=skip git commit -m "wip"') as never, { logger } as never)
+    );
+
+    expect(denied).toBe(false); // short-circuited by the inline escape hatch
+    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
+    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('surfaces an environmental condition as a transcript-visible systemMessage and allows (fail-open)', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      list: async () => [porcelainRow()],
+      stale: async () => [staleRow('SPARSE_EXCLUDED')]
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory(), {});
+    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput).toBeUndefined(); // allowed, not denied
+    expect(result.stdout.systemMessage).toContain('SPARSE_EXCLUDED');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {

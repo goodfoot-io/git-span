@@ -19,6 +19,7 @@ import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isDebt,
+  isEnvironmentalStatus,
   PORCELAIN_STATUSES,
   type PorcelainStatus,
   parsePorcelain,
@@ -389,5 +390,36 @@ describe('isDebt — the debt invariant', () => {
 
   it('covers the entire documented vocabulary with no status left unclassified', () => {
     expect(new Set([...neverDebt, ...alwaysDebt])).toEqual(new Set(PORCELAIN_STATUSES));
+  });
+});
+
+describe('isEnvironmentalStatus — the fixable/unresolvable split within debt', () => {
+  const environmental: readonly PorcelainStatus[] = [
+    'CONFLICT',
+    'SUBMODULE',
+    'LFS_NOT_FETCHED',
+    'LFS_NOT_INSTALLED',
+    'PROMISOR_MISSING',
+    'SPARSE_EXCLUDED',
+    'FILTER_FAILED',
+    'IO_ERROR'
+  ];
+
+  it('classifies exactly the terminal/environmental statuses', () => {
+    for (const status of environmental) {
+      expect(isEnvironmentalStatus(status)).toBe(true);
+    }
+  });
+
+  it('never classifies FRESH/MOVED/RESOLVED_PENDING_COMMIT or the semantic-drift statuses as environmental', () => {
+    for (const status of ['FRESH', 'MOVED', 'RESOLVED_PENDING_COMMIT', 'CHANGED', 'DELETED'] as PorcelainStatus[]) {
+      expect(isEnvironmentalStatus(status)).toBe(false);
+    }
+  });
+
+  it('every environmental status is also debt (a strict subset of isDebt)', () => {
+    for (const status of environmental) {
+      expect(isDebt(status)).toBe(true);
+    }
   });
 });

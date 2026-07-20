@@ -254,6 +254,41 @@ export function isDebt(status: PorcelainStatus): boolean {
 }
 
 /**
+ * The terminal/environmental statuses: the CLI could not resolve the anchor at
+ * all, so the row is not span drift a user can fix by editing a span. These are
+ * `CONFLICT` (unresolved merge), `SUBMODULE` (anchor inside a submodule),
+ * `LFS_NOT_FETCHED`/`LFS_NOT_INSTALLED` (Git LFS content unavailable),
+ * `PROMISOR_MISSING` (partial-clone object not fetched), `SPARSE_EXCLUDED`
+ * (path outside the sparse-checkout cone), `FILTER_FAILED` (a clean/smudge
+ * filter errored), and `IO_ERROR` (transient read failure).
+ *
+ * These are a strict subset of {@link isDebt}: every environmental status is
+ * also debt (it blocks on its own merits when surfaced in a status report), but
+ * the gate must treat them differently from *semantic* drift (`CHANGED`,
+ * `DELETED`). Semantic drift is fixable by editing a span, so the gate fails
+ * closed on it; an environmental condition is not something a span edit can
+ * resolve, so the gate fails OPEN on it (allow, but surface the condition) —
+ * re-denying forever on an infra failure the user cannot clear from here would
+ * contradict the fail-open contract the rest of the gate already honors for
+ * CLI-absent/timeout/parse-failure conditions.
+ */
+export function isEnvironmentalStatus(status: PorcelainStatus): boolean {
+  switch (status) {
+    case 'CONFLICT':
+    case 'SUBMODULE':
+    case 'LFS_NOT_FETCHED':
+    case 'LFS_NOT_INSTALLED':
+    case 'PROMISOR_MISSING':
+    case 'SPARSE_EXCLUDED':
+    case 'FILTER_FAILED':
+    case 'IO_ERROR':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * `git span stale --format porcelain` emits a different shape than
  * `list --porcelain`: a `# porcelain v2` header, `# fuzzy N` comment lines,
  * and one `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` row per drifted

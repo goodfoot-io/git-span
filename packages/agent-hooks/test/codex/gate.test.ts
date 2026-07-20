@@ -26,6 +26,7 @@ function fakeGit(overrides: Partial<GitExecutor> = {}): GitExecutor {
     stagedPaths: async () => [],
     trackedModifiedPaths: async () => [],
     outgoingPaths: async () => [],
+    pathspecPaths: async () => [],
     ...overrides
   };
 }
@@ -45,6 +46,7 @@ function sharedMemoFactory(): (cwd: string) => GateMemoState {
     has: (d) => digests.has(d),
     record: (d) => {
       digests.add(d);
+      return true;
     }
   };
   return () => state;
@@ -130,6 +132,25 @@ describe('codex gate adapter', () => {
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 
+  it('with hard-deny disabled, a semantic-staleness deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
+    // Exercises the CARD.md-documented fallback branch (CODEX_GATE_HARD_DENY =
+    // false): when deny is not trusted to block live, the same checklist is
+    // surfaced as a loud warning and the command is allowed through, with the CI
+    // recipe as Codex's enforcement backstop. Nothing must set a deny decision.
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const handler = createHandler(git, executors, sharedMemoFactory(), {}, false);
+    const result = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
+
+    // Allowed through — the fallback cannot block.
+    expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    // But loudly, transcript-visibly: both surfaces carry the warning + checklist.
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('could not block');
+    expect(result.stdout.systemMessage).toContain(SPAN);
+    expect(result.stdout.systemMessage).toContain('could not block');
+  });
+
   it('bypasses with a transcript-visible systemMessage under GIT_SPAN_GATE=skip', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
@@ -138,6 +159,39 @@ describe('codex gate adapter', () => {
 
     expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('bypasses via the inline `GIT_SPAN_GATE=skip git commit …` prefix even when the var is absent from the hook env', async () => {
+    let denied = false;
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      list: async () => [porcelainRow()],
+      stale: async () => {
+        denied = true;
+        return [staleRow('CHANGED')];
+      }
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory(), {}); // var absent from hook env
+    const result = toResult(
+      await handler(preInput(['bash', '-lc', 'GIT_SPAN_GATE=skip git commit -m "wip"']) as never, { logger } as never)
+    );
+
+    expect(denied).toBe(false);
+    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
+    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('surfaces an environmental condition as additional context and allows (fail-open)', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      list: async () => [porcelainRow()],
+      stale: async () => [staleRow('LFS_NOT_FETCHED')]
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory(), {});
+    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    expect(result.stdout.systemMessage).toContain('LFS_NOT_FETCHED');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {

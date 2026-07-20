@@ -35,6 +35,7 @@ import * as nodePath from 'node:path';
 import {
   gateMemoDir,
   isDebt,
+  isEnvironmentalStatus,
   isInsideSpanRoot,
   type PorcelainRow,
   parsePorcelain,
@@ -44,6 +45,30 @@ import {
   toPosix
 } from './agent-hooks-common.js';
 import { isGateIgnored, loadGateIgnore } from './gate-ignore.js';
+
+// ---------------------------------------------------------------------------
+// Scan-failure signal
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised by the `stale` executor when `git span stale` could not *complete* its
+ * scoped scan — as opposed to completing and reporting drift. `git span stale`
+ * exits non-zero in two very different situations: on legitimate drift (real
+ * porcelain rows on stdout) and on a hard scan failure (e.g. an unreadable
+ * anchor file aborts the whole scoped query, leaving stdout empty and an error
+ * on stderr). Only the second throws this, so {@link evaluateGate} can tell a
+ * scan that *ran clean* (empty rows) from one that *never ran* (empty rows
+ * because it aborted) and refuse to read the latter as a clean pass. `detail`
+ * carries the CLI's stderr for the surfaced reason.
+ */
+export class GateScanError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super(`git span stale could not complete its scan: ${detail}`);
+    this.name = 'GateScanError';
+    this.detail = detail;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Command parsing
@@ -121,15 +146,47 @@ export function parseGitCommand(command: string): ParsedGitCommand {
  * and threads it into {@link resolveChangeset} explicitly. Conservative: only a
  * short-flag group containing `a` (`-a`, `-am`, `-ma`) or an explicit `--all`,
  * scanned before any `--` pathspec separator, counts.
+ *
+ * Value-taking commit options (`-m`, `--message`, `-F`, `-C`, …) consume their
+ * following token, so it is never scanned as a flag: a message word like
+ * `-analysis` in `git commit -m "-analysis"` must not be misread as the
+ * `--all`-equivalent short-flag cluster and widen the changeset.
  */
+const COMMIT_VALUE_OPTIONS = new Set([
+  '-m',
+  '--message',
+  '-F',
+  '--file',
+  '-C',
+  '--reuse-message',
+  '-c',
+  '--reedit-message',
+  '--author',
+  '--date',
+  '-t',
+  '--template',
+  '--fixup',
+  '--squash',
+  '--trailer',
+  '--cleanup',
+  '--gpg-sign'
+]);
+
 export function commitStagesAll(command: string): boolean {
   for (const segment of splitSegments(command)) {
     const inv = matchGitInvocation(tokenize(segment));
     if (!inv || inv.subcommand !== 'commit') continue;
     const dashDash = inv.args.indexOf('--');
     const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
-    for (const arg of flagArgs) {
+    for (let i = 0; i < flagArgs.length; i++) {
+      const arg = flagArgs[i];
       if (arg === '--all') return true;
+      // A value-taking option consumes its following token — skip that token so
+      // a message/author/date argument is never scanned as an `-a` cluster.
+      if (COMMIT_VALUE_OPTIONS.has(arg)) {
+        i++;
+        continue;
+      }
       if (!arg.startsWith('--') && /^-[A-Za-z]*a[A-Za-z]*$/.test(arg)) return true;
     }
     return false;
@@ -287,34 +344,59 @@ export interface GitExecutor {
    * configured. These are what a `git push` would publish.
    */
   outgoingPaths(cwd: string): Promise<string[]>;
+  /**
+   * Paths under the given explicit pathspecs whose working-tree content differs
+   * from `HEAD` — `git diff HEAD --name-only -- <pathspecs>`. This is what a
+   * pathspec-scoped commit (`git commit -- <pathspec>…`) actually lands: the
+   * current working-tree content at those pathspecs, regardless of what else is
+   * staged. Used to scope the changeset when {@link ParsedGitCommand.paths} is
+   * present, so the gate evaluates exactly the files this commit takes — never
+   * an unrelated staged file, and never missing a modified-but-unstaged file
+   * named in the pathspec (which `git diff --cached` would never surface).
+   */
+  pathspecPaths(paths: string[], cwd: string): Promise<string[]>;
 }
 
 /**
  * Resolve the concrete list of repo-relative paths a gated command would land,
  * so the gate can scope its staleness/coverage check to exactly that changeset.
  *
- * - `commit`: the staged paths, plus — when `all` is true (the command was an
- *   `-a`/`-am` form) — the tracked-modified paths those forms stage implicitly.
+ * - `commit` with explicit `paths` (a `git commit -- <pathspec>…` form): only
+ *   the working-tree content under those pathspecs (`pathspecPaths`), since a
+ *   pathspec-scoped commit lands exactly that, regardless of the rest of the
+ *   staged set. `all` is ignored — `-a` and an explicit pathspec do not combine.
+ * - `commit`, no `paths`: the staged paths, plus — when `all` is true (the
+ *   command was an `-a`/`-am` form) — the tracked-modified paths those forms
+ *   stage implicitly.
  * - `push`: the outgoing range `@{u}..HEAD`, with a merge-base fallback when no
- *   upstream is configured. `all` is not meaningful for a push and is ignored.
+ *   upstream is configured. `all`/`paths` are not meaningful for a push and are
+ *   ignored.
  *
- * The `all` flag is threaded in explicitly (rather than read back out of the
- * command) because {@link ParsedGitCommand} intentionally does not carry it —
- * the caller/adapter derives it from the parse and passes it here.
+ * The `all` flag and `paths` are threaded in explicitly (rather than read back
+ * out of the command) because the caller/adapter derives them from the parse:
+ * `paths` is {@link ParsedGitCommand.paths}, and `all` (which {@link ParsedGitCommand}
+ * intentionally does not carry) comes from {@link commitStagesAll}.
  *
  * @param kind Whether the changeset is a commit's staged set or a push's range.
  * @param all Whether the commit was an `-a`/`-am` form (ignored for `push`).
  * @param cwd The working directory the git command ran in.
  * @param git The injected git surface backing the resolution.
+ * @param paths Explicit pathspecs from `git commit -- <pathspec>…`, if any.
  */
 export async function resolveChangeset(
   kind: 'commit' | 'push',
   all: boolean,
   cwd: string,
-  git: GitExecutor
+  git: GitExecutor,
+  paths?: string[]
 ): Promise<string[]> {
   if (kind === 'push') {
     return git.outgoingPaths(cwd);
+  }
+  // A pathspec-scoped commit lands only the working-tree content at those
+  // pathspecs — scope the changeset to exactly that, never the full staged set.
+  if (paths && paths.length > 0) {
+    return git.pathspecPaths(paths, cwd);
   }
   const staged = await git.stagedPaths(cwd);
   if (!all) return staged;
@@ -353,6 +435,12 @@ export interface GateExecutors {
    * parsed rows — one per drifted anchor among the changeset's spans, empty when
    * clean. Debt is classified from these rows via `isDebt()`; positional
    * (`MOVED`/`RESOLVED_PENDING_COMMIT`) rows are never debt and never deny.
+   *
+   * An empty result must mean the scan *ran and found nothing*, never that the
+   * scan *could not run*. When the scoped query aborts before completing (e.g.
+   * an unreadable anchor file), the implementation throws {@link GateScanError}
+   * rather than returning `[]`, so {@link evaluateGate} does not mistake an
+   * aborted scan for a clean one and silently allow unverified debt through.
    */
   stale(paths: string[], cwd: string): Promise<StalePorcelainRow[]>;
   /**
@@ -377,8 +465,15 @@ export interface GateExecutors {
 export interface GateMemoState {
   /** Whether this exact debt-state digest has already been presented once. */
   has(digest: string): boolean;
-  /** Record that this debt-state digest has now been presented. */
-  record(digest: string): void;
+  /**
+   * Record that this debt-state digest has now been presented, returning
+   * whether the record actually persisted. `false` means the memo could not be
+   * written (e.g. an unwritable memo directory) — the gate treats that as a
+   * fail-open signal rather than denying, because a non-persisting memo would
+   * silently turn "deny once, then allow the identical retry" into "deny every
+   * time" with no escape.
+   */
+  record(digest: string): boolean;
 }
 
 /**
@@ -394,6 +489,13 @@ export interface GateMemoState {
  * - `allow` / `already-presented` — debt is present, but this exact debt state
  *   was already presented once (uncovered-writes consider-once, or an unchanged
  *   state). The command passes.
+ * - `allow` / `environmental` — the changeset's only staleness rows are
+ *   terminal/environmental conditions (`CONFLICT`, `SUBMODULE`, `LFS_*`,
+ *   `PROMISOR_MISSING`, `SPARSE_EXCLUDED`, `FILTER_FAILED`, `IO_ERROR`) the CLI
+ *   could not resolve at all — not span drift a user can fix by editing a span.
+ *   The gate fails OPEN (allow) but carries `conditions`/`reason` so the adapter
+ *   surfaces the condition instead of swallowing it. Denying here would re-deny
+ *   forever on an infra failure the user cannot clear from the gate.
  * - `deny` / `semantic-staleness` — the changeset carries semantic staleness.
  *   Deny with `findings` rendered as a checklist in `reason`; re-denies on every
  *   retry until the findings change (staleness is hard-until-resolved).
@@ -401,30 +503,57 @@ export interface GateMemoState {
  *   covers, and this state has not been presented before. Deny **once**, listing
  *   `uncovered`; the retry with an unchanged state resolves to `already-presented`
  *   and passes (consider-once, per design-decisions.md #3).
+ * - `deny` / `scan-failed` — `git span stale` could not *complete* its scoped
+ *   scan (a {@link GateScanError}, e.g. an unreadable anchor file aborting the
+ *   whole query). This is distinct from both `environmental` (the scan completed
+ *   and carried terminal rows) and a clean pass (the scan completed with zero
+ *   rows): the scan never ran to completion, so its empty result is not evidence
+ *   of "no debt." The gate fails CLOSED here — an unverifiable changeset must not
+ *   read as clean — re-denying until the scan can run, with `reason` naming the
+ *   failure and the escape hatch as the deliberate override.
  */
 export type GateResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
+  | { decision: 'allow'; kind: 'environmental'; conditions: StalePorcelainRow[]; reason: string }
   | { decision: 'deny'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
-  | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
+  | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string }
+  | { decision: 'deny'; kind: 'scan-failed'; reason: string };
 
 /**
  * Evaluate the gate for a resolved changeset and decide whether to hold the
  * command.
  *
  * Runs `executors.fix` (scoped belt-and-braces `stale --fix`), then reads
- * `executors.stale` and classifies each row via `isDebt()`. Semantic staleness
- * → `deny`/`semantic-staleness`, re-blocking until the findings digest
- * changes. Uncovered writes (changed paths with zero coverage from
- * `executors.list`, minus `.span/**`, and paths matched by the repo's
- * `.span/.gateignore` — see {@link file://./gate-ignore.ts}, loaded directly
- * from disk via `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
+ * `executors.stale` and classifies each debt row (`isDebt()`) into *semantic*
+ * drift and *environmental* conditions (`isEnvironmentalStatus()`). Semantic
+ * drift (`CHANGED`/`DELETED`) → `deny`/`semantic-staleness`, re-blocking until
+ * the findings change. Environmental conditions the CLI could not resolve at all
+ * (`CONFLICT`/`SUBMODULE`/`LFS_*`/`PROMISOR_MISSING`/`SPARSE_EXCLUDED`/
+ * `FILTER_FAILED`/`IO_ERROR`) → `allow`/`environmental`: fail OPEN, surfacing the
+ * condition rather than denying on an infra failure a span edit cannot fix.
+ * Uncovered writes (changed paths with zero coverage from `executors.list`,
+ * minus `.span/**`, and paths matched by the repo's `.span/.gateignore` — see
+ * {@link file://./gate-ignore.ts}, loaded directly from disk via
+ * `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
  * `deny`/`uncovered-writes` the first time that state is seen, then
- * `allow`/`already-presented` on retry. `MOVED` and
- * `RESOLVED_PENDING_COMMIT` never contribute to either and never deny. The
- * distinct-debt-state digest (sorted findings + sorted uncovered paths) is
- * checked and recorded through `memoState`. Any internal error resolves to
- * `allow`/`silent` — the gate fails open and never bricks a commit.
+ * `allow`/`already-presented` on retry. `MOVED` and `RESOLVED_PENDING_COMMIT`
+ * never contribute to any branch and never deny. The distinct-debt-state digest
+ * (sorted uncovered paths) is checked and recorded through `memoState`; a
+ * `memoState.record` that reports failure (unwritable memo) also fails open,
+ * since a non-persisting memo would re-deny the identical retry forever. Any
+ * internal error resolves to `allow`/`silent` — the gate fails open and never
+ * bricks a commit.
+ *
+ * The one exception to fail-open is a {@link GateScanError} from `executors.stale`:
+ * a scan that *could not complete* (e.g. an unreadable anchor file aborts the
+ * scoped query) yields an empty result that is NOT evidence of a clean changeset.
+ * Resolving that to `allow`/`silent` would be silent non-enforcement — a user
+ * believes the check ran and passed when it never completed, masking real debt on
+ * a sibling anchor the query never reached. So this one case fails CLOSED:
+ * `deny`/`scan-failed`, distinct from both a clean pass and an `environmental`
+ * result, re-denying until the scan can actually run (with the escape hatch as the
+ * deliberate override).
  *
  * The `GIT_SPAN_GATE=skip` escape hatch is *not* checked here — it is a
  * pre-check the adapter runs via {@link isGateSkipped} before calling
@@ -449,12 +578,39 @@ export async function evaluateGate(
     await executors.fix(paths, cwd);
     const staleRows = await executors.stale(paths, cwd);
 
-    // Semantic staleness is hard-until-resolved: deny every time until the
-    // findings themselves change. `isDebt()` is the single source of truth —
+    // Split debt rows into semantic drift (a user can fix by editing a span)
+    // and terminal/environmental conditions (the CLI could not resolve the
+    // anchor at all — sparse checkout, unfetched LFS, partial-clone miss, I/O
+    // error). `isDebt()` is the single source of truth for what is debt at all;
+    // `isEnvironmentalStatus()` splits the fixable from the unresolvable.
     // `MOVED`/`RESOLVED_PENDING_COMMIT` are never debt and never contribute.
-    const findings = staleRows.filter((row) => isDebt(row.status));
-    if (findings.length > 0) {
-      return { decision: 'deny', kind: 'semantic-staleness', findings, reason: renderStalenessReason(findings) };
+    const debtRows = staleRows.filter((row) => isDebt(row.status));
+    const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
+    const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+
+    // Semantic staleness is hard-until-resolved: deny every time until the
+    // findings themselves change.
+    if (semantic.length > 0) {
+      return {
+        decision: 'deny',
+        kind: 'semantic-staleness',
+        findings: semantic,
+        reason: renderStalenessReason(semantic)
+      };
+    }
+
+    // Environmental conditions are not a span edit away from resolution: fail
+    // OPEN (allow) — but carry them so the adapter surfaces the condition rather
+    // than swallowing it. Denying would re-deny forever on an infra failure the
+    // user cannot clear from the gate, contradicting the fail-open contract the
+    // rest of the gate already honors for CLI-absent/timeout/parse failures.
+    if (environmental.length > 0) {
+      return {
+        decision: 'allow',
+        kind: 'environmental',
+        conditions: environmental,
+        reason: renderEnvironmentalReason(environmental)
+      };
     }
 
     // Uncovered writes: changed paths with zero covering span, minus `.span/**`
@@ -471,14 +627,24 @@ export async function evaluateGate(
     if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
 
     // Consider-once: deny the first time this exact debt state is seen, then
-    // pass the retry with an unchanged state.
-    const digest = gateStateDigest(findings, uncovered);
+    // pass the retry with an unchanged state. (No semantic/environmental rows
+    // survive to here — both branches above have returned — so the digest's
+    // findings component is empty and the state is keyed by the uncovered set.)
+    const digest = gateStateDigest([], uncovered);
     if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
-    memoState.record(digest);
+    // A non-persisting memo write would turn "deny once, then allow the retry"
+    // into "deny every time" with no escape — fail open rather than deny.
+    if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
     return { decision: 'deny', kind: 'uncovered-writes', uncovered, reason: renderUncoveredReason(uncovered) };
-  } catch {
-    // Fail open: any internal/CLI error resolves to allow. The gate must never
-    // brick a commit on its own failure.
+  } catch (err) {
+    // A scan that could not COMPLETE is not a clean result — failing open here
+    // would silently allow a commit whose debt the aborted scan never got to
+    // check. Fail closed with a distinguishable `scan-failed` deny instead.
+    if (err instanceof GateScanError) {
+      return { decision: 'deny', kind: 'scan-failed', reason: renderScanFailedReason(err.detail) };
+    }
+    // Fail open: any other internal/CLI error resolves to allow. The gate must
+    // never brick a commit on its own failure.
     return { decision: 'allow', kind: 'silent' };
   }
 }
@@ -520,6 +686,37 @@ function renderStalenessReason(findings: StalePorcelainRow[]): string {
   ].join('\n');
 }
 
+/**
+ * The advisory surfaced when the changeset's only staleness is environmental —
+ * the gate allows but says why, so the unresolvable condition is not silently
+ * swallowed. No escape-hatch line: the command already passes.
+ */
+function renderEnvironmentalReason(conditions: StalePorcelainRow[]): string {
+  const lines = conditions.map((row) => `  - ${row.name} (${row.status}): ${anchorText(row)}`);
+  return [
+    'git-span could not evaluate these anchors, so the gate is not blocking on them:',
+    ...lines,
+    '',
+    'This is an environmental condition (e.g. sparse checkout, unfetched LFS, partial-clone miss, or I/O error), not span drift you can fix by editing a span. Resolve the underlying checkout/fetch issue if this coupling needs verifying.'
+  ].join('\n');
+}
+
+/**
+ * The advisory a `scan-failed` deny renders into `reason`. Unlike the
+ * environmental advisory (which allows), this holds the command: the scan could
+ * not complete, so the changeset is unverified — not confirmed clean. Names the
+ * underlying failure and offers the escape hatch as the deliberate override.
+ */
+function renderScanFailedReason(detail: string): string {
+  return [
+    'git-span could not complete its staleness scan for this changeset, so it cannot confirm the change is free of span debt:',
+    `  ${detail}`,
+    '',
+    'This is a hard scan failure (e.g. an unreadable anchor file that aborts the whole scoped query), not a clean result — the gate is holding the command rather than letting an unverified changeset through. Resolve the underlying read/scan error, then retry.',
+    ESCAPE_HATCH_LINE
+  ].join('\n');
+}
+
 /** The one-time list an uncovered-writes deny renders into `reason`. */
 function renderUncoveredReason(uncovered: string[]): string {
   const lines = uncovered.map((path) => `  - ${path}`);
@@ -537,22 +734,60 @@ function renderUncoveredReason(uncovered: string[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the transcript-visible escape hatch `GIT_SPAN_GATE=skip` is set,
- * bypassing the gate for a user-approved exception (CARD.md acceptance
- * criterion 5; the skill documents that setting it requires explicit user
- * approval).
+ * Whether the transcript-visible escape hatch `GIT_SPAN_GATE=skip` is set in the
+ * ambient/session environment, bypassing the gate for a user-approved exception
+ * (CARD.md acceptance criterion 5; the skill documents that setting it requires
+ * explicit user approval).
  *
- * Implemented (not stubbed) in this phase: it is a single, pure env-var read
- * that CARD.md fully specifies, so the stub-then-implement ceremony would add
- * nothing — there is no logic to get wrong beyond the exact-string match, and a
- * trivial implementation is more honest than a stub that throws. Kept pure over
- * `process.env` (env injected as a parameter) so Phase 3.2 can exercise both
- * branches without mutating global state.
+ * This covers the *session-env* form (the var exported for the whole session).
+ * The *inline-prefix* form documented everywhere — `GIT_SPAN_GATE=skip git
+ * commit …` typed as one Bash command — never reaches the hook's own
+ * `process.env`, because a `PreToolUse` hook runs as a separate process *before*
+ * the shell command whose inline assignment it would set; that form is detected
+ * from the command string by {@link commandSkipsGate}. Adapters check both.
+ *
+ * Kept pure over the passed env (rather than reading `process.env` directly) so
+ * tests can exercise both branches without mutating global state.
  *
  * @param env The environment to read, e.g. `process.env`.
  */
 export function isGateSkipped(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
   return env['GIT_SPAN_GATE'] === 'skip';
+}
+
+/**
+ * Whether the raw command string carries the inline escape-hatch prefix
+ * `GIT_SPAN_GATE=skip` on a `git` invocation — the exact documented gesture
+ * `GIT_SPAN_GATE=skip git commit …` typed as one Bash command.
+ *
+ * A `PreToolUse` hook runs as its own process *before* the shell executes the
+ * command, so an inline `VAR=value cmd` assignment (which only affects the
+ * process the shell spawns afterward) never lands in the hook's own
+ * `process.env` — {@link isGateSkipped} alone can therefore never see it. This
+ * recovers the flag from the command text itself, so the documented one-shot,
+ * per-command bypass actually works: it inspects the leading `VAR=value`
+ * environment assignments {@link matchGitInvocation} otherwise strips, and
+ * returns true when one of them is exactly `GIT_SPAN_GATE=skip` on a segment
+ * that then invokes `git`.
+ *
+ * Conservative like the rest of the parser: the assignment must be a leading
+ * prefix on a `git` invocation (not buried mid-command), matching the exact
+ * documented shape and nothing looser.
+ *
+ * @param command The raw shell command string from the hook's tool input.
+ */
+export function commandSkipsGate(command: string): boolean {
+  for (const segment of splitSegments(command)) {
+    const tokens = tokenize(segment);
+    let i = 0;
+    let sawSkip = false;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
+      if (tokens[i] === 'GIT_SPAN_GATE=skip') sawSkip = true;
+      i++;
+    }
+    if (sawSkip && tokens[i] === 'git') return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +868,13 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       const base = gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs)[0];
       if (!base) return [];
       return gitLines(['-C', repoRoot, 'diff', '--name-only', `${base}..HEAD`], repoRoot, timeoutMs);
+    },
+    pathspecPaths: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      // Working-tree content vs HEAD, scoped to the pathspecs — the files a
+      // `git commit -- <pathspec>` would actually change (staged or not).
+      return gitLines(['-C', repoRoot, 'diff', 'HEAD', '--name-only', '--', ...paths], repoRoot, timeoutMs);
     }
   };
 }
@@ -668,9 +910,23 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
           timeout: timeoutMs
         });
       } catch (err) {
-        const captured = (err as { stdout?: string }).stdout;
-        if (typeof captured === 'string') out = captured;
-        else return [];
+        // `git span stale` exits non-zero in two very different ways, and they
+        // must not be conflated:
+        //  - Legitimate drift: real porcelain rows on stdout describing the
+        //    drift. Parse them (this is the whole point of the read).
+        //  - Hard scan failure: the scoped query aborted before completing (e.g.
+        //    an unreadable anchor file), writing an error to stderr and emitting
+        //    empty stdout. An empty result here is NOT "clean" — the scan never
+        //    ran to completion — so signal it distinctly rather than parsing to
+        //    `[]`, which would read as a clean pass and silently allow the commit.
+        const stdout = (err as { stdout?: string }).stdout;
+        const stderr = (err as { stderr?: string }).stderr;
+        const stdoutText = typeof stdout === 'string' ? stdout : '';
+        const stderrText = typeof stderr === 'string' ? stderr : '';
+        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
+          throw new GateScanError(stderrText.trim());
+        }
+        out = stdoutText;
       }
       return parseStalePorcelain(out);
     },
@@ -703,7 +959,9 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
 export function createDiskGateMemoState(cwd: string): GateMemoState {
   const repoRoot = resolveRepoRoot(cwd);
   if (!repoRoot) {
-    return { has: () => false, record: () => {} };
+    // No resolvable repo → the memo cannot persist. Report `false` from
+    // `record` so the gate fails open rather than denying with no escape.
+    return { has: () => false, record: () => false };
   }
   const dir = gateMemoDir(repoRoot);
   return {
@@ -718,8 +976,11 @@ export function createDiskGateMemoState(cwd: string): GateMemoState {
       try {
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(nodePath.join(dir, digest), '');
+        return true;
       } catch {
-        // Best-effort: a failed memo write must never brick the commit.
+        // A failed memo write must never brick the commit and must never
+        // silently re-deny forever: report the failure so the gate fails open.
+        return false;
       }
     }
   };
