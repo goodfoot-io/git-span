@@ -93,8 +93,8 @@ statistical separation from the two other survivors — all three were perfectly
 and within ~6% on mean transcript cost. It was adopted as
 [git-span-v2](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md) on design grounds:
 bounded 82-line core, section files loaded only on observable triggers
-([triage](../../plugins-claude/git-span/skills/git-span-v2/sections/triage.md),
-[inspect](../../plugins-claude/git-span/skills/git-span-v2/sections/inspect.md)), and the
+([triage](../../plugins-claude/git-span/skills/git-span-v2/references/triage.md),
+[inspect](../../plugins-claude/git-span/skills/git-span-v2/references/inspect.md)), and the
 bred-in anchor discipline (grep the `why`'s symbol before writing line ranges; trust
 `stale` output and stop) whose absence killed both retired variants on the identical trap.
 The incumbent [git-span skill](../../plugins-claude/git-span/skills/git-span/SKILL.md)

@@ -1,5 +1,5 @@
 ---
-name: git-span-v2
+name: git-span
 description: Track, declare, and reconcile implicit semantic couplings between file/line ranges in a git repo via anchored spans.
 ---
 
@@ -70,37 +70,37 @@ with `wc -l` and write the new range).
 
 ## Where to go next
 Pick the first that fits:
-1. Read-only question, no `.span` mutation intended → `sections/inspect.md`.
+1. Read-only question, no `.span` mutation intended → `references/inspect.md`.
 2. A `stale`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →
-   `sections/terminal-statuses.md`.
+   `references/terminal-statuses.md`.
 3. A finding says `CONTENT_UNAVAILABLE(...)`, or LFS / partial clone / sparse checkout is
-   involved → `sections/content-unavailable.md`.
+   involved → `references/content-unavailable.md`.
 4. The anchor target is binary, image, symlink, or LFS-tracked, or a whole-file anchor
-   (no `#L`) is in play → `sections/whole-file-and-lfs.md`.
+   (no `#L`) is in play → `references/whole-file-and-lfs.md`.
 5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
    of the three recipes above → do that, no section read.
 6. A `<git-span>` block appeared — or expectedly didn't — during a `Read`/`Edit`/`Write` →
-   `sections/understanding-hook-output.md`.
+   `references/understanding-hook-output.md`.
 7. The PreToolUse block surfaces spans that are noise for a path class →
-   `sections/hookignore.md`.
+   `references/hookignore.md`.
 8. Installing or troubleshooting the `post-commit`/`post-rewrite` reconciliation hooks or
-   the optional merge driver → `sections/git-hook-setup.md`.
+   the optional merge driver → `references/git-hook-setup.md`.
 9. You were spawned unattended as the dispatcher's standalone reconciler agent →
-   `sections/standalone-reconciler.md`.
+   `references/standalone-reconciler.md`.
 10. Mining git history for undeclared couplings (broad sweep, not one known pair) →
-    `sections/finding-span-candidates.md`.
+    `references/finding-span-candidates.md`.
 11. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
-    `sections/ci-and-sync.md`.
+    `references/ci-and-sync.md`.
 12. git-span under OpenAI Codex (marketplace install, hook trust) →
-    `sections/codex-install-and-trust.md`.
+    `references/codex-install-and-trust.md`.
 13. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
-    `sections/command-reference.md`.
+    `references/command-reference.md`.
 14. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond
-    the gotchas above → `sections/command-quirks-and-errors.md`.
+    the gotchas above → `references/command-quirks-and-errors.md`.
 15. Where `.span/` data lives, refs, or line-ending guarantees →
-    `sections/storage-model.md`.
+    `references/storage-model.md`.
 16. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
-    `sections/triage.md`.
+    `references/triage.md`.
 
 ## Not in this build — don't burn a `--help` call
 `move` subcommand; `stale --patch/--stat/--worktree/--staged/--head/--search`;

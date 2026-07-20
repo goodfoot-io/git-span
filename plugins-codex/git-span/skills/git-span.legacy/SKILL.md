@@ -1,5 +1,5 @@
 ---
-name: git-span.legacy
+name: git-span
 description: Use with `git span` or spans.
 ---
 
