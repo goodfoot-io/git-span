@@ -19,7 +19,7 @@ After making any changes to code or configuration files, lint, type check, and r
 
 ## Documentation
 
-Project documentation lives in `README.md`, `packages/git-span/docs/`, `wiki/`, and `plugins-claude/git-span/skills/git-span-v2/`. Keep docs focused on `git-span`, the Rust CLI in `packages/git-span`, and the lightweight VS Code extension in `packages/extension`.
+Project documentation lives in `README.md`, `packages/git-span/docs/`, `wiki/`, and `plugins-claude/git-span/skills/git-span/`. Keep docs focused on `git-span`, the Rust CLI in `packages/git-span`, and the lightweight VS Code extension in `packages/extension`.
 
 ## Validation
 

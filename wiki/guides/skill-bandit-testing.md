@@ -7,7 +7,7 @@ aliases: [skill bandit, bandit skill testing, git-span-v2 methodology, skill A/B
 # Testing Claude skills with a multi-armed bandit
 
 This guide documents the experiment that produced
-[plugins-claude/git-span/skills/git-span-v2](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md),
+[plugins-claude/git-span/skills/git-span-v2](../../plugins-claude/git-span/skills/git-span/SKILL.md),
 and how to run the same kind of experiment again. The complete harness — variant skills
 (including retired ones), scenario environments, runner, bandit, all 69 trial records with
 their session IDs, and every haiku session transcript — is archived in
@@ -83,7 +83,7 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
   trust-boundary violations (re-verifying `stale` output via `git log`/`git show`,
   ~50k wasted chars per occurrence), unbatched history calls, and silent router misses in
   multi-file skills. The bred-in countermeasures are visible in the winner's dispatch
-  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md#L71-L103) —
+  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L71-L103) —
   which routes on countable conditions with a catch-all else-branch.
 
 ## Outcome
@@ -91,10 +91,10 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
 Variant-e won on pooled record (7-3 and 6-4 in paired blocks, 10/10 passes) but without
 statistical separation from the two other survivors — all three were perfectly reliable
 and within ~6% on mean transcript cost. It was adopted as
-[git-span-v2](../../plugins-claude/git-span/skills/git-span-v2/SKILL.md) on design grounds:
+[git-span-v2](../../plugins-claude/git-span/skills/git-span/SKILL.md) on design grounds:
 bounded 82-line core, section files loaded only on observable triggers
-([triage](../../plugins-claude/git-span/skills/git-span-v2/references/triage.md),
-[inspect](../../plugins-claude/git-span/skills/git-span-v2/references/inspect.md)), and the
+([triage](../../plugins-claude/git-span/skills/git-span/references/triage.md),
+[inspect](../../plugins-claude/git-span/skills/git-span/references/inspect.md)), and the
 bred-in anchor discipline (grep the `why`'s symbol before writing line ranges; trust
 `stale` output and stop) whose absence killed both retired variants on the identical trap.
 The incumbent [git-span skill](../../plugins-claude/git-span/skills/git-span/SKILL.md)
