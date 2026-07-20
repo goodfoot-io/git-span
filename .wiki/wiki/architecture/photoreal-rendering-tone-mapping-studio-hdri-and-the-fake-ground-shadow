@@ -1,9 +1,0 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L243-L256 rk64:e53923128945558f
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L284-L320 rk64:34ba9065c6d5f36d
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L824-L842 rk64:764b2a65c5b4581c
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L849-L873 rk64:3f4ed4435b65545f
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L981-L987 rk64:c330bcc8f2275b91
-packages/website/app/components/marketing/story/engine/beats.ts#L375-L377 rk64:83faf612cdb23968
-wiki/architecture/homepage-engine-animation.md#L279-L331 rk64:af0b4b8681b0acd7
-
-Photoreal rendering pass: AgX tone mapping, studio HDRI lighting, and the fake ground-contact shadow.

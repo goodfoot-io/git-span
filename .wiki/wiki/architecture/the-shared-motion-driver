@@ -1,4 +1,5 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L557-L602 rk64:90f89a31ac91f08c
-wiki/architecture/homepage-engine-animation.md#L504-L521 rk64:d7c3800769c522d5
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L663-L667 rk64:fd769904b1fe9793
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L669-L725 rk64:12ecdf361dea786d
+wiki/architecture/homepage-engine-animation.md#L572-L594 rk64:1a2cb6044451c371
 
-The single motion-tick driver shared by drag-to-orbit interaction and idle rotation.
+The single shared motion-tick driver (ensureMotionLoop/motionTick) that advances idle spin, drag snap-back, and the highlight heartbeat pulse in one rAF loop rather than three competing loops.

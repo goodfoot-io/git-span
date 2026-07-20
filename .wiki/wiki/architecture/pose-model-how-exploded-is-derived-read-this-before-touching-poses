@@ -1,5 +1,7 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L42-L53 rk64:ba81edc7a91c1e18
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L224-L450 rk64:10b55f45c527e9af
-wiki/architecture/homepage-engine-animation.md#L137-L202 rk64:8255299be882c920
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L56-L57 rk64:286424622cc22700
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L279-L533 rk64:1cb678157a240a4f
+packages/website/app/components/marketing/story/engine/parts.ts#L142-L236 rk64:08386044c566ea47
+packages/website/app/components/marketing/story/engine/parts.ts#L255-L273 rk64:d49d4d07519255b4
+wiki/architecture/homepage-engine-animation.md#L152-L208 rk64:83ef3b56ad10ed11
 
-How the exploded pose is derived from the base part records; read before touching poses.
+How the exploded pose is synthesized in EngineScene.load() from the baked animation's staging-to-assembled axis rather than sampled directly, and the parts.ts EXPLODE_OVERRIDES/EXPLODE_DIRECTION_REFERENCE entries that correct individual parts' unreliable directions and distances.

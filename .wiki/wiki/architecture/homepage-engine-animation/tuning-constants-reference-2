@@ -1,8 +1,0 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L73-L117 rk64:ae9da093360652ce
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L767-L795 rk64:aaaa8b07c7990146
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L805-L821 rk64:1221aebdd717a8b5
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L823-L851 rk64:aaaa8b07c7990146
-packages/website/app/components/marketing/story/engine/beats.ts#L9-L80 rk64:a7f7a6a31d9353ec
-wiki/architecture/homepage-engine-animation.md#L623-L686 rk64:af99c30f0524c8ba
-
-Reference table of tuning constants used across the choreography and rendering modules.

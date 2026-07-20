@@ -1,4 +1,0 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L783-L803 rk64:195835b3d8fcf8fb
-wiki/architecture/homepage-engine-animation.md#L398-L404 rk64:4291af5cfb0aa438
-
-Why highlight rings and linkage lines render with additive x-ray-style materials rather than opaque shells.

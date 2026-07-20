@@ -1,7 +1,8 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L164-L164 rk64:7d6c457b618aba1d
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L169-L171 rk64:5e7f0bd30726c286
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L214-L233 rk64:953c8dc58d8c5d0b
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L699-L708 rk64:7c3a556919f91734
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L819-L872 rk64:f5cc18e10a775297
-wiki/architecture/homepage-engine-animation.md#L473-L496 rk64:19d6e00383bb5923
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L552-L561 rk64:7c3a556919f91734
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L669-L680 rk64:5541a89a78a1fb8d
+packages/website/app/components/marketing/story/engine/highlights.ts#L61-L61 rk64:8d7fca330e3c8684
+packages/website/app/components/marketing/story/engine/highlights.ts#L66-L68 rk64:1f3abd9f4e56c925
+packages/website/app/components/marketing/story/engine/highlights.ts#L111-L130 rk64:fed85d54b1af7d90
+wiki/architecture/homepage-engine-animation.md#L473-L497 rk64:e507beb83f5eb53a
 
+The highlight heartbeat: a wall-clock pulseCycle/pulseWave in highlights.ts driven each rAF by motionTick, mapped through blackbodyColor's temperature ramp, that beats independently of scroll and is pinned to zero under prefers-reduced-motion.

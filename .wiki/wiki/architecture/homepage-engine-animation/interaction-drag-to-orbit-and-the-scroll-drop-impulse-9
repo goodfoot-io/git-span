@@ -1,6 +1,0 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L507-L556 rk64:bf9d09477fc56c6f
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L510-L524 rk64:4a5e8de326a8f5c7
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L513-L527 rk64:4a5e8de326a8f5c7
-wiki/architecture/homepage-engine-animation.md#L483-L521 rk64:9bd39ed9edb69694
-
-Pointer drag-to-orbit interaction handling for the engine camera.

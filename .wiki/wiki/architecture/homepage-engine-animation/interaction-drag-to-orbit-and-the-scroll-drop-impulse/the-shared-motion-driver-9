@@ -1,5 +1,0 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L557-L602 rk64:90f89a31ac91f08c
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L589-L638 rk64:b97e7361fbbc1623
-wiki/architecture/homepage-engine-animation.md#L504-L521 rk64:d7c3800769c522d5
-
-The single motion-tick driver shared by drag-to-orbit interaction and idle rotation.

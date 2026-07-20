@@ -1,6 +1,5 @@
 packages/website/app/components/marketing/story/engine/mismatchBox.ts#L28-L55 rk64:63ac5bc7e41e5a85
 packages/website/app/components/marketing/story/engine/mismatchBox.ts#L68-L105 rk64:564bd91c915b770d
 packages/website/app/components/marketing/story/engine/mismatchBox.ts#L110-L120 rk64:402c06aebafa04bd
-wiki/architecture/homepage-engine-animation.md#L334-L353 rk64:b6b20d91ee712d00
+wiki/architecture/homepage-engine-animation.md#L361-L380 rk64:0543d46c0c07ee7e
 
-The translucent bounding box that flags the mismatch region: computed once in mismatchBox.ts from the parts' exploded pose, built as a padded fill-plus-outline mesh, and driven per frame only by opacity/visibility.

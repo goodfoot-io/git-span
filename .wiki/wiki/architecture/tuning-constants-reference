@@ -1,8 +1,4 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L73-L117 rk64:ae9da093360652ce
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L805-L821 rk64:1221aebdd717a8b5
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L823-L851 rk64:aaaa8b07c7990146
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L835-L843 rk64:4ac3169e2f117a41
-packages/website/app/components/marketing/story/engine/beats.ts#L9-L80 rk64:a7f7a6a31d9353ec
-wiki/architecture/homepage-engine-animation.md#L623-L686 rk64:af99c30f0524c8ba
+packages/website/app/components/marketing/story/engine/beats.ts#L9-L166 rk64:cc28ae55e8aa0cb5
+wiki/architecture/homepage-engine-animation.md#L729-L774 rk64:d78fdd3dc863f61d
 
-Reference table of tuning constants used across the choreography and rendering modules.
+Reference table of choreography tuning constants defined in beats.ts#L9-L166, documented alongside the (whole-file-linked, uncovered) EngineScene.ts/mismatchBox.ts/highlights.ts constant tables.

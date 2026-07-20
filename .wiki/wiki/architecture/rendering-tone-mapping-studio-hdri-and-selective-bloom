@@ -1,7 +1,8 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L330-L341 rk64:4f7563168bea0b84
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L367-L429 rk64:706a310d9748ff8c
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L453-L467 rk64:9731f6c9689831fa
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L1222-L1235 rk64:38a8f46afb23c302
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L1237-L1247 rk64:8a77113e76ab1624
-wiki/architecture/homepage-engine-animation.md#L355-L403 rk64:223d1a927cf1a6df
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L180-L189 rk64:d94e0c0eb8a55332
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L215-L274 rk64:78e8ae2e752213ff
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L301-L315 rk64:9731f6c9689831fa
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L816-L829 rk64:38a8f46afb23c302
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L831-L841 rk64:8a77113e76ab1624
+wiki/architecture/homepage-engine-animation.md#L355-L403 rk64:6eb74bc4f1fb0ac4
 
+Rendering pipeline: ACES tone mapping tuned to preserve bloom headroom, the studio-HDRI-derived PMREM environment map, and selective bloom via the darken-non-bloomed technique across two EffectComposers.

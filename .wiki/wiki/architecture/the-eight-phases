@@ -1,6 +1,4 @@
-packages/website/app/components/marketing/story/engine/beats.ts#L104-L377 rk64:ddab61e4f87b33e0
-packages/website/app/components/marketing/story/engine/beats.ts#L175-L189 rk64:1d7607770e23506c
-packages/website/app/components/marketing/story/engine/beats.ts#L379-L402 rk64:d885e05157486624
-wiki/architecture/homepage-engine-animation.md#L97-L135 rk64:dbb72412251f01c7
+packages/website/app/components/marketing/story/engine/beats.ts#L224-L299 rk64:1ce224a86f433d5c
+wiki/architecture/homepage-engine-animation.md#L106-L151 rk64:9d9f409d694db967
 
-The eight choreography phases that drive the homepage engine animation timeline.
+The eight scroll-phase buckets from scene.ts and the handful of beats.ts fields (mountScale, seatAdjust, camera azimuth/elevation/margin, idleWeight) still gated by PhaseId rather than driven directly by the raw timeline t.

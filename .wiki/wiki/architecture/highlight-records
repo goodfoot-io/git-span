@@ -1,7 +1,8 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L79-L79 rk64:6d8ee336b1fdfcfb
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L81-L87 rk64:25f8aa808bafba79
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L96-L106 rk64:8a47018a9add3f9f
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L635-L639 rk64:09757cdc4b9065ea
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L926-L972 rk64:77ecc292575090ba
-wiki/architecture/homepage-engine-animation.md#L417-L438 rk64:d71bb3ac5dec33a9
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L483-L487 rk64:09757cdc4b9065ea
+packages/website/app/components/marketing/story/engine/highlights.ts#L24-L24 rk64:c039de4ee557e988
+packages/website/app/components/marketing/story/engine/highlights.ts#L26-L32 rk64:28c92f569c3de67e
+packages/website/app/components/marketing/story/engine/highlights.ts#L41-L51 rk64:f984aec1110e9166
+packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221 rk64:e2a9c79612e851f1
+wiki/architecture/homepage-engine-animation.md#L417-L439 rk64:455b87dee7a0831c
 
+Highlight records: one HighlightRecord per highlightable part built via highlights.ts's buildHighlightRecords, giving each its own cloned material, base color, and ordered list of HighlightStages it cycles through.

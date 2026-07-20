@@ -1,6 +1,5 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L34-L45 rk64:ba81edc7a91c1e18
-packages/website/app/components/marketing/story/engine/parts.ts#L86-L94 rk64:4c83b9cad4680417
 packages/website/app/components/marketing/story/engine/parts.ts#L92-L94 rk64:256dbda0af3e28b2
-wiki/architecture/homepage-engine-animation.md#L204-L229 rk64:efa1234945baebd8
+packages/website/app/components/marketing/story/engine/types.ts#L12-L26 rk64:d61295adb36f3ce6
+wiki/architecture/homepage-engine-animation.md#L209-L234 rk64:693ea7ae7e41b389
 
-Trap: three.js mesh name collisions get silently deduped with numeric suffixes, breaking part lookup by name.
+Trap: GLTFLoader's mesh-name dedup suffixes silently break FRONT_DRIVE/FRONT_MOUNT membership checks unless every list membership check strips the suffix via stripDedupSuffix before comparing.
