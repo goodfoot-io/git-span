@@ -1,6 +1,6 @@
 packages/git-span/src/cli/tree.rs#L1-L80 rk64:90bd8b7ab1623066
-plugins-claude/git-span/skills/git-span/SKILL.md#L17-L17 rk64:33f03bdab83c79ff
-plugins-claude/git-span/skills/git-span/sections/command-reference.md#L38-L84 rk64:e48676827cb84b64
-plugins-claude/git-span/skills/git-span/sections/inspecting-spans.md#L40-L76 rk64:2c3470ad74d95c9b
+plugins-claude/git-span/skills/git-span.legacy/SKILL.md#L17-L17 rk64:33f03bdab83c79ff
+plugins-claude/git-span/skills/git-span.legacy/sections/command-reference.md#L38-L84 rk64:e48676827cb84b64
+plugins-claude/git-span/skills/git-span.legacy/sections/inspecting-spans.md#L40-L76 rk64:2c3470ad74d95c9b
 
 Handbook documentation of the git span tree subcommand behavior, which renders clique-grouped impact trees showing blast radius and ripple effects through span co-occurrence.

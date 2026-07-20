@@ -1,4 +1,4 @@
-plugins-claude/git-span/skills/git-span/SKILL.md#L22-L22 rk64:03a568f45de7a8fd
-plugins-claude/git-span/skills/git-span/sections/hookignore.md rk64:a3913a2162c6824b
+plugins-claude/git-span/skills/git-span.legacy/SKILL.md#L22-L22 rk64:03a568f45de7a8fd
+plugins-claude/git-span/skills/git-span.legacy/sections/hookignore.md rk64:a3913a2162c6824b
 
 Skill handbook instruction at line 22 points readers to the hookignore.md section that documents per-path span suppression via .hookignore files.
