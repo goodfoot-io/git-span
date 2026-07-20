@@ -1922,6 +1922,7 @@ fn compute_layer_sources(
             (None, None) => false,
             (Some((wt_txt, wt_t)), Some((idx_txt, idx_t))) => {
                 slice_pair_differs(wt_txt, wt_t, idx_txt, idx_t, ignore_ws)
+                    || tracked_position_differs(wt_t, idx_t)
             }
         };
         if drifts {
@@ -1938,6 +1939,7 @@ fn compute_layer_sources(
             (None, None) => false,
             (Some((idx_txt, idx_t)), Some((head_txt, head_t))) => {
                 slice_pair_differs(idx_txt, idx_t, head_txt, head_t, ignore_ws)
+                    || tracked_position_differs(idx_t, head_t)
             }
         };
         if drifts {
@@ -1985,6 +1987,19 @@ fn compute_layer_sources(
     }
 
     Ok(sources)
+}
+
+/// Compare two layers' tracked positions (path + line range). Returns
+/// `true` when the position moved between the two layers, even though the
+/// anchored content is byte-identical at both — this is exactly the pure
+/// in-file (or rename) `Moved` case, where `slice_pair_differs` alone finds
+/// no content drift because the tracked bytes did not change, only their
+/// location. Without this check `compute_layer_sources` never attributes a
+/// position-only shift to the layer that actually holds it, leaving
+/// `layer_sources` empty for uncommitted-only Moved anchors (card
+/// main-166).
+fn tracked_position_differs(a_t: &Tracked, b_t: &Tracked) -> bool {
+    a_t.path != b_t.path || a_t.start != b_t.start || a_t.end != b_t.end
 }
 
 /// Compare two layers' slices at their respective tracked ranges.
