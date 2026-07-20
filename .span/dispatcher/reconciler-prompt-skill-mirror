@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/agent-prompt.md rk64:d0a3fcab17471251
+packages/agent-hooks/src/common/agent-prompt.md rk64:14b9d5fe5c3610ce
 plugins-claude/git-span/skills/git-span/sections/standalone-reconciler.md rk64:f136497f483c7530
 
 The standalone-reconciler skill section restates the standalone reconciler's spawn prompt in agent-prompt.md for readers browsing the skill, deferring to the prompt wherever the two disagree.
