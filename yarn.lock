@@ -1803,6 +1803,7 @@ __metadata:
     three: "npm:^0.185.1"
     typescript: "npm:^5.9.3"
     vite: "npm:^8.1.4"
+    vitest: "npm:^4.0.16"
     wrangler: "npm:^4.110.0"
   languageName: unknown
   linkType: soft

@@ -1,6 +1,6 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L119-L120 rk64:286424622cc22700
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L431-L680 rk64:9701a0d6a41777b9
-packages/website/app/components/marketing/story/engine/parts.ts#L142-L236 rk64:c670fc5af00edba3
-packages/website/app/components/marketing/story/engine/parts.ts#L255-L273 rk64:ce674e25ea612f66
-wiki/architecture/homepage-engine-animation.md#L152-L207 rk64:d8a79acd55a7fd4f
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L56-L57 rk64:286424622cc22700
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L279-L533 rk64:1cb678157a240a4f
+packages/website/app/components/marketing/story/engine/parts.ts#L142-L236 rk64:08386044c566ea47
+packages/website/app/components/marketing/story/engine/parts.ts#L255-L273 rk64:d49d4d07519255b4
+wiki/architecture/homepage-engine-animation.md#L179-L234 rk64:4dc08e8725fef1d0
 

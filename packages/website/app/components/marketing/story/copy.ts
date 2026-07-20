@@ -61,14 +61,19 @@ export const CLOSING: ClosingCopy = {
 // Captions are the animation-beat descriptions for the media window: they seed the loading
 // fallback and the aria-live state announcements while the engine renders. The animation is an
 // engine: assembled, viewed end-on down its crankshaft as it would sit in a car and slowly
-// orbiting, exploding into a 3D technical view as soon as scrolling begins (with a brief orange
-// flash on the ring gear and rear cover as the camera settles into its final angle), changed (the
-// large ring gear grows and lifts off its seat under a translucent green highlight while the rear
-// cover glows red in sympathy), failed
-// reassembly (the modified ring gear no longer sits flush against the engine's rear cover, which
-// flags red at the gap), re-exploded, an amber line from the ring gear surfacing the recorded
-// relationship with the cover, the cover resizing and rising to meet the gear under green, and
-// finally reassembled cleanly.
+// orbiting, exploding into a 3D technical view as soon as scrolling begins. A sustained orange
+// pulse rises on the ring gear, the 8 pistons, and the rear cover as the camera settles into its
+// final angle (t7.5-28); the ring gear then grows and turns blue while the pistons and rear cover
+// turn red (t16-24), and the ring gear's own blue deepens to that same red (t28-41) -- no lift, no
+// separate "failure" motion, just a color story playing out on parts held in their exploded
+// positions. All color then drains away and the ring gear shrinks back to its normal size as a
+// translucent green bounding box fades in around it, the pistons, and the rear cover (t46-60);
+// the box fades back out as those parts fade up to a shared, permanent green (t60-72). The ring
+// gear grows again (t72-83), the rear cover resizes to meet it, and the whole engine draws back
+// together and reassembles (t83-87), ending fully assembled with the resolved parts still green.
+// There is no amber line, no camera zoom tied to any of these beats, and no residual reassembly
+// gap -- camera motion only happens across the hero->traverse handoff (settling by t=12.3), plus
+// a slow ambient azimuth drift and whatever the user drags.
 export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   hero: {
     prose: null,
@@ -80,7 +85,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'An API and its clients. A schema and its migrations. A constant and the tests that assume it. Every repository is held together by sections that form one subsystem with nothing connecting them — no import, no reference. Those relationships exist only in someone’s understanding.'
     },
     caption:
-      'The engine, already separating since the first scroll, continues pulling apart into a 3D technical exploded view, each part suspended along its axis of assembly with clear space between them; the camera settles into its final angle partway through, and the ring gear and rear cover briefly flash orange as it does'
+      'The engine, already separating since the first scroll, continues pulling apart into a 3D technical exploded view, each part suspended along its axis of assembly with clear space between them; the camera settles into its final angle partway through, and the ring gear, the pistons, and the rear cover hold a sustained, gentle orange pulse as it does'
   },
   change: {
     prose: {
@@ -88,7 +93,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'You change one file and commit it. Git records the new lines exactly — and records nothing about the other sections of the repository that were written against the behavior you just replaced.'
     },
     caption:
-      'The large ring gear grows larger and lifts up off its seat under a translucent green highlight, while the engine’s rear cover glows red in sympathy — nothing else moves'
+      'The large ring gear grows and turns blue in place, while the pistons and the engine’s rear cover turn red in sympathy — nothing lifts, nothing else moves'
   },
   failure: {
     prose: {
@@ -96,7 +101,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'The dependency that failed was never an import, a type, or a package manifest — nothing a compiler resolves or a diff reveals. It was a shared assumption between distant sections, still sitting in the source, and it broke at integration.'
     },
     caption:
-      'The camera zooms in; the engine attempts to reassemble, but the modified ring gear no longer sits flush against its seat — the engine’s rear cover highlights red at the gap'
+      'The ring gear’s blue deepens into the same red already showing on the pistons and the rear cover — no reassembly attempt, no gap, no camera motion'
   },
   second: {
     prose: {
@@ -104,7 +109,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'A span is a name, two or more exact anchors — file paths with line ranges — and a durable, present-tense definition of the subsystem those sections form. Someone who understood this relationship recorded it — git span add, git span why — and committed it like any other file. It sits quietly in the tree, inert until a recorded section changes.'
     },
     caption:
-      'The camera zooms out; the components separate in unison back into the exploded view, each part again suspended along its axis of assembly'
+      'No motion, no zoom: the color drains away from the ring gear, the pistons, and the rear cover, the ring gear shrinks back to its normal size, and a translucent green bounding box fades in around the three of them'
   },
   span: {
     prose: {
@@ -112,7 +117,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'The moment an anchored section is edited, a hook injects the relationship into your coding agent’s context: the name, the exact locations, the standing definition. The agent now knows what you knew when you recorded it.'
     },
     caption:
-      'A thin amber line draws from the ring gear to the engine’s rear cover — the recorded relationship surfaces, and only that cover begins to glow green'
+      'The bounding box fades out as the ring gear, the pistons, and the rear cover fade up together into a shared green glow'
   },
   related: {
     prose: {
@@ -120,7 +125,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'The agent — or you — reads each surfaced location and changes what the new behavior requires. git-span never edits code; it puts the relationship in front of whoever does, before the work is called complete.'
     },
     caption:
-      'The rear cover resizes and rises to meet the ring gear, staying green until they agree; the amber line fades as the geometry resolves'
+      'The ring gear grows again, the rear cover resizes to meet it, and the whole engine draws back together and reassembles — everything stays green throughout'
   },
   success: {
     prose: {
@@ -128,6 +133,6 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
       body: 'The change integrates on the first attempt, because every section of the relationship was part of the work. Git tracked the changes; git-span carried the consequences.'
     },
     caption:
-      'The camera zooms in; the engine reassembles with the same motion as the failed attempt — this time everything fits perfectly and the engine stands fully assembled'
+      'No zoom: the engine stands fully assembled, every part fitting together, the resolved ring gear, pistons, and rear cover still holding their shared green'
   }
 };

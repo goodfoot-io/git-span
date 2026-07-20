@@ -93,27 +93,28 @@ export function stripDedupSuffix(meshName: string): string {
   return meshName.replace(/_\d+$/, '');
 }
 
-// The "mismatch" part: the one piece that resizes and lifts off its seat in the `change` beat
-// and fails to seat in `failure`. Exact mesh name (post `stripDedupSuffix`). Previously this list
-// held all five front-accessory-drive parts (belt, crankshaft/camshaft sprockets, gear,
-// throttleBody); the story now isolates the mismatch to a single pair -- `gear` (this list) and
-// `engineBackCover` (FRONT_MOUNT, below) -- so belt/sprockets/throttleBody render as ordinary
-// static geometry and never highlight, resize, or lift. The name `FRONT_DRIVE` is kept (rather
-// than renamed to something gear-specific) since it's still the mesh-name lookup for "the part
-// that resizes" -- EngineScene derives `frontDriveParts`/highlight-shell/linkage counts from
-// this list's length, so narrowing it to one entry narrows those automatically.
+// The "mismatch" part: the one piece that resizes and recolors in place (grows, then cycles
+// through the orange/blue/red/green highlight story) over the t-based beats in beats.ts. Exact
+// mesh name (post `stripDedupSuffix`). Previously this list held all five front-accessory-drive
+// parts (belt, crankshaft/camshaft sprockets, gear, throttleBody); the story now isolates the
+// mismatch to a single pair -- `gear` (this list) and `engineBackCover` (FRONT_MOUNT, below) --
+// so belt/sprockets/throttleBody render as ordinary static geometry and never resize or glow. The
+// name `FRONT_DRIVE` is kept (rather than renamed to something gear-specific) since it's still
+// the mesh-name lookup for "the part that resizes" -- EngineScene derives `frontDriveParts` from
+// this list's length, so narrowing it to one entry narrows that automatically.
 export const FRONT_DRIVE: readonly string[] = ['gear'];
 
-// The mating surface the front drive fails to seat onto: flags red in `failure` and resizes to
-// meet the front drive in `related`. Measured empirically (see EngineScene.ts's PartRecord
-// build and the node inventory script used to pick it): `engineBackCover` is a large flat
-// castIron plate (~95x67 units) sitting at the crank's REAR end (assembled Z ~= +65.6), directly
-// adjacent to `gear` (Z ~= +72.3) -- the ring gear visually seats against its outward face. This
-// was moved here from `engineBlockFront` (a same-shaped plate at the *opposite*, front-drive end,
-// Z ~= -65) because `engineBlockFront` sits buried inside the assembly with no unobstructed
-// camera angle, forcing illegible depthTest:false "x-ray" highlight hacks. `engineBackCover` is
-// externally visible from the canonical camera angles, so its highlights can be ordinary
-// depth-tested overlays -- see `buildHighlightShells` in EngineScene.ts.
+// The mating surface the front drive seats against: shares the gear's orange/red highlight beats
+// and resizes to meet the (already-regrown) gear in `related`. Measured empirically (see
+// EngineScene.ts's PartRecord build and the node inventory script used to pick it):
+// `engineBackCover` is a large flat castIron plate (~95x67 units) sitting at the crank's REAR end
+// (assembled Z ~= +65.6), directly adjacent to `gear` (Z ~= +72.3) -- the ring gear visually seats
+// against its outward face. This was moved here from `engineBlockFront` (a same-shaped plate at
+// the *opposite*, front-drive end, Z ~= -65) because `engineBlockFront` sits buried inside the
+// assembly with no unobstructed camera angle, forcing illegible depthTest:false "x-ray" highlight
+// hacks. `engineBackCover` is externally visible from the canonical camera angles, so its
+// highlights can be ordinary depth-tested overlays -- see `buildHighlightRecords` in
+// highlights.ts.
 export const FRONT_MOUNT: readonly string[] = ['engineBackCover'];
 
 // `gear` is FRONT_DRIVE's only member and the one physically adjacent to the (rear-mounted)
@@ -237,7 +238,7 @@ export const EXPLODE_OVERRIDES: Readonly<Record<string, ExplodeOverride>> = {
 
 // Parts orange-emphasized alongside FRONT_DRIVE (gear) during the pre-highlight pulse
 // (frame.preHighlightOrange) without joining that list -- the 8 main piston bodies don't resize
-// or lift like the gear does, but they do carry their own red beat (frame.pistonRed) that the
+// like the gear does, but they do carry their own red beat (frame.pistonRed) that the
 // orange pulse crossfades into. `engineBackCover` deliberately does NOT get this pulse (only gear
 // + pistons do) -- exact live mesh names in the GLB (post `stripDedupSuffix`, though none of
 // these currently carry a dedup suffix).

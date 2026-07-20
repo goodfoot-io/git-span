@@ -1,10 +1,8 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L230-L244 rk64:f67d8fde410e173e
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L290-L304 rk64:f67d8fde410e173e
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L371-L386 rk64:2faf8abb7f3b4ee3
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L449-L464 rk64:2faf8abb7f3b4ee3
-packages/website/app/components/marketing/story/engine/parts.ts#L1-L54 rk64:ead220bb857e159d
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L285-L299 rk64:f67d8fde410e173e
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L443-L458 rk64:2faf8abb7f3b4ee3
+packages/website/app/components/marketing/story/engine/parts.ts#L22-L69 rk64:5c6c0060b0859e72
 packages/website/app/components/marketing/story/engine/parts.ts#L71-L84 rk64:2a85b31de9dfdcaf
-packages/website/app/components/marketing/story/engine/parts.ts#L96-L117 rk64:35d54029a857c398
-wiki/architecture/homepage-engine-animation.md#L231-L277 rk64:b1f72b15872e2675
+packages/website/app/components/marketing/story/engine/parts.ts#L105-L117 rk64:33fdaa6666ff7959
+packages/website/app/components/marketing/story/engine/parts.ts#L244-L253 rk64:1064e56b288fb35c
+wiki/architecture/homepage-engine-animation.md#L262-L310 rk64:fc762b4241706f92
 
-Why the engine parts use procedural/PBR materials instead of an albedo texture map.

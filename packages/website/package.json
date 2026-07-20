@@ -11,7 +11,8 @@
     "deploy": "yarn build && wrangler deploy",
     "lint": "biome check --write --unsafe --max-diagnostics 500",
     "fumadocs:generate": "fumadocs-mdx",
-    "typecheck": "yarn fumadocs:generate && tsc --noEmit"
+    "typecheck": "yarn fumadocs:generate && tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "fumadocs-core": "^16.11.4",
@@ -37,6 +38,7 @@
     "tailwindcss": "^4.3.2",
     "typescript": "^5.9.3",
     "vite": "^8.1.4",
+    "vitest": "^4.0.16",
     "wrangler": "^4.110.0"
   }
 }
