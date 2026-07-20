@@ -3,6 +3,10 @@ title: Reconcile stale spans
 description: Find drifted anchors with git span stale, auto-resolve what's mechanically safe, and manually re-anchor the rest.
 ---
 
+<Callout type="info">
+Under an agent session, most positional drift never reaches this guide — the touch hook heals a pure line-shift the moment the edit lands, and the commit gate re-runs a scoped `stale --fix` before classifying a changeset. What follows is for what neither can heal automatically: genuine semantic drift (content that no longer matches what a span asserts), a denied commit's checklist, or reconciling outside a hooked session entirely (a human-authored commit, CI, or a harness without the hooks wired up). See [Hooks & CI integration](/docs/hooks-and-ci) for the hook mechanics.
+</Callout>
+
 ## Run the scan
 
 Run `git span stale` to check every span in the repo for drift:
@@ -65,6 +69,10 @@ git add .span <changed source files> && git commit
 ```
 
 An anchor that `--fix` resolved keeps showing `resolved, pending commit` until both sides are committed — committing `.span/` alone while the drifted source content stays uncommitted leaves the status in place.
+
+## If a commit was denied
+
+Under a hooked agent session, `git commit`/`git push` can come back denied instead of landing, with a checklist describing exactly the debt above. Resolve it the same way — the checklist names each drifted span or uncovered file — then retry the identical command. Semantic-staleness denials re-block on every retry until the findings change; an uncovered-writes denial is consider-once and passes on an unchanged retry. See [Hooks & CI integration](/docs/hooks-and-ci) for the full denial-message shapes and the `GIT_SPAN_GATE=skip` escape hatch.
 
 ## Merge conflicts in `.span/`
 

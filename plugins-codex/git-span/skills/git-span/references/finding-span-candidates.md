@@ -171,7 +171,7 @@ when planning a fix.
   no dependencies beyond Node and git.
 - **`../scripts/shortlist.mjs`** — JSON consumer; prints the actionable §0.
 - **`../scripts/explain.mjs`** — per-pair commit listing.
-- **`techniques.md`** — deep dive on each of the 13 signals:
+- **`../references/techniques.md`** — deep dive on each of the 13 signals:
   what they measure, when they are trustworthy, how to tune them, and how to
   read each section of the long report. Consult when output looks empty or
   when deciding whether to trust a particular signal.

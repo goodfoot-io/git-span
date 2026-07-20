@@ -5,6 +5,10 @@ description: Update a span's anchors after a deliberate code change — in place
 
 ## When to use this
 
+<Callout type="info">
+Under an agent session, a pure line-shift (the span still describes the same content, just at a new range) is healed automatically — the touch hook re-anchors it the moment the edit lands, and no manual step or extra commit is needed. This guide is for what that hook can't do on its own: content itself changed in a way that needs a human or agent judgment call about whether the coupling still holds, or you're re-anchoring outside a hooked session (CI, a human-authored commit, `stale --fix` run by hand).
+</Callout>
+
 Use this when you've deliberately changed the code a span anchors — moved a function, changed its size, or otherwise made its old line range wrong — and `git span stale` now reports it as drifted. This guide covers the manual re-anchor step. If you haven't triaged the drift yet, start with [Reconcile stale spans](/docs/guides/reconcile-stale-spans).
 
 ## Find the new range

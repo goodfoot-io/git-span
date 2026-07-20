@@ -1,13 +1,15 @@
 # agent-hooks
 
-This project contains [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) built with the `@goodfoot/claude-code-hooks` library. Hooks let you extend Claude Code's behavior by running custom code at specific points during a session—before or after tool execution, when Claude starts or stops, and more. This project includes hooks for:
+This project contains hooks for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/hooks) (built with `@goodfoot/claude-code-hooks`) and OpenAI Codex (built with `@goodfoot/codex-hooks`) that keep `.span/` spans reconciled in-session, without a background pipeline or a separate commit. Two harness-agnostic cores in `src/common/` drive both harnesses' adapters:
 
-- `PreToolUse` — on Read/Edit/Write, surfaces overlapping span anchors inline and journals the touch for later reconciliation.
-- `Stop` — reads the per-session touch journal and writes a pre-commit record for the background dispatcher to reconcile spans against.
-- `SubagentStart` — increments the per-session active-subagent counter so the Stop hook knows subagents are still in flight.
-- `SubagentStop` — decrements that counter when a subagent finishes.
+- **`touch-core.ts`** — the `PostToolUse` touch hook (Claude matcher `Read|Edit|Write`, Codex matcher `apply_patch`). Fires synchronously after each file read/edit/write, re-anchors pure positional drift against the edit's real post-edit content silently, and — only when genuine semantic drift survives that heal — injects a bounded `<git-span>` context block, deduplicated per span-per-status-per-session.
+- **`gate-core.ts`** — the `PreToolUse` commit gate (Claude matcher `Bash`, Codex matcher `Bash|shell|exec|local_shell`). Fires before `git commit`/`git push`, resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), and denies the command when real span debt remains: semantic staleness (hard-until-resolved) or an uncovered write outside any span (denied once per distinct debt state). `.span/**` writes are excluded so span repairs riding the same commit never self-trigger the gate. `GIT_SPAN_GATE=skip` bypasses the gate for one invocation, transcript-visibly.
 
-To get started, run `yarn install` to install dependencies, then `yarn build` to compile your hooks into `hooks.json`. Copy the generated `hooks.json` to your Claude Code settings directory (or reference it in your `.claude/settings.json`), and your hooks will run automatically. Edit the files in `src/` to customize behavior, and use `yarn test` to verify your changes work correctly.
+Both hooks fail open at every layer — a missing `git span` binary, a timeout, or a malformed result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure. On Codex, whether `permissionDecision: 'deny'` actually blocks the shell tool was never confirmed live in this repo (see `notes/codex-deny-spike.md` in the card repo, and the header comment in `src/codex/gate.ts`); the adapter ships a hard-deny path per the SDK's documented example, with a one-constant fallback (`CODEX_GATE_HARD_DENY`) to a loud `additionalContext` warning if a live session shows deny doesn't fire.
+
+The old commit-triggered pipeline this replaced (a `Stop` hook writing a touch journal, `post-commit`/`post-rewrite` git hooks, a detached dispatcher subprocess, and a spawned reconciler agent) has been deleted entirely — span repairs now ride the implementing session's own commits instead of arriving as separate, provenance-unclear commits from a background process.
+
+To get started, run `yarn install` to install dependencies, then `yarn build` to compile the hooks into each harness's `hooks.json`. Point your Claude Code settings (or Codex plugin config) at the generated output, and the hooks run automatically. Edit the files in `src/` to customize behavior, and use `yarn test` to verify your changes work correctly.
 
 ## Suppressing span references per path
 
@@ -19,6 +21,10 @@ packages/agent-hooks/src  wiki,marketing
 packages                  wiki
 ```
 
-A span whose slug equals or begins with one of those prefixes (e.g. `wiki` or `wiki/onboarding`) is then never surfaced for an anchor under the matching path — neither inline by the `PreToolUse` hook while you read, nor in the `Stop` hook's stale / related sections. Suppressed spans still count toward write coverage, so hiding one never makes a covered write look uncovered.
+A span whose slug equals or begins with one of those prefixes (e.g. `wiki` or `wiki/onboarding`) is then never surfaced for an anchor under the matching path — the `PostToolUse` touch hook never injects it into `additionalContext`. Suppressed spans still count toward write coverage in the gate's uncovered-writes check, so hiding one never makes a covered write look uncovered.
 
 Pattern grammar is a focused subset of gitignore: blank lines and `#` comments are skipped; a trailing `/` restricts a pattern to directories; a pattern containing a slash is anchored to the repo root, otherwise it matches a path component at any depth; `*`/`?` match within one segment and `**` matches across segments. Negation (`!`) is not supported. A missing or malformed file simply suppresses nothing (fail-open).
+
+## Suppressing the gate's uncovered-writes check
+
+A separate, user-owned file, `.span/.gateignore`, excludes specific paths from the gate's uncovered-writes check. Each non-comment line is a gitignore-style path pattern — the same grammar as `.hookignore` above, minus the trailing span-slug-prefix list (a `.gateignore` line either excludes a path or it doesn't). Unlike `.hookignore`, nothing auto-creates it; its absence is the normal, unconfigured state. A missing or unreadable file, or a malformed line, fails open to no additional exclusion. It never suppresses the semantic-staleness check.

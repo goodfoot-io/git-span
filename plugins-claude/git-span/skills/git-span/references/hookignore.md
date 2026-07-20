@@ -58,3 +58,52 @@ docs/   wiki
 A missing or unreadable `.hookignore`, or a malformed line, yields no rule —
 spans surface as normal rather than being silently hidden. When in doubt the
 file errs toward showing spans, not hiding them.
+
+## Suppressing the gate's uncovered-writes check: `.gateignore`
+
+A separate file, `<repoRoot>/.span/.gateignore`, controls the gate's
+uncovered-writes leg (`references/understanding-hook-output.md` § "The gate:
+what a denied command sees") — a changed file no span anchors at all. It is
+**user-owned**: nothing creates or populates it (unlike `.hookignore`, which
+the `git-span` CLI auto-creates), so its absence is the normal, unconfigured
+state.
+
+Each non-comment line is a single gitignore-style path pattern — the same
+grammar as `.hookignore` above (blank lines and `#` comments skipped, trailing
+`/` for directory-only, anchored-vs-unanchored matching, `*`/`?`/`**`, no
+negation), but with **no trailing prefix list**: a `.gateignore` line either
+excludes a path from the uncovered-writes check or it doesn't, since the gate
+has no per-span-slug suppression concept.
+
+```text
+# Generated output and vendored code never need a span.
+packages/agent-hooks/generated/**
+vendor/
+```
+
+This is a coarser tool than `.hookignore` in scope but finer-grained in
+matching: it opts specific paths out of the "should this changed file have a
+span?" nudge, rather than suppressing specific spans on specific paths. Reach
+for it when part of a repo's write surface is dominated by files that will
+never carry a coupling worth declaring (generated output, vendored code, pure
+config) and the one-time uncovered-writes prompt on those paths is pure noise
+rather than an occasional useful nudge.
+
+`.gateignore` never affects the gate's **semantic-staleness** check — a
+changeset that already carries a drifted anchor is still held regardless of
+this file. It only silences the "nothing anchors this new/changed file"
+observation, and only for the paths it matches. The `GIT_SPAN_GATE=skip`
+escape hatch is the separate, per-command, user-approved override for either
+check; `.gateignore` is the standing, committed, path-scoped one for this
+specific check.
+
+Fail-open: a missing or unreadable `.gateignore`, or a malformed line, yields
+no additional exclusion — the uncovered-writes check simply falls back to the
+gate's unconditional `.span/**` exclusion.
+
+```bash
+cat <<'EOF' > .span/.gateignore
+vendor/
+EOF
+git add .span/.gateignore && git commit -m "Exclude vendored code from the gate's uncovered-writes nudge"
+```

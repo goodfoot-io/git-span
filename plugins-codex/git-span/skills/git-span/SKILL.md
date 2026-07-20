@@ -16,6 +16,17 @@ git span show <name>                     # == bare `git span <name>`
 ```
 After any `add`/`remove`/`why -m`/`delete`: `git add .span && git commit -m "..."`.
 
+## Same-commit workflow
+
+Positional drift (a pure line-shift from an edit) is healed inline by the
+`PostToolUse` touch hook the moment the edit lands — there is no separate
+"reconcile spans" commit to make for it. Only genuine semantic drift (content
+that no longer matches what a span asserts) needs your action, and when it
+does, fold the `.span/` fix into the **same commit** as the code change that
+caused it — never a follow-up commit. Before `git commit`/`git push`, a
+`PreToolUse` gate re-checks the changeset and holds the command if real span
+debt remains; see "Handling a gate denial" below.
+
 ## Trust boundary
 `git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with
 `git log`, `git show <hash>`, or a raw `Read` of a `.span/*` file — act on the CLI's own
@@ -68,6 +79,38 @@ git add .span && git commit -m "..."
 If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
 with `wc -l` and write the new range).
 
+## Handling a gate denial
+
+A `git commit`/`git push` can come back denied with a checklist in its
+`permissionDecisionReason`. Two shapes:
+
+- **Semantic staleness** — one or more anchors drifted for real. Resolve each
+  listed span with the recipes above (usually Re-anchor), then re-run the
+  exact same commit. This re-denies on every retry until the findings
+  themselves change — there's no way around fixing the anchors.
+- **Uncovered writes** — a changed file has no covering span at all. Either
+  declare the coupling with `git span add`, or just retry the identical
+  command: this check is consider-once, so an unchanged debt state passes on
+  the second attempt.
+
+Both checklists append an escape hatch: prefix the command with
+`GIT_SPAN_GATE=skip` to bypass the gate for that one invocation. **This
+requires explicit user approval — never set it unilaterally to get past a
+denial you haven't resolved or discussed.** The bypass is transcript-visible
+(a `systemMessage` notice), never silent.
+
+`.span/.gateignore` is a standing, committed, path-scoped opt-out of the
+uncovered-writes check specifically (a gitignore-style pattern list, same
+grammar as `.hookignore`) — see `references/hookignore.md`'s `.gateignore`
+section. It never suppresses the semantic-staleness check.
+
+**Codex caveat**: whether a denial actually blocks the shell tool here was
+never confirmed live in this repo (`references/codex-install-and-trust.md`); if
+the same `git commit`/`git push` you expected to be denied instead runs, treat
+the checklist as advisory and fix it anyway rather than assuming the gate is
+inert — the CI gate recipe (`references/ci-and-sync.md`) is the confirmed
+backstop.
+
 ## Where to go next
 Pick the first that fits:
 1. Read-only question, no `.span` mutation intended → `references/inspect.md`.
@@ -79,27 +122,23 @@ Pick the first that fits:
    (no `#L`) is in play → `references/whole-file-and-lfs.md`.
 5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
    of the three recipes above → do that, no section read.
-6. A `<git-span>` block appeared — or expectedly didn't — during a `Read`/`Edit`/`Write` →
-   `references/understanding-hook-output.md`.
-7. The PreToolUse block surfaces spans that are noise for a path class →
-   `references/hookignore.md`.
-8. Installing or troubleshooting the `post-commit`/`post-rewrite` reconciliation hooks or
-   the optional merge driver → `references/git-hook-setup.md`.
-9. You were spawned unattended as the dispatcher's standalone reconciler agent →
-   `references/standalone-reconciler.md`.
-10. Mining git history for undeclared couplings (broad sweep, not one known pair) →
-    `references/finding-span-candidates.md`.
-11. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
-    `references/ci-and-sync.md`.
-12. git-span under OpenAI Codex (marketplace install, hook trust) →
+6. A `<git-span>` block appeared — or a `git commit`/`git push` was denied — during an
+   `apply_patch` or shell call → `references/understanding-hook-output.md`.
+7. The touch hook's block surfaces spans that are noise for a path class, or the gate's
+   uncovered-writes nudge is noise for the whole repo → `references/hookignore.md`.
+8. Mining git history for undeclared couplings (broad sweep, not one known pair) →
+   `references/finding-span-candidates.md`.
+9. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
+   `references/ci-and-sync.md`.
+10. git-span under OpenAI Codex (marketplace install, hook trust) →
     `references/codex-install-and-trust.md`.
-13. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
+11. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
     `references/command-reference.md`.
-14. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond
+12. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond
     the gotchas above → `references/command-quirks-and-errors.md`.
-15. Where `.span/` data lives, refs, or line-ending guarantees →
+13. Where `.span/` data lives, refs, line-ending guarantees, or the optional merge driver →
     `references/storage-model.md`.
-16. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
+14. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
     `references/triage.md`.
 
 ## Not in this build — don't burn a `--help` call

@@ -3,10 +3,10 @@
 ## Overview
 
 Under OpenAI Codex, git-span ships as a hook-bundling plugin rather than a
-Claude Code plugin. Getting its hooks running takes four steps plus one
-prerequisite — registering a marketplace, installing the plugin, and
-explicitly **trusting** the hooks are three distinct steps, none of which
-happen automatically.
+Claude Code plugin. Getting its hooks (the touch hook and the gate) running
+takes three steps plus one prerequisite — registering a marketplace,
+installing the plugin, and explicitly **trusting** the hooks are three
+distinct steps, none of which happen automatically.
 
 ## 0. Prerequisite — the `git span` binary on `PATH`
 
@@ -62,13 +62,6 @@ it for normal interactive use.
 Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
-
-## 4. (Optional) reconciler git hooks
-
-The `/hooks` trust flow above only covers Codex's own PreToolUse/Stop-style
-plugin hooks. The separate `post-commit`/`post-rewrite` symlinks that drive
-background span reconciliation are a manual, git-level step, independent of
-Codex or plugin trust, and outside this skill's scope.
 
 ## Windows caveat
 

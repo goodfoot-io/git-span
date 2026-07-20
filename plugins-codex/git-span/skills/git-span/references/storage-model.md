@@ -44,3 +44,31 @@ Spans are versioned, fetched, and pushed exactly like any other tracked file —
 `git pull`/`git push` move them with the surrounding code. There is no
 `git span fetch`/`push`/`sync`. All `git span` reads are local and never touch
 the network. See `./ci-and-sync.md` for the CI/sync workflow.
+
+## Optional merge driver
+
+Registering a merge driver makes git collapse the easy majority of `.span/`
+conflicts in place during `git merge`, so they never surface. This is the one
+piece of git *config* spans can use — and it is entirely optional. Skipping it
+costs nothing: `.span/**` falls back to git's line merge, and `git span stale
+--fix` resolves the result afterward to the identical clean state (see
+SKILL.md's `stale --fix` gotcha). Registration has two parts, because git
+distributes one and not the other:
+
+```gitattributes
+# committed and shared with the repo
+.span/** merge=span
+```
+
+```ini
+# .git/config -- per-clone, NOT distributed by git; each clone adds it once
+[merge "span"]
+    name = git-span structural span merge
+    driver = git span merge-driver %O %A %B %L
+```
+
+There is **no auto-installer** — registration is manual by design, and
+`git span doctor` does not check for it (verified: its output never mentions
+merge-driver state, registered or not). Never run `git span merge-driver` by
+hand; git invokes it with the temp-file arguments shown above. Until a clone
+adds the `.git/config` block, conflicts simply fall back to `--fix`.
