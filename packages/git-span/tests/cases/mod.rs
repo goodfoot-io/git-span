@@ -59,6 +59,7 @@ pub mod stale_sparse_checkout;
 pub mod stale_span_integration;
 pub mod stale_positional_matches_full_scan;
 pub mod stale_relocation_scan_amortized;
+pub mod stale_fix_uncommitted_moved;
 pub mod stale_resolved_pending_commit;
 pub mod why_writer_name_validation;
 pub mod worktree_path_resolution;
