@@ -31,10 +31,10 @@ describe('generated hook bin portability', () => {
     try {
       execFileSync(
         'yarn',
-        ['claude-code-hooks', '-i', 'src/claude/pre-tool-use.ts', '-o', join(outDir, 'hooks.json')],
+        ['claude-code-hooks', '-i', 'src/claude/post-tool-use.ts', '-o', join(outDir, 'hooks.json')],
         { stdio: 'pipe' }
       );
-      const generated = readFileSync(join(outDir, 'bin', 'pre-tool-use.mjs'), 'utf8');
+      const generated = readFileSync(join(outDir, 'bin', 'post-tool-use.mjs'), 'utf8');
       const comments = nodeModulesComments(generated);
       expect(comments.length).toBeGreaterThan(0);
       for (const comment of comments) {
@@ -50,10 +50,10 @@ describe('generated hook bin portability', () => {
     try {
       execFileSync(
         'yarn',
-        ['codex-hooks', '-i', 'src/codex/pre-tool-use.ts', '-o', join(outDir, 'hooks.json'), '--plugin-root'],
+        ['codex-hooks', '-i', 'src/codex/post-tool-use.ts', '-o', join(outDir, 'hooks.json'), '--plugin-root'],
         { stdio: 'pipe' }
       );
-      const generated = readFileSync(join(outDir, 'pre-tool-use.mjs'), 'utf8');
+      const generated = readFileSync(join(outDir, 'post-tool-use.mjs'), 'utf8');
       const comments = nodeModulesComments(generated);
       expect(comments.length).toBeGreaterThan(0);
       for (const comment of comments) {

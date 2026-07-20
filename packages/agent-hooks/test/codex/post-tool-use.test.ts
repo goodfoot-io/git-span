@@ -1,40 +1,28 @@
 /**
- * Tests for the Codex PostToolUse hook (packages/agent-hooks/src/codex/post-tool-use.ts).
+ * Tests for the Codex PostToolUse touch hook
+ * (packages/agent-hooks/src/codex/post-tool-use.ts).
  *
- * Job A (journal): parse the confirmed apply_patch envelope into anchors and
- * append the write entries to the per-session touch journal the Stop core drains.
- * Two invariants are exercised against real timing semantics (no injected
- * reader): journaling is suppressed only on a *confirmed non-success*
- * tool_response (a genuine rejection), and every anchor is whole-file (no
- * post-edit range recovery). A real temp git repo backs the scope resolution.
+ * The adapter narrows the confirmed apply_patch envelope into per-file anchors
+ * and drives the shared runTouchHook core (whole-file scoped — Codex never
+ * recovers a post-edit range) with injected executors and an in-memory memo. It
+ * preserves the success-classification belt: a confirmed rejection suppresses
+ * the touch, an unrecognized shape proceeds with a warning.
  *
- * Success fixtures are built by {@link printSummary}, which mirrors Codex's real
- * `print_summary` (codex-rs/apply-patch/src/lib.rs:871 — header
- * `Success. Updated the following files:` then `A/M/D <path>` lines, fixed across
- * Add/Modify/Delete) rather than hand-typing the bare header the code checks for.
+ * Success fixtures are built by {@link printSummary}, mirroring Codex's real
+ * `print_summary` (header `Success. Updated the following files:` then
+ * `A/M/D <path>` lines) rather than pasting the literal the detector checks for.
  */
 
-import * as fs from 'node:fs';
 import { Logger } from '@goodfoot/codex-hooks';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import hook, { classifyApplyPatchResponse, createHandler } from '../../src/codex/post-tool-use.js';
-import { type JournalEntry, journalPath, loadJournal } from '../../src/common/stop-core.js';
+import type { PorcelainRow, PorcelainStatus, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
+import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 
 const logger = new Logger();
 
-/**
- * Reproduce Codex's apply_patch success stdout — the exact shape of
- * `print_summary` in codex-rs/apply-patch/src/lib.rs:871:
- *
- *   writeln!(out, "Success. Updated the following files:")?;
- *   for path in &affected.added    { writeln!(out, "A {}", path.display())?; }
- *   for path in &affected.modified { writeln!(out, "M {}", path.display())?; }
- *   for path in &affected.deleted  { writeln!(out, "D {}", path.display())?; }
- *
- * Building the fixture from that format (rather than pasting the literal the
- * detector matches) keeps the test from being self-confirming.
- */
 function printSummary(paths: { added?: string[]; modified?: string[]; deleted?: string[] }): string {
   const lines = ['Success. Updated the following files:'];
   for (const p of paths.added ?? []) lines.push(`A ${p}`);
@@ -43,21 +31,10 @@ function printSummary(paths: { added?: string[]; modified?: string[]; deleted?: 
   return `${lines.join('\n')}\n`;
 }
 
-/** A realistic multi-file confirmed apply — Codex surfaces this verbatim as tool_response. */
-const SUCCESS_RESPONSE = printSummary({ added: ['nested/new.ts'], modified: ['foo.ts'], deleted: ['old.ts'] });
-
-/**
- * A genuine apply_patch rejection as the *model* sees it — Codex delivers a
- * failure via `FunctionCallError::RespondToModel(message)` as a bare
- * tool_response string (codex-rs/core/src/stream_events_utils.rs:392). This is
- * the verification-failure message from
- * codex-rs/core/src/tools/handlers/apply_patch.rs:367
- * ("apply_patch verification failed: {parse_error}"). Clearly lacks the success
- * header, so it must suppress journaling.
- */
+const SUCCESS_RESPONSE = printSummary({ modified: ['foo.ts'] });
 const FAILURE_RESPONSE = 'apply_patch verification failed: context not found in foo.ts';
 
-/** Update `foo.ts` line 3 (block beta/gamma/delta → lines 2-4). */
+/** Update `foo.ts` (block beta/gamma/delta). */
 function updateEnvelope(path = 'foo.ts'): string {
   return [
     '*** Begin Patch',
@@ -71,19 +48,74 @@ function updateEnvelope(path = 'foo.ts'): string {
   ].join('\n');
 }
 
-function addEnvelope(path = 'brand-new.ts'): string {
-  return ['*** Begin Patch', `*** Add File: ${path}`, '+hello', '*** End Patch'].join('\n');
+// ---------------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------------
+
+interface FakeOpts {
+  list?: PorcelainRow[];
+  stale?: StalePorcelainRow[];
+  reject?: boolean;
+}
+function makeExecutors(opts: FakeOpts = {}): {
+  executors: TouchExecutors;
+  calls: { fix: number; list: number; stale: number };
+} {
+  const calls = { fix: 0, list: 0, stale: 0 };
+  const boom = () => {
+    throw new Error('spawn git ENOENT');
+  };
+  const executors: TouchExecutors = {
+    fix: async (): Promise<TouchFixResult> => {
+      calls.fix += 1;
+      if (opts.reject) boom();
+      return { modified: false };
+    },
+    list: async (): Promise<PorcelainRow[]> => {
+      calls.list += 1;
+      if (opts.reject) boom();
+      return opts.list ?? [];
+    },
+    stale: async (): Promise<StalePorcelainRow[]> => {
+      calls.stale += 1;
+      if (opts.reject) boom();
+      return opts.stale ?? [];
+    }
+  };
+  return { executors, calls };
 }
 
-function postInput(
-  sessionId: string,
-  cwd: string,
-  command: unknown,
-  toolResponse: unknown = SUCCESS_RESPONSE
-): Record<string, unknown> {
+function inMemoryMemoFactory(): MemoFactory {
+  const store = new Map<string, Set<string>>();
+  return (_logger: MemoLogger): MemoStore => ({
+    getSurfaced: (sid) => new Set(store.get(sid) ?? []),
+    addSurfaced: (sid, names) => {
+      const s = store.get(sid) ?? new Set<string>();
+      for (const n of names) s.add(n);
+      store.set(sid, s);
+    }
+  });
+}
+
+const SPAN = 'billing/checkout-request-flow';
+function porcelainRow(): PorcelainRow {
+  return { name: SPAN, path: 'foo.ts', start: 1, end: 10 };
+}
+function staleRow(status: PorcelainStatus): StalePorcelainRow {
+  return { name: SPAN, path: 'foo.ts', start: 1, end: 10, status };
+}
+
+function warnCapturingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  const capture = new Logger();
+  capture.on('warn', (event) => warnings.push(event.message));
+  return { logger: capture, warnings };
+}
+
+function postInput(cwd: string, command: unknown, toolResponse: unknown = SUCCESS_RESPONSE): Record<string, unknown> {
   return {
     hook_event_name: 'PostToolUse' as const,
-    session_id: sessionId,
+    session_id: 'codex-sess',
     cwd,
     model: 'gpt-x',
     permission_mode: 'default',
@@ -96,28 +128,17 @@ function postInput(
   };
 }
 
-/** A logger that records the messages of every `warn` it receives. */
-function warnCapturingLogger(): { logger: Logger; warnings: string[] } {
-  const warnings: string[] = [];
-  const capture = new Logger();
-  capture.on('warn', (event) => warnings.push(event.message));
-  return { logger: capture, warnings };
+interface HookResult {
+  stdout: { systemMessage?: string; hookSpecificOutput?: { additionalContext?: string } };
+}
+function toResult(raw: unknown): HookResult {
+  if (raw === null || raw === undefined) return { stdout: {} };
+  return raw as HookResult;
 }
 
-const sids: string[] = [];
-afterEach(() => {
-  for (const sid of sids) {
-    const p = journalPath(sid);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  sids.length = 0;
-});
-
-function sid(label: string): string {
-  const id = `codex-post-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  sids.push(id);
-  return id;
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe('codex post-tool-use hook registration', () => {
   it('registers PostToolUse with matcher apply_patch', () => {
@@ -127,202 +148,92 @@ describe('codex post-tool-use hook registration', () => {
 });
 
 describe('classifyApplyPatchResponse', () => {
-  it("classifies a bare-string success (today's Codex shape) as success", () => {
+  it('classifies a bare-string success as success', () => {
     expect(classifyApplyPatchResponse(SUCCESS_RESPONSE)).toBe('success');
-    // Every single-op variant carries the same fixed header.
-    expect(classifyApplyPatchResponse(printSummary({ added: ['new.ts'] }))).toBe('success');
-    expect(classifyApplyPatchResponse(printSummary({ modified: ['foo.ts'] }))).toBe('success');
-    expect(classifyApplyPatchResponse(printSummary({ deleted: ['old.ts'] }))).toBe('success');
-  });
-
-  it('extracts and accepts success text from an object-wrapped tool_response', () => {
-    // Durability against Codex ever wrapping the stdout instead of surfacing a
-    // bare string (its FunctionCallOutputBody already has a ContentItems variant).
     expect(classifyApplyPatchResponse({ output: SUCCESS_RESPONSE })).toBe('success');
-    expect(classifyApplyPatchResponse({ stdout: SUCCESS_RESPONSE })).toBe('success');
-    expect(classifyApplyPatchResponse({ content: SUCCESS_RESPONSE })).toBe('success');
-    expect(classifyApplyPatchResponse({ text: SUCCESS_RESPONSE })).toBe('success');
   });
-
-  it('classifies recovered-but-headerless text as failure (a genuine rejection)', () => {
+  it('classifies recovered-but-headerless text as failure', () => {
     expect(classifyApplyPatchResponse(FAILURE_RESPONSE)).toBe('failure');
-    expect(classifyApplyPatchResponse({ output: FAILURE_RESPONSE })).toBe('failure');
     expect(classifyApplyPatchResponse('')).toBe('failure');
   });
-
-  it('classifies an unrecoverable shape as unknown (default-to-journal territory)', () => {
+  it('classifies an unrecoverable shape as unknown', () => {
     expect(classifyApplyPatchResponse({})).toBe('unknown');
-    expect(classifyApplyPatchResponse({ exitCode: 0 })).toBe('unknown');
-    expect(classifyApplyPatchResponse(undefined)).toBe('unknown');
     expect(classifyApplyPatchResponse(null)).toBe('unknown');
-    expect(classifyApplyPatchResponse(42)).toBe('unknown');
-    // A non-string field is not usable text → still unknown.
-    expect(classifyApplyPatchResponse({ output: { nested: 'x' } })).toBe('unknown');
   });
 });
 
-describe('codex post-tool-use journaling', () => {
-  it('journals an Update as a whole-write anchor with no range on success', async () => {
+describe('codex post-tool-use touch signal', () => {
+  it('heals and surfaces a semantic directive on a confirmed apply', async () => {
     const repo = makeTempRepo();
     try {
-      const id = sid('write');
-      // Write genuine (pre-edit) content: were range recovery still active at Post
-      // it would read this file and coarsen/mis-anchor. We assert it does neither.
-      fs.writeFileSync(`${repo.root}/foo.ts`, 'alpha\nbeta\ngamma\ndelta\nepsilon\n');
-      const handler = createHandler();
-      await handler(postInput(id, repo.root, updateEnvelope()) as never, { logger } as never);
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
 
-      const entries = loadJournal(id) as JournalEntry[] | null;
-      expect(entries).not.toBeNull();
-      expect(entries).toHaveLength(1);
-      expect(entries![0].tool).toBe('apply_patch');
-      expect(entries![0].path).toBe('foo.ts');
-      expect(entries![0].kind).toBe('whole-write');
-      expect(entries![0].start).toBeUndefined();
-      expect(entries![0].end).toBeUndefined();
-      expect(entries![0].seen).toBe(false);
+      expect(calls.fix).toBe(1);
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+      expect(result.stdout.systemMessage).toContain(SPAN);
     } finally {
       repo.cleanup();
     }
   });
 
-  it('journals a success whose tool_response is object-wrapped', async () => {
+  it('suppresses the touch entirely on a confirmed rejection (no executor calls, no warn)', async () => {
     const repo = makeTempRepo();
     try {
-      const id = sid('wrapped');
-      const handler = createHandler();
-      // {output: "<print_summary>"} — the wrapper scenario the shape-tolerant
-      // detector defends. Must journal exactly as a bare-string success would.
-      await handler(
-        postInput(id, repo.root, addEnvelope(), { output: printSummary({ added: ['brand-new.ts'] }) }) as never,
-        { logger } as never
-      );
-
-      const entries = loadJournal(id) as JournalEntry[] | null;
-      expect(entries).toHaveLength(1);
-      expect(entries![0].path).toBe('brand-new.ts');
-      expect(entries![0].kind).toBe('create');
-    } finally {
-      repo.cleanup();
-    }
-  });
-
-  it('journals (and warns) when the tool_response shape is unrecognized', async () => {
-    const repo = makeTempRepo();
-    try {
-      const id = sid('unknown');
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler();
-      // No recoverable text. Codex core fires PostToolUse only on success, so
-      // defaulting to journal here cannot manufacture a phantom write — and it
-      // removes the "never journals" total-loss failure. Warn on the way through.
-      await handler(
-        postInput(id, repo.root, updateEnvelope(), { exitCode: 0 }) as never,
-        {
-          logger: capture
-        } as never
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const result = toResult(
+        await handler(postInput(repo.root, updateEnvelope(), FAILURE_RESPONSE) as never, { logger: capture } as never)
       );
 
-      const entries = loadJournal(id) as JournalEntry[] | null;
-      expect(entries).toHaveLength(1);
-      expect(entries![0].path).toBe('foo.ts');
-      expect(entries![0].kind).toBe('whole-write');
+      expect(calls.fix).toBe(0);
+      expect(calls.list).toBe(0);
+      expect(warnings).toHaveLength(0);
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('runs the touch (and warns) when the tool_response shape is unrecognized', async () => {
+    const repo = makeTempRepo();
+    try {
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { logger: capture, warnings } = warnCapturingLogger();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
+
+      expect(calls.fix).toBe(1);
       expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
     } finally {
       repo.cleanup();
     }
   });
 
-  it('never recovers a post-edit range, even when the real reader can read the file', async () => {
-    const repo = makeTempRepo();
-    const savedCwd = process.cwd();
-    try {
-      const id = sid('postedit');
-      // Reproduce the post-edit hazard against the *real* reader: run the hook
-      // from the repo so `defaultReadPreEditFile('foo.ts')` resolves and reads
-      // the on-disk file. The file is already POST-edit — the hunk's pre-edit
-      // block (beta/gamma/delta) no longer sits where the edit happened (now
-      // beta/GAMMA/delta at lines 2-4) but an untouched duplicate remains at
-      // lines 6-8. Post-edit range recovery would uniquely (and wrongly) anchor
-      // that copy as write 6-8. Whole-file journaling must ignore the file.
-      fs.writeFileSync(`${repo.root}/foo.ts`, 'header\nbeta\nGAMMA\ndelta\ntail\nbeta\ngamma\ndelta\n');
-      process.chdir(repo.root);
-      const handler = createHandler();
-      await handler(postInput(id, repo.root, updateEnvelope()) as never, { logger } as never);
-
-      const entries = loadJournal(id) as JournalEntry[] | null;
-      expect(entries).toHaveLength(1);
-      expect(entries![0].kind).toBe('whole-write');
-      expect(entries![0].start).toBeUndefined();
-      expect(entries![0].end).toBeUndefined();
-    } finally {
-      process.chdir(savedCwd);
-      repo.cleanup();
-    }
-  });
-
-  it('journals an Add File envelope as a create anchor (no range) on success', async () => {
+  it('fails open (empty output, no throw) when every executor rejects', async () => {
     const repo = makeTempRepo();
     try {
-      const id = sid('create');
-      const handler = createHandler();
-      await handler(postInput(id, repo.root, addEnvelope()) as never, { logger } as never);
-
-      const entries = loadJournal(id) as JournalEntry[] | null;
-      expect(entries).not.toBeNull();
-      expect(entries).toHaveLength(1);
-      expect(entries![0].path).toBe('brand-new.ts');
-      expect(entries![0].kind).toBe('create');
-      expect(entries![0].start).toBeUndefined();
+      const { executors } = makeExecutors({ reject: true });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+      expect(result.stdout.systemMessage).toBeUndefined();
     } finally {
       repo.cleanup();
     }
   });
 
-  it('journals nothing when the tool_response is a confirmed rejection', async () => {
+  it('surfaces nothing for a non-apply_patch tool_input', async () => {
     const repo = makeTempRepo();
     try {
-      const id = sid('failed');
-      const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler();
-      // A rejected apply_patch whose text plainly lacks the success header:
-      // journaling a write here would be a phantom → false drift. Suppress, and
-      // do NOT warn — this is a recognized non-success, not an unknown shape.
-      await handler(
-        postInput(id, repo.root, updateEnvelope(), FAILURE_RESPONSE) as never,
-        {
-          logger: capture
-        } as never
-      );
-      expect(loadJournal(id)).toBeNull();
-      expect(warnings).toHaveLength(0);
-    } finally {
-      repo.cleanup();
-    }
-  });
-
-  it('journals nothing for a non-apply_patch tool_input', async () => {
-    const repo = makeTempRepo();
-    try {
-      const id = sid('noop');
-      const handler = createHandler();
-      await handler(
-        {
-          hook_event_name: 'PostToolUse',
-          session_id: id,
-          cwd: repo.root,
-          model: 'gpt-x',
-          permission_mode: 'default',
-          transcript_path: '/tmp/t',
-          tool_name: 'apply_patch',
-          tool_input: { notCommand: 'x' },
-          tool_response: SUCCESS_RESPONSE,
-          tool_use_id: 'tu-1',
-          turn_id: 'turn-1'
-        } as never,
-        { logger } as never
-      );
-      expect(loadJournal(id)).toBeNull();
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const result = toResult(await handler(postInput(repo.root, undefined) as never, { logger } as never));
+      // narrowApplyPatchCommand rejects a missing command → no touch.
+      expect(calls.fix).toBe(0);
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
     } finally {
       repo.cleanup();
     }

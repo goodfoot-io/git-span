@@ -82,7 +82,7 @@ function staleRow(overrides: Partial<StalePorcelainRow> = {}): StalePorcelainRow
 
 describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
   describe('runTouchHook — write path', () => {
-    it.skip('heals insertion-only (positional) drift in the tree but surfaces no alert', async () => {
+    it('heals insertion-only (positional) drift in the tree but surfaces no alert', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: true }),
@@ -101,7 +101,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it.skip('surfaces the merged directive for semantic drift exactly once per span per status in a session', async () => {
+    it('surfaces the merged directive for semantic drift exactly once per span per status in a session', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
@@ -122,7 +122,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
   });
 
   describe('runTouchHook — read path', () => {
-    it.skip('never invokes the fix executor and never reports the tree as modified', async () => {
+    it('never invokes the fix executor and never reports the tree as modified', async () => {
       const memo = createMemoryMemoStore();
       let fixCalls = 0;
       const executors: TouchExecutors = {
@@ -140,7 +140,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.treeModified).toBe(false);
     });
 
-    it.skip('filters positional statuses out of the read-path hint, surfacing nothing when drift is positional-only', async () => {
+    it('filters positional statuses out of the read-path hint, surfacing nothing when drift is positional-only', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
@@ -159,7 +159,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
   });
 
   describe('runTouchHook — fail-open behavior', () => {
-    it.skip('returns a null/unmodified output rather than throwing when an executor rejects (CLI/.span absent)', async () => {
+    it('returns a null/unmodified output rather than throwing when an executor rejects (CLI/.span absent)', async () => {
       const memo = createMemoryMemoStore();
       // A rejected promise is how an injected executor expresses the CLI's
       // non-zero-exit / absent-binary contract (see
@@ -186,21 +186,21 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
   });
 
   describe('recoverRange', () => {
-    it.skip("degrades to 'whole-file' when the written block is absent from onDiskContent", () => {
+    it("degrades to 'whole-file' when the written block is absent from onDiskContent", () => {
       const written = 'const totally = "missing";\n';
       const onDiskContent = ['line one', 'line two', 'line three'].join('\n');
 
       expect(recoverRange(written, onDiskContent)).toBe('whole-file');
     });
 
-    it.skip("degrades to 'whole-file' when the written block is duplicated and cannot be disambiguated", () => {
+    it("degrades to 'whole-file' when the written block is duplicated and cannot be disambiguated", () => {
       const written = 'duplicate\n';
       const onDiskContent = ['duplicate', 'middle', 'duplicate', 'tail'].join('\n');
 
       expect(recoverRange(written, onDiskContent)).toBe('whole-file');
     });
 
-    it.skip('recovers the correct 1-based inclusive LineRange for an unambiguous written block', () => {
+    it('recovers the correct 1-based inclusive LineRange for an unambiguous written block', () => {
       const written = ['beta', 'gamma'].join('\n');
       const onDiskContent = ['alpha', 'beta', 'gamma', 'delta'].join('\n');
 
