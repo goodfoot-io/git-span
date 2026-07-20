@@ -3,16 +3,16 @@
 // part (discarding the imported hierarchy so the `$AssimpFbx$` pivot chains vanish), then drive
 // those poses each frame from the pure EngineFrame the caller computes via beats.ts.
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { lerp } from '../scene';
-import { type EngineFrame, HERO_IDLE_RATE, MOUNT_SCALE } from './beats';
+import { type EngineFrame, HERO_IDLE_RATE } from './beats';
 import {
   BLOOM_LAYER,
   buildHighlightRecords,
@@ -21,14 +21,13 @@ import {
   pulseWave,
   updateHighlights
 } from './highlights';
-import { buildBoundingBox, computeMismatchBoxBounds, updateBoundingBox } from './mismatchBox';
+import { buildMismatchBoxes, computeMismatchBoxBounds, updateBoundingBox } from './mismatchBox';
 import {
   EXPLODE_DIRECTION_REFERENCE,
   EXPLODE_DIRECTION_REFERENCE_FRONT,
   EXPLODE_OVERRIDES,
   FAMILY_MATERIAL,
   FRONT_DRIVE,
-  FRONT_DRIVE_SEAT_ADJUST,
   FRONT_MOUNT,
   familyOf,
   ORANGE_EMPHASIS,
@@ -40,7 +39,6 @@ import engineGlbUrl from '~/assets/engine/engine.glb?url';
 import engineAoUrl from '~/assets/engine/engine-ao.webp?url';
 import engineNormalUrl from '~/assets/engine/engine-normal.webp?url';
 import engineRoughnessUrl from '~/assets/engine/engine-roughness.webp?url';
-import studioHdrUrl from '~/assets/engine/studio_small_08_1k.hdr?url';
 
 const POSE_EPSILON = 1e-6;
 
@@ -63,11 +61,17 @@ const STAGE_BACKGROUND = 0xf2efe6;
 
 // Fog near/far are recomputed every frame in `fitCameraToFrame` relative to the fitted camera
 // distance and the current bounding-sphere radius (both already vary continuously with explode
-// state), so these are fractions of `radius`, not absolute distances. Near stays close to the
-// camera so the assembled view (small radius, parts close together) barely fogs; far is well
-// past the sphere's rear so even the fully exploded view never fully swallows the rearmost part.
-const FOG_NEAR_RADIUS_FRACTION = 0.4;
-const FOG_FAR_RADIUS_FRACTION = 0.55;
+// state), so these are fractions of `radius`, not absolute distances. Fog is purely a depth cue
+// for the *rear* of the exploded engine: `near` begins just past the frame's midline (fraction
+// 0.15) so the front half stays fully clear, and `far` sits ~0.4 radii beyond the rearmost
+// geometry (which sits at roughly `distance + radius`), so the very back picks up a moderate,
+// noticeable haze -- roughly 55-70% of the near-to-far span -- toward the page background,
+// without saturating. (Earlier values of 0.4/0.55 fogged the center ~40% and saturated the rear
+// completely -- far too heavy. That was overcorrected to 0.0/2.2, which pushed `far` so far past
+// the rear that even the rearmost part only reached a small fraction of fog density -- fog became
+// imperceptible. This is the retuned middle ground.)
+const FOG_NEAR_RADIUS_FRACTION = 0.15;
+const FOG_FAR_RADIUS_FRACTION = 1.4;
 
 // --- Interaction: drag-to-orbit -----------------------------------------------------------
 // Pointer drag adds transient camera-orbit offsets on top of whatever beats.ts computed for the
@@ -136,6 +140,15 @@ export class EngineScene {
   // Materials swapped out by darkenNonBloomed for the duration of the bloom pass, keyed by mesh so
   // restoreMaterial (right after) can put each one back exactly as it was.
   private readonly darkenedMaterials = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
+
+  // Bloomed highlight meshes whose color/env reflection were zeroed and whose emissive was scaled
+  // by their continuous bloom gate (userData.bloomGate, see updateHighlights) for the bloom pass
+  // only -- see darkenNonBloomed for why the bloom composer's input is emissive-only -- with the
+  // originals stored here so restoreMaterial can undo it exactly.
+  private readonly dimmedForBloom = new Map<
+    THREE.Mesh,
+    { color: THREE.Color; emissive: THREE.Color; envMapIntensity: number }
+  >();
 
   private group: THREE.Group | null = null;
   private parts: PartRecord[] = [];
@@ -208,6 +221,14 @@ export class EngineScene {
     const key = new THREE.DirectionalLight(0xfff4e6, 2.0);
     key.position.set(3, 4, 5);
     this.scene.add(key);
+
+    // Cool rim/fill, roughly opposite the key and slightly behind the model: guarantees a
+    // camera-independent specular edge on silhouettes at orientations where the key's lobe and
+    // the environment's brighter regions are both missed.
+    const rim = new THREE.DirectionalLight(0xdde8ff, 1.1);
+    rim.position.set(-4, 2.5, -5);
+    this.scene.add(rim);
+
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.15));
 
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -235,11 +256,25 @@ export class EngineScene {
     this.bloomComposer = new EffectComposer(this.renderer);
     this.bloomComposer.renderToScreen = false;
     this.bloomComposer.addPass(new RenderPass(this.scene, this.camera));
-    // Threshold/strength/radius are tuned to stay a restrained, local accent on the hottest
-    // highlights at pulse peak -- see the "Highlight heartbeat" constants above for how
-    // emissiveIntensity is kept under this threshold outside of pulse peaks on a fully-active
-    // highlight.
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.35, 0.92);
+    // Threshold is 0 because it no longer needs to do any selecting: darkenNonBloomed now feeds
+    // this composer an EMISSIVE-ONLY render (bloom-layer meshes' diffuse color and env reflection
+    // are zeroed for this pass; only their emissive, scaled by the continuous bloomGate, survives)
+    // -- so everything this pass sees already IS the glow, and there is no lit-metal/reflection
+    // brightness left for a threshold to filter out. A threshold-based approach (0.92, then 0.96
+    // after RoomEnvironment landed) was tried first and broke: under RoomEnvironment, linear-HDR
+    // speculars off its bright all-around panels routinely exceed 1.0 on highlighted meshes, so
+    // they cleared any threshold <= 1 from ordinary reflections alone, independent of the actual
+    // highlight/pulse state -- no threshold could tell "reflecting a bright panel" apart from
+    // "genuinely hot" once the input was the mesh's full lit render. Pop-free fade-in as a
+    // highlight ramps up is guaranteed by bloomGate's continuous 0..1 scaling of the emissive
+    // input (see darkenNonBloomed), not by this threshold, which is why threshold 0 is safe.
+    // Strength 0.5 (down from 0.8) reflects the highlight redesign where tint (color/metalness/
+    // roughness, see highlights.ts) carries the highlight's identity and emissive is only a small
+    // decorative accent (EMISSIVE_SCALE cut from 0.32 to 0.09) -- bloom is now a soft, local
+    // flourish on top of that accent rather than a major part of how the highlight reads, so it no
+    // longer needs strength 0.8's more assertive halo. Radius stays 0.35 -- spread, not intensity,
+    // and unaffected by any of the changes above.
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.35, 0.0);
     this.bloomComposer.addPass(this.bloomPass);
 
     const mixPass = new ShaderPass(
@@ -272,6 +307,14 @@ export class EngineScene {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.composer.addPass(mixPass);
     this.composer.addPass(new OutputPass());
+    // The renderer's antialias:true only covers the default framebuffer -- the scene is actually
+    // rasterized into these composer render targets (samples:0 by default), so MSAA has to be
+    // requested on them directly or the visible output stays aliased. setSize() below only resizes
+    // these targets in three 0.185, it never recreates them, so setting samples once here persists
+    // across resizes. The bloom composer is deliberately left non-multisampled: its output is
+    // gaussian-blurred by UnrealBloomPass anyway, so MSAA there would just be wasted cost.
+    this.composer.renderTarget1.samples = 4;
+    this.composer.renderTarget2.samples = 4;
 
     this.resize();
   }
@@ -280,33 +323,39 @@ export class EngineScene {
     const gltfLoader = new GLTFLoader();
     gltfLoader.setMeshoptDecoder(MeshoptDecoder);
     const textureLoader = new THREE.TextureLoader();
-    const rgbeLoader = new RGBELoader();
 
-    const [gltf, normalMap, roughnessMap, aoMap, hdrTexture] = await Promise.all([
+    const [gltf, normalMap, roughnessMap, aoMap] = await Promise.all([
       gltfLoader.loadAsync(engineGlbUrl),
       textureLoader.loadAsync(engineNormalUrl),
       textureLoader.loadAsync(engineRoughnessUrl),
-      textureLoader.loadAsync(engineAoUrl),
-      rgbeLoader.loadAsync(studioHdrUrl)
+      textureLoader.loadAsync(engineAoUrl)
     ]);
 
     // Shared detail maps: one UV set (`channel = 0`) carries normal, roughness, and AO alike;
-    // linear color space because none of these encode display-referred color.
+    // linear color space because none of these encode display-referred color. Anisotropic
+    // filtering is maxed out here too, since the engine's top surfaces are viewed at a glancing
+    // angle where isotropic minification mipmapping would otherwise moire these maps.
     for (const map of [normalMap, roughnessMap, aoMap]) {
       map.flipY = false;
       map.colorSpace = THREE.NoColorSpace;
       map.channel = 0;
+      map.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     }
 
-    // Studio HDRI (Poly Haven, CC0) replaces the earlier procedural RoomEnvironment for real
-    // softbox/rim gradients across the machined faces (ring gear, cylinder-head covers) instead
-    // of a flat ambient wash. Equirectangular source -> PMREM, same pipeline RoomEnvironment used.
-    // scene.background stays null -- the canvas is transparent (alpha:true) over the cream page
-    // and must never be painted over by the environment map.
-    hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
-    this.scene.environment = this.pmrem.fromEquirectangular(hdrTexture).texture;
+    // Procedural RoomEnvironment (a room lined with area-light panels on every wall) replaces an
+    // earlier Poly Haven studio HDRI. The HDRI's luminance was directional -- a handful of bright
+    // softbox regions against an otherwise dim equirect -- so at many of the rig's orientations
+    // (drag-to-orbit included) the 0.8-0.9-metalness families' reflection vectors landed in the
+    // HDRI's flat, dim regions and read as untextured flat gray instead of metal. RoomEnvironment's
+    // panels surround the model on every side, so a reflection vector finds gradient structure to
+    // reflect no matter which way the part is facing. scene.background stays null -- the canvas is
+    // transparent (alpha:true) over the cream page and must never be painted over by the
+    // environment map. RoomEnvironment needs no async load, so it's built and consumed here
+    // synchronously rather than through the Promise.all above.
+    const roomEnvironment = new RoomEnvironment();
+    this.scene.environment = this.pmrem.fromScene(roomEnvironment, 0.04).texture;
     this.scene.background = null;
-    hdrTexture.dispose();
+    roomEnvironment.dispose();
     // Intensity/rotation tuned against screenshots at t=0 (hero, end-on) and t=12 (exploded): high
     // enough that the softbox gradient is visible on the aluminum/cast-iron faces without blowing
     // out the light parts under AgX; rotated so the HDRI's brightest softbox falls across the
@@ -449,6 +498,11 @@ export class EngineScene {
         roughness: spec.roughness,
         metalness: spec.metalness,
         normalMap,
+        // Pushed past the map's default 1.0 scale: with RoomEnvironment's softer, more diffuse
+        // gradient (versus the old HDRI's punchier softbox highlights), the normal map needs to
+        // perturb reflection vectors harder for the machined surface detail to stay visible
+        // instead of washing out against flatter regions of the environment.
+        normalScale: new THREE.Vector2(1.5, 1.5),
         roughnessMap,
         aoMap,
         aoMapIntensity: 0.85
@@ -462,7 +516,6 @@ export class EngineScene {
     // (`belt` -> `belt_1`) even though FRONT_DRIVE/FRONT_MOUNT list the logical, unsuffixed name.
     const frontDriveSet = new Set(FRONT_DRIVE);
     const frontMountSet = new Set(FRONT_MOUNT);
-    const seatAdjustSet = new Set(FRONT_DRIVE_SEAT_ADJUST);
     const orangeEmphasisSet = new Set(ORANGE_EMPHASIS);
     const parts: PartRecord[] = [];
 
@@ -499,7 +552,6 @@ export class EngineScene {
         family,
         isFrontDrive,
         isMount,
-        isSeatAdjust: seatAdjustSet.has(strippedName),
         isOrangeEmphasis,
         localSphere
       });
@@ -520,12 +572,17 @@ export class EngineScene {
     this.scene.add(group);
 
     this.highlights = buildHighlightRecords(this.frontDriveParts, this.mountPart, this.orangeEmphasisParts);
-    const mismatchParts = [
-      ...this.frontDriveParts,
-      ...this.orangeEmphasisParts,
-      ...(this.mountPart ? [this.mountPart] : [])
-    ];
-    this.boundingBox = buildBoundingBox(computeMismatchBoxBounds(mismatchParts, group));
+    // The ring container encloses the front-drive/mount pair (gear + engineBackCover); the two
+    // piston-bank containers enclose the 8 pistons, split into banks internally by
+    // computeMismatchBoxBounds. orangeEmphasisParts is exactly the 8 piston bodies today (see
+    // parts.ts's ORANGE_EMPHASIS) -- filtered by mesh-name prefix here too, defensively, so a
+    // future ORANGE_EMPHASIS addition that isn't a piston doesn't silently end up sized into a
+    // piston-bank container instead of being dropped or given its own home.
+    const ringParts = [...this.frontDriveParts, ...(this.mountPart ? [this.mountPart] : [])];
+    const pistonParts = this.orangeEmphasisParts.filter((part) =>
+      stripDedupSuffix(part.mesh.name).toLowerCase().startsWith('piston')
+    );
+    this.boundingBox = buildMismatchBoxes(computeMismatchBoxBounds({ ring: ringParts, pistons: pistonParts }, group));
     this.scene.add(this.boundingBox);
 
     this.resize();
@@ -685,10 +742,11 @@ export class EngineScene {
       // Wrap the unbounded accumulator into (-pi, pi] so traverse's idleWeight fade-out (see
       // beats.ts's idleWeightAt) unwinds at most half a turn instead of potentially several full
       // turns baked up over a long hero hold -- see issue #2 in the tuning pass that added this.
-      // Guarded to ONLY wrap while idleWeight is exactly 1 (i.e. still in `hero`, or at `traverse`
-      // l=0): a raw-value 2*pi jump is invisible to the blended camera azimuth ONLY at full
-      // weight, since +-pi are 2*pi-equivalent camera positions there. Wrapping mid-fade (weight
-      // < 1) would show as a visible snap, so it must never happen once the fade has started.
+      // Guarded to ONLY wrap while idleWeight is exactly 1 (i.e. still in `hero`, at `traverse`
+      // l=0, or at t=100 once the RETURN_TO_NORMAL window has fully faded idleWeight back in): a
+      // raw-value 2*pi jump is invisible to the blended camera azimuth ONLY at full weight, since
+      // +-pi are 2*pi-equivalent camera positions there. Wrapping mid-fade (weight < 1) would show
+      // as a visible snap, so it must never happen while either fade is in flight.
       if (this.currentFrame?.idleWeight === 1) {
         this.idleAzimuthOffset =
           ((((this.idleAzimuthOffset + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
@@ -727,24 +785,10 @@ export class EngineScene {
   private updatePartTransforms(frame: EngineFrame): void {
     const mount = this.mountPart;
     if (!mount) return;
-    const mountAssembledCenter = mount.assembled.position;
-    // Success-only: FRONT_DRIVE_SEAT_ADJUST parts' assembled targets remap radially about the
-    // mount's assembled center as the mount grows, so they seat onto the resized mount rather
-    // than their original (pre-resize) assembled anchor. Scoped to `gear` alone (the only
-    // front-drive part physically adjacent to the rear-mounted FRONT_MOUNT) -- see parts.ts's
-    // FRONT_DRIVE_SEAT_ADJUST doc comment for why remapping the far-end front-drive parts
-    // (belt/sprockets/throttleBody) against a mount ~135 units away would read as nonsense.
-    const remapScale = lerp(1, MOUNT_SCALE, frame.seatAdjust);
 
     for (const part of this.parts) {
       const k = part.isFrontDrive ? frame.frontDriveExplode : frame.explode;
-      const assembledPos = part.isSeatAdjust
-        ? mountAssembledCenter
-            .clone()
-            .add(part.assembled.position.clone().sub(mountAssembledCenter).multiplyScalar(remapScale))
-        : part.assembled.position;
-
-      const basePos = assembledPos.clone().lerp(part.exploded.position, k);
+      const basePos = part.assembled.position.clone().lerp(part.exploded.position, k);
       const baseQuat = part.assembled.quaternion.clone().slerp(part.exploded.quaternion, k);
       const baseScale = part.assembled.scale.clone().lerp(part.exploded.scale, k);
 
@@ -815,13 +859,48 @@ export class EngineScene {
   // correctly occluding glowing parts behind them during the bloom-only pass.
   private darkenNonBloomed = (object: THREE.Object3D): void => {
     const mesh = object as THREE.Mesh;
-    if (!mesh.isMesh || bloomLayerTest.test(mesh.layers)) return;
+    if (!mesh.isMesh) return;
+    if (bloomLayerTest.test(mesh.layers)) {
+      // The bloom composer's input is EMISSIVE-ONLY: a bloom-layer mesh's diffuse color and env
+      // reflection are always zeroed for this pass (regardless of gate), so nothing but its own
+      // emissive -- scaled by the continuous bloomGate below -- can ever feed UnrealBloomPass.
+      // This decouples glow intensity from scene lighting/environment entirely. It replaces an
+      // earlier approach that let the mesh's full lit render (diffuse + HDRI speculars) into the
+      // bloom pass above a threshold: under RoomEnvironment, linear-HDR speculars off its bright
+      // panels routinely exceed 1.0, clearing any threshold <= 1 on their own, so a highlighted
+      // mesh bloomed from ordinary reflections, not from its emissive pulse, no matter how high
+      // the threshold was pushed.
+      //
+      // updateHighlights publishes a continuous 0..1 gate (userData.bloomGate) that tracks the
+      // highlight's magnitude; it scales the emissive going into this pass so a part eases into
+      // the bloom input in step with its highlight rather than arriving all at once the instant
+      // it joins BLOOM_LAYER.
+      const gate = (mesh.userData.bloomGate as number | undefined) ?? 1;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      this.dimmedForBloom.set(mesh, {
+        color: material.color.clone(),
+        emissive: material.emissive.clone(),
+        envMapIntensity: material.envMapIntensity
+      });
+      material.color.setScalar(0);
+      material.emissive.multiplyScalar(gate);
+      material.envMapIntensity = 0;
+      return;
+    }
     this.darkenedMaterials.set(mesh, mesh.material);
     mesh.material = DARK_MATERIAL;
   };
 
   private restoreMaterial = (object: THREE.Object3D): void => {
     const mesh = object as THREE.Mesh;
+    const dimmed = this.dimmedForBloom.get(mesh);
+    if (dimmed) {
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.color.copy(dimmed.color);
+      material.emissive.copy(dimmed.emissive);
+      material.envMapIntensity = dimmed.envMapIntensity;
+      this.dimmedForBloom.delete(mesh);
+    }
     const material = this.darkenedMaterials.get(mesh);
     if (!material) return;
     mesh.material = material;
@@ -832,9 +911,20 @@ export class EngineScene {
     // Pass 1: bloom-only, full scene/depth, but every non-glowing mesh temporarily flat black so
     // it contributes nothing to the bloom threshold while still occluding glowing parts behind it
     // correctly.
+    //
+    // The translucent mismatch box is excluded from this pass outright rather than darkened:
+    // darkenNonBloomed's stand-in is opaque, and mixPass sums ALPHA as well as color -- so an
+    // opaque stand-in writes alpha=1 across the box's whole silhouette in the bloom buffer, which
+    // (on this alpha:true, page-composited canvas) makes the final canvas fully opaque there and
+    // renders the "translucent" box as a solid slab of premultiplied green over the page
+    // background. Hiding it for the pass also keeps its bright green edge lines (LineSegments,
+    // which darkenNonBloomed's isMesh check never swaps) from feeding the bloom threshold.
+    if (this.boundingBox) this.boundingBox.visible = false;
     this.scene.traverse(this.darkenNonBloomed);
     this.bloomComposer.render();
     this.scene.traverse(this.restoreMaterial);
+    // Restores the frame-appropriate visibility (updateBoundingBox owns the visibility rule).
+    updateBoundingBox(this.boundingBox, this.currentFrame?.boxWeight ?? 0);
     // Pass 2: normal full-scene render with every material restored; mixPass adds the bloom
     // texture from pass 1 back in additively.
     this.composer.render();

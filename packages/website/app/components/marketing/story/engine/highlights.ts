@@ -1,7 +1,11 @@
-// The highlight color system: per-part emissive/diffuse recoloring driven by the EngineFrame's
-// highlight weights, plus the independent wall-clock heartbeat pulse layered on top of them. Pure
-// besides the `three` types it operates on -- holds no mutable module state; all per-scene state
-// (the HighlightRecord list, the pulse cycle/weight) lives in EngineScene.
+// The highlight color system: per-part diffuse/metalness/roughness tinting driven by the
+// EngineFrame's highlight weights, plus a small emissive accent (with the independent wall-clock
+// heartbeat pulse layered on top of the accent only) and the bloom composer's decorative halo on
+// top of that. Tint is the primary signal by design -- a highlighted part should read as visibly
+// amber/blue/red/green, not as a light source -- emissive/bloom are a restrained "just got hot"
+// flourish, not how the highlight itself is communicated. Pure besides the `three` types it
+// operates on -- holds no mutable module state; all per-scene state (the HighlightRecord list, the
+// pulse cycle/weight) lives in EngineScene.
 import * as THREE from 'three';
 import { lerp } from '../scene';
 import { type EngineFrame, HIGHLIGHT_BLUE, HIGHLIGHT_GREEN, HIGHLIGHT_ORANGE, HIGHLIGHT_RED } from './beats';
@@ -41,13 +45,15 @@ export interface HighlightStage {
 export interface HighlightRecord {
   mesh: THREE.Mesh;
   stages: HighlightStage[];
-  // The part's own unhighlighted albedo (captured once, from its cloned material -- see the
-  // material-cloning comment in EngineScene.ts's load()). Emissive alone, added on top of this
-  // part's real (often near-neutral gray metal) diffuse+specular shading, reads as a pale tint
-  // rather than a vivid color -- the achromatic base dominates the sum. updateHighlights also
-  // drives `color` itself, mixing from this identity toward the active stage's hue, so the surface
-  // actually reads as that color rather than merely having light of that color added on top of it.
+  // The part's own unhighlighted albedo/metalness/roughness (captured once, from its cloned
+  // material -- see the material-cloning comment in EngineScene.ts's load()). Tint is the PRIMARY
+  // highlight signal: updateHighlights drives `color`, `metalness`, and `roughness` all toward a
+  // tinted/matte state as the highlight weight rises, so the part itself reads as unmistakably
+  // amber/blue/red/green rather than merely having a small light of that color added on top of it
+  // (that's what the (much smaller) emissive accent is for -- see EMISSIVE_SCALE below).
   baseMaterialColor: THREE.Color;
+  baseMetalness: number;
+  baseRoughness: number;
 }
 
 // --- Highlight heartbeat ------------------------------------------------------------------
@@ -74,23 +80,47 @@ export function pulseWave(cycle: number): number {
 // half-transitioned one. This is what makes UnrealBloomPass's halo read as "this part just got
 // hot", a real-time accent, rather than a permanent glow baked into every highlight.
 //
-// Emissive is driven directly on each highlightable part's own material (see updateHighlights)
-// rather than through a separate additive-blended overlay mesh whose own diffuse was pinned to
-// black. That isolation is gone: this material's real diffuse+specular (under the key light/HDR
-// environment) is already nonzero before emissive adds on top, so EMISSIVE_SCALE has to stay low
-// enough that the sum doesn't cross into ACESFilmicToneMapping's highlight rolloff -- past that
-// point the tonemapper desaturates bright pixels toward white regardless of the source hue, which
-// is what "not saturated enough" actually was (not a hue problem -- an overexposure one).
+// Emissive is a SMALL ACCENT, not the highlight signal itself -- see the tint constants
+// (TINT_MAX etc.) below and updateHighlights for the primary color/metalness/roughness tint that
+// carries "this part is now amber/blue/red/green". EMISSIVE_SCALE was originally tuned much
+// higher (0.32) back when emissive alone had to carry that identity; now that tint does, it's cut
+// to 0.09 so the heartbeat reads as a gentle breathing highlight on top of a steady tinted state
+// rather than a competing light source. Emissive is still driven directly on each highlightable
+// part's own material (see updateHighlights) rather than through a separate additive-blended
+// overlay mesh whose own diffuse was pinned to black -- there's only one surface, and it's fogged
+// exactly once, the same way as every other part.
 const EMISSIVE_TIER_HIGH = 0.55; // red / ringRed / pistonRed
 const EMISSIVE_TIER_MID = 0.45; // blue / finalGreen
 const EMISSIVE_TIER_LOW = 0.5; // orange (shared pre-highlight)
-const EMISSIVE_SCALE = 0.32;
+const EMISSIVE_SCALE = 0.09;
 const HEARTBEAT_HEAT_PEAK_MULTIPLIER = 1.15; // emissiveIntensity multiplier at pulseWeight===1
 // `heat` (see updateHighlights) is capped well short of 1 so a fully-active highlight at pulse
 // peak reads as hot-orange/red, never the near-white top of blackbodyColor's ramp -- every
 // highlight kind pulsing to white at ~45 BPM read as the whole engine flashing white/overexposed
 // rather than a warm, localized "just got hot" accent.
 const HEARTBEAT_HEAT_PEAK_CAP = 0.62;
+
+// --- Tint (primary highlight signal) ------------------------------------------------------
+// Tint is driven by the stage's raw, pulse-independent intensity (the same weight the identity
+// recolor below already used) -- it holds steady rather than throbbing, so the part's
+// amber/blue/red/green state reads as a fact about the part, not a pulsing effect. Only the
+// emissive accent on top (see EMISSIVE_SCALE above) carries the heartbeat.
+//
+// TINT_MAX caps how far `color` travels toward the highlight hue at full weight -- 0.85, not 1,
+// so even a fully-active highlight keeps a hint of the part's own shading/identity rather than
+// becoming a flat swatch of the highlight color.
+const TINT_MAX = 0.85;
+// High-metalness parts (this scene's aluminum/steel families) show base-color tint mostly via
+// environment reflection, which is angle-dependent -- from some camera orientations a purely
+// diffuse-color tint on a near-1 metalness surface barely reads at all. Pulling metalness down as
+// the tint rises (toward a much less metallic 0.35) makes the tint color show up as genuine
+// diffuse shading from every orientation, not just the ones catching a reflection.
+const TINT_METALNESS_TARGET = 0.35;
+// A slight matte shift (roughness up toward 0.5, scaled by TINT_ROUGHNESS_PULL so it moves less
+// aggressively than color/metalness) makes the tinted state read as a distinct surface condition
+// -- "this part changed state" -- rather than a paint job sprayed over the same finish.
+const TINT_ROUGHNESS_TARGET = 0.5;
+const TINT_ROUGHNESS_PULL = 0.6;
 
 // Blackbody-ish color ramp: as `heat` (frame weight combined with the heartbeat pulse, see
 // updateHighlights) rises, the emissive color moves from a dim ember of its own base hue, through
@@ -165,9 +195,9 @@ function tierForKind(kind: HighlightKind): number {
 // overlay mesh. An earlier version added slightly-oversized additive-blended "shell" meshes as
 // children of each part instead; those read as a visible separate glowing container around the
 // part rather than the part's own surface glowing, and needed their own independent fog handling
-// that never quite matched the real part underneath. Driving emissive on the real material
-// sidesteps both: there's only one surface, and it's fogged exactly once, the same way as every
-// other part.
+// that never quite matched the real part underneath. Driving color/metalness/roughness (plus a
+// small emissive accent) on the real material sidesteps both: there's only one surface, and it's
+// fogged exactly once, the same way as every other part.
 export function buildHighlightRecords(
   frontDriveParts: PartRecord[],
   mountPart: PartRecord | null,
@@ -178,13 +208,21 @@ export function buildHighlightRecords(
     baseColor: new THREE.Color(colorHex)
   });
 
-  const baseColorOf = (mesh: THREE.Mesh): THREE.Color => (mesh.material as THREE.MeshStandardMaterial).color.clone();
+  // Captures the part's unhighlighted color/metalness/roughness once, before any highlight
+  // mutation, so updateHighlights always has an untouched base to lerp away from and back to.
+  const baseMaterialOf = (mesh: THREE.Mesh): { color: THREE.Color; metalness: number; roughness: number } => {
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    return { color: material.color.clone(), metalness: material.metalness, roughness: material.roughness };
+  };
 
   const records: HighlightRecord[] = [];
   for (const part of frontDriveParts) {
+    const base = baseMaterialOf(part.mesh);
     records.push({
       mesh: part.mesh,
-      baseMaterialColor: baseColorOf(part.mesh),
+      baseMaterialColor: base.color,
+      baseMetalness: base.metalness,
+      baseRoughness: base.roughness,
       stages: [
         stage('orange', HIGHLIGHT_ORANGE),
         stage('blue', HIGHLIGHT_BLUE),
@@ -197,9 +235,12 @@ export function buildHighlightRecords(
     // engineBackCover shares the pistons' pre-highlight orange (frame.preHighlightOrange), flips
     // to red in lockstep with the gear's ringRed and the pistons' pistonRed (frame.red), then
     // settles to the same shared green as the rest of the mismatch story (frame.finalGreen).
+    const base = baseMaterialOf(mountPart.mesh);
     records.push({
       mesh: mountPart.mesh,
-      baseMaterialColor: baseColorOf(mountPart.mesh),
+      baseMaterialColor: base.color,
+      baseMetalness: base.metalness,
+      baseRoughness: base.roughness,
       stages: [stage('orange', HIGHLIGHT_ORANGE), stage('red', HIGHLIGHT_RED), stage('finalGreen', HIGHLIGHT_GREEN)]
     });
   }
@@ -207,9 +248,12 @@ export function buildHighlightRecords(
   // preHighlightOrange), then their own red beat (frame.pistonRed) in lockstep with the gear's
   // ringRed, then the same shared final green (frame.finalGreen).
   for (const part of orangeEmphasisParts) {
+    const base = baseMaterialOf(part.mesh);
     records.push({
       mesh: part.mesh,
-      baseMaterialColor: baseColorOf(part.mesh),
+      baseMaterialColor: base.color,
+      baseMetalness: base.metalness,
+      baseRoughness: base.roughness,
       stages: [
         stage('orange', HIGHLIGHT_ORANGE),
         stage('pistonRed', HIGHLIGHT_RED),
@@ -220,12 +264,22 @@ export function buildHighlightRecords(
   return records;
 }
 
+// Bloom-pass membership cannot be continuous -- a mesh is either on BLOOM_LAYER or it isn't --
+// but the moment a part joins the pass, its full lit render (bright metal + HDRI speculars, not
+// just its still-tiny emissive) starts feeding UnrealBloomPass's threshold, which used to read as
+// a sudden visible pop the instant a stage's magnitude crossed the old on/off cutoff (~t60.8 for
+// finalGreen's ramp-in). `bloomGate` makes the *contribution* continuous instead: it rises 0..1
+// as the stage magnitude approaches BLOOM_GATE_FULL_MAGNITUDE, and render()'s bloom pass scales
+// the part's color/emissive/env-reflection down by that gate for the pass's duration -- so a part
+// eases into the bloom input in step with its highlight instead of arriving all at once.
+const BLOOM_GATE_FULL_MAGNITUDE = 0.06;
+
 // Sums every one of a part's active stages (see HighlightRecord's doc comment on why more than
-// one can be simultaneously active) into a single emissive contribution on that part's own
-// material -- true additive light mixing on one surface, rather than layering separate meshes.
-// Only enables BLOOM_LAYER on the part while that sum is actually nonzero, so a highlightable
-// part's ordinary lit shading (specular off the key light/HDR environment) never itself
-// contributes to the bloom pass -- only genuine "just got hot" glow does.
+// one can be simultaneously active) into both a primary tint (color/metalness/roughness) and a
+// small emissive accent on that part's own material -- true additive mixing on one surface, rather
+// than layering separate meshes. Enables BLOOM_LAYER on the part while the emissive sum is
+// nonzero, and publishes the continuous `bloomGate` (mesh.userData) that render()'s bloom pass
+// uses to fade the part's contribution in -- see BLOOM_GATE_FULL_MAGNITUDE above.
 export function updateHighlights(records: HighlightRecord[], frame: EngineFrame, pulseWeight: number): void {
   const stageColor = new THREE.Color();
   const identityColor = new THREE.Color();
@@ -261,23 +315,38 @@ export function updateHighlights(records: HighlightRecord[], frame: EngineFrame,
 
     const material = record.mesh.material as THREE.MeshStandardMaterial;
 
-    // Emissive alone, added on top of this part's real (often near-neutral gray metal)
-    // diffuse+specular, reads as a pale wash rather than a vivid color -- the achromatic base
-    // dominates the sum. Recoloring the diffuse itself toward the active stage's hue (weighted
-    // by how many stages are simultaneously active, for the two-stage crossfade case) is what
-    // makes the surface actually read as that color; emissive on top is then just the hot pulse
-    // accent, not the sole source of the color.
+    // Tint is the primary highlight signal (see TINT_MAX/TINT_METALNESS_TARGET/
+    // TINT_ROUGHNESS_TARGET above): color moves toward the active stage's hue (weighted by how
+    // many stages are simultaneously active, for the two-stage crossfade case), while metalness
+    // and roughness both move toward a less-metallic, slightly matte state so that color shift
+    // reads from every angle rather than only where a reflection would catch it. `w` -- the
+    // combined raw, pulse-independent stage weight, clamped to 1 -- drives all three identically
+    // so they land in lockstep; it's the same weight the old emissive-only model used for identity
+    // recolor, deliberately held steady (not pulse-scaled) so the tint is a stable state, not a
+    // throb -- only the (much smaller) emissive accent below carries the heartbeat. Each property
+    // is always re-lerped from its untouched base (record.baseMaterialColor/baseMetalness/
+    // baseRoughness), never mutated in place, so w returning to 0 lands exactly back on base with
+    // no drift.
     if (colorWeight > 0.001) {
       identityColor.multiplyScalar(1 / colorWeight);
-      material.color.copy(record.baseMaterialColor).lerp(identityColor, Math.min(colorWeight, 1));
+      const w = Math.min(colorWeight, 1);
+      material.color.copy(record.baseMaterialColor).lerp(identityColor, w * TINT_MAX);
+      material.metalness = lerp(record.baseMetalness, TINT_METALNESS_TARGET, w);
+      material.roughness = lerp(record.baseRoughness, TINT_ROUGHNESS_TARGET, w * TINT_ROUGHNESS_PULL);
     } else {
       material.color.copy(record.baseMaterialColor);
+      material.metalness = record.baseMetalness;
+      material.roughness = record.baseRoughness;
     }
 
+    // Small emissive accent on top of the tint -- see EMISSIVE_SCALE's comment above for why this
+    // is deliberately much smaller than the tint's own contribution to the part's brightness.
     material.emissive.copy(total);
     material.emissiveIntensity = 1; // total already carries the full per-stage intensity scaling
 
-    if (magnitude >= 0.01) record.mesh.layers.enable(BLOOM_LAYER);
+    const bloomGate = Math.min(1, magnitude / BLOOM_GATE_FULL_MAGNITUDE);
+    record.mesh.userData.bloomGate = bloomGate;
+    if (bloomGate > 0) record.mesh.layers.enable(BLOOM_LAYER);
     else record.mesh.layers.disable(BLOOM_LAYER);
   }
 }

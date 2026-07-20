@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { clamp01, deriveScene, ease, ramp, TIMELINE } from '../scene';
+import { clamp01, deriveScene, lerp, TIMELINE } from '../scene';
 import {
   AZIMUTH_DRIFT,
   CANONICAL_AZIMUTH,
   CANONICAL_ELEVATION,
   engineFrame,
   FRONT_SCALE,
+  MARGIN_ASSEMBLED,
   MARGIN_EXPLODED,
-  MOUNT_SCALE
+  MOUNT_SCALE,
+  RETURN_TO_NORMAL_END_T,
+  RETURN_TO_NORMAL_START_T
 } from './beats';
 
 // Authoritative timeline breakpoints, taken from beats.ts's own header comment (t 7.5-8 ... t
@@ -16,18 +19,25 @@ import {
 const CAMERA_SETTLE_T = 12.3;
 const ORANGE_IN_START_T = 7.5;
 const ORANGE_IN_END_T = 8;
-const ORANGE_OUT_START_T = 20;
-const ORANGE_OUT_END_T = 28;
+const ORANGE_OUT_START_T = 16;
+const ORANGE_OUT_END_T = 20;
 const RING_BLUE_START_T = 16;
-const RING_BLUE_END_T = 24;
-const MISMATCH_RED_START_T = 28;
-const MISMATCH_RED_END_T = 41;
+const RING_BLUE_END_T = 20;
+const RING_RESIZE_START_T = 22;
+const RING_RESIZE_END_T = 27;
+const MISMATCH_RED_START_T = 30;
+const MISMATCH_RED_END_T = 34;
 const COLOR_LOSS_START_T = 46;
 const COLOR_LOSS_END_T = 60;
 const RESOLVE_GREEN_START_T = 60;
 const RESOLVE_GREEN_END_T = 72;
 const RING_REGROW_START_T = 72;
 const RING_REGROW_END_T = 83;
+const FAILED_FIT_COLLAPSE_START_T = 32;
+const FAILED_FIT_COLLAPSE_END_T = 43;
+const FAILED_FIT_REEXPLODE_START_T = 48;
+const FAILED_FIT_REEXPLODE_END_T = 58;
+const BOX_IN_START_T = 58;
 const FINAL_REASSEMBLY_START_T = 83;
 const FINAL_REASSEMBLY_END_T = 87;
 
@@ -68,15 +78,15 @@ describe('blue (ring gear first stage)', () => {
     expect(frameAt(RING_BLUE_START_T).blue).toBe(0);
   });
 
-  it('is 1 from t=24 through t=28', () => {
+  it('is 1 from t=20 through t=30', () => {
     expect(frameAt(RING_BLUE_END_T).blue).toBe(1);
     expect(frameAt(26).blue).toBe(1);
     expect(frameAt(MISMATCH_RED_START_T).blue).toBe(1);
   });
 
-  it('is 0 at t>=41', () => {
+  it('is 0 at t>=34', () => {
     expect(frameAt(MISMATCH_RED_END_T).blue).toBe(0);
-    expect(frameAt(45).blue).toBe(0);
+    expect(frameAt(40).blue).toBe(0);
     expect(frameAt(100).blue).toBe(0);
   });
 });
@@ -86,8 +96,9 @@ describe('ringRed (ring gear second stage)', () => {
     expect(frameAt(MISMATCH_RED_START_T).ringRed).toBe(0);
   });
 
-  it('is 1 at t=41..46', () => {
+  it('is 1 at t=34..46', () => {
     expect(frameAt(MISMATCH_RED_END_T).ringRed).toBe(1);
+    expect(frameAt(40).ringRed).toBe(1);
     expect(frameAt(COLOR_LOSS_START_T).ringRed).toBe(1);
   });
 
@@ -123,22 +134,31 @@ describe('finalGreen', () => {
     expect(frameAt(0).finalGreen).toBe(0);
   });
 
-  it('is 1 at t>=72, and holds through t=100', () => {
+  it('is 1 across the held plateau, t=72..93', () => {
     expect(frameAt(RESOLVE_GREEN_END_T).finalGreen).toBe(1);
     expect(frameAt(80).finalGreen).toBe(1);
-    expect(frameAt(100).finalGreen).toBe(1);
+    expect(frameAt(RETURN_TO_NORMAL_START_T).finalGreen).toBe(1);
   });
 
   it('ramps linearly mid-window', () => {
     const mid = (RESOLVE_GREEN_START_T + RESOLVE_GREEN_END_T) / 2;
     expect(frameAt(mid).finalGreen).toBeCloseTo(0.5, 10);
   });
+
+  it('releases back to 0 over RETURN_TO_NORMAL_START_T..END_T, and is 0 at t=100', () => {
+    const mid = (RETURN_TO_NORMAL_START_T + RETURN_TO_NORMAL_END_T) / 2;
+    expect(frameAt(mid).finalGreen).toBeCloseTo(0.5, 10);
+    expect(frameAt(RETURN_TO_NORMAL_END_T).finalGreen).toBe(0);
+    expect(frameAt(100).finalGreen).toBe(0);
+  });
 });
 
 describe('boxWeight', () => {
-  it('is 0 at t<=46', () => {
-    expect(frameAt(COLOR_LOSS_START_T).boxWeight).toBe(0);
+  it('is 0 until the failed-fit re-explode has finished (t<=58)', () => {
     expect(frameAt(0).boxWeight).toBe(0);
+    expect(frameAt(COLOR_LOSS_START_T).boxWeight).toBe(0);
+    expect(frameAt(55).boxWeight).toBe(0);
+    expect(frameAt(BOX_IN_START_T).boxWeight).toBe(0);
   });
 
   it('peaks at exactly 1 at t=60', () => {
@@ -158,18 +178,30 @@ describe('boxWeight', () => {
 });
 
 describe('frontDriveScale', () => {
-  it('cycles 1 -> 1.25 (t24-46) -> 1 (t60-72) -> 1.25 (t>=83)', () => {
+  it('cycles 1 -> 1.25 (t27-46) -> 1 (t60-72) -> 1.25 (t83..93)', () => {
     expect(frameAt(0).frontDriveScale).toBe(1);
-    expect(frameAt(RING_BLUE_END_T).frontDriveScale).toBe(FRONT_SCALE);
+    expect(frameAt(RING_RESIZE_START_T).frontDriveScale).toBe(1);
+    expect(frameAt(RING_RESIZE_END_T).frontDriveScale).toBe(FRONT_SCALE);
     expect(frameAt(COLOR_LOSS_START_T).frontDriveScale).toBe(FRONT_SCALE);
     expect(frameAt(RESOLVE_GREEN_START_T).frontDriveScale).toBe(1);
     expect(frameAt(RING_REGROW_START_T).frontDriveScale).toBe(1);
     expect(frameAt(RING_REGROW_END_T).frontDriveScale).toBe(FRONT_SCALE);
-    expect(frameAt(100).frontDriveScale).toBe(FRONT_SCALE);
+    expect(frameAt(93).frontDriveScale).toBe(FRONT_SCALE);
   });
 
   it('shrinks back to 1x during the color-loss window', () => {
     expect(frameAt(COLOR_LOSS_END_T).frontDriveScale).toBe(1);
+  });
+
+  it('holds 1x through the whole blue window -- the resize is its own later beat (t22-27)', () => {
+    expect(frameAt(RING_BLUE_END_T).frontDriveScale).toBe(1);
+  });
+
+  it('eases back to 1x over RETURN_TO_NORMAL_START_T..END_T, and is exactly 1 at t=100', () => {
+    const mid = (RETURN_TO_NORMAL_START_T + RETURN_TO_NORMAL_END_T) / 2;
+    expect(frameAt(mid).frontDriveScale).toBeCloseTo(lerp(1, FRONT_SCALE, 0.5), 10);
+    expect(frameAt(RETURN_TO_NORMAL_END_T).frontDriveScale).toBe(1);
+    expect(frameAt(100).frontDriveScale).toBe(1);
   });
 });
 
@@ -185,9 +217,25 @@ describe('explode / frontDriveExplode', () => {
     expect(frameAt(0).explode).toBe(0);
   });
 
-  it('is 1 from CAMERA_SETTLE_T through t=83', () => {
+  it('is 1 from CAMERA_SETTLE_T until the failed-fit collapse begins', () => {
     expect(frameAt(CAMERA_SETTLE_T).explode).toBe(1);
-    expect(frameAt(50).explode).toBe(1);
+    expect(frameAt(20).explode).toBe(1);
+    expect(frameAt(FAILED_FIT_COLLAPSE_START_T).explode).toBe(1);
+  });
+
+  it('failed fit: fully collapsed from t=43 through t=48, mid-way at the window midpoints', () => {
+    const collapseMid = (FAILED_FIT_COLLAPSE_START_T + FAILED_FIT_COLLAPSE_END_T) / 2;
+    const reexplodeMid = (FAILED_FIT_REEXPLODE_START_T + FAILED_FIT_REEXPLODE_END_T) / 2;
+    expect(frameAt(collapseMid).explode).toBeCloseTo(0.5, 10);
+    expect(frameAt(FAILED_FIT_COLLAPSE_END_T).explode).toBe(0);
+    expect(frameAt(45).explode).toBe(0);
+    expect(frameAt(FAILED_FIT_REEXPLODE_START_T).explode).toBe(0);
+    expect(frameAt(reexplodeMid).explode).toBeCloseTo(0.5, 10);
+  });
+
+  it('re-exploded to 1 from t=58 through the start of the final reassembly', () => {
+    expect(frameAt(FAILED_FIT_REEXPLODE_END_T).explode).toBe(1);
+    expect(frameAt(70).explode).toBe(1);
     expect(frameAt(FINAL_REASSEMBLY_START_T).explode).toBe(1);
   });
 
@@ -198,10 +246,32 @@ describe('explode / frontDriveExplode', () => {
 });
 
 describe('camera settle: margin, azimuth, elevation', () => {
-  it('margin settles to MARGIN_EXPLODED by CAMERA_SETTLE_T and holds', () => {
+  it('margin rides the explode curve: MARGIN_EXPLODED whenever fully exploded', () => {
     expect(frameAt(CAMERA_SETTLE_T).margin).toBeCloseTo(MARGIN_EXPLODED, 10);
-    expect(frameAt(50).margin).toBe(MARGIN_EXPLODED);
-    expect(frameAt(100).margin).toBe(MARGIN_EXPLODED);
+    expect(frameAt(FAILED_FIT_COLLAPSE_START_T).margin).toBe(MARGIN_EXPLODED);
+    expect(frameAt(70).margin).toBe(MARGIN_EXPLODED);
+    expect(frameAt(FINAL_REASSEMBLY_START_T).margin).toBe(MARGIN_EXPLODED);
+  });
+
+  it('margin is MARGIN_ASSEMBLED for every collapsed pose -- hero, the failed-fit hold, and t87..100 all share the hero framing', () => {
+    expect(frameAt(0).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(FAILED_FIT_COLLAPSE_END_T).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(45).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(FAILED_FIT_REEXPLODE_START_T).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(FINAL_REASSEMBLY_END_T).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(88).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(RETURN_TO_NORMAL_START_T).margin).toBe(MARGIN_ASSEMBLED);
+    expect(frameAt(100).margin).toBe(MARGIN_ASSEMBLED);
+  });
+
+  it('margin blends on the same ramps that move the parts', () => {
+    const mid = (FINAL_REASSEMBLY_START_T + FINAL_REASSEMBLY_END_T) / 2;
+    expect(frameAt(mid).margin).toBeCloseTo(lerp(MARGIN_ASSEMBLED, MARGIN_EXPLODED, frameAt(mid).explode), 10);
+    const collapseMid = (FAILED_FIT_COLLAPSE_START_T + FAILED_FIT_COLLAPSE_END_T) / 2;
+    expect(frameAt(collapseMid).margin).toBeCloseTo(
+      lerp(MARGIN_ASSEMBLED, MARGIN_EXPLODED, frameAt(collapseMid).explode),
+      10
+    );
   });
 
   it('elevation settles to CANONICAL_ELEVATION by CAMERA_SETTLE_T and holds', () => {
@@ -223,11 +293,11 @@ describe('idleWeight', () => {
     expect(frameAt(0).idleWeight).toBe(1);
   });
 
-  it('is 0 by the top of `change`, and stays 0', () => {
+  it('is 0 from the top of `change` through the whole mismatch story, up to RETURN_TO_NORMAL_START_T', () => {
     const changePhase = TIMELINE.find((phase) => phase.id === 'change')!;
     expect(frameAt(changePhase.start).idleWeight).toBe(0);
-    expect(frameAt(50).idleWeight).toBe(0);
-    expect(frameAt(100).idleWeight).toBe(0);
+    expect(frameAt(45).idleWeight).toBe(0);
+    expect(frameAt(RETURN_TO_NORMAL_START_T).idleWeight).toBe(0);
   });
 
   it('fades out within the leading fraction of hero+traverse, well before traverse ends', () => {
@@ -237,9 +307,16 @@ describe('idleWeight', () => {
     expect(frameAt(fadeEndT).idleWeight).toBeCloseTo(0, 6);
     expect(frameAt(traversePhase.end).idleWeight).toBe(0);
   });
+
+  it('fades back in over RETURN_TO_NORMAL_START_T..END_T, reaching 1 at t=100', () => {
+    const mid = (RETURN_TO_NORMAL_START_T + RETURN_TO_NORMAL_END_T) / 2;
+    expect(frameAt(mid).idleWeight).toBeCloseTo(0.5, 10);
+    expect(frameAt(RETURN_TO_NORMAL_END_T).idleWeight).toBe(1);
+    expect(frameAt(100).idleWeight).toBe(1);
+  });
 });
 
-describe('mountScale / seatAdjust (phase + local driven)', () => {
+describe('mountScale (pure function of t)', () => {
   it('mountScale is 1 for every phase before `related`', () => {
     expect(frameAt(0).mountScale).toBe(1);
     expect(frameAt(traversePhase.end - 0.001).mountScale).toBe(1);
@@ -251,24 +328,19 @@ describe('mountScale / seatAdjust (phase + local driven)', () => {
     expect(frameAt(tAtLocal(relatedPhase, 0.7)).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
   });
 
-  it('mountScale holds at MOUNT_SCALE for the rest of `related` and all of `success`', () => {
-    expect(frameAt(relatedPhase.end - 0.001).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
-    expect(frameAt(tAtLocal(successPhase, 0.5)).mountScale).toBe(MOUNT_SCALE);
-    expect(frameAt(100).mountScale).toBe(MOUNT_SCALE);
+  it('mountScale holds at MOUNT_SCALE from the end of its growth window up to RETURN_TO_NORMAL_START_T', () => {
+    // `related` ends at ~96.97, well after RETURN_TO_NORMAL_START_T (93) -- the whole of `success`
+    // (96.97..100) falls inside the return-to-normal window, so the plateau is only observable
+    // from the growth window's end (~91.5, still inside `related`) through t=93.
+    expect(frameAt(tAtLocal(relatedPhase, 0.7)).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
+    expect(frameAt(RETURN_TO_NORMAL_START_T).mountScale).toBeCloseTo(MOUNT_SCALE, 10);
   });
 
-  it('seatAdjust is 0 everywhere outside `success`', () => {
-    expect(frameAt(0).seatAdjust).toBe(0);
-    expect(frameAt(relatedPhase.end - 0.001).seatAdjust).toBe(0);
-  });
-
-  it('seatAdjust eases 0 -> 1 across local 0..0.7 of `success`, then holds at 1', () => {
-    expect(frameAt(successPhase.start).seatAdjust).toBe(0);
-    const local = 0.35;
-    const expected = ease(ramp(local, 0, 0.7));
-    expect(frameAt(tAtLocal(successPhase, local)).seatAdjust).toBeCloseTo(expected, 10);
-    expect(frameAt(tAtLocal(successPhase, 0.7)).seatAdjust).toBeCloseTo(1, 10);
-    expect(frameAt(100).seatAdjust).toBeCloseTo(1, 10);
+  it('eases back to exactly 1 by t=100', () => {
+    const mid = (RETURN_TO_NORMAL_START_T + RETURN_TO_NORMAL_END_T) / 2;
+    expect(frameAt(mid).mountScale).toBeCloseTo(lerp(1, MOUNT_SCALE, 0.5), 10);
+    expect(frameAt(RETURN_TO_NORMAL_END_T).mountScale).toBe(1);
+    expect(frameAt(100).mountScale).toBe(1);
   });
 });
 
@@ -279,7 +351,6 @@ describe('invariant sweep over the whole timeline (t=0..100, step 0.5)', () => {
   const zeroToOneFields = [
     'explode',
     'frontDriveExplode',
-    'seatAdjust',
     'blue',
     'ringRed',
     'red',
@@ -323,5 +394,32 @@ describe('invariant sweep over the whole timeline (t=0..100, step 0.5)', () => {
       }
     }
     expect(sawNegative).toBe(false);
+  });
+});
+
+describe('regression: ring gear no longer drops at t≈96 (issue #1 -- seatAdjust removed)', () => {
+  it('EngineFrame carries no seat-related field', () => {
+    const frame = frameAt(tAtLocal(successPhase, 0.35));
+    expect(frame).not.toHaveProperty('seatAdjust');
+  });
+
+  it('no positional beat exists anywhere past t=87 -- explode (the only field that ever moves a part) stays exactly 0 for the rest of the timeline, including across all of `success`', () => {
+    for (let t = FINAL_REASSEMBLY_END_T; t <= 100; t += 0.5) {
+      expect(frameAt(t).explode, `explode at t=${t}`).toBe(0);
+      expect(frameAt(t).frontDriveExplode, `frontDriveExplode at t=${t}`).toBe(0);
+    }
+    // Specifically inside `success`, where the drop was reported (t≈96).
+    expect(frameAt(tAtLocal(successPhase, 0.35)).explode).toBe(0);
+  });
+});
+
+describe('regression: every mismatch component returns to normal by t=100, engine idle-rotating like the hero (issue #2)', () => {
+  it('at t=100: finalGreen, frontDriveScale, mountScale, idleWeight, and margin all match their hero-opening values', () => {
+    const frame = frameAt(100);
+    expect(frame.finalGreen).toBe(0);
+    expect(frame.frontDriveScale).toBe(1);
+    expect(frame.mountScale).toBe(1);
+    expect(frame.idleWeight).toBe(1);
+    expect(frame.margin).toBe(MARGIN_ASSEMBLED);
   });
 });

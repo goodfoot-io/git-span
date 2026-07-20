@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { PHASE_COPY } from './copy';
-import { engineFrame } from './engine/beats';
+import { engineFrame, RETURN_TO_NORMAL_START_T } from './engine/beats';
 import type { EngineScene } from './engine/EngineScene';
 import type { SceneState } from './scene';
 
@@ -67,7 +67,12 @@ export function EngineStage({ scene }: EngineStageProps) {
     const engine = engineRef.current;
     if (!engine) return;
     engine.setFrame(engineFrame(scene));
-    engine.setHeroIdle(scene.phase.id === 'hero' && !prefersReducedMotion());
+    // The turntable accumulates rotation during `hero` and again over the RETURN_TO_NORMAL window
+    // at the very end (t >= RETURN_TO_NORMAL_START_T, see beats.ts) -- idleWeight (which blends how
+    // much of that accumulation the camera keeps) ramps 1 -> 0 across hero/traverse and 0 -> 1
+    // back across that ending window, so the accumulator needs to be live in both spans, not just
+    // `hero`. Still fully disabled under prefers-reduced-motion.
+    engine.setHeroIdle((scene.phase.id === 'hero' || scene.t >= RETURN_TO_NORMAL_START_T) && !prefersReducedMotion());
     engine.setReducedMotion(prefersReducedMotion());
   }, [status, scene]);
 

@@ -16,9 +16,6 @@ export interface PartRecord {
   family: PartFamily;
   isFrontDrive: boolean;
   isMount: boolean;
-  // FRONT_DRIVE_SEAT_ADJUST subset -- only `gear` is physically adjacent to FRONT_MOUNT, so only
-  // it remaps its seat target onto the resized mount in `updatePartTransforms`; see parts.ts.
-  isSeatAdjust: boolean;
   // ORANGE_EMPHASIS subset -- the pistons get the same pre-highlight orange pulse as FRONT_DRIVE
   // (gear) without joining that list (no resize/lift/green/red). See parts.ts.
   isOrangeEmphasis: boolean;

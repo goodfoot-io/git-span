@@ -117,12 +117,6 @@ export const FRONT_DRIVE: readonly string[] = ['gear'];
 // highlights.ts.
 export const FRONT_MOUNT: readonly string[] = ['engineBackCover'];
 
-// `gear` is FRONT_DRIVE's only member and the one physically adjacent to the (rear-mounted)
-// FRONT_MOUNT, so it's the only part whose assembled seat target remaps radially about the
-// mount's center as the mount grows (`related`/`success`'s seatAdjust). Matched by name post
-// `stripDedupSuffix`.
-export const FRONT_DRIVE_SEAT_ADJUST: readonly string[] = ['gear'];
-
 // `gear`'s baked staging -> assembled displacement doesn't yield a usable explode axis (its own
 // raw distance is small relative to its neighbors and its direction isn't reliably "outward"),
 // so it interpenetrates its mount instead of clearing it. EngineScene.load() overrides these

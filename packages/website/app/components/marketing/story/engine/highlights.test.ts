@@ -21,7 +21,6 @@ function makePartRecord(colorHex: number): PartRecord {
     family: 'aluminum',
     isFrontDrive: false,
     isMount: false,
-    isSeatAdjust: false,
     isOrangeEmphasis: false,
     localSphere: new THREE.Sphere()
   };
@@ -172,6 +171,16 @@ describe('buildHighlightRecords', () => {
     expect(record.baseMaterialColor.equals(material.color)).toBe(false);
   });
 
+  it('baseMetalness/baseRoughness equal the material values at build time', () => {
+    const gear = makePartRecord(0x4a4d52);
+    const material = gear.mesh.material as THREE.MeshStandardMaterial;
+    material.metalness = 0.9;
+    material.roughness = 0.2;
+    const [record] = buildHighlightRecords([gear], null, []);
+    expect(record.baseMetalness).toBe(0.9);
+    expect(record.baseRoughness).toBe(0.2);
+  });
+
   it('mountPart null yields no mount record', () => {
     const gear = makePartRecord(0x123456);
     const records = buildHighlightRecords([gear], null, []);
@@ -181,40 +190,56 @@ describe('buildHighlightRecords', () => {
 });
 
 describe('updateHighlights', () => {
-  it('an all-zero EngineFrame (t=0) returns material to baseMaterialColor, emissive black, BLOOM_LAYER disabled', () => {
+  it('an all-zero EngineFrame (t=0) returns material to base color/metalness/roughness, emissive black, BLOOM_LAYER disabled', () => {
     const gear = makePartRecord(0x4a4d52);
+    const material = gear.mesh.material as THREE.MeshStandardMaterial;
+    material.metalness = 0.9;
+    material.roughness = 0.2;
     const records = buildHighlightRecords([gear], null, []);
     const frame = engineFrame(deriveScene(0));
 
     updateHighlights(records, frame, 0);
 
-    const material = gear.mesh.material as THREE.MeshStandardMaterial;
     expect(material.color.equals(records[0].baseMaterialColor)).toBe(true);
+    expect(material.metalness).toBe(records[0].baseMetalness);
+    expect(material.roughness).toBe(records[0].baseRoughness);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(true);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(false);
   });
 
-  it('frame.finalGreen = 1 (t=100) recolors toward the green identity, lights emissive, enables BLOOM_LAYER', () => {
+  it('frame.finalGreen = 1 (t=80, inside the held green plateau) tints toward green (base lerped 0.85 toward the green identity), pulls metalness/roughness toward their tint targets, lights emissive, enables BLOOM_LAYER', () => {
     const gear = makePartRecord(0x4a4d52);
+    const material = gear.mesh.material as THREE.MeshStandardMaterial;
+    material.metalness = 0.9;
+    material.roughness = 0.2;
     const records = buildHighlightRecords([gear], null, []);
-    const frame = engineFrame(deriveScene(100));
+    // t=80 sits inside the RESOLVE_GREEN_END_T (72) .. RETURN_TO_NORMAL_START_T (93) plateau where
+    // finalGreen holds at 1 -- t=100 no longer works as this fixture since the return-to-normal
+    // window (t93-100) releases finalGreen back to 0 by the end of the timeline.
+    const frame = engineFrame(deriveScene(80));
     expect(frame.finalGreen).toBe(1);
-    // Every other stage weight on the gear (orange/blue/ringRed) should be 0 at t=100, so the
-    // color moves fully to the green identity -- not a partial blend.
+    // Every other stage weight on the gear (orange/blue/ringRed) should be 0 at t=80, so the
+    // color moves fully toward the green identity -- not a partial blend across hues.
     expect(frame.preHighlightOrange).toBe(0);
     expect(frame.blue).toBe(0);
     expect(frame.ringRed).toBe(0);
 
     updateHighlights(records, frame, 0);
 
-    const material = gear.mesh.material as THREE.MeshStandardMaterial;
-    expect(material.color.equals(new THREE.Color(HIGHLIGHT_GREEN))).toBe(true);
+    // Tint is capped at TINT_MAX (0.85), not a full swap to the highlight color -- expected color
+    // is the base lerped 0.85 of the way to HIGHLIGHT_GREEN.
+    const expectedColor = records[0].baseMaterialColor.clone().lerp(new THREE.Color(HIGHLIGHT_GREEN), 0.85);
+    expect(material.color.equals(expectedColor)).toBe(true);
+    // Metalness/roughness both moved toward their tint targets (0.35 / 0.5, the latter scaled by
+    // the 0.6 roughness pull) at full weight (w=1).
+    expect(material.metalness).toBeCloseTo(0.35, 5);
+    expect(material.roughness).toBeCloseTo(0.2 + (0.5 - 0.2) * 0.6, 5);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(false);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(true);
   });
 
   it('pulseWeight changes emissive magnitude but never material.color (identity recolor is pulse-independent)', () => {
-    const frame = engineFrame(deriveScene(100));
+    const frame = engineFrame(deriveScene(80));
 
     const gearAtRest = makePartRecord(0x4a4d52);
     const recordsAtRest = buildHighlightRecords([gearAtRest], null, []);

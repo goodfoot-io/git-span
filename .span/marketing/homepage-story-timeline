@@ -1,5 +1,5 @@
-packages/website/app/components/marketing/story/copy.ts#L61-L138 rk64:1bb84c3c1c018a57
-packages/website/app/components/marketing/story/engine/beats.ts#L224-L324 rk64:1539aeeb85bd74c5
+packages/website/app/components/marketing/story/copy.ts#L61-L141 rk64:b282ee18b34a9704
+packages/website/app/components/marketing/story/engine/beats.ts#L184-L342 rk64:dcfed78ba1261d49
 packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:1155890b65315514
 packages/website/app/routes/_index.tsx#L23-L27 rk64:bb8389f32651af1e
 
