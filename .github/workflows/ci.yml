@@ -112,6 +112,9 @@ jobs:
       - name: Place CLI binary on PATH
         run: chmod +x git-span && sudo mv git-span /usr/local/bin/
 
+      - name: Check for stale spans
+        run: git span stale
+
       - name: Install Xvfb
         run: sudo apt-get install -y xvfb
 

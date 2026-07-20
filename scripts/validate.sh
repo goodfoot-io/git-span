@@ -25,6 +25,7 @@ if [ -d "$guardrail_root" ]; then
 fi
 
 {
+  git span stale &&
   yarn typecheck &&
   yarn lint &&
   yarn test &&
