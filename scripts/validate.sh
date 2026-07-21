@@ -29,7 +29,13 @@ fi
   yarn typecheck &&
   yarn lint &&
   yarn test &&
-  SKIP_INSTALL=1 yarn build
+  SKIP_INSTALL=1 yarn build &&
+  (
+    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks; then
+      echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
+      exit 1
+    fi
+  )
 } 2>&1 | tee yarn-validate-output.log
 
 EXIT_CODE=${PIPESTATUS[0]}
