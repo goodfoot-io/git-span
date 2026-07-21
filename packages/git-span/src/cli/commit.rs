@@ -756,7 +756,7 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result
     // `-m` sets the why text; otherwise read and print the current why.
     if let Some(m) = args.m {
         crate::validation::validate_span_name(&args.name)?;
-        let _perf = crate::perf::span("why.write-message");
+        let _perf = crate::perf::span("why.write");
         run_why_writer(repo, &args.name, &m, span_root)?;
         return print_why_written(&args.name);
     }

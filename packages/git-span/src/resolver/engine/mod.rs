@@ -593,7 +593,7 @@ fn resolve_loaded_span_with_state(
     }
     Ok(SpanResolved {
         name: span.name,
-        message: span.message,
+        why: span.why,
         anchors,
         follow_moves: span.config.follow_moves,
     })
@@ -751,7 +751,7 @@ pub(crate) fn capture_resolution_core(
         }
         spans.push(SpanCore {
             name: span.name.clone(),
-            message: span.message.clone(),
+            why: span.why.clone(),
             follow_moves: span.config.follow_moves,
             anchors,
         });
@@ -1474,7 +1474,7 @@ mod tests {
     fn make_span(name: &str, anchors: &[(&str, AnchorExtent)]) -> SpanResolved {
         SpanResolved {
             name: name.to_string(),
-            message: String::new(),
+            why: String::new(),
             anchors: anchors
                 .iter()
                 .map(|(path, extent)| AnchorResolved {

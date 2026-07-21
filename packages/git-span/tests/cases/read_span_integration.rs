@@ -42,7 +42,7 @@ fn read_span_returns_effective_state() -> Result<()> {
     let m = read_span(&repo.gix_repo()?, "alpha")?;
     assert_eq!(m.name, "alpha");
     assert_eq!(m.anchors.len(), 1);
-    assert!(m.message.contains("alpha init"));
+    assert!(m.why.contains("alpha init"));
     Ok(())
 }
 

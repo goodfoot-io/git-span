@@ -246,7 +246,7 @@ fn dirty_span_definition_reconstructs_byte_equal() {
     let (_td, dir) = fresh_two_span_repo("dspan");
     publish_baseline(&dir);
 
-    // Modify alpha's committed span file in the worktree (change its message).
+    // Modify alpha's committed span file in the worktree (change its why).
     // The span file is a relevant path, so it is dirty and alpha is affected.
     write_span(&dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha REVISED");
 

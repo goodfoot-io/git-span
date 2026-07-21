@@ -454,7 +454,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             let span_file_path = std::path::PathBuf::from(format!("{span_root_owned}/{name}"));
             spans.push(SpanResolved {
                 name: name.clone(),
-                message: String::new(),
+                why: String::new(),
                 anchors: vec![crate::types::AnchorResolved {
                     anchor_id: name.clone(),
                     anchor_sha: String::new(),
@@ -557,7 +557,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                     .collect();
                 full.push(SpanResolved {
                     name,
-                    message: span.message,
+                    why: span.why,
                     anchors,
                     follow_moves: span.config.follow_moves,
                 });
@@ -1448,7 +1448,7 @@ fn render_human(
         }
 
         // Why text: print verbatim after a blank line if non-empty.
-        let why = m.message.trim_end_matches('\n');
+        let why = m.why.trim_end_matches('\n');
         if !why.is_empty() {
             println!();
             println!("{why}");

@@ -200,7 +200,7 @@ pub(crate) fn write_prefixed(h: &mut Hasher, bytes: &[u8]) {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SpanCore {
     pub(crate) name: String,
-    pub(crate) message: String,
+    pub(crate) why: String,
     pub(crate) follow_moves: bool,
     /// `(ordinal, anchor)` pairs in stored order. A `Vec`, never a HashMap
     /// keyed by address — duplicate addresses are legal input.

@@ -101,7 +101,7 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
     Span {
         name: name.to_string(),
         anchors,
-        message: file.why.clone(),
+        why: file.why.clone(),
         config: SpanConfig {
             copy_detection: DEFAULT_COPY_DETECTION,
             ignore_whitespace: DEFAULT_IGNORE_WHITESPACE,
@@ -117,8 +117,8 @@ pub struct Span {
     pub name: String,
     /// Active anchors: (anchor_id, Anchor) pairs in stored order.
     pub anchors: Vec<(String, Anchor)>,
-    /// The span's "why" message (from the span file, after the first blank line).
-    pub message: String,
+    /// The span's why prose (from the span file, after the first blank line).
+    pub why: String,
     /// Resolver options for all anchors in this span.
     pub config: SpanConfig,
 }
@@ -236,7 +236,7 @@ pub enum DriftLocus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpanResolved {
     pub name: String,
-    pub message: String,
+    pub why: String,
     /// One resolved entry per Anchor id in the Span, in the Span's
     /// stored order.
     pub anchors: Vec<AnchorResolved>,

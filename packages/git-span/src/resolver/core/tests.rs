@@ -555,7 +555,7 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
     let core = ResolutionCore {
         spans: vec![SpanCore {
             name: "demo".to_string(),
-            message: "why".to_string(),
+            why: "why".to_string(),
             follow_moves: false,
             anchors: vec![(ord_a.clone(), anchor_a.clone()), (ord_b.clone(), anchor_b.clone())],
         }],
@@ -577,7 +577,7 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
     let other = ResolutionCore {
         spans: vec![SpanCore {
             name: "other".to_string(),
-            message: "why-other".to_string(),
+            why: "why-other".to_string(),
             follow_moves: false,
             anchors: Vec::new(),
         }],
@@ -661,7 +661,7 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
     let core = ResolutionCore {
         spans: vec![SpanCore {
             name: "demo".to_string(),
-            message: "why".to_string(),
+            why: "why".to_string(),
             follow_moves: false,
             anchors: vec![(ordinal, anchor)],
         }],

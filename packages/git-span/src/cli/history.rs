@@ -290,7 +290,7 @@ fn rendered_state_at(repo: &gix::Repository, commit_oid: &str, span: &Span) -> R
         anchors.push((addr, body));
     }
     RenderedState {
-        why: span.message.trim_end_matches('\n').to_string(),
+        why: span.why.trim_end_matches('\n').to_string(),
         anchors,
     }
 }
@@ -515,11 +515,11 @@ fn build_current(
     // Uncommitted why change (trigger 2).
     let head_why = head
         .as_ref()
-        .map(|m| m.message.trim_end_matches('\n').to_string())
+        .map(|m| m.why.trim_end_matches('\n').to_string())
         .unwrap_or_default();
     let work_why = work
         .as_ref()
-        .map(|m| m.message.trim_end_matches('\n').to_string())
+        .map(|m| m.why.trim_end_matches('\n').to_string())
         .unwrap_or_default();
     let why = if work_why != head_why {
         Some(work_why)

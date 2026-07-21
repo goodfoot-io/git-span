@@ -333,7 +333,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
 pub(crate) struct SpanResolvedDto {
     pub(crate) format_version: u8,
     pub(crate) name: String,
-    pub(crate) message: String,
+    pub(crate) why: String,
     pub(crate) anchors: Vec<AnchorResolvedDto>,
     pub(crate) follow_moves: bool,
 }
@@ -343,7 +343,7 @@ impl From<&SpanResolved> for SpanResolvedDto {
         Self {
             format_version: FORMAT_VERSION,
             name: m.name.clone(),
-            message: m.message.clone(),
+            why: m.why.clone(),
             anchors: m.anchors.iter().map(Into::into).collect(),
             follow_moves: m.follow_moves,
         }
@@ -365,7 +365,7 @@ impl TryFrom<SpanResolvedDto> for SpanResolved {
         }
         Ok(SpanResolved {
             name: d.name,
-            message: d.message,
+            why: d.why,
             anchors,
             follow_moves: d.follow_moves,
         })

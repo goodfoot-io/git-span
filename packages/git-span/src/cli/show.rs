@@ -31,8 +31,8 @@ fn build_listings(spans: &[(String, crate::types::Span)], include_why: bool) -> 
     spans
         .iter()
         .map(|(name, span)| {
-            let message = if include_why {
-                span.message.clone()
+            let why = if include_why {
+                span.why.clone()
             } else {
                 String::new()
             };
@@ -46,7 +46,7 @@ fn build_listings(spans: &[(String, crate::types::Span)], include_why: bool) -> 
                 .collect();
             SpanListing {
                 name: name.clone(),
-                why: message.trim_end_matches('\n').to_string(),
+                why: why.trim_end_matches('\n').to_string(),
                 anchors,
             }
         })
@@ -65,8 +65,8 @@ fn build_listings_for_names(
         .iter()
         .filter(|(name, _)| name_set.contains(name.as_str()))
         .map(|(name, span)| {
-            let message = if include_why {
-                span.message.clone()
+            let why = if include_why {
+                span.why.clone()
             } else {
                 String::new()
             };
@@ -80,7 +80,7 @@ fn build_listings_for_names(
                 .collect();
             SpanListing {
                 name: name.clone(),
-                why: message.trim_end_matches('\n').to_string(),
+                why: why.trim_end_matches('\n').to_string(),
                 anchors,
             }
         })
@@ -276,7 +276,7 @@ struct AnchorEntryToml {
 #[derive(Serialize)]
 struct SpanToml {
     name: String,
-    message: String,
+    why: String,
     anchors: Vec<AnchorEntryToml>,
     config: SpanConfig,
 }
@@ -337,7 +337,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
 
     let toml_output = SpanToml {
         name: span.name.clone(),
-        message: span.message.trim_end_matches('\n').to_string(),
+        why: span.why.trim_end_matches('\n').to_string(),
         anchors: span
             .anchors
             .iter()

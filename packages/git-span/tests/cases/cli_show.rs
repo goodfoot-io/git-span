@@ -42,7 +42,7 @@ fn show_by_name_has_required_lines() -> Result<()> {
     let out = repo.span_stdout(["alpha"])?;
     assert!(out.starts_with("name = \"alpha\"\n"), "out={out}");
     assert!(out.contains("path = \"file1.txt\""), "out={out}");
-    assert!(out.contains("message = \"seed\""), "out={out}");
+    assert!(out.contains("why = \"seed\""), "out={out}");
     assert!(out.contains("[config]"), "out={out}");
     assert!(
         out.contains("copy_detection = \"same-commit\""),

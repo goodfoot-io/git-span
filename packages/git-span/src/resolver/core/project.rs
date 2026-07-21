@@ -110,7 +110,7 @@ pub(crate) fn project_effective(
                 .collect();
             SpanResolved {
                 name: span.name.clone(),
-                message: span.message.clone(),
+                why: span.why.clone(),
                 anchors,
                 follow_moves: span.follow_moves,
             }
