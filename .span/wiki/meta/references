@@ -1,5 +1,6 @@
 packages/git-span/src/cli/mod.rs#L1-L32 rk64:66ad0502573194de
-packages/git-span/src/main.rs#L50-L113 rk64:40c06b1c3bd17368
+packages/git-span/src/main.rs#L50-L113 rk64:c2226c84060cd865
 packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420
-wiki/meta/git-span-documentation-touchpoints.md#L44-L48 rk64:41bba4254bcd95a3
+wiki/meta/git-span-documentation-touchpoints.md#L45-L47 rk64:1dae2ca758afd710
 
+The touchpoints page's References section links to the exact CLI-surface source files (cli/mod.rs, main.rs, validation.rs) it discusses elsewhere; these link targets must be kept pointed at the current CLI-config, dispatch, and reserved-name definitions.

@@ -1,4 +1,4 @@
-.devcontainer/Dockerfile#L7-L39 rk64:9338d3e879271ecd
+.devcontainer/Dockerfile#L7-L44 rk64:03dd4c8c355514b0
 README.md#L96-L103 rk64:c1462e5cceb63e63
 packages/git-span-core/.cargo/config.toml rk64:a316143975e68104
 packages/git-span/.cargo/config.toml#L12-L16 rk64:462e3cf78aa498e1
