@@ -1,5 +1,5 @@
 ---
-name: reconcile-stale-spans
+name: reconcile
 description: Reconcile stale git spans surfaced by `git span stale`. Use when asked to "reconcile stale spans", "fix stale spans", "resolve span drift", "clean up stale spans", or when `git span stale` exits non-zero with drift.
 ---
 
