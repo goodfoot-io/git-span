@@ -2,23 +2,32 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import { HERO } from '~/components/marketing/story/copy';
 
-// Abstract "span across a box" mark: a rounded square (the two disconnected sides of a
-// repository) crossed by a single accent-colored line that runs slightly past both edges (the
-// span linking them). Doubles as the favicon (see public/favicon.svg) at larger size.
-export function LogoMark() {
+// "GS" ring-and-span mark (see public/logo-negative.svg for the source asset). Doubles as
+// the favicon (see public/favicon.svg) at larger size.
+export function LogoMark({ size = 20 }: { size?: number }) {
   return (
     <svg
-      width="20"
-      height="20"
-      viewBox="0 0 20 20"
+      width={size}
+      height={size}
+      viewBox="0 0 1024 1024"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
       role="presentation"
       className="shrink-0"
     >
-      <rect x="3.25" y="3.25" width="13.5" height="13.5" rx="3" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="0.5" y1="10" x2="19.5" y2="10" stroke="var(--color-accent)" strokeWidth="1.5" strokeLinecap="round" />
+      <path
+        d="M1024 204.8H484.598C449.187 143.586 383.004 102.4 307.2 102.4C194.092 102.4 102.4 194.092 102.4 307.2C102.4 420.308 194.092 512 307.2 512C383.004 512 449.187 470.814 484.598 409.6H1024V1024H0V819.2H539.402C574.813 880.414 640.996 921.6 716.8 921.6C829.908 921.6 921.6 829.908 921.6 716.8C921.6 603.692 829.908 512 716.8 512C640.996 512 574.813 553.186 539.402 614.4H0V0H1024V204.8Z"
+        fill="currentColor"
+      />
+      <path
+        d="M716.8 614.4C773.354 614.4 819.2 660.246 819.2 716.8C819.2 773.354 773.354 819.2 716.8 819.2C660.246 819.2 614.4 773.354 614.4 716.8C614.4 660.246 660.246 614.4 716.8 614.4Z"
+        fill="currentColor"
+      />
+      <path
+        d="M307.2 204.8C363.754 204.8 409.6 250.646 409.6 307.2C409.6 363.754 363.754 409.6 307.2 409.6C250.646 409.6 204.8 363.754 204.8 307.2C204.8 250.646 250.646 204.8 307.2 204.8Z"
+        fill="currentColor"
+      />
     </svg>
   );
 }
@@ -42,9 +51,8 @@ export function Header() {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 border-b border-rule bg-ground/80 backdrop-blur-sm">
       <div className="flex h-16 items-center justify-between px-6 lg:pl-12">
-        <Link to="/" className="flex items-center gap-2 text-ink-primary">
-          <LogoMark />
-          <span className="font-mono text-sm font-medium tracking-tight whitespace-nowrap">git-span</span>
+        <Link to="/" className="flex items-center text-ink-primary">
+          <LogoMark size={34} />
         </Link>
         <nav className="flex items-center gap-4 sm:gap-6">
           <Link
