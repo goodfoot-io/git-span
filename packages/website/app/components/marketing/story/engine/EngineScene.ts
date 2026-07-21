@@ -42,6 +42,7 @@ import {
   type PartFamily,
   stripDedupSuffix
 } from './parts';
+import { STAGE_BACKGROUND } from './stage';
 import type { PartRecord, Pose } from './types';
 import engineGlbUrl from '~/assets/engine/engine.glb?url';
 import engineAoUrl from '~/assets/engine/engine-ao.webp?url';
@@ -65,7 +66,8 @@ const EXPLODE_MAX_FRACTION = 1.89;
 // The page's stage background (see EngineStage's containing div and root.tsx) -- the canvas
 // itself is transparent (`alpha: true`, clear alpha 0, `scene.background = null`), so fogging to
 // this exact color is what lets distant parts blend into the page instead of a mismatched haze.
-const STAGE_BACKGROUND = 0xf2efe6;
+// (STAGE_BACKGROUND itself now lives in ./stage, the single source of truth shared with
+// EngineStage.tsx and the page ground color.)
 
 // Fog near/far are recomputed every frame in `fitCameraToFrame` relative to the fitted camera
 // distance and the current bounding-sphere radius (both already vary continuously with explode

@@ -1699,6 +1699,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@fontsource-variable/ibm-plex-sans@npm:^5.3.0":
+  version: 5.3.0
+  resolution: "@fontsource-variable/ibm-plex-sans@npm:5.3.0"
+  checksum: 10c0/3fe44e92a441c956654d08be2fc1310f5527e241961f1386f4dcbe1ecfee4d3a387e1ca8b108afa48184647f3aa9db0d6547c2dd63a0442c2d369401c9a2e306
+  languageName: node
+  linkType: hard
+
+"@fontsource/ibm-plex-mono@npm:^5.3.0":
+  version: 5.3.0
+  resolution: "@fontsource/ibm-plex-mono@npm:5.3.0"
+  checksum: 10c0/4aaf5a3c9efc7c32de4fa46ff3187ac63720904beab825f331ac01800038899761da23270f09d3fb5cff22f7cdc366904834854e2107229ad60833bba71c223d
+  languageName: node
+  linkType: hard
+
 "@fuma-translate/react@npm:^1.0.2":
   version: 1.0.2
   resolution: "@fuma-translate/react@npm:1.0.2"
@@ -1785,6 +1799,8 @@ __metadata:
     "@biomejs/biome": "npm:^2.3.13"
     "@cloudflare/vite-plugin": "npm:^1.44.0"
     "@cloudflare/workers-types": "npm:^5.20260708.1"
+    "@fontsource-variable/ibm-plex-sans": "npm:^5.3.0"
+    "@fontsource/ibm-plex-mono": "npm:^5.3.0"
     "@react-router/dev": "npm:^8.2.0"
     "@react-router/node": "npm:^8.2.0"
     "@tailwindcss/vite": "npm:^4.3.2"

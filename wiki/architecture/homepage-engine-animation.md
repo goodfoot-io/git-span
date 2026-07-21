@@ -215,7 +215,7 @@ handles this in two steps:
    axis (what the staging frame reliably carries) and distance is the raw staging distance
    compressed by `rawDistance / (rawDistance + modelRadius)` into
    [`EXPLODE_MIN_FRACTION`, `EXPLODE_MAX_FRACTION`]
-   ([`EngineScene.ts#L56-L57`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L62-L63),
+   ([`EngineScene.ts#L56-L57`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L63-L64),
    currently 0.54–1.89 of the model's bounding radius — the product of two tuning passes: first
    tripled from an original 0.30–1.05 for a wider, more camera-friendly constellation, then reduced
    by roughly 40% in a follow-up pass that tightened the exploded-view zoom). A part listed in
@@ -287,9 +287,9 @@ pan (`#3f4247`, roughness 0.65/metalness 0.8, the darkest — a sand-cast part),
 block, `engineBackCover`, and the unmatched-name fallback (`#4a4d52`, 0.6/0.85), and `castIronLight`
 for the side covers (`#54575d`, 0.55/0.85). All families still share the GLB's normal, roughness,
 and AO detail maps (loaded in
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L429-L443)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L431-L445)
 and wired into each family's material in
-[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L587-L602))
+[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L589-L604))
 for surface realism — only the color layer is synthetic. The studio HDRI environment map (see
 [Rendering](#rendering-tone-mapping-studio-hdri-and-selective-bloom)) is what most recently changed
 how these families actually read on screen, but the family/color assignment itself is unaffected.
@@ -443,7 +443,7 @@ bloom](#rendering-tone-mapping-studio-hdri-and-selective-bloom) for the exact se
 ## Rendering: tone mapping, studio HDRI, and selective bloom
 
 **Tone mapping.** The constructor sets
-[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L333-L343)
+[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L335-L345)
 with `toneMappingExposure = 1.15`. This replaced an earlier `AgXToneMapping` pick once the
 emissive/bloom highlight pass (below) existed: AgX rolls off highlights hard by design, which
 crushed exactly the brightness range `UnrealBloomPass`'s threshold needs to read cleanly to tell
@@ -458,7 +458,7 @@ out" bug, and how the fix required both a lower emissive magnitude and direct di
 **Studio HDRI environment.** An equirectangular HDRI —
 [`studio_small_08_1k.hdr`](../../packages/website/app/assets/engine/) (Poly Haven, CC0), loaded via
 `RGBELoader` and converted through `THREE.PMREMGenerator` into a PMREM environment map
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L427-L459)).
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L429-L461)).
 This gives real softbox/rim gradients across the machined faces (ring gear, cylinder-head covers)
 instead of a flat ambient wash. `scene.environmentIntensity` is `1.1` and
 `scene.environmentRotation` is `new THREE.Euler(0, Math.PI * 0.35, 0)` — both tuned against
@@ -513,7 +513,7 @@ request; see the [Related pages](#related-pages) history if reconstructing that 
 
 Highlightable parts (`isFrontDrive || isMount || isOrangeEmphasis`) get their own material clone
 rather than the family's shared instance
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L706-L710))
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L708-L712))
 — `updateHighlights` drives emissive/color directly on each one, and a shared material would leak
 one part's glow onto every other part of the same family.
 [`buildHighlightRecords()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221)
@@ -577,7 +577,7 @@ so scrubbing/wrapping never pops. This is layered on top of whatever intensity `
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L936-L990)),
+[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L938-L992)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
@@ -598,7 +598,7 @@ rather than by hand-tuning per-beat camera shots:
 [`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L845-L883)
 computes the union bounding sphere of every part's current world position each frame
 (`sphereUnion`, a standard two-sphere merge,
-[`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L108-L123)),
+[`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L110-L125)),
 then places the camera at the distance that fits that sphere plus a margin, accounting for aspect
 ratio via `fitFov = min(fovY/2, atan(tan(fovY/2) * aspect))`. `frame.margin` is the one per-beat
 tuning knob; everything else in the shot is derived, not staged.
@@ -657,7 +657,7 @@ anywhere in the current source.)
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`,
-[`EngineScene.ts#L77-L80`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L85-L88))
+[`EngineScene.ts#L77-L80`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L87-L90))
 from pointer movement. The signs are inverted from the raw pointer delta so the interaction reads as
 grabbing the object itself rather than panning a camera around it: azimuth offset *subtracts* `dx *
 DRAG_SENSITIVITY` (dragging left rotates the engine clockwise), and the elevation sign is likewise
@@ -736,7 +736,7 @@ driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn pe
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable
 resumes right where the engine ends up fully assembled again) blends that accumulated offset into
 the camera azimuth
-([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1059-L1059))
+([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1061-L1061))
 so the first scroll movement smoothly absorbs whatever rotation had accumulated instead of snapping
 the camera back to the base azimuth — this is distinct from (and narrower than) the drag-to-orbit
 offset, which is *not* weighted by `idleWeight` and applies in every phase. `EngineStage.tsx` calls

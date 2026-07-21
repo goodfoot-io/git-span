@@ -1,3 +1,7 @@
+import '@fontsource-variable/ibm-plex-sans';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/600.css';
 import { RootProvider } from 'fumadocs-ui/provider/react-router';
 import type { LinksFunction, MetaFunction } from 'react-router';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router';
@@ -5,13 +9,16 @@ import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
 import globalStyles from '~/styles/global.css?url';
 
-export const links: LinksFunction = () => [{ rel: 'stylesheet', href: globalStyles }];
+export const links: LinksFunction = () => [
+  { rel: 'stylesheet', href: globalStyles },
+  { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }
+];
 
 // charset and viewport are NOT declared here: a leaf route's `meta` export replaces the
 // root's entirely, so any route defining `meta` would silently drop them. They are
 // document-level invariants and are rendered unconditionally in <head> below.
 export const meta: MetaFunction = () => [
-  { name: 'theme-color', content: '#f2efe6' },
+  { name: 'theme-color', content: '#f4f1e8' },
   { property: 'og:type', content: 'website' },
   { property: 'og:site_name', content: 'git-span' }
 ];

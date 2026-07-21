@@ -16,24 +16,24 @@
 */
 @theme inline {
   /* Surfaces, light to dark */
-  --color-ground: #f2efe6;
-  --color-ground-raised: #faf8f3;
-  --color-ground-sunken: #e7e2d5;
+  --color-ground: #f4f1e8;
+  --color-ground-raised: #faf8f2;
+  --color-ground-sunken: #ece7db;
 
   /* Ink, strongest to faintest */
-  --color-ink-primary: #1c1f24;
+  --color-ink-primary: #1b1e23;
   --color-ink-secondary: #55595f;
   --color-ink-tertiary: #8d919a;
   /* Tertiary ink darkened one step for legibility at specimen sizes */
   --color-ink-tertiary-deep: #797d84;
 
-  --color-rule: #d8d2c4;
+  --color-rule: #d9d3c6;
 
-  /* Darkened from #0d9488 to clear WCAG AA as text on the eggshell ground */
-  --color-accent: #0b7268;
-
-  /* Copper: the recorded-relationship accent from the report's art direction */
-  --color-linkage: #b87333;
+  /* Violet: the engine's story beats already own orange/blue/red/green (see beats.ts /
+     highlights.ts), so the chrome accent must sit outside that set entirely -- purple is the
+     only unused state hue. */
+  --color-accent: #5b21e6;
+  --color-accent-hover: #4a17c4;
 
   /* Diff/outcome accents legible on the eggshell ground */
   --color-positive: #2e7d43;
@@ -61,9 +61,34 @@
   --color-cc-accent: #d97757;
   --color-cc-violet: #b39ddb;
 
-  --radius: 0.5rem;
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, 'Fira Code', monospace;
+  --radius: 0.25rem;
+  --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Fira Code', monospace;
+}
+
+/*
+  fumadocs theming: map its `--color-fd-*` variables (see
+  fumadocs-ui/css/lib/default-colors.css) onto this page's own tokens so /docs matches the
+  marketing surface exactly. RootProvider has `theme={{ enabled: false }}` -- the site is
+  light-only, so overriding `:root` (rather than also handling `.dark`) is sufficient.
+*/
+:root {
+  --color-fd-background: var(--color-ground);
+  --color-fd-foreground: var(--color-ink-primary);
+  --color-fd-primary: var(--color-accent);
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-border: var(--color-rule);
+  --color-fd-muted: var(--color-ground-sunken);
+  --color-fd-muted-foreground: var(--color-ink-secondary);
+  --color-fd-card: var(--color-ground-raised);
+  --color-fd-card-foreground: var(--color-ink-primary);
+  --color-fd-popover: var(--color-ground-raised);
+  --color-fd-popover-foreground: var(--color-ink-primary);
+  --color-fd-secondary: var(--color-ground-sunken);
+  --color-fd-secondary-foreground: var(--color-ink-primary);
+  --color-fd-accent: var(--color-ground-sunken);
+  --color-fd-accent-foreground: var(--color-ink-primary);
+  --color-fd-ring: var(--color-accent);
 }
 
 /*

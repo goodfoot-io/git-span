@@ -1,0 +1,6 @@
+packages/website/app/components/marketing/story/EngineStage.tsx#L79-L79 rk64:bf6eabccae2a8eef
+packages/website/app/components/marketing/story/engine/stage.ts rk64:079a2e154caab358
+packages/website/app/root.tsx#L21-L21 rk64:37c6b0975ea592da
+packages/website/app/styles/global.css#L19-L19 rk64:a3d1eccf405341af
+
+Single stage-ground color shared by the page background token, the browser theme-color meta, the engine stage backdrop, and the fog EngineScene blends distant parts toward. All four must stay byte-identical (#f4f1e8) or the engine picks up a visible seam against the page.
