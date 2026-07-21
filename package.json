@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-span-monorepo",
-  "version": "1.0.134",
+  "version": "1.0.135",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/goodfoot-io/git-span.git"
