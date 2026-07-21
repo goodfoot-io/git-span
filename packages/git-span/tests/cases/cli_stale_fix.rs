@@ -1027,6 +1027,14 @@ file2.txt#L1-L5 rk64:{h2}
         stdout.contains("resolved conflict") || stdout.contains("Reconciled"),
         "expected clean resolution; stdout=\n{stdout}"
     );
+    // The dead file1.txt orphan was pruned before the structural merge ran,
+    // so the run summary's `removed` tally must reflect it -- not just the
+    // live file2.txt anchor that was merged/updated.
+    assert!(
+        stdout.contains("Reconciled") && !stdout.contains("(1 updated, 0 removed)"),
+        "expected the pruned orphan to be counted in `removed`, not silently \
+         folded into `updated`; stdout=\n{stdout}"
+    );
 
     let span = read_span(&repo, "m")?;
     assert!(

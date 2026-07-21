@@ -598,7 +598,16 @@ fn resolve_conflicted_span(
     // counterpart on the other side (renamed-file case), before the
     // structural-merge kernel runs. Fails closed if an unreadable orphan
     // anchor has zero or multiple candidates.
+    //
+    // Capture the anchor count on both sides before and after pruning so the
+    // dropped orphans are reflected in the run summary's `removed` tally —
+    // otherwise a resolution that only prunes (no update) would silently
+    // report `0 removed` even though anchors were genuinely dropped.
+    let before_prune_count = ours.anchors.len() + theirs.anchors.len();
     prune_unreadable_renamed_orphans(&mut ours, &mut theirs, &source_files)?;
+    let pruned_count =
+        before_prune_count.saturating_sub(ours.anchors.len() + theirs.anchors.len());
+    fix_result.anchors_removed += pruned_count;
 
     // Step 4: Structural merge.
     let result = merge_span_files(None, &ours, &theirs, &source_files);
