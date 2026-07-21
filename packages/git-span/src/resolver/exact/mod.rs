@@ -105,7 +105,13 @@ mod tests;
 /// carry `bincode(ReuseSpanRow)`, so a change to either the summary encoding or
 /// the reuse-row encoding must bump this constant (a version mismatch rejects
 /// the whole generation — a miss + rebuild — rather than misdecoding either).
-pub(crate) const SUMMARY_VERSION: u32 = 2;
+///
+/// Version 3 (card main-168): `DriftLocus`/`DriftLocusDto` gained a
+/// `RenamedAt(oid, new_path)` variant carrying a rename target alongside the
+/// existing `ChangedAt`/`OrphanedAt` commit loci. The encoded shape of every
+/// stored `locus` field changed, so old rows must miss and rebuild rather
+/// than be misdecoded against the new variant set.
+pub(crate) const SUMMARY_VERSION: u32 = 3;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `stale` calls within one

@@ -223,14 +223,17 @@ pub struct AnchorResolved {
 /// Locus emitted by the HEAD-history walk in `resolver::attribution`.
 /// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`;
 /// the other layers carry their own per-layer label.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DriftLocus {
     /// First commit reachable from HEAD that mutated the anchored byte
     /// range on the path.
     ChangedAt(gix::ObjectId),
-    /// Commit that removed (or renamed) the path; anchored content is
-    /// gone from HEAD.
+    /// Commit that removed the path (a genuine deletion, not a rename);
+    /// anchored content is gone from HEAD.
     OrphanedAt(gix::ObjectId),
+    /// Commit that renamed the path to the carried destination; anchored
+    /// content moved rather than being genuinely deleted.
+    RenamedAt(gix::ObjectId, String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

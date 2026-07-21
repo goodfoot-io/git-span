@@ -199,10 +199,15 @@ impl From<DriftSourceDto> for DriftSource {
     }
 }
 
+/// DTO mirror of `DriftLocus`. Variant names intentionally match
+/// `DriftLocus`/`DriftLocusCore` exactly; the shared `At` postfix is a
+/// deliberate naming convention, not an oversight.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum DriftLocusDto {
     ChangedAt(String),
     OrphanedAt(String),
+    RenamedAt(String, String),
 }
 
 impl From<DriftLocus> for DriftLocusDto {
@@ -210,6 +215,9 @@ impl From<DriftLocus> for DriftLocusDto {
         match l {
             DriftLocus::ChangedAt(oid) => DriftLocusDto::ChangedAt(oid.to_string()),
             DriftLocus::OrphanedAt(oid) => DriftLocusDto::OrphanedAt(oid.to_string()),
+            DriftLocus::RenamedAt(oid, new_path) => {
+                DriftLocusDto::RenamedAt(oid.to_string(), new_path)
+            }
         }
     }
 }
@@ -228,6 +236,12 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
                     crate::Error::Git(format!("store dto: parse locus oid: {e}"))
                 })?)
             }
+            DriftLocusDto::RenamedAt(s, new_path) => DriftLocus::RenamedAt(
+                gix::ObjectId::from_str(&s).map_err(|e| {
+                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
+                })?,
+                new_path,
+            ),
         })
     }
 }
@@ -295,7 +309,7 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
             content_equivalent: a.content_equivalent,
             source: a.source.map(Into::into),
             layer_sources: a.layer_sources.iter().copied().map(Into::into).collect(),
-            locus: a.locus.map(Into::into),
+            locus: a.locus.clone().map(Into::into),
             fuzzy_successors: a.fuzzy_successors.iter().map(Into::into).collect(),
         }
     }

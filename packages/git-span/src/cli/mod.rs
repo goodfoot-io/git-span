@@ -25,6 +25,7 @@ pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod show;
+pub mod stale_cluster;
 pub mod stale_fix;
 pub mod stale_output;
 pub mod tree;
@@ -258,6 +259,12 @@ pub struct StaleArgs {
     /// No commit is produced. Only supported with `--format human`.
     #[arg(long)]
     pub fix: bool,
+
+    /// Group this run's stale spans into connected-component clusters by
+    /// shared anchored file, so each cluster can be dispatched
+    /// independently. Not yet wired to any rendering.
+    #[arg(long)]
+    pub cluster: bool,
 }
 
 #[derive(Debug, clap::Args)]

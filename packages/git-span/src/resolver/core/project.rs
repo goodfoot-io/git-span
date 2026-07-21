@@ -55,6 +55,10 @@ fn project_anchor(
             DriftLocusCore::OrphanedAt(oid) => DriftLocus::OrphanedAt(
                 gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),
             ),
+            DriftLocusCore::RenamedAt(oid, new_path) => DriftLocus::RenamedAt(
+                gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),
+                new_path.clone(),
+            ),
         })
     } else {
         None

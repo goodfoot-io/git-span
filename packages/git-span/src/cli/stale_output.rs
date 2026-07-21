@@ -760,7 +760,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                                 source: r.source,
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
-                                locus: r.locus,
+                                locus: r.locus.clone(),
                                 fuzzy_successors: r.fuzzy_successors.clone(),
                             }]
                         } else {
@@ -775,7 +775,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                                     anchored: r.anchored.clone(),
                                     current: r.current.clone(),
                                     locus: if src == DriftSource::Head {
-                                        r.locus
+                                        r.locus.clone()
                                     } else {
                                         None
                                     },
@@ -1687,9 +1687,14 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "moved_to": moved_to,
         "fuzzy_successors": fuzzy_successors_json,
         "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
-        "locus": match f.locus {
+        "locus": match &f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
             Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),
+            // Stub-phase: `RenamedAt` is never produced yet (attribution
+            // still only returns `OrphanedAt`/`ChangedAt`); render it
+            // identically to `OrphanedAt` until Phase 3 wires the
+            // dedicated `renamed_to` field.
+            Some(DriftLocus::RenamedAt(oid, _)) => json!({ "deleted_in": oid.to_string() }),
             None => Value::Null,
         },
     })

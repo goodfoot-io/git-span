@@ -68,10 +68,16 @@ pub(crate) struct FuzzySuccessorCore {
 }
 
 /// Serde-safe mirror of `DriftLocus` (hex OID instead of `gix::ObjectId`).
+///
+/// Variant names intentionally mirror `DriftLocus` exactly (`ChangedAt` /
+/// `OrphanedAt` / `RenamedAt`) so the two stay obviously in lockstep; the
+/// shared `At` postfix is a deliberate naming convention, not an oversight.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DriftLocusCore {
     ChangedAt(String),
     OrphanedAt(String),
+    RenamedAt(String, String),
 }
 
 /// One layer's drift observation for one anchor: its classified status at

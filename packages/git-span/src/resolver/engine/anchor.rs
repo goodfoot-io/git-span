@@ -1566,6 +1566,9 @@ pub(crate) fn resolve_anchor_captured(
     let locus = head_run.locus.as_ref().map(|l| match l {
         DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
         DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
+        DriftLocus::RenamedAt(oid, new_path) => {
+            DriftLocusCore::RenamedAt(oid.to_string(), new_path.clone())
+        }
     });
 
     // Fast path: when every enabled layer holds identical content for this
