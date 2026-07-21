@@ -1,4 +1,4 @@
-packages/git-span/src/cli/stale_fix.rs#L987-L1247 rk64:b1d4f7535629747f
+packages/git-span/src/cli/stale_fix.rs#L996-L1256 rk64:b1d4f7535629747f
 packages/git-span/tests/cases/cli_stale_fix.rs#L617-L642 rk64:77da8540e260acc9
 packages/git-span/tests/cases/cli_stale_fix.rs#L644-L664 rk64:bba3fb4a13e648f4
 
