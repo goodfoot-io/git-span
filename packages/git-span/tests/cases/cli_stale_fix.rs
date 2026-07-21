@@ -793,6 +793,12 @@ const FILE2: &str =
     "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
      line11\nline12\nline13\nline14\nline15\nline16\n";
 
+/// A third file, distinct from the two `TestRepo::seeded` provides, used by
+/// the renamed-orphan pairing tests (card main-171) below to give the
+/// "ours"/deleted side a source path that can't collide with `file1.txt` or
+/// `file2.txt`.
+const FILE3: &str = "alpha1\nalpha2\nalpha3\nalpha4\nalpha5\n";
+
 #[test]
 fn fix_resolves_conflict_markers_cleanly() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -972,6 +978,215 @@ file1.txt#L5-L7 rk64:{h_b}
         !span.contains("<<<<<<<"),
         "no conflict markers; span:\n{span}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// --fix renamed-orphan pairing (card main-171)
+//
+// `prune_unreadable_renamed_orphans` (packages/git-span/src/cli/stale_fix.rs)
+// is a `todo!()` stub as of this Phase 2 bootstrap step — these tests encode
+// the contract it must satisfy once Phase 3 implements it, and are
+// `#[ignore]`d so the (currently unimplemented) behavior doesn't fail the
+// suite. Do not unskip until Phase 3 lands.
+// ---------------------------------------------------------------------------
+
+#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
+#[test]
+fn fix_resolves_renamed_orphan_anchor_automatically() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Ours has an orphan anchor at file1.txt#L1-L5, but file1.txt has been
+    // deleted from the worktree -- unreadable. Theirs has an orphan at the
+    // identical line range file2.txt#L1-L5, and file2.txt is clean and
+    // readable. Exactly one live candidate at the same (start, end) exists
+    // on the other side, so the rename-orphan pairing drops the dead
+    // file1.txt anchor and keeps the live file2.txt one -- same as a human
+    // would conclude by inspection.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+    std::fs::remove_file(repo.path().join("file1.txt"))?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("cannot resolve conflict in"),
+        "renamed orphan with an unambiguous live counterpart must not warn; stderr=\n{stderr}"
+    );
+    assert!(
+        stdout.contains("resolved conflict") || stdout.contains("Reconciled"),
+        "expected clean resolution; stdout=\n{stdout}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        !span.contains("<<<<<<<"),
+        "conflict markers must be removed; span:\n{span}"
+    );
+    assert!(
+        span.contains(&format!("file2.txt#L1-L5 rk64:{h2}")),
+        "live file2 anchor must remain (rehashed); span:\n{span}"
+    );
+    assert!(
+        !span.contains("file1.txt"),
+        "dead file1 anchor must be pruned; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
+#[test]
+fn fix_ambiguous_renamed_orphan_fails_closed() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Ours has a single orphan anchor at file3.txt#L1-L5, but file3.txt is
+    // deleted -- unreadable. Theirs has TWO orphan anchors at the identical
+    // line range (file1.txt#L1-L5 and file2.txt#L1-L5), both readable. With
+    // more than one same-range candidate on the other side, the pairing is
+    // ambiguous and the rename-orphan resolution must decline to guess --
+    // the whole span stays conflicted, same as today's fail-closed behavior
+    // for any unreadable anchor.
+    repo.write_file("file3.txt", FILE3)?;
+    let h3 = line_slice_hash(FILE3, 1, 5);
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file3.txt#L1-L5 rk64:{h3}
+=======
+file1.txt#L1-L5 rk64:{h1}
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+    std::fs::remove_file(repo.path().join("file3.txt"))?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot resolve conflict in"),
+        "ambiguous pairing must still fail closed with today's warning shape; stderr=\n{stderr}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("<<<<<<<"),
+        "span must remain conflicted; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
+#[test]
+fn fix_unmatched_renamed_orphan_fails_closed() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Ours has an orphan anchor at file3.txt#L1-L5, but file3.txt is deleted
+    // -- unreadable. Theirs has no anchor at that line range at all (only a
+    // different, disjoint range on file2.txt). With zero same-range
+    // candidates on the other side there is nothing to pair with, so the
+    // rename-orphan resolution must decline and leave the whole span
+    // conflicted -- same fail-closed shape as today.
+    repo.write_file("file3.txt", FILE3)?;
+    let h3 = line_slice_hash(FILE3, 1, 5);
+    let h2 = line_slice_hash(FILE2, 11, 15);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file3.txt#L1-L5 rk64:{h3}
+=======
+file2.txt#L11-L15 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+    std::fs::remove_file(repo.path().join("file3.txt"))?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot resolve conflict in"),
+        "unmatched orphan must still fail closed with today's warning shape; stderr=\n{stderr}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("<<<<<<<"),
+        "span must remain conflicted; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
+#[test]
+fn fix_renamed_orphan_resolution_orthogonal_to_why_divergence() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // Same rename fixture as `fix_resolves_renamed_orphan_anchor_automatically`
+    // -- ours' orphan at file1.txt#L1-L5 (deleted) pairs unambiguously with
+    // theirs' live orphan at file2.txt#L1-L5 -- but ours' and theirs' `--why`
+    // text diverge. Anchor pairing and `--why` reconciliation are separate,
+    // untouched-vs-new mechanisms: the anchor must still resolve cleanly to
+    // just the file2.txt anchor, while the why-divergence residue markers
+    // must still appear exactly as they do today for any why conflict --
+    // proving neither mechanism interferes with the other.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+
+our rationale
+=======
+file2.txt#L1-L5 rk64:{h2}
+
+their rationale
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+    std::fs::remove_file(repo.path().join("file1.txt"))?;
+
+    let out = repo.run_span(["stale", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("partial resolution"),
+        "why divergence must still produce a partial resolution; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("why text diverged"),
+        "expected why-divergence mention; stdout=\n{stdout}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains(&format!("file2.txt#L1-L5 rk64:{h2}")),
+        "live file2 anchor resolves cleanly; span:\n{span}"
+    );
+    assert!(
+        !span.contains("file1.txt"),
+        "dead file1 anchor must be pruned, not left as residue; span:\n{span}"
+    );
+    assert!(
+        span.contains("<<<<<<<"),
+        "why conflict markers must remain; span:\n{span}"
+    );
+    assert!(span.contains("our rationale"), "our why; span:\n{span}");
+    assert!(span.contains("their rationale"), "their why; span:\n{span}");
     Ok(())
 }
 
