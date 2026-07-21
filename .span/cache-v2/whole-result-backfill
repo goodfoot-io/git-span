@@ -1,3 +1,0 @@
-packages/git-span/src/resolver/cache_v2/mod.rs#L171-L230 rk64:66b345411964c32a
-
-Cache_v2 cold-build path stores a whole-result entry only when no span carries an interior anchor (fail-closed guard); when safe, backfills fresh anchors from span-file records so warm-clean repeats skip every per-invocation phase.
