@@ -185,12 +185,21 @@ markers into ours/theirs, **enforces a clean-source precondition** — every
 source file an affected span anchors must itself be conflict-free — reads the
 now-clean source, and merges structurally (anchors unioned, re-pointed,
 re-hashed against the worktree, written in canonical `(path, start, end)`
-order). It produces no commit and is only supported with `--format human`. It
-**fails closed** in two cases, leaving a minimal conflict around exactly the
-unresolvable lines, declining to re-stage that span, and reporting loudly:
+order). A source path that was renamed or deleted on one side resolves
+automatically when exactly one anchor on the other side shares its exact
+line range at a different, readable path: the dead anchor is dropped, and the
+surviving anchor is kept, re-pointed, and re-hashed against the worktree — no
+manual intervention needed. It produces no commit and is only supported with
+`--format human`. It **fails closed** in three cases, leaving a minimal
+conflict around exactly the unresolvable lines, declining to re-stage that
+span, and reporting loudly:
 
-- a source file an affected span anchors still carries conflict markers, or
-- the `--why` prose diverged between ours and theirs (no merge base to resolve it).
+- a source file an affected span anchors still carries conflict markers,
+- the `--why` prose diverged between ours and theirs (no merge base to resolve it), or
+- a renamed/missing source path has zero readable same-line-range
+  counterparts on the other side, or more than one — the warning names the
+  unreadable path (and, when ambiguous, the candidate paths it could not
+  choose between).
 
 `git span merge-driver %O %A %B %L` is an **optional accelerator**, invoked by
 git itself during a merge — never run by hand. Register it so the easy

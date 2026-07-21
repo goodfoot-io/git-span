@@ -1078,6 +1078,17 @@ file2.txt#L1-L5 rk64:{h2}
         stderr.contains("cannot resolve conflict in"),
         "ambiguous pairing must still fail closed with today's warning shape; stderr=\n{stderr}"
     );
+    // Finding 4: the ambiguous case must be distinguishable from the
+    // no-candidate case and must name the candidate rename targets so the
+    // operator can pick one.
+    assert!(
+        stderr.contains("multiple possible rename targets"),
+        "ambiguous message must state there are multiple targets; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("file1.txt") && stderr.contains("file2.txt"),
+        "ambiguous message must name every candidate path; stderr=\n{stderr}"
+    );
 
     let span = read_span(&repo, "m")?;
     assert!(
@@ -1118,11 +1129,200 @@ file2.txt#L11-L15 rk64:{h2}
         stderr.contains("cannot resolve conflict in"),
         "unmatched orphan must still fail closed with today's warning shape; stderr=\n{stderr}"
     );
+    // Finding 4: the no-candidate case must be distinguishable from the
+    // ambiguous case — it must plainly state the source path is gone (was
+    // not found among readable sources), restoring the substance the old
+    // `: No such file or directory` cause conveyed.
+    assert!(
+        stderr.contains("no longer exists")
+            && stderr.contains("not found among readable sources"),
+        "no-candidate message must state the path is gone; stderr=\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("multiple possible rename targets"),
+        "no-candidate message must not read as an ambiguity; stderr=\n{stderr}"
+    );
 
     let span = read_span(&repo, "m")?;
     assert!(
         span.contains("<<<<<<<"),
         "span must remain conflicted; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_many_orphans_one_candidate_fails_closed_no_collapse() -> Result<()> {
+    // Finding 1: two unreadable orphans on the SAME side sharing one line
+    // range, against exactly one readable orphan on the other side. Each
+    // orphan independently sees `candidate_count == 1` and, without a
+    // per-candidate contention check, both would adopt the single
+    // opposite-side anchor and silently collapse into one. The "exactly one
+    // readable candidate" contract must hold per-candidate too: two own-side
+    // orphans claiming the same target is a many-to-one collision, so the
+    // resolution must bail closed for all of them and leave the span
+    // conflicted — no anchor silently discarded.
+    let repo = TestRepo::seeded()?;
+
+    let h = line_slice_hash(ORIGINAL, 1, 5);
+    // `new.txt` is the sole readable candidate; oldA/oldB are never created,
+    // so both read as unreadable (renamed/deleted away).
+    repo.write_file("new.txt", ORIGINAL)?;
+    let span_content = format!(
+        "\
+<<<<<<< ours
+oldA.txt#L1-L5 rk64:{h}
+oldB.txt#L1-L5 rk64:{h}
+=======
+new.txt#L1-L5 rk64:{h}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot resolve conflict in"),
+        "many-to-one collision must fail closed; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("map to the same rename target"),
+        "collision message must name the contested target; stderr=\n{stderr}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("<<<<<<<"),
+        "span must remain conflicted (no silent collapse); span:\n{span}"
+    );
+    // Neither orphan may be silently discarded — both must still be present.
+    assert!(
+        span.contains("oldA.txt#L1-L5") && span.contains("oldB.txt#L1-L5"),
+        "both unreadable orphans must survive as residue; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_many_whole_file_orphans_one_candidate_fails_closed() -> Result<()> {
+    // Finding 1 (whole-file variant): the same many-to-one collision at the
+    // whole-file `(0, 0)` extent must also bail closed rather than collapse.
+    let repo = TestRepo::seeded()?;
+
+    let h = line_slice_hash(ORIGINAL, 1, 5); // any hash — pruning bails first.
+    repo.write_file("new.txt", ORIGINAL)?;
+    let span_content = format!(
+        "\
+<<<<<<< ours
+oldA.txt rk64:{h}
+oldB.txt rk64:{h}
+=======
+new.txt rk64:{h}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot resolve conflict in")
+            && stderr.contains("map to the same rename target"),
+        "whole-file many-to-one collision must fail closed; stderr=\n{stderr}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("<<<<<<<")
+            && span.contains("oldA.txt")
+            && span.contains("oldB.txt"),
+        "span must remain conflicted with both orphans; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_renamed_orphan_pending_commit_reports_not_deleted() -> Result<()> {
+    // Finding 2: a rename resolved mid-rebase where the renamed-to path is in
+    // the worktree+index but NOT YET in HEAD (the operator has not committed
+    // the merge). Real git mechanics: `old.txt` is renamed to `new.txt` via
+    // `git mv` (staged, uncommitted) so `new.txt` genuinely exists only in
+    // the worktree+index and is absent from HEAD — matching the mid-rebase
+    // shape. The `.span/m` conflict then pairs ours' dead `old.txt` anchor
+    // with theirs' live `new.txt` anchor.
+    //
+    // The single `stale --fix` invocation both resolves the conflict AND
+    // re-scans the survivor. Before the fix, the re-scan reported the
+    // just-resolved `new.txt` anchor as `deleted` (terminal) and exited 1,
+    // because the forward-from-HEAD layer tracking produced no `current` for
+    // a path absent from HEAD, so the ResolvedPendingCommit detection was
+    // skipped. It must instead report `resolved, pending commit` and exit 0,
+    // exactly like the same-path mid-merge case.
+    //
+    // Crucially this does NOT seed `new.txt` into HEAD (unlike
+    // `fix_resolves_renamed_orphan_anchor_automatically`), which is what let
+    // that test mask this bug.
+    let repo = TestRepo::new()?;
+    repo.write_file("old.txt", ORIGINAL)?;
+    repo.commit_all("initial commit with old.txt")?;
+    repo.write_commit_graph()?;
+
+    // Real rename: stage `git mv old.txt new.txt` but do not commit. `new.txt`
+    // now lives in the worktree+index only; HEAD still has `old.txt`.
+    repo.run_git(["mv", "old.txt", "new.txt"])?;
+
+    // Conflicted span: ours anchors the renamed-away path, theirs the live
+    // renamed-to path, identical line range.
+    let h = line_slice_hash(ORIGINAL, 1, 5);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+old.txt#L1-L5 rk64:{h}
+=======
+new.txt#L1-L5 rk64:{h}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+
+    let out = repo.run_span(["stale", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // The conflict resolves cleanly (dead old.txt pruned, live new.txt kept).
+    assert!(
+        stdout.contains("resolved conflict"),
+        "conflict must resolve; stdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    // The just-resolved survivor must NOT be reported as deleted.
+    assert!(
+        !stdout.contains("new.txt#L1-L5 — deleted")
+            && !stdout.contains("new.txt#L1-L5 — Deleted"),
+        "survivor must not be mislabeled deleted; stdout=\n{stdout}"
+    );
+    // It must read as resolved-pending-commit (worktree matches, HEAD lacks
+    // the path yet), the same as a plain mid-merge resolution.
+    assert!(
+        stdout.contains("resolved, pending commit") || stdout.contains("0 stale"),
+        "survivor must report resolved, pending commit; stdout=\n{stdout}"
+    );
+    // And the command must exit 0 — a `deleted` classification would exit 1
+    // and gate automated flows.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "resolved-pending-commit rename must exit 0; stdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        !span.contains("<<<<<<<") && span.contains(&format!("new.txt#L1-L5 rk64:{h}")),
+        "span must be resolved to the live new.txt anchor; span:\n{span}"
+    );
+    assert!(
+        !span.contains("old.txt"),
+        "dead old.txt anchor must be pruned; span:\n{span}"
     );
     Ok(())
 }

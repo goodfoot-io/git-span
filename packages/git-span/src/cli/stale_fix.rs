@@ -235,9 +235,11 @@ fn read_clean_source_files(
 /// Drop orphan anchors (present on only one side) whose path is unreadable
 /// when — and only when — exactly one orphan anchor on the *other* side
 /// shares the identical (start_line, end_line) at a different, readable
-/// path. Mutates `ours`/`theirs` in place. Returns an error (preserving
-/// today's whole-span fail-closed behavior) if any orphan anchor's path is
-/// unreadable and no unambiguous live counterpart exists.
+/// path AND no other own-side orphan would independently claim that same
+/// opposite-side candidate. Mutates `ours`/`theirs` in place. Returns an
+/// error (preserving today's whole-span fail-closed behavior) if any orphan
+/// anchor's path is unreadable and no unambiguous, uncontested live
+/// counterpart exists.
 ///
 /// An anchor is an "orphan" on a side when its `(path, start_line, end_line)`
 /// key is absent from the other side's key set — this mirrors the map keys
@@ -245,6 +247,15 @@ fn read_clean_source_files(
 /// same-path `Changed` conflict) or whose orphan path IS readable are left
 /// untouched here; they resolve via the existing, unmodified structural-merge
 /// kernel (rehash-and-keep or union, respectively).
+///
+/// The "exactly one readable candidate" precondition holds both per-orphan
+/// (an unreadable orphan sees exactly one same-range readable candidate on
+/// the other side) and per-candidate (no *other* unreadable orphan on the
+/// same side also maps to that candidate). Without the per-candidate check,
+/// two unreadable orphans sharing a line range would each independently
+/// adopt the single opposite-side candidate and silently collapse into one
+/// anchor. When that many-to-one collision is detected we bail closed for
+/// all colliding orphans rather than adopting any.
 fn prune_unreadable_renamed_orphans(
     ours: &mut SpanFile,
     theirs: &mut SpanFile,
@@ -279,58 +290,10 @@ fn prune_unreadable_renamed_orphans(
         .map(|(i, _)| i)
         .collect();
 
-    let mut remove_ours: HashSet<usize> = HashSet::new();
-    let mut remove_theirs: HashSet<usize> = HashSet::new();
-
-    for &i in &ours_orphans {
-        let anchor = &ours.anchors[i];
-        if readable.contains(anchor.path.as_str()) {
-            continue;
-        }
-        let candidate_count = theirs_orphans
-            .iter()
-            .filter(|&&j| {
-                let candidate = &theirs.anchors[j];
-                candidate.start_line == anchor.start_line
-                    && candidate.end_line == anchor.end_line
-                    && candidate.path != anchor.path
-                    && readable.contains(candidate.path.as_str())
-            })
-            .count();
-        if candidate_count == 1 {
-            remove_ours.insert(i);
-        } else {
-            anyhow::bail!(
-                "cannot read source file `{}` referenced by conflicted span",
-                anchor.path
-            );
-        }
-    }
-
-    for &j in &theirs_orphans {
-        let anchor = &theirs.anchors[j];
-        if readable.contains(anchor.path.as_str()) {
-            continue;
-        }
-        let candidate_count = ours_orphans
-            .iter()
-            .filter(|&&i| {
-                let candidate = &ours.anchors[i];
-                candidate.start_line == anchor.start_line
-                    && candidate.end_line == anchor.end_line
-                    && candidate.path != anchor.path
-                    && readable.contains(candidate.path.as_str())
-            })
-            .count();
-        if candidate_count == 1 {
-            remove_theirs.insert(j);
-        } else {
-            anyhow::bail!(
-                "cannot read source file `{}` referenced by conflicted span",
-                anchor.path
-            );
-        }
-    }
+    let remove_ours =
+        plan_orphan_removals(&ours.anchors, &ours_orphans, &theirs.anchors, &theirs_orphans, &readable)?;
+    let remove_theirs =
+        plan_orphan_removals(&theirs.anchors, &theirs_orphans, &ours.anchors, &ours_orphans, &readable)?;
 
     let mut idx = 0usize;
     ours.anchors.retain(|_| {
@@ -346,6 +309,94 @@ fn prune_unreadable_renamed_orphans(
     });
 
     Ok(())
+}
+
+/// Decide which of one side's unreadable orphan anchors to drop in favor of
+/// an unambiguous, uncontested rename target on the other side.
+///
+/// `own_orphans` / `other_orphans` are indices into `own_anchors` /
+/// `other_anchors` respectively. For each unreadable own-side orphan we
+/// gather its readable rename candidates on the other side (same
+/// `(start_line, end_line)`, different path). The removal is fail-closed:
+///
+/// - **zero candidates** — the source path is gone and no rename target was
+///   found among readable sources; bail naming the path.
+/// - **two or more candidates** — the rename target is ambiguous; bail
+///   naming the candidate paths so the operator can pick one.
+/// - **exactly one candidate** — provisionally adopt, then verify no other
+///   own-side orphan claims the same candidate (many-to-one collapse); bail
+///   closed for all colliding orphans if one is found.
+///
+/// Returns the set of own-side indices to drop when every unreadable orphan
+/// resolves to a distinct, unambiguous target.
+fn plan_orphan_removals(
+    own_anchors: &[AnchorRecord],
+    own_orphans: &[usize],
+    other_anchors: &[AnchorRecord],
+    other_orphans: &[usize],
+    readable: &HashSet<&str>,
+) -> Result<HashSet<usize>> {
+    // (own index, chosen candidate key) for each unreadable orphan that has
+    // exactly one same-range readable candidate on the other side.
+    let mut chosen: Vec<(usize, (String, u32, u32))> = Vec::new();
+
+    for &i in own_orphans {
+        let anchor = &own_anchors[i];
+        if readable.contains(anchor.path.as_str()) {
+            continue;
+        }
+        let candidates: Vec<&AnchorRecord> = other_orphans
+            .iter()
+            .map(|&j| &other_anchors[j])
+            .filter(|c| {
+                c.start_line == anchor.start_line
+                    && c.end_line == anchor.end_line
+                    && c.path != anchor.path
+                    && readable.contains(c.path.as_str())
+            })
+            .collect();
+
+        match candidates.len() {
+            0 => anyhow::bail!(
+                "source file `{}` referenced by conflicted anchor no longer exists \
+                 and was not found among readable sources; resolve manually",
+                anchor.path
+            ),
+            1 => {
+                let c = candidates[0];
+                chosen.push((i, (c.path.clone(), c.start_line, c.end_line)));
+            }
+            _ => {
+                let names: Vec<&str> =
+                    candidates.iter().map(|c| c.path.as_str()).collect();
+                anyhow::bail!(
+                    "anchor `{}` has multiple possible rename targets ({}); resolve manually",
+                    anchor.path,
+                    names.join(", ")
+                );
+            }
+        }
+    }
+
+    // Per-candidate check: two own-side orphans claiming the same opposite-side
+    // candidate would silently collapse into a single anchor. Bail closed.
+    let mut claims: HashMap<(String, u32, u32), usize> = HashMap::new();
+    for (_, key) in &chosen {
+        *claims.entry(key.clone()).or_insert(0) += 1;
+    }
+    for (_, key) in &chosen {
+        if claims[key] > 1 {
+            anyhow::bail!(
+                "multiple conflicted anchors map to the same rename target \
+                 `{}#L{}-L{}`; resolve manually",
+                key.0,
+                key.1,
+                key.2
+            );
+        }
+    }
+
+    Ok(chosen.into_iter().map(|(i, _)| i).collect())
 }
 
 /// Format the residue marker text for a partially-resolved merge.

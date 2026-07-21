@@ -78,10 +78,11 @@ Under a hooked agent session, `git commit`/`git push` can come back denied inste
 
 A merge can leave a span file with conflict markers. `git span stale` reports the span itself with a `— conflict` suffix in human output (`CONFLICT` in the machine formats), and `git span show` refuses to render a span in that state.
 
-`git span stale --fix` resolves what it can structurally — splitting the conflict markers into ours/theirs and merging anchors that don't genuinely disagree — but only when every source file the span references is itself free of conflict markers (the clean-source precondition). Two cases stay manual:
+`git span stale --fix` resolves what it can structurally — splitting the conflict markers into ours/theirs and merging anchors that don't genuinely disagree — but only when every source file the span references is itself free of conflict markers (the clean-source precondition). It also resolves a renamed or deleted source path automatically: if an anchor's path is missing on one side and exactly one anchor on the other side shares its exact line range at a different, readable path, `--fix` drops the dead anchor and keeps the live one, re-pointed and re-hashed against the worktree — no manual step needed. Three cases stay manual:
 
 - If the span's `why` text diverged between the two sides with no common merge base, `--fix` writes the anchors clean but leaves the why's conflict markers as residue, and the file stays unmerged for you to sort out by hand.
 - Any anchor whose source file still contains live `<<<<<<<` markers is reported as a conflict and left untouched — resolve the source file first, then re-run `--fix`.
+- A renamed or deleted source path with no readable same-line-range counterpart on the other side, or more than one, is reported as a conflict — the warning names the unreadable path (and, when ambiguous, the candidate paths it could not choose between).
 
 <Callout type="warn">
 After a `--fix` during a merge, always re-run `git span stale` — a `--fix` exit code of 0 does not guarantee the span came out fully clean. Also re-check `git span why <name>`: a merge resolution can leave the why empty even when both sides carried the same text; if it's blank, re-set it with `git span why <name> -m "..."`. Git still expects you to finish the merge with `git commit`.

@@ -743,10 +743,25 @@ pub(crate) fn resolve_anchor_inner(
     // (the source has uncommitted changes that re-anchor to the worktree).
     // Returns early before the `match current` block so normal
     // classification handles all other cases.
-    if !r.stored_hash.is_empty() && r.blob.is_empty()
-        && let Some((ref t, _, _)) = current
-    {
-        // Both reads below are session-memoized: `t.path`'s worktree bytes
+    if !r.stored_hash.is_empty() && r.blob.is_empty() {
+        // The worktree path whose content we test. Normally the deepest
+        // enabled layer's tracked path (`current`). When `current` is None
+        // the anchor's path is absent from HEAD and the forward-from-HEAD
+        // layer tracking never produced a `current` — but a path that a
+        // rename resolved *into* the worktree/index (e.g. a `git mv` target
+        // not yet committed, or a `.span` conflict just resolved to the
+        // renamed-to path) still has its content on disk at `r.path`. Fall
+        // back to it so that just-resolved anchor classifies as
+        // ResolvedPendingCommit, exactly like the same-path mid-merge case,
+        // rather than Deleted. A genuinely deleted path reads empty below
+        // (`read_worktree_normalized` returns no bytes), so `wt_matches`
+        // stays false and control falls through to the real Deleted
+        // classification — this fallback never masks a true deletion.
+        let wt_path: String = match current {
+            Some((ref t, _, _)) => t.path.clone(),
+            None => r.path.clone(),
+        };
+        // Both reads below are session-memoized: `wt_path`'s worktree bytes
         // and the HEAD blob's decoded text are each read at most once per
         // session regardless of how many anchors share the path/blob (the
         // worktree and HEAD are both constant for the duration of one
@@ -756,7 +771,7 @@ pub(crate) fn resolve_anchor_inner(
         // `read_worktree_normalized` / `read_git_text` pair would produce.
         let wt_bytes = state
             .session
-            .worktree_bytes(repo, &mut state.custom_filters, &t.path)?;
+            .worktree_bytes(repo, &mut state.custom_filters, &wt_path)?;
         let extent = AnchorExtent::LineRange {
             start: anchored_start,
             end: anchored_end,
@@ -805,7 +820,7 @@ pub(crate) fn resolve_anchor_inner(
                 anchor_sha: r.anchor_sha,
                 anchored,
                 current: Some(AnchorLocation {
-                    path: PathBuf::from(t.path.clone()),
+                    path: PathBuf::from(wt_path.clone()),
                     extent: AnchorExtent::LineRange {
                         start: anchored_start,
                         end: anchored_end,
