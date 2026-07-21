@@ -11,10 +11,6 @@
  * checklist as `permissionDecisionReason` (the model sees the reason); anything
  * else allows silently.
  *
- * The {@link isGateSkipped} escape hatch (`GIT_SPAN_GATE=skip`) is checked here,
- * at the adapter boundary, so a bypass is an explicit, transcript-visible
- * exception (a `systemMessage`) rather than folded into the core's decision.
- *
  * Fail-open is load-bearing at every layer: gate-core already resolves any
  * internal error to allow, and this adapter wraps the whole path in a try/catch
  * that allows-and-logs on any uncaught exception — the gate must never brick a
@@ -24,7 +20,6 @@
 
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
 import {
-  commandSkipsGate,
   commitStagesAll,
   createDefaultGateExecutors,
   createDefaultGitExecutor,
@@ -33,13 +28,9 @@ import {
   type GateExecutors,
   type GateMemoState,
   type GitExecutor,
-  isGateSkipped,
   parseGitCommand,
   resolveChangeset
 } from '../common/gate-core.js';
-
-/** The `systemMessage` shown when a gated command runs under `GIT_SPAN_GATE=skip`. */
-const SKIP_NOTICE = 'git-span gate bypassed (GIT_SPAN_GATE=skip) — span debt is not being checked for this command.';
 
 /** Narrow a `Bash` tool_input to its `command` string. */
 function narrowCommand(toolInput: unknown): string | null {
@@ -53,8 +44,7 @@ function narrowCommand(toolInput: unknown): string | null {
 export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),
   executors: GateExecutors = createDefaultGateExecutors(),
-  memoFactory: (cwd: string) => GateMemoState = createDiskGateMemoState,
-  env: NodeJS.ProcessEnv = process.env
+  memoFactory: (cwd: string) => GateMemoState = createDiskGateMemoState
 ) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
@@ -63,16 +53,6 @@ export function createHandler(
 
       const parsed = parseGitCommand(command);
       if (parsed.kind === 'none') return preToolUseOutput({});
-
-      // Escape hatch, checked only for an actually-gated command so it never
-      // narrates on unrelated Bash calls. Both forms bypass, kept
-      // transcript-visible: the session-env form (`isGateSkipped`) and the
-      // documented inline-prefix form (`GIT_SPAN_GATE=skip git commit …`), which
-      // never reaches this hook's own env and must be read from the command text
-      // (`commandSkipsGate`).
-      if (isGateSkipped(env) || commandSkipsGate(command)) {
-        return preToolUseOutput({ systemMessage: SKIP_NOTICE });
-      }
 
       const cwd = input.cwd ?? '';
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
@@ -85,10 +65,11 @@ export function createHandler(
           systemMessage: result.reason
         });
       }
-      // Environmental staleness allows (fail-open), but must not be swallowed:
-      // log it and surface the condition so the unresolvable anchor is visible.
-      if (result.kind === 'environmental') {
-        ctx.logger.warn('git-span gate allowed with unresolvable anchors', { reason: result.reason });
+      // Environmental staleness and a failed staleness scan both allow
+      // (fail-open), but must not be swallowed: log and surface the reason so
+      // the unresolvable anchor / unverified changeset is visible.
+      if (result.kind === 'environmental' || result.kind === 'scan-failed') {
+        ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
         return preToolUseOutput({ systemMessage: result.reason });
       }
       return preToolUseOutput({});

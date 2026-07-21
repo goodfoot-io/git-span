@@ -35,7 +35,6 @@
 
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/codex-hooks';
 import {
-  commandSkipsGate,
   commitStagesAll,
   createDefaultGateExecutors,
   createDefaultGitExecutor,
@@ -44,7 +43,6 @@ import {
   type GateExecutors,
   type GateMemoState,
   type GitExecutor,
-  isGateSkipped,
   parseGitCommand,
   resolveChangeset
 } from '../common/gate-core.js';
@@ -57,9 +55,6 @@ import {
  * file's header. This is the single switch that separates the two code paths.
  */
 const CODEX_GATE_HARD_DENY = true;
-
-/** The `systemMessage` shown when a gated command runs under `GIT_SPAN_GATE=skip`. */
-const SKIP_NOTICE = 'git-span gate bypassed (GIT_SPAN_GATE=skip) — span debt is not being checked for this command.';
 
 /**
  * Narrow Codex's `unknown` shell `tool_input` into the command string the core
@@ -86,7 +81,6 @@ export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),
   executors: GateExecutors = createDefaultGateExecutors(),
   memoFactory: (cwd: string) => GateMemoState = createDiskGateMemoState,
-  env: NodeJS.ProcessEnv = process.env,
   // The hard-deny switch is a parameter (defaulting to the shipped constant) so
   // the documented fallback branch is directly exercisable in tests without
   // mutating a module-level const. Production wiring never passes this — the
@@ -105,24 +99,17 @@ export function createHandler(
       const parsed = parseGitCommand(command);
       if (parsed.kind === 'none') return preToolUseOutput({});
 
-      // Both escape-hatch forms bypass, kept transcript-visible: the session-env
-      // form and the documented inline-prefix form (`GIT_SPAN_GATE=skip git
-      // commit …`), which never reaches the hook's own env and is read from the
-      // command text via `commandSkipsGate`.
-      if (isGateSkipped(env) || commandSkipsGate(command)) {
-        return preToolUseOutput({ systemMessage: SKIP_NOTICE });
-      }
-
       const cwd = input.cwd ?? '';
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd));
       if (result.decision !== 'deny') {
-        // Environmental staleness allows (fail-open) but must not be swallowed:
-        // log it and surface the condition as additional context.
-        if (result.kind === 'environmental') {
-          ctx.logger.warn('git-span gate allowed with unresolvable anchors', { reason: result.reason });
+        // Environmental staleness and a failed staleness scan both allow
+        // (fail-open) but must not be swallowed: log and surface the reason as
+        // additional context.
+        if (result.kind === 'environmental' || result.kind === 'scan-failed') {
+          ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
           return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
         }
         return preToolUseOutput({});

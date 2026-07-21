@@ -23,9 +23,7 @@
  *
  * Every function whose result depends on real logic is a `Not Implemented` stub
  * in this phase; Phase 3.2 writes skipped checks against these signatures and
- * Phase 3.3 implements them. The one exception is {@link isGateSkipped}, which
- * is pure and fully specified by CARD.md, so it is implemented here (see its
- * doc comment for the rationale).
+ * Phase 3.3 implements them.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -487,8 +485,8 @@ export interface GateMemoState {
  *   allow with no output. Internal errors and parse failures also resolve here:
  *   the gate fails open and must never brick a commit.
  * - `allow` / `already-presented` — debt is present, but this exact debt state
- *   was already presented once (uncovered-writes consider-once, or an unchanged
- *   state). The command passes.
+ *   was already presented once (semantic-staleness or uncovered-writes
+ *   consider-once, or an unchanged state). The command passes.
  * - `allow` / `environmental` — the changeset's only staleness rows are
  *   terminal/environmental conditions (`CONFLICT`, `SUBMODULE`, `LFS_*`,
  *   `PROMISOR_MISSING`, `SPARSE_EXCLUDED`, `FILTER_FAILED`, `IO_ERROR`) the CLI
@@ -496,29 +494,35 @@ export interface GateMemoState {
  *   The gate fails OPEN (allow) but carries `conditions`/`reason` so the adapter
  *   surfaces the condition instead of swallowing it. Denying here would re-deny
  *   forever on an infra failure the user cannot clear from the gate.
- * - `deny` / `semantic-staleness` — the changeset carries semantic staleness.
- *   Deny with `findings` rendered as a checklist in `reason`; re-denies on every
- *   retry until the findings change (staleness is hard-until-resolved).
- * - `deny` / `uncovered-writes` — the changeset has changed files no span
- *   covers, and this state has not been presented before. Deny **once**, listing
- *   `uncovered`; the retry with an unchanged state resolves to `already-presented`
- *   and passes (consider-once, per design-decisions.md #3).
- * - `deny` / `scan-failed` — `git span stale` could not *complete* its scoped
+ * - `allow` / `scan-failed` — `git span stale` could not *complete* its scoped
  *   scan (a {@link GateScanError}, e.g. an unreadable anchor file aborting the
  *   whole query). This is distinct from both `environmental` (the scan completed
  *   and carried terminal rows) and a clean pass (the scan completed with zero
  *   rows): the scan never ran to completion, so its empty result is not evidence
- *   of "no debt." The gate fails CLOSED here — an unverifiable changeset must not
- *   read as clean — re-denying until the scan can run, with `reason` naming the
- *   failure and the escape hatch as the deliberate override.
+ *   of "no debt." The gate fails OPEN here too — matching `environmental` —
+ *   but keeps its own `kind` and a `reason` naming the failure, so the adapter
+ *   surfaces a warning that span debt was NOT verified for this changeset
+ *   instead of staying silent. There is no debt-state to memoize: every
+ *   evaluation of a still-failing scan warns again.
+ * - `deny` / `semantic-staleness` — the changeset carries semantic staleness,
+ *   and this exact findings digest has not been presented before. Deny
+ *   **once**, listing `findings` as a checklist in `reason`; an identical
+ *   retry (unchanged findings) falls through to the environmental and
+ *   uncovered checks and resolves to `already-presented` when otherwise
+ *   clean. Changed findings (a new digest) deny fresh (consider-once per
+ *   distinct debt state, per design-decisions.md #1).
+ * - `deny` / `uncovered-writes` — the changeset has changed files no span
+ *   covers, and this state has not been presented before. Deny **once**, listing
+ *   `uncovered`; the retry with an unchanged state resolves to `already-presented`
+ *   and passes (consider-once, per design-decisions.md #3).
  */
 export type GateResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
   | { decision: 'allow'; kind: 'environmental'; conditions: StalePorcelainRow[]; reason: string }
+  | { decision: 'allow'; kind: 'scan-failed'; reason: string }
   | { decision: 'deny'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
-  | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string }
-  | { decision: 'deny'; kind: 'scan-failed'; reason: string };
+  | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
 
 /**
  * Evaluate the gate for a resolved changeset and decide whether to hold the
@@ -526,9 +530,28 @@ export type GateResult =
  *
  * Runs `executors.fix` (scoped belt-and-braces `stale --fix`), then reads
  * `executors.stale` and classifies each debt row (`isDebt()`) into *semantic*
- * drift and *environmental* conditions (`isEnvironmentalStatus()`). Semantic
- * drift (`CHANGED`/`DELETED`) → `deny`/`semantic-staleness`, re-blocking until
- * the findings change. Environmental conditions the CLI could not resolve at all
+ * drift and *environmental* conditions (`isEnvironmentalStatus()`).
+ *
+ * Semantic drift (`CHANGED`/`DELETED`) is checked against `memoState` via its
+ * own digest (`gateStateDigest(semantic, [])`), the same distinct-debt-state
+ * memo the uncovered-writes check already uses: not yet presented → record it
+ * and `deny`/`semantic-staleness` (a `memoState.record` failure fails open to
+ * `allow`/`silent`, since a non-persisting memo would re-deny the identical
+ * retry forever); already presented → **fall through** rather than returning,
+ * so a retry still surfaces environmental advisories and still runs the
+ * uncovered check. Whether the semantic state was already presented is
+ * tracked so that, if the evaluation then ends clean, it resolves to
+ * `allow`/`already-presented` rather than a bare `allow`/`silent` — mirroring
+ * the uncovered branch's own memo-hit result. A changeset carrying both
+ * unpresented semantic staleness and unpresented uncovered writes therefore
+ * denies twice (staleness first, uncovered on the retry) before a third
+ * attempt passes; editing one stale span while another remains stale produces
+ * a new findings set, hence a new digest and one fresh deny. Digest collision
+ * between the two categories is impossible: the payload is
+ * `JSON.stringify({findings, uncovered})`, and the semantic digest populates
+ * `findings` while the uncovered digest populates `uncovered`.
+ *
+ * Environmental conditions the CLI could not resolve at all
  * (`CONFLICT`/`SUBMODULE`/`LFS_*`/`PROMISOR_MISSING`/`SPARSE_EXCLUDED`/
  * `FILTER_FAILED`/`IO_ERROR`) → `allow`/`environmental`: fail OPEN, surfacing the
  * condition rather than denying on an infra failure a span edit cannot fix.
@@ -538,27 +561,19 @@ export type GateResult =
  * `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
  * `deny`/`uncovered-writes` the first time that state is seen, then
  * `allow`/`already-presented` on retry. `MOVED` and `RESOLVED_PENDING_COMMIT`
- * never contribute to any branch and never deny. The distinct-debt-state digest
- * (sorted uncovered paths) is checked and recorded through `memoState`; a
- * `memoState.record` that reports failure (unwritable memo) also fails open,
- * since a non-persisting memo would re-deny the identical retry forever. Any
- * internal error resolves to `allow`/`silent` — the gate fails open and never
- * bricks a commit.
+ * never contribute to any branch and never deny. Any internal error resolves
+ * to `allow`/`silent` — the gate fails open and never bricks a commit.
  *
- * The one exception to fail-open is a {@link GateScanError} from `executors.stale`:
- * a scan that *could not complete* (e.g. an unreadable anchor file aborts the
- * scoped query) yields an empty result that is NOT evidence of a clean changeset.
- * Resolving that to `allow`/`silent` would be silent non-enforcement — a user
- * believes the check ran and passed when it never completed, masking real debt on
- * a sibling anchor the query never reached. So this one case fails CLOSED:
- * `deny`/`scan-failed`, distinct from both a clean pass and an `environmental`
- * result, re-denying until the scan can actually run (with the escape hatch as the
- * deliberate override).
- *
- * The `GIT_SPAN_GATE=skip` escape hatch is *not* checked here — it is a
- * pre-check the adapter runs via {@link isGateSkipped} before calling
- * evaluateGate, so a bypass is logged as an explicit exception at the adapter
- * boundary rather than folded into the decision here.
+ * A {@link GateScanError} from `executors.stale` is the one case handled
+ * outside that flow: a scan that *could not complete* (e.g. an unreadable
+ * anchor file aborts the scoped query) yields an empty result that is NOT
+ * evidence of a clean changeset. Reading that as `allow`/`silent` would
+ * silently swallow the fact that verification never happened, so it resolves
+ * instead to its own `allow`/`scan-failed` — fail OPEN like `environmental`
+ * (the command is not held), but with a distinct `kind` and `reason` so the
+ * adapter surfaces a warning that span debt was NOT verified for this
+ * changeset rather than staying silent. There is no debt-state to memoize
+ * here: every evaluation of a still-failing scan warns again.
  *
  * @param paths The resolved changeset from {@link resolveChangeset}. Empty →
  *   `allow`/`silent`.
@@ -588,15 +603,24 @@ export async function evaluateGate(
     const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
 
-    // Semantic staleness is hard-until-resolved: deny every time until the
-    // findings themselves change.
+    // Semantic staleness joins the same distinct-debt-state memo the uncovered
+    // check uses: deny once per findings digest, then fall through (rather than
+    // returning) on an identical retry so the rest of the evaluation still runs.
+    let semanticAlreadyPresented = false;
     if (semantic.length > 0) {
-      return {
-        decision: 'deny',
-        kind: 'semantic-staleness',
-        findings: semantic,
-        reason: renderStalenessReason(semantic)
-      };
+      const semanticDigest = gateStateDigest(semantic, []);
+      if (!memoState.has(semanticDigest)) {
+        // A non-persisting memo write would turn "deny once, then allow the
+        // retry" into "deny every time" with no escape — fail open instead.
+        if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
+        return {
+          decision: 'deny',
+          kind: 'semantic-staleness',
+          findings: semantic,
+          reason: renderStalenessReason(semantic)
+        };
+      }
+      semanticAlreadyPresented = true;
     }
 
     // Environmental conditions are not a span edit away from resolution: fail
@@ -624,12 +648,20 @@ export async function evaluateGate(
     const uncovered = paths.filter(
       (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path)
     );
-    if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+    if (uncovered.length === 0) {
+      // A retry that fell through past an already-presented semantic-staleness
+      // digest ends clean here: surface already-presented rather than a bare
+      // silent allow, mirroring the uncovered branch's own memo-hit result.
+      return semanticAlreadyPresented
+        ? { decision: 'allow', kind: 'already-presented' }
+        : { decision: 'allow', kind: 'silent' };
+    }
 
     // Consider-once: deny the first time this exact debt state is seen, then
-    // pass the retry with an unchanged state. (No semantic/environmental rows
-    // survive to here — both branches above have returned — so the digest's
-    // findings component is empty and the state is keyed by the uncovered set.)
+    // pass the retry with an unchanged state. (No semantic rows survive to
+    // here unpresented — the semantic branch above has already returned for
+    // that case — so the digest's findings component is empty and the state
+    // is keyed by the uncovered set.)
     const digest = gateStateDigest([], uncovered);
     if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
     // A non-persisting memo write would turn "deny once, then allow the retry"
@@ -637,11 +669,12 @@ export async function evaluateGate(
     if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
     return { decision: 'deny', kind: 'uncovered-writes', uncovered, reason: renderUncoveredReason(uncovered) };
   } catch (err) {
-    // A scan that could not COMPLETE is not a clean result — failing open here
-    // would silently allow a commit whose debt the aborted scan never got to
-    // check. Fail closed with a distinguishable `scan-failed` deny instead.
+    // A scan that could not COMPLETE is not a clean result, but it is not
+    // debt either — there is nothing here for a user to resolve by editing a
+    // span. Fail OPEN with a distinguishable `scan-failed` warning instead of
+    // silently reading the aborted scan's empty result as clean.
     if (err instanceof GateScanError) {
-      return { decision: 'deny', kind: 'scan-failed', reason: renderScanFailedReason(err.detail) };
+      return { decision: 'allow', kind: 'scan-failed', reason: renderScanFailedReason(err.detail) };
     }
     // Fail open: any other internal/CLI error resolves to allow. The gate must
     // never brick a commit on its own failure.
@@ -670,10 +703,6 @@ function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): st
   return createHash('sha256').update(payload).digest('hex');
 }
 
-/** The `GIT_SPAN_GATE=skip` escape-hatch line appended to every deny reason. */
-const ESCAPE_HATCH_LINE =
-  'To proceed anyway (requires explicit user approval): prefix the command with `GIT_SPAN_GATE=skip`.';
-
 /** The checklist a semantic-staleness deny renders into `reason`. */
 function renderStalenessReason(findings: StalePorcelainRow[]): string {
   const lines = findings.map((row) => `  - ${row.name} (${row.status}): ${anchorText(row)}`);
@@ -681,8 +710,7 @@ function renderStalenessReason(findings: StalePorcelainRow[]): string {
     'This changeset carries span debt — resolve it before this lands:',
     ...lines,
     '',
-    "Update each span's anchors/why in this same change, or tell the user why the described coupling no longer holds, then retry.",
-    ESCAPE_HATCH_LINE
+    "Update each span's anchors/why in this same change, or tell the user why the described coupling no longer holds, then retry."
   ].join('\n');
 }
 
@@ -702,18 +730,20 @@ function renderEnvironmentalReason(conditions: StalePorcelainRow[]): string {
 }
 
 /**
- * The advisory a `scan-failed` deny renders into `reason`. Unlike the
- * environmental advisory (which allows), this holds the command: the scan could
- * not complete, so the changeset is unverified — not confirmed clean. Names the
- * underlying failure and offers the escape hatch as the deliberate override.
+ * The advisory an `allow`/`scan-failed` result renders into `reason`. Unlike
+ * the environmental advisory, this is a warning about an *unverified*
+ * changeset rather than a resolved/terminal condition: the scan could not
+ * complete, so span debt was NOT verified for this changeset — but the
+ * command proceeds anyway (fail-open, matching `environmental`). Names the
+ * underlying failure so the user can resolve the read/scan error if the
+ * coupling needs verifying.
  */
 function renderScanFailedReason(detail: string): string {
   return [
-    'git-span could not complete its staleness scan for this changeset, so it cannot confirm the change is free of span debt:',
+    'git-span could not complete its staleness scan for this changeset, so span debt was NOT verified for this changeset:',
     `  ${detail}`,
     '',
-    'This is a hard scan failure (e.g. an unreadable anchor file that aborts the whole scoped query), not a clean result — the gate is holding the command rather than letting an unverified changeset through. Resolve the underlying read/scan error, then retry.',
-    ESCAPE_HATCH_LINE
+    'The command is proceeding anyway. This is a hard scan failure (e.g. an unreadable anchor file that aborts the whole scoped query), not a clean result — resolve the underlying read/scan error if this coupling needs verifying.'
   ].join('\n');
 }
 
@@ -724,70 +754,8 @@ function renderUncoveredReason(uncovered: string[]): string {
     'Determine if you should document implicit semantic dependencies in these files:',
     ...lines,
     '',
-    'Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why <name> -m "one sentence: name the subsystem, what it does across anchors"`, or just retry the command to proceed (this is a one-time check).',
-    ESCAPE_HATCH_LINE
+    'Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why <name> -m "one sentence: name the subsystem, what it does across anchors"`, or just retry the command to proceed (this is a one-time check).'
   ].join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Escape hatch
-// ---------------------------------------------------------------------------
-
-/**
- * Whether the transcript-visible escape hatch `GIT_SPAN_GATE=skip` is set in the
- * ambient/session environment, bypassing the gate for a user-approved exception
- * (CARD.md acceptance criterion 5; the skill documents that setting it requires
- * explicit user approval).
- *
- * This covers the *session-env* form (the var exported for the whole session).
- * The *inline-prefix* form documented everywhere — `GIT_SPAN_GATE=skip git
- * commit …` typed as one Bash command — never reaches the hook's own
- * `process.env`, because a `PreToolUse` hook runs as a separate process *before*
- * the shell command whose inline assignment it would set; that form is detected
- * from the command string by {@link commandSkipsGate}. Adapters check both.
- *
- * Kept pure over the passed env (rather than reading `process.env` directly) so
- * tests can exercise both branches without mutating global state.
- *
- * @param env The environment to read, e.g. `process.env`.
- */
-export function isGateSkipped(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
-  return env['GIT_SPAN_GATE'] === 'skip';
-}
-
-/**
- * Whether the raw command string carries the inline escape-hatch prefix
- * `GIT_SPAN_GATE=skip` on a `git` invocation — the exact documented gesture
- * `GIT_SPAN_GATE=skip git commit …` typed as one Bash command.
- *
- * A `PreToolUse` hook runs as its own process *before* the shell executes the
- * command, so an inline `VAR=value cmd` assignment (which only affects the
- * process the shell spawns afterward) never lands in the hook's own
- * `process.env` — {@link isGateSkipped} alone can therefore never see it. This
- * recovers the flag from the command text itself, so the documented one-shot,
- * per-command bypass actually works: it inspects the leading `VAR=value`
- * environment assignments {@link matchGitInvocation} otherwise strips, and
- * returns true when one of them is exactly `GIT_SPAN_GATE=skip` on a segment
- * that then invokes `git`.
- *
- * Conservative like the rest of the parser: the assignment must be a leading
- * prefix on a `git` invocation (not buried mid-command), matching the exact
- * documented shape and nothing looser.
- *
- * @param command The raw shell command string from the hook's tool input.
- */
-export function commandSkipsGate(command: string): boolean {
-  for (const segment of splitSegments(command)) {
-    const tokens = tokenize(segment);
-    let i = 0;
-    let sawSkip = false;
-    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
-      if (tokens[i] === 'GIT_SPAN_GATE=skip') sawSkip = true;
-      i++;
-    }
-    if (sawSkip && tokens[i] === 'git') return true;
-  }
-  return false;
 }
 
 // ---------------------------------------------------------------------------

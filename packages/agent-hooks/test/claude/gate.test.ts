@@ -5,16 +5,16 @@
  * The adapter translates a Bash tool call into the shared gate-core pipeline
  * (parseGitCommand → resolveChangeset → evaluateGate) with injected executors and
  * an in-memory memo, and translates the GateResult into Claude's
- * permissionDecision output. These exercise the adapter's translation, the
- * escape-hatch pre-check, and fail-open wiring; the debt-classification logic
- * itself is covered by test/common/gate-core.test.ts.
+ * permissionDecision output. These exercise the adapter's translation and
+ * fail-open wiring; the debt-classification logic itself is covered by
+ * test/common/gate-core.test.ts.
  */
 
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { describe, expect, it } from 'vitest';
 import hook, { createHandler } from '../../src/claude/gate.js';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
-import type { GateExecutors, GateMemoState, GitExecutor } from '../../src/common/gate-core.js';
+import { type GateExecutors, type GateMemoState, GateScanError, type GitExecutor } from '../../src/common/gate-core.js';
 
 const logger = new Logger();
 
@@ -124,8 +124,23 @@ describe('claude gate adapter', () => {
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
-    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain('GIT_SPAN_GATE=skip');
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('To proceed anyway');
     expect(result.stdout.systemMessage).toContain(SPAN);
+  });
+
+  it('allows an identical retry after a semantic-staleness deny (consider-once per debt-state digest)', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      list: async () => [porcelainRow()],
+      stale: async () => [staleRow('CHANGED')]
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+
+    const first = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+    expect(first.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
+
+    const second = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+    expect(second.stdout.hookSpecificOutput).toBeUndefined();
   });
 
   it('allows a clean commit (staged, covered, no drift)', async () => {
@@ -151,58 +166,31 @@ describe('claude gate adapter', () => {
     expect(second.stdout.hookSpecificOutput).toBeUndefined();
   });
 
-  it('bypasses with a transcript-visible systemMessage under GIT_SPAN_GATE=skip', async () => {
-    let denied = false;
-    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({
-      list: async () => [porcelainRow()],
-      stale: async () => {
-        denied = true;
-        return [staleRow('CHANGED')];
-      }
-    });
-    const handler = createHandler(git, executors, sharedMemoFactory(), { GIT_SPAN_GATE: 'skip' });
-    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
-
-    expect(denied).toBe(false); // evaluation short-circuited by the escape hatch
-    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
-  });
-
-  it('bypasses via the inline `GIT_SPAN_GATE=skip git commit …` prefix even when the var is absent from the hook env', async () => {
-    // The documented one-shot gesture: the assignment is inline in the command
-    // string and never reaches the hook's own process.env. On a real
-    // semantic-debt state, it must still allow, transcript-visibly.
-    let denied = false;
-    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({
-      list: async () => [porcelainRow()],
-      stale: async () => {
-        denied = true;
-        return [staleRow('CHANGED')];
-      }
-    });
-    const handler = createHandler(git, executors, sharedMemoFactory(), {}); // var absent from hook env
-    const result = toResult(
-      await handler(preInput('GIT_SPAN_GATE=skip git commit -m "wip"') as never, { logger } as never)
-    );
-
-    expect(denied).toBe(false); // short-circuited by the inline escape hatch
-    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
-  });
-
   it('surfaces an environmental condition as a transcript-visible systemMessage and allows (fail-open)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
       stale: async () => [staleRow('SPARSE_EXCLUDED')]
     });
-    const handler = createHandler(git, executors, sharedMemoFactory(), {});
+    const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput).toBeUndefined(); // allowed, not denied
     expect(result.stdout.systemMessage).toContain('SPARSE_EXCLUDED');
+  });
+
+  it('surfaces a scan failure as a transcript-visible systemMessage and allows (fail-open)', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      stale: async () => {
+        throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+      }
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput).toBeUndefined(); // allowed, not denied
+    expect(result.stdout.systemMessage).toContain('Permission denied');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {

@@ -2,11 +2,11 @@
  * Skipped acceptance checks for gate-core.ts (Phase 3.2 of the TDD bootstrap
  * described in plans/initial.md's Phase 3). Phase 3.1 declared
  * `parseGitCommand`, `resolveChangeset`, and `evaluateGate` as not-implemented
- * stubs (`isGateSkipped` is the sole already-implemented exception); this file
- * writes the contract's acceptance checks against those stubs so the eventual
- * Phase 3.3 implementation has a fixed target. Every case here is marked
- * `.skip` — none are expected to run (the stubs throw `Not Implemented`);
- * Phase 3.3 unskips them one by one while implementing minimally against each.
+ * stubs; this file writes the contract's acceptance checks against those
+ * stubs so the eventual Phase 3.3 implementation has a fixed target. Every
+ * case here is marked `.skip` — none are expected to run (the stubs throw
+ * `Not Implemented`); Phase 3.3 unskips them one by one while implementing
+ * minimally against each.
  *
  * Fakes are constructed against the real exported types from gate-core.ts
  * (`GitExecutor`, `GateExecutors`, `GateMemoState`, `StalePorcelainRow`,
@@ -21,14 +21,12 @@ import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import {
-  commandSkipsGate,
   commitStagesAll,
   evaluateGate,
   type GateExecutors,
   type GateMemoState,
   GateScanError,
   type GitExecutor,
-  isGateSkipped,
   parseGitCommand,
   resolveChangeset
 } from '../../src/common/gate-core.js';
@@ -258,7 +256,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(calls).toBe(0);
     });
 
-    it('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings, and re-denies on an unchanged memoState', async () => {
+    it('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings once per digest, then falls through to allow/already-presented on an identical retry', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -273,12 +271,77 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(first.findings).toHaveLength(1);
       }
 
-      // Same paths, same executor results, same memoState — staleness
-      // re-blocks until the findings themselves change; the memo does not
-      // suppress a repeated semantic-staleness denial.
+      // Same paths, same executor results, same memoState — the digest is
+      // already memoized, so evaluation falls through past the semantic check
+      // into the (clean) environmental and uncovered checks, ending in
+      // already-presented rather than a bare silent allow.
+      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
+    });
+
+    it('a changed findings set produces a fresh semantic-staleness deny (new digest) even after the prior digest was memoized', async () => {
+      const memo = createMemoryGateMemoState();
+      let call = 0;
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => {
+          call += 1;
+          // The first call's findings differ from the second's (a different
+          // path drifted), so the digests differ and the second eval denies
+          // fresh rather than falling through.
+          return [staleRow({ status: 'CHANGED', path: call === 1 ? 'src/app.ts' : 'src/other.ts' })];
+        }
+      });
+      const paths = ['src/app.ts'];
+
+      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('deny');
+      expect(first.kind).toBe('semantic-staleness');
+
       const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
       expect(second.decision).toBe('deny');
       expect(second.kind).toBe('semantic-staleness');
+    });
+
+    it('a changeset carrying both unpresented semantic staleness and unpresented uncovered writes denies twice — staleness first, uncovered on the retry — then passes on the third attempt', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        // src/app.ts is covered but semantically stale; src/uncovered.ts has no
+        // covering span at all.
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/app.ts' })],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED', path: 'src/app.ts' })]
+      });
+      const paths = ['src/app.ts', 'src/uncovered.ts'];
+
+      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('deny');
+      expect(first.kind).toBe('semantic-staleness');
+
+      // The semantic digest is now memoized, so this retry falls through past
+      // the (already-presented) semantic check into the uncovered check, which
+      // has not been presented yet — a fresh deny for a distinct debt state.
+      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      expect(second.decision).toBe('deny');
+      expect(second.kind).toBe('uncovered-writes');
+      if (second.kind === 'uncovered-writes') {
+        expect(second.uncovered).toEqual(['src/uncovered.ts']);
+      }
+
+      // Both digests are now memoized — the third attempt ends clean.
+      const third = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      expect(third).toEqual({ decision: 'allow', kind: 'already-presented' });
+    });
+
+    it('a memo that cannot persist (record returns false) fails OPEN on semantic staleness rather than denying with no escape', async () => {
+      const unwritableMemo: GateMemoState = { has: () => false, record: () => false };
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, unwritableMemo);
+
+      expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('uncovered writes only → denies once and records state, then resolves to allow/already-presented on retry with unchanged memoState', async () => {
@@ -399,14 +462,15 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
-    it('a hard scan failure (GateScanError) denies with scan-failed rather than silently allowing, even when a sibling anchor would have carried real CHANGED debt', async () => {
+    it('a hard scan failure (GateScanError) allows with a scan-failed warning rather than reading the aborted scan as clean, even when a sibling anchor would have carried real CHANGED debt', async () => {
       // The scoped scan spans two paths; one anchor is unreadable, so the CLI
       // aborts the entire scoped query (empty stdout + an error on stderr, which
       // the default executor surfaces as a GateScanError). Had the scan
       // completed, the sibling anchor would have surfaced CHANGED debt — but it
-      // never ran, so an empty result here must NOT be read as "clean." The gate
-      // must fail closed (deny/scan-failed), never resolve to the silent allow a
-      // genuinely clean scan produces.
+      // never ran, so an empty result here must NOT be silently read as
+      // "clean" and swallowed: it allows (fail-open, matching the
+      // `environmental` category), but with a distinct `scan-failed` kind and a
+      // reason so the adapter can surface the warning instead of staying silent.
       const memo = createMemoryGateMemoState();
       let recorded = false;
       const guardedMemo: GateMemoState = {
@@ -425,19 +489,20 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const result = await evaluateGate(['src/app.ts', 'src/sibling.ts'], REPO_ROOT, executors, guardedMemo);
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('allow');
       expect(result.kind).toBe('scan-failed');
       if (result.kind === 'scan-failed') {
         expect(result.reason).toContain('Permission denied');
-        expect(result.reason).toContain('GIT_SPAN_GATE=skip');
+        expect(result.reason).not.toContain('To proceed anyway');
       }
-      // Not the silent allow a truly-clean scan produces, and not consider-once
-      // suppressed — a scan failure has no debt-state to memoize.
+      // A distinct kind from the ordinary silent allow a truly-clean scan
+      // produces — the adapter must still see and surface the warning.
       expect(result).not.toEqual({ decision: 'allow', kind: 'silent' });
+      // No debt-state to memoize for a scan that never ran to completion.
       expect(recorded).toBe(false);
     });
 
-    it('a hard scan failure re-denies on retry (no consider-once suppression) until the scan can complete', async () => {
+    it('a hard scan failure keeps warning on repeated evaluations — no memo involvement', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {
@@ -448,7 +513,9 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       const first = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
       const second = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
 
+      expect(first.decision).toBe('allow');
       expect(first.kind).toBe('scan-failed');
+      expect(second.decision).toBe('allow');
       expect(second.kind).toBe('scan-failed');
     });
 
@@ -585,56 +652,6 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
     it('is false for a plain staged commit', () => {
       expect(commitStagesAll('git commit -m "wip"')).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // commandSkipsGate — the inline `GIT_SPAN_GATE=skip git …` prefix
-  // -------------------------------------------------------------------------
-
-  describe('commandSkipsGate', () => {
-    it('detects the literal documented inline-prefix form', () => {
-      expect(commandSkipsGate('GIT_SPAN_GATE=skip git commit -m "x"')).toBe(true);
-      expect(commandSkipsGate('GIT_SPAN_GATE=skip git push')).toBe(true);
-    });
-
-    it('detects it alongside other leading env assignments', () => {
-      expect(commandSkipsGate('FOO=bar GIT_SPAN_GATE=skip git commit -m "x"')).toBe(true);
-    });
-
-    it('is false when the prefix is absent', () => {
-      expect(commandSkipsGate('git commit -m "x"')).toBe(false);
-    });
-
-    it('is false for a near-miss value', () => {
-      expect(commandSkipsGate('GIT_SPAN_GATE=no git commit -m "x"')).toBe(false);
-    });
-
-    it('is false when the assignment does not prefix a git invocation', () => {
-      expect(commandSkipsGate('GIT_SPAN_GATE=skip echo hello')).toBe(false);
-      expect(commandSkipsGate('echo GIT_SPAN_GATE=skip')).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // isGateSkipped
-  // -------------------------------------------------------------------------
-
-  describe('isGateSkipped', () => {
-    it('returns true when GIT_SPAN_GATE is exactly "skip"', () => {
-      expect(isGateSkipped({ GIT_SPAN_GATE: 'skip' })).toBe(true);
-    });
-
-    it('returns false when the env is empty', () => {
-      expect(isGateSkipped({})).toBe(false);
-    });
-
-    it('returns false for a near-miss value like "no"', () => {
-      expect(isGateSkipped({ GIT_SPAN_GATE: 'no' })).toBe(false);
-    });
-
-    it('returns false for an empty-string value', () => {
-      expect(isGateSkipped({ GIT_SPAN_GATE: '' })).toBe(false);
     });
   });
 });

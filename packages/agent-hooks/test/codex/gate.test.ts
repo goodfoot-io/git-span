@@ -13,7 +13,7 @@ import { Logger } from '@goodfoot/codex-hooks';
 import { describe, expect, it } from 'vitest';
 import hook, { createHandler, extractShellCommand } from '../../src/codex/gate.js';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
-import type { GateExecutors, GateMemoState, GitExecutor } from '../../src/common/gate-core.js';
+import { type GateExecutors, type GateMemoState, GateScanError, type GitExecutor } from '../../src/common/gate-core.js';
 
 const logger = new Logger();
 
@@ -139,7 +139,7 @@ describe('codex gate adapter', () => {
     // recipe as Codex's enforcement backstop. Nothing must set a deny decision.
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
-    const handler = createHandler(git, executors, sharedMemoFactory(), {}, false);
+    const handler = createHandler(git, executors, sharedMemoFactory(), false);
     const result = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
 
     // Allowed through — the fallback cannot block.
@@ -151,34 +151,16 @@ describe('codex gate adapter', () => {
     expect(result.stdout.systemMessage).toContain('could not block');
   });
 
-  it('bypasses with a transcript-visible systemMessage under GIT_SPAN_GATE=skip', async () => {
+  it('allows an identical retry after a semantic-staleness deny (consider-once per debt-state digest)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
-    const handler = createHandler(git, executors, sharedMemoFactory(), { GIT_SPAN_GATE: 'skip' });
-    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+    const handler = createHandler(git, executors, sharedMemoFactory());
 
-    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
-  });
+    const first = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
+    expect(first.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
 
-  it('bypasses via the inline `GIT_SPAN_GATE=skip git commit …` prefix even when the var is absent from the hook env', async () => {
-    let denied = false;
-    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({
-      list: async () => [porcelainRow()],
-      stale: async () => {
-        denied = true;
-        return [staleRow('CHANGED')];
-      }
-    });
-    const handler = createHandler(git, executors, sharedMemoFactory(), {}); // var absent from hook env
-    const result = toResult(
-      await handler(preInput(['bash', '-lc', 'GIT_SPAN_GATE=skip git commit -m "wip"']) as never, { logger } as never)
-    );
-
-    expect(denied).toBe(false);
-    expect(result.stdout.systemMessage).toContain('GIT_SPAN_GATE=skip');
-    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+    const second = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
+    expect(second.stdout.hookSpecificOutput).toBeUndefined();
   });
 
   it('surfaces an environmental condition as additional context and allows (fail-open)', async () => {
@@ -187,11 +169,26 @@ describe('codex gate adapter', () => {
       list: async () => [porcelainRow()],
       stale: async () => [staleRow('LFS_NOT_FETCHED')]
     });
-    const handler = createHandler(git, executors, sharedMemoFactory(), {});
+    const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     expect(result.stdout.systemMessage).toContain('LFS_NOT_FETCHED');
+  });
+
+  it('surfaces a scan failure as additionalContext + systemMessage and allows (fail-open)', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({
+      stale: async () => {
+        throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+      }
+    });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+    const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Permission denied');
+    expect(result.stdout.systemMessage).toContain('Permission denied');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {
