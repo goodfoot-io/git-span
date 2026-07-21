@@ -184,10 +184,15 @@ fn looks_like_anchor_line(line: &str) -> bool {
 
 /// Read every source file referenced by anchors in `ours` and `theirs`,
 /// checking each for conflict markers. Returns deduplicated
-/// `(repo_relative_path, file_bytes)` pairs.
+/// `(repo_relative_path, file_bytes)` pairs for the paths that read cleanly.
 ///
-/// Fail-closed: if any source file itself contains conflict markers, the
-/// span conflict cannot be resolved structurally and an error is returned.
+/// A path that fails a plain I/O read (e.g. the file was deleted/renamed
+/// away) is simply omitted from the returned vec rather than aborting the
+/// whole function — its absence is the signal `prune_unreadable_renamed_orphans`
+/// uses to identify dead-path orphan anchors. This is a distinct failure
+/// class from a *poisoned* source: if a source file itself contains conflict
+/// markers, that is still fail-closed and aborts the whole span, unchanged
+/// from today.
 fn read_clean_source_files(
     repo: &gix::Repository,
     ours: &SpanFile,
@@ -200,13 +205,13 @@ fn read_clean_source_files(
         if !seen.insert(anchor.path.clone()) {
             continue;
         }
-        let bytes = crate::git::read_worktree_bytes(repo, &anchor.path).map_err(|e| {
-            anyhow::anyhow!(
-                "cannot read source file `{}` referenced by conflicted span: {}",
-                anchor.path,
-                e
-            )
-        })?;
+        let bytes = match crate::git::read_worktree_bytes(repo, &anchor.path) {
+            Ok(bytes) => bytes,
+            // Plain I/O read failure (e.g. not found after a rename): skip
+            // this path. Its absence from the returned vec signals
+            // "unreadable" to prune_unreadable_renamed_orphans.
+            Err(_) => continue,
+        };
 
         // Check for conflict markers in the source file.
         // Non-UTF-8 (binary) files cannot contain textual conflict markers,
@@ -233,14 +238,114 @@ fn read_clean_source_files(
 /// path. Mutates `ours`/`theirs` in place. Returns an error (preserving
 /// today's whole-span fail-closed behavior) if any orphan anchor's path is
 /// unreadable and no unambiguous live counterpart exists.
-// Not yet called: wired into `resolve_conflicted_span` in Phase 3.
-#[allow(dead_code)]
+///
+/// An anchor is an "orphan" on a side when its `(path, start_line, end_line)`
+/// key is absent from the other side's key set — this mirrors the map keys
+/// `merge_span_files` builds. Anchors whose key exists on both sides (a
+/// same-path `Changed` conflict) or whose orphan path IS readable are left
+/// untouched here; they resolve via the existing, unmodified structural-merge
+/// kernel (rehash-and-keep or union, respectively).
 fn prune_unreadable_renamed_orphans(
-    _ours: &mut SpanFile,
-    _theirs: &mut SpanFile,
-    _source_files: &[(String, Vec<u8>)],
+    ours: &mut SpanFile,
+    theirs: &mut SpanFile,
+    source_files: &[(String, Vec<u8>)],
 ) -> Result<()> {
-    todo!("Phase 1 stub — implemented in Phase 3")
+    let readable: HashSet<&str> = source_files.iter().map(|(p, _)| p.as_str()).collect();
+
+    let ours_keys: HashSet<(&str, u32, u32)> = ours
+        .anchors
+        .iter()
+        .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+        .collect();
+    let theirs_keys: HashSet<(&str, u32, u32)> = theirs
+        .anchors
+        .iter()
+        .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+        .collect();
+
+    // Orphans: anchors present on only one side (key absent from the other).
+    let ours_orphans: Vec<usize> = ours
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !theirs_keys.contains(&(a.path.as_str(), a.start_line, a.end_line)))
+        .map(|(i, _)| i)
+        .collect();
+    let theirs_orphans: Vec<usize> = theirs
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !ours_keys.contains(&(a.path.as_str(), a.start_line, a.end_line)))
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut remove_ours: HashSet<usize> = HashSet::new();
+    let mut remove_theirs: HashSet<usize> = HashSet::new();
+
+    for &i in &ours_orphans {
+        let anchor = &ours.anchors[i];
+        if readable.contains(anchor.path.as_str()) {
+            continue;
+        }
+        let candidate_count = theirs_orphans
+            .iter()
+            .filter(|&&j| {
+                let candidate = &theirs.anchors[j];
+                candidate.start_line == anchor.start_line
+                    && candidate.end_line == anchor.end_line
+                    && candidate.path != anchor.path
+                    && readable.contains(candidate.path.as_str())
+            })
+            .count();
+        if candidate_count == 1 {
+            remove_ours.insert(i);
+        } else {
+            anyhow::bail!(
+                "cannot read source file `{}` referenced by conflicted span",
+                anchor.path
+            );
+        }
+    }
+
+    for &j in &theirs_orphans {
+        let anchor = &theirs.anchors[j];
+        if readable.contains(anchor.path.as_str()) {
+            continue;
+        }
+        let candidate_count = ours_orphans
+            .iter()
+            .filter(|&&i| {
+                let candidate = &ours.anchors[i];
+                candidate.start_line == anchor.start_line
+                    && candidate.end_line == anchor.end_line
+                    && candidate.path != anchor.path
+                    && readable.contains(candidate.path.as_str())
+            })
+            .count();
+        if candidate_count == 1 {
+            remove_theirs.insert(j);
+        } else {
+            anyhow::bail!(
+                "cannot read source file `{}` referenced by conflicted span",
+                anchor.path
+            );
+        }
+    }
+
+    let mut idx = 0usize;
+    ours.anchors.retain(|_| {
+        let keep = !remove_ours.contains(&idx);
+        idx += 1;
+        keep
+    });
+    let mut idx = 0usize;
+    theirs.anchors.retain(|_| {
+        let keep = !remove_theirs.contains(&idx);
+        idx += 1;
+        keep
+    });
+
+    Ok(())
 }
 
 /// Format the residue marker text for a partially-resolved merge.
@@ -422,19 +527,27 @@ fn resolve_conflicted_span(
     // Wrap parse errors with context so the operator can diagnose a span
     // whose conflict marker splitting produced malformed output (e.g. a
     // `=======` inside why text).
-    let ours = SpanFile::parse(&ours_text).map_err(|e| {
+    let mut ours = SpanFile::parse(&ours_text).map_err(|e| {
         anyhow::anyhow!(
             "failed to parse conflict-side content for span `{name}`: {e}"
         )
     })?;
-    let theirs = SpanFile::parse(&theirs_text).map_err(|e| {
+    let mut theirs = SpanFile::parse(&theirs_text).map_err(|e| {
         anyhow::anyhow!(
             "failed to parse conflict-side content for span `{name}`: {e}"
         )
     })?;
 
-    // Step 3: Enforce clean-source precondition.
+    // Step 3: Enforce clean-source precondition (fail-closed on a source
+    // file that itself contains conflict markers; tolerant of a plain
+    // missing/renamed-away path).
     let source_files = read_clean_source_files(repo, &ours, &theirs)?;
+
+    // Step 3b: Prune dead-path orphan anchors that have an unambiguous live
+    // counterpart on the other side (renamed-file case), before the
+    // structural-merge kernel runs. Fails closed if an unreadable orphan
+    // anchor has zero or multiple candidates.
+    prune_unreadable_renamed_orphans(&mut ours, &mut theirs, &source_files)?;
 
     // Step 4: Structural merge.
     let result = merge_span_files(None, &ours, &theirs, &source_files);

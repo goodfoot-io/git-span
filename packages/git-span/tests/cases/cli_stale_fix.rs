@@ -991,7 +991,6 @@ file1.txt#L5-L7 rk64:{h_b}
 // suite. Do not unskip until Phase 3 lands.
 // ---------------------------------------------------------------------------
 
-#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
 #[test]
 fn fix_resolves_renamed_orphan_anchor_automatically() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -1045,7 +1044,6 @@ file2.txt#L1-L5 rk64:{h2}
     Ok(())
 }
 
-#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
 #[test]
 fn fix_ambiguous_renamed_orphan_fails_closed() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -1089,7 +1087,6 @@ file2.txt#L1-L5 rk64:{h2}
     Ok(())
 }
 
-#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
 #[test]
 fn fix_unmatched_renamed_orphan_fails_closed() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -1130,7 +1127,6 @@ file2.txt#L11-L15 rk64:{h2}
     Ok(())
 }
 
-#[ignore = "Phase 2 stub — implemented in Phase 3 of card main-171"]
 #[test]
 fn fix_renamed_orphan_resolution_orthogonal_to_why_divergence() -> Result<()> {
     let repo = TestRepo::seeded()?;
