@@ -1,4 +1,4 @@
-packages/git-span/src/cli/drift_label.rs#L79-L80 rk64:dc0da71f5ed4773e
+packages/git-span/src/cli/drift_label.rs#L87-L88 rk64:dc0da71f5ed4773e
 packages/git-span/src/cli/stale_fix.rs#L796-L810 rk64:26ebfb2e5793c9af
 packages/git-span/src/cli/stale_fix.rs#L980-L1051 rk64:70e06553feb17ec1
 packages/git-span/src/resolver/engine/anchor.rs#L741-L823 rk64:ea35f6663eb2dc3d
