@@ -739,11 +739,13 @@ fn distinct_key_callers_build_concurrently() {
     let mut kb = None;
     for n in 0u8..255 {
         let s = shard_index(&key(n), shards);
-        if ka.is_none() {
-            ka = Some((key(n), s));
-        } else if kb.is_none() && s != ka.unwrap().1 {
-            kb = Some((key(n), s));
-            break;
+        match &ka {
+            None => ka = Some((key(n), s)),
+            Some((_, ka_shard)) if kb.is_none() && s != *ka_shard => {
+                kb = Some((key(n), s));
+                break;
+            }
+            Some(_) => {}
         }
     }
     let (ka, _) = ka.unwrap();

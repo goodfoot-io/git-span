@@ -496,3 +496,196 @@ fn all_args_resolve_to_clean_span_exits_zero() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Card main-168, Phase 2: `--cluster` output (Human/JSON/porcelain), plus
+// the warm-cache regression guard.
+//
+// Per `plans/bounded-rename-chain.md` ("Clustering design"): `--cluster`
+// partitions the run's stale spans into connected components by shared
+// anchored file. Not implemented yet (`cluster_stale_spans` is a `todo!()`
+// stub and nothing calls it) — `#[ignore]`d until Phase 3 wires the
+// dedicated `cluster_corpus` load and the three renderers.
+// ---------------------------------------------------------------------------
+
+/// Seed a span anchored on `file1.txt#L6-L10` (the bottom half). Deliberately
+/// not reusing `seed_stable` here: that helper's name encodes "stays clean
+/// under `drift_in_head`", which does not hold for this fixture — this
+/// helper is paired with `drift_both_halves_of_file1`, which changes both
+/// halves of `file1.txt`, so a span seeded here is expected to go stale too.
+fn seed_file1_lower(repo: &TestRepo, name: &str) -> Result<()> {
+    repo.span_stdout(["add", name, "file1.txt#L6-L10"])?;
+    repo.span_stdout(["why", name, "-m", "seed"])?;
+    {
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "span commit"])?;
+    }
+    Ok(())
+}
+
+/// Seed a span anchored on `file2.txt#L1-L5`, unrelated to `file1.txt`.
+fn seed_file2_upper(repo: &TestRepo, name: &str) -> Result<()> {
+    repo.span_stdout(["add", name, "file2.txt#L1-L5"])?;
+    repo.span_stdout(["why", name, "-m", "seed"])?;
+    {
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "span commit"])?;
+    }
+    Ok(())
+}
+
+/// Rewrite every line of `file1.txt` so both the L1-L5 and L6-L10 halves
+/// hash-differ from their seeded content.
+fn drift_both_halves_of_file1(repo: &TestRepo) -> Result<String> {
+    repo.write_file(
+        "file1.txt",
+        "ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN\nEIGHT\nNINE\nTEN\n",
+    )?;
+    repo.commit_all("mutate both halves of file1")
+}
+
+/// Rewrite the top of `file2.txt` so its own anchor drifts independently of
+/// `file1.txt`.
+fn drift_file2_head(repo: &TestRepo) -> Result<String> {
+    repo.write_file(
+        "file2.txt",
+        "A\nB\nC\nD\nE\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\n",
+    )?;
+    repo.commit_all("mutate file2 head")
+}
+
+/// `m` (`file1.txt#L1-L5`) and `n` (`file1.txt#L6-L10`) share `file1.txt` and
+/// go stale together; `o` (`file2.txt#L1-L5`) is unrelated and goes stale on
+/// its own. `--cluster` must place `m`/`n` in one cluster (bridged on
+/// `file1.txt`) and report `o` as an independent singleton.
+fn seed_cluster_fixture(repo: &TestRepo) -> Result<()> {
+    seed(repo, "m")?;
+    seed_file1_lower(repo, "n")?;
+    seed_file2_upper(repo, "o")?;
+    drift_both_halves_of_file1(repo)?;
+    drift_file2_head(repo)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
+fn human_cluster_lists_shared_spans_and_independent_singleton() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_cluster_fixture(&repo)?;
+
+    let out = repo.span_stdout(["stale", "--cluster", "--no-exit-code"])?;
+    assert!(out.contains("Clusters:"), "stdout={out}");
+    assert!(
+        out.contains("m, n (shared: file1.txt)"),
+        "expected m/n clustered on the shared file1.txt bridge, deterministically \
+         ordered; stdout={out}"
+    );
+    assert!(
+        out.contains("o (independent)"),
+        "unrelated span o must render as an independent singleton; stdout={out}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
+fn json_cluster_field_lists_spans_and_shared_files() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_cluster_fixture(&repo)?;
+
+    let out = repo.span_stdout(["stale", "--cluster", "--format=json", "--no-exit-code"])?;
+    let v: Value = serde_json::from_str(&out)?;
+    let clusters = v["clusters"].as_array().expect("clusters array");
+    assert_eq!(
+        clusters.len(),
+        2,
+        "expected one m/n cluster and one independent o cluster: {v}"
+    );
+
+    let bridged = clusters
+        .iter()
+        .find(|c| {
+            let spans: Vec<&str> = c["spans"]
+                .as_array()
+                .expect("spans array")
+                .iter()
+                .map(|s| s.as_str().expect("span name"))
+                .collect();
+            spans.contains(&"m") && spans.contains(&"n")
+        })
+        .unwrap_or_else(|| panic!("no cluster contains both m and n: {v}"));
+    assert_eq!(
+        bridged["spans"],
+        serde_json::json!(["m", "n"]),
+        "cluster members must be deterministically ordered: cluster={bridged}"
+    );
+    assert_eq!(
+        bridged["shared_files"],
+        serde_json::json!(["file1.txt"]),
+        "cluster={bridged}"
+    );
+
+    let singleton = clusters
+        .iter()
+        .find(|c| c["spans"].as_array().expect("spans array").len() == 1)
+        .unwrap_or_else(|| panic!("no singleton cluster found: {v}"));
+    assert_eq!(singleton["spans"], serde_json::json!(["o"]));
+    assert!(
+        singleton["shared_files"]
+            .as_array()
+            .expect("shared_files array")
+            .is_empty(),
+        "singleton={singleton}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
+fn porcelain_cluster_comment_lines_list_spans_and_shared_files() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_cluster_fixture(&repo)?;
+
+    let out = repo.span_stdout(["stale", "--cluster", "--format=porcelain", "--no-exit-code"])?;
+    assert!(
+        out.contains("# cluster m,n shared:file1.txt"),
+        "expected a `# cluster` comment line bridging m/n on file1.txt; stdout={out}"
+    );
+    assert!(
+        out.contains("# cluster o shared:"),
+        "expected an independent `# cluster o` comment line with no shared files; \
+         stdout={out}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
+fn cluster_output_is_identical_on_warm_cache_hit() -> Result<()> {
+    // Regression guard: `pre_fix_corpus`/`post_region_corpus` both go
+    // `None` on every warm cache_v2 hit (the fast path `stale` is optimized
+    // for), so a clustering implementation that sourced `full_anchor_paths`
+    // from either would silently produce empty or wrong clusters on this
+    // second run. `--cluster` must load its own dedicated `cluster_corpus`
+    // instead, independent of the whole-result cache lifecycle, so the
+    // second (warm) run reports byte-identical cluster output.
+    let repo = TestRepo::seeded()?;
+    seed_cluster_fixture(&repo)?;
+
+    let first = repo.span_stdout(["stale", "--cluster", "--format=json", "--no-exit-code"])?;
+    let second = repo.span_stdout(["stale", "--cluster", "--format=json", "--no-exit-code"])?;
+    assert_eq!(
+        first, second,
+        "cluster output must be byte-identical across a cold run and a warm \
+         cache_v2 hit against an unchanged repo"
+    );
+
+    let v: Value = serde_json::from_str(&second)?;
+    let clusters = v["clusters"].as_array().expect("clusters array");
+    assert_eq!(
+        clusters.len(),
+        2,
+        "warm-cache run must still report both clusters, not an empty/degraded set: {v}"
+    );
+    Ok(())
+}

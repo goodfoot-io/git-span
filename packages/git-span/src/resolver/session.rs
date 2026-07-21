@@ -15,7 +15,7 @@ use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::layers::{CustomFilters, read_worktree_normalized};
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
-use crate::types::{Anchor, CopyDetection, DriftSource};
+use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
 use git_span_core::LineIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -293,6 +293,15 @@ pub(crate) struct ResolveSession {
     /// `HEAD..anchor`). An in-memory, per-run memo — never persisted.
     pub(crate) known_head_ancestors:
         std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
+    /// Per-anchored-path memo for `resolver::attribution`'s deleted-locus
+    /// walk (card main-168). Keyed by the anchored path string (not by
+    /// anchor or span), so every subsequent anchor sharing a deleted path
+    /// within the same `stale` run reuses the first walk's answer instead of
+    /// re-walking history — see "Cross-anchor memoization" in
+    /// `plans/bounded-rename-chain.md`. Stub only in Phase 2: populated and
+    /// consulted starting in Phase 3, once `deleted_locus_walk` is wired
+    /// into `drift_locus`'s `Deleted` branch.
+    pub(crate) deleted_locus_memo: std::collections::HashMap<String, Option<DriftLocus>>,
     /// Session-scoped blob OID memo: `commit_sha → path → blob_oid`.
     ///
     /// `path_blob_at` requires a tree traversal for every `(commit, path)`
@@ -492,6 +501,7 @@ impl ResolveSession {
             filter_attr_hits: 0,
             filter_attr_misses: 0,
             known_head_ancestors: std::collections::HashMap::new(),
+            deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
             anchors_fresh: 0,
@@ -1381,6 +1391,7 @@ mod tests {
             filter_attr_hits: 0,
             filter_attr_misses: 0,
             known_head_ancestors: std::collections::HashMap::new(),
+            deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
             anchors_fresh: 0,
@@ -1447,6 +1458,7 @@ mod tests {
             filter_attr_hits: 0,
             filter_attr_misses: 0,
             known_head_ancestors: std::collections::HashMap::new(),
+            deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
             anchors_fresh: 0,

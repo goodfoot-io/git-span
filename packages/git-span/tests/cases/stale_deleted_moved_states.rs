@@ -13,6 +13,7 @@ use crate::support;
 use anyhow::Result;
 use git_span::types::{AnchorStatus, EngineOptions};
 use git_span::{resolve_span, stale_spans};
+use serde_json::Value;
 use support::TestRepo;
 
 fn full_opts() -> EngineOptions {
@@ -242,6 +243,158 @@ fn whole_file_relocated_in_index_is_moved() -> Result<()> {
         resolved.anchors[0].status,
         AnchorStatus::Moved,
         "staged-relocation verbatim content must classify as Moved"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Card main-168, Phase 2: deleted-vs-renamed rendering (Human/JSON/porcelain).
+//
+// These extend the F4 "Deleted" coverage above with the distinction
+// `plans/bounded-rename-chain.md` adds on top of it: a `Deleted` anchor whose
+// path was provably renamed in git history (per `deleted_locus_walk`, Phase
+// 3) must surface the rename target; a `Deleted` anchor with no rename in
+// its history must surface the plain "needs code-fix-first or span
+// deletion" phrasing. Not implemented yet — `#[ignore]`d until Phase 3 wires
+// `deleted_locus_walk` into `drift_locus`'s `Deleted` branch and the
+// renderers in `drift_label.rs`/`stale_output.rs` per the plan's "CLI
+// surfaces" section.
+// ---------------------------------------------------------------------------
+
+/// `api/charge.ts` is `git mv`'d to `api/billing.ts`, then edited further at
+/// the new path so verbatim content-matching (which would otherwise
+/// classify the anchor as `Moved`) can never find it — the anchor's own
+/// path is genuinely absent at HEAD (`Deleted`), while git history still
+/// records the rename that `deleted_locus_walk` must recover.
+fn seed_renamed_whole_file(repo: &TestRepo) -> Result<()> {
+    repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("seed")?;
+    repo.run_span(["add", "wf", "api/charge.ts"])?;
+    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span wf"])?;
+
+    repo.run_git(["mv", "api/charge.ts", "api/billing.ts"])?;
+    repo.run_git(["commit", "-m", "rename charge to billing"])?;
+
+    repo.write_file("api/billing.ts", "alpha\nbeta\ngamma\ndelta\n")?;
+    repo.commit_all("edit after rename")?;
+    Ok(())
+}
+
+/// `api/charge.ts` is committed-deleted outright — no rename anywhere in
+/// its history.
+fn seed_true_deletion_whole_file(repo: &TestRepo) -> Result<()> {
+    repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("seed")?;
+    repo.run_span(["add", "wf", "api/charge.ts"])?;
+    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span wf"])?;
+
+    repo.run_git(["rm", "api/charge.ts"])?;
+    repo.run_git(["commit", "-m", "delete charge"])?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn human_renamed_deletion_reports_re_anchor_target() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_renamed_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--no-exit-code"])?;
+    assert!(
+        out.contains("needs re-anchor to api/billing.ts"),
+        "renamed deletion must surface the rename target; stdout=\n{out}"
+    );
+    assert!(
+        !out.contains("needs code-fix-first"),
+        "a provable rename must not fall back to the true-deletion phrasing; stdout=\n{out}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn human_true_deletion_reports_code_fix_or_span_deletion() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_true_deletion_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--no-exit-code"])?;
+    assert!(
+        out.contains("needs code-fix-first or span deletion"),
+        "true deletion must surface the code-fix-or-span-deletion phrasing; stdout=\n{out}"
+    );
+    assert!(
+        !out.contains("needs re-anchor"),
+        "a genuine deletion must never guess a rename target; stdout=\n{out}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn json_renamed_deletion_has_renamed_at_and_renamed_to_fields() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_renamed_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--format=json", "--no-exit-code"])?;
+    let v: Value = serde_json::from_str(&out)?;
+    let finding = &v["findings"][0];
+    assert_eq!(finding["status"]["code"], "DELETED", "finding={finding}");
+    assert!(
+        finding["locus"]["renamed_at"].is_string(),
+        "renamed deletion must carry a renamed_at commit; finding={finding}"
+    );
+    assert_eq!(
+        finding["locus"]["renamed_to"], "api/billing.ts",
+        "finding={finding}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn json_true_deletion_has_deleted_in_and_no_renamed_fields() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_true_deletion_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--format=json", "--no-exit-code"])?;
+    let v: Value = serde_json::from_str(&out)?;
+    let finding = &v["findings"][0];
+    assert_eq!(finding["status"]["code"], "DELETED", "finding={finding}");
+    assert!(
+        finding["locus"]["deleted_in"].is_string(),
+        "true deletion must carry a deleted_in commit; finding={finding}"
+    );
+    assert!(
+        finding["locus"]["renamed_to"].is_null(),
+        "true deletion must never carry a renamed_to field; finding={finding}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn porcelain_renamed_deletion_emits_renamed_to_comment() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_renamed_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--format=porcelain", "--no-exit-code"])?;
+    assert!(out.contains("DELETED"), "stdout={out}");
+    assert!(
+        out.contains("# renamed-to api/billing.ts"),
+        "renamed deletion must emit a renamed-to porcelain comment; stdout={out}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
+fn porcelain_true_deletion_has_no_renamed_to_comment() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_true_deletion_whole_file(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--format=porcelain", "--no-exit-code"])?;
+    assert!(out.contains("DELETED"), "stdout={out}");
+    assert!(
+        !out.contains("# renamed-to"),
+        "a true deletion must not emit a renamed-to comment; stdout={out}"
     );
     Ok(())
 }

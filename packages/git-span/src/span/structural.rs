@@ -10,155 +10,6 @@ use crate::validation::validate_span_name;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        ensure_span_dir, GITATTRIBUTES_CONTENTS, HOOKIGNORE_CONTENTS,
-        MANUAL_RUN_CONTENTS, SPAN_GITIGNORE_CONTENTS,
-    };
-
-    /// `ensure_span_dir` must create `.span/.gitattributes` with exact
-    /// canonical content and must be idempotent.
-    #[test]
-    fn ensure_span_dir_writes_canonical_gitattributes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let span_root = ".span";
-
-        // First call: directory and file must be created.
-        ensure_span_dir(workdir, span_root).expect("first call");
-
-        let ga_path = workdir.join(span_root).join(".gitattributes");
-        assert!(ga_path.exists(), ".span/.gitattributes must exist after first call");
-
-        let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
-        assert_eq!(
-            content, GITATTRIBUTES_CONTENTS,
-            ".span/.gitattributes content must match the canonical form"
-        );
-
-        // Second call: idempotent — no error, content unchanged.
-        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
-
-        let content2 = std::fs::read_to_string(&ga_path).expect("read .gitattributes again");
-        assert_eq!(
-            content2, GITATTRIBUTES_CONTENTS,
-            "content must be unchanged after idempotent second call"
-        );
-    }
-
-    /// `ensure_span_dir` must create `.span/.gitignore` with exact canonical
-    /// content and must be idempotent.
-    #[test]
-    fn ensure_span_dir_writes_canonical_gitignore() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let span_root = ".span";
-
-        ensure_span_dir(workdir, span_root).expect("first call");
-
-        let gi_path = workdir.join(span_root).join(".gitignore");
-        assert!(gi_path.exists(), ".span/.gitignore must exist after first call");
-
-        let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
-        assert_eq!(
-            content, SPAN_GITIGNORE_CONTENTS,
-            ".span/.gitignore content must match the canonical form"
-        );
-
-        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
-
-        let content2 = std::fs::read_to_string(&gi_path).expect("read .gitignore again");
-        assert_eq!(
-            content2, SPAN_GITIGNORE_CONTENTS,
-            "content must be unchanged after idempotent second call"
-        );
-    }
-
-    /// `ensure_span_dir` must create `.span/.manual-run` with exact
-    /// canonical content and must be idempotent.
-    #[test]
-    fn ensure_span_dir_writes_canonical_manual_run() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let span_root = ".span";
-
-        ensure_span_dir(workdir, span_root).expect("first call");
-
-        let mr_path = workdir.join(span_root).join(".manual-run");
-        assert!(mr_path.exists(), ".span/.manual-run must exist after first call");
-
-        let content = std::fs::read_to_string(&mr_path).expect("read .manual-run");
-        assert_eq!(
-            content, MANUAL_RUN_CONTENTS,
-            ".span/.manual-run content must match the canonical form"
-        );
-
-        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
-
-        let content2 = std::fs::read_to_string(&mr_path).expect("read .manual-run again");
-        assert_eq!(
-            content2, MANUAL_RUN_CONTENTS,
-            "content must be unchanged after idempotent second call"
-        );
-    }
-
-    /// `ensure_span_dir` must create `.span/.hookignore` with exact
-    /// canonical content on first call, and the second call must be a
-    /// no-op (existence guard) even when content differs.
-    #[test]
-    fn ensure_span_dir_writes_canonical_hookignore() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let span_root = ".span";
-
-        ensure_span_dir(workdir, span_root).expect("first call");
-
-        let hi_path = workdir.join(span_root).join(".hookignore");
-        assert!(hi_path.exists(), ".span/.hookignore must exist after first call");
-
-        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
-        assert_eq!(
-            content, HOOKIGNORE_CONTENTS,
-            ".span/.hookignore content must match the canonical form"
-        );
-
-        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
-
-        let content2 = std::fs::read_to_string(&hi_path).expect("read .hookignore again");
-        assert_eq!(
-            content2, HOOKIGNORE_CONTENTS,
-            "content must be unchanged after idempotent second call"
-        );
-    }
-
-    /// `.hookignore` with user-added content must NOT be overwritten by a
-    /// subsequent call to `ensure_span_dir`.
-    #[test]
-    fn ensure_span_dir_hookignore_preserves_user_rules() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let span_root = ".span";
-
-        // Pre-populate .hookignore with user content that differs from
-        // the canonical form.
-        let span_dir = workdir.join(span_root);
-        std::fs::create_dir_all(&span_dir).expect("create .span");
-        let user_content = "# my custom rule\npath/to/foo  my-prefix\n";
-        std::fs::write(span_dir.join(".hookignore"), user_content)
-            .expect("write user .hookignore");
-
-        ensure_span_dir(workdir, span_root).expect("call after user content");
-
-        let hi_path = workdir.join(span_root).join(".hookignore");
-        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
-        assert_eq!(
-            content, user_content,
-            ".hookignore must preserve user-added rules"
-        );
-    }
-}
-
 const DEFAULT_SPAN_ROOT: &str = ".span";
 
 /// Canonical contents of `.span/.gitattributes` -- forces LF line endings
@@ -330,4 +181,153 @@ pub fn rename_span_in(repo: &gix::Repository, old: &str, new: &str, span_root: &
             .map_err(|e| Error::Git(format!("remove `{}`: {e}", old_path.display())))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_span_dir, GITATTRIBUTES_CONTENTS, HOOKIGNORE_CONTENTS,
+        MANUAL_RUN_CONTENTS, SPAN_GITIGNORE_CONTENTS,
+    };
+
+    /// `ensure_span_dir` must create `.span/.gitattributes` with exact
+    /// canonical content and must be idempotent.
+    #[test]
+    fn ensure_span_dir_writes_canonical_gitattributes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        // First call: directory and file must be created.
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let ga_path = workdir.join(span_root).join(".gitattributes");
+        assert!(ga_path.exists(), ".span/.gitattributes must exist after first call");
+
+        let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
+        assert_eq!(
+            content, GITATTRIBUTES_CONTENTS,
+            ".span/.gitattributes content must match the canonical form"
+        );
+
+        // Second call: idempotent — no error, content unchanged.
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&ga_path).expect("read .gitattributes again");
+        assert_eq!(
+            content2, GITATTRIBUTES_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `ensure_span_dir` must create `.span/.gitignore` with exact canonical
+    /// content and must be idempotent.
+    #[test]
+    fn ensure_span_dir_writes_canonical_gitignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let gi_path = workdir.join(span_root).join(".gitignore");
+        assert!(gi_path.exists(), ".span/.gitignore must exist after first call");
+
+        let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
+        assert_eq!(
+            content, SPAN_GITIGNORE_CONTENTS,
+            ".span/.gitignore content must match the canonical form"
+        );
+
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&gi_path).expect("read .gitignore again");
+        assert_eq!(
+            content2, SPAN_GITIGNORE_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `ensure_span_dir` must create `.span/.manual-run` with exact
+    /// canonical content and must be idempotent.
+    #[test]
+    fn ensure_span_dir_writes_canonical_manual_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let mr_path = workdir.join(span_root).join(".manual-run");
+        assert!(mr_path.exists(), ".span/.manual-run must exist after first call");
+
+        let content = std::fs::read_to_string(&mr_path).expect("read .manual-run");
+        assert_eq!(
+            content, MANUAL_RUN_CONTENTS,
+            ".span/.manual-run content must match the canonical form"
+        );
+
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&mr_path).expect("read .manual-run again");
+        assert_eq!(
+            content2, MANUAL_RUN_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `ensure_span_dir` must create `.span/.hookignore` with exact
+    /// canonical content on first call, and the second call must be a
+    /// no-op (existence guard) even when content differs.
+    #[test]
+    fn ensure_span_dir_writes_canonical_hookignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        ensure_span_dir(workdir, span_root).expect("first call");
+
+        let hi_path = workdir.join(span_root).join(".hookignore");
+        assert!(hi_path.exists(), ".span/.hookignore must exist after first call");
+
+        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
+        assert_eq!(
+            content, HOOKIGNORE_CONTENTS,
+            ".span/.hookignore content must match the canonical form"
+        );
+
+        ensure_span_dir(workdir, span_root).expect("second call (idempotency)");
+
+        let content2 = std::fs::read_to_string(&hi_path).expect("read .hookignore again");
+        assert_eq!(
+            content2, HOOKIGNORE_CONTENTS,
+            "content must be unchanged after idempotent second call"
+        );
+    }
+
+    /// `.hookignore` with user-added content must NOT be overwritten by a
+    /// subsequent call to `ensure_span_dir`.
+    #[test]
+    fn ensure_span_dir_hookignore_preserves_user_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        // Pre-populate .hookignore with user content that differs from
+        // the canonical form.
+        let span_dir = workdir.join(span_root);
+        std::fs::create_dir_all(&span_dir).expect("create .span");
+        let user_content = "# my custom rule\npath/to/foo  my-prefix\n";
+        std::fs::write(span_dir.join(".hookignore"), user_content)
+            .expect("write user .hookignore");
+
+        ensure_span_dir(workdir, span_root).expect("call after user content");
+
+        let hi_path = workdir.join(span_root).join(".hookignore");
+        let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
+        assert_eq!(
+            content, user_content,
+            ".hookignore must preserve user-added rules"
+        );
+    }
 }
