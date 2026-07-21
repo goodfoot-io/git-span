@@ -53,40 +53,50 @@ The `git span stale` output already lists every anchor for every stale span (sta
 ones marked `— changed`/`— deleted`, healthy ones unmarked). Use that directly —
 no need to run `git span show` on each span.
 
-For every file that appears in more than one stale span, run `tree` at depth 1:
+Collect every file that appears in more than one stale span, then pass all of
+them as roots to a single `tree` call at depth 1 — `tree` accepts multiple
+roots in one invocation and separates unrelated roots into distinct top-level
+trees in the same output, so there is never a reason to call it once per file:
 
 ```bash
-git span tree '<shared-file>' --depth 1
+git span tree '<shared-file-1>' '<shared-file-2>' '<shared-file-N>' --depth 1
 ```
 
-The tree output is the adjacency list: each child line represents one span that
-anchors the file, displayed as its *other* anchored file paths. Stale spans that
-appear as children of the same file are connected — they form one component. A
-stale span whose anchored files each appear in only one stale span is a component
-of size one. Spans that appear in the tree output but are not stale are context
-the fork will use to understand what the correct line ranges should be.
+The tree output is the adjacency list: each top-level tree covers one shared
+file (or a clique of files that co-occur on a span), and each child line
+represents one span that anchors it, displayed as its *other* anchored file
+paths. Stale spans that appear as children of the same top-level tree are
+connected — they form one component. A stale span whose anchored files each
+appear in only one stale span is a component of size one. Spans that appear in
+the tree output but are not stale are context the fork will use to understand
+what the correct line ranges should be.
 
 *(If the tree output format is unfamiliar, invoke `git-span:git-span` — the
 inspecting-spans section covers the nested markdown-list schema.)*
 
 *Example: `wiki/meta/update-order`, `git-span-touchpoints/cli-config`, and
-`wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs` — running
-`git span tree cli/mod.rs --depth 1` shows all three as children, so they form
-one component. `docs/merge-conflict-fix-contract` anchors only
-`command-reference.md` and `terminal-statuses.md`, which no other stale span
-anchors — it forms a second component. These two components can be forked in
+`wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs`, while
+`docs/merge-conflict-fix-contract` anchors `command-reference.md` and
+`terminal-statuses.md`, which no other stale span anchors. Running
+`git span tree cli/mod.rs command-reference.md terminal-statuses.md --depth 1`
+in one call returns `cli/mod.rs` as a top-level tree with all three spans as
+children (one component) and `command-reference.md`/`terminal-statuses.md`
+merged onto their own clique line as a second, separate top-level tree (a
+second component) — the same result as three single-file calls, without
+manually cross-referencing the outputs. These two components can be forked in
 parallel.*
 
 Find the connected components of this graph. Each component is one unit of work.
 
 ### 4. Survey blast radius for context
 
-For the shared files within each component, widen the tree one more level to
-understand the second-degree neighborhood — spans that don't anchor the shared
-file directly, but anchor files that the component's other spans anchor:
+Widen the tree one more level to understand the second-degree neighborhood —
+spans that don't anchor a shared file directly, but anchor files that the
+component's other spans anchor. Pass every shared file collected in step 3 as
+roots of one call again, this time at depth 2, rather than one call per file:
 
 ```bash
-git span tree '<shared-file>' --depth 2
+git span tree '<shared-file-1>' '<shared-file-2>' '<shared-file-N>' --depth 2
 ```
 
 This reveals the full neighborhood the fork needs: stale spans (the component),

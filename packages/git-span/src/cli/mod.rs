@@ -140,6 +140,15 @@ pub enum Commands {
     /// default) prints the nested markdown list; `--format json` emits the
     /// same structure as nested `{ "members": [...], "children": [...] }`
     /// nodes for tooling.
+    ///
+    /// Multiple roots are supported and encouraged: pass every file
+    /// whose blast radius you're tracing in one call — e.g. `git span
+    /// tree fileA fileB fileC --depth 2` — rather than invoking `tree`
+    /// once per file and merging the outputs by hand. All roots are
+    /// unioned before clique grouping, so files that share a span
+    /// collapse onto one clique line exactly as they would from a
+    /// single-root call, while roots with no span in common still
+    /// surface as separate top-level trees in the same listing.
     Tree(TreeArgs),
 
     /// Resolve `.span/` merge conflicts structurally when invoked by git
