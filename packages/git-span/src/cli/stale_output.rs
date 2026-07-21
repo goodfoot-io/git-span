@@ -853,6 +853,46 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
 
     let stale_count = stale_findings;
 
+    // `--cluster`: connected components over the run's stale spans, by
+    // shared anchored file. Gated strictly on `args.cluster && stale_count >
+    // 0` (no clusters possible with zero stale spans). `full_anchor_paths`
+    // is sourced from a dedicated `cluster_corpus` load — never from
+    // `pre_fix_corpus`/`post_region_corpus`, which are `None` on every warm
+    // cache_v2 hit — so `--cluster` output is identical on a cold run and a
+    // warm cache hit against an unchanged repo. See "Clustering design" in
+    // `plans/bounded-rename-chain.md`.
+    let clusters: Vec<crate::cli::stale_cluster::StaleCluster> = if args.cluster && stale_count > 0
+    {
+        let _perf = crate::perf::span("stale.cluster-corpus-load");
+        let (cluster_corpus, _conflicted) =
+            crate::span::read::load_all_spans_in(repo, span_root)?;
+        let stale_span_names: std::collections::BTreeSet<String> = findings
+            .iter()
+            .filter(|f| {
+                if matches!(f.status, AnchorStatus::ResolvedPendingCommit) {
+                    return false;
+                }
+                if followed_ids.contains(&f.anchor_id) {
+                    return false;
+                }
+                true
+            })
+            .map(|f| f.span.clone())
+            .collect();
+        let full_anchor_paths: HashMap<String, std::collections::BTreeSet<String>> =
+            cluster_corpus
+                .into_iter()
+                .map(|(name, span)| {
+                    let paths: std::collections::BTreeSet<String> =
+                        span.anchors.into_iter().map(|(_, a)| a.path).collect();
+                    (name, paths)
+                })
+                .collect();
+        crate::cli::stale_cluster::cluster_stale_spans(&stale_span_names, &full_anchor_paths)
+    } else {
+        Vec::new()
+    };
+
     match args.format {
         StaleFormat::Human => {
             let _perf = crate::perf::span("stale.render-human");
@@ -868,6 +908,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                     named_lookup: !args.paths.is_empty(),
                 },
                 &span_anchor_totals,
+                &clusters,
             )?;
 
             // No-drift message: zero drift prints a summary count line. A
@@ -916,11 +957,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         }
         StaleFormat::Porcelain => {
             let _perf = crate::perf::span("stale.render-porcelain");
-            render_porcelain(&findings, show_src_column);
+            render_porcelain(&findings, show_src_column, &clusters);
         }
         StaleFormat::Json => {
             let _perf = crate::perf::span("stale.render-json");
-            render_json(&spans, &findings, &followed_ids)?;
+            render_json(&spans, &findings, &followed_ids, &clusters)?;
         }
     }
 
@@ -1140,12 +1181,20 @@ fn describe_finding_lower(f: &Finding) -> String {
                 "moved".to_string()
             }
         }
-        AnchorStatus::Deleted => super::drift_label::format_drift_label(
-            &f.status,
-            f.source,
-            f.locus.as_ref(),
-            f.current.is_some(),
-        ),
+        AnchorStatus::Deleted => {
+            let label = super::drift_label::format_drift_label(
+                &f.status,
+                f.source,
+                f.locus.as_ref(),
+                f.current.is_some(),
+            );
+            match &f.locus {
+                Some(DriftLocus::RenamedAt(_, path)) => {
+                    format!("{label} — needs re-anchor to {path}")
+                }
+                _ => format!("{label} — needs code-fix-first or span deletion"),
+            }
+        }
         AnchorStatus::MergeConflict => {
             let src = src_phrase(f.source);
             if src.is_empty() {
@@ -1297,6 +1346,7 @@ fn render_human(
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
     span_anchor_totals: &std::collections::HashMap<String, usize>,
+    clusters: &[crate::cli::stale_cluster::StaleCluster],
 ) -> Result<bool> {
     // named_lookup: true when positional args were given (named lookup mode).
     // For workspace scan: suppress clean spans.
@@ -1454,6 +1504,22 @@ fn render_human(
             println!("{why}");
         }
     }
+
+    if !clusters.is_empty() {
+        if printed_any_span {
+            println!();
+        }
+        println!("Clusters:");
+        for c in clusters {
+            let members = c.spans.join(", ");
+            if c.shared_files.is_empty() {
+                println!("- {members} (independent)");
+            } else {
+                println!("- {members} (shared: {})", c.shared_files.join(", "));
+            }
+        }
+    }
+
     Ok(printed_any_span)
 }
 
@@ -1545,7 +1611,11 @@ fn slice_lines(text: &str, start: u32, end: u32) -> String {
 // Porcelain renderer.
 // ---------------------------------------------------------------------------
 
-fn render_porcelain(findings: &[Finding], show_src: bool) {
+fn render_porcelain(
+    findings: &[Finding],
+    show_src: bool,
+    clusters: &[crate::cli::stale_cluster::StaleCluster],
+) {
     if findings.is_empty() {
         return;
     }
@@ -1578,11 +1648,26 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
                 end_col,
             );
         }
+        // Renamed-deletion comment line: the rename target the deleted-locus
+        // walk recovered, when the anchor's own orphaning commit's rewrite
+        // resolved to a path that's live at HEAD.
+        if let Some(DriftLocus::RenamedAt(_, path)) = &f.locus {
+            println!("# renamed-to {path}");
+        }
         // Fuzzy comment line: confidence of the best fuzzy successor.
         if let Some(best) = f.fuzzy_successors.first() {
             let pct = (best.confidence * 100.0).round() as u32;
             println!("# fuzzy {pct}");
         }
+    }
+    // Cluster comment lines: one per connected component, after all finding
+    // rows. `spans`/`shared_files` are already sorted (see `StaleCluster`).
+    for c in clusters {
+        println!(
+            "# cluster {} shared:{}",
+            c.spans.join(","),
+            c.shared_files.join(","),
+        );
     }
 }
 
@@ -1594,6 +1679,7 @@ fn render_json(
     spans: &[SpanResolved],
     findings: &[Finding],
     followed_ids: &HashSet<String>,
+    clusters: &[crate::cli::stale_cluster::StaleCluster],
 ) -> Result<()> {
     if findings.is_empty() {
         return Ok(());
@@ -1602,6 +1688,10 @@ fn render_json(
         "schema_version": 2,
         "span": spans.first().map(|m| m.name.clone()).unwrap_or_default(),
         "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
+        "clusters": clusters.iter().map(|c| json!({
+            "spans": c.spans,
+            "shared_files": c.shared_files,
+        })).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
     Ok(())
@@ -1690,11 +1780,10 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "locus": match &f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
             Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),
-            // Stub-phase: `RenamedAt` is never produced yet (attribution
-            // still only returns `OrphanedAt`/`ChangedAt`); render it
-            // identically to `OrphanedAt` until Phase 3 wires the
-            // dedicated `renamed_to` field.
-            Some(DriftLocus::RenamedAt(oid, _)) => json!({ "deleted_in": oid.to_string() }),
+            Some(DriftLocus::RenamedAt(oid, path)) => json!({
+                "renamed_at": oid.to_string(),
+                "renamed_to": path,
+            }),
             None => Value::Null,
         },
     })

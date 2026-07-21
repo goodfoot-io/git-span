@@ -64,10 +64,10 @@ pub fn format_drift_label(
                 Some(DriftLocus::OrphanedAt(oid)) => {
                     format!("deleted in {}", short_sha(oid))
                 }
-                // Stub-phase: `RenamedAt` is only ever produced for a
-                // `Deleted` anchor (see `resolver::attribution`), so this
-                // arm is not reachable yet; mirror `OrphanedAt`'s label
-                // until Phase 3 differentiates it.
+                // `RenamedAt` is only ever produced for a `Deleted` anchor
+                // (see `resolver::attribution::deleted_locus_walk`), so this
+                // arm is unreachable for `Changed`+`Head`; mirror
+                // `OrphanedAt`'s label for exhaustiveness.
                 Some(DriftLocus::RenamedAt(oid, _)) => {
                     format!("deleted in {}", short_sha(oid))
                 }

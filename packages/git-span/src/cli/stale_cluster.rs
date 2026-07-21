@@ -1,11 +1,8 @@
 //! Stale-span clustering — `git span stale --cluster`.
 //!
-//! Stub phase (card main-168 Phase 1): declares the contract only. See
-//! `plans/bounded-rename-chain.md` ("Clustering design") for the union-find algorithm
-//! this will implement — connected components over the run's stale spans,
-//! with an edge between two spans whenever they share an anchored file
-//! (stale or healthy anchor). Not yet implemented; `cluster_stale_spans`
-//! panics via `todo!()` and is not called by anything yet.
+//! Connected components over the run's stale spans, with an edge between
+//! two spans whenever they share an anchored file (stale or healthy anchor).
+//! See `plans/bounded-rename-chain.md` ("Clustering design").
 
 /// One connected component of stale spans that share at least one anchored
 /// file, transitively.
@@ -22,13 +19,80 @@ pub struct StaleCluster {
 /// anchors (stale or healthy) — not just its currently-stale anchors — per
 /// `plans/bounded-rename-chain.md`.
 ///
-/// Not implemented yet: this is a Phase 1 contract stub.
+/// Plain union-find: two spans merge whenever their `full_anchor_paths`
+/// entries intersect. `shared_files` is not carried from whichever edge
+/// happened to merge a group — it is recomputed after grouping, as every
+/// path anchored by 2+ of that group's final members, so a transitive chain
+/// bridged by two different files reports both bridges.
+///
+/// Only `stale_span_names` (a `BTreeSet`, so already sorted) is iterated;
+/// `full_anchor_paths` is only ever probed via `.get()` by name, never
+/// iterated, so output ordering does not depend on the input `HashMap`'s
+/// iteration order.
 pub fn cluster_stale_spans(
     stale_span_names: &std::collections::BTreeSet<String>,
     full_anchor_paths: &std::collections::HashMap<String, std::collections::BTreeSet<String>>,
 ) -> Vec<StaleCluster> {
-    let _ = (stale_span_names, full_anchor_paths);
-    todo!("implemented in a later phase")
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let names: Vec<&String> = stale_span_names.iter().collect();
+    let n = names.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    }
+
+    let empty: BTreeSet<String> = BTreeSet::new();
+    for (i, name_i) in names.iter().enumerate() {
+        let paths_i = full_anchor_paths.get(name_i.as_str()).unwrap_or(&empty);
+        for (j, name_j) in names.iter().enumerate().skip(i + 1) {
+            let paths_j = full_anchor_paths.get(name_j.as_str()).unwrap_or(&empty);
+            if paths_i.intersection(paths_j).next().is_some() {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    let mut clusters: Vec<StaleCluster> = groups
+        .into_values()
+        .map(|members| {
+            let spans: Vec<String> = members.iter().map(|&i| names[i].clone()).collect();
+            let mut file_counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for &i in &members {
+                if let Some(paths) = full_anchor_paths.get(names[i].as_str()) {
+                    for p in paths {
+                        *file_counts.entry(p.as_str()).or_insert(0) += 1;
+                    }
+                }
+            }
+            let shared_files: Vec<String> = file_counts
+                .into_iter()
+                .filter(|&(_, count)| count >= 2)
+                .map(|(p, _)| p.to_string())
+                .collect();
+            StaleCluster { spans, shared_files }
+        })
+        .collect();
+
+    clusters.sort_by(|a, b| a.spans.cmp(&b.spans));
+    clusters
 }
 
 #[cfg(test)]
@@ -41,7 +105,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn singleton_with_no_shared_file_is_independent() {
         let stale = set(&["alpha"]);
         let mut full = HashMap::new();
@@ -57,7 +120,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn two_spans_sharing_one_file_form_one_cluster() {
         let stale = set(&["alpha", "beta"]);
         let mut full = HashMap::new();
@@ -77,7 +139,6 @@ mod tests {
     /// carrying only whichever single union-find edge happened to merge the
     /// group first.
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn transitive_chain_via_two_different_files_lists_both_bridges() {
         let stale = set(&["a", "b", "c"]);
         let mut full = HashMap::new();
@@ -103,7 +164,6 @@ mod tests {
     /// healthy. Two stale spans must still cluster together through a file
     /// that is currently a *healthy* (non-stale) anchor for one of them.
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn shared_file_via_a_healthy_anchor_still_clusters() {
         let stale = set(&["alpha", "beta"]);
         let mut full = HashMap::new();
@@ -119,7 +179,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn unrelated_spans_form_separate_clusters() {
         let stale = set(&["alpha", "beta"]);
         let mut full = HashMap::new();
@@ -146,7 +205,6 @@ mod tests {
     /// per-cluster member order — regardless of which map's iteration order
     /// it happened to walk.
     #[test]
-    #[ignore = "card main-168 Phase 3: cluster_stale_spans not implemented yet"]
     fn ordering_is_deterministic_across_shuffled_input_maps() {
         let stale = set(&["a", "b", "c", "d"]);
 

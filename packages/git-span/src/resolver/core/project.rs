@@ -47,7 +47,13 @@ fn project_anchor(
     source: Option<DriftSource>,
     layer_sources: Vec<DriftSource>,
 ) -> AnchorResolved {
-    let locus = if matches!(source, Some(DriftSource::Head)) {
+    // `Deleted` anchors always carry `source: None` (deletion is not
+    // attributed to a layer the way `Changed` drift is — see
+    // `resolve_anchor_inner`'s Deleted arms), so the HEAD-only gate below
+    // would otherwise drop every orphaning/rename locus a Deleted anchor
+    // carries. Admit `Deleted` alongside the `Head`-sourced `Changed` case.
+    let locus = if matches!(source, Some(DriftSource::Head)) || obs.status == AnchorStatus::Deleted
+    {
         core.locus.as_ref().map(|l| match l {
             DriftLocusCore::ChangedAt(oid) => DriftLocus::ChangedAt(
                 gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),

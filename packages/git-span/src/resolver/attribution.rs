@@ -24,21 +24,35 @@ use std::collections::HashMap;
 /// cache (`resolver::cache`'s `drift_locus` kind) was removed in the
 /// greenfield cutover — the SQLite store now caches at the whole-generation
 /// level, so a per-`DriftLocus` disk tier is redundant. `session` still
-/// carries the miss counter and the per-session HEAD-ancestor memo the walk
-/// populates.
+/// carries the miss counter and the per-session deleted-locus memo the walk
+/// populates for `Deleted` anchors.
 pub(crate) fn drift_locus(
     repo: &gix::Repository,
     resolved: &AnchorResolved,
     session: &mut ResolveSession,
 ) -> Result<Option<DriftLocus>> {
     let _perf = crate::perf::span("attribution.drift-locus");
-    // The walk applies to (a) HEAD-attributed drift (Changed-in-HEAD) and
-    // (b) Orphaned anchors, where the caller (`populate_drift_locus`) asks
-    // us to describe the orphaning commit (rename or deletion) when the
-    // anchor itself is still reachable from HEAD.
-    if resolved.source != Some(DriftSource::Head)
-        && !matches!(resolved.status, crate::types::AnchorStatus::Deleted)
-    {
+
+    // `Deleted` anchors go through the boundary-free backward walk (card
+    // main-168), memoized per anchored path so every subsequent anchor
+    // sharing a deleted path within this session reuses the first walk's
+    // answer. This is checked ahead of the whole-file early-return and the
+    // `anchor_sha` boundary below — both are meaningless for `Deleted`
+    // (there is no boundary to walk from; see
+    // `plans/bounded-rename-chain.md`).
+    if resolved.status == crate::types::AnchorStatus::Deleted {
+        let path = resolved.anchored.path.to_string_lossy().into_owned();
+        if let Some(cached) = session.deleted_locus_memo.get(&path) {
+            return Ok(cached.clone());
+        }
+        let locus = deleted_locus_walk(repo, &path)?;
+        session.deleted_locus_memo.insert(path, locus.clone());
+        return Ok(locus);
+    }
+
+    // The remaining walk applies only to HEAD-attributed drift
+    // (Changed-in-HEAD); other layers carry their own per-layer label.
+    if resolved.source != Some(DriftSource::Head) {
         return Ok(None);
     }
 
@@ -55,14 +69,7 @@ pub(crate) fn drift_locus(
         .unwrap_or_default();
 
     session.drift_locus_misses += 1;
-    drift_locus_walk(
-        repo,
-        resolved,
-        anchored_start,
-        anchored_end,
-        &blob_oid,
-        &mut session.known_head_ancestors,
-    )
+    drift_locus_walk(repo, resolved, anchored_start, anchored_end, &blob_oid)
 }
 
 /// Perform the full forward walk.
@@ -72,10 +79,6 @@ fn drift_locus_walk(
     anchored_start: u32,
     anchored_end: u32,
     blob_oid: &str,
-    known_head_ancestors: &mut std::collections::HashMap<
-        gix::ObjectId,
-        std::collections::HashSet<gix::ObjectId>,
-    >,
 ) -> Result<Option<DriftLocus>> {
     let head_hex = git::head_oid(repo)?;
     let head_id = match repo.rev_parse_single(head_hex.as_str()) {
@@ -105,14 +108,6 @@ fn drift_locus_walk(
         // Anchor is at HEAD (or beyond): no commit on the path. The
         // caller should treat this as "no Head locus".
         return Ok(None);
-    }
-    // Every commit in this walk is an ancestor of HEAD by construction
-    // (rev_walk visits `HEAD..anchor`, so all visited commits reach HEAD).
-    // The memo is keyed by HEAD so entries from a stale HEAD do not leak
-    // into a subsequent check against a different HEAD.
-    let entry = known_head_ancestors.entry(head_id).or_default();
-    for &id in &commits {
-        entry.insert(id);
     }
     commits.reverse();
 
@@ -318,10 +313,26 @@ enum TouchKind {
 /// that follows spans several more renames before reaching a path that
 /// resolves at HEAD.
 ///
-/// Not implemented yet: Phase 2 contract stub (card main-168).
 fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<DriftLocus>> {
-    let _ = (repo, path);
-    todo!("card main-168 Phase 3: implement the bounded rename-chain walk (plans/bounded-rename-chain.md)")
+    let Some(commit_id) = nearest_touching_commit(repo, path)? else {
+        return Ok(None); // history exhausted without a match: fail-closed
+    };
+    match classify_touching_commit(repo, commit_id, path)? {
+        Some(TouchKind::Deletion) => Ok(Some(DriftLocus::OrphanedAt(commit_id))),
+        Some(TouchKind::Rewrite(target)) => {
+            // commit_id is pinned here — only the path is threaded forward.
+            match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS)? {
+                Some(terminal) => Ok(Some(DriftLocus::RenamedAt(commit_id, terminal))),
+                None => Ok(Some(DriftLocus::OrphanedAt(commit_id))), // chain ends in a
+                    // delete, an unclassifiable change, or exceeds the hop bound —
+                    // report the anchor's own orphaning commit as a plain deletion
+                    // rather than a rename to a path that turned out not to resolve.
+            }
+        }
+        None => Ok(None), // e.g. a mode change (blob -> submodule gitlink):
+                           // neither a plain deletion nor a content rewrite —
+                           // fail-closed rather than guessing.
+    }
 }
 
 /// Follow `path` forward through however many further renames it takes to
@@ -330,10 +341,70 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
 /// exceeds `hops_left` — every `None` case is fail-closed, never a guess.
 /// Carries no commit — [`deleted_locus_walk`] owns the commit to report.
 ///
-/// Not implemented yet: Phase 2 contract stub (card main-168).
 fn resolve_terminal_path(repo: &gix::Repository, path: &str, hops_left: u8) -> Result<Option<String>> {
-    let _ = (repo, path, hops_left);
-    todo!("card main-168 Phase 3: implement the bounded rename-chain walk (plans/bounded-rename-chain.md)")
+    if path_exists_at_head(repo, path)? {
+        return Ok(Some(path.to_string())); // terminal: this path is live right now
+    }
+    if hops_left == 0 {
+        return Ok(None); // fail-closed: chain too deep to trust
+    }
+    let Some(commit_id) = nearest_touching_commit(repo, path)? else {
+        return Ok(None); // history exhausted without a match: fail-closed
+    };
+    match classify_touching_commit(repo, commit_id, path)? {
+        Some(TouchKind::Rewrite(next)) => resolve_terminal_path(repo, &next, hops_left - 1),
+        _ => Ok(None), // a Deletion (rename-then-delete) or an unclassifiable
+                       // change ends the chain without ever finding a live path
+    }
+}
+
+/// Look up the blob OID at `path` in `tree`. Returns `None` when the path is
+/// absent or does not resolve to a blob/symlink (a directory at that path is
+/// treated as "no blob here"). Mirrors
+/// [`crate::git::git_log_name_only_for_paths`]'s internal `blob_oid_at`.
+fn blob_oid_at(tree: &gix::Tree<'_>, path: &str) -> Option<gix::ObjectId> {
+    let entry = tree
+        .clone()
+        .lookup_entry_by_path(std::path::Path::new(path))
+        .ok()??;
+    if entry.mode().is_blob_or_symlink() {
+        Some(entry.object_id())
+    } else {
+        None
+    }
+}
+
+/// `true` when `path` resolves to a blob/symlink in HEAD's tree right now.
+fn path_exists_at_head(repo: &gix::Repository, path: &str) -> Result<bool> {
+    let head_id = match repo.head_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return Ok(false),
+    };
+    let commit = match repo.find_commit(head_id) {
+        Ok(c) => c,
+        Err(_) => return Ok(false),
+    };
+    let tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return Ok(false),
+    };
+    Ok(blob_oid_at(&tree, path).is_some())
+}
+
+/// The tree of `commit_id`'s first parent, or the empty tree for a root
+/// commit / an unreadable parent.
+fn first_parent_tree_or_empty<'repo>(
+    repo: &'repo gix::Repository,
+    commit: &gix::Commit<'repo>,
+) -> gix::Tree<'repo> {
+    let parent_ids: Vec<_> = commit.parent_ids().map(|p| p.detach()).collect();
+    match parent_ids.first() {
+        Some(pid) => match repo.find_commit(*pid) {
+            Ok(parent) => parent.tree().unwrap_or_else(|_| repo.empty_tree()),
+            Err(_) => repo.empty_tree(),
+        },
+        None => repo.empty_tree(),
+    }
 }
 
 /// Walk `HEAD` backward and return the first (nearest) commit whose blob OID
@@ -343,10 +414,34 @@ fn resolve_terminal_path(repo: &gix::Repository, path: &str, hops_left: u8) -> R
 /// skipped: a merge commit that resolves a conflict by dropping a file is a
 /// legitimate orphaning commit and must not be missed.
 ///
-/// Not implemented yet: Phase 2 contract stub (card main-168).
 fn nearest_touching_commit(repo: &gix::Repository, path: &str) -> Result<Option<gix::ObjectId>> {
-    let _ = (repo, path);
-    todo!("card main-168 Phase 3: implement the bounded rename-chain walk (plans/bounded-rename-chain.md)")
+    let head_id = match repo.head_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return Ok(None),
+    };
+    let walk = match repo.rev_walk([head_id]).all() {
+        Ok(w) => w,
+        Err(_) => return Ok(None),
+    };
+    for info in walk {
+        let info = match info {
+            Ok(i) => i,
+            Err(_) => return Ok(None),
+        };
+        let commit = match repo.find_commit(info.id) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let new_tree = match commit.tree() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let old_tree = first_parent_tree_or_empty(repo, &commit);
+        if blob_oid_at(&new_tree, path) != blob_oid_at(&old_tree, path) {
+            return Ok(Some(info.id));
+        }
+    }
+    Ok(None)
 }
 
 /// Classify how `commit_id` touched `path`, via a single
@@ -356,14 +451,49 @@ fn nearest_touching_commit(repo: &gix::Repository, path: &str) -> Result<Option<
 /// for an unclassifiable change (e.g. a mode change: blob -> submodule
 /// gitlink) — fail-closed rather than guessing.
 ///
-/// Not implemented yet: Phase 2 contract stub (card main-168).
 fn classify_touching_commit(
     repo: &gix::Repository,
     commit_id: gix::ObjectId,
     path: &str,
 ) -> Result<Option<TouchKind>> {
-    let _ = (repo, commit_id, path);
-    todo!("card main-168 Phase 3: implement the bounded rename-chain walk (plans/bounded-rename-chain.md)")
+    let commit = match repo.find_commit(commit_id) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let new_tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return Ok(None),
+    };
+    let old_tree = first_parent_tree_or_empty(repo, &commit);
+
+    let mut opts = gix::diff::Options::default();
+    opts.track_rewrites(Some(Default::default()));
+    let changes = match repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts)) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+
+    let path_bytes = path.as_bytes();
+    for change in changes.iter() {
+        use gix::object::tree::diff::ChangeDetached;
+        match change {
+            ChangeDetached::Deletion { location, .. } if location.as_slice() == path_bytes => {
+                return Ok(Some(TouchKind::Deletion));
+            }
+            ChangeDetached::Rewrite {
+                source_location,
+                location,
+                ..
+            } if source_location.as_slice() == path_bytes => {
+                let target = std::str::from_utf8(location.as_slice())
+                    .unwrap_or_default()
+                    .to_string();
+                return Ok(Some(TouchKind::Rewrite(target)));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -421,7 +551,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn single_rename_at_orphaning_commit_resolves_to_renamed_at() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -445,7 +574,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn true_deletion_resolves_to_orphaned_at() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -472,7 +600,6 @@ mod deleted_locus_walk_tests {
     /// the identical `deleted_locus_walk(repo, path)` call — there is no
     /// separate whole-file branch to exercise.
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn extent_agnostic_whole_file_and_line_range_share_one_walk() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -510,7 +637,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn path_never_tracked_returns_none_fail_closed() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -528,7 +654,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn rename_chain_reports_anchors_own_orphaning_commit() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -557,7 +682,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn rename_then_delete_resolves_to_orphaned_at_first_hop() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -585,7 +709,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn rename_chain_exceeding_max_hops_fails_closed_and_terminates() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -631,7 +754,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_walk not implemented yet"]
     fn merge_commit_deletion_reads_as_orphaned_at_merge_commit() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -673,7 +795,6 @@ mod deleted_locus_walk_tests {
     }
 
     #[test]
-    #[ignore = "card main-168 Phase 3: deleted_locus_memo not wired into drift_locus yet"]
     fn deleted_locus_memo_reused_across_anchors_sharing_a_path() {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
@@ -697,10 +818,13 @@ mod deleted_locus_walk_tests {
         assert_eq!(first, Some(DriftLocus::RenamedAt(x1, "b.rs".to_string())));
         assert_eq!(session.deleted_locus_memo.len(), 1);
 
-        // Mutate history further: recreate b.rs then delete it again at a NEW
-        // commit closer to HEAD. A non-memoized second full walk over "a.rs"
-        // would now find this newer commit (X2) instead of X1 — the memo
-        // must insulate the second anchor from that drift within one session.
+        // Mutate history further: delete b.rs, recreate it, then delete it
+        // again at a NEW commit closer to HEAD. A non-memoized second full
+        // walk over "a.rs" would now resolve differently (through b.rs's
+        // later history) — the memo must insulate the second anchor from
+        // that drift within one session.
+        git(dir, &["rm", "b.rs"]);
+        git(dir, &["commit", "-m", "delete b (interim)"]);
         write_file(dir, "b.rs", "fn a() {}\n");
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-m", "recreate b"]);

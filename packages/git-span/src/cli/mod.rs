@@ -262,7 +262,8 @@ pub struct StaleArgs {
 
     /// Group this run's stale spans into connected-component clusters by
     /// shared anchored file, so each cluster can be dispatched
-    /// independently. Not yet wired to any rendering.
+    /// independently. Rendered as an additional section/field in every
+    /// `--format`.
     #[arg(long)]
     pub cluster: bool,
 }

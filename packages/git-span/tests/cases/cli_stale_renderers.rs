@@ -498,14 +498,12 @@ fn all_args_resolve_to_clean_span_exits_zero() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Card main-168, Phase 2: `--cluster` output (Human/JSON/porcelain), plus
-// the warm-cache regression guard.
+// Card main-168: `--cluster` output (Human/JSON/porcelain), plus the
+// warm-cache regression guard.
 //
 // Per `plans/bounded-rename-chain.md` ("Clustering design"): `--cluster`
 // partitions the run's stale spans into connected components by shared
-// anchored file. Not implemented yet (`cluster_stale_spans` is a `todo!()`
-// stub and nothing calls it) — `#[ignore]`d until Phase 3 wires the
-// dedicated `cluster_corpus` load and the three renderers.
+// anchored file.
 // ---------------------------------------------------------------------------
 
 /// Seed a span anchored on `file1.txt#L6-L10` (the bottom half). Deliberately
@@ -568,7 +566,6 @@ fn seed_cluster_fixture(repo: &TestRepo) -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
 fn human_cluster_lists_shared_spans_and_independent_singleton() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_cluster_fixture(&repo)?;
@@ -588,7 +585,6 @@ fn human_cluster_lists_shared_spans_and_independent_singleton() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
 fn json_cluster_field_lists_spans_and_shared_files() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_cluster_fixture(&repo)?;
@@ -641,7 +637,6 @@ fn json_cluster_field_lists_spans_and_shared_files() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
 fn porcelain_cluster_comment_lines_list_spans_and_shared_files() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_cluster_fixture(&repo)?;
@@ -660,7 +655,6 @@ fn porcelain_cluster_comment_lines_list_spans_and_shared_files() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: --cluster rendering not wired yet"]
 fn cluster_output_is_identical_on_warm_cache_hit() -> Result<()> {
     // Regression guard: `pre_fix_corpus`/`post_region_corpus` both go
     // `None` on every warm cache_v2 hit (the fast path `stale` is optimized

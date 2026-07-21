@@ -248,17 +248,14 @@ fn whole_file_relocated_in_index_is_moved() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Card main-168, Phase 2: deleted-vs-renamed rendering (Human/JSON/porcelain).
+// Card main-168: deleted-vs-renamed rendering (Human/JSON/porcelain).
 //
 // These extend the F4 "Deleted" coverage above with the distinction
 // `plans/bounded-rename-chain.md` adds on top of it: a `Deleted` anchor whose
-// path was provably renamed in git history (per `deleted_locus_walk`, Phase
-// 3) must surface the rename target; a `Deleted` anchor with no rename in
-// its history must surface the plain "needs code-fix-first or span
-// deletion" phrasing. Not implemented yet — `#[ignore]`d until Phase 3 wires
-// `deleted_locus_walk` into `drift_locus`'s `Deleted` branch and the
-// renderers in `drift_label.rs`/`stale_output.rs` per the plan's "CLI
-// surfaces" section.
+// path was provably renamed in git history (per `deleted_locus_walk`) must
+// surface the rename target; a `Deleted` anchor with no rename in its
+// history must surface the plain "needs code-fix-first or span deletion"
+// phrasing.
 // ---------------------------------------------------------------------------
 
 /// `api/charge.ts` is `git mv`'d to `api/billing.ts`, then edited further at
@@ -298,7 +295,6 @@ fn seed_true_deletion_whole_file(repo: &TestRepo) -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn human_renamed_deletion_reports_re_anchor_target() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_renamed_whole_file(&repo)?;
@@ -315,7 +311,6 @@ fn human_renamed_deletion_reports_re_anchor_target() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn human_true_deletion_reports_code_fix_or_span_deletion() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_true_deletion_whole_file(&repo)?;
@@ -332,7 +327,6 @@ fn human_true_deletion_reports_code_fix_or_span_deletion() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn json_renamed_deletion_has_renamed_at_and_renamed_to_fields() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_renamed_whole_file(&repo)?;
@@ -352,7 +346,6 @@ fn json_renamed_deletion_has_renamed_at_and_renamed_to_fields() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn json_true_deletion_has_deleted_in_and_no_renamed_fields() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_true_deletion_whole_file(&repo)?;
@@ -372,7 +365,6 @@ fn json_true_deletion_has_deleted_in_and_no_renamed_fields() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn porcelain_renamed_deletion_emits_renamed_to_comment() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_renamed_whole_file(&repo)?;
@@ -386,7 +378,6 @@ fn porcelain_renamed_deletion_emits_renamed_to_comment() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-168 Phase 3: deleted-vs-renamed rendering not wired yet"]
 fn porcelain_true_deletion_has_no_renamed_to_comment() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_true_deletion_whole_file(&repo)?;

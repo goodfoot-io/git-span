@@ -287,20 +287,12 @@ pub(crate) struct ResolveSession {
     /// distinct path). On a warm `stale` run, this equals the number of
     /// distinct paths probed across all anchors in the session.
     pub(crate) filter_attr_misses: u64,
-    /// Per-session set of commit ObjectIds known to be ancestors of HEAD.
-    /// Populated by every commit observed during a `drift_locus` `rev_walk`
-    /// (those are ancestors of HEAD by construction since the walk runs
-    /// `HEAD..anchor`). An in-memory, per-run memo — never persisted.
-    pub(crate) known_head_ancestors:
-        std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
     /// Per-anchored-path memo for `resolver::attribution`'s deleted-locus
     /// walk (card main-168). Keyed by the anchored path string (not by
     /// anchor or span), so every subsequent anchor sharing a deleted path
     /// within the same `stale` run reuses the first walk's answer instead of
     /// re-walking history — see "Cross-anchor memoization" in
-    /// `plans/bounded-rename-chain.md`. Stub only in Phase 2: populated and
-    /// consulted starting in Phase 3, once `deleted_locus_walk` is wired
-    /// into `drift_locus`'s `Deleted` branch.
+    /// `plans/bounded-rename-chain.md`.
     pub(crate) deleted_locus_memo: std::collections::HashMap<String, Option<DriftLocus>>,
     /// Session-scoped blob OID memo: `commit_sha → path → blob_oid`.
     ///
@@ -500,7 +492,6 @@ impl ResolveSession {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            known_head_ancestors: std::collections::HashMap::new(),
             deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
@@ -1390,7 +1381,6 @@ mod tests {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            known_head_ancestors: std::collections::HashMap::new(),
             deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
@@ -1457,7 +1447,6 @@ mod tests {
             drift_locus_misses: 0,
             filter_attr_hits: 0,
             filter_attr_misses: 0,
-            known_head_ancestors: std::collections::HashMap::new(),
             deleted_locus_memo: std::collections::HashMap::new(),
             blob_oid_memo: HashMap::new(),
             head_blob_memo_warmed_for: None,
