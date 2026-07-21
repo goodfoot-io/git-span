@@ -227,6 +227,22 @@ fn read_clean_source_files(
     Ok(files)
 }
 
+/// Drop orphan anchors (present on only one side) whose path is unreadable
+/// when — and only when — exactly one orphan anchor on the *other* side
+/// shares the identical (start_line, end_line) at a different, readable
+/// path. Mutates `ours`/`theirs` in place. Returns an error (preserving
+/// today's whole-span fail-closed behavior) if any orphan anchor's path is
+/// unreadable and no unambiguous live counterpart exists.
+// Not yet called: wired into `resolve_conflicted_span` in Phase 3.
+#[allow(dead_code)]
+fn prune_unreadable_renamed_orphans(
+    _ours: &mut SpanFile,
+    _theirs: &mut SpanFile,
+    _source_files: &[(String, Vec<u8>)],
+) -> Result<()> {
+    todo!("Phase 1 stub — implemented in Phase 3")
+}
+
 /// Format the residue marker text for a partially-resolved merge.
 ///
 /// Produces the text portion of a residue span file: resolved anchors in
