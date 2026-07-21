@@ -389,3 +389,35 @@ fn porcelain_true_deletion_has_no_renamed_to_comment() -> Result<()> {
     );
     Ok(())
 }
+
+/// `api/old,name.ts` is `git mv`'d to `api/new,name.ts`, then edited further at
+/// the new path so the anchor's renamed path contains commas, testing comma-escaping
+/// in the porcelain `# renamed-to` output.
+fn seed_renamed_with_comma(repo: &TestRepo) -> Result<()> {
+    repo.write_file("api/old,name.ts", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("seed")?;
+    repo.run_span(["add", "wf", "api/old,name.ts"])?;
+    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span wf"])?;
+
+    repo.run_git(["mv", "api/old,name.ts", "api/new,name.ts"])?;
+    repo.run_git(["commit", "-m", "rename to new path with comma"])?;
+
+    repo.write_file("api/new,name.ts", "alpha\nbeta\ngamma\ndelta\n")?;
+    repo.commit_all("edit after rename")?;
+    Ok(())
+}
+
+#[test]
+fn porcelain_renamed_deletion_escapes_comma_in_path() -> Result<()> {
+    let repo = TestRepo::new()?;
+    seed_renamed_with_comma(&repo)?;
+    let out = repo.span_stdout(["stale", "wf", "--format=porcelain", "--no-exit-code"])?;
+    assert!(out.contains("DELETED"), "stdout={out}");
+    assert!(
+        out.contains("# renamed-to \"api/new,name.ts\""),
+        "renamed deletion with comma in path must emit an escaped renamed-to comment; stdout={out}"
+    );
+    Ok(())
+}

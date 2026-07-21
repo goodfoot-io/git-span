@@ -1652,7 +1652,7 @@ fn render_porcelain(
         // walk recovered, when the anchor's own orphaning commit's rewrite
         // resolved to a path that's live at HEAD.
         if let Some(DriftLocus::RenamedAt(_, path)) = &f.locus {
-            println!("# renamed-to {path}");
+            println!("# renamed-to {}", csv_escape(path));
         }
         // Fuzzy comment line: confidence of the best fuzzy successor.
         if let Some(best) = f.fuzzy_successors.first() {
@@ -1665,8 +1665,8 @@ fn render_porcelain(
     for c in clusters {
         println!(
             "# cluster {} shared:{}",
-            c.spans.join(","),
-            c.shared_files.join(","),
+            c.spans.iter().map(|s| csv_escape(s)).collect::<Vec<_>>().join(","),
+            c.shared_files.iter().map(|f| csv_escape(f)).collect::<Vec<_>>().join(","),
         );
     }
 }

@@ -321,7 +321,7 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
         Some(TouchKind::Deletion) => Ok(Some(DriftLocus::OrphanedAt(commit_id))),
         Some(TouchKind::Rewrite(target)) => {
             // commit_id is pinned here — only the path is threaded forward.
-            match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS)? {
+            match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS, commit_id)? {
                 Some(terminal) => Ok(Some(DriftLocus::RenamedAt(commit_id, terminal))),
                 None => Ok(Some(DriftLocus::OrphanedAt(commit_id))), // chain ends in a
                     // delete, an unclassifiable change, or exceeds the hop bound —
@@ -336,25 +336,77 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
 }
 
 /// Follow `path` forward through however many further renames it takes to
-/// reach a path that resolves at HEAD. Returns that terminal path, or `None`
-/// if the chain ends in a deletion, an unclassifiable change, a cycle, or
-/// exceeds `hops_left` — every `None` case is fail-closed, never a guess.
-/// Carries no commit — [`deleted_locus_walk`] owns the commit to report.
+/// reach a path that resolves at HEAD. `created_at` is the commit that
+/// produced `path` as a rewrite destination (the commit `deleted_locus_walk`
+/// or a prior hop of this function classified as `Rewrite(path)`) — it
+/// anchors the *forward* scan below so a later, unrelated file that happens
+/// to resurrect an abandoned intermediate path can never be mistaken for the
+/// live continuation of the lineage that arrived at it.
 ///
-fn resolve_terminal_path(repo: &gix::Repository, path: &str, hops_left: u8) -> Result<Option<String>> {
-    if path_exists_at_head(repo, path)? {
-        return Ok(Some(path.to_string())); // terminal: this path is live right now
-    }
-    if hops_left == 0 {
-        return Ok(None); // fail-closed: chain too deep to trust
-    }
-    let Some(commit_id) = nearest_touching_commit(repo, path)? else {
-        return Ok(None); // history exhausted without a match: fail-closed
+/// Returns the terminal path, or `None` if the chain ends in a deletion, an
+/// unclassifiable change, a cycle, or exceeds `hops_left` — every `None`
+/// case is fail-closed, never a guess. Carries no commit —
+/// [`deleted_locus_walk`] owns the commit to report.
+///
+/// Rather than asking "does some file exist at `path` right now" (which a
+/// resurrected, unrelated addition would satisfy just as well as the true
+/// continuation), this scans forward from `created_at` (exclusive) to HEAD,
+/// oldest-first, for the *next* commit that actually does something to
+/// `path` itself: a further rename away (`Rewrite`, source = `path`) chases
+/// the chain to its destination, and a plain deletion ends the chain
+/// fail-closed. Any other touch (a content-only `Modification`, or the
+/// unrelated `Addition` that resurrects an abandoned intermediate path after
+/// the chain has already moved on) does not change what `path` refers to,
+/// so it's skipped. If nothing in that range ever removes or renames
+/// `path` away, the path has been continuously live since `created_at` and
+/// is genuinely the terminal.
+fn resolve_terminal_path(
+    repo: &gix::Repository,
+    path: &str,
+    hops_left: u8,
+    created_at: gix::ObjectId,
+) -> Result<Option<String>> {
+    let head_id = match repo.head_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return Ok(None),
     };
-    match classify_touching_commit(repo, commit_id, path)? {
-        Some(TouchKind::Rewrite(next)) => resolve_terminal_path(repo, &next, hops_left - 1),
-        _ => Ok(None), // a Deletion (rename-then-delete) or an unclassifiable
-                       // change ends the chain without ever finding a live path
+    let walk = match repo.rev_walk([head_id]).with_hidden([created_at]).all() {
+        Ok(w) => w,
+        Err(_) => return Ok(None),
+    };
+    let mut commits: Vec<gix::ObjectId> = Vec::new();
+    for info in walk {
+        match info {
+            Ok(i) => commits.push(i.id),
+            Err(_) => return Ok(None),
+        }
+    }
+    commits.reverse(); // oldest-first, i.e. created_at's earliest descendant first
+
+    for commit_id in commits {
+        match classify_touching_commit(repo, commit_id, path)? {
+            Some(TouchKind::Deletion) => return Ok(None), // chain ends in a
+                // delete between created_at and HEAD: fail-closed, never guess
+            Some(TouchKind::Rewrite(next)) => {
+                if hops_left == 0 {
+                    return Ok(None); // fail-closed: chain too deep to trust
+                }
+                return resolve_terminal_path(repo, &next, hops_left - 1, commit_id);
+            }
+            None => continue, // content-only modification, an unrelated
+                               // resurrection of this same path, or another
+                               // unclassifiable change — none of these move
+                               // the lineage, keep scanning forward
+        }
+    }
+
+    // Nothing between created_at and HEAD ever removed or renamed `path`
+    // away: it has been continuously live since created_at, so whatever is
+    // there now is genuinely the same lineage, not a resurrection.
+    if path_exists_at_head(repo, path)? {
+        Ok(Some(path.to_string()))
+    } else {
+        Ok(None) // defensive fail-closed: shouldn't happen given the scan above
     }
 }
 
@@ -736,7 +788,8 @@ mod deleted_locus_walk_tests {
 
         // The chain-follower itself must fail closed once hops are exhausted,
         // not loop forever and not guess a distant terminal path.
-        let terminal = resolve_terminal_path(&repo, "p1.rs", MAX_RENAME_HOPS).expect("resolve");
+        let terminal = resolve_terminal_path(&repo, "p1.rs", MAX_RENAME_HOPS, x1.expect("x1 captured"))
+            .expect("resolve");
         assert_eq!(
             terminal, None,
             "a chain deeper than MAX_RENAME_HOPS must fail closed to None"
@@ -791,6 +844,55 @@ mod deleted_locus_walk_tests {
              attribute to the merge commit itself — the regression guard for \
              nearest_touching_commit deliberately not skipping merge commits the \
              way git_log_name_only_for_paths' hardcoded --no-merges would"
+        );
+    }
+
+    #[test]
+    fn resurrected_intermediate_path_does_not_shadow_true_terminal() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path();
+        init_repo(dir);
+        write_file(dir, "a.rs", "fn a() {}\n");
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-m", "init"]);
+
+        // a.rs -> b.rs (X1)
+        git(dir, &["mv", "a.rs", "b.rs"]);
+        git(dir, &["commit", "-m", "rename a to b (X1)"]);
+        let repo = gix::open(dir).expect("gix open");
+        let x1 = head_id(&repo);
+
+        // b.rs -> c.rs (X2): the chain moves past b.rs entirely.
+        git(dir, &["mv", "b.rs", "c.rs"]);
+        git(dir, &["commit", "-m", "rename b to c (X2)"]);
+
+        // b.rs is resurrected as a completely unrelated file, and survives to
+        // HEAD. A naive "does something exist at this path right now" check
+        // would mistake this for the live continuation of the a.rs -> b.rs
+        // hop.
+        write_file(dir, "b.rs", "totally unrelated content\n");
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-m", "resurrect b.rs as an unrelated file"]);
+
+        // c.rs — the true terminal — is edited further, simulating content
+        // drift heavy enough to defeat any fuzzy content-based relocation
+        // scan elsewhere in the engine. The walk here never relies on
+        // content matching, only path-identity continuity, so this must not
+        // affect the outcome.
+        write_file(dir, "c.rs", "fn a() { /* heavily rewritten */ }\n");
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-m", "heavily rewrite c.rs"]);
+
+        let repo = gix::open(dir).expect("gix open");
+
+        let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
+        assert_eq!(
+            locus,
+            Some(DriftLocus::RenamedAt(x1, "c.rs".to_string())),
+            "a resurrected, unrelated file at an abandoned intermediate path \
+             (b.rs) must never be reported as the rename target — the walk must \
+             see through it to the true terminal (c.rs), pinned at the anchor's \
+             own orphaning commit (X1)"
         );
     }
 
