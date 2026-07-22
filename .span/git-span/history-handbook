@@ -1,2 +1,4 @@
 packages/git-span/src/cli/history.rs#L1-L8 rk64:84ae47364f11e745
 plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L85 rk64:10ac26d3f59fe214
+
+The handbook's history section documents the timeline the history command renders — the oldest-to-newest walk of commits that changed the span file, the optional trailing current entry for worktree drift, and the XML-default/JSON output formats.

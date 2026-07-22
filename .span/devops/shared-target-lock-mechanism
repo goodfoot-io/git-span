@@ -3,4 +3,4 @@ packages/git-span/scripts/with-target-lock.sh rk64:e86d4f05fe54e028
 scripts/sync-versions.sh#L146-L173 rk64:5b4561beac751c66
 scripts/typecheck.sh#L20-L20 rk64:73bfe34d005ebcb8
 
-Shared target directory lock mechanism: with-target-lock.sh implements reader/writer locking (shared for cargo tasks, exclusive for cleanup) to prevent races where one worktree's build:clean rm -rf's artifacts out from under another worktree's in-flight build; cleanup-stale-target.sh, typecheck.sh, and sync-versions.sh all invoke it with consistent mode and parameters to guard concurrent artifact access across worktrees.
+The lock script implements a reader-writer flock over the shared cargo target root, and its callers take the mode their work requires — the version-sync cargo runs and the delegated package typecheck hold the shared lock while the cleanup script's freshness-stamp wipe holds the exclusive lock.
