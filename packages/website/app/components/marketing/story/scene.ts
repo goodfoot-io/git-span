@@ -23,13 +23,13 @@ interface PhaseWeight {
 
 const PHASE_WEIGHTS: readonly PhaseWeight[] = [
   { id: 'hero', label: 'Hero', scrollVh: 1 },
-  { id: 'traverse', label: 'Exploded view', scrollVh: 1 },
-  { id: 'change', label: 'First change', scrollVh: 1.5 },
-  { id: 'failure', label: 'Failed integration', scrollVh: 1.5 },
-  { id: 'second', label: 'Second change', scrollVh: 1 },
-  { id: 'span', label: 'Span appears', scrollVh: 1 },
-  { id: 'related', label: 'Related changes', scrollVh: 1.5 },
-  { id: 'success', label: 'Success', scrollVh: 0.5 }
+  { id: 'traverse', label: 'Hidden connections', scrollVh: 1 },
+  { id: 'change', label: 'Missing context', scrollVh: 1.5 },
+  { id: 'failure', label: 'Project failure', scrollVh: 1.5 },
+  { id: 'second', label: 'Reveal connections', scrollVh: 1 },
+  { id: 'span', label: 'JIT documentation', scrollVh: 1 },
+  { id: 'related', label: 'Better outcomes', scrollVh: 1.5 },
+  { id: 'success', label: 'Everything fits', scrollVh: 0.5 }
 ];
 
 // Phase geometry is center-line based: a phase is active exactly while its block straddles the
