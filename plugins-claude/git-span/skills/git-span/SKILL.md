@@ -141,6 +141,8 @@ Pick the first that fits:
     `references/storage-model.md`.
 14. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
     `references/triage.md`.
+15. Sweeping `.span/**` (or a large slice of it) up to the why-writing standard, not just
+    one drifted span → `references/why-cleanup-campaign.md`.
 
 ## Not in this build — don't burn a `--help` call
 `move` subcommand; `stale --patch/--stat/--worktree/--staged/--head/--search`;

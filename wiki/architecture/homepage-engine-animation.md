@@ -403,7 +403,7 @@ It's a fixed prop: sized/positioned once at load time from those parts' *explode
 ([`computeMismatchBoxBounds()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L34-L61))
 rather than tracked live, since explode is held flat for this entire window — nothing it encloses
 moves.
-[`buildBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L78-L123)
+[`buildBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L80-L125)
 returns a `THREE.Group` with two children: a lit `MeshPhysicalMaterial` "green glass" fill mesh
 (`BOUNDING_BOX_GLASS_GREEN = '#0c8a60'`, a deep emerald, `metalness: 0`, `roughness: 0.12`,
 `clearcoat: 1`/`clearcoatRoughness: 0.08` for an HDRI/env sheen, `DoubleSide`, `depthWrite: false`,
@@ -417,7 +417,7 @@ specular/clearcoat sheen from the scene's HDRI and key light instead of a flat u
 `DoubleSide` lets the box's far faces show through its near ones, which is what sells it as a glass
 volume rather than a solid card. The `EdgesGeometry` outline is still needed on top for legible
 corners, since even a lit fill doesn't give a translucent volume crisp edges on its own.
-[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L231-L241)
+[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L233-L243)
 drives only opacity/visibility per frame: `BOUNDING_BOX_MAX_OPACITY` (0.45) for the fill,
 `BOUNDING_BOX_EDGE_OPACITY` (0.7) for the outline. The box is deliberately never touched by the
 [highlight heartbeat pulse](#highlight-heartbeat-and-the-blackbody-color-ramp) — it's a plain
