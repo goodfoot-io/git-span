@@ -1,5 +1,6 @@
 /**
- * Codex PreToolUse gate hook — hold `git commit`/`git push` on real span debt.
+ * Codex PreToolUse gate hook — hold `git commit`/`git push` on real span debt,
+ * and advise (never hold) on a plain `git status`.
  *
  * The Codex twin of [claude/gate.ts](./packages/agent-hooks/src/claude/gate.ts):
  * same shared gate-core pipeline ({@link parseGitCommand} → {@link resolveChangeset}
@@ -103,13 +104,19 @@ export function createHandler(
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
-      const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd));
+      const mode = parsed.kind === 'status' ? 'inform' : 'enforce';
+      const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd), mode);
       if (result.decision !== 'deny') {
         // Environmental staleness and a failed staleness scan both allow
         // (fail-open) but must not be swallowed: log and surface the reason as
         // additional context.
         if (result.kind === 'environmental' || result.kind === 'scan-failed') {
           ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
+          return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
+        }
+        // `status`-only advisory kinds: span debt exists, but a status check
+        // never holds the command — surface it as information, not a warning.
+        if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
           return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
         }
         return preToolUseOutput({});

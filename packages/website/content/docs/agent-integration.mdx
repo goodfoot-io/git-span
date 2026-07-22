@@ -6,7 +6,7 @@ description: What the Claude Code and Codex plugins wire up — the touch hook, 
 The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it ships four things:
 
 - **A touch hook** — fires after every file read/edit/write, healing positional drift inline.
-- **A commit gate** — fires before `git commit`/`git push`, holding the command when the changeset carries real span debt.
+- **A commit gate** — fires before `git commit`/`git push`, holding the command when the changeset carries real span debt, and advises (without holding) on a plain `git status`.
 - **Two skills** — `git-span` (command syntax, recipes, gate-denial handling) and `reconcile` (the multi-span triage workflow), loaded into context when the agent's task matches.
 - **An expert subagent** — a dedicated agent for span work: creating, reconciling, and inspecting spans, with judgment about when a coupling is real and when a span should be deleted rather than patched.
 
@@ -15,7 +15,7 @@ The CLI itself doesn't change: every capability the plugin uses is a plain `git 
 ## Touch hook + gate
 
 - **Touch hook** (`PostToolUse`) — fires synchronously right after each file read/edit/write. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
-- **Gate** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), reruns a scoped `git span stale --fix`, and classifies what's left. Real span debt — semantic staleness, or a changed file no span covers — denies the command with a checklist once per distinct debt state; an identical retry proceeds. Positional drift never blocks; the touch hook already healed it. If the scan itself fails to complete, the gate never blocks on that account — it warns that span debt wasn't verified and lets the command proceed.
+- **Gate** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span stale --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic staleness, or a changed file no span covers — denies the command with a checklist once per distinct debt state; an identical retry proceeds. `git status` never denies: the same checklist surfaces as advisory context instead, re-reported live on every call since a status preview has no memory of what it already showed. Positional drift never blocks; the touch hook already healed it. If the scan itself fails to complete, the gate never blocks on that account — it warns that span debt wasn't verified and lets the command proceed.
 
 <Callout type="info">
 Both hooks fail open at every layer: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
@@ -57,6 +57,8 @@ Otherwise retry the command to proceed (one-time check).
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` anchors are never debt — they never appear in either checklist and never block. `.span/**` writes are excluded from the uncovered-writes check so a span repair riding the same commit never self-triggers the gate.
+
+A `git status` preview renders the same two checklists as advisory `systemMessage` context, minus the retry-flavored closing sentence (`— then retry`, `Otherwise retry the command to proceed`) — nothing was ever held, so there's nothing to retry. Critically, a `git status` call never consults or updates the once-per-debt-state memo that `git commit`/`git push` rely on: it can't spend the one-time deny a later real commit depends on, and it always reports whatever debt is live right now.
 
 ### Suppression
 

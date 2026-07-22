@@ -8,9 +8,10 @@ moments. Neither waits for a commit:
   positional drift silently and, when it can't, injects a bounded
   `additionalContext` signal.
 - **Gate** (`PreToolUse`, matcher `Bash|shell|exec|local_shell`) — fires
-  before `git commit`/`git push` runs, and only when the resolved changeset
-  carries real span debt. Whether Codex's `permissionDecision: 'deny'` result
-  actually blocks the shell tool was never confirmed live in this repo (see
+  before `git commit`/`git push`/`git status` runs. For `git commit`/`git
+  push`, it holds the command when the resolved changeset carries real span
+  debt. Whether Codex's `permissionDecision: 'deny'` result actually blocks
+  the shell tool was never confirmed live in this repo (see
   `references/codex-install-and-trust.md`) — the hook ships a hard-deny path per
   its SDK's own documented example, with a one-constant fallback to a loud
   `additionalContext` warning if a live session shows deny doesn't fire. Don't
@@ -18,7 +19,9 @@ moments. Neither waits for a commit:
   keeps landing after a supposed deny, treat the CI gate recipe
   (`references/ci-and-sync.md`) as the real backstop. Either way — blocked or
   not — the `systemMessage` checklist below is what's shown, so its presence
-  in the transcript is not itself proof the command was stopped.
+  in the transcript is not itself proof the command was stopped. A plain `git
+  status` never denies (unconditionally, not just per the unconfirmed-deny
+  caveat) — it only ever advises via `additionalContext`/`systemMessage`.
 
 ## The touch hook: the merged `<git-span>` block
 
@@ -29,7 +32,7 @@ and a single footer after a final `---`. A healthy span renders as:
 
 ```
 <git-span>
-This change touches implicit dependencies:
+checkout.tsx has implicit dependencies:
 
 ## billing/checkout-request-flow
 - web/checkout.tsx#L88-L120
@@ -40,8 +43,8 @@ Stripe-backed server.
 
 ---
 
-If your edit changes how these locations work together, update the other
-anchors to match.
+If you change checkout.tsx check the other files to confirm they still work
+together.
 </git-span>
 ```
 
@@ -74,9 +77,9 @@ including anchors in files other than the touched one — as
 `- path#Lstart-Lend` bullets (a bare path for a whole-file anchor), followed
 by the span's why sentence when one is recorded. Only genuine (semantic or
 terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
-drift never does — see below. The header scales with what drifted: `This
-change touches implicit dependencies:` when nothing did, the singular
-form above for one drifted span, and `This edit put implicit
+drift never does — see below. The header scales with what drifted: `<file>
+has implicit dependencies:` (naming the touched file) when nothing did, the
+singular form above for one drifted span, and `This edit put implicit
 dependencies out of date:` for more than one. With several drifted spans the
 footer generalizes: "For each out-of-date span above: update the changed
 anchors or description before committing — `git span add <name>
@@ -121,12 +124,14 @@ edits in one session, it renders once, not on every touch.
 
 ## The gate: what a denied command sees
 
-The gate inspects `git commit`/`git push` before they run — never a Read,
-Edit, or Write. It resolves the actual changeset (staged files, plus
-tracked-modified files when the command uses `-a`/`-am`), reruns a scoped
-`stale --fix`, then classifies what's left. A deny becomes a
-`permissionDecision: 'deny'` result whose `permissionDecisionReason` (and
-`systemMessage`, so it's visible in the transcript) is one of two shapes:
+The gate inspects `git commit`/`git push`/`git status` before they run —
+never a Read, Edit, or Write. It resolves the actual changeset (staged files,
+plus tracked-modified files when the command uses `-a`/`-am`; for `git
+status`, staged plus tracked-modified — the same working-tree picture `git
+status` itself prints), reruns a scoped `stale --fix`, then classifies what's
+left. For `git commit`/`git push`, a deny becomes a `permissionDecision:
+'deny'` result whose `permissionDecisionReason` (and `systemMessage`, so it's
+visible in the transcript) is one of two shapes:
 
 **Semantic staleness** — the same human span format the touch hook renders
 (full anchor list, drifted anchors labeled, the description), denied once per
@@ -176,6 +181,17 @@ e.g. an unreadable anchor file), the gate never denies on that account either
 — it allows with a warning that span debt was NOT verified for this
 changeset, naming the underlying failure; there's nothing to memoize because
 every evaluation of a still-failing scan warns again.
+
+**`git status`** never denies — it only advises. The same two checklists
+above render as `additionalContext`/`systemMessage` (never
+`permissionDecision: 'deny'`, and not subject to the unconfirmed-deny caveat
+above since nothing is ever held), with one difference: the closing sentence
+drops its retry phrasing (`— then retry`, `Otherwise retry the command to
+proceed (one-time check)`), since a status preview never held the command and
+there's nothing to retry. A `git status` call also never reads or writes the
+consider-once memo — it always reports whatever debt is live right now, and
+it can't spend the one-time deny a later real `git commit`/`git push` with
+the same debt depends on.
 
 ### Resolving a denied commit
 

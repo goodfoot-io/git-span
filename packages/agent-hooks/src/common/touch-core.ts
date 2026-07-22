@@ -17,6 +17,7 @@
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { basename } from 'node:path';
 import {
   humanStatusLabel,
   isDebt,
@@ -230,9 +231,13 @@ function anchorText(row: PorcelainRow): string {
   return `${row.path}#L${row.start}-L${row.end}`;
 }
 
-const CLEAN_HEADER = 'This change touches implicit dependencies:';
+function cleanHeader(fileName: string): string {
+  return `${fileName} has implicit dependencies:`;
+}
 
-const CLEAN_FOOTER = 'If your edit changes how these locations work together, update the other anchors to match.';
+function cleanFooter(fileName: string): string {
+  return `If you change ${fileName} check the other files to confirm they still work together.`;
+}
 
 function driftHeader(driftedCount: number): string {
   return driftedCount === 1
@@ -401,8 +406,9 @@ async function computeSurface(
 
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length) : CLEAN_HEADER;
-  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : CLEAN_FOOTER;
+  const fileName = basename(input.filePath);
+  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length) : cleanHeader(fileName);
+  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
   return buildBlock(sections, header, footer);
 }
 

@@ -76,10 +76,12 @@ export class GateScanError extends Error {
 /**
  * The kind of gated git command a shell command string resolves to. `'none'`
  * is the conservative fail-open answer: any shape {@link parseGitCommand} does
- * not confidently recognize as a `git commit`/`git push` maps to `'none'` and
- * the gate allows the command through untouched.
+ * not confidently recognize as a `git commit`/`git push`/`git status` maps to
+ * `'none'` and the gate allows the command through untouched. `'status'` is
+ * never denied — {@link evaluateGate}'s `'inform'` mode only ever allows,
+ * surfacing any span debt as advisory context.
  */
-export type GitCommandKind = 'commit' | 'push' | 'none';
+export type GitCommandKind = 'commit' | 'push' | 'status' | 'none';
 
 /**
  * The result of parsing a shell command string for a gated git invocation.
@@ -98,21 +100,22 @@ export interface ParsedGitCommand {
 }
 
 /**
- * Word-boundary parse of a `git commit` / `git push` invocation embedded in an
- * arbitrary shell command string.
+ * Word-boundary parse of a `git commit` / `git push` / `git status` invocation
+ * embedded in an arbitrary shell command string.
  *
- * Must recognize the real shapes commits and pushes arrive in: chained
- * commands (`… && git commit …`, `…; git push`, `… | …`), an explicit repo via
- * `git -C <dir> commit …`, trailing pathspecs after `--`, the `-a`/`-am`
- * "commit all tracked-modified" forms, and invocation from a cwd below the repo
- * root. Matching is on word boundaries, never substring: a path or message that
- * merely contains the text `git commit` must not trip the gate.
+ * Must recognize the real shapes commits, pushes, and status checks arrive in:
+ * chained commands (`… && git commit …`, `…; git push`, `… | …`), an explicit
+ * repo via `git -C <dir> commit …`, trailing pathspecs after `--`, the
+ * `-a`/`-am` "commit all tracked-modified" forms, and invocation from a cwd
+ * below the repo root. Matching is on word boundaries, never substring: a path
+ * or message that merely contains the text `git commit` must not trip the
+ * gate.
  *
  * Conservative by contract: this is the fail-open point at the parse layer, not
  * a place to guess. Any command whose shape is not confidently a gated
- * `git commit`/`git push` — an unfamiliar subcommand, an alias, an obfuscated
- * or dynamically-built invocation — returns `{ kind: 'none' }` so the gate
- * allows it rather than denying on a shaky read. (See CARD.md "Risks and
+ * `git commit`/`git push`/`git status` — an unfamiliar subcommand, an alias, an
+ * obfuscated or dynamically-built invocation — returns `{ kind: 'none' }` so the
+ * gate allows it rather than denying on a shaky read. (See CARD.md "Risks and
  * required spikes → Command parsing" and design-decisions.md #1.)
  *
  * @param command The raw shell command string from the hook's tool input.
@@ -129,8 +132,11 @@ export function parseGitCommand(command: string): ParsedGitCommand {
     if (inv.subcommand === 'push') {
       return { kind: 'push' };
     }
-    // A recognized `git` invocation that is neither commit nor push (e.g.
-    // `git add . && git commit …`): keep scanning later segments.
+    if (inv.subcommand === 'status') {
+      return { kind: 'status' };
+    }
+    // A recognized `git` invocation that is neither commit, push, nor status
+    // (e.g. `git add . && git commit …`): keep scanning later segments.
   }
   return { kind: 'none' };
 }
@@ -370,20 +376,24 @@ export interface GitExecutor {
  * - `push`: the outgoing range `@{u}..HEAD`, with a merge-base fallback when no
  *   upstream is configured. `all`/`paths` are not meaningful for a push and are
  *   ignored.
+ * - `status`: the staged paths plus the tracked-modified paths, deduplicated —
+ *   the same working-tree picture `git status` itself prints, previewed for
+ *   span debt. `all`/`paths` are not meaningful for a status check and are
+ *   ignored.
  *
  * The `all` flag and `paths` are threaded in explicitly (rather than read back
  * out of the command) because the caller/adapter derives them from the parse:
  * `paths` is {@link ParsedGitCommand.paths}, and `all` (which {@link ParsedGitCommand}
  * intentionally does not carry) comes from {@link commitStagesAll}.
  *
- * @param kind Whether the changeset is a commit's staged set or a push's range.
- * @param all Whether the commit was an `-a`/`-am` form (ignored for `push`).
+ * @param kind Whether the changeset is a commit's staged set, a push's range, or a status preview.
+ * @param all Whether the commit was an `-a`/`-am` form (ignored for `push`/`status`).
  * @param cwd The working directory the git command ran in.
  * @param git The injected git surface backing the resolution.
  * @param paths Explicit pathspecs from `git commit -- <pathspec>…`, if any.
  */
 export async function resolveChangeset(
-  kind: 'commit' | 'push',
+  kind: 'commit' | 'push' | 'status',
   all: boolean,
   cwd: string,
   git: GitExecutor,
@@ -391,6 +401,10 @@ export async function resolveChangeset(
 ): Promise<string[]> {
   if (kind === 'push') {
     return git.outgoingPaths(cwd);
+  }
+  if (kind === 'status') {
+    const [staged, tracked] = await Promise.all([git.stagedPaths(cwd), git.trackedModifiedPaths(cwd)]);
+    return mergeUniquePaths(staged, tracked);
   }
   // A pathspec-scoped commit lands only the working-tree content at those
   // pathspecs — scope the changeset to exactly that, never the full staged set.
@@ -400,12 +414,19 @@ export async function resolveChangeset(
   const staged = await git.stagedPaths(cwd);
   if (!all) return staged;
   const tracked = await git.trackedModifiedPaths(cwd);
+  return mergeUniquePaths(staged, tracked);
+}
+
+/** Concatenate path lists in order, dropping later duplicates of an earlier path. */
+function mergeUniquePaths(...groups: string[][]): string[] {
   const seen = new Set<string>();
   const merged: string[] = [];
-  for (const path of [...staged, ...tracked]) {
-    if (seen.has(path)) continue;
-    seen.add(path);
-    merged.push(path);
+  for (const group of groups) {
+    for (const path of group) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      merged.push(path);
+    }
   }
   return merged;
 }
@@ -526,14 +547,32 @@ export interface GateMemoState {
  *   covers, and this state has not been presented before. Deny **once**, listing
  *   `uncovered`; the retry with an unchanged state resolves to `already-presented`
  *   and passes (consider-once, per design-decisions.md #3).
+ * - `allow` / `semantic-staleness-info`, `allow` / `uncovered-writes-info` —
+ *   `'inform'`-mode-only counterparts of the two `deny` kinds above: same
+ *   `findings`/`uncovered`/`reason` payload, but never denies and never
+ *   consults or writes `memoState` (a `git status` preview is not a debt state
+ *   to hold or consider-once — it re-reports the same live debt on every call,
+ *   exactly like `git status` itself does for the working tree).
  */
 export type GateResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
   | { decision: 'allow'; kind: 'environmental'; conditions: StalePorcelainRow[]; reason: string }
   | { decision: 'allow'; kind: 'scan-failed'; reason: string }
+  | { decision: 'allow'; kind: 'semantic-staleness-info'; findings: StalePorcelainRow[]; reason: string }
+  | { decision: 'allow'; kind: 'uncovered-writes-info'; uncovered: string[]; reason: string }
   | { decision: 'deny'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
   | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
+
+/**
+ * Whether {@link evaluateGate} may hold the command (`'enforce'`, the default —
+ * used for `commit`/`push`) or must only ever advise (`'inform'` — used for
+ * `status`): every branch that would otherwise `deny` returns its `-info`
+ * `allow` counterpart instead, and `memoState` is never read or written, since
+ * an informational preview must not spend (or be blocked by) the consider-once
+ * credit a real `commit`/`push` relies on.
+ */
+export type GateMode = 'enforce' | 'inform';
 
 /**
  * Evaluate the gate for a resolved changeset and decide whether to hold the
@@ -586,17 +625,27 @@ export type GateResult =
  * changeset rather than staying silent. There is no debt-state to memoize
  * here: every evaluation of a still-failing scan warns again.
  *
+ * In `'inform'` mode (`status`), the same classification runs but neither
+ * `deny` branch fires and `memoState` is never read or written: semantic
+ * staleness resolves to `allow`/`semantic-staleness-info` and uncovered
+ * writes to `allow`/`uncovered-writes-info`, both carrying the same
+ * `findings`/`uncovered`/`reason` payload the `deny` kinds would have. The
+ * environmental/scan-failed/silent branches are unaffected by mode — they
+ * already always allow.
+ *
  * @param paths The resolved changeset from {@link resolveChangeset}. Empty →
  *   `allow`/`silent`.
  * @param cwd The working directory the git command ran in.
  * @param executors The injected `fix`/`stale`/`list` surface.
- * @param memoState The per-changeset debt-state memo.
+ * @param memoState The per-changeset debt-state memo. Unused in `'inform'` mode.
+ * @param mode `'enforce'` (default) may deny; `'inform'` only ever advises.
  */
 export async function evaluateGate(
   paths: string[],
   cwd: string,
   executors: GateExecutors,
-  memoState: GateMemoState
+  memoState: GateMemoState,
+  mode: GateMode = 'enforce'
 ): Promise<GateResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
@@ -613,6 +662,35 @@ export async function evaluateGate(
     const debtRows = staleRows.filter((row) => isDebt(row.status));
     const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+
+    if (mode === 'inform') {
+      // A status preview never denies and never touches the enforce memo — it
+      // just reports whatever debt is live right now, every time it's asked.
+      if (semantic.length > 0) {
+        return {
+          decision: 'allow',
+          kind: 'semantic-staleness-info',
+          findings: semantic,
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'inform')
+        };
+      }
+      if (environmental.length > 0) {
+        return {
+          decision: 'allow',
+          kind: 'environmental',
+          conditions: environmental,
+          reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
+        };
+      }
+      const uncovered = await computeUncoveredPaths(paths, cwd, executors);
+      if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+      return {
+        decision: 'allow',
+        kind: 'uncovered-writes-info',
+        uncovered,
+        reason: renderUncoveredReason(uncovered, 'inform')
+      };
+    }
 
     // Semantic staleness joins the same distinct-debt-state memo the uncovered
     // check uses: deny once per findings digest, then fall through (rather than
@@ -652,13 +730,7 @@ export async function evaluateGate(
     // (span repairs ride the same commit and must never self-trigger the gate)
     // and paths the repo's user-owned `.span/.gateignore` excludes. Gitignored
     // paths never reach here — git does not stage/publish them.
-    const covering = await executors.list(paths, cwd);
-    const covered = new Set(covering.map((row) => row.path));
-    const repoRoot = resolveRepoRoot(cwd);
-    const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
-    const uncovered = paths.filter(
-      (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path)
-    );
+    const uncovered = await computeUncoveredPaths(paths, cwd, executors);
     if (uncovered.length === 0) {
       // A retry that fell through past an already-presented semantic-staleness
       // digest ends clean here: surface already-presented rather than a bare
@@ -691,6 +763,22 @@ export async function evaluateGate(
     // never brick a commit on its own failure.
     return { decision: 'allow', kind: 'silent' };
   }
+}
+
+/**
+ * The changed paths with zero covering span — minus `.span/**` (span repairs
+ * ride the same commit and must never self-trigger the gate) and paths the
+ * repo's user-owned `.span/.gateignore` excludes (fail-open when absent/
+ * unreadable). Shared by `evaluateGate`'s `'enforce'` and `'inform'` branches,
+ * which differ only in what they do with the result (deny-once vs. an
+ * always-fresh advisory).
+ */
+async function computeUncoveredPaths(paths: string[], cwd: string, executors: GateExecutors): Promise<string[]> {
+  const covering = await executors.list(paths, cwd);
+  const covered = new Set(covering.map((row) => row.path));
+  const repoRoot = resolveRepoRoot(cwd);
+  const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
+  return paths.filter((path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path));
 }
 
 // ---------------------------------------------------------------------------
@@ -794,11 +882,21 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   return out.join('\n');
 }
 
-/** The full-span checklist a semantic-staleness deny renders into `reason`. */
-function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {
+/**
+ * The full-span checklist a semantic-staleness `deny` (or, in `'inform'` mode,
+ * a `status` advisory) renders into `reason`. The closing sentence drops "—
+ * then retry" in `'inform'` mode: a `status` check never held anything, so
+ * there is nothing to retry.
+ */
+function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string, mode: GateMode = 'enforce'): string {
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
+  const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\``;
+  const closing =
+    mode === 'enforce'
+      ? `Update the drifted locations or the description — ${action} — then retry. If a dependency no longer holds, tell the user instead.`
+      : `Update the drifted locations or the description — ${action}. If a dependency no longer holds, tell the user instead.`;
   return [
     `This change leaves ${subject} out of date:`,
     '',
@@ -806,7 +904,7 @@ function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string
     '',
     '---',
     '',
-    `Update the drifted locations or the description — \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\` — then retry. If a dependency no longer holds, tell the user instead.`
+    closing
   ].join('\n');
 }
 
@@ -841,14 +939,23 @@ function renderScanFailedReason(detail: string): string {
   ].join('\n');
 }
 
-/** The one-time list an uncovered-writes deny renders into `reason`. */
-function renderUncoveredReason(uncovered: string[]): string {
+/**
+ * The list an uncovered-writes `deny` (or, in `'inform'` mode, a `status`
+ * advisory) renders into `reason`. The closing sentence drops "Otherwise retry
+ * the command to proceed (one-time check)" in `'inform'` mode: a `status`
+ * check never held anything, so there is nothing to retry and no consider-once
+ * state to clear.
+ */
+function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce'): string {
   const lines = uncovered.map((path) => `  - ${path}`);
+  const action =
+    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "one sentence: the subsystem, what it does across locations"`.';
+  const closing = mode === 'enforce' ? `${action} Otherwise retry the command to proceed (one-time check).` : action;
   return [
     'Decide whether these changed files carry an implicit dependency — code kept consistent with other locations that nothing links to it:',
     ...lines,
     '',
-    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "one sentence: the subsystem, what it does across locations"`. Otherwise retry the command to proceed (one-time check).'
+    closing
   ].join('\n');
 }
 

@@ -1,15 +1,19 @@
 /**
- * Claude PreToolUse gate hook — hold `git commit`/`git push` on real span debt.
+ * Claude PreToolUse gate hook — hold `git commit`/`git push` on real span debt,
+ * and advise (never hold) on a plain `git status`.
  *
  * Fires before a `Bash` tool call. The Claude-specific job is translating the
  * `Bash` `tool_input.command` string plus `cwd`/`session_id` into the shared
  * gate-core pipeline: {@link parseGitCommand} recognizes a gated `git commit`/
- * `git push` (word-boundary, conservative — anything else allows), then
- * {@link resolveChangeset} resolves the concrete changeset via a real
- * subprocess-backed {@link GitExecutor} and {@link evaluateGate} classifies its
- * span debt. A `deny` result becomes `permissionDecision: 'deny'` with the
- * checklist as `permissionDecisionReason` (the model sees the reason); anything
- * else allows silently.
+ * `git push`/`git status` (word-boundary, conservative — anything else
+ * allows), then {@link resolveChangeset} resolves the concrete changeset via a
+ * real subprocess-backed {@link GitExecutor} and {@link evaluateGate}
+ * classifies its span debt — in `'enforce'` mode for `commit`/`push`, in
+ * `'inform'` mode for `status`, which never denies. A `deny` result (only
+ * reachable in `'enforce'` mode) becomes `permissionDecision: 'deny'` with the
+ * checklist as `permissionDecisionReason` (the model sees the reason); an
+ * `-info` result surfaces the same checklist as `systemMessage` advisory
+ * context and still allows; anything else allows silently.
  *
  * Fail-open is load-bearing at every layer: gate-core already resolves any
  * internal error to allow, and this adapter wraps the whole path in a try/catch
@@ -58,7 +62,8 @@ export function createHandler(
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
-      const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd));
+      const mode = parsed.kind === 'status' ? 'inform' : 'enforce';
+      const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd), mode);
       if (result.decision === 'deny') {
         return preToolUseOutput({
           hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.reason },
@@ -70,6 +75,11 @@ export function createHandler(
       // the unresolvable anchor / unverified changeset is visible.
       if (result.kind === 'environmental' || result.kind === 'scan-failed') {
         ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
+        return preToolUseOutput({ systemMessage: result.reason });
+      }
+      // `status`-only advisory kinds: span debt exists, but a status check
+      // never holds the command — surface it as information, not a warning.
+      if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
         return preToolUseOutput({ systemMessage: result.reason });
       }
       return preToolUseOutput({});

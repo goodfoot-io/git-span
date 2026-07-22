@@ -109,6 +109,17 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('push');
     });
 
+    it('recognizes a plain `git status` as kind: status', () => {
+      const result = parseGitCommand('git status');
+
+      expect(result.kind).toBe('status');
+    });
+
+    it('recognizes `git -C <dir> status` and a chained `&& git status`', () => {
+      expect(parseGitCommand('git -C /repo/sub status').kind).toBe('status');
+      expect(parseGitCommand('cd /repo && git status').kind).toBe('status');
+    });
+
     it('recognizes a chained `&&` form: `cd /repo && git commit -m "wip"`', () => {
       const result = parseGitCommand('cd /repo && git commit -m "wip"');
 
@@ -212,6 +223,18 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await resolveChangeset('push', true, REPO_ROOT, git);
 
       expect(result).toEqual(['src/outgoing.ts']);
+    });
+
+    it('status → staged paths plus tracked-modified paths, deduplicated, ignoring `all`/pathspecs', async () => {
+      const git = createFakeGitExecutor({
+        stagedPaths: async (): Promise<string[]> => ['src/staged.ts', 'src/both.ts'],
+        trackedModifiedPaths: async (): Promise<string[]> => ['src/both.ts', 'src/modified.ts']
+      });
+
+      const result = await resolveChangeset('status', false, REPO_ROOT, git);
+
+      expect(new Set(result)).toEqual(new Set(['src/staged.ts', 'src/both.ts', 'src/modified.ts']));
+      expect(result.filter((p) => p === 'src/both.ts')).toHaveLength(1);
     });
 
     it('commit with explicit pathspecs → the pathspec working-tree content only, never the full staged set', async () => {
@@ -679,6 +702,159 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       expect(result.decision).toBe('deny');
       expect(result.kind).toBe('semantic-staleness');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // evaluateGate — 'inform' mode (git status)
+  // -------------------------------------------------------------------------
+
+  describe("evaluateGate in 'inform' mode", () => {
+    it('semantic staleness → allow/semantic-staleness-info (never deny), and repeats identically on a second call', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      });
+      const paths = ['src/app.ts'];
+
+      const first = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(first.decision).toBe('allow');
+      expect(first.kind).toBe('semantic-staleness-info');
+      if (first.kind === 'semantic-staleness-info') {
+        expect(first.findings).toHaveLength(1);
+        expect(first.reason).toContain('This change leaves an implicit dependency out of date:');
+      }
+
+      // A status preview never memoizes, so an identical second call reports
+      // the same live debt again rather than falling through to already-presented.
+      const second = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(second.decision).toBe('allow');
+      expect(second.kind).toBe('semantic-staleness-info');
+    });
+
+    it('uncovered writes → allow/uncovered-writes-info (never deny), and repeats identically on a second call', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts'];
+
+      const first = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(first.decision).toBe('allow');
+      expect(first.kind).toBe('uncovered-writes-info');
+      if (first.kind === 'uncovered-writes-info') {
+        expect(first.uncovered).toEqual(['src/uncovered.ts']);
+      }
+
+      const second = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(second.decision).toBe('allow');
+      expect(second.kind).toBe('uncovered-writes-info');
+    });
+
+    it('a clean changeset → allow/silent, same as enforce mode', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+
+      expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+    });
+
+    it('an environmental condition → allow/environmental, same as enforce mode', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('environmental');
+    });
+
+    it('a hard scan failure → allow/scan-failed, same as enforce mode', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        stale: async (): Promise<StalePorcelainRow[]> => {
+          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+        }
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('scan-failed');
+    });
+
+    it('never reads or writes memoState — an inform call never spends the consider-once credit a later enforce call depends on', async () => {
+      let hasCalls = 0;
+      let recordCalls = 0;
+      const backing = createMemoryGateMemoState();
+      const spyingMemo: GateMemoState = {
+        has: (d) => {
+          hasCalls += 1;
+          return backing.has(d);
+        },
+        record: (d) => {
+          recordCalls += 1;
+          return backing.record(d);
+        }
+      };
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      });
+      const paths = ['src/app.ts'];
+
+      const informResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'inform');
+      expect(informResult.decision).toBe('allow');
+      expect(hasCalls).toBe(0);
+      expect(recordCalls).toBe(0);
+
+      // The identical debt state, now evaluated in 'enforce' mode against the
+      // very same memoState, still denies fresh — the inform pass above did
+      // not consume the digest's one-time deny.
+      const enforceResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'enforce');
+      expect(enforceResult.decision).toBe('deny');
+      expect(enforceResult.kind).toBe('semantic-staleness');
+    });
+
+    it('the rendered reason never contains deny/retry-flavored phrasing — a status preview held nothing, so there is nothing to retry', async () => {
+      const staleMemo = createMemoryGateMemoState();
+      const staleExecutors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      });
+      const staleResult = await evaluateGate(['src/app.ts'], REPO_ROOT, staleExecutors, staleMemo, 'inform');
+      expect(staleResult.kind).toBe('semantic-staleness-info');
+      if (staleResult.kind === 'semantic-staleness-info') {
+        expect(staleResult.reason).not.toContain('then retry');
+        expect(staleResult.reason).not.toContain('Otherwise retry the command to proceed');
+      }
+
+      const uncoveredMemo = createMemoryGateMemoState();
+      const uncoveredExecutors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const uncoveredResult = await evaluateGate(
+        ['src/uncovered.ts'],
+        REPO_ROOT,
+        uncoveredExecutors,
+        uncoveredMemo,
+        'inform'
+      );
+      expect(uncoveredResult.kind).toBe('uncovered-writes-info');
+      if (uncoveredResult.kind === 'uncovered-writes-info') {
+        expect(uncoveredResult.reason).not.toContain('Otherwise retry the command to proceed');
+        expect(uncoveredResult.reason).not.toContain('one-time check');
+      }
     });
   });
 

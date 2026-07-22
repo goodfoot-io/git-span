@@ -1,8 +1,6 @@
-CLAUDE.md#L97-L118 rk64:4ded508266bcb8ce
 README.md#L18-L55 rk64:a8db05db9c1321c3
 packages/git-span/src/cli/mod.rs#L39-L184 rk64:7263c3c04424fc65
 packages/git-span/src/main.rs#L49-L113 rk64:c05ed91bbc3814dc
-wiki/meta/git-span-documentation-touchpoints.md#L34-L42 rk64:cd9d429c87102123
-
+wiki/meta/git-span-documentation-touchpoints.md#L34-L42 rk64:c262407ba48351bc
 
 Wiki documentation update order: when git-span CLI behavior or documentation changes, this checklist defines the sequence in which operator-facing and agent-facing documentation must be updated to avoid drift from the implementation source of truth.

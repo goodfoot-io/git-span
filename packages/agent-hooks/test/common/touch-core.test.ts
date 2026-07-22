@@ -152,10 +152,10 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // First touch: clean — the span surfaces once with the clean header/footer.
       const first = await runTouchHook(input, executors, memo);
       const cleanBlock = first.additionalContext ?? '';
-      expect(cleanBlock).toContain('This change touches implicit dependencies:');
+      expect(cleanBlock).toContain('app.ts has implicit dependencies:');
       expect(cleanBlock).toContain('## billing/checkout-request-flow');
       expect(cleanBlock).toContain(WHY);
-      expect(cleanBlock).toContain('update the other anchors to match.');
+      expect(cleanBlock).toContain('If you change app.ts check the other files to confirm they still work together.');
       expect(cleanBlock).not.toContain('— changed');
 
       // Clean again: nothing new to say.

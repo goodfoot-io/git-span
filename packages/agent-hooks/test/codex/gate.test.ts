@@ -202,4 +202,39 @@ describe('codex gate adapter', () => {
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
   });
+
+  it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext + systemMessage instead', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+    const result = toResult(await handler(preInput('git status') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    expect(result.stdout.hookSpecificOutput?.additionalContext).not.toContain('then retry');
+    expect(result.stdout.systemMessage).toContain(SPAN);
+  });
+
+  it('`git status` never consumes the consider-once credit a later `git commit` with the same debt depends on', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const memoFactory = sharedMemoFactory();
+    const handler = createHandler(git, executors, memoFactory);
+
+    const status = toResult(await handler(preInput('git status') as never, { logger } as never));
+    expect(status.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+
+    const commit = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
+    expect(commit.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
+  it('allows `git status` silently when the changeset is clean', async () => {
+    const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [] });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+    const result = toResult(await handler(preInput('git status') as never, { logger } as never));
+
+    expect(result.stdout.hookSpecificOutput).toBeUndefined();
+    expect(result.stdout.systemMessage).toBeUndefined();
+  });
 });
