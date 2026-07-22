@@ -1,0 +1,7 @@
+packages/agent-hooks/src/common/gate-core.ts#L797-L853 rk64:49728c3dbc47a6ab
+packages/agent-hooks/src/common/touch-core.ts#L233-L249 rk64:ed35ece307b8b9c0
+packages/website/content/docs/agent-integration.mdx rk64:e43151e22478015d
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:0825905d01d5858e
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:2c720530fdbcf3b6
+
+The hook-facing message copy: the latent-semantic-dependency wording rendered by the touch hook's block and the gate's four reasons, quoted verbatim in both plugin skill references and the website's agent-integration doc — reword one and the others must follow.
