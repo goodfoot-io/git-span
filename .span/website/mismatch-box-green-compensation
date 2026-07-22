@@ -1,0 +1,5 @@
+packages/website/app/components/marketing/story/engine/beats.ts#L23-L23 rk64:daebb9826f236c24
+packages/website/app/components/marketing/story/engine/mismatchBox.ts#L44-L53 rk64:06c2077190624147
+packages/website/app/styles/global.css#L39-L39 rk64:e3b3f5dff699f0d2
+
+BOUNDING_BOX_GLASS_GREEN's source hue is pre-compensated by eye so the box's lit, alpha-composited render lands back near HIGHLIGHT_GREEN / --color-positive's 135.95° -- retuning either of those two hues, or the rendering pipeline that shifts the composited result, should re-derive this compensation rather than leave it pointing at a stale target.

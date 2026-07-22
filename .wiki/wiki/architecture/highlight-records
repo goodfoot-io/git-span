@@ -3,6 +3,6 @@ packages/website/app/components/marketing/story/engine/highlights.ts#L24-L24 rk6
 packages/website/app/components/marketing/story/engine/highlights.ts#L26-L32 rk64:28c92f569c3de67e
 packages/website/app/components/marketing/story/engine/highlights.ts#L41-L51 rk64:5da10c418e1a93e8
 packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221 rk64:71874f1792b273eb
-wiki/architecture/homepage-engine-animation.md#L417-L439 rk64:2dac74571f83afe8
+wiki/architecture/homepage-engine-animation.md#L417-L439 rk64:cfbba5063a567af8
 
 Highlight records: one HighlightRecord per highlightable part built via highlights.ts's buildHighlightRecords, giving each its own cloned material, base color, and ordered list of HighlightStages it cycles through.

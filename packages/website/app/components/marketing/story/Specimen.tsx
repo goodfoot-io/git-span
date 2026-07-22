@@ -33,7 +33,7 @@ function lineBackgroundClass(tone: SpecimenTone, highlight: boolean | undefined)
 // output it produced, as one block of terminal scrollback.
 function SpecimenFrame({ header, children }: { header?: string; children: ReactNode }) {
   return (
-    <div className="whitespace-pre-wrap rounded-md border border-rule bg-ground-raised px-4 py-3 font-mono text-xs leading-relaxed">
+    <div className="overflow-x-auto whitespace-pre rounded-md border border-rule bg-ground-raised px-4 py-3 font-mono text-xs leading-relaxed">
       {header && <div className="text-ink-secondary">{header}</div>}
       {children}
     </div>
@@ -49,7 +49,7 @@ export function PhaseSpecimen({ state }: { state: PhaseId }) {
     // {id, row} pairs rather than the line number or text alone.
     const rows = specimen.diff.map((row, index) => ({ ...row, id: `${index}-${row.sign ?? ' '}-${row.text}` }));
     return (
-      <div className="whitespace-pre-wrap rounded-md border border-terminal-rule bg-terminal-raised px-4 py-3 font-mono text-xs leading-relaxed text-terminal-ink">
+      <div className="overflow-x-auto whitespace-pre rounded-md border border-terminal-rule bg-terminal-raised px-4 py-3 font-mono text-xs leading-relaxed text-terminal-ink">
         <div>
           <span className="text-cc-tool">●</span> <span className="font-semibold">{specimen.tool}</span>(
           <span className="underline">{specimen.target}</span>)
@@ -75,7 +75,7 @@ export function PhaseSpecimen({ state }: { state: PhaseId }) {
           </div>
         ))}
         <div className="text-terminal-ink-faint">{`  ⎿  ${specimen.hookLabel}`}</div>
-        {/* pl-[5ch] instead of a space prefix keeps wrapped lines (the why) on the same indent. */}
+        {/* pl-[5ch] instead of a space prefix keeps the why lines indented flush under the ⎿ marker's text column. */}
         {specimen.hookLines.map((line) => (
           <div key={line} className="pl-[5ch] text-terminal-ink-faint">
             {line}

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import type { MetaFunction } from 'react-router';
 import { Link } from 'react-router';
+import { DownloadIcon, GithubInvertedIcon } from '~/components/icons';
 import { CLOSING, HERO, PHASE_COPY } from '~/components/marketing/story/copy';
 import { EngineStage } from '~/components/marketing/story/EngineStage';
 import { deriveScene, TIMELINE, TimelineReadout, useTimeline } from '~/components/marketing/story/index';
@@ -38,14 +39,16 @@ function CtaButtons({ primary, secondary }: { primary: CtaLink; secondary: CtaLi
     <div className="flex flex-wrap items-center gap-4">
       <Link
         to={primary.href}
-        className="inline-flex items-center rounded-radius bg-accent px-5 py-3 font-mono text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+        className="inline-flex items-center gap-2 rounded-radius bg-accent px-5 py-3 font-mono text-sm font-medium text-white transition-colors hover:bg-accent-hover"
       >
+        <DownloadIcon size={16} />
         {primary.label}
       </Link>
       <Link
         to={secondary.href}
-        className="inline-flex items-center rounded-radius border border-rule px-5 py-3 font-mono text-sm font-medium text-ink-primary transition-colors hover:bg-ground-raised"
+        className="inline-flex items-center gap-2 rounded-radius border border-rule px-5 py-3 font-mono text-sm font-medium text-ink-primary transition-colors hover:bg-ground-raised"
       >
+        <GithubInvertedIcon size={16} />
         {secondary.label}
       </Link>
     </div>
@@ -55,18 +58,23 @@ function CtaButtons({ primary, secondary }: { primary: CtaLink; secondary: CtaLi
 function HeroIntro() {
   return (
     // Below lg there is no engine column, so the single content column centers itself and takes a
-    // wider measure; at lg+ the split layout owns the measure and it snaps back to the left rail.
-    <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-md">
-      <h1 className="text-[2.6rem] font-semibold leading-[1.05] tracking-[-0.02em] text-balance text-ink-primary sm:text-5xl lg:text-[3.5rem]">
-        {HERO.headline.map((segment) =>
-          segment.code ? (
-            <span key={segment.text} className="font-mono">
-              {segment.text}
-            </span>
-          ) : (
-            <span key={segment.text}>{segment.text}</span>
-          )
-        )}
+    // capped measure; at lg+ the split layout owns the measure -- the column's own width (5/12 of
+    // the grid, minus its padding) sets it directly, so the headline/paragraph/specimen fill
+    // whatever space is available instead of clamping to a fixed max-width.
+    <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-none">
+      <h1 className="text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.02em] text-balance text-ink-primary sm:text-5xl lg:text-[2rem] xl:text-[2.75rem]">
+        {HERO.headline.map((segment, index) => (
+          <span key={segment.text}>
+            {segment.code ? <span className="font-mono">{segment.text}</span> : segment.text}
+            {/* A hard break at the sentence boundary -- text-balance alone isn't reliable here
+                because the column's width swings from a capped centered measure to a direct
+                fraction of the viewport (see the comment on this component's wrapper div), so the
+                two sentences need to land on their own lines regardless of where that measure
+                falls. text-balance stays on to balance any further soft-wrap within a sentence at
+                narrow widths. */}
+            {index === 0 && <br />}
+          </span>
+        ))}
       </h1>
       <p className="mt-6 text-lg leading-relaxed text-ink-secondary">{HERO.supporting}</p>
       <div className="mt-8">
@@ -95,7 +103,7 @@ export default function Index() {
       */}
       <section className="w-full">
         <div className="grid grid-cols-1 lg:grid-cols-12">
-          <div className="px-6 lg:col-span-5 lg:pr-8 lg:pl-12">
+          <div className="px-6 lg:col-span-5 lg:pl-12 lg:pr-12">
             {/*
               Unmeasured full-viewport hero lead-in. It gives the first measured step a viewport
               of content above it, so at rest that step sits at the viewport bottom and the timeline
@@ -116,7 +124,7 @@ export default function Index() {
                   className={`flex flex-col justify-center py-14 lg:py-12 ${stepHeightClass(phase.scrollVh)}`}
                 >
                   {prose && (
-                    <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-md">
+                    <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-none">
                       <h2 className="text-[1.6rem] font-semibold tracking-tight text-ink-primary sm:text-3xl">
                         {prose.headline}
                       </h2>

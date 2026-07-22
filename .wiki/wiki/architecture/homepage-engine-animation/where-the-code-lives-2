@@ -3,6 +3,7 @@ packages/website/app/components/marketing/story/copy.ts#L77-L138 rk64:ee2da262f7
 packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:13167aea3f0b3147
 packages/website/app/routes/_index.tsx#L124-L130 rk64:6f9de8acb847cc3d
 packages/website/app/routes/_index.tsx#L128-L134 rk64:6f9de8acb847cc3d
+packages/website/app/routes/_index.tsx#L132-L138 rk64:6f9de8acb847cc3d
 packages/website/vite.config.ts#L22-L25 rk64:98d116e237c9e6e7
-wiki/architecture/homepage-engine-animation.md#L30-L78 rk64:747d8f8e35c49ab0
+wiki/architecture/homepage-engine-animation.md#L30-L78 rk64:8e3a404be2e1b649
 

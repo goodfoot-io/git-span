@@ -94,7 +94,10 @@ export const SPECIMENS: Partial<Record<PhaseId, Specimen>> = {
   // The span file itself, cat as a terminal session, in its real on-disk shape (verified
   // against this repo's .span files): one anchor per line as `path#Lstart-Lend rk64:<key>`
   // separated by a single space, a blank line, then the present-tense why. The anchors
-  // point at the exact lines the traverse excerpts showed.
+  // point at the exact lines the traverse excerpts showed. The why is manually broken into
+  // two lines -- the specimen frame no longer soft-wraps (see Specimen.tsx), and one line
+  // is wider than the narrowest column can show without a horizontal scrollbar; a real
+  // span file's why would just be one long line.
   second: {
     kind: 'lines',
     lines: [
@@ -102,10 +105,8 @@ export const SPECIMENS: Partial<Record<PhaseId, Specimen>> = {
       { text: 'api/src/routes/products.ts#L4-L7 rk64:38db8e8540025b2a', tone: 'muted', highlight: true },
       { text: 'client-py/pagination.py#L25-L27  rk64:f4df18e9b3e72d2a', tone: 'muted', highlight: true },
       { text: ' ', tone: 'muted' },
-      {
-        text: 'Product-listing pagination is a continuation flow implemented across the API and client libraries.',
-        tone: 'muted'
-      }
+      { text: 'Product-listing pagination is a continuation flow', tone: 'muted' },
+      { text: 'implemented across the API and client libraries.', tone: 'muted' }
     ]
   },
   // The agent edits an anchored section, and the PostToolUse hook injects the relationship.
@@ -129,7 +130,8 @@ export const SPECIMENS: Partial<Record<PhaseId, Specimen>> = {
       'api/src/routes/products.ts#L4-L7',
       'client-py/pagination.py#L25-L27',
       ' ',
-      'Product-listing pagination is a continuation flow implemented across the API and client libraries.',
+      'Product-listing pagination is a continuation flow',
+      'implemented across the API and client libraries.',
       '</git-span>'
     ]
   },

@@ -427,7 +427,7 @@ export class EngineScene {
     // the user flagged this directly ("the highlighted parts are glowing too much, and it looks
     // odd with the background"). Radius cut in step, 0.35 -> 0.22, since spread (not just
     // intensity) is what was reading as "external glow" bleeding into the colored panel.
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.16, 0.22, 0.0);
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0, 0.22, 0.0);
     this.bloomComposer.addPass(this.bloomPass);
 
     const mixPass = new ShaderPass(

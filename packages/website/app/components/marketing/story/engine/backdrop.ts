@@ -14,10 +14,11 @@ interface Beat {
 }
 
 // Flat hold across t ± HOLD_HALF_WIDTH; ramps across the HOLD_HALF_WIDTH..HOLD_HALF_WIDTH +
-// FADE_WIDTH skirt on either side (t ± 2 through t ± 5). The remaining two beats (27.4 and 45)
-// sit 17.6 apart, comfortably outside two 5-unit skirts, so beats never overlap and a beat's
-// weight can be applied as a single default -> color lerp with no cross-beat blending to reason
-// about. The original t12 pale-blue beat was cut -- that window now stays at the default color.
+// FADE_WIDTH skirt on either side (t ± 2 through t ± 5). The remaining two beats (45 and 88) sit
+// 43 apart, comfortably outside two 5-unit skirts, so beats never overlap and a beat's weight can
+// be applied as a single default -> color lerp with no cross-beat blending to reason about. The
+// original t12 pale-blue beat was cut, and the t27.4 dark-graphite beat (the "Missing context"
+// step's backdrop) was cut too -- both windows now stay at the default color.
 const HOLD_HALF_WIDTH = 2;
 const FADE_WIDTH = 3;
 
@@ -26,7 +27,6 @@ const FADE_WIDTH = 3;
 // stay aligned with every other red/green color on the page -- keep any future retune of one
 // mirrored in the other, on those same two hues.
 const BEATS: readonly Beat[] = [
-  { t: 27.4, color: '#3f434a' }, // dark, cool-leaning graphite
   { t: 45, color: '#813731' }, // muted but bright brick red
   { t: 88, color: '#318146' } // muted but bright sage green -- same S/L as the t45 red
 ];

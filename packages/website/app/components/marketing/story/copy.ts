@@ -53,7 +53,7 @@ export const HERO: HeroCopy = {
 };
 
 export const CLOSING: ClosingCopy = {
-  headline: 'Record why your code belongs together.',
+  headline: 'Give agents the context they need.',
   primaryCta: PRIMARY_CTA,
   secondaryCta: SECONDARY_CTA
 };

@@ -1,0 +1,5 @@
+packages/website/app/components/Header.tsx#L8-L34 rk64:3a8127902478d54d
+packages/website/public/favicon.svg rk64:26bae7863ecb1f37
+packages/website/public/logo-negative.svg rk64:4c65e9332bfe7673
+
+Header.tsx's LogoMark hardcodes the same ring-and-span path data as logo-negative.svg's mark, and favicon.svg recolors the identical geometry -- redrawing the mark means copying the new path data into all three by hand.

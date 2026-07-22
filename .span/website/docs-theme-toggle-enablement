@@ -1,0 +1,4 @@
+packages/website/app/root.tsx#L36-L36 rk64:638aa5f834009633
+packages/website/app/routes/docs/page.tsx#L56-L56 rk64:18652837a0c624a4
+
+The docs sidebar's themeSwitch.enabled must match RootProvider's theme.enabled -- both must flip together, or the site ships either a visible toggle with no theme provider behind it or a working toggle nobody can reach.

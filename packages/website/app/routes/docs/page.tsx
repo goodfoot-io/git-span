@@ -46,7 +46,15 @@ export default function DocsRoute() {
   const { path, title, tree } = useLoaderData<typeof loader>();
 
   return (
-    <DocsLayout tree={tree} nav={{ title: 'git-span', enabled: false }}>
+    <DocsLayout
+      tree={tree}
+      nav={{ title: 'git-span', enabled: false }}
+      // The sidebar's built-in sun/moon toggle switches next-themes' theme, but RootProvider
+      // (root.tsx) has theme.enabled: false -- this is a single-theme (light-only) site with no
+      // ThemeProvider mounted, so the control is a dead no-op. Disable it rather than ship a
+      // button that does nothing when clicked.
+      themeSwitch={{ enabled: false }}
+    >
       <DocsPage>
         <DocsTitle>{title}</DocsTitle>
         <DocsBody>{clientLoader.useContent(path)}</DocsBody>

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
+import { DownloadIcon, GithubAltIcon, LibraryIcon } from '~/components/icons';
 import { HERO } from '~/components/marketing/story/copy';
 
-// "GS" ring-and-span mark (see public/logo-negative.svg for the source asset). Doubles as
-// the favicon (see public/favicon.svg) at larger size.
+// "GS" ring-and-span mark (see public/logo-negative.svg for the source asset -- the same mark
+// public/favicon.svg uses, recolored here to the page's accent purple via currentColor).
 export function LogoMark({ size = 20 }: { size?: number }) {
   return (
     <svg
@@ -17,15 +18,15 @@ export function LogoMark({ size = 20 }: { size?: number }) {
       className="shrink-0 text-accent"
     >
       <path
-        d="M1024 204.8H484.598C449.187 143.586 383.004 102.4 307.2 102.4C194.092 102.4 102.4 194.092 102.4 307.2C102.4 420.308 194.092 512 307.2 512C383.004 512 449.187 470.814 484.598 409.6H1024V1024H0V819.2H539.402C574.813 880.414 640.996 921.6 716.8 921.6C829.908 921.6 921.6 829.908 921.6 716.8C921.6 603.692 829.908 512 716.8 512C640.996 512 574.813 553.186 539.402 614.4H0V0H1024V204.8Z"
+        d="M1024 207H442.502C411.417 153.199 353.32 117 286.777 117C187.489 117 107 197.589 107 297C107 396.411 187.489 477 286.777 477C353.32 477 411.417 440.801 442.502 387H1024V1028H0V821H581.498C612.583 874.801 670.68 911 737.223 911C836.511 911 917 830.411 917 731C917 631.589 836.511 551 737.223 551C670.68 551 612.583 587.199 581.498 641H0V4H1024V207Z"
         fill="currentColor"
       />
       <path
-        d="M716.8 614.4C773.354 614.4 819.2 660.246 819.2 716.8C819.2 773.354 773.354 819.2 716.8 819.2C660.246 819.2 614.4 773.354 614.4 716.8C614.4 660.246 660.246 614.4 716.8 614.4Z"
+        d="M737.223 641C786.867 641 827.111 681.295 827.111 731C827.111 780.706 786.867 821 737.223 821C687.578 821 647.334 780.706 647.334 731C647.334 681.294 687.579 641 737.223 641Z"
         fill="currentColor"
       />
       <path
-        d="M307.2 204.8C363.754 204.8 409.6 250.646 409.6 307.2C409.6 363.754 363.754 409.6 307.2 409.6C250.646 409.6 204.8 363.754 204.8 307.2C204.8 250.646 250.646 204.8 307.2 204.8Z"
+        d="M286.777 207C336.422 207 376.666 247.294 376.666 297C376.666 346.706 336.421 387 286.777 387C237.133 387 196.889 346.705 196.889 297C196.889 247.294 237.133 207 286.777 207Z"
         fill="currentColor"
       />
     </svg>
@@ -57,26 +58,29 @@ export function Header() {
         <nav className="flex items-center gap-4 sm:gap-6">
           <Link
             to="/docs"
-            className="font-mono text-xs uppercase tracking-[0.08em] text-ink-secondary transition-colors hover:text-ink-primary"
+            className="inline-flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.08em] text-ink-secondary transition-colors hover:text-ink-primary"
           >
+            <LibraryIcon size={14} />
             Docs
           </Link>
           <a
             href="https://github.com/goodfoot-io/git-span"
             target="_blank"
             rel="noopener noreferrer"
-            className="font-mono text-xs uppercase tracking-[0.08em] text-ink-secondary transition-colors hover:text-ink-primary"
+            className="inline-flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.08em] text-ink-secondary transition-colors hover:text-ink-primary"
           >
+            <GithubAltIcon size={14} />
             GitHub
           </a>
           <Link
             to={HERO.primaryCta.href}
-            className={`hidden items-center rounded-radius px-3.5 py-2 font-mono text-xs font-medium whitespace-nowrap transition-colors sm:inline-flex ${
+            className={`hidden items-center gap-1.5 rounded-radius px-3.5 py-2 font-mono text-xs font-medium whitespace-nowrap transition-colors sm:inline-flex ${
               emphasized
                 ? 'border border-accent bg-accent text-white hover:border-accent-hover hover:bg-accent-hover'
                 : 'border border-rule text-ink-primary hover:bg-ground-raised'
             }`}
           >
+            <DownloadIcon size={14} />
             {HERO.primaryCta.label}
           </Link>
         </nav>

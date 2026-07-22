@@ -166,3 +166,23 @@ body {
      way to widen it. 3rem leaves a 16px gap after the button. */
   --padding-right: 3rem !important;
 }
+
+/*
+  fumadocs' docs sidebar (#nd-sidebar) pads its content 1rem (p-4) in from its own edge by
+  default, which doesn't line up with the site's own Header (Header.tsx), whose logo sits
+  3rem in from the viewport edge at lg+ via `lg:pl-12`. Nudge the sidebar's two content rows
+  to match: the title/collapse row has no padding of its own beyond the container, so it gets
+  3rem directly; the nav tree's items each carry a fixed 0.5rem of their own inline padding
+  (getItemOffset at depth 0), so its container gets 2.5rem to land text in the same place.
+  Scoped to the same lg breakpoint Header itself switches on -- below lg the sidebar keeps its
+  default indent (the docs sidebar is hidden below md anyway).
+*/
+@media (min-width: 1024px) {
+  #nd-sidebar > div:first-child {
+    padding-inline-start: 3rem;
+  }
+
+  #nd-sidebar [data-radix-scroll-area-viewport] {
+    padding-inline-start: 2.5rem;
+  }
+}

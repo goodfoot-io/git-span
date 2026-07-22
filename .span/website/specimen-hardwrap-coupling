@@ -1,0 +1,6 @@
+packages/website/app/components/marketing/story/Specimen.tsx#L36-L36 rk64:8c069c75407afb9c
+packages/website/app/components/marketing/story/Specimen.tsx#L52-L52 rk64:0e981336b09ed0ec
+packages/website/app/components/marketing/story/specimens.ts#L108-L109 rk64:1f7ae4a86d816e0c
+packages/website/app/components/marketing/story/specimens.ts#L133-L134 rk64:21f237e9f64a764f
+
+Specimen.tsx's frames no longer soft-wrap (whitespace-pre + overflow-x-auto), so specimens.ts hand-breaks the pagination why onto two lines at a width that fits the narrowest column without a scrollbar -- reverting the frame to soft-wrap or changing the column width should collapse these back to one line.
