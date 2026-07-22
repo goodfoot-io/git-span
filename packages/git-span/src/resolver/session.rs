@@ -20,48 +20,61 @@ use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
 use git_span_core::LineIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// A line index that owns its backing bytes, cacheable in the resolver session.
 ///
-/// Must be stored behind a `Box` (or other heap allocation) so the byte buffer
-/// never moves after the index is built — the [`LineIndex`] borrows from it.
-/// Rebuilding the index per anchor on the same file is the central cost Tier 2
-/// amortizes away.
+/// Must be stored behind an `Arc` (or other stable heap allocation) so the
+/// byte buffer never moves after the index is built — the [`LineIndex`]
+/// borrows from it. Rebuilding the index per anchor on the same file is the
+/// central cost Tier 2 amortizes away.
 ///
 /// The inner [`LineIndex`] lazily allocates prefix-hash and power tables
 /// (~16 bytes per file byte) on the first prefiltered scan.  Files exceeding
 /// [`git_span_core::PREFILTER_TABLES_MAX_BYTES`] (32 MiB) skip this allocation
 /// and fall back to per-window hashing.  Tables live for the [`ConcurrentSession`]
 /// lifetime and are evicted with the line-index cache.
+///
+/// Card main-162 staged-rollout step 3: `idx` is an [`OnceLock`] rather than
+/// an `Option`, so [`get`](Self::get) is `&self`-only — a warm entry can be
+/// read through an `RwLock` read guard (the entry is an `Arc<CachedLineIndex>`
+/// cloned out of the map) without forcing every reader through an exclusive
+/// path, and two threads racing on a *new* entry block on the `OnceLock`'s own
+/// single-flight rather than on the outer map lock.
 pub(crate) struct CachedLineIndex {
     bytes: Vec<u8>,
-    /// Lazily built; `None` until the first `get()` call.  The inner
+    /// Lazily built on the first `get()` call.  The inner
     /// `LineIndex<'static>` borrows from `self.bytes` and is sound only
-    /// because `CachedLineIndex` lives in a `Box` (pinned).
-    idx: Option<LineIndex<'static>>,
+    /// because `CachedLineIndex` lives in an `Arc` (pinned; the value never
+    /// moves for the lifetime of the allocation).  `OnceLock` gives the
+    /// first caller single-flight build semantics under `&self`.
+    idx: OnceLock<LineIndex<'static>>,
 }
 
 impl CachedLineIndex {
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, idx: None }
+        Self {
+            bytes,
+            idx: OnceLock::new(),
+        }
     }
 
     /// Return a [`LineIndex`] borrowing from the cached bytes, building it
-    /// on first call.  Subsequent calls return the pre-built index.
-    pub(crate) fn get(&mut self) -> &LineIndex<'_> {
-        if self.idx.is_none() {
+    /// on first call.  Subsequent calls return the pre-built index.  `&self`
+    /// only: the first caller to reach an unbuilt cell pays the build under
+    /// [`OnceLock::get_or_init`]'s single-flight; every other caller (racing
+    /// or later) blocks until it finishes, then reads the same index.
+    pub(crate) fn get(&self) -> &LineIndex<'_> {
+        self.idx.get_or_init(|| {
             let idx = LineIndex::build(&self.bytes);
-            // SAFETY: CachedLineIndex is always stored in a `Box`, so
-            // `self.bytes` never moves.  The transmute extends the borrow
-            // lifetime to `'static`; all returned references are bounded
-            // by `&mut self`.
-            let idx: LineIndex<'static> = unsafe { std::mem::transmute(idx) };
-            self.idx = Some(idx);
-        }
-        self.idx.as_ref().unwrap()
+            // SAFETY: CachedLineIndex is always stored in an `Arc`, so
+            // `self.bytes` never moves for the allocation's lifetime.  The
+            // transmute extends the borrow lifetime to `'static`; all
+            // returned references are bounded by `&self`, and `LineIndex`'s
+            // covariance narrows `'static` back to the caller's borrow.
+            unsafe { std::mem::transmute::<LineIndex<'_>, LineIndex<'static>>(idx) }
+        })
     }
-
 }
 
 /// Nested `commit_sha → path → blob_oid` memo shape shared by
@@ -69,6 +82,15 @@ impl CachedLineIndex {
 /// `walker` and `timeline` — see `blob_oid_memo`'s doc comment for why the
 /// nesting (vs. a flat tuple-keyed map) matters.
 pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
+
+/// Per-key single-flight memo shape (card main-162 staged-rollout step 3):
+/// the outer `RwLock<HashMap>` maps a string key to an `Arc<OnceLock<V>>`
+/// cell, and the value `V` is computed exactly once via
+/// [`OnceLock::get_or_init`] — even when concurrent callers race the same
+/// key. Backs [`ConcurrentSession::rename_before_commit_memo`] and
+/// [`ConcurrentSession::before_tree_paths_memo`]; see
+/// [`ConcurrentSession::single_flight_cell`] for the lookup-or-insert helper.
+type SingleFlightMemo<V> = RwLock<HashMap<String, Arc<OnceLock<V>>>>;
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Produced by the reverse-indexed walk once per
@@ -281,19 +303,39 @@ impl PathIndex {
 /// Staged-rollout step 2 (card main-162): the general-purpose memo caches
 /// (`blob_oid_memo`, `deleted_locus_memo`, `relocation_text_memo`,
 /// `history_blob_memo`, `history_fingerprint_memo`, `timelines`,
-/// `commit_reachability`, `filter_attrs`) are now `RwLock<HashMap<K, V>>`,
+/// `commit_reachability`, `filter_attrs`) are `RwLock<HashMap<K, V>>`,
 /// and the counters they drive are `AtomicU64` — read-lock/check,
 /// drop-and-compute, write-lock/insert; every one of these is a pure
 /// function of `(immutable git state, key)` for the session's lifetime, so
 /// two callers racing to fill the same missing key both compute the same
-/// value (redundant work, never a wrong answer). The loop that drives this
-/// session is still fully serial — this step only prepares the storage for
-/// sharing behind `Arc<ConcurrentSession>` once the rayon fork lands. The
-/// special-cased fields (`JaccardCorpus`, `first_parent_chain`,
-/// `head_blob_memo_warmed_for`, `rename_before_commit_memo`,
-/// `before_tree_paths_memo`, `worktree_bytes_memo`, `blob_text_memo`,
-/// `line_index_cache`, `timeline_paths`) are untouched here — each has its
-/// own correctness argument and lands in the next staged step.
+/// value (redundant work, never a wrong answer).
+///
+/// Staged-rollout step 3 (card main-162): the special-cased fields are now
+/// converted too, each with its own correctness argument:
+/// - `rename_before_commit_memo` / `before_tree_paths_memo`:
+///   `RwLock<HashMap<K, Arc<OnceLock<V>>>>` — per-key single-flight so an
+///   expensive HEAD walk / tree enumeration for one key runs exactly once
+///   even when multiple callers race the *same* key.
+/// - `worktree_bytes_memo` / `blob_text_memo`: plain `RwLock<HashMap<K, V>>`
+///   that inserts only on a *successful* read — a failing read is
+///   `?`-propagated and never cached, so the next caller retries (this is
+///   why they are NOT single-flight: an `OnceLock` cell would pin the first
+///   caller's transient failure for the rest of the session).
+/// - `line_index_cache`: `RwLock<HashMap<K, Arc<CachedLineIndex>>>` whose
+///   values build their inner index behind an `OnceLock` (see
+///   [`CachedLineIndex`]).
+/// - `timeline_paths`: `Mutex<PathInterner>` (atomic per-`intern` call).
+/// - `jaccard_corpus`: `Mutex<JaccardCorpus>` (id assignment is atomic under
+///   one lock so two threads never mint two ids for the same line).
+/// - `first_parent_chain`: `Mutex<Option<Vec<ObjectId>>>`, extended entirely
+///   inside one lock acquisition.
+/// - `head_blob_memo_warmed` (was `head_blob_memo_warmed_for`): `OnceLock<()>`
+///   gating a single `warm_head_blob_memo` call (`head_sha` is constant per
+///   session, so no keying is needed).
+///
+/// The loop that drives this session is still fully serial — these steps
+/// only prepare the storage for sharing behind `Arc<ConcurrentSession>` once
+/// the rayon fork lands.
 pub(crate) struct ConcurrentSession {
     /// Session-scoped memo for the changed-path Bloom filter handle. The
     /// commit-graph file is constant for the life of a session, but
@@ -347,10 +389,15 @@ pub(crate) struct ConcurrentSession {
     /// identical blob OID, so a race here is redundant work, never a wrong
     /// answer.
     pub(crate) blob_oid_memo: RwLock<BlobOidMemo>,
-    /// HEAD sha whose tree has been bulk-enumerated into `blob_oid_memo`
-    /// by [`warm_head_blob_memo`](Self::warm_head_blob_memo). `None`
-    /// until the first relocation scan asks for it.
-    head_blob_memo_warmed_for: Option<String>,
+    /// Single-flight gate for the one-time bulk enumeration of HEAD's tree
+    /// into `blob_oid_memo` by
+    /// [`warm_head_blob_memo`](Self::warm_head_blob_memo). `head_sha` is
+    /// constant for the whole session, so there is only ever one thing to
+    /// warm — an `OnceLock<()>` is the std-native single-flight primitive
+    /// (card main-162 staged-rollout step 3): the first caller runs the
+    /// enumeration, every concurrent caller blocks until it finishes, and no
+    /// keying by `head_sha` is needed.
+    head_blob_memo_warmed: OnceLock<()>,
     /// Counters: anchors classified by terminal status. Updated from the
     /// per-anchor loop in `engine::resolve_loaded_span_with_state` after each
     /// `resolve_anchor_inner` call.
@@ -411,7 +458,15 @@ pub(crate) struct ConcurrentSession {
     pub(crate) timeline_cache_hits: AtomicU64,
     pub(crate) timeline_cache_misses: AtomicU64,
     /// Phase 1: shared path-byte interner used while building timelines.
-    pub(crate) timeline_paths: PathInterner,
+    /// `Mutex`-wrapped (card main-162 staged-rollout step 3): each
+    /// `interner.intern(...)` call in `build_timeline` locks, runs the whole
+    /// IO-free lookup-or-insert body, and unlocks immediately — atomic per
+    /// call, so two threads never mint two different `Arc<[u8]>` for the same
+    /// path bytes. The interner lock and `blob_oid_memo`'s lock are never held
+    /// simultaneously by the same thread (the `intern` guard is dropped before
+    /// `blob_oid_at`'s independent per-call acquisition), so there is no lock
+    /// order to defend.
+    pub(crate) timeline_paths: Mutex<PathInterner>,
     /// Counter: candidate-path content reads performed inside the
     /// file-backed cross-path relocation scan
     /// (`find_relocated_range_in_paths`). Without amortization this counts
@@ -434,13 +489,16 @@ pub(crate) struct ConcurrentSession {
         RwLock<HashMap<(String, crate::types::DriftSource), Option<String>>>,
     /// Session-scoped line-index cache keyed by `(path, layer)`.  Each
     /// distinct `(path, layer)` pair is read once and indexed once
-    /// regardless of how many anchors touch that file.  Values are `Box`ed
-    /// so the byte buffer is pinned — the inner [`LineIndex`] borrows from
-    /// it (see [`CachedLineIndex`]). Left as a plain (non-lock-wrapped)
-    /// `HashMap` for now — card main-162's next staged step restructures
-    /// `CachedLineIndex` around `OnceLock` before this can be shared safely;
-    /// see the plan's `line_index_cache` note.
-    pub(crate) line_index_cache: HashMap<(String, DriftSource), Box<CachedLineIndex>>,
+    /// regardless of how many anchors touch that file.  Values are
+    /// `Arc<CachedLineIndex>` so the byte buffer is pinned — the inner
+    /// [`LineIndex`] borrows from it (see [`CachedLineIndex`]).
+    /// `RwLock`-wrapped (card main-162 staged-rollout step 3): a hit clones
+    /// the `Arc` under a read guard and calls the now-`&self`
+    /// [`CachedLineIndex::get`] lock-free; a miss inserts an unbuilt entry
+    /// under the write guard, and the first caller to reach `get()` pays the
+    /// one-time index build under the entry's own `OnceLock` single-flight —
+    /// never under the outer map lock.
+    pub(crate) line_index_cache: RwLock<HashMap<(String, DriftSource), Arc<CachedLineIndex>>>,
     /// Counter: line-index cache hits (subsequent anchors on a previously
     /// indexed path+layer).
     pub(crate) line_index_hits: AtomicU64,
@@ -452,32 +510,64 @@ pub(crate) struct ConcurrentSession {
     /// the same anchored path performed an identical reverse-chronological
     /// HEAD walk before this memo existed; now the walk runs once per
     /// distinct anchored path per session.
-    pub(crate) rename_before_commit_memo: HashMap<String, Option<String>>,
+    ///
+    /// `RwLock<HashMap<K, Arc<OnceLock<V>>>>` (card main-162 staged-rollout
+    /// step 3): per-key single-flight. The outer map lock is held only long
+    /// enough to look up or insert an empty per-key cell; the expensive
+    /// reverse-chronological HEAD walk runs inside that cell's
+    /// [`OnceLock::get_or_init`], so concurrent callers racing the *same*
+    /// anchored path block on the cell (the walk runs exactly once) while
+    /// callers on *different* paths never contend on the map lock.
+    pub(crate) rename_before_commit_memo: SingleFlightMemo<Option<String>>,
     /// Session-scoped memo for [`is_rename_target`](Self::is_rename_target),
     /// keyed by `before_commit`. Holds every path present in that commit's
     /// tree (any entry kind — see [`before_tree_paths`](Self::before_tree_paths)),
     /// enumerated once via a breadth-first traversal instead of probing each
     /// candidate with its own root-to-leaf `tree_entry_at` walk.
-    pub(crate) before_tree_paths_memo: HashMap<String, Arc<HashSet<String>>>,
+    ///
+    /// `RwLock<HashMap<K, Arc<OnceLock<V>>>>` (card main-162 staged-rollout
+    /// step 3): per-key single-flight, same discipline as
+    /// `rename_before_commit_memo` — the full tree enumeration runs inside the
+    /// per-commit cell's [`OnceLock::get_or_init`], once per distinct commit.
+    pub(crate) before_tree_paths_memo: SingleFlightMemo<Arc<HashSet<String>>>,
     /// Session-scoped memo for normalized worktree bytes, keyed by path.
     /// The worktree does not change during a `stale` run, so every reader
     /// of the same path — the deepest-layer `current` read and the
     /// `ResolvedPendingCommit` detection in `resolve_anchor_inner` alike —
     /// shares one disk-plus-filter read. Failed reads are not cached; the
     /// rare failing path is simply retried by the next caller.
-    pub(crate) worktree_bytes_memo: HashMap<String, Arc<[u8]>>,
+    ///
+    /// Plain `RwLock<HashMap<K, V>>` (card main-162 staged-rollout step 3),
+    /// deliberately NOT the per-key `OnceLock` single-flight the two memos
+    /// above use: only a *successful* read is inserted (a failing read is
+    /// `?`-propagated before the write), so the next caller retries rather
+    /// than being pinned to a stale failure. A single-flight `OnceLock` cell
+    /// would have to persist the first caller's transient failure for the
+    /// rest of the session — a correctness regression — so this field keeps
+    /// the racy generic pattern (redundant compute on a race is accepted).
+    pub(crate) worktree_bytes_memo: RwLock<HashMap<String, Arc<[u8]>>>,
     /// Session-scoped memo for decoded blob text, keyed by blob OID hex.
     /// HEAD is constant for the run, so the same OID read by multiple
     /// anchors (e.g. anchors sharing a path, all pointing at the same HEAD
     /// blob) pays for one ODB decompress-and-decode. Failed reads are not
-    /// cached, matching `worktree_bytes_memo`'s policy.
-    pub(crate) blob_text_memo: HashMap<String, Arc<str>>,
+    /// cached, matching `worktree_bytes_memo`'s policy — plain
+    /// `RwLock<HashMap<K, V>>` inserting only on success (card main-162
+    /// staged-rollout step 3), for the same retry-on-failure reason.
+    pub(crate) blob_text_memo: RwLock<HashMap<String, Arc<str>>>,
     /// Lazily-built, session-scoped first-parent ancestor chain from HEAD,
     /// used by [`first_parent_ancestor`](Self::first_parent_ancestor).
     /// `chain[i - 1]` is `HEAD~i`. Built incrementally: extended only as far
     /// as the deepest index any caller has asked for so far, and never
     /// re-walked from HEAD on a later request.
-    pub(crate) first_parent_chain: Option<Vec<gix::ObjectId>>,
+    ///
+    /// `Mutex`-wrapped (card main-162 staged-rollout step 3): the chain is a
+    /// single order-dependent `Vec`, so extension happens entirely inside one
+    /// lock acquisition (check current depth, extend to the needed depth, all
+    /// under the same guard — never dropped and reacquired mid-extension).
+    /// This serializes chain growth across threads, but growth is O(depth) and
+    /// monotonically non-repeating, so the serialized cost is bounded and paid
+    /// at most once per depth regardless of thread count.
+    pub(crate) first_parent_chain: Mutex<Option<Vec<gix::ObjectId>>>,
     /// Session-scoped memo for [`history_path_blob`](Self::history_path_blob),
     /// keyed by `(commit_oid, path)`. The history walk in
     /// [`find_original_line_slice_in_history`](crate::resolver::engine::anchor::find_original_line_slice_in_history)
@@ -503,7 +593,15 @@ pub(crate) struct ConcurrentSession {
     /// [`jaccard_candidate_ids`](Self::jaccard_candidate_ids) /
     /// [`jaccard_anchored_ids`](Self::jaccard_anchored_ids). See
     /// [`JaccardCorpus`].
-    pub(crate) jaccard_corpus: JaccardCorpus,
+    ///
+    /// `Mutex`-wrapped (card main-162 staged-rollout step 3): the id-assignment
+    /// critical section (string → id lookup-or-insert) stays inside ONE lock
+    /// acquisition per interning call — never split into "check unlocked, then
+    /// lock to insert" — so two threads can never both decide a never-seen
+    /// string is un-interned and mint two different ids for it (which would
+    /// silently break every downstream Jaccard comparison that assumes id
+    /// equality means line equality).
+    pub(crate) jaccard_corpus: Mutex<JaccardCorpus>,
 }
 
 /// Session-scoped Jaccard interner and per-`(path, layer)` interned-line
@@ -546,7 +644,7 @@ impl ConcurrentSession {
             filter_attr_misses: AtomicU64::new(0),
             deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
             blob_oid_memo: RwLock::new(HashMap::new()),
-            head_blob_memo_warmed_for: None,
+            head_blob_memo_warmed: OnceLock::new(),
             anchors_fresh: 0,
             anchors_moved: 0,
             anchors_changed: 0,
@@ -568,20 +666,20 @@ impl ConcurrentSession {
             timelines: RwLock::new(HashMap::new()),
             timeline_cache_hits: AtomicU64::new(0),
             timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: PathInterner::new(),
+            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: RwLock::new(HashMap::new()),
-            line_index_cache: HashMap::new(),
+            line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
-            rename_before_commit_memo: HashMap::new(),
-            before_tree_paths_memo: HashMap::new(),
-            worktree_bytes_memo: HashMap::new(),
-            blob_text_memo: HashMap::new(),
-            first_parent_chain: None,
+            rename_before_commit_memo: RwLock::new(HashMap::new()),
+            before_tree_paths_memo: RwLock::new(HashMap::new()),
+            worktree_bytes_memo: RwLock::new(HashMap::new()),
+            blob_text_memo: RwLock::new(HashMap::new()),
+            first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
-            jaccard_corpus: JaccardCorpus::default(),
+            jaccard_corpus: Mutex::new(JaccardCorpus::default()),
         }
     }
 
@@ -745,34 +843,39 @@ impl ConcurrentSession {
     /// still fall through to `head_blob_oid`'s authoritative per-path
     /// lookup, so results are identical with or without warming.
     ///
-    /// Idempotent per `head_sha`; enumeration failure is silently skipped
+    /// Idempotent per session; enumeration failure is silently skipped
     /// (the per-path traversal path remains correct).
-    pub(crate) fn warm_head_blob_memo(&mut self, repo: &gix::Repository, head_sha: &str) {
-        if self.head_blob_memo_warmed_for.as_deref() == Some(head_sha) {
-            return;
-        }
-        let pairs = (|| -> Result<Vec<(String, String)>> {
-            let oid = gix::ObjectId::from_hex(head_sha.as_bytes())
-                .map_err(|e| crate::Error::Git(format!("parse HEAD {head_sha}: {e}")))?;
-            let commit = repo
-                .find_commit(oid)
-                .map_err(|e| crate::Error::Git(format!("find HEAD commit: {e}")))?;
-            let tree = commit
-                .tree()
-                .map_err(|e| crate::Error::Git(format!("HEAD tree: {e}")))?;
-            walker::tree_blob_paths(&tree)
-        })();
-        let Ok(pairs) = pairs else {
-            return;
-        };
-        {
+    ///
+    /// Card main-162 staged-rollout step 3: gated by an `OnceLock<()>` rather
+    /// than an `Option<String>` compare. `head_sha` is constant for the whole
+    /// session, so the enumeration runs at most once — the first caller pays
+    /// it inside [`OnceLock::get_or_init`], every concurrent caller blocks
+    /// until it finishes. A failed enumeration still initializes the gate (no
+    /// retry), which is behavior-preserving: warming is a pure optimization
+    /// (absent paths fall through to `head_blob_oid`'s authoritative lookup),
+    /// and a re-run over the same immutable HEAD tree would fail identically.
+    pub(crate) fn warm_head_blob_memo(&self, repo: &gix::Repository, head_sha: &str) {
+        self.head_blob_memo_warmed.get_or_init(|| {
+            let pairs = (|| -> Result<Vec<(String, String)>> {
+                let oid = gix::ObjectId::from_hex(head_sha.as_bytes())
+                    .map_err(|e| crate::Error::Git(format!("parse HEAD {head_sha}: {e}")))?;
+                let commit = repo
+                    .find_commit(oid)
+                    .map_err(|e| crate::Error::Git(format!("find HEAD commit: {e}")))?;
+                let tree = commit
+                    .tree()
+                    .map_err(|e| crate::Error::Git(format!("HEAD tree: {e}")))?;
+                walker::tree_blob_paths(&tree)
+            })();
+            let Ok(pairs) = pairs else {
+                return;
+            };
             let mut memo = self.blob_oid_memo.write().unwrap();
             let by_path = memo.entry(head_sha.to_string()).or_default();
             for (path, oid) in pairs {
                 by_path.entry(path).or_insert(Some(oid));
             }
-        }
-        self.head_blob_memo_warmed_for = Some(head_sha.to_string());
+        });
     }
 
     /// Get or read the normalized worktree bytes at `path`, memoized for
@@ -790,11 +893,20 @@ impl ConcurrentSession {
         custom_filters: &mut CustomFilters,
         path: &str,
     ) -> Result<Arc<[u8]>> {
-        if let Some(cached) = self.worktree_bytes_memo.get(path) {
-            return Ok(cached.clone());
+        // Read-lock, check, and drop the guard before the (I/O-bound) filter
+        // read below. Card main-162 staged-rollout step 3: plain
+        // `RwLock<HashMap>` inserting only on success — the `?` propagates a
+        // failed read *before* the write, so nothing is cached and the next
+        // caller retries (deliberately NOT single-flight; see the field doc).
+        let cached = self.worktree_bytes_memo.read().unwrap().get(path).cloned();
+        if let Some(cached) = cached {
+            return Ok(cached);
         }
         let bytes: Arc<[u8]> = read_worktree_normalized(repo, custom_filters, path)?.into();
-        self.worktree_bytes_memo.insert(path.to_string(), bytes.clone());
+        self.worktree_bytes_memo
+            .write()
+            .unwrap()
+            .insert(path.to_string(), bytes.clone());
         Ok(bytes)
     }
 
@@ -804,11 +916,19 @@ impl ConcurrentSession {
     /// decompress-and-decode. Like [`worktree_bytes`](Self::worktree_bytes),
     /// a failing read is propagated but not cached.
     pub(crate) fn blob_text(&mut self, repo: &gix::Repository, oid: &str) -> Result<Arc<str>> {
-        if let Some(cached) = self.blob_text_memo.get(oid) {
-            return Ok(cached.clone());
+        // Same insert-only-on-success discipline as
+        // [`worktree_bytes`](Self::worktree_bytes): a failing read is
+        // `?`-propagated before the write, so it is never cached and the next
+        // caller retries (card main-162 staged-rollout step 3).
+        let cached = self.blob_text_memo.read().unwrap().get(oid).cloned();
+        if let Some(cached) = cached {
+            return Ok(cached);
         }
         let text: Arc<str> = git::read_git_text(repo, oid)?.into();
-        self.blob_text_memo.insert(oid.to_string(), text.clone());
+        self.blob_text_memo
+            .write()
+            .unwrap()
+            .insert(oid.to_string(), text.clone());
         Ok(text)
     }
 
@@ -836,7 +956,13 @@ impl ConcurrentSession {
         repo: &gix::Repository,
         i: u32,
     ) -> Option<gix::ObjectId> {
-        let chain = self.first_parent_chain.get_or_insert_with(Vec::new);
+        // Card main-162 staged-rollout step 3: the whole check-then-extend
+        // runs inside one `Mutex` acquisition — the guard is held across the
+        // extension walk and never dropped/reacquired mid-extension, so the
+        // single order-dependent chain grows atomically. An early `?` (out of
+        // ancestors) returns `None` and drops the guard.
+        let mut guard = self.first_parent_chain.lock().unwrap();
+        let chain = guard.get_or_insert_with(Vec::new);
         while (chain.len() as u32) < i {
             let current = match chain.last() {
                 Some(oid) => *oid,
@@ -918,13 +1044,20 @@ impl ConcurrentSession {
         lines: &[&str],
     ) -> JaccardCandidateIds {
         let key = (path.to_string(), layer);
-        if let Some(cached) = self.jaccard_corpus.candidates.get(&key) {
+        // Card main-162 staged-rollout step 3: hold the corpus `Mutex` across
+        // the whole candidate-cache lookup and the interning step, so the
+        // string→id assignment is atomic — two threads can never mint two ids
+        // for the same never-seen line. The lock also spans line
+        // normalization; that only matters for contention (irrelevant while
+        // the loop is serial), never for correctness.
+        let mut corpus = self.jaccard_corpus.lock().unwrap();
+        if let Some(cached) = corpus.candidates.get(&key) {
             return cached.clone();
         }
         let (ids, raw_empty) =
-            git_span_core::intern_normalized_lines(lines, &mut self.jaccard_corpus.interner);
+            git_span_core::intern_normalized_lines(lines, &mut corpus.interner);
         let value: JaccardCandidateIds = (ids.into(), raw_empty.into());
-        self.jaccard_corpus.candidates.insert(key, value.clone());
+        corpus.candidates.insert(key, value.clone());
         value
     }
 
@@ -936,8 +1069,12 @@ impl ConcurrentSession {
     /// every call (it's the anchor's own drifted content), so there is
     /// nothing to reuse beyond the interner's accumulated id assignments.
     pub(crate) fn jaccard_anchored_ids(&mut self, anchored_lines: &[&str]) -> Vec<u32> {
+        // Intern against the same shared corpus under one lock acquisition
+        // (card main-162 staged-rollout step 3) so these ids are comparable
+        // against candidate ids minted by the same interner.
+        let mut corpus = self.jaccard_corpus.lock().unwrap();
         let (ids, _raw_empty) =
-            git_span_core::intern_normalized_lines(anchored_lines, &mut self.jaccard_corpus.interner);
+            git_span_core::intern_normalized_lines(anchored_lines, &mut corpus.interner);
         ids
     }
 
@@ -950,16 +1087,25 @@ impl ConcurrentSession {
         bytes: Vec<u8>,
         path: &str,
         layer: DriftSource,
-    ) -> &mut CachedLineIndex {
+    ) -> Arc<CachedLineIndex> {
         let key = (path.to_string(), layer);
-        if self.line_index_cache.contains_key(&key) {
+        // Card main-162 staged-rollout step 3: read-lock/check for a hit
+        // (clone the cheap `Arc`), else write-lock/insert an *unbuilt* entry.
+        // The one-time `LineIndex` build happens later, lock-free, inside the
+        // entry's own `OnceLock` when the caller invokes `.get()`.
+        let existing = self.line_index_cache.read().unwrap().get(&key).cloned();
+        if let Some(existing) = existing {
             self.line_index_hits.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.line_index_misses.fetch_add(1, Ordering::Relaxed);
-            self.line_index_cache
-                .insert(key.clone(), Box::new(CachedLineIndex::new(bytes)));
+            return existing;
         }
-        self.line_index_cache.get_mut(&key).unwrap()
+        self.line_index_misses.fetch_add(1, Ordering::Relaxed);
+        let entry = Arc::new(CachedLineIndex::new(bytes));
+        self.line_index_cache
+            .write()
+            .unwrap()
+            .entry(key)
+            .or_insert_with(|| entry.clone())
+            .clone()
     }
 
     /// Retrieve an already-built [`CachedLineIndex`] for `(path, layer)`.
@@ -969,9 +1115,9 @@ impl ConcurrentSession {
         &mut self,
         path: &str,
         layer: DriftSource,
-    ) -> Option<&mut CachedLineIndex> {
+    ) -> Option<Arc<CachedLineIndex>> {
         let key = (path.to_string(), layer);
-        self.line_index_cache.get_mut(&key).map(|b| &mut **b)
+        self.line_index_cache.read().unwrap().get(&key).cloned()
     }
 
     /// The commit-ish whose tree still had `anchored_path` (the state
@@ -992,35 +1138,58 @@ impl ConcurrentSession {
         repo: &gix::Repository,
         anchored_path: &str,
     ) -> Option<String> {
-        if let Some(cached) = self.rename_before_commit_memo.get(anchored_path) {
-            return cached.clone();
-        }
-        let before: Option<String> = (|| {
-            let head = git::head_oid(repo).ok()?;
-            let head_oid = gix::ObjectId::from_hex(head.as_bytes()).ok()?;
-            let walk = repo
-                .rev_walk([head_oid])
-                .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                    gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-                ))
-                .all()
-                .ok()?;
-            for info in walk {
-                let info = info.ok()?;
-                let cid = info.id.to_string();
-                if git::tree_entry_at(repo, &cid, std::path::Path::new(anchored_path))
-                    .ok()
-                    .flatten()
-                    .is_some()
-                {
-                    return Some(cid);
+        // Card main-162 staged-rollout step 3: per-key single-flight. Take (or
+        // insert) an empty per-key cell under the outer map lock, then run the
+        // reverse-chronological HEAD walk inside that cell's `get_or_init` with
+        // no map lock held — so callers racing the *same* anchored path share
+        // one walk, and callers on different paths never contend on the map.
+        let cell = self.single_flight_cell(&self.rename_before_commit_memo, anchored_path);
+        cell.get_or_init(|| {
+            (|| {
+                let head = git::head_oid(repo).ok()?;
+                let head_oid = gix::ObjectId::from_hex(head.as_bytes()).ok()?;
+                let walk = repo
+                    .rev_walk([head_oid])
+                    .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                        gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+                    ))
+                    .all()
+                    .ok()?;
+                for info in walk {
+                    let info = info.ok()?;
+                    let cid = info.id.to_string();
+                    if git::tree_entry_at(repo, &cid, std::path::Path::new(anchored_path))
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        return Some(cid);
+                    }
                 }
-            }
-            None
-        })();
-        self.rename_before_commit_memo
-            .insert(anchored_path.to_string(), before.clone());
-        before
+                None
+            })()
+        })
+        .clone()
+    }
+
+    /// Look up or insert an empty per-key single-flight [`OnceLock`] cell in
+    /// one of the `RwLock<HashMap<K, Arc<OnceLock<V>>>>` memos, holding the
+    /// outer map lock only long enough to clone (hit) or insert (miss) the
+    /// cell — never across the value computation the caller drives via
+    /// [`OnceLock::get_or_init`]. Card main-162 staged-rollout step 3.
+    fn single_flight_cell<V>(
+        &self,
+        memo: &SingleFlightMemo<V>,
+        key: &str,
+    ) -> Arc<OnceLock<V>> {
+        if let Some(cell) = memo.read().unwrap().get(key).cloned() {
+            return cell;
+        }
+        memo.write()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
     }
 
     /// Every path present in `before_commit`'s tree (any entry kind — see
@@ -1044,20 +1213,22 @@ impl ConcurrentSession {
         repo: &gix::Repository,
         before_commit: &str,
     ) -> Arc<HashSet<String>> {
-        if let Some(set) = self.before_tree_paths_memo.get(before_commit) {
-            return set.clone();
-        }
-        let set = (|| -> Option<HashSet<String>> {
-            let oid = gix::ObjectId::from_hex(before_commit.as_bytes()).ok()?;
-            let commit = repo.find_commit(oid).ok()?;
-            let tree = commit.tree().ok()?;
-            walker::tree_all_paths(&tree).ok()
-        })()
-        .unwrap_or_default();
-        let set = Arc::new(set);
-        self.before_tree_paths_memo
-            .insert(before_commit.to_string(), set.clone());
-        set
+        // Card main-162 staged-rollout step 3: per-key single-flight, same
+        // discipline as [`rename_before_commit`](Self::rename_before_commit) —
+        // the full tree enumeration runs inside the per-commit cell's
+        // `get_or_init`, once per distinct commit, with no map lock held.
+        let cell = self.single_flight_cell(&self.before_tree_paths_memo, before_commit);
+        cell.get_or_init(|| {
+            let set = (|| -> Option<HashSet<String>> {
+                let oid = gix::ObjectId::from_hex(before_commit.as_bytes()).ok()?;
+                let commit = repo.find_commit(oid).ok()?;
+                let tree = commit.tree().ok()?;
+                walker::tree_all_paths(&tree).ok()
+            })()
+            .unwrap_or_default();
+            Arc::new(set)
+        })
+        .clone()
     }
 
     /// True when `candidate` is a valid committed-rename target for
@@ -1500,7 +1671,7 @@ pub(crate) fn resolve_at_head_shared(
             &deltas,
             head_blob_oid,
             copy_detection,
-            &mut concurrent.timeline_paths,
+            &concurrent.timeline_paths,
             &concurrent.blob_oid_memo,
         )?;
         let arc = Arc::new(tl);
@@ -1573,7 +1744,7 @@ mod tests {
             filter_attr_misses: AtomicU64::new(0),
             deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
             blob_oid_memo: RwLock::new(HashMap::new()),
-            head_blob_memo_warmed_for: None,
+            head_blob_memo_warmed: OnceLock::new(),
             anchors_fresh: 0,
             anchors_moved: 0,
             anchors_changed: 0,
@@ -1595,20 +1766,20 @@ mod tests {
             timelines: RwLock::new(HashMap::new()),
             timeline_cache_hits: AtomicU64::new(0),
             timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: PathInterner::new(),
+            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: RwLock::new(HashMap::new()),
-            line_index_cache: HashMap::new(),
+            line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
-            rename_before_commit_memo: HashMap::new(),
-            before_tree_paths_memo: HashMap::new(),
-            worktree_bytes_memo: HashMap::new(),
-            blob_text_memo: HashMap::new(),
-            first_parent_chain: None,
+            rename_before_commit_memo: RwLock::new(HashMap::new()),
+            before_tree_paths_memo: RwLock::new(HashMap::new()),
+            worktree_bytes_memo: RwLock::new(HashMap::new()),
+            blob_text_memo: RwLock::new(HashMap::new()),
+            first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
-            jaccard_corpus: JaccardCorpus::default(),
+            jaccard_corpus: Mutex::new(JaccardCorpus::default()),
         };
 
         let total = session.anchors_total();
@@ -1639,7 +1810,7 @@ mod tests {
             filter_attr_misses: AtomicU64::new(0),
             deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
             blob_oid_memo: RwLock::new(HashMap::new()),
-            head_blob_memo_warmed_for: None,
+            head_blob_memo_warmed: OnceLock::new(),
             anchors_fresh: 0,
             anchors_moved: 3,
             anchors_changed: 2,
@@ -1661,20 +1832,20 @@ mod tests {
             timelines: RwLock::new(HashMap::new()),
             timeline_cache_hits: AtomicU64::new(0),
             timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: PathInterner::new(),
+            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: RwLock::new(HashMap::new()),
-            line_index_cache: HashMap::new(),
+            line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
-            rename_before_commit_memo: HashMap::new(),
-            before_tree_paths_memo: HashMap::new(),
-            worktree_bytes_memo: HashMap::new(),
-            blob_text_memo: HashMap::new(),
-            first_parent_chain: None,
+            rename_before_commit_memo: RwLock::new(HashMap::new()),
+            before_tree_paths_memo: RwLock::new(HashMap::new()),
+            worktree_bytes_memo: RwLock::new(HashMap::new()),
+            blob_text_memo: RwLock::new(HashMap::new()),
+            first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
-            jaccard_corpus: JaccardCorpus::default(),
+            jaccard_corpus: Mutex::new(JaccardCorpus::default()),
         };
 
         let total = session.anchors_total();

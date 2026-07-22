@@ -22,7 +22,7 @@ use crate::types::CopyDetection;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// One diff hunk: `(old_start, old_count, new_start, new_count)`.
 pub(crate) type Hunk = (u32, u32, u32, u32);
@@ -258,11 +258,18 @@ pub(crate) fn build_timeline(
     deltas: &[Arc<CommitDelta>],
     head_blob_oid: Option<gix::ObjectId>,
     copy_detection: CopyDetection,
-    interner: &mut PathInterner,
+    interner: &Mutex<PathInterner>,
     blob_oid_memo: &RwLock<BlobOidMemo>,
 ) -> Result<PathTimeline> {
     let _span = perf::span("timeline.build");
-    let start_path_arc = interner.intern(start_path);
+    // Card main-162 staged-rollout step 3: `interner` is a `Mutex<PathInterner>`
+    // handle. Each `intern` call locks, runs the whole IO-free lookup-or-insert
+    // body, and unlocks immediately (guard dropped at the end of the statement)
+    // — atomic per call, so two threads never mint two different `Arc<[u8]>` for
+    // the same bytes. The interner guard is never held across `blob_oid_at`'s
+    // independent `blob_oid_memo` acquisition below, so the two locks are never
+    // held simultaneously by this thread.
+    let start_path_arc = interner.lock().unwrap().intern(start_path);
     let mut current_path: Arc<[u8]> = Arc::clone(&start_path_arc);
     let mut out: Vec<PathDelta> = Vec::new();
     let mut deleted_terminal = false;
@@ -332,7 +339,7 @@ pub(crate) fn build_timeline(
         }
 
         let new_path_str = next_path.unwrap_or_else(|| cur_path_str.clone());
-        let new_path_arc = interner.intern(new_path_str.as_bytes());
+        let new_path_arc = interner.lock().unwrap().intern(new_path_str.as_bytes());
 
         let parent_sha = &delta.parent;
         let commit_sha = &delta.commit;
@@ -564,7 +571,7 @@ mod parity_tests {
         end: u32,
         copy_detection: CopyDetection,
     ) -> Option<Tracked> {
-        let mut interner = PathInterner::new();
+        let interner = Mutex::new(PathInterner::new());
         let memo = RwLock::new(HashMap::new());
         let tl = build_timeline(
             repo,
@@ -572,7 +579,7 @@ mod parity_tests {
             deltas,
             None,
             copy_detection,
-            &mut interner,
+            &interner,
             &memo,
         )
         .unwrap();
