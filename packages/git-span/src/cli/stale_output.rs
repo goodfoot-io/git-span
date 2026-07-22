@@ -261,13 +261,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             // Step 3: arg matched neither a span nor any path-index entry. If
             // it names an existing file in the worktree, silently skip — no
             // span tracks it, so there is nothing for stale to scan and that
-            // is not an error. If the file doesn't exist, surface it.
+            // is not an error. A path inside the span root gets the same
+            // treatment regardless of whether it still exists on disk: a
+            // span-root path (e.g. a deleted `.span/<name>` definition file)
+            // is never itself a scan target, so a mid-restructure deletion
+            // must not surface as "not tracked". If the file doesn't exist
+            // and isn't inside the span root, surface it.
             if !found {
                 let exists = repo
                     .workdir()
                     .map(|w| w.join(arg).exists())
                     .unwrap_or(false);
-                if !exists {
+                if !exists && !crate::span_root::is_inside_span_root(span_root, arg) {
                     missing_files.push(arg.clone());
                 }
             }

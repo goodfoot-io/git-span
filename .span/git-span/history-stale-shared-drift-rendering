@@ -1,4 +1,4 @@
 packages/git-span/src/cli/history.rs#L567-L581 rk64:28066c753e967fa4
-packages/git-span/src/cli/stale_output.rs#L1549-L1554 rk64:53acef52ed60e153
+packages/git-span/src/cli/stale_output.rs#L1554-L1559 rk64:53acef52ed60e153
 
 Shared drifted-anchor rendering contract: git span history's current section reuses stale_output's read_location_text and drift labels so both commands display identical drifted content for the same anchor.
