@@ -772,8 +772,14 @@ export async function evaluateGate(
  * unreadable). Shared by `evaluateGate`'s `'enforce'` and `'inform'` branches,
  * which differ only in what they do with the result (deny-once vs. an
  * always-fresh advisory).
+ *
+ * A changeset of fewer than two files can never carry an implicit *cross-file*
+ * dependency — git-span records couplings between file/line ranges across
+ * files — so a single-file (or empty) changeset short-circuits to no
+ * uncovered paths rather than prompting for a coupling that cannot exist.
  */
 async function computeUncoveredPaths(paths: string[], cwd: string, executors: GateExecutors): Promise<string[]> {
+  if (paths.length < 2) return [];
   const covering = await executors.list(paths, cwd);
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);

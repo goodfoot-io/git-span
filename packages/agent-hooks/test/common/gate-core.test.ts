@@ -419,17 +419,19 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('uncovered writes only → denies once and records state, then resolves to allow/already-presented on retry with unchanged memoState', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
-        // Zero covering rows for the changed path — an uncovered write.
+        // Zero covering rows for the changed paths — uncovered writes. Two
+        // files, since a single-file changeset can never carry a cross-file
+        // coupling and short-circuits to no uncovered paths.
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
-      const paths = ['src/uncovered.ts'];
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
 
       const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
       expect(first.decision).toBe('deny');
       expect(first.kind).toBe('uncovered-writes');
       if (first.kind === 'uncovered-writes') {
-        expect(first.uncovered).toEqual(['src/uncovered.ts']);
+        expect(first.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
       }
 
       // Identical paths/executor results and the same memoState — consider-once.
@@ -469,19 +471,19 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+        const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
 
         expect(result.decision).toBe('deny');
         expect(result.kind).toBe('uncovered-writes');
         if (result.kind === 'uncovered-writes') {
-          expect(result.uncovered).toEqual(['src/uncovered.ts']);
+          expect(result.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
         }
       } finally {
         repo.cleanup();
       }
     });
 
-    it('a missing `.span/.gateignore` fails open — no additional exclusion — and still denies the uncovered path', async () => {
+    it('a missing `.span/.gateignore` fails open — no additional exclusion — and still denies the uncovered paths', async () => {
       const repo = makeTempRepo();
       try {
         const memo = createMemoryGateMemoState();
@@ -490,7 +492,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+        const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
 
         expect(result.decision).toBe('deny');
         expect(result.kind).toBe('uncovered-writes');
@@ -670,7 +672,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
 
-      const result = await evaluateGate(['src/uncovered.ts'], REPO_ROOT, executors, unwritableMemo);
+      const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], REPO_ROOT, executors, unwritableMemo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
@@ -756,13 +758,13 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
-      const paths = ['src/uncovered.ts'];
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
 
       const first = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
       expect(first.decision).toBe('allow');
       expect(first.kind).toBe('uncovered-writes-info');
       if (first.kind === 'uncovered-writes-info') {
-        expect(first.uncovered).toEqual(['src/uncovered.ts']);
+        expect(first.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
       }
 
       const second = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
@@ -861,7 +863,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const uncoveredResult = await evaluateGate(
-        ['src/uncovered.ts'],
+        ['src/uncovered.ts', 'src/other.ts'],
         REPO_ROOT,
         uncoveredExecutors,
         uncoveredMemo,

@@ -154,7 +154,9 @@ describe('claude gate adapter', () => {
   });
 
   it('denies an uncovered-only commit once, then allows the retry (consider-once)', async () => {
-    const git = fakeGit({ stagedPaths: async () => ['src/uncovered.ts'] });
+    // Two staged files — a single-file changeset can never carry a cross-file
+    // coupling and short-circuits to no uncovered paths.
+    const git = fakeGit({ stagedPaths: async () => ['src/uncovered.ts', 'src/other.ts'] });
     const executors = fakeExecutors({ list: async () => [], stale: async () => [] });
     const memoFactory = sharedMemoFactory();
     const handler = createHandler(git, executors, memoFactory);
