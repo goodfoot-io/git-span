@@ -941,22 +941,30 @@ function renderScanFailedReason(detail: string): string {
 
 /**
  * The list an uncovered-writes `deny` (or, in `'inform'` mode, a `status`
- * advisory) renders into `reason`. The closing sentence drops "Otherwise retry
- * the command to proceed (one-time check)" in `'inform'` mode: a `status`
- * check never held anything, so there is nothing to retry and no consider-once
- * state to clear.
+ * advisory) renders into `reason`, wrapped in a `<git-span>` block matching the
+ * touch hook's block styling. The "retry the command to proceed (one-time
+ * check)" sentence drops entirely in `'inform'` mode: a `status` check never
+ * held anything, so there is nothing to retry and no consider-once state to
+ * clear.
  */
 function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce'): string {
-  const lines = uncovered.map((path) => `  - ${path}`);
-  const action =
-    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "<one present-tense sentence naming the subsystem and what it does across the anchors>"`.';
-  const closing = mode === 'enforce' ? `${action} Otherwise retry the command to proceed (one-time check).` : action;
-  return [
-    'Decide whether these changed files carry an implicit dependency — code kept consistent with other locations that nothing links to it:',
+  const lines = uncovered.map((path) => `- ${path}`);
+  const body = [
+    '<git-span>',
     ...lines,
     '',
-    closing
-  ].join('\n');
+    'Determine if these files carry implicit dependencies, then use `git span` to document them:',
+    '',
+    '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+    '`git span why <name> -m "<why>"`',
+    '',
+    'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
+  ];
+  if (mode === 'enforce') {
+    body.push('', 'If none exist, retry the command to proceed (one-time check).');
+  }
+  body.push('', 'Load the `git-span:git-span` skill for guidance.', '</git-span>');
+  return body.join('\n');
 }
 
 // ---------------------------------------------------------------------------

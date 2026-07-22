@@ -156,14 +156,23 @@ distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes:
 
 ```
-Decide whether these changed files carry an implicit dependency — code
-kept consistent with other locations that nothing links to it:
-  - src/new-module.ts
+<git-span>
+- src/new-module.ts
 
-If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why
-<name> -m "<one present-tense sentence naming the subsystem and what it
-does across the anchors>"`. Otherwise retry the command to proceed
-(one-time check).
+Determine if these files carry implicit dependencies, then use `git span` to
+document them:
+
+`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
+`git span why <name> -m "<why>"`
+
+The "<why>" is a single present-tense sentence naming what the ranges form
+together, specific enough to tell whether an edit lands inside it, with no
+rules or reminders.
+
+If none exist, retry the command to proceed (one-time check).
+
+Load the `git-span:git-span` skill for guidance.
+</git-span>
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
@@ -177,12 +186,13 @@ every evaluation of a still-failing scan warns again.
 
 **`git status`** never denies — it only advises. The same two checklists
 above render as `systemMessage` (never `permissionDecision: 'deny'`), with one
-difference: the closing sentence drops its retry phrasing (`— then retry`,
-`Otherwise retry the command to proceed (one-time check)`), since a status
-preview never held the command and there's nothing to retry. A `git status`
-call also never reads or writes the consider-once memo — it always reports
-whatever debt is live right now, and it can't spend the one-time deny a later
-real `git commit`/`git push` with the same debt depends on.
+difference: each drops its retry phrasing — staleness drops `— then retry`
+from its closing sentence, and uncovered writes drops the whole `If none
+exist, retry the command to proceed (one-time check).` sentence — since a
+status preview never held the command and there's nothing to retry. A `git
+status` call also never reads or writes the consider-once memo — it always
+reports whatever debt is live right now, and it can't spend the one-time deny
+a later real `git commit`/`git push` with the same debt depends on.
 
 ### Resolving a denied commit
 
