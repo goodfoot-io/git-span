@@ -210,3 +210,32 @@ jobs:
     secrets: inherit
     with:
       release_tag: ${{ github.ref_name }}
+
+  deploy-website:
+    # The site documents `npm install -g git-span` and the released version, so
+    # it must not go live before the packages are actually on npm.
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    concurrency:
+      group: website-deploy
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Yarn 4 via corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build and deploy to Cloudflare Workers
+        run: yarn workspace @goodfoot/git-span-website deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
