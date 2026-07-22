@@ -174,9 +174,11 @@ if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
   fi
 fi
 
-# Update plugin manifests under plugins/*/.claude-plugin/plugin.json
-for plugin_dir in "$REPO_ROOT"/plugins/*/; do
-  plugin_json="$plugin_dir/.claude-plugin/plugin.json"
+# Update plugin manifests: plugins-claude/*/.claude-plugin/plugin.json and
+# plugins-codex/*/.codex-plugin/plugin.json
+for plugin_json in \
+  "$REPO_ROOT"/plugins-claude/*/.claude-plugin/plugin.json \
+  "$REPO_ROOT"/plugins-codex/*/.codex-plugin/plugin.json; do
   if [ -f "$plugin_json" ]; then
     current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$plugin_json','utf8')).version || '')")
     if [ -n "$current" ] && [ "$current" != "$VERSION" ]; then
