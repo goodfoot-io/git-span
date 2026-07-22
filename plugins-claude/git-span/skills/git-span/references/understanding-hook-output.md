@@ -94,11 +94,12 @@ distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes:
 
 ```
-These changed files are covered by no span — consider whether they need one:
+Determine if you should document implicit semantic dependencies in these files:
   - src/new-module.ts
 
-Declare a coupling with `git span add` if one genuinely exists, or just retry
-the command to proceed (this is a one-time check).
+Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why
+<name> -m "one sentence: name the subsystem, what it does across anchors"`,
+or just retry the command to proceed (this is a one-time check).
 To proceed anyway (requires explicit user approval): prefix the command with
 `GIT_SPAN_GATE=skip`.
 ```
@@ -113,8 +114,9 @@ self-triggers the gate.
 1. Semantic staleness: fix each listed span the normal way (`git span add`
    the drifted anchors, or `git span delete` if the coupling is gone), then
    retry the same commit.
-2. Uncovered writes: either declare the coupling (`git span add`) or just
-   retry — the second attempt at an unchanged debt state passes.
+2. Uncovered writes: either declare the coupling (`git span add` then
+   `git span why -m "..."`) or just retry — the second attempt at an
+   unchanged debt state passes.
 3. `GIT_SPAN_GATE=skip` bypasses either check for one command, but only with
    explicit user approval — see `SKILL.md`.
 

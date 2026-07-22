@@ -721,10 +721,10 @@ function renderScanFailedReason(detail: string): string {
 function renderUncoveredReason(uncovered: string[]): string {
   const lines = uncovered.map((path) => `  - ${path}`);
   return [
-    'These changed files are covered by no span — consider whether they need one:',
+    'Determine if you should document implicit semantic dependencies in these files:',
     ...lines,
     '',
-    'Declare a coupling with `git span add` if one genuinely exists, or just retry the command to proceed (this is a one-time check).',
+    'Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why <name> -m "one sentence: name the subsystem, what it does across anchors"`, or just retry the command to proceed (this is a one-time check).',
     ESCAPE_HATCH_LINE
   ].join('\n');
 }

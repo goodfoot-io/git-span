@@ -1,0 +1,75 @@
+---
+title: Agent integration
+description: What the Claude Code and Codex plugins wire up — the touch hook, the commit gate, the skills, and the expert subagent.
+---
+
+The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it ships four things:
+
+- **A touch hook** — fires after every file read/edit/write, healing positional drift inline.
+- **A commit gate** — fires before `git commit`/`git push`, holding the command when the changeset carries real span debt.
+- **Two skills** — `git-span` (command syntax, recipes, gate-denial handling) and `reconcile` (the multi-span triage workflow), loaded into context when the agent's task matches.
+- **An expert subagent** — a dedicated agent for span work: creating, reconciling, and inspecting spans, with judgment about when a coupling is real and when a span should be deleted rather than patched.
+
+The CLI itself doesn't change: every capability the plugin uses is a plain `git span` invocation, scriptable the same way in a terminal or CI.
+
+## Touch hook + gate
+
+- **Touch hook** (`PostToolUse`) — fires synchronously right after each file read/edit/write. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
+- **Gate** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), reruns a scoped `git span stale --fix`, and classifies what's left. Real span debt — semantic staleness, or a changed file no span covers — holds the command with a checklist. Positional drift never blocks; the touch hook already healed it.
+
+<Callout type="info">
+Both hooks fail open at every layer: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
+</Callout>
+
+### What the gate denies
+
+Two shapes, both rendered into the denied command's `permissionDecisionReason`:
+
+**Semantic staleness** — hard-until-resolved; the same command re-denies on every retry until the findings themselves change:
+
+```
+This changeset carries span debt — resolve it before this lands:
+  - checkout-flow (CHANGED): web/checkout.tsx#L4-L6
+
+Update each span's anchors/why in this same change, or tell the user why the
+described coupling no longer holds, then retry.
+```
+
+**Uncovered writes** — a changed file no span anchors at all, denied once per distinct debt state; an unchanged retry passes:
+
+```
+Determine if you should document implicit semantic dependencies in these files:
+  - src/new-module.ts
+
+Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why
+<name> -m "one sentence: name the subsystem, what it does across anchors"`,
+or just retry the command to proceed (this is a one-time check).
+```
+
+`MOVED` and `RESOLVED_PENDING_COMMIT` anchors are never debt — they never appear in either checklist and never block. `.span/**` writes are excluded from the uncovered-writes check so a span repair riding the same commit never self-triggers the gate.
+
+### Escape hatch and suppression
+
+- `GIT_SPAN_GATE=skip` — prefix the git command with this env var to bypass the gate for one invocation. It requires explicit user approval and is transcript-visible (a notice is emitted), never silent.
+- `.span/.hookignore` — a gitignore-like, per-path file suppressing the touch hook's context injection for noisy spans (wiki/marketing prose, etc). Never affects `git span` command output itself.
+- `.span/.gateignore` — user-owned; each non-comment line is a gitignore-style path pattern (same grammar as `.hookignore`, minus the span-slug-prefix list) excluding matching paths from the gate's uncovered-writes check. Nothing auto-creates it, and a missing/unreadable file fails open to no additional exclusion. It never suppresses the semantic-staleness check.
+
+### Resolving a denied commit
+
+1. Semantic staleness: fix each listed span (`git span add` the drifted anchors, or `git span delete` if the coupling is gone), then retry the same commit.
+2. Uncovered writes: either declare the coupling (`git span add` then `git span why -m "..."`) or just retry — a second attempt at an unchanged debt state passes.
+
+See [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for the full triage workflow.
+
+## Codex specifics
+
+The trust flow in [Getting started](/docs/getting-started) is what actually turns these hooks on under Codex — installing the plugin alone leaves them inert until `/hooks` review. Two things worth repeating here because they change what "installed" means:
+
+- Hash-stable hook filenames keep an existing trust decision valid across plugin upgrades, so a Codex user doesn't re-trust on every update.
+- Hooks are disabled entirely on Windows, with no partial fallback — none of the touch-hook or gate behavior above applies there.
+
+None of this affects Claude Code, which has no separate trust step.
+
+## The enforcement backstop
+
+The touch hook and gate only run inside a hooked agent session. A human-authored commit, a session with hooks disabled, or a Codex `permissionDecision: 'deny'` that doesn't actually block can all still land span debt. [CI & git integration](/docs/ci) covers `git span stale` as the backstop that catches what the in-session hooks miss.
