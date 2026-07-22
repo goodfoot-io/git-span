@@ -797,7 +797,7 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
 /** The full-span checklist a semantic-staleness deny renders into `reason`. */
 function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {
   const names = [...new Set(findings.map((row) => row.name))];
-  const subject = names.length === 1 ? 'a latent semantic dependency' : 'latent semantic dependencies';
+  const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
   return [
     `This change leaves ${subject} out of date:`,
@@ -817,7 +817,7 @@ function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string
  */
 function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
   return [
-    'Could not check these latent semantic dependencies (unfetched LFS, sparse checkout, or similar) — not blocking:',
+    'Could not check these implicit dependencies (unfetched LFS, sparse checkout, or similar) — not blocking:',
     '',
     annotateBlocks(blocksText, conditions),
     '',
@@ -834,7 +834,7 @@ function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: 
  */
 function renderScanFailedReason(detail: string): string {
   return [
-    'The latent-semantic-dependency check could not run, so this change was NOT verified:',
+    'The implicit-dependency check could not run, so this change was NOT verified:',
     `  ${detail}`,
     '',
     'The command proceeds anyway. Fix the scan error if verification matters for this change.'
@@ -845,7 +845,7 @@ function renderScanFailedReason(detail: string): string {
 function renderUncoveredReason(uncovered: string[]): string {
   const lines = uncovered.map((path) => `  - ${path}`);
   return [
-    'Decide whether these changed files carry a latent semantic dependency — code kept consistent with other locations that nothing links to it:',
+    'Decide whether these changed files carry an implicit dependency — code kept consistent with other locations that nothing links to it:',
     ...lines,
     '',
     'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "one sentence: the subsystem, what it does across locations"`. Otherwise retry the command to proceed (one-time check).'

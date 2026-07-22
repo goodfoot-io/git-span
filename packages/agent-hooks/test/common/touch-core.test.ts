@@ -122,7 +122,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // Drift header + full span section: name heading, every declared anchor
       // (the drifted one lowercase-status-suffixed, the clean cross-file one
       // bare), the why sentence, and the drift footer after a final `---`.
-      expect(block).toContain('This edit put a latent semantic dependency out of date:');
+      expect(block).toContain('This edit put an implicit dependency out of date:');
       expect(block).toContain('## billing/checkout-request-flow');
       expect(block).toContain('- src/app.ts#L1-L10 — changed');
       expect(block).toContain('- api/charge.ts#L30-L76\n');
@@ -152,7 +152,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // First touch: clean — the span surfaces once with the clean header/footer.
       const first = await runTouchHook(input, executors, memo);
       const cleanBlock = first.additionalContext ?? '';
-      expect(cleanBlock).toContain('This change touches latent semantic dependencies:');
+      expect(cleanBlock).toContain('This change touches implicit dependencies:');
       expect(cleanBlock).toContain('## billing/checkout-request-flow');
       expect(cleanBlock).toContain(WHY);
       expect(cleanBlock).toContain('update the other anchors to match.');
@@ -167,7 +167,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       drifted = true;
       const third = await runTouchHook(input, executors, memo);
       const driftBlock = third.additionalContext ?? '';
-      expect(driftBlock).toContain('This edit put a latent semantic dependency out of date:');
+      expect(driftBlock).toContain('This edit put an implicit dependency out of date:');
       expect(driftBlock).toContain('- src/app.ts#L1-L10 — changed');
       expect(driftBlock).toContain(WHY);
 

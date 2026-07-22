@@ -299,7 +299,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
-        expect(result.reason).toContain('This change leaves a latent semantic dependency out of date:');
+        expect(result.reason).toContain('This change leaves an implicit dependency out of date:');
         // The drifted anchor is labeled; the clean sibling anchor is not.
         expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
         expect(result.reason).toContain('- api/charge.ts#L30-L76\n');

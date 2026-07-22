@@ -20,7 +20,7 @@ and a single footer after a final `---`. A healthy span renders as:
 
 ```
 <git-span>
-This change touches latent semantic dependencies:
+This change touches implicit dependencies:
 
 ## billing/checkout-request-flow
 - web/checkout.tsx#L88-L120
@@ -41,7 +41,7 @@ lowercase status suffix and the header and footer switch:
 
 ```
 <git-span>
-This edit put a latent semantic dependency out of date:
+This edit put an implicit dependency out of date:
 
 ## billing/checkout-request-flow
 - web/checkout.tsx#L88-L120 — changed
@@ -66,8 +66,8 @@ including anchors in files other than the touched one — as
 by the span's why sentence when one is recorded. Only genuine (semantic or
 terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `This
-change touches latent semantic dependencies:` when nothing did, the singular
-form above for one drifted span, and `This edit put latent semantic
+change touches implicit dependencies:` when nothing did, the singular
+form above for one drifted span, and `This edit put implicit
 dependencies out of date:` for more than one. With several drifted spans the
 footer generalizes: "For each out-of-date span above: update the changed
 anchors or description before committing — `git span add <name>
@@ -125,7 +125,7 @@ distinct set of findings; an identical retry (same findings) passes, and
 editing a span's anchors changes the findings and earns one fresh deny:
 
 ```
-This change leaves a latent semantic dependency out of date:
+This change leaves an implicit dependency out of date:
 
 ## billing/checkout-request-flow
 - src/checkout.tsx#L88-L120 — changed
@@ -150,7 +150,7 @@ distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes:
 
 ```
-Decide whether these changed files carry a latent semantic dependency — code
+Decide whether these changed files carry an implicit dependency — code
 kept consistent with other locations that nothing links to it:
   - src/new-module.ts
 

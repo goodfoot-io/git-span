@@ -230,14 +230,14 @@ function anchorText(row: PorcelainRow): string {
   return `${row.path}#L${row.start}-L${row.end}`;
 }
 
-const CLEAN_HEADER = 'This change touches latent semantic dependencies:';
+const CLEAN_HEADER = 'This change touches implicit dependencies:';
 
 const CLEAN_FOOTER = 'If your edit changes how these locations work together, update the other anchors to match.';
 
 function driftHeader(driftedCount: number): string {
   return driftedCount === 1
-    ? 'This edit put a latent semantic dependency out of date:'
-    : 'This edit put latent semantic dependencies out of date:';
+    ? 'This edit put an implicit dependency out of date:'
+    : 'This edit put implicit dependencies out of date:';
 }
 
 function driftFooter(driftedNames: string[]): string {

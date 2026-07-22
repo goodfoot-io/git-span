@@ -28,7 +28,7 @@ Two shapes, both rendered into the denied command's `permissionDecisionReason`:
 **Semantic staleness** — the full span in the same human format `git span list` prints (all anchors, drifted ones labeled, the description), denied once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh deny:
 
 ```
-This change leaves a latent semantic dependency out of date:
+This change leaves an implicit dependency out of date:
 
 ## checkout-flow
 - web/checkout.tsx#L4-L6 — changed
@@ -47,7 +47,7 @@ dependency no longer holds, tell the user instead.
 **Uncovered writes** — a changed file no span anchors at all, denied once per distinct debt state; an unchanged retry passes:
 
 ```
-Decide whether these changed files carry a latent semantic dependency — code
+Decide whether these changed files carry an implicit dependency — code
 kept consistent with other locations that nothing links to it:
   - src/new-module.ts
 
