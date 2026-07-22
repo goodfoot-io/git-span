@@ -1,8 +1,8 @@
-packages/website/app/components/marketing/story/EngineStage.tsx#L1-L100 rk64:7e24474dbdae56ad
-packages/website/app/components/marketing/story/copy.ts#L77-L138 rk64:0f7be5d88ceeba34
-packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:1155890b65315514
-packages/website/app/routes/_index.tsx#L128-L134 rk64:0cc9cf857fc51159
+packages/website/app/components/marketing/story/EngineStage.tsx#L1-L100 rk64:a87a283405bd41f1
+packages/website/app/components/marketing/story/copy.ts#L77-L138 rk64:ee2da262f7b22f57
+packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:13167aea3f0b3147
+packages/website/app/routes/_index.tsx#L128-L134 rk64:6f9de8acb847cc3d
 packages/website/vite.config.ts#L22-L25 rk64:98d116e237c9e6e7
-wiki/architecture/homepage-engine-animation.md#L27-L60 rk64:f53dc05ea11966cb
+wiki/architecture/homepage-engine-animation.md#L27-L60 rk64:0c44f73022fda308
 
 Where the homepage engine animation code lives across the marketing story components: scene.ts's shared timeline, copy.ts's per-phase PHASE_COPY prose, EngineStage.tsx's React mount point, and the asset-loading wiring in _index.tsx/vite.config.ts.

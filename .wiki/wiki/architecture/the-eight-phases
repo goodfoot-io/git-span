@@ -1,4 +1,4 @@
-packages/website/app/components/marketing/story/engine/beats.ts#L224-L299 rk64:1ce224a86f433d5c
-wiki/architecture/homepage-engine-animation.md#L106-L151 rk64:9d9f409d694db967
+packages/website/app/components/marketing/story/engine/beats.ts#L224-L299 rk64:c159bcce6fb31112
+wiki/architecture/homepage-engine-animation.md#L106-L151 rk64:110e9497b9d866e1
 
 The eight scroll-phase buckets from scene.ts and the handful of beats.ts fields (mountScale, seatAdjust, camera azimuth/elevation/margin, idleWeight) still gated by PhaseId rather than driven directly by the raw timeline t.

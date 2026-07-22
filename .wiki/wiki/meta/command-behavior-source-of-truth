@@ -1,11 +1,11 @@
-packages/git-span/src/cli/mod.rs#L35-L108 rk64:1ac9645752ff9856
-packages/git-span/src/cli/mod.rs#L39-L184 rk64:7263c3c04424fc65
-packages/git-span/src/cli/mod.rs#L46-L174 rk64:a719572ff666515f
-packages/git-span/src/cli/mod.rs#L393-L445 rk64:5f81ef54986189e0
+packages/git-span/src/cli/mod.rs#L35-L108 rk64:61d934a096e35209
+packages/git-span/src/cli/mod.rs#L39-L184 rk64:d8a0c4b04f18a655
+packages/git-span/src/cli/mod.rs#L46-L174 rk64:739fec65abc8d3a5
+packages/git-span/src/cli/mod.rs#L393-L445 rk64:137708cfa3b03e1f
 packages/git-span/src/cli/mod.rs#L410-L470 rk64:561c9ace1c18c52d
 packages/git-span/src/cli/mod.rs#L416-L484 rk64:d0ce16cc031b6cf0
 packages/git-span/src/main.rs#L49-L100 rk64:9bb62b4928980a81
-packages/git-span/src/main.rs#L50-L113 rk64:de349cf32633354f
-packages/git-span/src/validation.rs#L7-L28 rk64:b8cfd2796703cccc
+packages/git-span/src/main.rs#L50-L113 rk64:c2226c84060cd865
+packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420
 wiki/meta/git-span-documentation-touchpoints.md#L14-L20 rk64:9fbfd743e72eb6ad
 

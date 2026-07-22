@@ -73,7 +73,7 @@ All of it is under `packages/website/app/components/marketing/story/`:
   studio-lighting HDRI (`studio_small_08_1k.hdr`, Poly Haven, CC0) used as the environment map. No
   albedo/color texture ships — see [Materials](#materials-why-there-is-no-albedo-texture).
 
-Mounted in [`_index.tsx`](../../packages/website/app/routes/_index.tsx#L128-L134) inside the
+Mounted in [`_index.tsx`](../../packages/website/app/routes/_index.tsx#L124-L130) inside the
 pinned right column, and enabled for `.glb`/`.hdr` imports by
 [`vite.config.ts`](../../packages/website/vite.config.ts#L22-L25)'s `assetsInclude`.
 
@@ -287,9 +287,9 @@ pan (`#3f4247`, roughness 0.65/metalness 0.8, the darkest — a sand-cast part),
 block, `engineBackCover`, and the unmatched-name fallback (`#4a4d52`, 0.6/0.85), and `castIronLight`
 for the side covers (`#54575d`, 0.55/0.85). All families still share the GLB's normal, roughness,
 and AO detail maps (loaded in
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L431-L445)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L438-L452)
 and wired into each family's material in
-[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L589-L604))
+[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L596-L611))
 for surface realism — only the color layer is synthetic. The studio HDRI environment map (see
 [Rendering](#rendering-tone-mapping-studio-hdri-and-selective-bloom)) is what most recently changed
 how these families actually read on screen, but the family/color assignment itself is unaffected.
@@ -355,7 +355,7 @@ one window and fall for the next without an explicit phase switch — e.g.
 is `ramp(t, MISMATCH_RED_START_T, MISMATCH_RED_END_T) - ramp(t, COLOR_LOSS_START_T,
 COLOR_LOSS_END_T)`: it rises across `t 28-41` and falls back across `t 46-60`, with nothing in
 between needing special-casing. This is the same technique
-[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L137-L139) uses
+[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L139-L141) uses
 to compose the initial explode with the final-reassembly collapse
 (`FINAL_REASSEMBLY_START_T`/`END_T`, `t = 83`/`87`) into one curve. **None of these beats are undone
 by anything earlier than `RETURN_TO_NORMAL_START_T` (`t = 93`)** — once a stage locks in
@@ -375,7 +375,7 @@ beat remapped its seat onto the resized mount; there is no positional beat of an
 unclosed gap the way an earlier version of this system did (see [The eight
 phases](#the-eight-phases)); it moves in unison with the rest of the body for both the initial
 explode and the final reassembly. The oversize beat itself
-([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L321-L328))
+([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L323-L330))
 is four chained `ramp()`s: grow at `RING_BLUE_START_T..END_T` (`t 16-24`), shrink at
 `COLOR_LOSS_START_T..END_T` (`t 46-60`), regrow at `RING_REGROW_START_T..END_T` (`t 72-83`), then
 ease back to 1× for good at `RETURN_TO_NORMAL_START_T..END_T` (`t 93-100`) — the gear's size
@@ -458,7 +458,7 @@ out" bug, and how the fix required both a lower emissive magnitude and direct di
 **Studio HDRI environment.** An equirectangular HDRI —
 [`studio_small_08_1k.hdr`](../../packages/website/app/assets/engine/) (Poly Haven, CC0), loaded via
 `RGBELoader` and converted through `THREE.PMREMGenerator` into a PMREM environment map
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L429-L461)).
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L436-L468)).
 This gives real softbox/rim gradients across the machined faces (ring gear, cylinder-head covers)
 instead of a flat ambient wash. `scene.environmentIntensity` is `1.1` and
 `scene.environmentRotation` is `new THREE.Euler(0, Math.PI * 0.35, 0)` — both tuned against
@@ -513,7 +513,7 @@ request; see the [Related pages](#related-pages) history if reconstructing that 
 
 Highlightable parts (`isFrontDrive || isMount || isOrangeEmphasis`) get their own material clone
 rather than the family's shared instance
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L708-L712))
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L715-L719))
 — `updateHighlights` drives emissive/color directly on each one, and a shared material would leak
 one part's glow onto every other part of the same family.
 [`buildHighlightRecords()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221)
@@ -577,7 +577,7 @@ so scrubbing/wrapping never pops. This is layered on top of whatever intensity `
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L938-L992)),
+[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L945-L999)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
@@ -603,7 +603,7 @@ then places the camera at the distance that fits that sphere plus a margin, acco
 ratio via `fitFov = min(fovY/2, atan(tan(fovY/2) * aspect))`. `frame.margin` is the one per-beat
 tuning knob; everything else in the shot is derived, not staged.
 
-[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L420-L428) is
+[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L422-L430) is
 now simpler than it once was: it only has two cases. For `hero`/`traverse`, it `lerp`s continuously
 from `MARGIN_ASSEMBLED` (0.896) to `MARGIN_EXPLODED` (0.68) over `heroTraverseProgress(t)` — the
 same shared curve driving explode and the azimuth/elevation approach — so the camera pull-back
@@ -672,7 +672,7 @@ Idle spin, drag snap-back, and the highlight heartbeat pulse are all genuinely t
 purely scroll-driven) motions, and used to risk competing `requestAnimationFrame` loops (a fourth,
 the scroll-impulse decay, existed before that motion was removed entirely — see above). They share
 one: `ensureMotionLoop()`/`motionTick()`
-([`EngineScene.ts#L660-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L660-L723)).
+([`EngineScene.ts#L660-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L667-L730)).
 Any of them starting (hero idle turning on, a drag ending, or `setReducedMotion(false)`) calls
 `ensureMotionLoop()`, which starts the loop if it isn't already running. Each tick advances all
 three (accumulating idle rotation if `heroIdle`, easing drag offsets toward zero if not dragging,
@@ -707,10 +707,10 @@ as the engine would present mounted in a car — instead of `CANONICAL_AZIMUTH`/
 (35°/18°, the three-quarter technical-drawing angle every later phase holds).
 
 **The hero → traverse camera move.** `azimuthBaseAt`/`elevationAt`
-([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L422-L440))
+([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L424-L442))
 `lerp` from the hero angle to the canonical angle across `hero` and `traverse` together, riding
 `heroTraverseProgress(t)`
-([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L94-L96)) —
+([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L95-L97)) —
 one continuous, monotonic curve spanning from the top of `hero` (`t = 0`, fully assembled, hero
 angle) to `CAMERA_SETTLE_T` (`t = 12.3`, fully exploded, canonical angle), where it settles and
 holds flat, rather than the actual end of `traverse` (`t = 18.18`) it once rode all the way to. The
@@ -736,7 +736,7 @@ driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn pe
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable
 resumes right where the engine ends up fully assembled again) blends that accumulated offset into
 the camera azimuth
-([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1061-L1061))
+([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1068-L1068))
 so the first scroll movement smoothly absorbs whatever rotation had accumulated instead of snapping
 the camera back to the base azimuth — this is distinct from (and narrower than) the drag-to-orbit
 offset, which is *not* weighted by `idleWeight` and applies in every phase. `EngineStage.tsx` calls

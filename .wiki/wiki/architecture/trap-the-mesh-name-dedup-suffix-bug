@@ -1,5 +1,5 @@
 packages/website/app/components/marketing/story/engine/parts.ts#L92-L94 rk64:256dbda0af3e28b2
-packages/website/app/components/marketing/story/engine/types.ts#L12-L26 rk64:d61295adb36f3ce6
-wiki/architecture/homepage-engine-animation.md#L209-L234 rk64:693ea7ae7e41b389
+packages/website/app/components/marketing/story/engine/types.ts#L12-L23 rk64:3f2c7dc70bd528f2
+wiki/architecture/homepage-engine-animation.md#L209-L234 rk64:0bd3d65453b304c8
 
 Trap: GLTFLoader's mesh-name dedup suffixes silently break FRONT_DRIVE/FRONT_MOUNT membership checks unless every list membership check strips the suffix via stripDedupSuffix before comparing.

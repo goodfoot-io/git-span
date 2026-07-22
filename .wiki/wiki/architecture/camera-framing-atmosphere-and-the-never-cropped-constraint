@@ -1,7 +1,7 @@
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L96-L111 rk64:00a6117945db0393
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L772-L810 rk64:58f4cfa5580535ae
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L772-L810 rk64:2a67a4da10f5336b
 packages/website/app/components/marketing/story/engine/beats.ts#L250-L268 rk64:bca4b1c7401281c7
-packages/website/app/components/marketing/story/engine/beats.ts#L291-L299 rk64:d5c73db094416e90
-wiki/architecture/homepage-engine-animation.md#L498-L549 rk64:4d9266cbc5285991
+packages/website/app/components/marketing/story/engine/beats.ts#L291-L299 rk64:41b9aa8118a5a5bc
+wiki/architecture/homepage-engine-animation.md#L498-L549 rk64:302b146ba2a30be2
 
 Camera framing that keeps the exploded rig inside a never-cropped safe frame: fitCameraToFrame's bounding-sphere fit (sphereUnion) combined with beats.ts's margin/azimuth/elevation curves, plus the fog range it recomputes each frame from the same fitted distance.

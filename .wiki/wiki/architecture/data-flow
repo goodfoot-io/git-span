@@ -1,4 +1,4 @@
-packages/website/app/components/marketing/story/engine/beats.ts#L91-L108 rk64:1a7f291a6e670507
-wiki/architecture/homepage-engine-animation.md#L61-L105 rk64:45c08e195cfe8ca9
+packages/website/app/components/marketing/story/engine/beats.ts#L91-L108 rk64:c220ee59f4b9c2ce
+wiki/architecture/homepage-engine-animation.md#L61-L105 rk64:9d9b6aad258a64c1
 
 Data flow from pure choreography (beats.ts's EngineFrame, the entire contract between the pure and imperative halves) into EngineScene's imperative Three.js rendering.
