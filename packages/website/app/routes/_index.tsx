@@ -109,7 +109,6 @@ export default function Index() {
 
             {STORY_STEPS.map((phase, index) => {
               const prose = PHASE_COPY[phase.id].prose;
-              const eyebrow = `${String(index + 2).padStart(2, '0')} — ${phase.label.toUpperCase()}`;
               return (
                 <div
                   key={phase.id}
@@ -118,9 +117,6 @@ export default function Index() {
                 >
                   {prose && (
                     <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-md">
-                      <p className="mb-3 font-mono text-xs uppercase tracking-[0.08em] text-ink-tertiary-deep">
-                        {eyebrow}
-                      </p>
                       <h2 className="text-[1.6rem] font-semibold tracking-tight text-ink-primary sm:text-3xl">
                         {prose.headline}
                       </h2>
@@ -156,12 +152,9 @@ export default function Index() {
       </section>
 
       {/* Closing. The full-width top rule terminates the split layout's column rule and the
-          engine's scroll-away tail with a clean sectioning line. The eyebrow continues the
-          steps' numbered sequence (the last story step is 08) so the CTA reads as the final
-          beat of the narrative rather than a detached banner. */}
+          engine's scroll-away tail with a clean sectioning line. */}
       <section className="border-t border-rule bg-ground">
         <div className="mx-auto max-w-2xl px-6 py-24 text-center">
-          <p className="mb-3 font-mono text-xs uppercase tracking-[0.08em] text-ink-tertiary-deep">09 — Get started</p>
           <h2 className="text-3xl font-semibold tracking-tight text-ink-primary sm:text-4xl">{CLOSING.headline}</h2>
           <div className="mt-8 flex justify-center">
             <CtaButtons primary={CLOSING.primaryCta} secondary={CLOSING.secondaryCta} />

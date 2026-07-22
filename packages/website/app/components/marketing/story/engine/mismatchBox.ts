@@ -44,8 +44,10 @@ export const RING_BOX_AXIAL_PADDING = 1.16;
 // The fill's own tint runs much deeper than HIGHLIGHT_GREEN: the canvas is alpha-composited over
 // the cream page, so the only way the glass can *darken and tint* what's behind it (the way real
 // colored glass does) is opacity x a deep color -- at glass-level opacity the mint highlight
-// green just washes out to near-white. The edges stay on the shared highlight color.
-export const BOUNDING_BOX_GLASS_GREEN = '#0c8a60';
+// green just washes out to near-white. The edges stay on the shared highlight color. Hued to
+// match HIGHLIGHT_GREEN / --color-positive exactly (135.95°, see global.css), keeping this
+// token's own deeper S/L.
+export const BOUNDING_BOX_GLASS_GREEN = '#0c8a2d';
 
 // A single container's world placement: a center plus a size measured along an orthonormal frame,
 // and the quaternion that frame corresponds to. The ring container doesn't tilt (identity

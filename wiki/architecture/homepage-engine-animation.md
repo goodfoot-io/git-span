@@ -107,7 +107,7 @@ setHeroIdle((hero || t >= RETURN_TO_NORMAL_START_T) && !reduced-motion) --/
 ```
 
 `EngineFrame` (defined in
-[`beats.ts#L91-L108`](../../packages/website/app/components/marketing/story/engine/beats.ts#L97-L114))
+[`beats.ts#L91-L108`](../../packages/website/app/components/marketing/story/engine/beats.ts#L100-L117))
 is the **entire contract** between the pure and imperative halves — one flat object of numbers,
 computed fresh from `(phase, local, t)` with no memory of the previous call. That's what makes
 scrubbing backwards through the timeline exactly as valid as scrubbing forwards: there is no
@@ -151,7 +151,7 @@ can start or end mid-phase, straddle a phase boundary, or span several phases. O
 still phase-`switch` functions in the classic sense; `mountScale` has since joined the pure-`t`
 group (see [The timeline](#the-timeline-color-scale-and-the-bounding-box)), and `seatAdjust` no
 longer exists — see
-[`beats.ts#L266-L318`](../../packages/website/app/components/marketing/story/engine/beats.ts#L283-L335).
+[`beats.ts#L266-L318`](../../packages/website/app/components/marketing/story/engine/beats.ts#L286-L338).
 
 Phase boundaries (`t`, from `TIMELINE` in `scene.ts`): `hero` 0–6.06, `traverse` 6.06–18.18,
 `change` 18.18–36.36, `failure` 36.36–54.55, `second` 54.55–66.67, `span` 66.67–78.79, `related`
@@ -326,7 +326,7 @@ physical parts tell the story is a one-line edit here, not in `EngineScene.ts` o
 The mismatch story used to be told through per-phase `switch` functions on `PhaseId`/`local`. It
 has been substantially retimed and is now told almost entirely through composed pure functions of
 the raw timeline `t`
-([`beats.ts#L134-L225`](../../packages/website/app/components/marketing/story/engine/beats.ts#L134-L225)),
+([`beats.ts#L134-L225`](../../packages/website/app/components/marketing/story/engine/beats.ts#L137-L228)),
 independent of phase boundaries:
 
 ```
@@ -355,7 +355,7 @@ one window and fall for the next without an explicit phase switch — e.g.
 is `ramp(t, MISMATCH_RED_START_T, MISMATCH_RED_END_T) - ramp(t, COLOR_LOSS_START_T,
 COLOR_LOSS_END_T)`: it rises across `t 28-41` and falls back across `t 46-60`, with nothing in
 between needing special-casing. This is the same technique
-[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L139-L141) uses
+[`explodeAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L142-L144) uses
 to compose the initial explode with the final-reassembly collapse
 (`FINAL_REASSEMBLY_START_T`/`END_T`, `t = 83`/`87`) into one curve. **None of these beats are undone
 by anything earlier than `RETURN_TO_NORMAL_START_T` (`t = 93`)** — once a stage locks in
@@ -375,16 +375,16 @@ beat remapped its seat onto the resized mount; there is no positional beat of an
 unclosed gap the way an earlier version of this system did (see [The eight
 phases](#the-eight-phases)); it moves in unison with the rest of the body for both the initial
 explode and the final reassembly. The oversize beat itself
-([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L323-L330))
+([`scaleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L326-L333))
 is four chained `ramp()`s: grow at `RING_BLUE_START_T..END_T` (`t 16-24`), shrink at
 `COLOR_LOSS_START_T..END_T` (`t 46-60`), regrow at `RING_REGROW_START_T..END_T` (`t 72-83`), then
 ease back to 1× for good at `RETURN_TO_NORMAL_START_T..END_T` (`t 93-100`) — the gear's size
 genuinely cycles 1× → `FRONT_SCALE` → 1× → `FRONT_SCALE` → 1× over the story, in lockstep with its
 own color beats. `mountScaleAt`
-([`beats.ts#L258-L262`](../../packages/website/app/components/marketing/story/engine/beats.ts#L275-L279))
+([`beats.ts#L258-L262`](../../packages/website/app/components/marketing/story/engine/beats.ts#L278-L282))
 now composes the same way, purely as a function of `t`: it grows across `MOUNT_GROW_START_T..END_T`
 (derived from `TIMELINE`'s `related`-phase span at local `0.1..0.7`, not hardcoded — see
-[`beats.ts#L249-L251`](../../packages/website/app/components/marketing/story/engine/beats.ts#L249-L251)),
+[`beats.ts#L249-L251`](../../packages/website/app/components/marketing/story/engine/beats.ts#L252-L254)),
 holds, then eases back to 1× over the same `RETURN_TO_NORMAL` window as the gear. There is no
 separate "lift off its seat" degree of freedom in the current system — an earlier version had one
 (`frontDriveLift`/`FRONT_LIFT_FRACTION`); it has been removed entirely. There is also no more
@@ -403,7 +403,7 @@ It's a fixed prop: sized/positioned once at load time from those parts' *explode
 ([`computeMismatchBoxBounds()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L34-L61))
 rather than tracked live, since explode is held flat for this entire window — nothing it encloses
 moves.
-[`buildBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L73-L118)
+[`buildBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L75-L120)
 returns a `THREE.Group` with two children: a lit `MeshPhysicalMaterial` "green glass" fill mesh
 (`BOUNDING_BOX_GLASS_GREEN = '#0c8a60'`, a deep emerald, `metalness: 0`, `roughness: 0.12`,
 `clearcoat: 1`/`clearcoatRoughness: 0.08` for an HDRI/env sheen, `DoubleSide`, `depthWrite: false`,
@@ -417,7 +417,7 @@ specular/clearcoat sheen from the scene's HDRI and key light instead of a flat u
 `DoubleSide` lets the box's far faces show through its near ones, which is what sells it as a glass
 volume rather than a solid card. The `EdgesGeometry` outline is still needed on top for legible
 corners, since even a lit fill doesn't give a translucent volume crisp edges on its own.
-[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L226-L236)
+[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L228-L238)
 drives only opacity/visibility per frame: `BOUNDING_BOX_MAX_OPACITY` (0.45) for the fill,
 `BOUNDING_BOX_EDGE_OPACITY` (0.7) for the outline. The box is deliberately never touched by the
 [highlight heartbeat pulse](#highlight-heartbeat-and-the-blackbody-color-ramp) — it's a plain
@@ -603,7 +603,7 @@ then places the camera at the distance that fits that sphere plus a margin, acco
 ratio via `fitFov = min(fovY/2, atan(tan(fovY/2) * aspect))`. `frame.margin` is the one per-beat
 tuning knob; everything else in the shot is derived, not staged.
 
-[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L422-L430) is
+[`marginAt()`](../../packages/website/app/components/marketing/story/engine/beats.ts#L425-L433) is
 now simpler than it once was: it only has two cases. For `hero`/`traverse`, it `lerp`s continuously
 from `MARGIN_ASSEMBLED` (0.896) to `MARGIN_EXPLODED` (0.68) over `heroTraverseProgress(t)` — the
 same shared curve driving explode and the azimuth/elevation approach — so the camera pull-back
@@ -707,10 +707,10 @@ as the engine would present mounted in a car — instead of `CANONICAL_AZIMUTH`/
 (35°/18°, the three-quarter technical-drawing angle every later phase holds).
 
 **The hero → traverse camera move.** `azimuthBaseAt`/`elevationAt`
-([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L424-L442))
+([`beats.ts#L250-L268`](../../packages/website/app/components/marketing/story/engine/beats.ts#L427-L445))
 `lerp` from the hero angle to the canonical angle across `hero` and `traverse` together, riding
 `heroTraverseProgress(t)`
-([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L95-L97)) —
+([`beats.ts#L82-L84`](../../packages/website/app/components/marketing/story/engine/beats.ts#L98-L100)) —
 one continuous, monotonic curve spanning from the top of `hero` (`t = 0`, fully assembled, hero
 angle) to `CAMERA_SETTLE_T` (`t = 12.3`, fully exploded, canonical angle), where it settles and
 holds flat, rather than the actual end of `traverse` (`t = 18.18`) it once rode all the way to. The
@@ -730,7 +730,7 @@ different purposes and were not meant to move together.
 `requestAnimationFrame`-driven `idleAzimuthOffset` (ticked by the [shared motion
 driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn per 45s) while
 `setHeroIdle(true)`. `EngineFrame.idleWeight`
-([`idleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L293-L301),
+([`idleWeightAt`](../../packages/website/app/components/marketing/story/engine/beats.ts#L296-L304),
 1 throughout `hero`, fading to 0 over `IDLE_FADE_FRACTION` (0.3) of the hero+traverse span
 (`TRAVERSE_END_T`) — starting at the first pixel of scroll, not at the top of `traverse` — then
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable

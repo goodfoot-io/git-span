@@ -39,10 +39,22 @@
   --color-positive: #2e7d43;
   --color-negative: #b04138;
 
-  /* Muted green wash for highlighted specimen lines, with a vivid green for the bracket
+  /* Every red/green token on the page (this block, the terminal tokens below, and the engine's
+     own beat/highlight colors in engine/backdrop.ts, engine/beats.ts, and engine/mismatchBox.ts)
+     is hued to match --color-positive/--color-negative exactly (135.95° / 4.5°), each varying
+     only in saturation/lightness for its own role (pale wash, vivid accent, dark terminal fill,
+     etc). Keep any new red/green color on those same two hues rather than picking one by eye.
+
+     Muted green wash for highlighted specimen lines, with a vivid green for the bracket
      that links them */
-  --color-highlight: #e3edd7;
-  --color-highlight-accent: #27a24a;
+  --color-highlight: #d7eddd;
+  --color-highlight-accent: #27a248;
+  /* Muted red wash, the --color-negative counterpart to --color-highlight above -- every
+     removed/danger specimen line gets this behind its text, the same way every added/
+     emphasized line gets --color-highlight, so red and green read as one consistent
+     background treatment across the page rather than text-color-only in some places and a
+     wash in others. */
+  --color-negative-wash: #f3dad8;
 
   /* The coding-agent terminal, styled after the Claude Code environment: near-black surface. */
   --color-terminal: #0d0d0d;
@@ -50,11 +62,11 @@
   --color-terminal-ink: #e6e6e6;
   --color-terminal-ink-faint: #8b8b8b;
   --color-terminal-rule: #333333;
-  --color-terminal-success: #6bd08a;
-  --color-terminal-danger: #e5707a;
+  --color-terminal-success: #6bd086;
+  --color-terminal-danger: #e57970;
   /* Diff-row washes for the agent-session specimen, matching Claude Code's dark diff rows */
-  --color-terminal-removed: #4a1d18;
-  --color-terminal-added: #1d3a22;
+  --color-terminal-removed: #4a1c18;
+  --color-terminal-added: #1d3a25;
   --color-terminal-span: #d99a5b;
   /* Claude Code accents: green tool bullets, coral status line, violet mode line. */
   --color-cc-tool: #4eb96a;

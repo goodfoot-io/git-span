@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { PHASE_COPY } from './copy';
+import { stageBackgroundCssAt, stageLabelColorAt } from './engine/backdrop';
 import { engineFrame, RETURN_TO_NORMAL_START_T } from './engine/beats';
 import type { EngineScene } from './engine/EngineScene';
-import { STAGE_BACKGROUND_CSS } from './engine/stage';
 import type { SceneState } from './scene';
 
 interface EngineStageProps {
@@ -79,25 +79,20 @@ export function EngineStage({ scene }: EngineStageProps) {
   const figureLabel = (scene.phase.id === 'hero' ? 'Assembled view' : scene.phase.label).toUpperCase();
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-lg lg:border-l lg:border-rule">
-      <div className="relative flex-1" style={{ backgroundColor: STAGE_BACKGROUND_CSS }}>
+    <div className="flex h-full w-full flex-col overflow-hidden lg:border-l lg:border-rule">
+      <div className="relative flex-1" style={{ background: stageBackgroundCssAt(scene.t) }}>
         <div ref={containerRef} aria-hidden className="absolute inset-0" />
 
-        {/* Technical figure label: always visible, not just in the loading/fallback state.
-            Offset right of the top-left crop mark so the tick doesn't strike through the text. */}
+        {/* Technical figure label: always visible, not just in the loading/fallback state. Fades
+            to white in lockstep with the backdrop beats (see engine/backdrop.ts's
+            stageLabelColorAt) since the default dark-tertiary-ink color loses contrast against
+            the gray/red/green panel states. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute left-7 top-[9px] font-mono text-xs uppercase tracking-[0.08em] text-ink-tertiary-deep"
+          className="pointer-events-none absolute left-3 top-[9px] font-mono text-xs uppercase tracking-[0.08em]"
+          style={{ color: stageLabelColorAt(scene.t) }}
         >
           {figureLabel}
-        </div>
-
-        {/* Corner crop marks -- purely decorative technical-drawing framing. */}
-        <div aria-hidden className="pointer-events-none absolute inset-0">
-          <span className="absolute left-3 top-3 h-2.5 w-2.5 border-l border-t border-ink-tertiary/40" />
-          <span className="absolute right-3 top-3 h-2.5 w-2.5 border-r border-t border-ink-tertiary/40" />
-          <span className="absolute bottom-3 left-3 h-2.5 w-2.5 border-b border-l border-ink-tertiary/40" />
-          <span className="absolute bottom-3 right-3 h-2.5 w-2.5 border-b border-r border-ink-tertiary/40" />
         </div>
 
         {status !== 'ready' && (

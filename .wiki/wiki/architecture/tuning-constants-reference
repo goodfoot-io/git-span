@@ -1,4 +1,4 @@
 packages/website/app/components/marketing/story/engine/beats.ts#L9-L166 rk64:f5a554457655596a
-wiki/architecture/homepage-engine-animation.md#L729-L774 rk64:7a654ae53fd3def3
+wiki/architecture/homepage-engine-animation.md#L729-L774 rk64:b1b267e52d4ef99f
 
 Reference table of choreography tuning constants defined in beats.ts#L9-L166, documented alongside the (whole-file-linked, uncovered) EngineScene.ts/mismatchBox.ts/highlights.ts constant tables.

@@ -1,0 +1,4 @@
+packages/website/app/root.tsx#L21-L21 rk64:37c6b0975ea592da
+packages/website/app/styles/global.css#L19-L19 rk64:a3d1eccf405341af
+
+The theme-color meta tag mirrors the page ground token so browser chrome (address bar, task switcher) matches the page background; keep byte-identical.

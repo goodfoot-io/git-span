@@ -9,12 +9,25 @@ const TONE_CLASS: Record<SpecimenTone, string> = {
   danger: 'text-negative'
 };
 
+// Every red/green delineated line gets a background wash matching its text color, not text
+// color alone -- the same pairing the 'agent' kind already uses (bg-terminal-removed/-added
+// beside text-terminal-danger/-success below). '-'/'+' rows carry the wash unconditionally;
+// context/hunk-header rows stay washless.
 const DIFF_SIGN_CLASS: Record<DiffSign, string> = {
-  '+': 'text-positive',
-  '-': 'text-negative',
+  '+': 'bg-highlight text-positive',
+  '-': 'bg-negative-wash text-negative',
   ' ': 'text-ink-tertiary-deep',
   '@': 'text-ink-tertiary-deep'
 };
+
+// 'lines' kind background wash: danger-toned lines always carry the red wash (they're
+// inherently a negative delineation, same as a diff '-' row), independent of the `highlight`
+// flag, which instead marks the green/neutral callout wash used to bracket-link a pair of
+// lines.
+function lineBackgroundClass(tone: SpecimenTone, highlight: boolean | undefined): string {
+  if (tone === 'danger') return 'bg-negative-wash';
+  return highlight ? 'bg-highlight' : '';
+}
 
 // The header is the container's first line — a command prompt or file label above the
 // output it produced, as one block of terminal scrollback.
@@ -101,7 +114,10 @@ export function PhaseSpecimen({ state }: { state: PhaseId }) {
     <SpecimenFrame header={specimen.header}>
       <div className={bracket ? 'relative pr-6' : undefined}>
         {lines.map((line) => (
-          <div key={line.id} className={`${TONE_CLASS[line.tone]}${line.highlight ? ' bg-highlight' : ''}`}>
+          <div
+            key={line.id}
+            className={`${TONE_CLASS[line.tone]} ${lineBackgroundClass(line.tone, line.highlight)}`.trim()}
+          >
             {line.text}
           </div>
         ))}

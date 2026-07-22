@@ -1,7 +1,9 @@
-// Single source of truth for the engine stage's background color. This is the exact pixel
-// color shown behind the transparent engine canvas (EngineStage renders it as the containing
-// div's CSS background, and EngineScene fogs distant parts toward it so they blend into the
-// page instead of picking up a mismatched haze). It must equal the page ground
-// (--color-ground in global.css) and the theme-color meta in root.tsx.
-export const STAGE_BACKGROUND_CSS = '#f4f1e8';
-export const STAGE_BACKGROUND = 0xf4f1e8;
+// The engine stage's resting/default background color -- the exact pixel color shown behind the
+// transparent engine canvas whenever no color beat (see engine/backdrop.ts) is active. Slightly
+// lighter than the page ground (--color-ground in global.css, #f4f1e8) so the stage panel reads
+// as its own surface, not a literal continuation of the page; the two are deliberately no longer
+// required to match. engine/backdrop.ts is the single source of truth for the full t-varying
+// color (panel gradient CSS + WebGL fog) built on top of this default -- read that module, not
+// this constant, wherever the actual per-frame color is needed.
+export const STAGE_BACKGROUND_DEFAULT_CSS = '#f5f3eb';
+export const STAGE_BACKGROUND_DEFAULT = 0xf5f3eb;

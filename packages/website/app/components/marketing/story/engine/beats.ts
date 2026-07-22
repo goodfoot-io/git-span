@@ -4,6 +4,7 @@
 // previous call's output — so scrubbing the scroll timeline backwards is exactly as valid as
 // scrubbing it forwards.
 import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, TIMELINE } from '../scene';
+import { stageEdgeColorHexAt } from './backdrop';
 
 // --- Tunable constants -------------------------------------------------------------------
 export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch beat is active
@@ -16,8 +17,11 @@ export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch be
 // green especially read as a pale, minty tint rather than a vivid, saturated green. Deeper starting
 // hues leave more headroom before ACESFilmicToneMapping's highlight shoulder desaturates them
 // toward white once lit and tinted onto the metal.
-export const HIGHLIGHT_GREEN = '#059669'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
-export const HIGHLIGHT_RED = '#dc2626';
+// Hued to match --color-positive / --color-negative exactly (135.95° / 4.5°, see global.css),
+// same as every other red/green color on the page -- keeping this pair's own S/L, only the hue
+// moved (from a teal-leaning emerald to true green, negligibly for the red).
+export const HIGHLIGHT_GREEN = '#05962c'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
+export const HIGHLIGHT_RED = '#dc3426';
 export const HIGHLIGHT_BLUE = '#2563eb'; // the ring gear's own first-stage transition color
 // A pre-highlight pulse on the gear + pistons + engineBackCover right around when the camera
 // settles into its canonical framing (see CAMERA_SETTLE_T), fading directly into the mismatch
@@ -118,6 +122,7 @@ export interface EngineFrame {
   elevation: number;
   margin: number;
   idleWeight: number; // 0..1 -- how much of the accumulated hero idle rotation the camera keeps
+  backgroundColor: number; // 0xRRGGBB -- the fog's target color; must track the CSS stage panel's flat edge color exactly, see engine/backdrop.ts
 }
 
 // The failed fit: mid-story, the engine attempts to reassemble around the oversized, mismatched
@@ -504,6 +509,7 @@ export function engineFrame(scene: SceneState): EngineFrame {
     azimuth: azimuthBaseAt(id, t) + drift,
     elevation: elevationAt(id, t),
     margin: marginAt(t),
-    idleWeight: idleWeightAt(id, t)
+    idleWeight: idleWeightAt(id, t),
+    backgroundColor: stageEdgeColorHexAt(t)
   };
 }

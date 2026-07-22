@@ -1,7 +1,7 @@
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L540-L547 rk64:69a4b356e62c9e20
 packages/website/app/components/marketing/story/engine/beats.ts#L82-L84 rk64:3b890daebfd2d52f
 packages/website/app/components/marketing/story/engine/beats.ts#L250-L268 rk64:bca4b1c7401281c7
-packages/website/app/components/marketing/story/engine/beats.ts#L274-L282 rk64:f1e6783b2fbc1436
-wiki/architecture/homepage-engine-animation.md#L595-L642 rk64:4ef667e062af2003
+packages/website/app/components/marketing/story/engine/beats.ts#L274-L282 rk64:e9a5b69e8ac38995
+wiki/architecture/homepage-engine-animation.md#L595-L642 rk64:14eae231458230b7
 
 The hero's in-car pose, achieved purely through camera azimuth/elevation rather than per-part reorientation, and its idle rotation (setHeroIdle/idleWeightAt) that fades out as traverse gets underway.

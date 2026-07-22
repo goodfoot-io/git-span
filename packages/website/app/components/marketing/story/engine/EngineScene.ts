@@ -42,7 +42,7 @@ import {
   type PartFamily,
   stripDedupSuffix
 } from './parts';
-import { STAGE_BACKGROUND } from './stage';
+import { STAGE_BACKGROUND_DEFAULT } from './stage';
 import type { PartRecord, Pose } from './types';
 import engineGlbUrl from '~/assets/engine/engine.glb?url';
 import engineAoUrl from '~/assets/engine/engine-ao.webp?url';
@@ -63,11 +63,11 @@ const POSE_EPSILON = 1e-6;
 const EXPLODE_MIN_FRACTION = 0.54;
 const EXPLODE_MAX_FRACTION = 1.89;
 
-// The page's stage background (see EngineStage's containing div and root.tsx) -- the canvas
-// itself is transparent (`alpha: true`, clear alpha 0, `scene.background = null`), so fogging to
-// this exact color is what lets distant parts blend into the page instead of a mismatched haze.
-// (STAGE_BACKGROUND itself now lives in ./stage, the single source of truth shared with
-// EngineStage.tsx and the page ground color.)
+// The stage's own backdrop (see EngineStage.tsx's containing div) -- the canvas itself is
+// transparent (`alpha: true`, clear alpha 0, `scene.background = null`), so fogging to the same
+// color the panel is rendering is what lets distant parts blend into it instead of a mismatched
+// haze. The color is no longer static: engine/backdrop.ts computes it per-t (default + four color
+// beats), and EngineFrame.backgroundColor carries that value in here every frame.
 
 // Fog near/far are recomputed every frame in `fitCameraToFrame` relative to the fitted camera
 // distance and the current bounding-sphere radius (both already vary continuously with explode
@@ -357,7 +357,10 @@ export class EngineScene {
     // Near/far are placeholders here -- fitCameraToFrame recomputes both every frame relative to
     // the fitted camera distance, since the bounding sphere (and therefore the sane fog range)
     // changes continuously with explode state.
-    this.scene.fog = new THREE.Fog(STAGE_BACKGROUND, 1, 100);
+    // Color is a placeholder too -- fitCameraToFrame sets it every frame from the live
+    // EngineFrame.backgroundColor (see engine/backdrop.ts), which tracks the stage panel's own
+    // t-varying color exactly.
+    this.scene.fog = new THREE.Fog(STAGE_BACKGROUND_DEFAULT, 1, 100);
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
 
     const key = new THREE.DirectionalLight(0xfff4e6, 2.0);
@@ -410,17 +413,21 @@ export class EngineScene {
     // "genuinely hot" once the input was the mesh's full lit render. Pop-free fade-in as a
     // highlight ramps up is guaranteed by bloomGate's continuous 0..1 scaling of the emissive
     // input (see darkenNonBloomed), not by this threshold, which is why threshold 0 is safe.
-    // Strength 0.25 (down from 0.5, originally 0.8) reflects the highlight redesign where tint
-    // (color/metalness/roughness, see highlights.ts) carries the highlight's identity and emissive
-    // is only a small decorative accent (EMISSIVE_SCALE cut 0.32 -> 0.09 -> 0.05) -- bloom is now a
-    // soft, local flourish on top of that accent rather than a major part of how the highlight
-    // reads. 0.5 was still too strong: this pass adds its halo additively on top of the base render
-    // in linear HDR, before tone mapping, so on top of the already-bright tinted metal (RoomEnvironment
-    // + key + rim) it kept pushing highlighted pixels' combined luminance past ACESFilmicToneMapping's
-    // shoulder, where the tonemapper desaturates toward white -- the halo also composites over the
-    // near-white cream page background, compounding the effect. Radius stays 0.35 -- spread, not
-    // intensity, and unaffected by any of the changes above.
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.25, 0.35, 0.0);
+    // Strength 0.16 (down from 0.25, 0.5, originally 0.8) reflects the highlight redesign where
+    // tint (color/metalness/roughness, see highlights.ts) carries the highlight's identity and
+    // emissive is only a small decorative accent (EMISSIVE_SCALE cut 0.32 -> 0.09 -> 0.05) --
+    // bloom is now a soft, local flourish on top of that accent rather than a major part of how
+    // the highlight reads. This pass adds its halo additively on top of the base render in linear
+    // HDR, before tone mapping, so on top of the already-bright tinted metal (RoomEnvironment +
+    // key + rim) it keeps pushing highlighted pixels' combined luminance toward
+    // ACESFilmicToneMapping's shoulder, where the tonemapper desaturates toward white. The 0.25
+    // value read fine against the old static cream backdrop, but once the stage backdrop started
+    // taking on its own saturated color during the color beats (see engine/backdrop.ts), the
+    // halo's outward bleed competed with the panel's own color right at the part's silhouette --
+    // the user flagged this directly ("the highlighted parts are glowing too much, and it looks
+    // odd with the background"). Radius cut in step, 0.35 -> 0.22, since spread (not just
+    // intensity) is what was reading as "external glow" bleeding into the colored panel.
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.16, 0.22, 0.0);
     this.bloomComposer.addPass(this.bloomPass);
 
     const mixPass = new ShaderPass(
@@ -1259,6 +1266,7 @@ export class EngineScene {
     if (fog instanceof THREE.Fog) {
       fog.near = Math.max(0.01, distance - radius * FOG_NEAR_RADIUS_FRACTION);
       fog.far = distance + radius * FOG_FAR_RADIUS_FRACTION;
+      fog.color.setHex(frame.backgroundColor);
     }
   }
 

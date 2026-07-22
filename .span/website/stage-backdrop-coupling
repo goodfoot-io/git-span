@@ -1,0 +1,6 @@
+packages/website/app/components/marketing/story/EngineStage.tsx#L83-L83 rk64:5b164932d005136e
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L1269-L1269 rk64:4575892dc7e54172
+packages/website/app/components/marketing/story/engine/backdrop.ts rk64:269f28a70be00e20
+packages/website/app/components/marketing/story/engine/stage.ts rk64:e2598e2254b7bcf8
+
+engine/backdrop.ts is the single source of truth for the stage's t-varying color; the CSS panel background and the WebGL fog color must always render its output identically or the transparent canvas picks up a visible seam against the panel behind it.
