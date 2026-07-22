@@ -27,9 +27,18 @@ A span makes the coupling explicit without pretending to enforce it:
 
 git-span never blocks an edit and never claims the coupling still holds. It keeps an honest record of what someone once declared and shows you exactly where reality has diverged from it. Deciding whether drift is fine or a bug stays with you.
 
+## Built for agents, usable by anyone
+
+git-span is designed to be operated by coding agents. It ships as plugins for Claude Code and OpenAI Codex whose in-session hooks keep spans honest as an agent works: a touch hook heals positional drift right after each edit, and a commit gate holds commits that carry real span debt. Every capability behind those hooks is still a plain, scriptable CLI — the same commands work by hand, and the same `git span stale` exit code is what CI checks at merge time.
+
+<Callout type="info">
+You don't have to use an agent to use git-span. The plugins are a convenience layer over a CLI that's complete on its own — see [Agent integration](/docs/agent-integration) if you're wiring an agent up, or skip straight to [Command reference](/docs/commands) if you're not.
+</Callout>
+
 ## Where to go next
 
-- [Getting started](/docs/getting-started) — install git-span and declare your first span in a toy repository.
+- [Getting started](/docs/getting-started) — install the CLI, then wire it into Claude Code or Codex.
+- [Agent integration](/docs/agent-integration) — what the plugin hooks, skills, and expert subagent actually do.
 - [Concepts](/docs/concepts) — spans, anchors, drift, and the why, defined precisely.
 - [Command reference](/docs/commands) — every subcommand, grouped by task.
-- [Hooks & CI integration](/docs/hooks-and-ci) — make `git span stale` part of review.
+- [CI & git integration](/docs/ci) — make `git span stale` part of review.

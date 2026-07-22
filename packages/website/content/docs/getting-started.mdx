@@ -1,9 +1,11 @@
 ---
 title: Getting started
-description: Install git-span and declare, inspect, and audit your first span in a toy repository.
+description: Install the git-span CLI, then wire it into Claude Code or OpenAI Codex.
 ---
 
-## Install
+git-span is a CLI. Day to day, it's your coding agent that runs it — declaring spans, checking `git span stale`, reconciling drift — while you review the results. Install the binary first, then install the plugin for whichever agent runtime you use.
+
+## Install the CLI
 
 ```bash
 npm install -g git-span
@@ -16,132 +18,74 @@ git span --version
 ```
 
 ```txt
-git-span 1.0.134
+git-span 1.0.135
 ```
-
-## Set up a toy repo
-
-Create a repo with two files that are coupled but not enforced by anything: an API that validates a minimum charge amount, and a checkout UI that duplicates the same minimum.
-
-```bash
-mkdir git-span-tutorial && cd git-span-tutorial
-git init
-mkdir -p api web
-```
-
-```bash
-cat > api/charge.ts <<'EOF'
-export const MIN_AMOUNT_CENTS = 50;
-
-export function charge(amountCents: number) {
-  if (amountCents < MIN_AMOUNT_CENTS) {
-    throw new Error("amount too small");
-  }
-  return amountCents;
-}
-EOF
-```
-
-```bash
-cat > web/checkout.tsx <<'EOF'
-export function Checkout({ amountCents }: { amountCents: number }) {
-  if (amountCents < 50) {
-    throw new Error("amount too small");
-  }
-  return amountCents;
-}
-EOF
-```
-
-Commit the starting point:
-
-```bash
-git add api web
-git commit -m "Add charge API and checkout UI"
-```
-
-Nothing here says these two files must agree on `50`. That's the coupling a span declares.
-
-## Declare a span
-
-`git span add` takes a span name and one or more anchors. An anchor is either a whole file or a `path#Lstart-Lend` line range (1-indexed, inclusive). Anchor the validation block in `api/charge.ts` by line range, and anchor `web/checkout.tsx` as a whole file:
-
-```bash
-git span add checkout/min-amount api/charge.ts#L4-L6 web/checkout.tsx
-```
-
-`api/charge.ts#L4-L6` covers the `if`/`throw`/closing brace that checks `MIN_AMOUNT_CENTS`.
-
-## Attach a why
-
-A span without a why is just a list of locations. Write one sentence defining what the anchors collectively do:
-
-```bash
-git span why checkout/min-amount -m "Minimum-amount validation that the charge API and the checkout UI must agree on."
-```
-
-## Commit the span
-
-Span data lives under `.span/`, tracked by git like any other file:
-
-```bash
-git add .span && git commit -m "Declare checkout/min-amount span"
-```
-
-## Inspect the span
-
-```bash
-git span show checkout/min-amount
-```
-
-This renders the span as a TOML-style view: its `name`, its `message` (the why you just wrote), one `[[anchors]]` block per anchor (`id`, `path`, `extent`), and a `[config]` block (`copy_detection`, `ignore_whitespace`, `follow_moves`). That rendered view is a display format — the file actually stored under `.span/` uses a different, internal layout. See [Concepts](/docs/concepts) for the distinction.
 
 <Callout type="info">
-`git span list` shows the same anchors in a shorter form, and lists every span in the repo when you omit a name.
+The Claude Code and Codex plugins don't install this binary — they call `git span` on `PATH`. Install the CLI first, on any machine or container an agent session runs in.
 </Callout>
 
-## Cause drift and catch it
+## Install the Claude Code plugin
 
-Edit `web/checkout.tsx` so it no longer agrees with `api/charge.ts`, without touching the anchored file on the other side:
+Inside a Claude Code session:
+
+```
+/plugin marketplace add goodfoot-io/git-span
+/plugin install git-span@git-span
+```
+
+<Callout type="info">
+For a non-interactive or scripted install, use the `claude` CLI form instead:
 
 ```bash
-cat > web/checkout.tsx <<'EOF'
-export function Checkout({ amountCents }: { amountCents: number }) {
-  if (amountCents < 100) {
-    throw new Error("amount too small");
-  }
-  return amountCents;
-}
-EOF
+claude plugin marketplace add goodfoot-io/git-span
+claude plugin install git-span@git-span
 ```
+</Callout>
 
-Now scan for drift:
+This wires an in-session touch hook, a commit gate, two skills, and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
+
+## Install the Codex plugin
 
 ```bash
-git span stale
+codex plugin marketplace add goodfoot-io/git-span
+codex plugin add git-span@git-span
 ```
 
-```txt
-## checkout/min-amount
-- api/charge.ts#L4-L6
-- web/checkout.tsx — changed in the working tree
-
-Minimum-amount validation that the charge API and the checkout UI must agree on.
-```
+Installing the plugin does not trust its hooks. Codex is fail-closed here: hooks stay inert, and Codex prints a startup warning, until you explicitly review and trust them:
 
 ```bash
-echo $?
+codex
+/hooks
 ```
 
-```txt
-1
+Launch `codex` and run `/hooks` to review the git-span hook definitions and trust them. Hash-stable hook filenames keep that trust decision valid across plugin upgrades, so re-trusting after every update isn't expected.
+
+<Callout type="warn">
+On Windows, hooks are disabled entirely — there's no partial fallback. `--dangerously-bypass-hook-trust` exists for CI or other one-off, non-interactive runs where a trust prompt can't be answered; avoid it for normal interactive use.
+</Callout>
+
+## Verify
+
+```bash
+claude plugin list
 ```
 
-The listing shows every anchor in the stale span, not just the drifted one — `api/charge.ts#L4-L6` is printed with no suffix because it hasn't moved or changed — followed by the span's why, so the report itself reminds you what the coupling is for. `git span stale` exits `1` whenever it finds drift; on a clean scan it prints a `0 stale across N spans` summary and exits `0`. Once you decide whether the drift was intentional and re-anchor with `git span add` (or fix the underlying disagreement in code), a rerun of `git span stale` reports `0 stale` and exits `0`.
+or
+
+```bash
+codex plugin list
+```
+
+should show `git-span`. Independently of either plugin, confirm the CLI itself is healthy:
+
+```bash
+git span doctor
+```
 
 ## Where to go next
 
-- [Concepts](/docs/concepts) — spans, anchors, the why, and drift, defined precisely.
-- [Reconcile stale spans](/docs/guides/reconcile-stale-spans) — the triage workflow for the drift you just caused.
-- [Mine span candidates from history](/docs/guides/mine-span-candidates) — find the couplings your real repo already has.
-- [Command reference](/docs/commands) — every subcommand, its flags, and exit behavior.
+- [Agent integration](/docs/agent-integration) — what the plugin actually wires up: the touch hook, the commit gate, the skills, and the expert subagent.
+- [Concepts](/docs/concepts) — spans, anchors, drift, and the why, defined precisely.
+- [Command reference](/docs/commands) — every subcommand, grouped by task.
+- [Guides](/docs/guides/reconcile-stale-spans) — task-shaped walkthroughs: reconciling drift, re-anchoring, mining history for span candidates.

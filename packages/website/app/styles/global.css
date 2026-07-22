@@ -141,3 +141,16 @@ body {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/*
+  fumadocs floats the copy button over the code block's top-right corner (absolute
+  top-3 right-2), so a long first line can end underneath it. Reserve the button's
+  footprint via the padding hook fumadocs' shiki.css applies to every line.
+*/
+.shiki:not(.not-fumadocs-codeblock *) .fd-scroll-container {
+  /* The copy button is 8px inset + 24px wide, and fumadocs' own accommodation is
+     an inline --padding-right on this scroll viewport of exactly that footprint
+     (zero gap), so an !important on the same element is the only stylesheet-level
+     way to widen it. 3rem leaves a 16px gap after the button. */
+  --padding-right: 3rem !important;
+}

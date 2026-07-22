@@ -1,4 +1,4 @@
 {
   "title": "Documentation",
-  "pages": ["overview", "getting-started", "concepts", "guides", "commands", "hooks-and-ci", "reference"]
+  "pages": ["overview", "getting-started", "agent-integration", "concepts", "guides", "commands", "ci", "reference"]
 }
