@@ -22,7 +22,7 @@ use crate::types::CopyDetection;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// One diff hunk: `(old_start, old_count, new_start, new_count)`.
 pub(crate) type Hunk = (u32, u32, u32, u32);
@@ -259,7 +259,7 @@ pub(crate) fn build_timeline(
     head_blob_oid: Option<gix::ObjectId>,
     copy_detection: CopyDetection,
     interner: &mut PathInterner,
-    blob_oid_memo: &mut BlobOidMemo,
+    blob_oid_memo: &RwLock<BlobOidMemo>,
 ) -> Result<PathTimeline> {
     let _span = perf::span("timeline.build");
     let start_path_arc = interner.intern(start_path);
@@ -404,14 +404,25 @@ fn blob_oid_at(
     repo: &gix::Repository,
     commit: &str,
     path: &str,
-    memo: Option<&mut BlobOidMemo>,
+    memo: Option<&RwLock<BlobOidMemo>>,
 ) -> Option<String> {
     if let Some(m) = memo {
-        if let Some(cached) = m.get(commit).and_then(|by_path| by_path.get(path)) {
-            return cached.clone();
+        // Read-lock, check, and drop the guard before falling through to the
+        // tree traversal and the write-lock insert below — holding the read
+        // guard across the miss path would deadlock against the write lock.
+        let cached = m
+            .read()
+            .unwrap()
+            .get(commit)
+            .and_then(|by_path| by_path.get(path))
+            .cloned();
+        if let Some(cached) = cached {
+            return cached;
         }
         let oid = git::path_blob_at(repo, commit, path).ok();
-        m.entry(commit.to_string())
+        m.write()
+            .unwrap()
+            .entry(commit.to_string())
             .or_default()
             .insert(path.to_string(), oid.clone());
         oid
@@ -554,7 +565,7 @@ mod parity_tests {
         copy_detection: CopyDetection,
     ) -> Option<Tracked> {
         let mut interner = PathInterner::new();
-        let mut memo = HashMap::new();
+        let memo = RwLock::new(HashMap::new());
         let tl = build_timeline(
             repo,
             start_path.as_bytes(),
@@ -562,7 +573,7 @@ mod parity_tests {
             None,
             copy_detection,
             &mut interner,
-            &mut memo,
+            &memo,
         )
         .unwrap();
         tl.project_by_hunk_replay(start, end)

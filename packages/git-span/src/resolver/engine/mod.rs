@@ -19,6 +19,7 @@ use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 
 use anchor::resolve_anchor_inner;
 
@@ -626,9 +627,18 @@ fn status_label(s: &AnchorStatus) -> &'static str {
 }
 
 fn emit_timeline_cache_counters(session: &ConcurrentSession) {
-    crate::perf::counter("timeline.cache-hits", session.timeline_cache_hits);
-    crate::perf::counter("timeline.cache-misses", session.timeline_cache_misses);
-    crate::perf::counter("timeline.cache-entries", session.timelines.len() as u64);
+    crate::perf::counter(
+        "timeline.cache-hits",
+        session.timeline_cache_hits.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "timeline.cache-misses",
+        session.timeline_cache_misses.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "timeline.cache-entries",
+        session.timelines.read().unwrap().len() as u64,
+    );
 }
 
 pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
@@ -860,10 +870,16 @@ fn emit_session_walk_counters(session: &ConcurrentSession) {
     );
     crate::perf::counter(
         "session.relocation-candidate-reads",
-        session.relocation_candidate_reads,
+        session.relocation_candidate_reads.load(Ordering::Relaxed),
     );
-    crate::perf::counter("session.line-index-hits", session.line_index_hits);
-    crate::perf::counter("session.line-index-misses", session.line_index_misses);
+    crate::perf::counter(
+        "session.line-index-hits",
+        session.line_index_hits.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.line-index-misses",
+        session.line_index_misses.load(Ordering::Relaxed),
+    );
     crate::resolver::timeline::emit_counters();
     emit_timeline_cache_counters(session);
     crate::resolver::linemap::emit_counters();
@@ -1102,35 +1118,43 @@ fn stale_spans_inner(
     );
     crate::perf::counter(
         "session.relocation-candidate-reads",
-        state.concurrent.relocation_candidate_reads,
+        state
+            .concurrent
+            .relocation_candidate_reads
+            .load(Ordering::Relaxed),
     );
-    crate::perf::counter("session.line-index-hits", state.concurrent.line_index_hits);
-    crate::perf::counter("session.line-index-misses", state.concurrent.line_index_misses);
-    crate::perf::counter("session.drift-locus-hits", state.concurrent.drift_locus_hits);
+    crate::perf::counter(
+        "session.line-index-hits",
+        state.concurrent.line_index_hits.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.line-index-misses",
+        state.concurrent.line_index_misses.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.drift-locus-hits",
+        state.concurrent.drift_locus_hits.load(Ordering::Relaxed),
+    );
     crate::perf::counter(
         "session.drift-locus-misses",
-        state.concurrent.drift_locus_misses,
+        state.concurrent.drift_locus_misses.load(Ordering::Relaxed),
     );
     crate::resolver::timeline::emit_counters();
     emit_timeline_cache_counters(&state.concurrent);
     crate::resolver::linemap::emit_counters();
-    crate::perf::counter("session.filter-attr-hits", state.concurrent.filter_attr_hits);
-    crate::perf::counter(
-        "session.filter-attr-misses",
-        state.concurrent.filter_attr_misses,
-    );
+    let filter_attr_hits = state.concurrent.filter_attr_hits.load(Ordering::Relaxed);
+    let filter_attr_misses = state.concurrent.filter_attr_misses.load(Ordering::Relaxed);
+    crate::perf::counter("session.filter-attr-hits", filter_attr_hits);
+    crate::perf::counter("session.filter-attr-misses", filter_attr_misses);
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
     // the engine-state memo (one increment per `filter_short_circuit` call,
     // misses count distinct paths); the remaining counters are process-global
     // and reset at the top of `stale_spans`.
     crate::perf::counter(
         "session.filter-attr-calls",
-        state.concurrent.filter_attr_hits + state.concurrent.filter_attr_misses,
+        filter_attr_hits + filter_attr_misses,
     );
-    crate::perf::counter(
-        "session.filter-attr-distinct-paths",
-        state.concurrent.filter_attr_misses,
-    );
+    crate::perf::counter("session.filter-attr-distinct-paths", filter_attr_misses);
     // Tier legend for the `session.*` family below:
     //   `gix-open-calls`     — count of `gix::open(...)` invocations the resolver
     //                          triggers (each pays `.git/config` parse + parent
@@ -1635,20 +1659,20 @@ mod tests {
 
         // First lookup for `a.txt` → miss.
         let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses, 1);
-        assert_eq!(state.concurrent.filter_attr_hits, 0);
+        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 1);
+        assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 0);
 
         // Repeated lookup for the same path → hit, no new miss.
         let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
         let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses, 1);
-        assert_eq!(state.concurrent.filter_attr_hits, 2);
+        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 1);
+        assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 2);
 
         // Distinct path → one additional miss.
         let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
         let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses, 2);
-        assert_eq!(state.concurrent.filter_attr_hits, 3);
+        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 2);
+        assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 3);
     }
 
     fn state_for_predicate(

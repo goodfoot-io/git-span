@@ -1,4 +1,4 @@
-packages/git-span/src/resolver/engine/anchor.rs#L903-L1084 rk64:dfb36fffb5e0363e
+packages/git-span/src/resolver/engine/anchor.rs#L926-L1107 rk64:dfb36fffb5e0363e
 packages/git-span/src/resolver/engine/whole_file.rs#L366-L434 rk64:fe96170a444fdbf7
 packages/git-span/src/types.rs#L836-L854 rk64:1e059d5d546213b1
 packages/git-span/tests/cases/stale_span_integration.rs#L569-L576 rk64:e7fa41bd8da6562b

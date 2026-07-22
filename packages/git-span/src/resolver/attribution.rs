@@ -14,6 +14,7 @@ use crate::git;
 use crate::resolver::session::ConcurrentSession;
 use crate::types::{AnchorExtent, AnchorResolved, DriftLocus, DriftSource};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 /// Forward-walk `anchor..HEAD` along the anchored path and return the
 /// `DriftLocus` that explains the drift. Returns `None` when
@@ -42,11 +43,16 @@ pub(crate) fn drift_locus(
     // `plans/bounded-rename-chain.md`).
     if resolved.status == crate::types::AnchorStatus::Deleted {
         let path = resolved.anchored.path.to_string_lossy().into_owned();
-        if let Some(cached) = session.deleted_locus_memo.get(&path) {
-            return Ok(cached.clone());
+        let cached = session.deleted_locus_memo.read().unwrap().get(&path).cloned();
+        if let Some(cached) = cached {
+            return Ok(cached);
         }
         let locus = deleted_locus_walk(repo, &path)?;
-        session.deleted_locus_memo.insert(path, locus.clone());
+        session
+            .deleted_locus_memo
+            .write()
+            .unwrap()
+            .insert(path, locus.clone());
         return Ok(locus);
     }
 
@@ -68,7 +74,7 @@ pub(crate) fn drift_locus(
         .map(|o| o.to_string())
         .unwrap_or_default();
 
-    session.drift_locus_misses += 1;
+    session.drift_locus_misses.fetch_add(1, Ordering::Relaxed);
     drift_locus_walk(repo, resolved, anchored_start, anchored_end, &blob_oid)
 }
 
@@ -909,16 +915,18 @@ mod deleted_locus_walk_tests {
         git(dir, &["commit", "-m", "rename a to b (X1)"]);
         let repo = gix::open(dir).expect("gix open");
         let x1 = head_id(&repo);
-        let mut session = ConcurrentSession::new(&repo);
+        let session = ConcurrentSession::new(&repo);
 
         // First anchor sharing "a.rs": computes and memoizes the walk.
         let first = session
             .deleted_locus_memo
+            .write()
+            .unwrap()
             .entry("a.rs".to_string())
             .or_insert_with(|| deleted_locus_walk(&repo, "a.rs").expect("walk"))
             .clone();
         assert_eq!(first, Some(DriftLocus::RenamedAt(x1, "b.rs".to_string())));
-        assert_eq!(session.deleted_locus_memo.len(), 1);
+        assert_eq!(session.deleted_locus_memo.read().unwrap().len(), 1);
 
         // Mutate history further: delete b.rs, recreate it, then delete it
         // again at a NEW commit closer to HEAD. A non-memoized second full
@@ -938,6 +946,8 @@ mod deleted_locus_walk_tests {
         // against the now-different repo state.
         let second = session
             .deleted_locus_memo
+            .write()
+            .unwrap()
             .entry("a.rs".to_string())
             .or_insert_with(|| deleted_locus_walk(&repo2, "a.rs").expect("walk"))
             .clone();
@@ -947,7 +957,7 @@ mod deleted_locus_walk_tests {
              re-walk the now-different repo and find X2"
         );
         assert_eq!(
-            session.deleted_locus_memo.len(),
+            session.deleted_locus_memo.read().unwrap().len(),
             1,
             "one distinct path must occupy exactly one memo slot regardless of \
              how many anchors share it"

@@ -24,6 +24,7 @@ use git_span_core::{LineIndex, scan_indexed_rk64_one};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
     gix::ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
@@ -263,11 +264,23 @@ fn find_relocated_range_in_paths(
         // each `(path, layer)` to a single read; `relocation_candidate_reads`
         // counts only memo misses.
         let memo_key = (en.path.clone(), deepest);
-        let text: String = match concurrent.relocation_text_memo.get(&memo_key) {
-            Some(Some(t)) => t.clone(),
+        // Read-lock, check, and drop the guard before falling through to the
+        // (I/O-bound) candidate read and the write-lock insert below —
+        // holding the read guard across the miss arm would deadlock against
+        // the write lock a few lines down.
+        let cached = concurrent
+            .relocation_text_memo
+            .read()
+            .unwrap()
+            .get(&memo_key)
+            .cloned();
+        let text: String = match cached {
+            Some(Some(t)) => t,
             Some(None) => continue, // previously unreadable
             None => {
-                concurrent.relocation_candidate_reads += 1;
+                concurrent
+                    .relocation_candidate_reads
+                    .fetch_add(1, Ordering::Relaxed);
                 let read: Option<String> = match deepest {
                     DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
                         .ok()
@@ -278,6 +291,8 @@ fn find_relocated_range_in_paths(
                 };
                 concurrent
                     .relocation_text_memo
+                    .write()
+                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,
@@ -369,8 +384,14 @@ fn find_similar_ranges(
 
         // Read the candidate file text (reusing the session memo).
         let memo_key = (en.path.clone(), deepest);
-        let text: String = match concurrent.relocation_text_memo.get(&memo_key) {
-            Some(Some(t)) => t.clone(),
+        let cached = concurrent
+            .relocation_text_memo
+            .read()
+            .unwrap()
+            .get(&memo_key)
+            .cloned();
+        let text: String = match cached {
+            Some(Some(t)) => t,
             Some(None) => continue,
             None => {
                 let read: Option<String> = match deepest {
@@ -383,6 +404,8 @@ fn find_similar_ranges(
                 };
                 concurrent
                     .relocation_text_memo
+                    .write()
+                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,
