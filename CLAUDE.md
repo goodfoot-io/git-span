@@ -93,26 +93,3 @@ Run `yarn validate` from the workspace root for final validations — it typeche
 
 If a new feature was added to the `git-span` CLI, build the latest version and use the `Bash` tool to perform smoke tests around the new feature.
 </validation>
-
-<git-span>
-
-```bash
-# Stage the span: slug titles the subsystem; line-range anchors (`path#L<start>-L<end>`) or whole-file anchors carry the path
-git span add billing/checkout-request-flow \
-  web/checkout.tsx#L88-L120 \
-  api/charge.ts#L30-L76
-
-# Name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them
-git span why billing/checkout-request-flow \
-  -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
-
-# Persist the span alongside the code in the same commit
-git add .span && git commit -m "Wire checkout to charge API"
-
-# Later ...
-
-# Run `git span stale [glob]` and carefully examine the files in each span to identify drift
-git span stale
-```
-
-</git-span>

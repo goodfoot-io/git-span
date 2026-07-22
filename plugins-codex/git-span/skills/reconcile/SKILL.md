@@ -218,12 +218,12 @@ For each assigned span:
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
 | One side of the relationship broke | Fix the code first, then re-anchor (both sides in one commit) |
 | Relationship gone entirely | `git span delete <name>` |
-| Span has no why | `git span why <name> -m "<one sentence>"` |
+| Span has no why | `git span why <name> -m "<one present-tense sentence naming what the anchors form together>"` |
 
 *(If deletion syntax is unfamiliar, invoke `git-span:git-span` — the
 command-reference section covers `git span delete`. If source code needs
 fixing or you need to write a why, invoke `git-span:git-span` — the
-creating-a-span section covers why-writing conventions.)*
+"Declare a new coupling" recipe covers why-writing conventions.)*
 
 5. `git span stale` — confirm this span no longer appears (ignore spans
    assigned to other components).

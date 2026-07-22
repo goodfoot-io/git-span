@@ -45,24 +45,34 @@ doesn't cover: what makes a decision correct, not how to type it.
 
 ## Why-writing discipline
 
-A why is one sentence that names the subsystem and says plainly what it
-does across the anchors — no caveats, no invariants, no review triggers:
+A why is a router, not a work order. Hooks surface it mid-task, and its
+only job is to let a reader who just touched one anchor decide, from the
+sentence alone, whether their edit lands inside the thing it names.
+
+Write one complete present-tense sentence defining the subsystem the
+anchors form together: name the thing in role words (not file names, not
+the span name), then say what it does across the anchors. Subject + verb —
+never a label followed by a colon; the verb is what the reader classifies
+their edit against.
 
 > Checkout request flow that carries a charge attempt from the browser to
 > the Stripe-backed server.
 
-Not: "This span tracks the checkout flow and ensures that the charge
-request is properly handled. Also note that the payment gateway may
-change in the future and we should review the error handling."
+Not: "This span tracks the checkout flow and ensures the charge request is
+handled properly; don't touch the gateway client without updating the
+server, and re-run the payment tests." Vague ("properly" checks nothing),
+and the rules make an incidental touch read as an order to act.
 
-Invariants, caveats, ownership, and review triggers belong in source
-comments, commit messages, CODEOWNERS, and PR descriptions. The why is
-evergreen and inherited across routine re-anchors — only rewrite it when
+Rules, invariants, caveats, ownership, and review triggers stay out of the
+why — they belong in comments at the anchor sites, commit messages,
+CODEOWNERS, and PR descriptions. Because it only defines, a why is
+evergreen and inherited across routine re-anchors — rewrite it only when
 the subsystem itself changes.
 
-A span without a why is incomplete: `git span why <name> -m "<sentence>"`
-after confirming the relationship, then commit the span file before
-adding new anchors that reference it.
+A span is not finished until it has a why and a comment at each
+load-bearing anchor site stating what must hold there. Run
+`git span why <name> -m "<sentence>"` after confirming the relationship,
+then commit the span file before adding new anchors that reference it.
 
 ## Reconciliation discipline
 

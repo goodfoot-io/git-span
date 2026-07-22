@@ -42,7 +42,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-span",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A span holds the anchors — line-anchor or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that defines the subsystem those anchors collectively form. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
+    after_help = "A span holds the anchors — line-anchor or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why`: one complete present-tense sentence defining the subsystem those anchors form together, specific enough that a reader who just edited one anchor can tell whether their change lands inside it. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in comments at the anchor sites, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
 )]
 pub struct Cli {
     /// Emit performance timings for major git-span operation groups to stderr.
@@ -99,17 +99,22 @@ pub enum Commands {
     /// root. Stage and commit the change with `git add .span && git commit`.
     Remove(RemoveArgs),
 
-    /// Read or stage the span's why — a one-sentence definition of
-    /// the subsystem, flow, or concern the anchors collectively form.
+    /// Read or stage the span's why — one complete present-tense
+    /// sentence defining the subsystem the anchors form together.
     ///
-    /// Write the why as a definition: name the subsystem and say
-    /// plainly what it does across the anchors (e.g. "Checkout
-    /// request flow that carries a charge attempt from the browser
-    /// to the Stripe-backed server."). Leave invariants, caveats,
-    /// ownership, and review triggers to source comments, commit
-    /// messages, CODEOWNERS, and PR descriptions. The why is
-    /// inherited across routine re-anchors; only write a new one
-    /// when the subsystem itself changes.
+    /// Write a definition, not an instruction: name the thing in
+    /// role words rather than file names and say what it does
+    /// across the anchors, as a sentence with a subject and a verb
+    /// — never a label followed by a colon (e.g. "Checkout request
+    /// flow that carries a charge attempt from the browser to the
+    /// Stripe-backed server."). Make it specific enough that a
+    /// reader who just edited one anchor can tell whether their
+    /// change lands inside what it names. Leave invariants,
+    /// caveats, ownership, and review triggers to comments at the
+    /// anchor sites, commit messages, CODEOWNERS, and PR
+    /// descriptions. The why is evergreen and inherited across
+    /// routine re-anchors; only write a new one when the subsystem
+    /// itself changes.
     ///
     /// Bare `git span why <name>` prints the current why; the writer
     /// flags `-m`/`-F`/`--edit` write a new one into the span file
@@ -302,13 +307,14 @@ pub struct RemoveArgs {
 #[derive(Debug, clap::Args)]
 pub struct WhyArgs {
     /// Span whose why text to read (no writer flag) or stage
-    /// (`-m`). The why defines the subsystem the
-    /// anchors collectively form.
+    /// (`-m`). The why defines the subsystem the anchors form
+    /// together.
     pub name: String,
 
-    /// Inline why text (`-m "..."`). Writer flag. One sentence
-    /// defining the subsystem the anchors form; evergreen and
-    /// inherited across routine re-anchors.
+    /// Inline why text (`-m "..."`). Writer flag. One complete
+    /// present-tense sentence defining the subsystem the anchors
+    /// form together — no rules, warnings, or review steps;
+    /// evergreen and inherited across routine re-anchors.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
 }

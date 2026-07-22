@@ -1,7 +1,7 @@
 packages/git-span/docs/history-example-output-xml.md rk64:970cd6c40fd3f770
 packages/git-span/docs/history-example-output.md rk64:4e658c42d7d34e90
 packages/git-span/src/cli/history.rs rk64:6deea7fce4c8043a
-packages/git-span/src/cli/mod.rs#L365-L381 rk64:3bfaa6c3b4a59ad7
+packages/git-span/src/cli/mod.rs#L371-L387 rk64:3bfaa6c3b4a59ad7
 packages/git-span/tests/cases/cli_history.rs rk64:fe64ee5974f18349
 packages/git-span/tests/cases/mod.rs#L18-L19 rk64:9a8c9ce10afc19cf
 

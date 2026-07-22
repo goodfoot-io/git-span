@@ -20,12 +20,12 @@ ls path/to/file1 path/to/file2   # check existence
 
 **Per-span process.** For each `DELETED` span:
 
-1. **Read the why.** `git span why <name>` — what relationship does this span
-   claim?
-2. **Inspect each current anchor and write the relationship in one sentence.**
-   Open the file at the recorded path and line range with `Read` (whole file,
-   for whole-file anchors). If you cannot write that sentence, you have not
-   confirmed — inspect further or `git span delete <name>`.
+1. **Read the why.** `git span why <name>` — what subsystem does this span
+   define?
+2. **Inspect each current anchor and define the subsystem in one present-tense
+   sentence.** Open the file at the recorded path and line range with `Read`
+   (whole file, for whole-file anchors). If you cannot write that sentence, you
+   have not confirmed — inspect further or `git span delete <name>`.
 3. **Decide:**
    - Relationship still holds at a new location → re-anchor at the new extent
      (`git span remove <name> <old>` then `git span add <name> <new>`; see the

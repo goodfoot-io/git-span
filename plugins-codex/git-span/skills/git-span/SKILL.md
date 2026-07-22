@@ -53,9 +53,14 @@ output and stop.
 ### Declare a new coupling
 ```
 git span add <name> <anchor>...
-git span why <name> -m "one sentence: name the subsystem, what it does across anchors"
+git span why <name> -m "<one present-tense sentence naming the subsystem and what it does across the anchors>"
 git add .span && git commit -m "..."
 ```
+The why is a definition, not a work order: a complete sentence (subject + verb, never
+`label:`) in role words, not file names, specific enough that someone who just edited one
+anchor can tell whether their change lands inside it. No rules, warnings, or review steps
+— put those in comments at the load-bearing anchor sites. A span isn't done until those
+comments exist.
 
 ### Re-anchor + retire (stale names the drifted anchor; fix is obvious)
 ```

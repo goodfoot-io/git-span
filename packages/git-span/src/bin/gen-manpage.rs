@@ -67,32 +67,38 @@ Each
 .B span
 anchors the participating anchors and carries a durable
 .I why
-\[em] one prose sentence that names the relationship the anchored set holds
-and survives a rewrite of either side.
+\[em] one present-tense sentence that defines the subsystem the anchored set
+forms together and stays true across a rewrite of either side.
 .PP
 The standing question at commit time: did this change create or rely on a
 coupling that is not visible from the lines themselves?
 .PP
 .B Writing the why.
-Name the relationship the anchors hold in one prose sentence, written so it
-survives a rewrite of either side.
-Describe the relationship in role\-words (\(lqthe doc,\(rq \(lqthe parser,\(rq
+Write one complete sentence, in the present tense, that defines the subsystem
+the anchors form together: name the thing, then say what it does across the
+anchors.
+Give it a subject and a verb \[em] never a label followed by a colon \[em] and
+name the thing in role\-words (\(lqthe doc,\(rq \(lqthe parser,\(rq
 \(lqthe runbook,\(rq \(lqthe migration\(rq) rather than repeating filenames.
-For asymmetric relationships, name which side is normative:
-\(lqthe doc is the source of truth when they disagree.\(rq
-Do not restate the span name, embed incidental implementation details, or
-bundle ownership and review triggers in the why.
+A why is read when a hook surfaces it mid\-task, so make it specific enough
+that a reader who just edited one anchor can tell from the sentence alone
+whether their change lands inside the thing it names.
+Do not restate the span name or embed incidental implementation details, and
+keep invariants, caveats, ownership, and review triggers out of the why \[em]
+those belong in comments at the anchor sites, in commit messages, CODEOWNERS,
+and PR descriptions.
 .PP
 .B Re\-anchoring on drift.
 When
 .B git span stale
 reports drift, review the change at each anchor.
-If the relationship still holds, re-anchor with
+Because a why only defines, it is inherited across routine re-anchors: if the
+subsystem still holds, re-anchor with
 .B git span add
-and commit.
-If the relationship has changed, update the why with
+and commit, leaving the why alone.
+Rewrite it with
 .B git span why
-before re-anchoring.
+only when the subsystem itself has changed.
 .PP
 Each span is an ordinary tracked file under the span root (default
 .IR .span ,
@@ -127,8 +133,8 @@ Anchor a new span alongside a code change:
 git span add billing/charge-request-contract \e
     docs/api/charge.md#L40-L88 api/charge.ts#L30-L76
 git span why billing/charge-request-contract \e
-    -m "The doc states the request body shape the parser honors; \e
-the doc is the source of truth when they disagree."
+    -m "The charge request body shape is stated by the doc \e
+and honored by the parser that reads it."
 git add .span
 git commit -m "Wire checkout to charge API"
 .fi
@@ -142,7 +148,8 @@ git span add auth/token-contract --at HEAD \e
     packages/auth/token.ts#L88-L104 \e
     packages/auth/crypto.ts#L12-L40
 git span why auth/token-contract \e
-    -m "Token verification depends on signature verification."
+    -m "Session token verification checks signatures with the \e
+algorithm and key encoding the crypto helper defines."
 git add .span && git commit -m "Document token/crypto coupling"
 .fi
 .RE
