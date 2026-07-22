@@ -37,6 +37,7 @@ function fakeExecutors(overrides: Partial<GateExecutors> = {}): GateExecutors {
     fix: async () => {},
     list: async (): Promise<PorcelainRow[]> => [],
     stale: async (): Promise<StalePorcelainRow[]> => [],
+    listBlocks: async (): Promise<string> => '',
     ...overrides
   };
 }
@@ -176,7 +177,7 @@ describe('claude gate adapter', () => {
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput).toBeUndefined(); // allowed, not denied
-    expect(result.stdout.systemMessage).toContain('SPARSE_EXCLUDED');
+    expect(result.stdout.systemMessage).toContain('sparse excluded');
   });
 
   it('surfaces a scan failure as a transcript-visible systemMessage and allows (fail-open)', async () => {

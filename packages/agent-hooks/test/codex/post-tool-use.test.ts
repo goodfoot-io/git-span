@@ -59,9 +59,9 @@ interface FakeOpts {
 }
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
-  calls: { fix: number; list: number; stale: number };
+  calls: { fix: number; list: number; stale: number; why: number };
 } {
-  const calls = { fix: 0, list: 0, stale: 0 };
+  const calls = { fix: 0, list: 0, stale: 0, why: 0 };
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
@@ -80,6 +80,11 @@ function makeExecutors(opts: FakeOpts = {}): {
       calls.stale += 1;
       if (opts.reject) boom();
       return opts.stale ?? [];
+    },
+    why: async (): Promise<string | null> => {
+      calls.why += 1;
+      if (opts.reject) boom();
+      return 'Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.';
     }
   };
   return { executors, calls };

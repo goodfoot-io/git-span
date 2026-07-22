@@ -128,7 +128,7 @@ export function createHandler(
 
     // One envelope may touch several files; force whole-file anchors (Codex never
     // recovers a post-edit range) and run the shared touch core per touched file.
-    // The shared memo dedupes surfacing/directives across anchors and the session.
+    // The shared memo dedupes span renders across anchors and the session.
     const anchors = parseApplyPatch(command, noRangeRecovery);
     const blocks: string[] = [];
     for (const anchor of anchors) {

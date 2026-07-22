@@ -41,6 +41,7 @@ function createMemoryMemoStore(): MemoStore {
 
 const REPO_ROOT = '/repo';
 const SESSION_ID = 'session-touch-core-test';
+const WHY = 'Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.';
 
 function writeInput(overrides: Partial<TouchWriteInput> = {}): TouchWriteInput {
   return {
@@ -92,7 +93,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         stale: async (): Promise<StalePorcelainRow[]> => [
           staleRow({ status: 'MOVED' }),
           staleRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
-        ]
+        ],
+        why: async (): Promise<string | null> => WHY
       };
 
       const output = await runTouchHook(writeInput(), executors, memo);
@@ -101,23 +103,77 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it('surfaces the merged directive for semantic drift exactly once per span per status in a session', async () => {
+    it('surfaces the full human-format span render for semantic drift exactly once per span per status in a session', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
-        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow(),
+          porcelainRow({ path: 'api/charge.ts', start: 30, end: 76 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        why: async (): Promise<string | null> => WHY
       };
       const input = writeInput();
 
       const first = await runTouchHook(input, executors, memo);
       expect(first.additionalContext).not.toBeNull();
-      expect(first.additionalContext).toContain('billing/checkout-request-flow');
+      const block = first.additionalContext ?? '';
+      // Drift header + full span section: name heading, every declared anchor
+      // (the drifted one lowercase-status-suffixed, the clean cross-file one
+      // bare), the why sentence, and the drift footer after a final `---`.
+      expect(block).toContain('This edit put a latent semantic dependency out of date:');
+      expect(block).toContain('## billing/checkout-request-flow');
+      expect(block).toContain('- src/app.ts#L1-L10 — changed');
+      expect(block).toContain('- api/charge.ts#L30-L76\n');
+      expect(block).not.toContain('api/charge.ts#L30-L76 —');
+      expect(block).toContain(WHY);
+      expect(block).toContain('\n\n---\n\n');
+      expect(block).toContain('Update the changed anchors or description before committing');
+      expect(block).toContain('`git span add billing/checkout-request-flow <path#Lstart-Lend>`');
 
       // Same span, same status, same session (same MemoStore instance) — the
-      // directive must not repeat.
+      // render must not repeat.
       const second = await runTouchHook(input, executors, memo);
       expect(second.additionalContext).toBeNull();
+    });
+
+    it('re-renders the full span when drift appears after the span already surfaced healthy', async () => {
+      const memo = createMemoryMemoStore();
+      let drifted = false;
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => (drifted ? [staleRow({ status: 'CHANGED' })] : []),
+        why: async (): Promise<string | null> => WHY
+      };
+      const input = writeInput();
+
+      // First touch: clean — the span surfaces once with the clean header/footer.
+      const first = await runTouchHook(input, executors, memo);
+      const cleanBlock = first.additionalContext ?? '';
+      expect(cleanBlock).toContain('This change touches latent semantic dependencies:');
+      expect(cleanBlock).toContain('## billing/checkout-request-flow');
+      expect(cleanBlock).toContain(WHY);
+      expect(cleanBlock).toContain('update the other anchors to match.');
+      expect(cleanBlock).not.toContain('— changed');
+
+      // Clean again: nothing new to say.
+      const second = await runTouchHook(input, executors, memo);
+      expect(second.additionalContext).toBeNull();
+
+      // Drift appears later in the session: the full span re-renders (anchors
+      // and why included) — never a bare directive without paths.
+      drifted = true;
+      const third = await runTouchHook(input, executors, memo);
+      const driftBlock = third.additionalContext ?? '';
+      expect(driftBlock).toContain('This edit put a latent semantic dependency out of date:');
+      expect(driftBlock).toContain('- src/app.ts#L1-L10 — changed');
+      expect(driftBlock).toContain(WHY);
+
+      // Same (span, status) pair again: deduped.
+      const fourth = await runTouchHook(input, executors, memo);
+      expect(fourth.additionalContext).toBeNull();
     });
   });
 
@@ -131,7 +187,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           return { modified: true };
         },
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        why: async (): Promise<string | null> => WHY
       };
 
       const output = await runTouchHook(readInput(), executors, memo);
@@ -148,7 +205,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         stale: async (): Promise<StalePorcelainRow[]> => [
           staleRow({ status: 'MOVED' }),
           staleRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
-        ]
+        ],
+        why: async (): Promise<string | null> => WHY
       };
 
       const output = await runTouchHook(readInput(), executors, memo);
@@ -174,6 +232,9 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           throw new Error('spawn git ENOENT');
         },
         stale: async (): Promise<StalePorcelainRow[]> => {
+          throw new Error('spawn git ENOENT');
+        },
+        why: async (): Promise<string | null> => {
           throw new Error('spawn git ENOENT');
         }
       };

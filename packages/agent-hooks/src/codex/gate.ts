@@ -125,7 +125,7 @@ export function createHandler(
       }
       // Fallback path (CARD.md contingency): cannot block, so surface the same
       // checklist as a loud warning and allow — the CI recipe enforces for Codex.
-      const warning = `git-span gate could not block this command; span debt remains:\n${result.reason}`;
+      const warning = `Could not block this command — the issue below still needs resolving:\n${result.reason}`;
       return preToolUseOutput({ additionalContext: warning, systemMessage: warning });
     } catch (err) {
       ctx.logger.warn('git-span gate failed open on an uncaught error', { err });

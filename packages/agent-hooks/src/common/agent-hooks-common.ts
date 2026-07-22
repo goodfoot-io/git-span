@@ -254,6 +254,16 @@ export function isDebt(status: PorcelainStatus): boolean {
 }
 
 /**
+ * Lowercase human label for a porcelain status token (`LFS_NOT_FETCHED` →
+ * `lfs not fetched`). The single label mapping for every human-format anchor
+ * suffix — both the touch hook's block and the gate's messages render through
+ * this, so a status never reads differently between the two.
+ */
+export function humanStatusLabel(status: PorcelainStatus): string {
+  return status.toLowerCase().replace(/_/g, ' ');
+}
+
+/**
  * The terminal/environmental statuses: the CLI could not resolve the anchor at
  * all, so the row is not span drift a user can fix by editing a span. These are
  * `CONFLICT` (unresolved merge), `SUBMODULE` (anchor inside a submodule),

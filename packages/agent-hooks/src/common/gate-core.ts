@@ -32,6 +32,7 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   gateMemoDir,
+  humanStatusLabel,
   isDebt,
   isEnvironmentalStatus,
   isInsideSpanRoot,
@@ -449,6 +450,16 @@ export interface GateExecutors {
    * is an uncovered write.
    */
   list(paths: string[], cwd: string): Promise<PorcelainRow[]>;
+  /**
+   * Run `git span list <names...>` (human format) and return its raw stdout —
+   * one `## <name>` block per span (anchor bullets + description), blocks
+   * separated by `---`. The deny/advisory renderers annotate these blocks with
+   * per-anchor drift labels so the surfaced message carries the full span
+   * (all locations + description), not just the drifted rows. Returns `''` on
+   * any failure; {@link annotateBlocks} then synthesizes minimal blocks from
+   * the findings themselves so no finding is dropped.
+   */
+  listBlocks(names: string[], cwd: string): Promise<string>;
 }
 
 /**
@@ -617,7 +628,7 @@ export async function evaluateGate(
           decision: 'deny',
           kind: 'semantic-staleness',
           findings: semantic,
-          reason: renderStalenessReason(semantic)
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd))
         };
       }
       semanticAlreadyPresented = true;
@@ -633,7 +644,7 @@ export async function evaluateGate(
         decision: 'allow',
         kind: 'environmental',
         conditions: environmental,
-        reason: renderEnvironmentalReason(environmental)
+        reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
       };
     }
 
@@ -703,47 +714,130 @@ function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): st
   return createHash('sha256').update(payload).digest('hex');
 }
 
-/** The checklist a semantic-staleness deny renders into `reason`. */
-function renderStalenessReason(findings: StalePorcelainRow[]): string {
-  const lines = findings.map((row) => `  - ${row.name} (${row.status}): ${anchorText(row)}`);
+/**
+ * Fetch the human-format `## <name>` blocks for the spans named in `rows`,
+ * failing to `''` (never throwing) so a list failure can never turn a deny
+ * into a silent allow via {@link evaluateGate}'s outer catch —
+ * {@link annotateBlocks} synthesizes minimal blocks from the rows instead.
+ */
+async function fetchSpanBlocks(executors: GateExecutors, rows: StalePorcelainRow[], cwd: string): Promise<string> {
+  const names = [...new Set(rows.map((row) => row.name))].sort();
+  try {
+    return await executors.listBlocks(names, cwd);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Annotate `git span list` human blocks with per-anchor drift labels: each
+ * bullet whose anchor matches a finding gains ` — <label>`. Bullets are only
+ * the contiguous `- ` run directly under a `## <name>` header, so a
+ * description line that happens to start with `- ` is never annotated.
+ * Findings whose anchor has no matching bullet are appended to their span's
+ * bullet run; spans absent from `blocksText` entirely (or an empty/failed
+ * list read) get a synthesized minimal block — no finding is ever dropped.
+ */
+function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
+  const remaining = new Map<string, StalePorcelainRow[]>();
+  for (const row of rows) {
+    const group = remaining.get(row.name);
+    if (group) group.push(row);
+    else remaining.set(row.name, [row]);
+  }
+
+  const out: string[] = [];
+  let pending: StalePorcelainRow[] = [];
+  let inBullets = false;
+  const closeBullets = (): void => {
+    for (const row of pending) out.push(`- ${anchorText(row)} — ${humanStatusLabel(row.status)}`);
+    pending = [];
+    inBullets = false;
+  };
+
+  const trimmed = blocksText.trim();
+  if (trimmed.length > 0) {
+    for (const line of trimmed.split('\n')) {
+      const header = /^## (.+)$/.exec(line);
+      if (header) {
+        closeBullets();
+        out.push(line);
+        pending = remaining.get(header[1]) ?? [];
+        remaining.delete(header[1]);
+        inBullets = true;
+        continue;
+      }
+      if (inBullets && line.startsWith('- ')) {
+        const addr = line.slice(2);
+        let idx = pending.findIndex((row) => anchorText(row) === addr);
+        if (idx === -1) idx = pending.findIndex((row) => addr === row.path || addr.startsWith(`${row.path}#`));
+        if (idx >= 0) {
+          const [row] = pending.splice(idx, 1);
+          out.push(`${line} — ${humanStatusLabel(row.status)}`);
+        } else {
+          out.push(line);
+        }
+        continue;
+      }
+      if (inBullets) closeBullets();
+      out.push(line);
+    }
+    closeBullets();
+  }
+
+  for (const [name, group] of remaining) {
+    if (out.length > 0) out.push('', '---', '');
+    out.push(`## ${name}`);
+    for (const row of group) out.push(`- ${anchorText(row)} — ${humanStatusLabel(row.status)}`);
+  }
+
+  return out.join('\n');
+}
+
+/** The full-span checklist a semantic-staleness deny renders into `reason`. */
+function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {
+  const names = [...new Set(findings.map((row) => row.name))];
+  const subject = names.length === 1 ? 'a latent semantic dependency' : 'latent semantic dependencies';
+  const name = names.length === 1 ? names[0] : '<name>';
   return [
-    'This changeset carries span debt — resolve it before this lands:',
-    ...lines,
+    `This change leaves ${subject} out of date:`,
     '',
-    "Update each span's anchors/why in this same change, or tell the user why the described coupling no longer holds, then retry."
+    annotateBlocks(blocksText, findings),
+    '',
+    '---',
+    '',
+    `Update the drifted locations or the description — \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\` — then retry. If a dependency no longer holds, tell the user instead.`
   ].join('\n');
 }
 
 /**
  * The advisory surfaced when the changeset's only staleness is environmental —
  * the gate allows but says why, so the unresolvable condition is not silently
- * swallowed. No escape-hatch line: the command already passes.
+ * swallowed.
  */
-function renderEnvironmentalReason(conditions: StalePorcelainRow[]): string {
-  const lines = conditions.map((row) => `  - ${row.name} (${row.status}): ${anchorText(row)}`);
+function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
   return [
-    'git-span could not evaluate these anchors, so the gate is not blocking on them:',
-    ...lines,
+    'Could not check these latent semantic dependencies (unfetched LFS, sparse checkout, or similar) — not blocking:',
     '',
-    'This is an environmental condition (e.g. sparse checkout, unfetched LFS, partial-clone miss, or I/O error), not span drift you can fix by editing a span. Resolve the underlying checkout/fetch issue if this coupling needs verifying.'
+    annotateBlocks(blocksText, conditions),
+    '',
+    '---',
+    '',
+    'Fix the checkout/fetch issue if these dependencies need verifying.'
   ].join('\n');
 }
 
 /**
- * The advisory an `allow`/`scan-failed` result renders into `reason`. Unlike
- * the environmental advisory, this is a warning about an *unverified*
- * changeset rather than a resolved/terminal condition: the scan could not
- * complete, so span debt was NOT verified for this changeset — but the
- * command proceeds anyway (fail-open, matching `environmental`). Names the
- * underlying failure so the user can resolve the read/scan error if the
- * coupling needs verifying.
+ * The advisory an `allow`/`scan-failed` result renders into `reason`: the scan
+ * could not complete, so the changeset was NOT verified — but the command
+ * proceeds anyway (fail-open, matching `environmental`).
  */
 function renderScanFailedReason(detail: string): string {
   return [
-    'git-span could not complete its staleness scan for this changeset, so its span debt was NOT verified:',
+    'The latent-semantic-dependency check could not run, so this change was NOT verified:',
     `  ${detail}`,
     '',
-    'The command is proceeding anyway. This is a hard scan failure (e.g. an unreadable anchor file that aborts the whole scoped query), not a clean result — resolve the underlying read/scan error if this coupling needs verifying.'
+    'The command proceeds anyway. Fix the scan error if verification matters for this change.'
   ].join('\n');
 }
 
@@ -751,10 +845,10 @@ function renderScanFailedReason(detail: string): string {
 function renderUncoveredReason(uncovered: string[]): string {
   const lines = uncovered.map((path) => `  - ${path}`);
   return [
-    'Determine if you should document implicit semantic dependencies in these files:',
+    'Decide whether these changed files carry a latent semantic dependency — code kept consistent with other locations that nothing links to it:',
     ...lines,
     '',
-    'Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why <name> -m "one sentence: name the subsystem, what it does across anchors"`, or just retry the command to proceed (this is a one-time check).'
+    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "one sentence: the subsystem, what it does across locations"`. Otherwise retry the command to proceed (one-time check).'
   ].join('\n');
 }
 
@@ -911,6 +1005,22 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
         return parsePorcelain(out);
       } catch {
         return [];
+      }
+    },
+    listBlocks: async (names, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || names.length === 0) return '';
+      try {
+        return execFileSync('git', ['span', 'list', ...names], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs
+        });
+      } catch {
+        // A failed human-format read only degrades the rendered message
+        // (annotateBlocks synthesizes minimal blocks); never a gate error.
+        return '';
       }
     }
   };

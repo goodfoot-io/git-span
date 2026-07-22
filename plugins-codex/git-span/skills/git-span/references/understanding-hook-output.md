@@ -20,51 +20,93 @@ moments. Neither waits for a commit:
   not — the `systemMessage` checklist below is what's shown, so its presence
   in the transcript is not itself proof the command was stopped.
 
-## The touch hook: merged block + directive line
+## The touch hook: the merged `<git-span>` block
 
 When an edit lands (or a read touches a partial range) inside a span anchor,
-the hook injects a merged `<git-span>` block as `additionalContext`:
+the hook injects a merged `<git-span>` block as `additionalContext`: a header
+line, one full span section per surfaced span (sections separated by `---`),
+and a single footer after a final `---`. A healthy span renders as:
 
 ```
 <git-span>
-Spans coupled to this change:
-  billing/checkout-request-flow	src/checkout.tsx#L88-L120
+This change touches latent semantic dependencies:
 
-- billing/checkout-request-flow (CHANGED): the described coupling no longer
-matches the code. Update its anchors/why in this change before it lands, or
-tell the user why the coupling no longer holds.
+## billing/checkout-request-flow
+- web/checkout.tsx#L88-L120
+- api/charge.ts#L30-L76
+
+Checkout request flow that carries a charge attempt from the browser to the
+Stripe-backed server.
+
+---
+
+If your edit changes how these locations work together, update the other
+anchors to match.
 </git-span>
 ```
 
-The block's first section, when present, lists every covering span not yet
-surfaced this session as a `<name>\t<anchor>` row (tab-delimited — one row per
-span, the anchor written as `path#Lstart-Lend`, or a bare path for a
-whole-file anchor). If — and only if — the touch left genuine semantic drift
-behind (a `CHANGED` anchor whose content no longer matches, or a terminal
-status), a blank line separates a second section: one `- <name> (<status>):
-...` directive line per drifted `(span, status)` pair. A block can carry
-either section alone, or both. Positional drift never produces a directive
-line — see below.
+When the touch leaves genuine content drift behind, drifted anchors carry a
+lowercase status suffix and the header and footer switch:
+
+```
+<git-span>
+This edit put a latent semantic dependency out of date:
+
+## billing/checkout-request-flow
+- web/checkout.tsx#L88-L120 — changed
+- api/charge.ts#L30-L76
+
+Checkout request flow that carries a charge attempt from the browser to the
+Stripe-backed server.
+
+---
+
+Update the changed anchors or description before committing —
+`git span add billing/checkout-request-flow <path#Lstart-Lend>` /
+`git span why billing/checkout-request-flow -m "..."` — and check the other
+anchors for knock-on changes. If the coupling no longer holds, tell the user
+instead.
+</git-span>
+```
+
+Each `## <name>` section renders the span's full declared anchor list —
+including anchors in files other than the touched one — as
+`- path#Lstart-Lend` bullets (a bare path for a whole-file anchor), followed
+by the span's why sentence when one is recorded. Only genuine (semantic or
+terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
+drift never does — see below. The header scales with what drifted: `This
+change touches latent semantic dependencies:` when nothing did, the singular
+form above for one drifted span, and `This edit put latent semantic
+dependencies out of date:` for more than one. With several drifted spans the
+footer generalizes: "For each out-of-date span above: update the changed
+anchors or description before committing — `git span add <name>
+<path#Lstart-Lend>` / `git span why <name> -m "..."` — and check the other
+anchors for knock-on changes. If a coupling no longer holds, tell the user
+instead." The block carries everything needed to act — anchors, statuses,
+and the description — so no follow-up `git span` read is required.
 
 ### Positional drift is healed, not surfaced
 
 Before computing what to show, the hook first runs the equivalent of `git
 span stale --fix` scoped to the touched file, re-anchoring any pure line-shift
 drift (`MOVED`, whitespace-only `CHANGED`) against the edit's real post-edit
-range. This happens silently — no block, no directive, nothing in the
-transcript — because there is nothing left to act on by the time the agent
-sees output. Only what survives that heal (genuine content drift) can produce
-a directive line. This is the touch hook's whole reason for existing: it
+range. This happens silently — no block, nothing in the transcript — because
+there is nothing left to act on by the time the agent sees output. Only what
+survives that heal (genuine content drift) can earn an anchor its status
+suffix. This is the touch hook's whole reason for existing: it
 collapses the old "edit now, reconcile in a separate pass later" flow into
 "edit now, healed now" — a positional re-anchor never needs its own commit.
 
-### Once-per-session, once-per-status dedup
+### When a span surfaces (and resurfaces)
 
-Each `(span, status)` pair is surfaced at most once per session — the hook
-tracks what it has already shown under `~/.cache/git-span/session/<id>/`. If
-the same span keeps coming up `CHANGED` across several edits in one session, the
-directive line appears once, not on every touch. A status *change* (e.g.
-`CHANGED` → a terminal status) is a new pair and surfaces again.
+A span renders when its name has not been surfaced this session, or when it
+carries a drift status not yet surfaced for it — the hook tracks what it has
+already shown under `~/.cache/git-span/session/<id>/`. Every render is the
+full span section; there is no bare drift line without anchors. A span
+already surfaced healthy re-renders in full when drift later appears, and a
+status *change* (e.g. `changed` → a terminal status) is a new pair and
+surfaces again. If the same span keeps coming up `changed` across several
+edits in one session, it renders once, not on every touch.
 
 ### What never produces a block
 
@@ -74,7 +116,8 @@ directive line appears once, not on every touch. A status *change* (e.g.
   what's on disk).
 - Whole-file anchors (no `#L…` range) — excluded from intersection matching.
 - Gitignored or non-repo files.
-- A `(span, status)` pair already surfaced this session.
+- A span whose name and current drift statuses were all surfaced earlier
+  this session.
 
 ## The gate: what a denied command sees
 
@@ -85,29 +128,44 @@ tracked-modified files when the command uses `-a`/`-am`), reruns a scoped
 `permissionDecision: 'deny'` result whose `permissionDecisionReason` (and
 `systemMessage`, so it's visible in the transcript) is one of two shapes:
 
-**Semantic staleness** — a checklist, one line per drifted anchor, denied once
-per distinct set of findings; an identical retry (same findings) passes, and
+**Semantic staleness** — the same human span format the touch hook renders
+(full anchor list, drifted anchors labeled, the description), denied once per
+distinct set of findings; an identical retry (same findings) passes, and
 editing a span's anchors changes the findings and earns one fresh deny:
 
 ```
-This changeset carries span debt — resolve it before this lands:
-  - billing/checkout-request-flow (CHANGED): src/checkout.tsx#L88-L120
+This change leaves a latent semantic dependency out of date:
 
-Update each span's anchors/why in this same change, or tell the user why the
-described coupling no longer holds, then retry.
+## billing/checkout-request-flow
+- src/checkout.tsx#L88-L120 — changed
+- api/charge.ts#L30-L76
+
+Checkout request flow that carries a charge attempt from the browser to the
+Stripe-backed server.
+
+---
+
+Update the drifted locations or the description — `git span add
+billing/checkout-request-flow <path#Lstart-Lend>` / `git span why
+billing/checkout-request-flow -m "..."` — then retry. If a dependency no
+longer holds, tell the user instead.
 ```
+
+With several drifted spans the sections stack, separated by `---`, the header
+pluralizes, and the closing commands use a `<name>` placeholder.
 
 **Uncovered writes** — a changed file no span anchors at all. Denied once per
 distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes:
 
 ```
-Determine if you should document implicit semantic dependencies in these files:
+Decide whether these changed files carry a latent semantic dependency — code
+kept consistent with other locations that nothing links to it:
   - src/new-module.ts
 
-Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why
-<name> -m "one sentence: name the subsystem, what it does across anchors"`,
-or just retry the command to proceed (this is a one-time check).
+If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why
+<name> -m "one sentence: the subsystem, what it does across locations"`.
+Otherwise retry the command to proceed (one-time check).
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
@@ -137,8 +195,8 @@ Both hooks apply the same principle from opposite ends: positional-only drift
 never reaches the agent as something to act on. The touch hook heals it before
 building its block; the gate's `stale --fix` pre-pass heals it before
 classifying the changeset. Only genuine semantic drift — content that no
-longer matches what a span asserts — ever surfaces as a directive line or
-blocks a commit.
+longer matches what a span asserts — ever surfaces in a block or blocks a
+commit.
 
 ## Failure behaviour
 

@@ -25,25 +25,35 @@ Both hooks fail open at every layer: a missing `git span` binary, a timeout, or 
 
 Two shapes, both rendered into the denied command's `permissionDecisionReason`:
 
-**Semantic staleness** — denied once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh deny:
+**Semantic staleness** — the full span in the same human format `git span list` prints (all anchors, drifted ones labeled, the description), denied once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh deny:
 
 ```
-This changeset carries span debt — resolve it before this lands:
-  - checkout-flow (CHANGED): web/checkout.tsx#L4-L6
+This change leaves a latent semantic dependency out of date:
 
-Update each span's anchors/why in this same change, or tell the user why the
-described coupling no longer holds, then retry.
+## checkout-flow
+- web/checkout.tsx#L4-L6 — changed
+- api/charge.ts#L30-L76
+
+Checkout request flow that carries a charge attempt from the browser to the
+Stripe-backed server.
+
+---
+
+Update the drifted locations or the description — `git span add checkout-flow
+<path#Lstart-Lend>` / `git span why checkout-flow -m "..."` — then retry. If a
+dependency no longer holds, tell the user instead.
 ```
 
 **Uncovered writes** — a changed file no span anchors at all, denied once per distinct debt state; an unchanged retry passes:
 
 ```
-Determine if you should document implicit semantic dependencies in these files:
+Decide whether these changed files carry a latent semantic dependency — code
+kept consistent with other locations that nothing links to it:
   - src/new-module.ts
 
-Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why
-<name> -m "one sentence: name the subsystem, what it does across anchors"`,
-or just retry the command to proceed (this is a one-time check).
+If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why
+<name> -m "one sentence: the subsystem, what it does across locations"`.
+Otherwise retry the command to proceed (one-time check).
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` anchors are never debt — they never appear in either checklist and never block. `.span/**` writes are excluded from the uncovered-writes check so a span repair riding the same commit never self-triggers the gate.

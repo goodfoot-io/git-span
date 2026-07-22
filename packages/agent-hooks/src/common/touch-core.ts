@@ -18,6 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import {
+  humanStatusLabel,
   isDebt,
   type LineRange,
   type PorcelainRow,
@@ -174,7 +175,14 @@ export type TouchListExecutor = (filePath: string, cwd: string) => Promise<Porce
 export type TouchStaleExecutor = (args: string[], cwd: string) => Promise<StalePorcelainRow[]>;
 
 /**
- * The injected execution surface. Kept as three narrow async functions (rather
+ * Run bare `git span why <name>` and return the span's recorded why sentence,
+ * or `null` when none is recorded or the read fails. Feeds the human-format
+ * span render; invoked only for spans actually being surfaced this touch.
+ */
+export type TouchWhyExecutor = (name: string, cwd: string) => Promise<string | null>;
+
+/**
+ * The injected execution surface. Kept as four narrow async functions (rather
  * than a raw command runner) so tests inject fakes returning structured data
  * and the core never spawns a subprocess itself. The `read` path never invokes
  * `fix`.
@@ -183,6 +191,7 @@ export interface TouchExecutors {
   fix: TouchFixExecutor;
   list: TouchListExecutor;
   stale: TouchStaleExecutor;
+  why: TouchWhyExecutor;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +201,9 @@ export interface TouchExecutors {
 /** What the core hands back for the adapter to translate into SDK output. */
 export interface TouchOutput {
   /**
-   * The merged `<git-span>` block (span render + any folded semantic directive
-   * line) to inject via the harness's `additionalContext`, or `null` when there
-   * is nothing worth surfacing this touch.
+   * The merged `<git-span>` block (header, one human-format section per
+   * surfaced span, footer) to inject via the harness's `additionalContext`,
+   * or `null` when there is nothing worth surfacing this touch.
    */
   additionalContext: string | null;
   /**
@@ -208,8 +217,8 @@ export interface TouchOutput {
 // Merged-block assembly
 // ---------------------------------------------------------------------------
 
-/** The memo key under which a span's directive for a given status is deduped. */
-function directiveKey(name: string, status: PorcelainStatus): string {
+/** The memo key under which a span's render for a given drift status is deduped. */
+function driftKey(name: string, status: PorcelainStatus): string {
   // Span names come from tab-delimited porcelain, so they never contain a tab;
   // a tab-joined key can never collide with a bare span name (the surfacing key).
   return `${name}\t${status}`;
@@ -221,25 +230,69 @@ function anchorText(row: PorcelainRow): string {
   return `${row.path}#L${row.start}-L${row.end}`;
 }
 
-/** One folded semantic-directive line for a drifted span. */
-function directiveLine(name: string, status: PorcelainStatus): string {
-  return `- ${name} (${status}): the described coupling no longer matches the code. Update its anchors/why in this change before it lands, or tell the user why the coupling no longer holds.`;
+const CLEAN_HEADER = 'This change touches latent semantic dependencies:';
+
+const CLEAN_FOOTER = 'If your edit changes how these locations work together, update the other anchors to match.';
+
+function driftHeader(driftedCount: number): string {
+  return driftedCount === 1
+    ? 'This edit put a latent semantic dependency out of date:'
+    : 'This edit put latent semantic dependencies out of date:';
 }
 
-/** Assemble the merged `<git-span>` block from render rows + directive lines. */
-function buildBlock(renderRows: PorcelainRow[], directiveLines: string[]): string {
-  const parts: string[] = [];
-  if (renderRows.length > 0) {
-    parts.push('Spans coupled to this change:');
-    for (const row of renderRows) {
-      parts.push(`  ${row.name}\t${anchorText(row)}`);
+function driftFooter(driftedNames: string[]): string {
+  if (driftedNames.length === 1) {
+    const name = driftedNames[0];
+    return `Update the changed anchors or description before committing — \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\` — and check the other anchors for knock-on changes. If the coupling no longer holds, tell the user instead.`;
+  }
+  return 'For each out-of-date span above: update the changed anchors or description before committing — `git span add <name> <path#Lstart-Lend>` / `git span why <name> -m "..."` — and check the other anchors for knock-on changes. If a coupling no longer holds, tell the user instead.';
+}
+
+/**
+ * Bullet lines for a span's full anchor list, suffixing each anchor that
+ * carries genuine drift with its lowercase status token(s) (` — changed`).
+ * A drift row matches an anchor by exact path+range, or by path alone when the
+ * span has a single anchor on that path (ranges can disagree after a heal).
+ */
+function anchorBullets(anchors: PorcelainRow[], debtRows: StalePorcelainRow[]): string[] {
+  return anchors.map((anchor) => {
+    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
+    const statuses = new Set<PorcelainStatus>();
+    for (const row of debtRows) {
+      if (row.path !== anchor.path) continue;
+      if (soleOnPath || (row.start === anchor.start && row.end === anchor.end)) {
+        statuses.add(row.status);
+      }
     }
-  }
-  if (directiveLines.length > 0) {
-    if (parts.length > 0) parts.push('');
-    for (const line of directiveLines) parts.push(line);
-  }
-  return `\n<git-span>\n${parts.join('\n')}\n</git-span>\n`;
+    const sorted = [...statuses].sort();
+    const suffix = sorted.length > 0 ? ` — ${sorted.map(humanStatusLabel).join(', ')}` : '';
+    return `- ${anchorText(anchor)}${suffix}`;
+  });
+}
+
+/**
+ * One human-format span section: `## <name>`, the full anchor list (drifted
+ * anchors status-suffixed), and the why sentence when one is recorded — the
+ * same shape `git span list` renders.
+ */
+function renderSpanSection(
+  name: string,
+  anchors: PorcelainRow[],
+  debtRows: StalePorcelainRow[],
+  why: string | null
+): string {
+  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
+  if (why) lines.push('', why);
+  return lines.join('\n');
+}
+
+/**
+ * Assemble the merged `<git-span>` block: header, one section per surfaced
+ * span (separated by `---`), and a single footer after a final `---`.
+ */
+function buildBlock(sections: string[], header: string, footer: string): string {
+  const body = `${header}\n\n${sections.join('\n\n---\n\n')}\n\n---\n\n${footer}`;
+  return `\n<git-span>\n${body}\n</git-span>\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,12 +324,25 @@ function recoverRangeFromDisk(written: string, filePath: string): LineRange | 'w
 }
 
 /**
+ * Whether a covering row is an anchor in the touched file itself. `list
+ * --porcelain <file>` returns every anchor of each matching span — cross-file
+ * anchors included — but only anchors in the touched file participate in the
+ * range-intersection scope test. Row paths are repo-relative; the touched path
+ * is absolute, so match on an exact or `/`-separated suffix.
+ */
+function onTouchedFile(row: PorcelainRow, filePath: string): boolean {
+  return filePath === row.path || filePath.endsWith(`/${row.path}`);
+}
+
+/**
  * Compute the merged `<git-span>` block for the touch, or `null` when there is
  * nothing worth surfacing. Shared by both paths; the write path passes a
  * recovered range for precision, the read path scopes file-wide.
  *
- * A covering span surfaces at most once per session; a span carrying semantic
- * debt folds one directive line per (span, status) into the same block. A span
+ * A span renders as a full human-format section (name, all anchors with
+ * drifted ones status-suffixed, why) when its name has not been surfaced this
+ * session, or when it carries a drift status not yet surfaced for it — so a
+ * span first seen healthy re-renders in full when drift later appears. A span
  * whose only drift is positional (`MOVED`/`RESOLVED_PENDING_COMMIT` — never
  * `isDebt`) is filtered out entirely: positional drift never surfaces.
  */
@@ -287,52 +353,57 @@ async function computeSurface(
   range: LineRange | 'whole-file'
 ): Promise<string | null> {
   const covering = await executors.list(input.filePath, input.cwd);
-  const coveringRows = covering.filter((row) => intersects(row, range));
-  if (coveringRows.length === 0) return null;
+  if (covering.length === 0) return null;
+
+  // Group every anchor by span; a span is in scope when one of its anchors on
+  // the touched file intersects the recovered range.
+  const anchorsByName = new Map<string, PorcelainRow[]>();
+  for (const row of covering) {
+    const rows = anchorsByName.get(row.name) ?? [];
+    rows.push(row);
+    anchorsByName.set(row.name, rows);
+  }
+  const touchedNames = [...anchorsByName.keys()].filter((name) =>
+    (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersects(row, range))
+  );
+  if (touchedNames.length === 0) return null;
 
   const staleRows = await executors.stale([input.filePath], input.cwd);
-  const staleByName = new Map<string, Set<PorcelainStatus>>();
-  for (const r of staleRows) {
-    let s = staleByName.get(r.name);
-    if (!s) {
-      s = new Set<PorcelainStatus>();
-      staleByName.set(r.name, s);
-    }
-    s.add(r.status);
+  const staleByName = new Map<string, StalePorcelainRow[]>();
+  for (const row of staleRows) {
+    const rows = staleByName.get(row.name) ?? [];
+    rows.push(row);
+    staleByName.set(row.name, rows);
   }
 
   const surfaced = memo.getSurfaced(input.sessionId);
   const toRecord: string[] = [];
-  const renderRows: PorcelainRow[] = [];
-  const renderedNames = new Set<string>();
-  const directiveLines: string[] = [];
+  const sections: string[] = [];
+  const driftedNames: string[] = [];
 
-  for (const row of coveringRows) {
-    const statuses = staleByName.get(row.name);
-    const debtStatuses = statuses ? [...statuses].filter(isDebt).sort() : [];
-    const positionalOnly = statuses !== undefined && statuses.size > 0 && debtStatuses.length === 0;
-    if (positionalOnly) continue; // positional-only drift never surfaces
+  for (const name of touchedNames) {
+    const spanStale = staleByName.get(name) ?? [];
+    const debtRows = spanStale.filter((row) => isDebt(row.status));
+    if (spanStale.length > 0 && debtRows.length === 0) continue; // positional-only drift never surfaces
 
-    // Surfacing: once per span per session.
-    if (!surfaced.has(row.name) && !renderedNames.has(row.name)) {
-      renderRows.push(row);
-      renderedNames.add(row.name);
-      toRecord.push(row.name);
-    }
+    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
+    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
+    const isNewName = !surfaced.has(name);
+    if (!isNewName && unsurfacedDebt.length === 0) continue; // fully surfaced already
 
-    // Directive: once per span per status.
-    for (const status of debtStatuses) {
-      const key = directiveKey(row.name, status);
-      if (!surfaced.has(key) && !toRecord.includes(key)) {
-        directiveLines.push(directiveLine(row.name, status));
-        toRecord.push(key);
-      }
-    }
+    const why = await executors.why(name, input.cwd);
+    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
+    if (debtStatuses.length > 0) driftedNames.push(name);
+
+    if (isNewName) toRecord.push(name);
+    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
   }
 
-  if (renderRows.length === 0 && directiveLines.length === 0) return null;
+  if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
-  return buildBlock(renderRows, directiveLines);
+  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length) : CLEAN_HEADER;
+  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : CLEAN_FOOTER;
+  return buildBlock(sections, header, footer);
 }
 
 /**
@@ -340,9 +411,10 @@ async function computeSurface(
  *
  * - **Write path**: run `executors.fix` (`git span stale <file> --fix`) scoped
  *   to the touched file to heal positional drift in the working tree, then
- *   compute the merged `<git-span>` block against the healed anchors, folding any
- *   remaining semantic residue into one directive line per (span, status) in the
- *   same block. Cadence is deduped through `memo`.
+ *   compute the merged `<git-span>` block against the healed anchors, rendering
+ *   each surfaced span as a full human-format section with any remaining
+ *   semantic drift status-suffixed on its anchors. Cadence is deduped through
+ *   `memo` per span name and per (span, status).
  * - **Read path**: never invokes `fix` and never mutates the tree; surfaces the
  *   overlapping spans with positional statuses filtered out via `isDebt()`.
  *
@@ -472,6 +544,25 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
         }
       }
       return parseStalePorcelain(out);
+    },
+
+    why: async (name, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      try {
+        const out = execFileSync('git', ['span', 'why', name], {
+          cwd: repoRoot ?? cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs
+        });
+        const text = out.trimEnd();
+        // Bare `git span why` prints this exact sentinel (exit 0) when the
+        // span has no why recorded — treat it as "no why", not as content.
+        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
+        return text;
+      } catch {
+        return null;
+      }
     }
   };
 }

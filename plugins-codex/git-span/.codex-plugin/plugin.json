@@ -1,6 +1,6 @@
 {
   "name": "git-span",
-  "version": "1.0.135",
+  "version": "1.0.136",
   "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
   "author": {
     "name": "goodfoot",

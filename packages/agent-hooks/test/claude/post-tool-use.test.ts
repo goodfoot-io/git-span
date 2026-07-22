@@ -32,9 +32,9 @@ interface FakeOpts {
 
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
-  calls: { fix: number; list: number; stale: number };
+  calls: { fix: number; list: number; stale: number; why: number };
 } {
-  const calls = { fix: 0, list: 0, stale: 0 };
+  const calls = { fix: 0, list: 0, stale: 0, why: 0 };
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
@@ -53,6 +53,11 @@ function makeExecutors(opts: FakeOpts = {}): {
       calls.stale += 1;
       if (opts.reject) boom();
       return opts.stale ?? [];
+    },
+    why: async (): Promise<string | null> => {
+      calls.why += 1;
+      if (opts.reject) boom();
+      return WHY;
     }
   };
   return { executors, calls };
@@ -71,6 +76,7 @@ function inMemoryMemoFactory(): MemoFactory {
 }
 
 const SPAN = 'billing/checkout-request-flow';
+const WHY = 'Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.';
 function porcelainRow(): PorcelainRow {
   return { name: SPAN, path: 'app.ts', start: 1, end: 10 };
 }
@@ -131,7 +137,7 @@ describe('claude post-tool-use touch signal', () => {
     expect(calls.fix).toBe(1); // write path heals the tree
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
     expect(ctx).toContain(SPAN);
-    expect(ctx).toContain('CHANGED');
+    expect(ctx).toContain('— changed');
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 

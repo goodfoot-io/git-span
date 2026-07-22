@@ -1,6 +1,6 @@
 {
   "name": "git-span-darwin-x64",
-  "version": "1.0.135",
+  "version": "1.0.136",
   "description": "Platform-specific binary for git-span",
   "license": "MIT",
   "os": [

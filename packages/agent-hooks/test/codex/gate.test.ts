@@ -36,6 +36,7 @@ function fakeExecutors(overrides: Partial<GateExecutors> = {}): GateExecutors {
     fix: async () => {},
     list: async (): Promise<PorcelainRow[]> => [],
     stale: async (): Promise<StalePorcelainRow[]> => [],
+    listBlocks: async (): Promise<string> => '',
     ...overrides
   };
 }
@@ -146,9 +147,9 @@ describe('codex gate adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     // But loudly, transcript-visibly: both surfaces carry the warning + checklist.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('could not block');
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Could not block');
     expect(result.stdout.systemMessage).toContain(SPAN);
-    expect(result.stdout.systemMessage).toContain('could not block');
+    expect(result.stdout.systemMessage).toContain('Could not block');
   });
 
   it('allows an identical retry after a semantic-staleness deny (consider-once per debt-state digest)', async () => {
@@ -173,7 +174,7 @@ describe('codex gate adapter', () => {
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
-    expect(result.stdout.systemMessage).toContain('LFS_NOT_FETCHED');
+    expect(result.stdout.systemMessage).toContain('lfs not fetched');
   });
 
   it('surfaces a scan failure as additionalContext + systemMessage and allows (fail-open)', async () => {

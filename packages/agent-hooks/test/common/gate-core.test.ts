@@ -69,6 +69,7 @@ function createFakeGateExecutors(overrides: Partial<GateExecutors> = {}): GateEx
     fix: async (): Promise<void> => {},
     list: async (): Promise<PorcelainRow[]> => [],
     stale: async (): Promise<StalePorcelainRow[]> => [],
+    listBlocks: async (): Promise<string> => '',
     ...overrides
   };
 }
@@ -277,6 +278,54 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       // already-presented rather than a bare silent allow.
       const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
+    });
+
+    it('a semantic-staleness deny renders the full human span block with per-anchor drift labels', async () => {
+      const memo = createMemoryGateMemoState();
+      const blocks = [
+        '## billing/checkout-request-flow',
+        '- src/app.ts#L1-L10',
+        '- api/charge.ts#L30-L76',
+        '',
+        'Checkout request flow that carries a charge attempt from the browser to the server.'
+      ].join('\n');
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => blocks
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.kind).toBe('semantic-staleness');
+      if (result.kind === 'semantic-staleness') {
+        expect(result.reason).toContain('This change leaves a latent semantic dependency out of date:');
+        // The drifted anchor is labeled; the clean sibling anchor is not.
+        expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
+        expect(result.reason).toContain('- api/charge.ts#L30-L76\n');
+        expect(result.reason).toContain('Checkout request flow');
+        expect(result.reason).toContain('git span add billing/checkout-request-flow');
+      }
+    });
+
+    it('a failed human-format list read degrades to a synthesized block — the deny still carries every finding', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => {
+          throw new Error('spawn git ENOENT');
+        }
+      });
+
+      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('deny');
+      expect(result.kind).toBe('semantic-staleness');
+      if (result.kind === 'semantic-staleness') {
+        expect(result.reason).toContain('## billing/checkout-request-flow');
+        expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
+      }
     });
 
     it('a changed findings set produces a fresh semantic-staleness deny (new digest) even after the prior digest was memoized', async () => {
@@ -546,7 +595,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind === 'environmental') {
         expect(result.conditions).toHaveLength(1);
         expect(result.conditions[0].status).toBe('SPARSE_EXCLUDED');
-        expect(result.reason).toContain('SPARSE_EXCLUDED');
+        expect(result.reason).toContain('sparse excluded');
         expect(result.reason).toContain('billing/checkout-request-flow');
       }
     });
