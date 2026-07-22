@@ -222,7 +222,13 @@ fn changed_anchored_path_reresolves_only_affected() {
 
     // Byte-equal to a full resolve of the same state.
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
-    let full = capture_resolution_core(&repo, SPAN_ROOT, &names).expect("full");
+    let full = capture_resolution_core(
+        &repo,
+        SPAN_ROOT,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )
+    .expect("full");
     assert_eq!(
         build.core, full,
         "reconstructed core must equal a full resolve after a changed anchored path"
@@ -273,7 +279,13 @@ fn reconstructed_core_byte_equal_to_full_unrelated() {
     assert_eq!(build.anchor_resolutions, 0);
 
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
-    let full = capture_resolution_core(&repo, SPAN_ROOT, &names).expect("full");
+    let full = capture_resolution_core(
+        &repo,
+        SPAN_ROOT,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )
+    .expect("full");
     assert_eq!(
         build.core, full,
         "a fully-reused reconstruction must equal a full resolve byte-for-byte"

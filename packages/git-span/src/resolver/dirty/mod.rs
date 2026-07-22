@@ -389,7 +389,12 @@ fn build_dirty_core(
     let fresh_core = if affected_names.is_empty() {
         ResolutionCore { spans: Vec::new() }
     } else {
-        capture_resolution_core(repo, span_root, &affected_names)?
+        capture_resolution_core(
+            repo,
+            span_root,
+            &affected_names,
+            crate::resolver::engine::SMALL_BATCH_MIN_ANCHORS_PER_TASK,
+        )?
     };
     let anchor_resolutions: u64 = fresh_core
         .spans

@@ -689,16 +689,42 @@ pub(crate) fn resolve_named_spans(
 }
 
 /// Floor on the chunk size rayon's adaptive work-stealing will split the
-/// flattened anchor batch down to in [`capture_resolution_core`]. `map_init`
+/// flattened anchor batch down to in [`capture_resolution_core`], for the
+/// **primary cold `stale` path** ([`resolver::exact::cold_miss`]). `map_init`
 /// spawns a fresh `EngineLocal` (and a real `FilterProcess`/`LfsState`
-/// subprocess) per task, and rayon can split into more tasks than worker
-/// threads — so flooring the split length here caps instance creation at
-/// roughly the thread count regardless of batch size. It doubles as the
-/// small-batch guard: set above the `incremental`/`dirty` callers' typical
-/// per-invocation anchor counts, rayon keeps their batches on a single task
-/// (one `EngineLocal`, effectively serial) without a separate serial-vs-parallel
-/// threshold. A starting value tuned against the bench corpus in Phase 6.
-const MIN_ANCHORS_PER_TASK: usize = 64;
+/// subprocess plus a `gix::Repository` clone) per rayon job, and rayon splits
+/// the batch into roughly `anchors / floor` jobs — so the floor sets both the
+/// achievable task count (`anchors / floor`, capped by the pool's worker
+/// count) and the number of per-job `EngineLocal`/repo-clone instances paid.
+///
+/// Tuned empirically for card main-162's finding fix (`min-len-caps-
+/// parallelism-no-speedup`): the prior shared value of 64 forced the ~145-anchor
+/// dogfooded corpus (and the ~180-anchor bench corpus) into only
+/// `floor(N/64) = 2` tasks — measured CPU overlap ~1.9× — throttling the exact
+/// path this card exists to speed up. `16` forks that corpus into 8 concurrent
+/// tasks (measured overlap ~6.6× on a 10-core host) and cuts the cold
+/// wall-clock ~22% vs 64 / ~44% vs the fully-serial pre-parallel baseline, while
+/// still requiring ≥32 anchors before forking at all (a corpus under 16 anchors
+/// stays on one task) and keeping ≥16 anchors of real resolution work per job to
+/// amortize its `EngineLocal`/repo-clone init. Lower floors (4/8) reach full
+/// worker saturation but pay strictly more per-job init for negligible extra
+/// overlap and measurably regress trivially-cheap (all-fresh) corpora, where the
+/// clone overhead dominates; 16 is the balance point across the 50/150/300/600-
+/// anchor sweep.
+pub(crate) const COLD_STALE_MIN_ANCHORS_PER_TASK: usize = 16;
+
+/// Floor for the small-batch `incremental`/`dirty` callers, which pass only the
+/// re-resolved `affected_names` subset (typically a handful of spans). Set above
+/// their typical per-invocation anchor counts so rayon keeps their batches on a
+/// single task (one `EngineLocal`, effectively serial) without a separate
+/// serial-vs-parallel threshold — forking a tiny subset would spend more on
+/// per-job `EngineLocal`/repo-clone init than the overlap could ever recover.
+///
+/// Deliberately distinct from [`COLD_STALE_MIN_ANCHORS_PER_TASK`]: card
+/// main-162's finding fix lowered the cold path's floor for real multi-core
+/// scaling, but that must not drag the small-batch callers into forking. This
+/// preserves their pre-fix behavior (the original shared `64`) byte-for-byte.
+pub(crate) const SMALL_BATCH_MIN_ANCHORS_PER_TASK: usize = 64;
 
 /// Single-pass, layer-neutral capture (card main-157 Phase 3A). Resolve every
 /// named span ONCE and assemble a [`ResolutionCore`] whose every anchor holds
@@ -713,10 +739,19 @@ const MIN_ANCHORS_PER_TASK: usize = 64;
 /// Capture always observes all three layers regardless of any eventual view,
 /// so the core is genuinely layer-neutral; `super::core::project` reconstructs
 /// the committed or effective `SpanResolved` from it by pure selection.
+///
+/// `min_anchors_per_task` is the rayon split floor (see
+/// [`COLD_STALE_MIN_ANCHORS_PER_TASK`] / [`SMALL_BATCH_MIN_ANCHORS_PER_TASK`]):
+/// the primary cold `stale` path passes the low cold-path floor for real
+/// multi-core scaling; the small-batch `incremental`/`dirty` callers pass the
+/// higher small-batch floor to stay pinned to one task. It affects scheduling
+/// only — output is byte-identical across any floor (guarded by
+/// `tests/cases/cli_stale_parallel_equivalence.rs`).
 pub(crate) fn capture_resolution_core(
     repo: &gix::Repository,
     span_root: &str,
     names: &[String],
+    min_anchors_per_task: usize,
 ) -> Result<crate::resolver::core::resolution::ResolutionCore> {
     use crate::resolver::core::resolution::{
         AnchorCore, DefinitionOrdinal, ResolutionCore, SpanCore,
@@ -796,12 +831,14 @@ pub(crate) fn capture_resolution_core(
     // a `Send + Sync` `ThreadSafeRepository`, mirroring the repo-clone-per-worker
     // precedent in `resolve_named_spans_parallel`. `shared`/`concurrent` are the
     // read-only context and the interior-mutable memo store, shared by plain
-    // `&`. `.with_min_len` floors rayon's split granularity so the number of
-    // `EngineLocal`/subprocess instances stays ~thread-count regardless of batch
-    // size, and — set above the small-batch `incremental`/`dirty` callers'
-    // typical anchor counts — keeps them on one task without a separate serial
-    // threshold. `.collect::<Vec<_>>()` preserves input-anchor order regardless
-    // of completion order.
+    // `&`. `.with_min_len(min_anchors_per_task)` floors rayon's split
+    // granularity: the primary cold `stale` path passes the low
+    // `COLD_STALE_MIN_ANCHORS_PER_TASK` so realistic anchor counts fork across
+    // the machine's cores, while the small-batch `incremental`/`dirty` callers
+    // pass the higher `SMALL_BATCH_MIN_ANCHORS_PER_TASK`, which sits above their
+    // typical anchor counts and keeps them on one task (one `EngineLocal`) with
+    // no separate serial threshold. `.collect::<Vec<_>>()` preserves input-anchor
+    // order regardless of completion order.
     //
     // Card main-162 staged-rollout step 5 (this phase): the fork runs on rayon's
     // global pool at the default thread count, enabling real parallelism. The
@@ -826,7 +863,7 @@ pub(crate) fn capture_resolution_core(
     // thread count or scheduling.
     let collected: Vec<(usize, u32, Result<AnchorCore>)> = work
         .into_par_iter()
-        .with_min_len(MIN_ANCHORS_PER_TASK)
+        .with_min_len(min_anchors_per_task)
         .map_init(
             || (EngineLocal::new(LayerSet::full(), true), repo_sync.to_thread_local()),
             |(local, repo_local), item| {

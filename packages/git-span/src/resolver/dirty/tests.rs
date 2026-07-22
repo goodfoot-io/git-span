@@ -149,7 +149,13 @@ fn publish_baseline(dir: &Path) {
 /// Full resolve of the live worktree state — the byte-equality ground truth.
 fn full_live_core(repo: &gix::Repository) -> ResolutionCore {
     let names = crate::span::read::list_span_names_in(repo, SPAN_ROOT).expect("names");
-    capture_resolution_core(repo, SPAN_ROOT, &names).expect("full")
+    capture_resolution_core(
+        repo,
+        SPAN_ROOT,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )
+    .expect("full")
 }
 
 fn open_token_store(dir: &Path) -> (gix::Repository, StateToken, CacheStore) {
@@ -395,7 +401,12 @@ fn unreadable_file_degrades_fail_closed() {
     // fresh cache result (`notes/correctness-contract.md` "Fail-Closed").
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
     let dirty_res = build_dirty_core(&repo, SPAN_ROOT, &token, &mut store);
-    let full_res = capture_resolution_core(&repo, SPAN_ROOT, &names);
+    let full_res = capture_resolution_core(
+        &repo,
+        SPAN_ROOT,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    );
     assert!(dirty_res.is_err(), "dirty tier surfaces the resolver read error");
     assert!(full_res.is_err(), "the authoritative full resolve errors identically");
 }

@@ -463,7 +463,13 @@ fn reuse_rows_round_trip_core_through_store() {
     // Resolve a real core, normalize it to reuse rows, and publish those rows
     // in a generation (summary content is irrelevant here).
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
-    let core = capture_resolution_core(&repo, SPAN_ROOT, &names).expect("core");
+    let core = capture_resolution_core(
+        &repo,
+        SPAN_ROOT,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )
+    .expect("core");
     let widen = reuse::compute_widen(&core, false);
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
     let (rows, path_index) =

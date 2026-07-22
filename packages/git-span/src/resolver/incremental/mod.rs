@@ -252,7 +252,12 @@ fn build_incremental_core(
         .filter(|n| affected.contains(n.as_str()))
         .cloned()
         .collect();
-    let fresh_core = capture_resolution_core(repo, span_root, &affected_names)?;
+    let fresh_core = capture_resolution_core(
+        repo,
+        span_root,
+        &affected_names,
+        crate::resolver::engine::SMALL_BATCH_MIN_ANCHORS_PER_TASK,
+    )?;
     let anchor_resolutions: u64 = fresh_core
         .spans
         .iter()

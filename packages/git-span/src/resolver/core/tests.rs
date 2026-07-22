@@ -398,7 +398,12 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
         .clone();
 
     // One single-pass capture drives both projections.
-    let core = capture_resolution_core(&repo, ".span", &names)?;
+    let core = capture_resolution_core(
+        &repo,
+        ".span",
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )?;
 
     assert_eq!(
         project_committed(&core),
@@ -451,7 +456,12 @@ fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktr
         .expect("effective resolution succeeds")
         .clone();
 
-    let core = capture_resolution_core(&repo, ".span", &names)?;
+    let core = capture_resolution_core(
+        &repo,
+        ".span",
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )?;
 
     // Both layers captured independent drift — the exact property the
     // two-pass reconstruction could not represent.

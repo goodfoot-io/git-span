@@ -17,9 +17,9 @@
 //!
 //! ## What is asserted (the dev-context.md correctness matrix, plus threads)
 //!
-//! For a mixed-status corpus of ~120 anchors (well above
-//! [`MIN_ANCHORS_PER_TASK`](src/resolver/engine/mod.rs#L701) so rayon really
-//! forks into multiple tasks), across `{human, porcelain, json}`:
+//! For a mixed-status corpus of ~120 anchors (well above the cold path's
+//! [`COLD_STALE_MIN_ANCHORS_PER_TASK`](src/resolver/engine/mod.rs) so rayon
+//! really forks into multiple tasks), across `{human, porcelain, json}`:
 //!
 //! * cache-enabled **cold** (parallel `capture_resolution_core`) == cache-off
 //!   `GIT_SPAN_CACHE=0` **ground truth** — the parallel loop agrees with the
@@ -151,7 +151,7 @@ fn add_span(repo: &TestRepo, name: &str, anchors: &[String]) -> Result<()> {
 
 /// Build the mixed-status stress corpus and return it.
 ///
-/// Four 60-line files, 30 anchors each (120 total, > `MIN_ANCHORS_PER_TASK`):
+/// Four 60-line files, 30 anchors each (120 total, > `COLD_STALE_MIN_ANCHORS_PER_TASK`):
 /// `keep.txt` stays **Fresh**; `edit.txt` is content-edited (**Changed**);
 /// `doomed.txt` is deleted (30 **Deleted** anchors sharing one deleted path —
 /// `deleted_locus_memo`/single-flight contention); `orig.txt` is `git mv`d to
@@ -319,7 +319,7 @@ fn dirty_tree_cache_off_matches_warm_across_formats() -> Result<()> {
 /// read fails with `EISDIR` rather than classifying as drift). `aaa-err` sorts
 /// first among span names and `zzz-err` last, so the first-in-input-order error
 /// is deterministically `aaa-err`'s `a.txt`. Bulk Fresh anchors in the middle
-/// push the batch above `MIN_ANCHORS_PER_TASK` so rayon forks for real.
+/// push the batch above `COLD_STALE_MIN_ANCHORS_PER_TASK` so rayon forks for real.
 fn build_error_corpus() -> Result<TestRepo> {
     let repo = TestRepo::new()?;
     repo.run_git(["config", "gc.auto", "0"])?;

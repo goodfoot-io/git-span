@@ -610,7 +610,12 @@ fn cold_miss(
 
     // THE single resolver build. Every path below renders from this one core;
     // nothing re-resolves.
-    let core = capture_resolution_core(repo, span_root, &names)?;
+    let core = capture_resolution_core(
+        repo,
+        span_root,
+        &names,
+        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+    )?;
     incr_cold_miss_builds();
     crate::perf::counter("cache-path.cold-miss-builds", 1);
     emit_hit_class("miss");
