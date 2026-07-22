@@ -437,6 +437,33 @@ fn existing_file_with_no_span_does_not_error() -> Result<()> {
 }
 
 #[test]
+fn deleted_span_root_file_arg_does_not_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    // Remove the span definition file from the working tree without staging
+    // or committing the deletion — mirrors mid-restructure repo state.
+    std::fs::remove_file(repo.path().join(".span/m"))?;
+    // A path inside the span root can never legitimately match a span name
+    // or a path-index entry (spans cannot anchor inside their own root), so
+    // this exercises the same "nothing to scan here" treatment stale already
+    // gives an existing, unanchored file — regardless of whether the
+    // span-root path still exists on disk.
+    let out = repo.run_span(["stale", ".span/m"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0 for a deleted span-root path, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("is not tracked"),
+        "must not surface not-tracked diagnostic for a span-root path, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn file_path_arg_resolves_span_via_path_index() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
