@@ -664,14 +664,20 @@ export async function evaluateGate(
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
 
     if (mode === 'inform') {
-      // A status preview never denies and never touches the enforce memo — it
-      // just reports whatever debt is live right now, every time it's asked.
+      // A status preview never denies and never touches the enforce
+      // consider-once deny credit — it reports whatever debt is live right
+      // now, every time it's asked. It does, however, mark the debt state as
+      // "seen" (a separate axis from the deny credit) so an enforce
+      // evaluation of the same unchanged state moments later — e.g. a `git
+      // commit` right after the `git status` that just showed this — renders
+      // a condensed reminder instead of repeating the identical checklist.
       if (semantic.length > 0) {
+        const seen = wasAlreadySeen(memoState, gateStateDigest(semantic, []));
         return {
           decision: 'allow',
           kind: 'semantic-staleness-info',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'inform')
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'inform', seen)
         };
       }
       if (environmental.length > 0) {
@@ -684,11 +690,12 @@ export async function evaluateGate(
       }
       const uncovered = await computeUncoveredPaths(paths, cwd, executors);
       if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+      const seen = wasAlreadySeen(memoState, gateStateDigest([], uncovered));
       return {
         decision: 'allow',
         kind: 'uncovered-writes-info',
         uncovered,
-        reason: renderUncoveredReason(uncovered, 'inform')
+        reason: renderUncoveredReason(uncovered, 'inform', seen)
       };
     }
 
@@ -702,11 +709,12 @@ export async function evaluateGate(
         // A non-persisting memo write would turn "deny once, then allow the
         // retry" into "deny every time" with no escape — fail open instead.
         if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
+        const seen = wasAlreadySeen(memoState, semanticDigest);
         return {
           decision: 'deny',
           kind: 'semantic-staleness',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd))
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'enforce', seen)
         };
       }
       semanticAlreadyPresented = true;
@@ -750,7 +758,13 @@ export async function evaluateGate(
     // A non-persisting memo write would turn "deny once, then allow the retry"
     // into "deny every time" with no escape — fail open rather than deny.
     if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
-    return { decision: 'deny', kind: 'uncovered-writes', uncovered, reason: renderUncoveredReason(uncovered) };
+    const seen = wasAlreadySeen(memoState, digest);
+    return {
+      decision: 'deny',
+      kind: 'uncovered-writes',
+      uncovered,
+      reason: renderUncoveredReason(uncovered, 'enforce', seen)
+    };
   } catch (err) {
     // A scan that could not COMPLETE is not a clean result, but it is not
     // debt either — there is nothing here for a user to resolve by editing a
@@ -806,6 +820,29 @@ function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): st
   const findingKeys = findings.map((row) => `${row.status}\t${row.name}\t${row.path}\t${row.start}\t${row.end}`).sort();
   const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
   return createHash('sha256').update(payload).digest('hex');
+}
+
+/**
+ * Whether this debt-state digest has already been explained to the agent in
+ * full — orthogonal to (and independent of) the enforce-only consider-once
+ * deny credit `evaluateGate` reads/writes on the same `digest` value. A single
+ * `git status`/`git add` preview and the `git commit`/`push` that follows it
+ * moments later resolve to the same digest but reach `evaluateGate` through
+ * different modes (`'inform'` never touches the deny credit); without a
+ * separate "seen" axis, both would render the identical checklist verbatim in
+ * the same turn — which is exactly what a captured session showed: a status
+ * preview immediately followed by a commit attempt on the same two files,
+ * the second message differing only by the appended retry sentence. Marking
+ * "seen" here (and consulting it before rendering) lets both `renderStalenessReason`
+ * and `renderUncoveredReason` fall back to a condensed reminder on the second
+ * showing, in either direction (inform-then-enforce or enforce-then-inform),
+ * without changing whether `enforce` denies or allows.
+ */
+function wasAlreadySeen(memoState: GateMemoState, digest: string): boolean {
+  const seenKey = `seen-${digest}`;
+  const already = memoState.has(seenKey);
+  memoState.record(seenKey);
+  return already;
 }
 
 /**
@@ -894,11 +931,26 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
  * then retry" in `'inform'` mode: a `status` check never held anything, so
  * there is nothing to retry.
  */
-function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string, mode: GateMode = 'enforce'): string {
+function renderStalenessReason(
+  findings: StalePorcelainRow[],
+  blocksText: string,
+  mode: GateMode = 'enforce',
+  alreadySeen = false
+): string {
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
   const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\``;
+  if (alreadySeen) {
+    const paths = [...new Set(findings.map((row) => row.path))];
+    const closing =
+      mode === 'enforce'
+        ? `Already flagged above — update the drifted locations or the description, then retry.`
+        : `Already flagged above — update the drifted locations or the description.`;
+    return [`This change still leaves ${subject} out of date:`, ...paths.map((path) => `- ${path}`), '', closing].join(
+      '\n'
+    );
+  }
   const closing =
     mode === 'enforce'
       ? `Update the drifted locations or the description — ${action} — then retry. If a dependency no longer holds, tell the user instead.`
@@ -953,8 +1005,16 @@ function renderScanFailedReason(detail: string): string {
  * held anything, so there is nothing to retry and no consider-once state to
  * clear.
  */
-function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce'): string {
+function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce', alreadySeen = false): string {
   const lines = uncovered.map((path) => `- ${path}`);
+  if (alreadySeen) {
+    const body = ['<git-span>', ...lines, '', 'Already flagged for git-span review above.'];
+    if (mode === 'enforce') {
+      body.push('', 'If none exist, retry the command to proceed (one-time check).');
+    }
+    body.push('</git-span>');
+    return body.join('\n');
+  }
   const body = [
     '<git-span>',
     ...lines,

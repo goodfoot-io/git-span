@@ -859,17 +859,16 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('scan-failed');
     });
 
-    it('never reads or writes memoState — an inform call never spends the consider-once credit a later enforce call depends on', async () => {
-      let hasCalls = 0;
-      let recordCalls = 0;
+    it('never reads or writes the enforce deny-credit digest — an inform call never spends the consider-once credit a later enforce call depends on', async () => {
+      const digestCalls: string[] = [];
       const backing = createMemoryGateMemoState();
       const spyingMemo: GateMemoState = {
         has: (d) => {
-          hasCalls += 1;
+          digestCalls.push(d);
           return backing.has(d);
         },
         record: (d) => {
-          recordCalls += 1;
+          digestCalls.push(d);
           return backing.record(d);
         }
       };
@@ -881,8 +880,10 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const informResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'inform');
       expect(informResult.decision).toBe('allow');
-      expect(hasCalls).toBe(0);
-      expect(recordCalls).toBe(0);
+      // The inform pass only ever touches the orthogonal "seen" (rendering
+      // verbosity) marker — never the bare deny-credit digest itself.
+      expect(digestCalls.every((d) => d.startsWith('seen-'))).toBe(true);
+      expect(digestCalls.length).toBeGreaterThan(0);
 
       // The identical debt state, now evaluated in 'enforce' mode against the
       // very same memoState, still denies fresh — the inform pass above did
