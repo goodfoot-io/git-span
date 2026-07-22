@@ -740,7 +740,7 @@ function renderEnvironmentalReason(conditions: StalePorcelainRow[]): string {
  */
 function renderScanFailedReason(detail: string): string {
   return [
-    'git-span could not complete its staleness scan for this changeset, so span debt was NOT verified for this changeset:',
+    'git-span could not complete its staleness scan for this changeset, so its span debt was NOT verified:',
     `  ${detail}`,
     '',
     'The command is proceeding anyway. This is a hard scan failure (e.g. an unreadable anchor file that aborts the whole scoped query), not a clean result — resolve the underlying read/scan error if this coupling needs verifying.'
