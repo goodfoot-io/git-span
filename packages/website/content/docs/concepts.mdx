@@ -49,6 +49,6 @@ Beyond manual use, git-span is meant to run unattended at a few points in a repo
 - **CI**: run `git span stale` and fail the build on a non-zero exit — see [Hooks & CI](/docs/hooks-and-ci) for the wiring. A plain local `git commit` hook works the same way for a workflow with no agent hooks at all.
 - **Merge driver**: `.span/` files can conflict like any other tracked file during a merge; git-span registers a merge driver that resolves what's structurally derivable and leaves genuine same-anchor divergence for `git span stale --fix` to finish.
 - **Agent touch hook**: a `PostToolUse` hook (Claude Code and Codex) fires after each read/edit/write, healing pure positional drift inline and surfacing genuine semantic drift as context — it never blocks the tool call.
-- **Agent commit gate**: a `PreToolUse` hook on the shell tool holds `git commit`/`git push` when the changeset carries real span debt — semantic staleness, or a changed file no span covers — with an escape hatch requiring explicit user approval.
+- **Agent commit gate**: a `PreToolUse` hook on the shell tool denies `git commit`/`git push` once per distinct debt state when the changeset carries real span debt — semantic staleness, or a changed file no span covers — and an identical retry proceeds. A scan that fails to complete never blocks; it warns that span debt wasn't verified and lets the command through.
 
 See [Hooks & CI](/docs/hooks-and-ci) for setup details, and the [reference page](/docs/reference) for the storage model and exit codes.

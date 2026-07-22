@@ -72,7 +72,7 @@ An anchor that `--fix` resolved keeps showing `resolved, pending commit` until b
 
 ## If a commit was denied
 
-Under a hooked agent session, `git commit`/`git push` can come back denied instead of landing, with a checklist describing exactly the debt above. Resolve it the same way — the checklist names each drifted span or uncovered file — then retry the identical command. Semantic-staleness denials re-block on every retry until the findings change; an uncovered-writes denial is consider-once and passes on an unchanged retry. See [Hooks & CI integration](/docs/hooks-and-ci) for the full denial-message shapes and the `GIT_SPAN_GATE=skip` escape hatch.
+Under a hooked agent session, `git commit`/`git push` can come back denied instead of landing, with a checklist describing exactly the debt above. Resolve it the same way — the checklist names each drifted span or uncovered file — then retry the identical command. Both denial kinds are consider-once: semantic-staleness and uncovered-writes denials each deny once per distinct debt state, and an identical retry proceeds. Editing a span's anchors changes the findings and earns one fresh deny. See [Hooks & CI integration](/docs/hooks-and-ci) for the full denial-message shapes.
 
 ## Merge conflicts in `.span/`
 

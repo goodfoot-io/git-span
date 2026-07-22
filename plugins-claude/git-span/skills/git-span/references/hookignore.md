@@ -90,12 +90,11 @@ config) and the one-time uncovered-writes prompt on those paths is pure noise
 rather than an occasional useful nudge.
 
 `.gateignore` never affects the gate's **semantic-staleness** check — a
-changeset that already carries a drifted anchor is still held regardless of
-this file. It only silences the "nothing anchors this new/changed file"
-observation, and only for the paths it matches. The `GIT_SPAN_GATE=skip`
-escape hatch is the separate, per-command, user-approved override for either
-check; `.gateignore` is the standing, committed, path-scoped one for this
-specific check.
+changeset that already carries a drifted anchor is still denied regardless of
+this file (once per distinct set of findings; an identical retry passes on
+its own). It only silences the "nothing anchors this new/changed file"
+observation, and only for the paths it matches — a standing, committed,
+path-scoped exclusion from that one check.
 
 Fail-open: a missing or unreadable `.gateignore`, or a malformed line, yields
 no additional exclusion — the uncovered-writes check simply falls back to the

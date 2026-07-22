@@ -76,8 +76,9 @@ tracked-modified files when the command uses `-a`/`-am`), reruns a scoped
 `permissionDecision: 'deny'` result whose `permissionDecisionReason` (and
 `systemMessage`, so it's visible in the transcript) is one of two shapes:
 
-**Semantic staleness** — a checklist, one line per drifted anchor, re-denied
-on every retry until the findings themselves change:
+**Semantic staleness** — a checklist, one line per drifted anchor, denied once
+per distinct set of findings; an identical retry (same findings) passes, and
+editing a span's anchors changes the findings and earns one fresh deny:
 
 ```
 This changeset carries span debt — resolve it before this lands:
@@ -85,8 +86,6 @@ This changeset carries span debt — resolve it before this lands:
 
 Update each span's anchors/why in this same change, or tell the user why the
 described coupling no longer holds, then retry.
-To proceed anyway (requires explicit user approval): prefix the command with
-`GIT_SPAN_GATE=skip`.
 ```
 
 **Uncovered writes** — a changed file no span anchors at all. Denied once per
@@ -100,25 +99,28 @@ Determine if you should document implicit semantic dependencies in these files:
 Use `git span add <name> <path/to/anchor#Lstart-Lend>` then `git span why
 <name> -m "one sentence: name the subsystem, what it does across anchors"`,
 or just retry the command to proceed (this is a one-time check).
-To proceed anyway (requires explicit user approval): prefix the command with
-`GIT_SPAN_GATE=skip`.
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
 either checklist and never deny. `.span/**` writes are excluded from the
 uncovered-writes check so a span repair riding the same commit never
-self-triggers the gate.
+self-triggers the gate. If the scan itself can't complete (a `GateScanError`,
+e.g. an unreadable anchor file), the gate never denies on that account either
+— it allows with a warning that span debt was NOT verified for this
+changeset, naming the underlying failure; there's nothing to memoize because
+every evaluation of a still-failing scan warns again.
 
 ### Resolving a denied commit
 
 1. Semantic staleness: fix each listed span the normal way (`git span add`
    the drifted anchors, or `git span delete` if the coupling is gone), then
-   retry the same commit.
+   retry the same commit — or just retry with the findings unchanged, since
+   an identical set of findings only denies once.
 2. Uncovered writes: either declare the coupling (`git span add` then
    `git span why -m "..."`) or just retry — the second attempt at an
    unchanged debt state passes.
-3. `GIT_SPAN_GATE=skip` bypasses either check for one command, but only with
-   explicit user approval — see `SKILL.md`.
+3. Scan failure: resolve the underlying read/scan error if the span coupling
+   still needs verifying — the command itself already proceeded.
 
 ## Read-path filtering
 
@@ -135,4 +137,8 @@ Both hooks fail open at every layer: a missing `git span` binary, a timeout,
 or a malformed/unexpected CLI result resolves to "allow silently, inject
 nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
-said — never an error condition.
+said — never an error condition. The one exception is the gate's own scoped
+scan failing to complete (see "The gate: what a denied command sees" above):
+that still fails open, but visibly — a warning names the failure instead of
+staying silent, since an unverified changeset is worth flagging even though
+it isn't blocked.

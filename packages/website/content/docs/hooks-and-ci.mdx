@@ -8,7 +8,7 @@ description: The in-session touch hook and commit gate, git span stale in CI, an
 git-span ships as a plugin for both Claude Code and OpenAI Codex, wiring two in-session hooks that run without waiting for a commit:
 
 - **Touch hook** (`PostToolUse`) — fires synchronously right after each file read/edit/write. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
-- **Gate** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), reruns a scoped `git span stale --fix`, and classifies what's left. Real span debt — semantic staleness, or a changed file no span covers — holds the command with a checklist. Positional drift never blocks; the touch hook already healed it.
+- **Gate** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), reruns a scoped `git span stale --fix`, and classifies what's left. Real span debt — semantic staleness, or a changed file no span covers — denies the command with a checklist once per distinct debt state; an identical retry proceeds. Positional drift never blocks; the touch hook already healed it. If the scan itself fails to complete, the gate never blocks on that account — it warns that span debt wasn't verified and lets the command proceed.
 
 <Callout type="info">
 Both hooks fail open at every layer: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
@@ -18,7 +18,7 @@ Both hooks fail open at every layer: a missing `git span` binary, a timeout, or 
 
 Two shapes, both rendered into the denied command's `permissionDecisionReason`:
 
-**Semantic staleness** — hard-until-resolved; the same command re-denies on every retry until the findings themselves change:
+**Semantic staleness** — denied once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh deny:
 
 ```
 This changeset carries span debt — resolve it before this lands:
@@ -40,15 +40,16 @@ the command to proceed (this is a one-time check).
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` anchors are never debt — they never appear in either checklist and never block. `.span/**` writes are excluded from the uncovered-writes check so a span repair riding the same commit never self-triggers the gate.
 
-### Escape hatch and suppression
+### Suppression
 
-- `GIT_SPAN_GATE=skip` — prefix the git command with this env var to bypass the gate for one invocation. It requires explicit user approval and is transcript-visible (a notice is emitted), never silent.
+There's no override for a gate deny — every deny path resolves on its own: a fresh finding denies once, and an identical retry proceeds. What's left to configure is what the hooks pay attention to in the first place:
+
 - `.span/.hookignore` — a gitignore-like, per-path file suppressing the touch hook's context injection for noisy spans (wiki/marketing prose, etc). Never affects `git span` command output itself.
 - `.span/.gateignore` — user-owned; each non-comment line is a gitignore-style path pattern (same grammar as `.hookignore`, minus the span-slug-prefix list) excluding matching paths from the gate's uncovered-writes check. Nothing auto-creates it, and a missing/unreadable file fails open to no additional exclusion. It never suppresses the semantic-staleness check.
 
 ### Resolving a denied commit
 
-1. Semantic staleness: fix each listed span (`git span add` the drifted anchors, or `git span delete` if the coupling is gone), then retry the same commit.
+1. Semantic staleness: fix each listed span (`git span add` the drifted anchors, or `git span delete` if the coupling is gone), then retry the same commit — or just retry with the findings unchanged, since an identical set of findings only denies once.
 2. Uncovered writes: declare the coupling with `git span add`, or just retry — a second attempt at an unchanged debt state passes.
 
 See [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for the full triage workflow.

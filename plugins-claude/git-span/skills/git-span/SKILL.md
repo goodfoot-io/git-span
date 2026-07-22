@@ -86,18 +86,21 @@ A `git commit`/`git push` can come back denied with a checklist in its
 
 - **Semantic staleness** — one or more anchors drifted for real. Resolve each
   listed span with the recipes above (usually Re-anchor), then re-run the
-  exact same commit. This re-denies on every retry until the findings
-  themselves change — there's no way around fixing the anchors.
+  exact same commit. This check is also consider-once: it denies once per
+  distinct set of findings, so an identical retry with the same findings
+  passes. Editing a span's anchors changes the findings and earns one fresh
+  deny.
 - **Uncovered writes** — a changed file has no covering span at all. Either
   declare the coupling with `git span add`, or just retry the identical
   command: this check is consider-once, so an unchanged debt state passes on
   the second attempt.
 
-Both checklists append an escape hatch: prefix the command with
-`GIT_SPAN_GATE=skip` to bypass the gate for that one invocation. **This
-requires explicit user approval — never set it unilaterally to get past a
-denial you haven't resolved or discussed.** The bypass is transcript-visible
-(a `systemMessage` notice), never silent.
+There's no override for a gate denial — every deny resolves on its own by
+either fixing the underlying debt or retrying once the finding has already
+been shown. A scan that fails to complete never blocks the command either:
+the gate warns that span debt wasn't verified and lets the command proceed;
+resolve the underlying read/scan error if the coupling still needs
+verifying.
 
 `.span/.gateignore` is a standing, committed, path-scoped opt-out of the
 uncovered-writes check specifically (a gitignore-style pattern list, same
