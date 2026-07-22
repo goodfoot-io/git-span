@@ -439,6 +439,54 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
+    it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, does not repeat the full checklist verbatim', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['packages/website/app/components/icons.tsx', 'packages/website/public/logo-positive.svg'];
+
+      // `git add -A && git status` — a status preview, non-blocking.
+      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(info.decision).toBe('allow');
+      expect(info.kind).toBe('uncovered-writes-info');
+      if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      expect(info.reason).toContain('Determine if these files carry implicit dependencies');
+
+      // `git commit` moments later, same unresolved debt state — still denies
+      // (the commit must still be held), but must not re-print the identical
+      // explanatory checklist the status preview just showed.
+      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      expect(deny.decision).toBe('deny');
+      expect(deny.kind).toBe('uncovered-writes');
+      if (deny.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(deny.reason).not.toContain('Determine if these files carry implicit dependencies');
+      expect(deny.reason).toContain('If none exist, retry the command to proceed (one-time check).');
+      for (const path of paths) expect(deny.reason).toContain(path);
+    });
+
+    it('an `enforce` (commit) deny of a semantic-staleness group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      });
+      const paths = ['src/app.ts'];
+
+      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      expect(deny.decision).toBe('deny');
+      expect(deny.kind).toBe('semantic-staleness');
+      if (deny.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(deny.reason).toContain('This change leaves an implicit dependency out of date');
+
+      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      expect(info.decision).toBe('allow');
+      expect(info.kind).toBe('semantic-staleness-info');
+      if (info.kind !== 'semantic-staleness-info') throw new Error('unreachable');
+      expect(info.reason).not.toContain('This change leaves an implicit dependency out of date');
+    });
+
     it('a `.span/.gateignore` match drops the sole uncovered path, resolving to allow/silent', async () => {
       const repo = makeTempRepo();
       try {
