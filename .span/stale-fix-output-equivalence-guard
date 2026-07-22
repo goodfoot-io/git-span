@@ -1,5 +1,5 @@
-packages/git-span/src/resolver/engine/mod.rs#L889-L891 rk64:ffe5049cf110d674
-packages/git-span/src/resolver/engine/mod.rs#L1476-L1481 rk64:7286db5a1c4f5622
+packages/git-span/src/resolver/engine/mod.rs#L888-L890 rk64:ffe5049cf110d674
+packages/git-span/src/resolver/engine/mod.rs#L1475-L1480 rk64:7286db5a1c4f5622
 packages/git-span/src/resolver/mod.rs#L36-L36 rk64:fbf80b9853416cb1
 packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L40-L305 rk64:e405cda801091b13
 packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L566-L655 rk64:6953f15a0e49e242

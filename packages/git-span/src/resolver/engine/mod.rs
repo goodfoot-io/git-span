@@ -803,19 +803,19 @@ pub(crate) fn capture_resolution_core(
     // threshold. `.collect::<Vec<_>>()` preserves input-anchor order regardless
     // of completion order.
     //
-    // Card main-162 staged-rollout step 4 (this phase): the fork runs inside a
-    // pinned single-thread pool, proving the flatten / ordinal pre-pass /
-    // ordered-collect / regroup plumbing at single-threaded-equivalent operation
-    // before Phase 5 enables real parallelism at the default thread count.
+    // Card main-162 staged-rollout step 5 (this phase): the fork runs on rayon's
+    // global pool at the default thread count, enabling real parallelism. The
+    // global pool honors `RAYON_NUM_THREADS` when a caller sets it — the real,
+    // functioning thread-count knob the correctness matrix compares across
+    // (`RAYON_NUM_THREADS=1` vs default must stay byte-identical, both
+    // directions). Phase 4's single-thread `ThreadPoolBuilder` pin — which proved
+    // the flatten / ordinal pre-pass / ordered-collect / regroup plumbing at
+    // single-threaded-equivalent operation — is removed now that the plumbing is
+    // proven.
     let shared = &state.shared;
     let concurrent = &state.concurrent;
     let span_metas_ref = &span_metas;
     let repo_sync = repo.clone().into_sync();
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .map_err(|e| Error::Git(format!("build capture-resolution thread pool: {e}")))?;
 
     // Each item always produces a value: the per-anchor closure never uses `?`,
     // so a failing anchor yields `(span_index, source_ordinal, Err(..))` rather
@@ -824,28 +824,27 @@ pub(crate) fn capture_resolution_core(
     // error — the first-in-input-order `Err` is recovered by the serial scan
     // below, reproducing the serial loop's early-return exactly regardless of
     // thread count or scheduling.
-    let collected: Vec<(usize, u32, Result<AnchorCore>)> = pool.install(|| {
-        work.into_par_iter()
-            .with_min_len(MIN_ANCHORS_PER_TASK)
-            .map_init(
-                || (EngineLocal::new(LayerSet::full(), true), repo_sync.to_thread_local()),
-                |(local, repo_local), item| {
-                    let meta = &span_metas_ref[item.span_index];
-                    let core = anchor::resolve_anchor_captured(
-                        repo_local,
-                        local,
-                        shared,
-                        concurrent,
-                        &meta.config,
-                        &meta.name,
-                        &item.anchor_id,
-                        item.anchor,
-                    );
-                    (item.span_index, item.source_ordinal, core)
-                },
-            )
-            .collect()
-    });
+    let collected: Vec<(usize, u32, Result<AnchorCore>)> = work
+        .into_par_iter()
+        .with_min_len(MIN_ANCHORS_PER_TASK)
+        .map_init(
+            || (EngineLocal::new(LayerSet::full(), true), repo_sync.to_thread_local()),
+            |(local, repo_local), item| {
+                let meta = &span_metas_ref[item.span_index];
+                let core = anchor::resolve_anchor_captured(
+                    repo_local,
+                    local,
+                    shared,
+                    concurrent,
+                    &meta.config,
+                    &meta.name,
+                    &item.anchor_id,
+                    item.anchor,
+                );
+                (item.span_index, item.source_ordinal, core)
+            },
+        )
+        .collect();
 
     // Rebuild the per-span groupings from the flat, input-ordered result: one
     // `SpanCore` per span (preserving empty-anchor spans), regrouped by the
