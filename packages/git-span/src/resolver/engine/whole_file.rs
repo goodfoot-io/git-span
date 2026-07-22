@@ -70,7 +70,7 @@ fn canonical_layer_bytes(repo: &gix::Repository, oid_hex: &str, gitlink: bool) -
 fn find_relocated_whole_file(
     repo: &gix::Repository,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     workdir: &std::path::Path,
     deepest: DriftSource,
     stored_hash: &str,
@@ -124,7 +124,7 @@ pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     local: &mut EngineLocal,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,

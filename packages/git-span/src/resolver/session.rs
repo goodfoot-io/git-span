@@ -415,7 +415,12 @@ pub(crate) struct ConcurrentSession {
     /// return). The remainder went through the full layer-comparison path
     /// (`anchors_total - anchors_fast_path_hits - anchors_skipped_clean_head
     ///  == anchors_full_resolution`).
-    pub(crate) anchors_fast_path_hits: u64,
+    ///
+    /// `AtomicU64` (card main-162 staged-rollout step 4): incremented from
+    /// [`clean_head_fast_path`] inside the now-parallel capture loop, so it is
+    /// shared behind `&self` like the other resolve-path counters rather than
+    /// mutated through `&mut self`.
+    pub(crate) anchors_fast_path_hits: AtomicU64,
     /// Counter: anchors that went through the full per-layer resolution
     /// (`resolve_anchor_inner` past the fast-path).
     pub(crate) anchors_full_resolution: u64,
@@ -652,7 +657,7 @@ impl ConcurrentSession {
             anchors_merge_conflict: 0,
             anchors_unavailable: 0,
             anchors_skipped_clean_head: 0,
-            anchors_fast_path_hits: 0,
+            anchors_fast_path_hits: AtomicU64::new(0),
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
@@ -692,7 +697,7 @@ impl ConcurrentSession {
     /// `head_sha` (constant for the run) is now passed in from
     /// [`SharedEngineContext`] rather than read off `self`.
     pub(crate) fn commit_reachable(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         head_sha: &str,
         commit: &str,
@@ -725,7 +730,7 @@ impl ConcurrentSession {
     /// `HashMap` reads. Moved here from `EngineState` in the three-way split
     /// (card main-162).
     pub(crate) fn filter_short_circuit(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         path: &str,
     ) -> Result<Option<String>> {
@@ -748,7 +753,7 @@ impl ConcurrentSession {
     /// distinct path pays one attribute-stack probe per session instead of
     /// one per anchor. Bare repo or any attribute-read failure → `false`.
     /// Moved here from `EngineState` in the three-way split (card main-162).
-    pub(crate) fn is_lfs_path_memo(&mut self, repo: &gix::Repository, path: &str) -> bool {
+    pub(crate) fn is_lfs_path_memo(&self, repo: &gix::Repository, path: &str) -> bool {
         if crate::git::work_dir(repo).is_err() {
             return false;
         }
@@ -759,7 +764,7 @@ impl ConcurrentSession {
     }
 
     fn filter_attribute_value(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         path: &str,
     ) -> Result<Option<String>> {
@@ -786,7 +791,7 @@ impl ConcurrentSession {
     /// [`SharedEngineContext`]. Thin alias for [`head_blob_oid`](Self::head_blob_oid)
     /// preserving the former `EngineState::head_blob_at` call sites.
     pub(crate) fn head_blob_at(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         head_sha: &str,
         path: &str,
@@ -800,7 +805,7 @@ impl ConcurrentSession {
     /// `None` means "path absent in that tree" (fail-closed, mirroring the
     /// `PathNotInTree` arm of the prior un-memoed callers).
     pub(crate) fn head_blob_oid(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         head_sha: &str,
         path: &str,
@@ -888,7 +893,7 @@ impl ConcurrentSession {
     /// the next caller for the same path retries rather than being pinned
     /// to a stale failure.
     pub(crate) fn worktree_bytes(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         custom_filters: &mut CustomFilters,
         path: &str,
@@ -915,7 +920,7 @@ impl ConcurrentSession {
     /// a HEAD blob (typically: anchors sharing a path) pay for one ODB
     /// decompress-and-decode. Like [`worktree_bytes`](Self::worktree_bytes),
     /// a failing read is propagated but not cached.
-    pub(crate) fn blob_text(&mut self, repo: &gix::Repository, oid: &str) -> Result<Arc<str>> {
+    pub(crate) fn blob_text(&self, repo: &gix::Repository, oid: &str) -> Result<Arc<str>> {
         // Same insert-only-on-success discipline as
         // [`worktree_bytes`](Self::worktree_bytes): a failing read is
         // `?`-propagated before the write, so it is never cached and the next
@@ -952,7 +957,7 @@ impl ConcurrentSession {
     /// growing and every subsequent call for an equal-or-deeper `i` returns
     /// `None` in O(1) without re-walking.
     pub(crate) fn first_parent_ancestor(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         i: u32,
     ) -> Option<gix::ObjectId> {
@@ -995,7 +1000,7 @@ impl ConcurrentSession {
     /// objects are immutable — so there is no "transient failure, retry
     /// later" case to keep uncached.
     pub(crate) fn history_path_blob(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         commit_oid: &str,
         path: &str,
@@ -1018,7 +1023,7 @@ impl ConcurrentSession {
     /// as the unmemoized call for the same inputs — the fingerprint is a
     /// pure function of the blob's bytes and the line range — so caching by
     /// blob identity plus range is exact, not approximate.
-    pub(crate) fn history_fingerprint(&mut self, oid: &str, text: &str, start: u32, end: u32) -> u64 {
+    pub(crate) fn history_fingerprint(&self, oid: &str, text: &str, start: u32, end: u32) -> u64 {
         let key = (oid.to_string(), start, end);
         if let Some(&fp) = self.history_fingerprint_memo.read().unwrap().get(&key) {
             return fp;
@@ -1038,7 +1043,7 @@ impl ConcurrentSession {
     /// `layer`, building and caching them on first request against the
     /// session's shared Jaccard interner. See [`JaccardCorpus`].
     pub(crate) fn jaccard_candidate_ids(
-        &mut self,
+        &self,
         path: &str,
         layer: DriftSource,
         lines: &[&str],
@@ -1068,7 +1073,7 @@ impl ConcurrentSession {
     /// cached ids. Not itself cached: the anchored text is different on
     /// every call (it's the anchor's own drifted content), so there is
     /// nothing to reuse beyond the interner's accumulated id assignments.
-    pub(crate) fn jaccard_anchored_ids(&mut self, anchored_lines: &[&str]) -> Vec<u32> {
+    pub(crate) fn jaccard_anchored_ids(&self, anchored_lines: &[&str]) -> Vec<u32> {
         // Intern against the same shared corpus under one lock acquisition
         // (card main-162 staged-rollout step 3) so these ids are comparable
         // against candidate ids minted by the same interner.
@@ -1083,7 +1088,7 @@ impl ConcurrentSession {
     /// the same key return the pre-built index directly (hit path; `bytes`
     /// is dropped unused).
     pub(crate) fn get_or_build_line_index(
-        &mut self,
+        &self,
         bytes: Vec<u8>,
         path: &str,
         layer: DriftSource,
@@ -1112,7 +1117,7 @@ impl ConcurrentSession {
     /// Returns `None` when no entry exists — the caller should fall back to
     /// [`get_or_build_line_index`].
     pub(crate) fn get_line_index(
-        &mut self,
+        &self,
         path: &str,
         layer: DriftSource,
     ) -> Option<Arc<CachedLineIndex>> {
@@ -1134,7 +1139,7 @@ impl ConcurrentSession {
     /// callers then treat every HEAD-present candidate as pre-existing,
     /// which fails closed to no relocation.
     pub(crate) fn rename_before_commit(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         anchored_path: &str,
     ) -> Option<String> {
@@ -1209,7 +1214,7 @@ impl ConcurrentSession {
     /// fail-closed posture: an empty "before" universe treats every
     /// HEAD-present candidate as new, i.e. a rename target.
     pub(crate) fn before_tree_paths(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         before_commit: &str,
     ) -> Arc<HashSet<String>> {
@@ -1244,7 +1249,7 @@ impl ConcurrentSession {
     /// probing each candidate individually — set-membership subsumes the
     /// old per-`(before_commit, candidate)` memo.
     pub(crate) fn is_rename_target(
-        &mut self,
+        &self,
         repo: &gix::Repository,
         anchored_path: &str,
         candidate: &str,
@@ -1596,7 +1601,7 @@ pub(crate) struct AnchorWalkState {
 pub(crate) fn resolve_at_head_shared(
     repo: &gix::Repository,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     r: &Anchor,
     span_name: &str,
     anchor_id: &str,
@@ -1751,7 +1756,7 @@ mod tests {
             anchors_orphaned: 0,
             anchors_merge_conflict: 0,
             anchors_unavailable: 0,
-            anchors_fast_path_hits: 0,
+            anchors_fast_path_hits: AtomicU64::new(0),
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
@@ -1788,7 +1793,7 @@ mod tests {
         // clean-head, resolved via a per-anchor fast-path, or goes through
         // full resolution.
         let decomposed = session.anchors_skipped_clean_head
-            + session.anchors_fast_path_hits
+            + session.anchors_fast_path_hits.load(Ordering::Relaxed)
             + session.anchors_full_resolution;
         assert_eq!(
             total, decomposed,
@@ -1817,7 +1822,7 @@ mod tests {
             anchors_orphaned: 0,
             anchors_merge_conflict: 0,
             anchors_unavailable: 1,
-            anchors_fast_path_hits: 4,
+            anchors_fast_path_hits: AtomicU64::new(4),
             anchors_full_resolution: 2,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
@@ -1865,7 +1870,7 @@ mod tests {
         );
 
         let decomposed = session.anchors_skipped_clean_head
-            + session.anchors_fast_path_hits
+            + session.anchors_fast_path_hits.load(Ordering::Relaxed)
             + session.anchors_full_resolution;
         assert_eq!(
             total, decomposed,

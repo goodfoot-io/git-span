@@ -30,7 +30,7 @@ use std::sync::atomic::Ordering;
 pub(crate) fn drift_locus(
     repo: &gix::Repository,
     resolved: &AnchorResolved,
-    session: &mut ConcurrentSession,
+    session: &ConcurrentSession,
 ) -> Result<Option<DriftLocus>> {
     let _perf = crate::perf::span("attribution.drift-locus");
 

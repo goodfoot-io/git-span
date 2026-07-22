@@ -41,6 +41,22 @@ pub(crate) struct EngineLocal {
     pub(crate) custom_filters: CustomFilters,
 }
 
+impl EngineLocal {
+    /// Fresh per-worker scratch: no LFS state and an unspawned custom-filter
+    /// process, exactly as [`EngineState::new_with_fuzzy_threshold`] seeds the
+    /// engine's own `local`. Card main-162 staged-rollout step 4 uses this as
+    /// the `map_init` init closure so each rayon task owns its own
+    /// `FilterProcess`/`LfsState` subprocess handles and `layers` scratch.
+    pub(crate) fn new(layers: LayerSet, needs_all_layers: bool) -> Self {
+        EngineLocal {
+            layers,
+            needs_all_layers,
+            lfs: None,
+            custom_filters: CustomFilters::new(),
+        }
+    }
+}
+
 /// Read-only-after-construction resolver context (card main-162 three-way
 /// split).
 ///
@@ -383,7 +399,7 @@ pub fn resolve_anchor(
             repo,
             &mut state.local,
             &state.shared,
-            &mut state.concurrent,
+            &state.concurrent,
             &span.config,
             span_name,
             anchor_id,
@@ -530,7 +546,7 @@ fn resolve_loaded_span_with_state(
             let anchor_t0 = std::time::Instant::now();
             let trace_anchor_sha = r.anchor_sha.clone();
             let trace_path = r.path.clone();
-            let fast_path_before = concurrent.anchors_fast_path_hits;
+            let fast_path_before = concurrent.anchors_fast_path_hits.load(Ordering::Relaxed);
             let mut resolved = resolve_anchor_inner(
                 repo,
                 local,
@@ -551,7 +567,8 @@ fn resolve_loaded_span_with_state(
                     anchor_sha: trace_anchor_sha,
                     path: trace_path,
                     wall_us,
-                    fast_path: concurrent.anchors_fast_path_hits > fast_path_before,
+                    fast_path: concurrent.anchors_fast_path_hits.load(Ordering::Relaxed)
+                        > fast_path_before,
                     status: status_label(&resolved.status),
                 });
             }
@@ -581,7 +598,7 @@ fn resolve_loaded_span_with_state(
 pub(crate) fn populate_drift_locus(
     repo: &gix::Repository,
     resolved: &mut AnchorResolved,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
 ) {
     use crate::types::DriftSource;
     match resolved.status {
@@ -671,6 +688,18 @@ pub(crate) fn resolve_named_spans(
     Ok(out)
 }
 
+/// Floor on the chunk size rayon's adaptive work-stealing will split the
+/// flattened anchor batch down to in [`capture_resolution_core`]. `map_init`
+/// spawns a fresh `EngineLocal` (and a real `FilterProcess`/`LfsState`
+/// subprocess) per task, and rayon can split into more tasks than worker
+/// threads — so flooring the split length here caps instance creation at
+/// roughly the thread count regardless of batch size. It doubles as the
+/// small-batch guard: set above the `incremental`/`dirty` callers' typical
+/// per-invocation anchor counts, rayon keeps their batches on a single task
+/// (one `EngineLocal`, effectively serial) without a separate serial-vs-parallel
+/// threshold. A starting value tuned against the bench corpus in Phase 6.
+const MIN_ANCHORS_PER_TASK: usize = 64;
+
 /// Single-pass, layer-neutral capture (card main-157 Phase 3A). Resolve every
 /// named span ONCE and assemble a [`ResolutionCore`] whose every anchor holds
 /// three independent per-layer observations (Head / Index / Worktree), instead
@@ -689,7 +718,10 @@ pub(crate) fn capture_resolution_core(
     span_root: &str,
     names: &[String],
 ) -> Result<crate::resolver::core::resolution::ResolutionCore> {
-    use crate::resolver::core::resolution::{DefinitionOrdinal, ResolutionCore, SpanCore};
+    use crate::resolver::core::resolution::{
+        AnchorCore, DefinitionOrdinal, ResolutionCore, SpanCore,
+    };
+    use rayon::prelude::*;
 
     let _perf = crate::perf::span("resolver.capture-resolution-core");
     let mut state =
@@ -707,49 +739,143 @@ pub(crate) fn capture_resolution_core(
             .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
     }
 
-    let mut spans = Vec::with_capacity(span_pairs.len());
-    for (name, span) in span_pairs {
+    // Serial pre-pass: flatten every span's anchors into one ordered work-item
+    // vec across the whole batch, so anchor resolutions across the batch (not
+    // merely within a single span) fork concurrently — matching the card's
+    // "anchor resolutions across the whole batch" behavior. Each span's
+    // metadata (name/why/follow_moves/config) is captured once, indexed by
+    // `span_index`. `DefinitionOrdinal`'s `source_ordinal` — the position among
+    // same-`anchor_id` duplicates, in stored order — depends only on the
+    // anchors' stored order, never on any resolution result, so it is computed
+    // here cheaply and serially and carried alongside each work item rather
+    // than serialized with the expensive resolve.
+    struct SpanMeta {
+        name: String,
+        why: String,
+        follow_moves: bool,
+        config: crate::types::SpanConfig,
+    }
+    struct WorkItem {
+        span_index: usize,
+        source_ordinal: u32,
+        anchor_id: String,
+        anchor: crate::types::Anchor,
+    }
+    let mut span_metas: Vec<SpanMeta> = Vec::with_capacity(span_pairs.len());
+    let mut work: Vec<WorkItem> = Vec::new();
+    for (span_index, (name, span)) in span_pairs.into_iter().enumerate() {
         debug_assert_eq!(name, span.name);
-        let mut anchors = Vec::with_capacity(span.anchors.len());
-        // Ordinal identity for duplicate anchor addresses: the position among
-        // definitions sharing the same address (anchor_id), in stored order.
         let mut occurrences: HashMap<String, u32> = HashMap::new();
         for (id, r) in span.anchors {
-            let anchor_core = anchor::resolve_anchor_captured(
-                repo,
-                &mut state.local,
-                &state.shared,
-                &mut state.concurrent,
-                &span.config,
-                &span.name,
-                &id,
-                r,
-            )?;
             let source_ordinal = {
                 let n = occurrences.entry(id.clone()).or_insert(0);
                 let v = *n;
                 *n += 1;
                 v
             };
-            let definition_digest = DefinitionOrdinal::digest_definition(
-                &anchor_core.anchor_id,
-                &anchor_core.anchor_sha,
-                &anchor_core.anchored.path,
-                anchor_core.anchored.extent,
-            );
-            let ordinal = DefinitionOrdinal {
-                span_identity: span.name.clone(),
+            work.push(WorkItem {
+                span_index,
                 source_ordinal,
-                definition_digest,
-            };
-            anchors.push((ordinal, anchor_core));
+                anchor_id: id,
+                anchor: r,
+            });
         }
-        spans.push(SpanCore {
-            name: span.name.clone(),
-            why: span.why.clone(),
-            follow_moves: span.config.follow_moves,
-            anchors,
+        let follow_moves = span.config.follow_moves;
+        span_metas.push(SpanMeta {
+            name: span.name,
+            why: span.why,
+            follow_moves,
+            config: span.config,
         });
+    }
+
+    // Fork the flattened work items via rayon. `map_init` gives each concurrent
+    // task its own `EngineLocal` (own `FilterProcess`/`LfsState` subprocess
+    // handles, own `layers` scratch) and its own thread-local `gix::Repository`
+    // clone — `gix::Repository` is `!Sync`, so it is materialized per task from
+    // a `Send + Sync` `ThreadSafeRepository`, mirroring the repo-clone-per-worker
+    // precedent in `resolve_named_spans_parallel`. `shared`/`concurrent` are the
+    // read-only context and the interior-mutable memo store, shared by plain
+    // `&`. `.with_min_len` floors rayon's split granularity so the number of
+    // `EngineLocal`/subprocess instances stays ~thread-count regardless of batch
+    // size, and — set above the small-batch `incremental`/`dirty` callers'
+    // typical anchor counts — keeps them on one task without a separate serial
+    // threshold. `.collect::<Vec<_>>()` preserves input-anchor order regardless
+    // of completion order.
+    //
+    // Card main-162 staged-rollout step 4 (this phase): the fork runs inside a
+    // pinned single-thread pool, proving the flatten / ordinal pre-pass /
+    // ordered-collect / regroup plumbing at single-threaded-equivalent operation
+    // before Phase 5 enables real parallelism at the default thread count.
+    let shared = &state.shared;
+    let concurrent = &state.concurrent;
+    let span_metas_ref = &span_metas;
+    let repo_sync = repo.clone().into_sync();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .map_err(|e| Error::Git(format!("build capture-resolution thread pool: {e}")))?;
+
+    // Each item always produces a value: the per-anchor closure never uses `?`,
+    // so a failing anchor yields `(span_index, source_ordinal, Err(..))` rather
+    // than short-circuiting the parallel collect. `.collect::<Vec<_>>()` (never
+    // `Result<Vec<_>, _>`) therefore cannot surface a completion-order-dependent
+    // error — the first-in-input-order `Err` is recovered by the serial scan
+    // below, reproducing the serial loop's early-return exactly regardless of
+    // thread count or scheduling.
+    let collected: Vec<(usize, u32, Result<AnchorCore>)> = pool.install(|| {
+        work.into_par_iter()
+            .with_min_len(MIN_ANCHORS_PER_TASK)
+            .map_init(
+                || (EngineLocal::new(LayerSet::full(), true), repo_sync.to_thread_local()),
+                |(local, repo_local), item| {
+                    let meta = &span_metas_ref[item.span_index];
+                    let core = anchor::resolve_anchor_captured(
+                        repo_local,
+                        local,
+                        shared,
+                        concurrent,
+                        &meta.config,
+                        &meta.name,
+                        &item.anchor_id,
+                        item.anchor,
+                    );
+                    (item.span_index, item.source_ordinal, core)
+                },
+            )
+            .collect()
+    });
+
+    // Rebuild the per-span groupings from the flat, input-ordered result: one
+    // `SpanCore` per span (preserving empty-anchor spans), regrouped by the
+    // carried `span_index`. The `result?` reproduces the serial loop's
+    // first-in-input-order early-return: `collected` is in input-anchor order,
+    // so the first `Err` scanned here is exactly the anchor the serial `?` would
+    // have surfaced.
+    let mut spans: Vec<SpanCore> = span_metas
+        .iter()
+        .map(|m| SpanCore {
+            name: m.name.clone(),
+            why: m.why.clone(),
+            follow_moves: m.follow_moves,
+            anchors: Vec::new(),
+        })
+        .collect();
+    for (span_index, source_ordinal, result) in collected {
+        let anchor_core = result?;
+        let definition_digest = DefinitionOrdinal::digest_definition(
+            &anchor_core.anchor_id,
+            &anchor_core.anchor_sha,
+            &anchor_core.anchored.path,
+            anchor_core.anchored.extent,
+        );
+        let ordinal = DefinitionOrdinal {
+            span_identity: span_metas[span_index].name.clone(),
+            source_ordinal,
+            definition_digest,
+        };
+        spans[span_index].anchors.push((ordinal, anchor_core));
     }
     state.finish(repo);
     Ok(ResolutionCore { spans })
@@ -1187,14 +1313,15 @@ fn stale_spans_inner(
         "session.anchors-skipped-clean-head",
         state.concurrent.anchors_skipped_clean_head,
     );
-    crate::perf::counter(
-        "session.anchors-fast-path-hits",
-        state.concurrent.anchors_fast_path_hits,
-    );
+    let anchors_fast_path_hits = state
+        .concurrent
+        .anchors_fast_path_hits
+        .load(Ordering::Relaxed);
+    crate::perf::counter("session.anchors-fast-path-hits", anchors_fast_path_hits);
     crate::perf::counter(
         "session.anchors-full-resolution",
         anchors_total
-            .saturating_sub(state.concurrent.anchors_fast_path_hits)
+            .saturating_sub(anchors_fast_path_hits)
             .saturating_sub(state.concurrent.anchors_skipped_clean_head),
     );
     // Category 3: per-anchor resolution distribution.
@@ -1646,7 +1773,7 @@ mod tests {
         assert!(out.status.success());
 
         let repo = gix::open(dir).unwrap();
-        let mut state = EngineState::new(
+        let state = EngineState::new(
             &repo,
             LayerSet {
                 index: false,

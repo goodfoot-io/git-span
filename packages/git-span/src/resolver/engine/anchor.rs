@@ -78,7 +78,7 @@ const HISTORY_WALK_LIMIT: u32 = 64;
 /// argument for each memo.
 fn find_original_line_slice_in_history(
     repo: &gix::Repository,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     path: &str,
     start: u32,
     end: u32,
@@ -219,7 +219,7 @@ fn parse_stored_fingerprint(stored_hash: &str) -> Option<u64> {
 fn find_relocated_range_in_paths(
     repo: &gix::Repository,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     deepest: DriftSource,
     extent: usize,
     stored_hash: &str,
@@ -341,7 +341,7 @@ const FUZZY_NOISE_FLOOR: f64 = 0.50;
 fn find_similar_ranges(
     repo: &gix::Repository,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     deepest: DriftSource,
     anchored_text: &str,
     extent_lines: usize,
@@ -455,7 +455,7 @@ pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     local: &mut EngineLocal,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
@@ -1565,7 +1565,7 @@ pub(crate) fn resolve_anchor_captured(
     repo: &gix::Repository,
     local: &mut EngineLocal,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
@@ -1801,7 +1801,7 @@ fn clean_head_fast_path(
     repo: &gix::Repository,
     local: &mut EngineLocal,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     anchor_id: &str,
     r: &Anchor,
     anchored: AnchorLocation,
@@ -1839,7 +1839,9 @@ fn clean_head_fast_path(
     } else {
         oid_from_hex(&head_blob).ok()
     };
-    concurrent.anchors_fast_path_hits += 1;
+    concurrent
+        .anchors_fast_path_hits
+        .fetch_add(1, Ordering::Relaxed);
     Ok(Some(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
@@ -1888,7 +1890,7 @@ fn compute_layer_sources(
     worktree_tracked: &Option<Tracked>,
     local: &mut EngineLocal,
     shared: &SharedEngineContext,
-    concurrent: &mut ConcurrentSession,
+    concurrent: &ConcurrentSession,
     anchored_lines: &[&str],
     anchored_start: u32,
     anchored_end: u32,

@@ -1,6 +1,6 @@
 CLAUDE.md#L30-L42 rk64:cb105cfafc0950ee
 README.md#L115-L127 rk64:b42e4411594985f8
-packages/git-span/Cargo.toml#L64-L77 rk64:57b48a678daa9dc4
+packages/git-span/Cargo.toml#L65-L78 rk64:57b48a678daa9dc4
 packages/git-span/scripts/cargo-build-system.md rk64:c75b76de913b720b
 
 Build system documentation across Cargo.toml, CLAUDE.md, README, and cargo-build-system.md that explains the shared per-user cargo target directory (check for rmeta, build for rlib), directory isolation to prevent E0463 link failures, and the GIT_SPAN_CARGO_TARGET_ROOT override.
