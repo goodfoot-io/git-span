@@ -1,5 +1,5 @@
 packages/git-span/src/resolver/dirty/mod.rs#L392-L399 rk64:befb8374fd30fd64
-packages/git-span/src/resolver/engine/mod.rs#L699-L727 rk64:70fd8eff5912a15d
+packages/git-span/src/resolver/engine/mod.rs#L702-L730 rk64:70fd8eff5912a15d
 packages/git-span/src/resolver/exact/mod.rs#L613-L620 rk64:e4e0f1b25e3e7026
 packages/git-span/src/resolver/incremental/mod.rs#L255-L262 rk64:9ee14c29e95a8ed6
 

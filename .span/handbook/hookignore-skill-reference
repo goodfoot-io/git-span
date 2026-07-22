@@ -1,3 +1,4 @@
 plugins-claude/git-span/skills/git-span/SKILL.md#L129-L129 rk64:b82cfe32fcb168b2
 plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:36e3b5ad0ebafe87
 
+SKILL.md's routing table step 7 sends readers with hookignore- or gateignore-related noise questions to references/hookignore.md, which defines the .hookignore and .gateignore per-path suppression files that hold back noisy span surfacing in the PreToolUse inline block and the gate's uncovered-writes nudge respectively.

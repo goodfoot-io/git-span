@@ -1,4 +1,4 @@
 README.md#L18-L55 rk64:a8db05db9c1321c3
 wiki/meta/git-span-documentation-touchpoints.md#L22-L32 rk64:0c80432149542bfc
 
-Operator-facing documentation surfaces (README CLI section, the website's agent integration doc, the git-span skill, and the man page) that the touchpoints page names as the reader/agent-facing pages most likely to drift when the CLI contract changes, and that must be checked whenever a documentation update changes the recommended workflow.
+The README CLI section, the website's agent integration doc, the git-span skill, and the man page are the operator- and agent-facing documentation surfaces that the touchpoints page's Operator-Facing Documentation section names as most likely to drift when the CLI contract changes.

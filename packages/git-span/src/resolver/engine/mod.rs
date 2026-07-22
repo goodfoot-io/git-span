@@ -658,6 +658,9 @@ fn emit_timeline_cache_counters(session: &ConcurrentSession) {
     );
 }
 
+/// A fully-freshened span (every anchor `Fresh`) is omitted from stale
+/// rendering. The `stale --fix` output-equivalence tests assert this holds
+/// identically on both the read-only and `--fix` passes.
 pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
 }
@@ -1509,7 +1512,10 @@ pub(crate) fn sort_spans_by_anchor_path(spans: &mut [SpanResolved]) {
             std::cmp::Ordering::Equal => {}
         }
 
-        // Path tuples identical. Sub-group by extent overlap.
+        // Path tuples identical. Sub-group by extent overlap. A true tie
+        // (no overlap either way) returns Equal so the stable sort preserves
+        // the caller's input order; the output-equivalence tests assert this
+        // holds identically on both the read-only and `--fix` passes.
         match (has_overlap[a], has_overlap[b]) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,

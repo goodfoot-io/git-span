@@ -1,2 +1,4 @@
 packages/git-span/src/types.rs#L130-L143 rk64:e0b161f3ca1d626e
 plugins-claude/git-span/skills/git-span/references/content-unavailable.md#L7-L21 rk64:a0f70ba9fe2d8857
+
+The UnavailableReason enum's variants are defined in types.rs and each one is documented with its cause and fix in the content-unavailable skill reference.

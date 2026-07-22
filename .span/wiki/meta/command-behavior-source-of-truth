@@ -4,5 +4,4 @@ packages/git-span/src/main.rs#L49-L113 rk64:c05ed91bbc3814dc
 packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420
 wiki/meta/git-span-documentation-touchpoints.md#L14-L20 rk64:9fbfd743e72eb6ad
 
-
-The Clap configuration and dispatch function in cli/mod.rs are the primary source of truth for top-level CLI behavior, and main.rs's pre-classification logic (checked against validation.rs's reserved-subcommand set) resolves the bare 'git span <name>' vs subcommand ambiguity before Clap parses; documentation describing CLI behavior must track these together.
+Top-level CLI behavior's source of truth is the Clap config and dispatch function in cli/mod.rs, the pre-classification logic in main.rs that resolves the bare-name-vs-subcommand ambiguity before Clap parses, and the reserved-subcommand set in validation.rs it checks against, as the touchpoints page's Command Behavior Source Of Truth section names them.

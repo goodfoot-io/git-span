@@ -49,7 +49,9 @@ export const RING_BOX_AXIAL_PADDING = 1.16;
 // compositing that lit, translucent fill over the parts and the warm cream page pulls the
 // on-screen result toward yellow-green -- pixel-sampled from a real render at ~112-126°, well
 // short of HIGHLIGHT_GREEN / --color-positive's 135.95°. This token is pre-compensated (source
-// hue 150.71°, S/L unchanged) so the rendered result lands back near 135.95°.
+// hue 150.71°, S/L unchanged) so the rendered result lands back near 135.95°. Retuning
+// HIGHLIGHT_GREEN, --color-positive, or the rendering pipeline that shifts the composited
+// result should re-derive this compensation rather than leave it pointing at a stale target.
 export const BOUNDING_BOX_GLASS_GREEN = '#0c8a4d';
 
 // A single container's world placement: a center plus a size measured along an orthonormal frame,

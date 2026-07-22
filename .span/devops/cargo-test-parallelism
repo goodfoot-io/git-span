@@ -1,4 +1,4 @@
 .github/workflows/ci.yml#L60-L63 rk64:265fc800e97fb60e
 packages/git-span/package.json#L14-L14 rk64:9ebd2f2d3f1153e1
 
-Cargo nextest test invocation across local (yarn test) and CI that uses consistent flags, shared target directory, and runner configuration.
+The git-span nextest run command matches between the local yarn test script and CI's Cargo test step, sharing the same --build-jobs 1 flag and CARGO_TARGET_DIR convention.

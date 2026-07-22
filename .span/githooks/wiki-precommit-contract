@@ -1,4 +1,4 @@
 .githooks/README.md#L31-L52 rk64:e9ed8371f94f6404
 .githooks/pre-commit.wiki.sh#L2-L55 rk64:7dd9ab7832acabc1
 
-Two-phase wiki pre-commit concern whose documented contract in the hooks README—wiki check --fix --print-applied --source=worktree, *.md and span re-staging, fail-closed phase-2 gate—is the behavior the wiki sub-script implements.
+The hooks README documents the pre-commit wiki behavior — auto-fixing drifted links/anchors, creating span coverage for uncovered fragment links, and re-staging the files and spans it touches — that .githooks/pre-commit.wiki.sh implements, with the script as the source of truth when the two disagree.

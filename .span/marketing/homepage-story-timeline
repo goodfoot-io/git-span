@@ -4,5 +4,4 @@ packages/website/app/components/marketing/story/engine/beats.ts#L427-L514 rk64:8
 packages/website/app/components/marketing/story/scene.ts#L24-L33 rk64:13167aea3f0b3147
 packages/website/app/routes/_index.tsx#L21-L30 rk64:dcc8ada6a18ce448
 
-
 The homepage story timeline is the scroll-driven narrative that defines its eight phases and per-phase scroll weights once in PHASE_WEIGHTS and drives step heights, 3D engine animation beats, and per-phase copy from that single phase list.

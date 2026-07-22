@@ -5,4 +5,4 @@ packages/git-span/src/cli/mod.rs#L371-L387 rk64:3bfaa6c3b4a59ad7
 packages/git-span/tests/cases/cli_history.rs rk64:fe64ee5974f18349
 packages/git-span/tests/cases/mod.rs#L18-L19 rk64:9a8c9ce10afc19cf
 
-Git span history command: argument definitions, handler implementation, integration tests, and output contract documentation that must evolve together.
+The `git span history` command is HistoryArgs and its handler in history.rs rendering the timeline that the XML and markdown output-contract fixtures document and that the cli_history integration tests (registered in tests/cases/mod.rs) assert against.

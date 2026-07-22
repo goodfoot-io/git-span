@@ -22,6 +22,11 @@ use crate::{Error, Result};
 ///
 /// Returns `Error::InvalidSpanFile` if the resolved value is an absolute
 /// path, contains `..`, or points inside `.git`.
+///
+/// `packages/agent-hooks/src/common/agent-hooks-common.ts`'s `resolveSpanRoot`
+/// mirrors this precedence (minus the CLI flag, invisible to file-write
+/// hooks) in TypeScript, unenforced by any shared code; keep both in sync
+/// when this precedence changes.
 pub fn resolve_span_root(
     repo: &gix::Repository,
     cli_dir: Option<&str>,

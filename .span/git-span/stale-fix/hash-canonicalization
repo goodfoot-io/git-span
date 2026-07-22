@@ -1,4 +1,4 @@
 packages/git-span/src/cli/commit.rs#L81-L179 rk64:18904f78f9e6df43
-packages/git-span/src/cli/stale_fix.rs#L134-L165 rk64:b04f8e6e02fe5788
+packages/git-span/src/cli/stale_fix.rs#L837-L966 rk64:dd7a1988e302b156
 
-Anchor-content hashing canonicalization that stale --fix must reproduce when it hashes the index layer by hand, so re-anchored hashes stay comparable with the resolver's add-time and resolve-time hashes.
+Anchor-content hashing canonicalization that stale --fix must reproduce when it recomputes hashes per drift layer (worktree, HEAD, index) by hand, so re-anchored hashes stay comparable with the resolver's add-time and resolve-time hashes.
