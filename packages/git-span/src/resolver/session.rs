@@ -1,6 +1,6 @@
-//! `ResolveSession` — engine-wide shared state for one `stale` run.
+//! `ConcurrentSession` — engine-wide shared memo store for one `stale` run.
 //!
-//! The reverse-indexed HEAD walk (built by [`ResolveSession::build_reverse_walk`])
+//! The reverse-indexed HEAD walk (built by [`ConcurrentSession::build_reverse_walk`])
 //! runs once and produces per-anchor commit deltas. Each anchor's classifier
 //! consumes its slice of the walk output instead of running its own per-anchor
 //! walk. The session is constructed once at the top of the `stale` CLI path and
@@ -12,7 +12,8 @@ use crate::Result;
 use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
-use crate::resolver::layers::{CustomFilters, read_worktree_normalized};
+use crate::resolver::engine::SharedEngineContext;
+use crate::resolver::layers::{CustomFilters, is_custom_filter_configured, read_worktree_normalized};
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
@@ -30,7 +31,7 @@ use std::sync::Arc;
 /// The inner [`LineIndex`] lazily allocates prefix-hash and power tables
 /// (~16 bytes per file byte) on the first prefiltered scan.  Files exceeding
 /// [`git_span_core::PREFILTER_TABLES_MAX_BYTES`] (32 MiB) skip this allocation
-/// and fall back to per-window hashing.  Tables live for the [`ResolveSession`]
+/// and fall back to per-window hashing.  Tables live for the [`ConcurrentSession`]
 /// lifetime and are evicted with the line-index cache.
 pub(crate) struct CachedLineIndex {
     bytes: Vec<u8>,
@@ -268,8 +269,16 @@ impl PathIndex {
 
 /// Engine-wide shared state: session-scoped caches and counters for one
 /// `stale` run.
-pub(crate) struct ResolveSession {
-    pub(crate) reverse_walk_output: Option<ReverseWalkOutput>,
+///
+/// This is the interior-mutability memo store of the resolver's three-way
+/// state split (card main-162): the per-worker scratch and subprocess
+/// handles live on [`crate::resolver::engine::EngineLocal`], the read-only
+/// context (HEAD sha, layer diffs, the reverse-walk output) on
+/// [`SharedEngineContext`], and every grow-only memo cache plus its
+/// perf counters here. Phase 1 keeps every field in its plain
+/// (non-lock-wrapped) form — the loop is still fully serial; the lock/atomic
+/// conversions land in later phases.
+pub(crate) struct ConcurrentSession {
     /// Session-scoped memo for the changed-path Bloom filter handle. The
     /// commit-graph file is constant for the life of a session, but
     /// `build_reverse_walk` runs once per resolve batch — under chunked
@@ -354,9 +363,17 @@ pub(crate) struct ResolveSession {
     pub(crate) walk_commits_visited: u64,
     /// Reverse-indexed walk: wall-clock ms to build the AnchorReverseIndex.
     pub(crate) reverse_index_build_ms: u64,
-    /// Warnings accumulated during the reverse-indexed walk (rename budget
-    /// notes, etc.). Forwarded to `EngineState::finish` for stderr output.
-    pub(crate) warnings: Vec<String>,
+    /// Per-command memo for anchor commit reachability. This avoids
+    /// scanning all refs once per anchor in large repositories. Moved here
+    /// from `EngineState` in the three-way split (card main-162): it is a
+    /// pure grow-only memo like the rest of this store.
+    commit_reachability: HashMap<String, bool>,
+    /// Per-command memo for `.gitattributes` filter-driver lookups, keyed
+    /// by `rel_path`. The workdir is constant per session, so the repo
+    /// handle is implicit. A cached `None` means "no driver / fail closed"
+    /// (matches the pre-memo behavior on plumbing error). Moved here from
+    /// `EngineState` in the three-way split (card main-162).
+    filter_attrs: HashMap<String, Option<String>>,
     /// Phase 1: per-session `PathTimeline` cache keyed by
     /// `(path, head_blob_oid, copy_detection, anchor_sha)`. Timelines are
     /// currently anchor-scoped because they are built from per-anchor delta
@@ -483,10 +500,9 @@ pub(crate) struct JaccardCorpus {
     candidates: HashMap<(String, DriftSource), JaccardCandidateIds>,
 }
 
-impl ResolveSession {
+impl ConcurrentSession {
     pub(crate) fn new(_repo: &gix::Repository) -> Self {
         Self {
-            reverse_walk_output: None,
             bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
@@ -511,7 +527,8 @@ impl ResolveSession {
             walk_tree_diffs: 0,
             walk_commits_visited: 0,
             reverse_index_build_ms: 0,
-            warnings: Vec::new(),
+            commit_reachability: HashMap::new(),
+            filter_attrs: HashMap::new(),
             timelines: HashMap::new(),
             timeline_cache_hits: 0,
             timeline_cache_misses: 0,
@@ -534,6 +551,104 @@ impl ResolveSession {
 
     pub(crate) fn enable_trace(&mut self) {
         self.per_anchor_trace = Some(Vec::new());
+    }
+
+    /// Whether `commit` is reachable from HEAD, memoized per session. Moved
+    /// here from `EngineState` in the three-way split (card main-162);
+    /// `head_sha` (constant for the run) is now passed in from
+    /// [`SharedEngineContext`] rather than read off `self`.
+    pub(crate) fn commit_reachable(
+        &mut self,
+        repo: &gix::Repository,
+        head_sha: &str,
+        commit: &str,
+    ) -> Result<bool> {
+        if commit == head_sha {
+            self.commit_reachability.insert(commit.to_string(), true);
+            return Ok(true);
+        }
+        if let Some(reachable) = self.commit_reachability.get(commit) {
+            return Ok(*reachable);
+        }
+        // HEAD-relative: per drift-label spec, "orphaned (no sha)" applies
+        // when the anchor commit is not in HEAD's history, even if another
+        // ref still keeps it alive (e.g. after `checkout --orphan`).
+        let reachable = crate::git::commit_reachable_from_head(repo, commit)?;
+        self.commit_reachability
+            .insert(commit.to_string(), reachable);
+        Ok(reachable)
+    }
+
+    /// Probe `.gitattributes` for a custom `filter=<name>` driver on
+    /// `path`, returning `Some(name)` when the driver is unknown
+    /// (fail-loud short-circuit). Memoized per-session: the first query for
+    /// a path performs the full `attr_for` lookup; later queries are O(1)
+    /// `HashMap` reads. Moved here from `EngineState` in the three-way split
+    /// (card main-162).
+    pub(crate) fn filter_short_circuit(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        let name = match self.filter_attribute_value(repo, path)? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        if crate::types::is_core_filter(&name) {
+            return Ok(None);
+        }
+        if is_custom_filter_configured(repo, &name) {
+            return Ok(None);
+        }
+        Ok(Some(name))
+    }
+
+    /// LFS check routed through the per-session `filter_attrs` memo. The
+    /// deepest-layer LFS short-circuit in `resolve_anchor_inner` runs once
+    /// per anchor, but the `filter` attribute is a per-path fact — each
+    /// distinct path pays one attribute-stack probe per session instead of
+    /// one per anchor. Bare repo or any attribute-read failure → `false`.
+    /// Moved here from `EngineState` in the three-way split (card main-162).
+    pub(crate) fn is_lfs_path_memo(&mut self, repo: &gix::Repository, path: &str) -> bool {
+        if crate::git::work_dir(repo).is_err() {
+            return false;
+        }
+        matches!(
+            self.filter_attribute_value(repo, path),
+            Ok(Some(ref n)) if n == "lfs"
+        )
+    }
+
+    fn filter_attribute_value(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        if let Some(cached) = self.filter_attrs.get(path) {
+            self.filter_attr_hits += 1;
+            return Ok(cached.clone());
+        }
+        self.filter_attr_misses += 1;
+        // Fail-closed: any plumbing error caches `None` so subsequent
+        // reads of the same path return the same answer (matches the
+        // un-memoed behavior in `path_filter_attribute_with_repo`).
+        let value = crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(path))
+            .unwrap_or(None);
+        self.filter_attrs.insert(path.to_string(), value.clone());
+        Ok(value)
+    }
+
+    /// Resolve the blob OID of `path` at `head_sha`, via the session-scoped
+    /// `blob_oid_memo`. `head_sha` (constant for the run) is passed in from
+    /// [`SharedEngineContext`]. Thin alias for [`head_blob_oid`](Self::head_blob_oid)
+    /// preserving the former `EngineState::head_blob_at` call sites.
+    pub(crate) fn head_blob_at(
+        &mut self,
+        repo: &gix::Repository,
+        head_sha: &str,
+        path: &str,
+    ) -> Result<Option<String>> {
+        self.head_blob_oid(repo, head_sha, path)
     }
 
     /// Resolve the blob OID of `path` at `head_sha`, memoized through the
@@ -941,8 +1056,14 @@ impl ResolveSession {
     /// is a normal state, not an error. When absent the walk runs
     /// without it (tree-diffing every commit). Absence is never surfaced
     /// as a fatal error or a plumbing instruction.
+    /// Build the reverse-indexed walk. Runs once per resolve batch, serially,
+    /// before any parallel fork — so its two outputs that outlive the walk
+    /// (the walk result and the rename-budget warnings) are written into the
+    /// read-only-after-construction [`SharedEngineContext`], while the walk's
+    /// own memo (`bloom_memo`) and perf counters stay on `self`.
     pub(crate) fn build_reverse_walk(
         &mut self,
+        shared: &mut SharedEngineContext,
         repo: &gix::Repository,
         spans: &[(String, crate::types::Span)],
     ) -> Result<()> {
@@ -1088,7 +1209,7 @@ impl ResolveSession {
                     &parent_sha_str,
                     &commit_sha_str,
                     max_copy,
-                    &mut self.warnings,
+                    &mut shared.warnings,
                 )?;
 
                 // Count Bloom false positives: paths Bloom said "maybe" that
@@ -1204,7 +1325,7 @@ impl ResolveSession {
         // re-key `self.timelines` here.
         self.bloom_memo = Some(bloom);
 
-        self.reverse_walk_output = Some(ReverseWalkOutput {
+        shared.reverse_walk_output = Some(ReverseWalkOutput {
             head_sha,
             per_anchor_deltas,
         });
@@ -1243,11 +1364,11 @@ pub(crate) struct AnchorWalkState {
 /// genuinely depends on the anchor's path.
 pub(crate) fn resolve_at_head_shared(
     repo: &gix::Repository,
-    session: &mut ResolveSession,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     r: &Anchor,
     span_name: &str,
     anchor_id: &str,
-    _warnings: &mut Vec<String>,
 ) -> Result<Option<walker::Tracked>> {
     use crate::types::AnchorExtent;
     let (rstart, rend) = match r.extent {
@@ -1255,10 +1376,10 @@ pub(crate) fn resolve_at_head_shared(
         AnchorExtent::WholeFile => (1, 1),
     };
     // Clone the walk data so we can release the borrow on
-    // `session.reverse_walk_output` and then freely access
-    // `session.blob_oid_memo` during the hunk loop.
+    // `shared.reverse_walk_output` and then freely access
+    // `concurrent.blob_oid_memo` during the hunk loop.
     let (head_sha, deltas) = {
-        let output = session
+        let output = shared
             .reverse_walk_output
             .as_ref()
             .ok_or_else(|| crate::Error::Git("reverse walk not built".into()))?;
@@ -1287,7 +1408,7 @@ pub(crate) fn resolve_at_head_shared(
     // any wider detection the walk performed.
     let copy_detection = CopyDetection::SameCommit;
 
-    let head_blob_oid_hex: Option<String> = session.head_blob_oid(repo, &head_sha, &r.path)?;
+    let head_blob_oid_hex: Option<String> = concurrent.head_blob_oid(repo, &head_sha, &r.path)?;
     let head_blob_oid: Option<gix::ObjectId> = head_blob_oid_hex
         .as_deref()
         .and_then(|s| gix::ObjectId::from_hex(s.as_bytes()).ok());
@@ -1299,22 +1420,22 @@ pub(crate) fn resolve_at_head_shared(
         anchor_sha: r.anchor_sha.clone(),
     };
 
-    let timeline_arc: Arc<PathTimeline> = if let Some(existing) = session.timelines.get(&key) {
-        session.timeline_cache_hits += 1;
+    let timeline_arc: Arc<PathTimeline> = if let Some(existing) = concurrent.timelines.get(&key) {
+        concurrent.timeline_cache_hits += 1;
         Arc::clone(existing)
     } else {
-        session.timeline_cache_misses += 1;
+        concurrent.timeline_cache_misses += 1;
         let tl = build_timeline(
             repo,
             r.path.as_bytes(),
             &deltas,
             head_blob_oid,
             copy_detection,
-            &mut session.timeline_paths,
-            &mut session.blob_oid_memo,
+            &mut concurrent.timeline_paths,
+            &mut concurrent.blob_oid_memo,
         )?;
         let arc = Arc::new(tl);
-        session.timelines.insert(key, Arc::clone(&arc));
+        concurrent.timelines.insert(key, Arc::clone(&arc));
         arc
     };
 
@@ -1330,7 +1451,9 @@ pub(crate) fn resolve_at_head_shared(
     let loc_present = if loc.path == r.path {
         head_blob_oid_hex.is_some()
     } else {
-        session.head_blob_oid(repo, &head_sha, &loc.path)?.is_some()
+        concurrent
+            .head_blob_oid(repo, &head_sha, &loc.path)?
+            .is_some()
     };
     if !loc_present {
         return Ok(None);
@@ -1344,13 +1467,12 @@ pub(crate) fn resolve_at_head_shared(
 /// was followed, `None` if the path is unchanged.
 pub(crate) fn follow_path_to_head_shared(
     _repo: &gix::Repository,
-    session: &mut ResolveSession,
+    shared: &SharedEngineContext,
     span_name: &str,
     anchor_id: &str,
     path: &str,
-    _warnings: &mut Vec<String>,
 ) -> Option<String> {
-    let output = session.reverse_walk_output.as_ref()?;
+    let output = shared.reverse_walk_output.as_ref()?;
     let deltas = output
         .per_anchor_deltas
         .get(&(span_name.to_string(), anchor_id.to_string()))?;
@@ -1374,8 +1496,7 @@ mod tests {
 
     #[test]
     fn anchors_total_includes_skipped_clean_head() {
-        let session = ResolveSession {
-            reverse_walk_output: None,
+        let session = ConcurrentSession {
             bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
@@ -1399,7 +1520,8 @@ mod tests {
             walk_tree_diffs: 0,
             walk_commits_visited: 0,
             reverse_index_build_ms: 0,
-            warnings: Vec::new(),
+            commit_reachability: HashMap::new(),
+            filter_attrs: HashMap::new(),
             anchors_skipped_clean_head: 50,
             timelines: HashMap::new(),
             timeline_cache_hits: 0,
@@ -1440,8 +1562,7 @@ mod tests {
 
     #[test]
     fn decomposition_identity_mixed_buckets() {
-        let session = ResolveSession {
-            reverse_walk_output: None,
+        let session = ConcurrentSession {
             bloom_memo: None,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
@@ -1465,7 +1586,8 @@ mod tests {
             walk_tree_diffs: 0,
             walk_commits_visited: 0,
             reverse_index_build_ms: 0,
-            warnings: Vec::new(),
+            commit_reachability: HashMap::new(),
+            filter_attrs: HashMap::new(),
             anchors_skipped_clean_head: 40,
             timelines: HashMap::new(),
             timeline_cache_hits: 0,

@@ -11,7 +11,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::session::ResolveSession;
+use crate::resolver::session::ConcurrentSession;
 use crate::types::{AnchorExtent, AnchorResolved, DriftLocus, DriftSource};
 use std::collections::HashMap;
 
@@ -29,7 +29,7 @@ use std::collections::HashMap;
 pub(crate) fn drift_locus(
     repo: &gix::Repository,
     resolved: &AnchorResolved,
-    session: &mut ResolveSession,
+    session: &mut ConcurrentSession,
 ) -> Result<Option<DriftLocus>> {
     let _perf = crate::perf::span("attribution.drift-locus");
 
@@ -909,7 +909,7 @@ mod deleted_locus_walk_tests {
         git(dir, &["commit", "-m", "rename a to b (X1)"]);
         let repo = gix::open(dir).expect("gix open");
         let x1 = head_id(&repo);
-        let mut session = ResolveSession::new(&repo);
+        let mut session = ConcurrentSession::new(&repo);
 
         // First anchor sharing "a.rs": computes and memoizes the walk.
         let first = session

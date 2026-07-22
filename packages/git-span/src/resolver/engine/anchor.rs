@@ -5,9 +5,9 @@ use super::super::core::resolution::{
     AnchorCore, DriftLocusCore, LayerObservationCore, LocationCore,
 };
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
-use super::super::session::resolve_at_head_shared;
+use super::super::session::{ConcurrentSession, resolve_at_head_shared};
 use super::super::walker::{Tracked, apply_hunks_to_range};
-use super::EngineState;
+use super::{EngineLocal, SharedEngineContext};
 use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
@@ -77,20 +77,20 @@ const HISTORY_WALK_LIMIT: u32 = 64;
 /// argument for each memo.
 fn find_original_line_slice_in_history(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    concurrent: &mut ConcurrentSession,
     path: &str,
     start: u32,
     end: u32,
     stored_hash: &str,
 ) -> Option<Vec<String>> {
     for i in 1..=HISTORY_WALK_LIMIT {
-        let commit_oid = state.session.first_parent_ancestor(repo, i)?;
+        let commit_oid = concurrent.first_parent_ancestor(repo, i)?;
         let commit_oid_hex = commit_oid.to_string();
-        let blob_oid = state.session.history_path_blob(repo, &commit_oid_hex, path)?;
-        let Ok(text) = state.session.blob_text(repo, &blob_oid) else {
+        let blob_oid = concurrent.history_path_blob(repo, &commit_oid_hex, path)?;
+        let Ok(text) = concurrent.blob_text(repo, &blob_oid) else {
             continue;
         };
-        let fp = state.session.history_fingerprint(&blob_oid, &text, start, end);
+        let fp = concurrent.history_fingerprint(&blob_oid, &text, start, end);
         let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(fp));
         if computed == stored_hash {
             let lines: Vec<&str> = text.lines().collect();
@@ -214,9 +214,11 @@ fn parse_stored_fingerprint(stored_hash: &str) -> Option<u64> {
 /// unrelated committed file does not masquerade as a relocation. Returns
 /// `(path, start, end)` on the first hit; the original `exclude` path is
 /// skipped.
+#[allow(clippy::too_many_arguments)]
 fn find_relocated_range_in_paths(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     deepest: DriftSource,
     extent: usize,
     stored_hash: &str,
@@ -229,8 +231,8 @@ fn find_relocated_range_in_paths(
     // root-to-leaf traversal in the `head_blob_at` probe below — the scan
     // visits every tracked path, so warming the memo up front is strictly
     // cheaper than letting each path miss individually.
-    let head_sha = state.head_sha.clone();
-    state.session.warm_head_blob_memo(repo, &head_sha);
+    let head_sha = shared.head_sha.clone();
+    concurrent.warm_head_blob_memo(repo, &head_sha);
     // When the anchored path is gone from HEAD (committed `git mv` /
     // deletion), a HEAD-present path is a valid relocation target only
     // if it is new as of the rename commit — see
@@ -248,9 +250,9 @@ fn find_relocated_range_in_paths(
         }
         // A path absent from HEAD is always a candidate. A HEAD-present
         // path qualifies only via the committed-rename predicate.
-        if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
+        if concurrent.head_blob_at(repo, &shared.head_sha,&en.path).ok().flatten().is_some() {
             let is_target =
-                anchored_absent_at_head && state.session.is_rename_target(repo, exclude, &en.path);
+                anchored_absent_at_head && concurrent.is_rename_target(repo, exclude, &en.path);
             if !is_target {
                 continue;
             }
@@ -261,11 +263,11 @@ fn find_relocated_range_in_paths(
         // each `(path, layer)` to a single read; `relocation_candidate_reads`
         // counts only memo misses.
         let memo_key = (en.path.clone(), deepest);
-        let text: String = match state.session.relocation_text_memo.get(&memo_key) {
+        let text: String = match concurrent.relocation_text_memo.get(&memo_key) {
             Some(Some(t)) => t.clone(),
             Some(None) => continue, // previously unreadable
             None => {
-                state.session.relocation_candidate_reads += 1;
+                concurrent.relocation_candidate_reads += 1;
                 let read: Option<String> = match deepest {
                     DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
                         .ok()
@@ -274,8 +276,7 @@ fn find_relocated_range_in_paths(
                         Some(read_blob_text(repo, &en.oid.to_string()))
                     }
                 };
-                state
-                    .session
+                concurrent
                     .relocation_text_memo
                     .insert(memo_key, read.clone());
                 match read {
@@ -288,9 +289,8 @@ fn find_relocated_range_in_paths(
         // index instead of re-scanning raw bytes — the same amortization
         // `resolve_anchor_inner`'s in-place freshness check already relies
         // on, now shared with the cross-path relocation scan.
-        let cached_idx = state
-            .session
-            .get_or_build_line_index(text.into_bytes(), &en.path, deepest);
+        let cached_idx =
+            concurrent.get_or_build_line_index(text.into_bytes(), &en.path, deepest);
         let file_idx: &LineIndex = cached_idx.get();
         if let Some((s, e)) = find_relocated_range_indexed(file_idx, extent, stored_hash, 1) {
             return Some((en.path, s, e));
@@ -325,7 +325,8 @@ const FUZZY_NOISE_FLOOR: f64 = 0.50;
 /// by path for determinism.
 fn find_similar_ranges(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     deepest: DriftSource,
     anchored_text: &str,
     extent_lines: usize,
@@ -343,15 +344,15 @@ fn find_similar_ranges(
     };
 
     // Warm the HEAD blob memo for the rename-target scan.
-    let head_sha = state.head_sha.clone();
-    state.session.warm_head_blob_memo(repo, &head_sha);
+    let head_sha = shared.head_sha.clone();
+    concurrent.warm_head_blob_memo(repo, &head_sha);
 
     // Interned once against the session's shared Jaccard corpus interner —
     // every candidate this anchor is scanned against below shares that same
     // interner, so id equality between the two sides still means line
     // equality (see `JaccardCorpus`'s doc comment).
     let anchored_lines: Vec<&str> = anchored_text.lines().collect();
-    let anchored_ids = state.session.jaccard_anchored_ids(&anchored_lines);
+    let anchored_ids = concurrent.jaccard_anchored_ids(&anchored_lines);
     let mut results: Vec<FuzzySuccessor> = Vec::new();
     let mut candidates_scanned = 0usize;
 
@@ -368,7 +369,7 @@ fn find_similar_ranges(
 
         // Read the candidate file text (reusing the session memo).
         let memo_key = (en.path.clone(), deepest);
-        let text: String = match state.session.relocation_text_memo.get(&memo_key) {
+        let text: String = match concurrent.relocation_text_memo.get(&memo_key) {
             Some(Some(t)) => t.clone(),
             Some(None) => continue,
             None => {
@@ -380,8 +381,7 @@ fn find_similar_ranges(
                         Some(read_blob_text(repo, &en.oid.to_string()))
                     }
                 };
-                state
-                    .session
+                concurrent
                     .relocation_text_memo
                     .insert(memo_key, read.clone());
                 match read {
@@ -399,9 +399,7 @@ fn find_similar_ranges(
         }
 
         let (candidate_ids, candidate_raw_empty) =
-            state
-                .session
-                .jaccard_candidate_ids(&en.path, deepest, &candidate_lines);
+            concurrent.jaccard_candidate_ids(&en.path, deepest, &candidate_lines);
         let hits = jaccard_window_scan_interned(
             &anchored_ids,
             &candidate_ids,
@@ -429,16 +427,19 @@ fn find_similar_ranges(
     results
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    local: &mut EngineLocal,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
     if matches!(r.extent, AnchorExtent::WholeFile) {
-        return resolve_whole_file(repo, state, cfg, span_name, anchor_id, r);
+        return resolve_whole_file(repo, local, shared, concurrent, cfg, span_name, anchor_id, r);
     }
     let (anchored_start, anchored_end) = match r.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -452,8 +453,8 @@ pub(crate) fn resolve_anchor_inner(
     let anchored_blob = if !r.blob.is_empty() {
         oid_from_hex(&r.blob).ok()
     } else {
-        state
-            .head_blob_at(repo, &r.path)?
+        concurrent
+            .head_blob_at(repo, &shared.head_sha, &r.path)?
             .and_then(|o| oid_from_hex(&o).ok())
     };
     let anchored = AnchorLocation {
@@ -461,7 +462,7 @@ pub(crate) fn resolve_anchor_inner(
         extent: r.extent,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
+    if !r.anchor_sha.is_empty() && !concurrent.commit_reachable(repo, &shared.head_sha,&r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -482,7 +483,7 @@ pub(crate) fn resolve_anchor_inner(
     // and the call is provably futile. Gate both attempts (here and the
     // second below) on `!r.blob.is_empty()` so file-backed anchors skip
     // the wasted attribute/blob-OID lookups entirely.
-    if r.anchor_sha == state.head_sha && !r.blob.is_empty() {
+    if r.anchor_sha == shared.head_sha && !r.blob.is_empty() {
         let head_loc = Some(Tracked {
             path: r.path.clone(),
             start: anchored_start,
@@ -490,7 +491,9 @@ pub(crate) fn resolve_anchor_inner(
         });
         if let Some(resolved) = clean_head_fast_path(
             repo,
-            state,
+            local,
+            shared,
+            concurrent,
             anchor_id,
             &r,
             anchored.clone(),
@@ -502,19 +505,12 @@ pub(crate) fn resolve_anchor_inner(
         }
     }
 
-    let head_loc = resolve_at_head_shared(
-        repo,
-        &mut state.session,
-        &r,
-        span_name,
-        anchor_id,
-        &mut state.warnings,
-    )?;
+    let head_loc = resolve_at_head_shared(repo, shared, concurrent, &r, span_name, anchor_id)?;
 
     let head_path: Option<String> = head_loc.as_ref().map(|t| t.path.clone());
-    if state.layers.index || state.layers.worktree {
+    if local.layers.index || local.layers.worktree {
         let p = head_path.as_deref().unwrap_or(r.path.as_str());
-        if state.conflicted_paths.contains(p) {
+        if shared.conflicted_paths.contains(p) {
             return Ok(AnchorResolved {
                 anchor_id: anchor_id.into(),
                 anchor_sha: r.anchor_sha,
@@ -543,7 +539,9 @@ pub(crate) fn resolve_anchor_inner(
     if !r.blob.is_empty()
         && let Some(resolved) = clean_head_fast_path(
             repo,
-            state,
+            local,
+            shared,
+            concurrent,
             anchor_id,
             &r,
             anchored.clone(),
@@ -563,9 +561,9 @@ pub(crate) fn resolve_anchor_inner(
     let mut index_tracked: Option<Tracked> = head_tracked.clone();
     let mut index_blob_oid: Option<String> = None;
     let mut index_hunk_applied = false;
-    if state.layers.index
+    if local.layers.index
         && let Some(t) = index_tracked.as_ref()
-        && let Some(diffs) = state.index_diffs.as_ref()
+        && let Some(diffs) = shared.index_diffs.as_ref()
         && let Some(entry) = diffs.map.get(&t.path)
     {
         if entry.deleted {
@@ -586,9 +584,9 @@ pub(crate) fn resolve_anchor_inner(
     // Worktree layer: apply hunks on top of index_tracked.
     let mut worktree_tracked: Option<Tracked> = index_tracked.clone();
     let mut worktree_hunk_applied = false;
-    if state.layers.worktree
+    if local.layers.worktree
         && let Some(t) = worktree_tracked.as_ref()
-        && let Some(diffs) = state.worktree_diffs.as_ref()
+        && let Some(diffs) = shared.worktree_diffs.as_ref()
         && let Some(entry) = diffs.map.get(&t.path)
     {
         if entry.deleted {
@@ -606,9 +604,9 @@ pub(crate) fn resolve_anchor_inner(
     }
 
     // The deepest enabled layer's tracked position determines `current`.
-    let (tracked, deepest_layer) = if state.layers.worktree {
+    let (tracked, deepest_layer) = if local.layers.worktree {
         (worktree_tracked.as_ref(), DriftSource::Worktree)
-    } else if state.layers.index {
+    } else if local.layers.index {
         (index_tracked.as_ref(), DriftSource::Index)
     } else {
         (head_tracked.as_ref(), DriftSource::Head)
@@ -618,11 +616,11 @@ pub(crate) fn resolve_anchor_inner(
     // Memoized per path on the engine state — an unmemoized check builds a
     // fresh gitattributes stack on every anchor.
     if let Some(t) = tracked
-        && state.is_lfs_path_memo(repo, &t.path)
+        && concurrent.is_lfs_path_memo(repo,&t.path)
     {
         return Ok(resolve_lfs_anchor(
             repo,
-            &mut state.lfs,
+            &mut local.lfs,
             anchor_id,
             &r,
             anchored,
@@ -639,7 +637,7 @@ pub(crate) fn resolve_anchor_inner(
         Some(t) => {
             let (cur_text, cur_blob) = match deepest_layer {
                 DriftSource::Worktree => {
-                    match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
+                    match read_worktree_normalized(repo, &mut local.custom_filters, &t.path) {
                         Ok(bytes) => {
                             if bytes.is_empty()
                                 && crate::git::is_skip_worktree(repo, &t.path)?
@@ -665,7 +663,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Index => {
-                    if let Some(filter) = state.filter_short_circuit(repo, &t.path)? {
+                    if let Some(filter) = concurrent.filter_short_circuit(repo,&t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -675,7 +673,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                     let oid = match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => state.head_blob_at(repo, &t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
                     };
                     match oid {
                         Some(o) => {
@@ -697,7 +695,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Head => {
-                    if let Some(filter) = state.filter_short_circuit(repo, &t.path)? {
+                    if let Some(filter) = concurrent.filter_short_circuit(repo,&t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -705,7 +703,7 @@ pub(crate) fn resolve_anchor_inner(
                             UnavailableReason::FilterFailed { filter },
                         ));
                     }
-                    let oid = state.head_blob_at(repo, &t.path)?;
+                    let oid = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?;
                     let txt = match &oid {
                         Some(o) => match git::read_git_text(repo, o) {
                             Ok(t) => t,
@@ -769,9 +767,8 @@ pub(crate) fn resolve_anchor_inner(
         // identical to the un-memoized form — only the disk/ODB reads are
         // cached, so the fingerprints below match exactly what a fresh
         // `read_worktree_normalized` / `read_git_text` pair would produce.
-        let wt_bytes = state
-            .session
-            .worktree_bytes(repo, &mut state.custom_filters, &wt_path)?;
+        let wt_bytes =
+            concurrent.worktree_bytes(repo, &mut local.custom_filters, &wt_path)?;
         let extent = AnchorExtent::LineRange {
             start: anchored_start,
             end: anchored_end,
@@ -782,9 +779,9 @@ pub(crate) fn resolve_anchor_inner(
         );
         let wt_matches = wt_hash == r.stored_hash;
 
-        let head_matches = match state.head_blob_at(repo, &r.path)? {
+        let head_matches = match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
             Some(oid) => {
-                let head_txt = match state.session.blob_text(repo, &oid) {
+                let head_txt = match concurrent.blob_text(repo, &oid) {
                     Ok(t) => t,
                     Err(_) if crate::git::promisor_active(repo) => {
                         if wt_matches {
@@ -853,7 +850,7 @@ pub(crate) fn resolve_anchor_inner(
                     Err(e) => return Err(e),
                 }
             } else {
-                match state.head_blob_at(repo, &r.path)? {
+                match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
                     Some(oid) => match git::read_git_text(repo, &oid) {
                         Ok(t) => t,
                         Err(_) if crate::git::promisor_active(repo) => {
@@ -876,7 +873,9 @@ pub(crate) fn resolve_anchor_inner(
                 &head_tracked,
                 &index_tracked,
                 &worktree_tracked,
-                &mut *state,
+                local,
+                shared,
+                concurrent,
                 &anchored_lines,
                 anchored_start,
                 anchored_end,
@@ -898,12 +897,13 @@ pub(crate) fn resolve_anchor_inner(
             //    rendered "deleted in the working tree/index".
             // A removal is never mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
-            let head_path_absent = file_backed && state.head_blob_at(repo, &r.path)?.is_none();
+            let head_path_absent = file_backed && concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
             if file_backed {
                 let extent = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
                 let relocated = find_relocated_range_in_paths(
                     repo,
-                    state,
+                    shared,
+                    concurrent,
                     deepest_layer,
                     extent,
                     &r.stored_hash,
@@ -940,12 +940,13 @@ pub(crate) fn resolve_anchor_inner(
                         // Fuzzy-similarity fallback: exact-match relocation found
                         // nothing, so try a content-similarity scan over candidate
                         // files. A candidate above the auto-fix threshold
-                        // (state.fuzzy_threshold, default 0.95) is treated as
+                        // (shared.fuzzy_threshold, default 0.95) is treated as
                         // MOVED; candidates below threshold are still reported in
                         // fuzzy_successors for the operator to review.
                         let fuzzy_found = find_similar_ranges(
                             repo,
-                            state,
+                            shared,
+                            concurrent,
                             deepest_layer,
                             &anchored_text,
                             extent,
@@ -958,7 +959,7 @@ pub(crate) fn resolve_anchor_inner(
                         if !fuzzy_found.is_empty() {
                             fuzzy_successors = fuzzy_found;
                         }
-                        if best_confidence >= state.fuzzy_threshold {
+                        if best_confidence >= shared.fuzzy_threshold {
                             status = AnchorStatus::Moved;
                             source = Some(deepest_layer);
                             layer_sources = vec![deepest_layer];
@@ -985,12 +986,13 @@ pub(crate) fn resolve_anchor_inner(
                     // Fuzzy-similarity fallback: exact-match relocation found
                     // nothing, so try a content-similarity scan over candidate
                     // files. A candidate above the auto-fix threshold
-                    // (state.fuzzy_threshold, default 0.95) is treated as
+                    // (shared.fuzzy_threshold, default 0.95) is treated as
                     // MOVED; candidates below threshold are still reported in
                     // fuzzy_successors for the operator to review.
                     let fuzzy_found = find_similar_ranges(
                         repo,
-                        state,
+                        shared,
+                        concurrent,
                         deepest_layer,
                         &anchored_text,
                         extent,
@@ -1003,7 +1005,7 @@ pub(crate) fn resolve_anchor_inner(
                     if !fuzzy_found.is_empty() {
                         fuzzy_successors = fuzzy_found;
                     }
-                    if best_confidence >= state.fuzzy_threshold {
+                    if best_confidence >= shared.fuzzy_threshold {
                         status = AnchorStatus::Moved;
                         source = Some(deepest_layer);
                         layer_sources = vec![deepest_layer];
@@ -1105,7 +1107,7 @@ pub(crate) fn resolve_anchor_inner(
                     Err(e) => return Err(e),
                 }
             } else {
-                match state.head_blob_at(repo, &r.path)? {
+                match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
                     Some(oid) => match git::read_git_text(repo, &oid) {
                         Ok(t) => t,
                         Err(_) if crate::git::promisor_active(repo) => {
@@ -1142,7 +1144,7 @@ pub(crate) fn resolve_anchor_inner(
             // rk64 freshness hashes against it. The borrow is scoped so it is
             // released before compute_layer_sources takes &mut state.
             let (equal, worktree_recorded_fresh) = {
-                let cached_idx = state.session.get_or_build_line_index(
+                let cached_idx = concurrent.get_or_build_line_index(
                     cur_text.clone().into_bytes(),
                     &t.path,
                     deepest_layer,
@@ -1177,7 +1179,7 @@ pub(crate) fn resolve_anchor_inner(
                 // does *not* match) falls through to the layered classification
                 // below and may still be `Moved`; `--head`/`--staged` views do
                 // not enable the worktree layer, so they are unaffected.
-                let worktree_recorded_fresh = state.layers.worktree
+                let worktree_recorded_fresh = local.layers.worktree
                     && !r.stored_hash.is_empty()
                     && r.blob.is_empty()
                     && t.path == r.path
@@ -1203,7 +1205,9 @@ pub(crate) fn resolve_anchor_inner(
                 &head_tracked,
                 &index_tracked,
                 &worktree_tracked,
-                &mut *state,
+                local,
+                shared,
+                concurrent,
                 &anchored_lines,
                 anchored_start,
                 anchored_end,
@@ -1230,7 +1234,7 @@ pub(crate) fn resolve_anchor_inner(
             let relocated: Option<(u32, u32)> = if !equal && file_backed {
                 // Re-acquire the cached line index (built during the
                 // freshness block above — always a hit).
-                match state.session.get_line_index(&t.path, deepest_layer) {
+                match concurrent.get_line_index(&t.path, deepest_layer) {
                     Some(cached_idx) => {
                         find_relocated_range_indexed(
                             cached_idx.get(),
@@ -1257,10 +1261,11 @@ pub(crate) fn resolve_anchor_inner(
             // classifying `Changed`.
             let relocated_path: Option<(String, u32, u32)> =
                 if !equal && file_backed && relocated.is_none() {
-                    let anchored_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
+                    let anchored_absent_at_head = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
                     find_relocated_range_in_paths(
                         repo,
-                        state,
+                        shared,
+                        concurrent,
                         deepest_layer,
                         extent,
                         &r.stored_hash,
@@ -1273,7 +1278,7 @@ pub(crate) fn resolve_anchor_inner(
 
             let cur_blob_oid = if worktree_hunk_applied {
                 None
-            } else if state.layers.index && index_blob_oid.is_some() {
+            } else if local.layers.index && index_blob_oid.is_some() {
                 index_blob_oid.as_deref().and_then(|o| oid_from_hex(o).ok())
             } else {
                 cur_blob
@@ -1401,7 +1406,7 @@ pub(crate) fn resolve_anchor_inner(
                     // anchor drifting exactly as before — fail-closed.
                     find_original_line_slice_in_history(
                         repo,
-                        state,
+                        concurrent,
                         &t.path,
                         anchored_start,
                         anchored_end,
@@ -1532,32 +1537,35 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
 ///
 /// The default resolution path is untouched: this is invoked only through
 /// the opt-in [`super::capture_resolution_core`] entry point.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_anchor_captured(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    local: &mut EngineLocal,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorCore> {
-    let saved_layers = state.layers;
-    let saved_needs_all_layers = state.needs_all_layers;
+    let saved_layers = local.layers;
+    let saved_needs_all_layers = local.needs_all_layers;
     // Every layer must be evaluated so the core is genuinely layer-neutral;
     // `needs_all_layers` matches both `committed_only()` and `full()`, which
     // set it `true`, so per-layer output is byte-identical to direct runs.
-    state.needs_all_layers = true;
+    local.needs_all_layers = true;
 
     // The committed (HEAD-only) observation is always needed on its own: its
     // rendered `current.blob` is the committed blob OID, which the deeper
     // effective view drops. Run it first — for a layer-clean anchor it is also
     // the ONLY heavy classification we run, since index/worktree read the same
     // bytes and reclassifying them reproduces this result verbatim.
-    state.layers = CAPTURE_HEAD_LAYERS;
-    let mut head_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
+    local.layers = CAPTURE_HEAD_LAYERS;
+    let mut head_run = resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r.clone())?;
     // The resolver leaves `locus` unset; the live path fills it afterwards in
     // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
     // committed projection carries the same locus as a direct committed run.
-    super::populate_drift_locus(repo, &mut head_run, &mut state.session);
+    super::populate_drift_locus(repo, &mut head_run, concurrent);
 
     // `anchored` is layer-independent (computed identically at every depth), so
     // reading it from the HEAD run matches the value a full-depth run produces.
@@ -1579,9 +1587,9 @@ pub(crate) fn resolve_anchor_captured(
     // dropped (the worktree carries no committed blob OID). This runs the
     // ~600-line classifier exactly once for the overwhelmingly common
     // clean-repo anchor instead of three times.
-    if capture_clean_derivable(state, &r, &head_run) {
-        state.layers = saved_layers;
-        state.needs_all_layers = saved_needs_all_layers;
+    if capture_clean_derivable(shared, &r, &head_run) {
+        local.layers = saved_layers;
+        local.needs_all_layers = saved_needs_all_layers;
         let full = effective_from_clean_head(&head);
         return Ok(AnchorCore {
             anchor_id: head_run.anchor_id,
@@ -1600,22 +1608,23 @@ pub(crate) fn resolve_anchor_captured(
     // drift — the index-as-deepest view. A worktree-only edit therefore costs
     // two heavy passes, not three; only simultaneous index+worktree drift
     // costs all three.
-    state.layers = CAPTURE_FULL_LAYERS;
-    let full_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r.clone())?;
+    local.layers = CAPTURE_FULL_LAYERS;
+    let full_run = resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r.clone())?;
 
     let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
     let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
 
     let index = if index_drifts {
-        state.layers = CAPTURE_INDEX_LAYERS;
-        let index_run = resolve_anchor_inner(repo, state, cfg, span_name, anchor_id, r)?;
+        local.layers = CAPTURE_INDEX_LAYERS;
+        let index_run =
+            resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r)?;
         observation_from(&index_run)
     } else {
         fresh_observation(&anchored)
     };
 
-    state.layers = saved_layers;
-    state.needs_all_layers = saved_needs_all_layers;
+    local.layers = saved_layers;
+    local.needs_all_layers = saved_needs_all_layers;
 
     let worktree = if worktree_drifts {
         observation_from(&full_run)
@@ -1695,7 +1704,11 @@ fn effective_from_clean_head(head: &LayerObservationCore) -> LayerObservationCor
 /// (layer-specific availability reads). A followed rename resolves to a path
 /// other than `r.path` and is already classified `Moved`; the explicit
 /// path check guards the residual cases.
-fn capture_clean_derivable(state: &EngineState, r: &Anchor, head_run: &AnchorResolved) -> bool {
+fn capture_clean_derivable(
+    shared: &SharedEngineContext,
+    r: &Anchor,
+    head_run: &AnchorResolved,
+) -> bool {
     let path_matches = head_run
         .current
         .as_ref()
@@ -1704,12 +1717,12 @@ fn capture_clean_derivable(state: &EngineState, r: &Anchor, head_run: &AnchorRes
         return false;
     }
     match head_run.status {
-        AnchorStatus::Fresh => capture_path_layer_clean(state, &r.path),
+        AnchorStatus::Fresh => capture_path_layer_clean(shared, &r.path),
         // Whole-file `Changed` measures drift absolutely per layer, so clean
         // layers do not collapse to a single HEAD observation — see this
         // function's doc comment.
         AnchorStatus::Changed if matches!(r.extent, AnchorExtent::WholeFile) => false,
-        AnchorStatus::Changed | AnchorStatus::Deleted => state.clean_layers,
+        AnchorStatus::Changed | AnchorStatus::Deleted => shared.clean_layers,
         _ => false,
     }
 }
@@ -1720,19 +1733,19 @@ fn capture_clean_derivable(state: &EngineState, r: &Anchor, head_run: &AnchorRes
 /// "clean" here means precisely "the deeper layers apply nothing and read the
 /// same bytes as HEAD". Fails closed: an unbuilt diff map (unknown state) is
 /// treated as dirty.
-fn capture_path_layer_clean(state: &EngineState, path: &str) -> bool {
-    if state.clean_layers {
+fn capture_path_layer_clean(shared: &SharedEngineContext, path: &str) -> bool {
+    if shared.clean_layers {
         return true;
     }
-    if state.conflicted_paths.contains(path) {
+    if shared.conflicted_paths.contains(path) {
         return false;
     }
-    match &state.index_diffs {
+    match &shared.index_diffs {
         Some(d) if d.map.contains_key(path) => return false,
         None => return false,
         _ => {}
     }
-    match &state.worktree_diffs {
+    match &shared.worktree_diffs {
         Some(d) if d.map.contains_key(path) => return false,
         None => return false,
         _ => {}
@@ -1763,7 +1776,9 @@ fn unavailable(
 #[allow(clippy::too_many_arguments)]
 fn clean_head_fast_path(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    local: &mut EngineLocal,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     anchor_id: &str,
     r: &Anchor,
     anchored: AnchorLocation,
@@ -1771,16 +1786,16 @@ fn clean_head_fast_path(
     anchored_start: u32,
     anchored_end: u32,
 ) -> Result<Option<AnchorResolved>> {
-    if !super::anchor_path_is_layer_clean(state, &r.path) {
+    if !super::anchor_path_is_layer_clean(local, shared, &r.path) {
         return Ok(None);
     }
     let Some(t) = head_loc.as_ref() else {
         return Ok(None);
     };
-    if state.filter_short_circuit(repo, &t.path)?.is_some() {
+    if concurrent.filter_short_circuit(repo,&t.path)?.is_some() {
         return Ok(None);
     }
-    let Some(head_blob) = state.head_blob_at(repo, &t.path)? else {
+    let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)? else {
         return Ok(None);
     };
     if head_blob != r.blob {
@@ -1796,12 +1811,12 @@ fn clean_head_fast_path(
     } else {
         AnchorStatus::Moved
     };
-    let current_blob = if state.layers.worktree {
+    let current_blob = if local.layers.worktree {
         None
     } else {
         oid_from_hex(&head_blob).ok()
     };
-    state.session.anchors_fast_path_hits += 1;
+    concurrent.anchors_fast_path_hits += 1;
     Ok(Some(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
@@ -1848,7 +1863,9 @@ fn compute_layer_sources(
     head_tracked: &Option<Tracked>,
     index_tracked: &Option<Tracked>,
     worktree_tracked: &Option<Tracked>,
-    state: &mut EngineState,
+    local: &mut EngineLocal,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     anchored_lines: &[&str],
     anchored_start: u32,
     anchored_end: u32,
@@ -1857,20 +1874,20 @@ fn compute_layer_sources(
     worktree_hunk_applied: bool,
     index_blob_oid: &Option<String>,
 ) -> Result<Vec<DriftSource>> {
-    let layer_index = state.layers.index;
-    let layer_worktree = state.layers.worktree;
+    let layer_index = local.layers.index;
+    let layer_worktree = local.layers.worktree;
 
     // Read each layer's content as text, scoped to the layer's tracked
     // path. `None` represents "path absent at this layer".
     let head_text: Option<(String, Tracked)> = match head_tracked.as_ref() {
         None => None,
         Some(t) => {
-            if state.filter_short_circuit(repo, &t.path)?.is_some() {
+            if concurrent.filter_short_circuit(repo,&t.path)?.is_some() {
                 // Fail-closed: can't read — treat as "absent" so adjacent
                 // comparisons surface drift.
                 None
             } else {
-                let oid = state.head_blob_at(repo, &t.path)?;
+                let oid = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?;
                 let txt = match &oid {
                     Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                     None => String::new(),
@@ -1887,10 +1904,10 @@ fn compute_layer_sources(
                 let oid = if index_hunk_applied {
                     match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => state.head_blob_at(repo, &t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
                     }
                 } else {
-                    state.head_blob_at(repo, &t.path)?
+                    concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?
                 };
                 let txt = match &oid {
                     Some(o) => read_blob_text(repo, o),
@@ -1908,14 +1925,14 @@ fn compute_layer_sources(
             None => None,
             Some(t) => {
                 if worktree_hunk_applied {
-                    match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
+                    match read_worktree_normalized(repo, &mut local.custom_filters, &t.path) {
                         Ok(bytes) => Some((string_from_utf8_lossy(&bytes), t.clone())),
                         Err(_) => None,
                     }
                 } else {
                     let oid = match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => state.head_blob_at(repo, &t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
                     };
                     let txt = match &oid {
                         Some(o) => read_blob_text(repo, o),

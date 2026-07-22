@@ -2,8 +2,8 @@
 //! per plan §D2. Renames produce `Moved`; symlinks/gitlinks compare by
 //! recorded blob/SHA.
 
-use super::super::session::follow_path_to_head_shared;
-use super::EngineState;
+use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
+use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
     submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
@@ -66,9 +66,11 @@ fn canonical_layer_bytes(repo: &gix::Repository, oid_hex: &str, gitlink: bool) -
 /// path is a valid relocation target. Otherwise HEAD-present paths are
 /// skipped so an unrelated committed file is not mistaken for the move
 /// destination.
+#[allow(clippy::too_many_arguments)]
 fn find_relocated_whole_file(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     workdir: &std::path::Path,
     deepest: DriftSource,
     stored_hash: &str,
@@ -89,9 +91,9 @@ fn find_relocated_whole_file(
         // content match in an unrelated pre-existing file is not a
         // relocation. The before-commit walk and per-candidate probe are
         // session-memoized (see `is_rename_target`'s doc comment).
-        if state.head_blob_at(repo, &en.path).ok().flatten().is_some() {
+        if concurrent.head_blob_at(repo, &shared.head_sha,&en.path).ok().flatten().is_some() {
             let is_target =
-                anchored_absent_at_head && state.session.is_rename_target(repo, exclude, &en.path);
+                anchored_absent_at_head && concurrent.is_rename_target(repo, exclude, &en.path);
             if !is_target {
                 continue;
             }
@@ -117,9 +119,12 @@ fn find_relocated_whole_file(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
-    state: &mut EngineState,
+    local: &mut EngineLocal,
+    shared: &SharedEngineContext,
+    concurrent: &mut ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
@@ -131,8 +136,8 @@ pub(crate) fn resolve_whole_file(
     let anchored_blob = if !r.blob.is_empty() {
         oid_from_hex(&r.blob).ok()
     } else {
-        state
-            .head_blob_at(repo, &r.path)?
+        concurrent
+            .head_blob_at(repo, &shared.head_sha, &r.path)?
             .and_then(|o| oid_from_hex(&o).ok())
     };
     let anchored = AnchorLocation {
@@ -140,7 +145,7 @@ pub(crate) fn resolve_whole_file(
         extent: AnchorExtent::WholeFile,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty() && !state.commit_reachable(repo, &r.anchor_sha)? {
+    if !r.anchor_sha.is_empty() && !concurrent.commit_reachable(repo, &shared.head_sha,&r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -155,9 +160,9 @@ pub(crate) fn resolve_whole_file(
         });
     }
 
-    if r.anchor_sha == state.head_sha
-        && super::anchor_path_is_layer_clean(state, &r.path)
-        && let Some(head_blob) = state.head_blob_at(repo, &r.path)?
+    if r.anchor_sha == shared.head_sha
+        && super::anchor_path_is_layer_clean(local, shared,&r.path)
+        && let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?
         && head_blob == r.blob
     {
         return Ok(AnchorResolved {
@@ -181,29 +186,22 @@ pub(crate) fn resolve_whole_file(
     let workdir = git::work_dir(repo)?;
     // Phase 2: rename trail consumes per-commit deltas from the shared
     // session instead of running its own `anchor..HEAD` rev_walk.
-    let current_path = follow_path_to_head_shared(
-        repo,
-        &mut state.session,
-        span_name,
-        anchor_id,
-        &r.path,
-        &mut state.warnings,
-    )
-    .unwrap_or_else(|| r.path.clone());
+    let current_path = follow_path_to_head_shared(repo, shared, span_name, anchor_id, &r.path)
+        .unwrap_or_else(|| r.path.clone());
 
     let moved = current_path != r.path;
 
     // Per-layer blob OIDs for whole-file comparison.
-    let head_blob: Option<String> = state.head_blob_at(repo, &current_path)?;
-    let deepest = if state.layers.worktree {
+    let head_blob: Option<String> = concurrent.head_blob_at(repo, &shared.head_sha,&current_path)?;
+    let deepest = if local.layers.worktree {
         DriftSource::Worktree
-    } else if state.layers.index {
+    } else if local.layers.index {
         DriftSource::Index
     } else {
         DriftSource::Head
     };
 
-    if super::anchor_path_is_layer_clean(state, &current_path)
+    if super::anchor_path_is_layer_clean(local, shared,&current_path)
         && let Some(head_blob) = head_blob.as_ref()
         && head_blob == &r.blob
     {
@@ -232,7 +230,7 @@ pub(crate) fn resolve_whole_file(
         });
     }
 
-    let index_blob: Option<String> = if state.layers.index {
+    let index_blob: Option<String> = if local.layers.index {
         if let Some((_mode, sha)) = index_entry_for(repo, &current_path) {
             Some(sha)
         } else {
@@ -242,7 +240,7 @@ pub(crate) fn resolve_whole_file(
         head_blob.clone()
     };
 
-    let worktree_blob: Option<Option<String>> = if state.layers.worktree {
+    let worktree_blob: Option<Option<String>> = if local.layers.worktree {
         let abs = workdir.join(&current_path);
         if let Ok(md) = std::fs::symlink_metadata(&abs) {
             if md.file_type().is_symlink() {
@@ -296,7 +294,7 @@ pub(crate) fn resolve_whole_file(
         head_blob.as_deref() != Some(r.blob.as_str())
     };
     let index_drifts = if !r.stored_hash.is_empty() {
-        state.layers.index
+        local.layers.index
             && match &index_blob {
                 Some(oid) => {
                     let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
@@ -306,10 +304,10 @@ pub(crate) fn resolve_whole_file(
                 None => true,
             }
     } else {
-        state.layers.index && index_blob.as_deref() != Some(r.blob.as_str())
+        local.layers.index && index_blob.as_deref() != Some(r.blob.as_str())
     };
     let worktree_drifts = if !r.stored_hash.is_empty() {
-        state.layers.worktree
+        local.layers.worktree
             && match &worktree_blob {
                 Some(Some(oid)) => {
                     if is_gitlink {
@@ -333,7 +331,7 @@ pub(crate) fn resolve_whole_file(
                 None => false,
             }
     } else {
-        state.layers.worktree
+        local.layers.worktree
             && worktree_blob
                 .as_ref()
                 .map(|b| b.as_deref() != Some(r.blob.as_str()))
@@ -364,11 +362,12 @@ pub(crate) fn resolve_whole_file(
             // In no case is a removal mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty();
             let head_path_absent =
-                file_backed && state.head_blob_at(repo, &r.path).ok().flatten().is_none();
+                file_backed && concurrent.head_blob_at(repo, &shared.head_sha,&r.path).ok().flatten().is_none();
             let relocated = if file_backed {
                 find_relocated_whole_file(
                     repo,
-                    state,
+                    shared,
+                    concurrent,
                     workdir,
                     deepest,
                     &r.stored_hash,
@@ -474,7 +473,7 @@ pub(crate) fn resolve_whole_file(
                             // or filter normalization is not falsely drifted.
                             match super::super::layers::read_worktree_normalized(
                                 repo,
-                                &mut state.custom_filters,
+                                &mut local.custom_filters,
                                 &current_path,
                             ) {
                                 Ok(b) => b,
@@ -515,10 +514,11 @@ pub(crate) fn resolve_whole_file(
                 // follow-walk did not pick up). Scan before `Changed`.
                 let file_backed = !r.stored_hash.is_empty();
                 if file_backed {
-                    let anchored_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
+                    let anchored_absent_at_head = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
                     find_relocated_whole_file(
                         repo,
-                        state,
+                        shared,
+                        concurrent,
                         workdir,
                         deepest,
                         &r.stored_hash,

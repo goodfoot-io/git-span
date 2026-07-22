@@ -5,11 +5,10 @@ pub(crate) mod anchor;
 pub(crate) mod whole_file;
 
 use super::layers::{
-    CustomFilters, LayerDiffs, LfsState, is_custom_filter_configured, read_conflicted_paths,
-    read_index_layer, read_index_trailer, read_layer_status, read_worktree_layer,
-    read_worktree_layer_for_paths,
+    CustomFilters, LayerDiffs, LfsState, read_conflicted_paths, read_index_layer,
+    read_index_trailer, read_layer_status, read_worktree_layer, read_worktree_layer_for_paths,
 };
-use super::session::ResolveSession;
+use super::session::{ConcurrentSession, ReverseWalkOutput};
 
 use crate::span_file_reader::SpanFileReader;
 use crate::types::{
@@ -23,38 +22,67 @@ use std::str::FromStr;
 
 use anchor::resolve_anchor_inner;
 
-/// Engine-level state cached for one `stale` run.
-pub(crate) struct EngineState {
+/// Per-worker resolver scratch (card main-162 three-way split).
+///
+/// Holds exactly the state that a future parallel anchor-resolution worker
+/// cannot share: the per-anchor mutated-and-restored `layers`/`needs_all_layers`
+/// scratch (`resolve_anchor_captured` saves, overwrites, and restores these
+/// per anchor), and the live `FilterProcess`/`LfsState` subprocess handles.
+/// One instance per worker; today the loop is serial, so there is exactly one.
+pub(crate) struct EngineLocal {
     pub(crate) layers: LayerSet,
+    /// Phase 4 (layer neutrality): when false, `compute_layer_sources` may
+    /// short-circuit once it has enough information to drive the exit code.
+    /// Set by `cli/stale.rs` based on whether the output mode requires
+    /// per-layer detail (`--patch`, `--stat`, the `human` renderer).
+    pub(crate) needs_all_layers: bool,
+    pub(crate) lfs: LfsState,
+    pub(crate) custom_filters: CustomFilters,
+}
+
+/// Read-only-after-construction resolver context (card main-162 three-way
+/// split).
+///
+/// Every field is written once — in [`EngineState::new_with_fuzzy_threshold`]
+/// or [`ConcurrentSession::build_reverse_walk`] — before any anchor resolves,
+/// and only read during resolution. A future parallel fork can therefore
+/// share this behind a plain `&`/`Arc` with no lock.
+pub(crate) struct SharedEngineContext {
     pub(crate) head_sha: String,
     pub(crate) clean_layers: bool,
     pub(crate) index_diffs: Option<LayerDiffs>,
     pub(crate) worktree_diffs: Option<LayerDiffs>,
     pub(crate) conflicted_paths: HashSet<String>,
-    index_trailer_start: Option<[u8; 20]>,
-    pub(crate) warnings: Vec<String>,
-    pub(crate) lfs: LfsState,
-    pub(crate) custom_filters: CustomFilters,
-    /// Shared state including the reverse-indexed walk output, layer
-    /// caches, and perf counters.
-    pub(crate) session: ResolveSession,
-    /// Phase 4: when false, `compute_layer_sources` may short-circuit
-    /// once it has enough information to drive the exit code. Set by
-    /// `cli/stale.rs` based on whether the output mode requires per-layer
-    /// detail (`--patch`, `--stat`, the `human` renderer).
-    pub(crate) needs_all_layers: bool,
+    /// Output of the single reverse-indexed HEAD walk. Written once by
+    /// [`ConcurrentSession::build_reverse_walk`] (serially, before any fork);
+    /// read by `resolve_at_head_shared` / `follow_path_to_head_shared`.
+    pub(crate) reverse_walk_output: Option<ReverseWalkOutput>,
     /// Confidence threshold for fuzzy-similarity auto-fix. Matches at or
     /// above this threshold are automatically re-anchored by `--fix`.
     /// Default 0.95. Passed through from `EngineOptions`.
     pub(crate) fuzzy_threshold: f64,
-    /// Per-command memo for anchor commit reachability. This avoids
-    /// scanning all refs once per anchor in large repositories.
-    commit_reachability: HashMap<String, bool>,
-    /// Per-command memo for `.gitattributes` filter-driver lookups, keyed
-    /// by `rel_path`. The workdir is constant per `EngineState`, so the
-    /// repo handle is implicit. A cached `None` means "no driver / fail
-    /// closed" (matches the pre-memo behavior on plumbing error).
-    filter_attrs: HashMap<String, Option<String>>,
+    /// Warnings accumulated during the reverse-indexed walk (rename budget
+    /// notes, etc.). Written only by `build_reverse_walk` (once, serially,
+    /// before the loop); drained into `EngineState::warnings` in `finish`
+    /// for stderr output.
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Engine-level state cached for one `stale` run.
+///
+/// Card main-162 split what was one flat struct into three: the per-worker
+/// [`EngineLocal`], the read-only [`SharedEngineContext`], and the
+/// interior-mutability [`ConcurrentSession`] memo store. `EngineState` owns
+/// all three plus the two run-lifecycle fields that belong to none of them,
+/// and is the handle the pre-fork machinery (`new`, `build_reverse_walk`,
+/// `finish`) and the serial span loop pass around. The resolution callee tree
+/// takes the three components as separate borrows.
+pub(crate) struct EngineState {
+    pub(crate) local: EngineLocal,
+    pub(crate) shared: SharedEngineContext,
+    pub(crate) concurrent: ConcurrentSession,
+    index_trailer_start: Option<[u8; 20]>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Reusable source-layer state captured from a pre-fix `EngineState` so the
@@ -99,170 +127,88 @@ impl EngineState {
             .as_ref()
             .is_some_and(|status| status.is_clean());
         let index_trailer_start = read_index_trailer(repo).ok();
-        let mut s = EngineState {
-            layers,
-            head_sha,
-            clean_layers,
-            index_diffs: None,
-            worktree_diffs: None,
-            conflicted_paths: HashSet::new(),
-            index_trailer_start,
-            warnings: Vec::new(),
-            lfs: None,
-            custom_filters: HashMap::new(),
-            session: ResolveSession::new(repo),
-            needs_all_layers,
-            fuzzy_threshold,
-            commit_reachability: HashMap::new(),
-            filter_attrs: HashMap::new(),
-        };
+        // Init-layer warnings (rare index/worktree read-budget downgrades)
+        // accrue to the engine-level `warnings` buffer, kept separate from
+        // the reverse-walk warnings the shared context later carries.
+        let mut warnings: Vec<String> = Vec::new();
+        let mut index_diffs: Option<LayerDiffs> = None;
+        let mut worktree_diffs: Option<LayerDiffs> = None;
+        let mut conflicted_paths: HashSet<String> = HashSet::new();
         if clean_layers {
             if layers.index {
-                s.index_diffs = Some(LayerDiffs::empty());
+                index_diffs = Some(LayerDiffs::empty());
             }
             if layers.worktree {
-                s.worktree_diffs = Some(LayerDiffs::empty());
+                worktree_diffs = Some(LayerDiffs::empty());
             }
         } else if layers.index || layers.worktree {
             match layer_status.as_ref() {
                 Some(status) if !status.requires_full_scan => {
                     if status.has_unmerged {
                         let _perf = crate::perf::span("resolver.init-layers.read-conflicts");
-                        s.conflicted_paths = read_conflicted_paths(repo)?;
+                        conflicted_paths = read_conflicted_paths(repo)?;
                     }
                     if layers.index {
                         if status.index_dirty {
                             let _perf = crate::perf::span("resolver.init-layers.read-index-layer");
-                            s.index_diffs = Some(read_index_layer(repo, &mut s.warnings)?);
+                            index_diffs = Some(read_index_layer(repo, &mut warnings)?);
                         } else {
-                            s.index_diffs = Some(LayerDiffs::empty());
+                            index_diffs = Some(LayerDiffs::empty());
                         }
                     }
                     if layers.worktree {
                         if status.worktree_paths.is_empty() {
-                            s.worktree_diffs = Some(LayerDiffs::empty());
+                            worktree_diffs = Some(LayerDiffs::empty());
                         } else {
                             let _perf =
                                 crate::perf::span("resolver.init-layers.read-worktree-layer");
-                            s.worktree_diffs = Some(read_worktree_layer_for_paths(
+                            worktree_diffs = Some(read_worktree_layer_for_paths(
                                 repo,
                                 &status.worktree_paths,
-                                &mut s.warnings,
+                                &mut warnings,
                             )?);
                         }
                     }
                 }
                 _ => {
                     let _perf = crate::perf::span("resolver.init-layers.full-scan");
-                    s.conflicted_paths = read_conflicted_paths(repo)?;
+                    conflicted_paths = read_conflicted_paths(repo)?;
                     if layers.index {
-                        s.index_diffs = Some(read_index_layer(repo, &mut s.warnings)?);
+                        index_diffs = Some(read_index_layer(repo, &mut warnings)?);
                     }
                     if layers.worktree {
-                        s.worktree_diffs = Some(read_worktree_layer(repo, &mut s.warnings)?);
+                        worktree_diffs = Some(read_worktree_layer(repo, &mut warnings)?);
                     }
                 }
             }
         }
-        Ok(s)
-    }
-
-    pub(crate) fn commit_reachable(
-        &mut self,
-        repo: &gix::Repository,
-        commit: &str,
-    ) -> Result<bool> {
-        if commit == self.head_sha {
-            self.commit_reachability.insert(commit.to_string(), true);
-            return Ok(true);
-        }
-        if let Some(reachable) = self.commit_reachability.get(commit) {
-            return Ok(*reachable);
-        }
-        // HEAD-relative: per drift-label spec, "orphaned (no sha)" applies
-        // when the anchor commit is not in HEAD's history, even if another
-        // ref still keeps it alive (e.g. after `checkout --orphan`).
-        let reachable = crate::git::commit_reachable_from_head(repo, commit)?;
-        self.commit_reachability
-            .insert(commit.to_string(), reachable);
-        Ok(reachable)
-    }
-
-    /// Probe `.gitattributes` for a custom `filter=<name>` driver on
-    /// `path`, returning `Some(name)` when the driver is unknown
-    /// (fail-loud short-circuit). Memoized per-`EngineState`: the first
-    /// query for a path performs the full `attr_for` lookup; later
-    /// queries are O(1) `HashMap` reads. Reuses the caller's repo handle
-    /// instead of re-opening per call.
-    pub(crate) fn filter_short_circuit(
-        &mut self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
-        let name = match self.filter_attribute_value(repo, path)? {
-            Some(n) => n,
-            None => return Ok(None),
-        };
-        if crate::types::is_core_filter(&name) {
-            return Ok(None);
-        }
-        if is_custom_filter_configured(repo, &name) {
-            return Ok(None);
-        }
-        Ok(Some(name))
-    }
-
-    /// LFS check routed through the per-state `filter_attrs` memo. The
-    /// deepest-layer LFS short-circuit in `resolve_anchor_inner` runs once
-    /// per anchor, but the `filter` attribute is a per-path fact — each
-    /// distinct path pays one attribute-stack probe per state instead of
-    /// one per anchor. Bare repo or any attribute-read failure → `false`.
-    pub(crate) fn is_lfs_path_memo(&mut self, repo: &gix::Repository, path: &str) -> bool {
-        if crate::git::work_dir(repo).is_err() {
-            return false;
-        }
-        matches!(
-            self.filter_attribute_value(repo, path),
-            Ok(Some(ref n)) if n == "lfs"
-        )
-    }
-
-    fn filter_attribute_value(
-        &mut self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
-        if let Some(cached) = self.filter_attrs.get(path) {
-            self.session.filter_attr_hits += 1;
-            return Ok(cached.clone());
-        }
-        self.session.filter_attr_misses += 1;
-        // Fail-closed: any plumbing error caches `None` so subsequent
-        // reads of the same path return the same answer (matches the
-        // un-memoed behavior in `path_filter_attribute_with_repo`).
-        let value = crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(path))
-            .unwrap_or(None);
-        self.filter_attrs.insert(path.to_string(), value.clone());
-        Ok(value)
-    }
-
-    pub(crate) fn head_blob_at(
-        &mut self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
-        // Delegate to the single session-scoped `blob_oid_memo` (keyed by
-        // `commit_sha -> path`) so there is exactly one source of truth for
-        // HEAD blob OIDs. `head_sha` is constant for the run; borrowing it
-        // directly (disjoint from `self.session`) avoids a per-call String
-        // clone on this hot path.
-        self.session.head_blob_oid(repo, &self.head_sha, path)
+        Ok(EngineState {
+            local: EngineLocal {
+                layers,
+                needs_all_layers,
+                lfs: None,
+                custom_filters: CustomFilters::new(),
+            },
+            shared: SharedEngineContext {
+                head_sha,
+                clean_layers,
+                index_diffs,
+                worktree_diffs,
+                conflicted_paths,
+                reverse_walk_output: None,
+                fuzzy_threshold,
+                warnings: Vec::new(),
+            },
+            concurrent: ConcurrentSession::new(repo),
+            index_trailer_start,
+            warnings,
+        })
     }
 
     fn finish(mut self, repo: &gix::Repository) {
-        // Forward session warnings (rename budget, budget downgrade, etc.)
-        // from the reverse-indexed walk into the engine's warning buffer.
-        self.warnings.append(&mut self.session.warnings);
+        // Forward reverse-walk warnings (rename budget, budget downgrade,
+        // etc.) from the shared context into the engine's warning buffer.
+        self.warnings.append(&mut self.shared.warnings);
         if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -274,8 +220,8 @@ impl EngineState {
         }
         // Subprocess handles drop here; `FilterProcess`'s `Drop` impl
         // closes stdin (signalling EOF) before waiting on the child.
-        let _ = self.lfs;
-        let _ = self.custom_filters;
+        let _ = self.local.lfs;
+        let _ = self.local.custom_filters;
     }
 
     /// Like `finish`, but returns the reusable source-layer state instead of
@@ -287,9 +233,9 @@ impl EngineState {
     /// are intentionally NOT carried in `SourceLayers`, so the post-fix
     /// `from_source_layers` starts clean and cannot re-emit them.
     fn finish_retaining_layers(mut self, repo: &gix::Repository) -> SourceLayers {
-        // Forward session warnings (rename budget, budget downgrade, etc.)
-        // from the reverse-indexed walk into the engine's warning buffer.
-        self.warnings.append(&mut self.session.warnings);
+        // Forward reverse-walk warnings (rename budget, budget downgrade,
+        // etc.) from the shared context into the engine's warning buffer.
+        self.warnings.append(&mut self.shared.warnings);
         if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -302,14 +248,14 @@ impl EngineState {
         // LFS and custom_filters move into SourceLayers rather than dropping
         // here: their subprocess handles stay alive for the post-fix pass.
         SourceLayers {
-            layers: self.layers,
-            head_sha: self.head_sha,
-            clean_layers: self.clean_layers,
-            index_diffs: self.index_diffs,
-            worktree_diffs: self.worktree_diffs,
-            conflicted_paths: self.conflicted_paths,
-            lfs: self.lfs,
-            custom_filters: self.custom_filters,
+            layers: self.local.layers,
+            head_sha: self.shared.head_sha,
+            clean_layers: self.shared.clean_layers,
+            index_diffs: self.shared.index_diffs,
+            worktree_diffs: self.shared.worktree_diffs,
+            conflicted_paths: self.shared.conflicted_paths,
+            lfs: self.local.lfs,
+            custom_filters: self.local.custom_filters,
         }
     }
 
@@ -343,14 +289,14 @@ impl EngineState {
         }
         state.warnings.clear();
         Ok(SourceLayers {
-            layers: state.layers,
-            head_sha: state.head_sha,
-            clean_layers: state.clean_layers,
-            index_diffs: state.index_diffs,
-            worktree_diffs: state.worktree_diffs,
-            conflicted_paths: state.conflicted_paths,
-            lfs: state.lfs,
-            custom_filters: state.custom_filters,
+            layers: state.local.layers,
+            head_sha: state.shared.head_sha,
+            clean_layers: state.shared.clean_layers,
+            index_diffs: state.shared.index_diffs,
+            worktree_diffs: state.shared.worktree_diffs,
+            conflicted_paths: state.shared.conflicted_paths,
+            lfs: state.local.lfs,
+            custom_filters: state.local.custom_filters,
         })
     }
 
@@ -369,28 +315,32 @@ impl EngineState {
         // `conflicted_paths` are correct for every post-fix per-anchor source
         // resolution — the rewritten span files appear dirty in `git status`
         // but the resolver never examines a span-root path. The reverse-walk
-        // is NOT reused (a fresh `ResolveSession` rebuilds it for the
+        // is NOT reused (a fresh `ConcurrentSession` rebuilds it for the
         // rewritten spans); only these static source-layer fields are reused.
         EngineState {
-            layers: layers.layers,
-            head_sha: layers.head_sha,
-            clean_layers: layers.clean_layers,
-            index_diffs: layers.index_diffs,
-            worktree_diffs: layers.worktree_diffs,
-            conflicted_paths: layers.conflicted_paths,
+            local: EngineLocal {
+                layers: layers.layers,
+                needs_all_layers,
+                lfs: layers.lfs,
+                custom_filters: layers.custom_filters,
+            },
+            shared: SharedEngineContext {
+                head_sha: layers.head_sha,
+                clean_layers: layers.clean_layers,
+                index_diffs: layers.index_diffs,
+                worktree_diffs: layers.worktree_diffs,
+                conflicted_paths: layers.conflicted_paths,
+                reverse_walk_output: None,
+                fuzzy_threshold,
+                warnings: Vec::new(),
+            },
+            concurrent: ConcurrentSession::new(repo),
             // Re-read fresh so the post-fix finish detects index changes that
             // occur during the post-fix resolve window (not the pre-fix one).
             index_trailer_start: read_index_trailer(repo).ok(),
             // Start clean: pre-fix warnings were already emitted by
             // finish_retaining_layers and must not be re-emitted.
             warnings: Vec::new(),
-            lfs: layers.lfs,
-            custom_filters: layers.custom_filters,
-            session: ResolveSession::new(repo),
-            needs_all_layers,
-            fuzzy_threshold,
-            commit_reachability: HashMap::new(),
-            filter_attrs: HashMap::new(),
         }
     }
 }
@@ -419,16 +369,25 @@ pub fn resolve_anchor(
         span_from_file(span_name, &file)
     };
     // Build the reverse-indexed walk so resolve_anchor_inner can consume
-    // per-anchor deltas from the shared session.  resolve_anchor_inner
+    // per-anchor deltas from the shared context.  resolve_anchor_inner
     // delegates to resolve_at_head_shared / follow_path_to_head_shared,
-    // both of which read from session.reverse_walk_output.
-    state
-        .session
-        .build_reverse_walk(repo, &[(span_name.to_string(), span.clone())])?;
+    // both of which read from shared.reverse_walk_output.
+    state.concurrent.build_reverse_walk(
+        &mut state.shared,
+        repo,
+        &[(span_name.to_string(), span.clone())],
+    )?;
     let out = match span.anchors.into_iter().find(|(id, _)| id == anchor_id) {
-        Some((_, r)) => {
-            resolve_anchor_inner(repo, &mut state, &span.config, span_name, anchor_id, r)?
-        }
+        Some((_, r)) => resolve_anchor_inner(
+            repo,
+            &mut state.local,
+            &state.shared,
+            &mut state.concurrent,
+            &span.config,
+            span_name,
+            anchor_id,
+            r,
+        )?,
         None => deleted_placeholder(anchor_id),
     };
     state.finish(repo);
@@ -542,13 +501,21 @@ fn resolve_loaded_span_with_state(
     // deltas consumed by resolve_at_head_shared.
     {
         let _perf = crate::perf::span("resolver.prepare-groups");
-        if state.session.reverse_walk_output.is_none() {
+        if state.shared.reverse_walk_output.is_none() {
             let spans = [(span.name.clone(), span.clone())];
-            state.session.build_reverse_walk(repo, &spans)?;
+            state
+                .concurrent
+                .build_reverse_walk(&mut state.shared, repo, &spans)?;
         }
     }
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
+        let EngineState {
+            local,
+            shared,
+            concurrent,
+            ..
+        } = state;
         for (id, r) in span.anchors {
             // Since-filter: in the file-backed model anchor_sha is empty, so the
             // filter is a no-op unless a non-empty anchor_sha is present.
@@ -562,24 +529,32 @@ fn resolve_loaded_span_with_state(
             let anchor_t0 = std::time::Instant::now();
             let trace_anchor_sha = r.anchor_sha.clone();
             let trace_path = r.path.clone();
-            let fast_path_before = state.session.anchors_fast_path_hits;
-            let mut resolved =
-                resolve_anchor_inner(repo, &mut *state, &span.config, &span.name, &id, r)?;
+            let fast_path_before = concurrent.anchors_fast_path_hits;
+            let mut resolved = resolve_anchor_inner(
+                repo,
+                local,
+                shared,
+                concurrent,
+                &span.config,
+                &span.name,
+                &id,
+                r,
+            )?;
             let wall_us = anchor_t0.elapsed().as_micros();
-            state.session.per_anchor_us.push(wall_us);
-            tally_anchor_status(&mut state.session, &resolved.status);
-            if let Some(trace) = state.session.per_anchor_trace.as_mut() {
+            concurrent.per_anchor_us.push(wall_us);
+            tally_anchor_status(concurrent, &resolved.status);
+            if let Some(trace) = concurrent.per_anchor_trace.as_mut() {
                 trace.push(crate::perf::TraceRow {
                     span: span.name.clone(),
                     anchor_id: id.clone(),
                     anchor_sha: trace_anchor_sha,
                     path: trace_path,
                     wall_us,
-                    fast_path: state.session.anchors_fast_path_hits > fast_path_before,
+                    fast_path: concurrent.anchors_fast_path_hits > fast_path_before,
                     status: status_label(&resolved.status),
                 });
             }
-            populate_drift_locus(repo, &mut resolved, &mut state.session);
+            populate_drift_locus(repo, &mut resolved, concurrent);
             anchors.push(resolved);
         }
     }
@@ -605,19 +580,19 @@ fn resolve_loaded_span_with_state(
 pub(crate) fn populate_drift_locus(
     repo: &gix::Repository,
     resolved: &mut AnchorResolved,
-    session: &mut super::session::ResolveSession,
+    concurrent: &mut ConcurrentSession,
 ) {
     use crate::types::DriftSource;
     match resolved.status {
         AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
-            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, session) {
+            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, concurrent) {
                 resolved.locus = locus;
             }
         }
         AnchorStatus::Deleted if resolved.locus.is_none() => {
             // Ask the walk to describe an orphaning commit when the anchor
             // is reachable but the path is absent from HEAD.
-            if let Ok(Some(locus)) = super::attribution::drift_locus(repo, resolved, session) {
+            if let Ok(Some(locus)) = super::attribution::drift_locus(repo, resolved, concurrent) {
                 resolved.locus = Some(locus);
             }
         }
@@ -625,7 +600,7 @@ pub(crate) fn populate_drift_locus(
     }
 }
 
-fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &AnchorStatus) {
+fn tally_anchor_status(session: &mut ConcurrentSession, status: &AnchorStatus) {
     match status {
         AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit => session.anchors_fresh += 1,
         AnchorStatus::Moved => session.anchors_moved += 1,
@@ -650,7 +625,7 @@ fn status_label(s: &AnchorStatus) -> &'static str {
     }
 }
 
-fn emit_timeline_cache_counters(session: &super::session::ResolveSession) {
+fn emit_timeline_cache_counters(session: &ConcurrentSession) {
     crate::perf::counter("timeline.cache-hits", session.timeline_cache_hits);
     crate::perf::counter("timeline.cache-misses", session.timeline_cache_misses);
     crate::perf::counter("timeline.cache-entries", session.timelines.len() as u64);
@@ -717,7 +692,9 @@ pub(crate) fn capture_resolution_core(
             .filter_map(|(outcome, name)| outcome.ok().flatten().map(|span| (name.clone(), span)))
             .collect();
     if !span_pairs.is_empty() {
-        state.session.build_reverse_walk(repo, &span_pairs)?;
+        state
+            .concurrent
+            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
     }
 
     let mut spans = Vec::with_capacity(span_pairs.len());
@@ -728,8 +705,16 @@ pub(crate) fn capture_resolution_core(
         // definitions sharing the same address (anchor_id), in stored order.
         let mut occurrences: HashMap<String, u32> = HashMap::new();
         for (id, r) in span.anchors {
-            let anchor_core =
-                anchor::resolve_anchor_captured(repo, &mut state, &span.config, &span.name, &id, r)?;
+            let anchor_core = anchor::resolve_anchor_captured(
+                repo,
+                &mut state.local,
+                &state.shared,
+                &mut state.concurrent,
+                &span.config,
+                &span.name,
+                &id,
+                r,
+            )?;
             let source_ordinal = {
                 let n = occurrences.entry(id.clone()).or_insert(0);
                 let v = *n;
@@ -835,7 +820,9 @@ pub(crate) fn resolve_named_spans_with_state(
                 })
                 .collect();
         if !span_pairs.is_empty() {
-            state.session.build_reverse_walk(repo, &span_pairs)?;
+            state
+            .concurrent
+            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
         }
     }
 
@@ -846,7 +833,7 @@ pub(crate) fn resolve_named_spans_with_state(
     }
     // Emit walk perf counters matching stale_spans_inner so named-span
     // resolution is observable through the same perf counter interface.
-    emit_session_walk_counters(&state.session);
+    emit_session_walk_counters(&state.concurrent);
     let source_layers = if retain_layers {
         Some(state.finish_retaining_layers(repo))
     } else {
@@ -859,7 +846,7 @@ pub(crate) fn resolve_named_spans_with_state(
 /// Emit the per-session walk/cache perf counters shared by every batch
 /// resolution surface (`stale_spans_inner`, named-span resolution, and
 /// each parallel baseline worker).
-fn emit_session_walk_counters(session: &super::session::ResolveSession) {
+fn emit_session_walk_counters(session: &ConcurrentSession) {
     crate::perf::counter("session.walk-bloom-skips", session.walk_bloom_skips);
     crate::perf::counter(
         "session.walk-bloom-false-positives",
@@ -989,7 +976,11 @@ pub(crate) fn resolve_named_spans_parallel(
                         })
                         .collect();
                     if !walk_pairs.is_empty()
-                        && let Err(e) = state.session.build_reverse_walk(&repo, &walk_pairs)
+                        && let Err(e) = state.concurrent.build_reverse_walk(
+                            &mut state.shared,
+                            &repo,
+                            &walk_pairs,
+                        )
                     {
                         fatal.lock().unwrap().get_or_insert(e);
                         break;
@@ -1008,7 +999,7 @@ pub(crate) fn resolve_named_spans_parallel(
                         out.push((start + offset, r));
                     }
                 }
-                emit_session_walk_counters(&state.session);
+                emit_session_walk_counters(&state.concurrent);
                 state.finish(&repo);
                 resolved.lock().unwrap().extend(out);
             });
@@ -1061,12 +1052,14 @@ fn stale_spans_inner(
         )?
     };
     if enable_trace {
-        state.session.enable_trace();
+        state.concurrent.enable_trace();
     }
     let mut can_skip_clean_head_ns: u128 = 0;
     {
         // Build the reverse-indexed walk once across all spans.
-        state.session.build_reverse_walk(repo, &span_pairs)?;
+        state
+            .concurrent
+            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
 
         let _perf = crate::perf::span("resolver.resolve-stale-spans");
         for (name, span) in span_pairs {
@@ -1079,7 +1072,7 @@ fn stale_spans_inner(
                     can_skip_clean_head_pinned_span(repo, &mut state, &name, &span, options)?;
                 can_skip_clean_head_ns += t.elapsed().as_nanos();
                 if skip {
-                    state.session.anchors_skipped_clean_head += span.anchors.len() as u64;
+                    state.concurrent.anchors_skipped_clean_head += span.anchors.len() as u64;
                     continue;
                 }
             }
@@ -1093,38 +1086,38 @@ fn stale_spans_inner(
         "resolver.can-skip-clean-head-us",
         (can_skip_clean_head_ns / 1_000) as u64,
     );
-    crate::perf::counter("session.walk-bloom-skips", state.session.walk_bloom_skips);
+    crate::perf::counter("session.walk-bloom-skips", state.concurrent.walk_bloom_skips);
     crate::perf::counter(
         "session.walk-bloom-false-positives",
-        state.session.walk_bloom_false_positives,
+        state.concurrent.walk_bloom_false_positives,
     );
-    crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
+    crate::perf::counter("session.walk-tree-diffs", state.concurrent.walk_tree_diffs);
     crate::perf::counter(
         "session.walk-commits-visited",
-        state.session.walk_commits_visited,
+        state.concurrent.walk_commits_visited,
     );
     crate::perf::counter(
         "session.reverse-index-build-ms",
-        state.session.reverse_index_build_ms,
+        state.concurrent.reverse_index_build_ms,
     );
     crate::perf::counter(
         "session.relocation-candidate-reads",
-        state.session.relocation_candidate_reads,
+        state.concurrent.relocation_candidate_reads,
     );
-    crate::perf::counter("session.line-index-hits", state.session.line_index_hits);
-    crate::perf::counter("session.line-index-misses", state.session.line_index_misses);
-    crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
+    crate::perf::counter("session.line-index-hits", state.concurrent.line_index_hits);
+    crate::perf::counter("session.line-index-misses", state.concurrent.line_index_misses);
+    crate::perf::counter("session.drift-locus-hits", state.concurrent.drift_locus_hits);
     crate::perf::counter(
         "session.drift-locus-misses",
-        state.session.drift_locus_misses,
+        state.concurrent.drift_locus_misses,
     );
     crate::resolver::timeline::emit_counters();
-    emit_timeline_cache_counters(&state.session);
+    emit_timeline_cache_counters(&state.concurrent);
     crate::resolver::linemap::emit_counters();
-    crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
+    crate::perf::counter("session.filter-attr-hits", state.concurrent.filter_attr_hits);
     crate::perf::counter(
         "session.filter-attr-misses",
-        state.session.filter_attr_misses,
+        state.concurrent.filter_attr_misses,
     );
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
     // the engine-state memo (one increment per `filter_short_circuit` call,
@@ -1132,11 +1125,11 @@ fn stale_spans_inner(
     // and reset at the top of `stale_spans`.
     crate::perf::counter(
         "session.filter-attr-calls",
-        state.session.filter_attr_hits + state.session.filter_attr_misses,
+        state.concurrent.filter_attr_hits + state.concurrent.filter_attr_misses,
     );
     crate::perf::counter(
         "session.filter-attr-distinct-paths",
-        state.session.filter_attr_misses,
+        state.concurrent.filter_attr_misses,
     );
     // Tier legend for the `session.*` family below:
     //   `gix-open-calls`     — count of `gix::open(...)` invocations the resolver
@@ -1152,37 +1145,37 @@ fn stale_spans_inner(
     crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
     crate::perf::counter("session.attr-for-calls", crate::perf::attr_for_calls());
     // Category 2: anchor-set decomposition.
-    let anchors_total = state.session.anchors_total();
+    let anchors_total = state.concurrent.anchors_total();
     crate::perf::counter("session.anchors-total", anchors_total);
-    crate::perf::counter("session.anchors-fresh", state.session.anchors_fresh);
-    crate::perf::counter("session.anchors-moved", state.session.anchors_moved);
-    crate::perf::counter("session.anchors-changed", state.session.anchors_changed);
-    crate::perf::counter("session.anchors-orphaned", state.session.anchors_orphaned);
+    crate::perf::counter("session.anchors-fresh", state.concurrent.anchors_fresh);
+    crate::perf::counter("session.anchors-moved", state.concurrent.anchors_moved);
+    crate::perf::counter("session.anchors-changed", state.concurrent.anchors_changed);
+    crate::perf::counter("session.anchors-orphaned", state.concurrent.anchors_orphaned);
     crate::perf::counter(
         "session.anchors-merge-conflict",
-        state.session.anchors_merge_conflict,
+        state.concurrent.anchors_merge_conflict,
     );
     crate::perf::counter(
         "session.anchors-unavailable",
-        state.session.anchors_unavailable,
+        state.concurrent.anchors_unavailable,
     );
     crate::perf::counter(
         "session.anchors-skipped-clean-head",
-        state.session.anchors_skipped_clean_head,
+        state.concurrent.anchors_skipped_clean_head,
     );
     crate::perf::counter(
         "session.anchors-fast-path-hits",
-        state.session.anchors_fast_path_hits,
+        state.concurrent.anchors_fast_path_hits,
     );
     crate::perf::counter(
         "session.anchors-full-resolution",
         anchors_total
-            .saturating_sub(state.session.anchors_fast_path_hits)
-            .saturating_sub(state.session.anchors_skipped_clean_head),
+            .saturating_sub(state.concurrent.anchors_fast_path_hits)
+            .saturating_sub(state.concurrent.anchors_skipped_clean_head),
     );
     // Category 3: per-anchor resolution distribution.
     {
-        let mut per_anchor = std::mem::take(&mut state.session.per_anchor_us);
+        let mut per_anchor = std::mem::take(&mut state.concurrent.per_anchor_us);
         per_anchor.sort_unstable();
         let percentile = |q: f64| -> u64 {
             if per_anchor.is_empty() {
@@ -1203,7 +1196,7 @@ fn stale_spans_inner(
         "session.group-legend: session.* counts in-process state and subroutine calls; \
          resolve-anchor.* names per-anchor distribution",
     );
-    let trace_rows = state.session.per_anchor_trace.take().unwrap_or_default();
+    let trace_rows = state.concurrent.per_anchor_trace.take().unwrap_or_default();
     let source_layers = if retain_layers {
         Some(state.finish_retaining_layers(repo))
     } else {
@@ -1398,27 +1391,31 @@ fn can_skip_clean_head_pinned_span(
 
 /// Returns `true` when the workspace's enabled content layers agree
 /// with HEAD *for `path` specifically*, even if some other path in the
-/// workspace is dirty. The global `state.clean_layers` is a
+/// workspace is dirty. The global `shared.clean_layers` is a
 /// fast-positive trivial-true shortcut so the genuinely-clean
 /// workspace skips the per-path HashMap probes; the same shortcut
 /// covers the "no content layers enabled" case.
-pub(crate) fn anchor_path_is_layer_clean(state: &EngineState, path: &str) -> bool {
-    if state.clean_layers || (!state.layers.index && !state.layers.worktree) {
+pub(crate) fn anchor_path_is_layer_clean(
+    local: &EngineLocal,
+    shared: &SharedEngineContext,
+    path: &str,
+) -> bool {
+    if shared.clean_layers || (!local.layers.index && !local.layers.worktree) {
         return true;
     }
-    if state.conflicted_paths.contains(path) {
+    if shared.conflicted_paths.contains(path) {
         return false;
     }
-    if state.layers.index
-        && state
+    if local.layers.index
+        && shared
             .index_diffs
             .as_ref()
             .is_some_and(|d| d.map.contains_key(path))
     {
         return false;
     }
-    if state.layers.worktree
-        && state
+    if local.layers.worktree
+        && shared
             .worktree_diffs
             .as_ref()
             .is_some_and(|d| d.map.contains_key(path))
@@ -1637,21 +1634,21 @@ mod tests {
         .unwrap();
 
         // First lookup for `a.txt` → miss.
-        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.session.filter_attr_misses, 1);
-        assert_eq!(state.session.filter_attr_hits, 0);
+        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
+        assert_eq!(state.concurrent.filter_attr_misses, 1);
+        assert_eq!(state.concurrent.filter_attr_hits, 0);
 
         // Repeated lookup for the same path → hit, no new miss.
-        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
-        let _ = state.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.session.filter_attr_misses, 1);
-        assert_eq!(state.session.filter_attr_hits, 2);
+        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
+        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
+        assert_eq!(state.concurrent.filter_attr_misses, 1);
+        assert_eq!(state.concurrent.filter_attr_hits, 2);
 
         // Distinct path → one additional miss.
-        let _ = state.filter_short_circuit(&repo, "b.txt").unwrap();
-        let _ = state.filter_short_circuit(&repo, "b.txt").unwrap();
-        assert_eq!(state.session.filter_attr_misses, 2);
-        assert_eq!(state.session.filter_attr_hits, 3);
+        let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
+        let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
+        assert_eq!(state.concurrent.filter_attr_misses, 2);
+        assert_eq!(state.concurrent.filter_attr_hits, 3);
     }
 
     fn state_for_predicate(
@@ -1691,7 +1688,7 @@ mod tests {
         assert!(out.status.success());
         let repo = gix::open(dir).unwrap();
         let mut state = EngineState::new(&repo, layers, true).unwrap();
-        state.clean_layers = clean_layers;
+        state.shared.clean_layers = clean_layers;
         let mut idx = LayerDiffs::empty();
         for p in index_paths {
             idx.map.insert(
@@ -1706,7 +1703,7 @@ mod tests {
                 },
             );
         }
-        state.index_diffs = Some(idx);
+        state.shared.index_diffs = Some(idx);
         let mut wt = LayerDiffs::empty();
         for p in worktree_paths {
             wt.map.insert(
@@ -1721,9 +1718,9 @@ mod tests {
                 },
             );
         }
-        state.worktree_diffs = Some(wt);
+        state.shared.worktree_diffs = Some(wt);
         for p in conflicted {
-            state.conflicted_paths.insert((*p).to_string());
+            state.shared.conflicted_paths.insert((*p).to_string());
         }
         state
     }
@@ -1736,7 +1733,7 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &["other.rs"], &["wiki/x.md"], &[]);
-        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1747,7 +1744,7 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
-        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1758,7 +1755,7 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &[], &["packages/anchor.rs"], &[]);
-        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1769,7 +1766,7 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
-        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1781,7 +1778,7 @@ mod tests {
         };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
         // With no content layers enabled, every path is trivially clean.
-        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1793,7 +1790,7 @@ mod tests {
         };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
         // Index layer disabled → index diffs don't disqualify.
-        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
     }
 
     #[test]
@@ -1808,7 +1805,7 @@ mod tests {
         // clean_layers=true; the shortcut is what makes the genuinely
         // clean workspace skip the HashMap probes).
         let state = state_for_predicate(layers, true, &[], &[], &[]);
-        assert!(anchor_path_is_layer_clean(&state, "anything.rs"));
+        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"anything.rs"));
     }
 
     #[test]
