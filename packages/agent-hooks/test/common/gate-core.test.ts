@@ -499,6 +499,23 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
+    it('a single-file changeset never denies on uncovered writes — a lone file cannot form a cross-file coupling', async () => {
+      const repo = makeTempRepo();
+      try {
+        const memo = createMemoryGateMemoState();
+        const executors = createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+
+        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+
+        expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+      } finally {
+        repo.cleanup();
+      }
+    });
+
     it('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {
       const freshMemo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
