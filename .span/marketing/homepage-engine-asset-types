@@ -1,0 +1,4 @@
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L47-L47 rk64:aaebd78ee52490cd
+packages/website/vite.config.ts#L22-L25 rk64:98d116e237c9e6e7
+
+vite.config.ts's assetsInclude glob must list every static-asset extension EngineScene.ts imports via ?url (currently just .glb; .hdr is stale from a removed HDRI import) — dropping an extension from one side silently breaks Vite's asset handling on the other without a type error.

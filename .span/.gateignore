@@ -1,0 +1,8 @@
+# Path-scoped exclusions for the git-span PreToolUse gate's uncovered-writes
+# check. See packages/agent-hooks/src/common/gate-ignore.ts for the grammar.
+
+# .wiki/wiki/** is the wiki tool's auto-generated anchor mesh (rk64 hashes
+# mirroring wiki-cited line ranges for staleness detection), not source the
+# gate should ask for a git span — a commit that only re-anchors a drifted
+# wiki mesh file is not an uncovered implicit dependency.
+.wiki/
