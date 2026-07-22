@@ -949,7 +949,7 @@ function renderScanFailedReason(detail: string): string {
 function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce'): string {
   const lines = uncovered.map((path) => `  - ${path}`);
   const action =
-    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "one sentence: the subsystem, what it does across locations"`.';
+    'If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why <name> -m "<one present-tense sentence naming the subsystem and what it does across the anchors>"`.';
   const closing = mode === 'enforce' ? `${action} Otherwise retry the command to proceed (one-time check).` : action;
   return [
     'Decide whether these changed files carry an implicit dependency — code kept consistent with other locations that nothing links to it:',

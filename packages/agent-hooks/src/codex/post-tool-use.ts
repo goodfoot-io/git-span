@@ -106,12 +106,12 @@ export function createHandler(
 ) {
   return async (input: PostToolUseInput, ctx: HookContext) => {
     const command = narrowApplyPatchCommand(input.tool_input);
-    if (command === null) return postToolUseOutput({});
+    if (command === null) return undefined;
 
     // Suppress only a *confirmed* non-success. An unrecognized response shape
     // proceeds (with a warning) rather than risk skipping a real edit's touch.
     const classification = classifyApplyPatchResponse(input.tool_response);
-    if (classification === 'failure') return postToolUseOutput({});
+    if (classification === 'failure') return undefined;
     if (classification === 'unknown') {
       ctx.logger.warn('Codex apply_patch tool_response shape unrecognized; running touch defensively', {
         toolResponseType: typeof input.tool_response,
@@ -143,7 +143,7 @@ export function createHandler(
       if (output.additionalContext) blocks.push(output.additionalContext);
     }
 
-    if (blocks.length === 0) return postToolUseOutput({});
+    if (blocks.length === 0) return undefined;
     const combined = blocks.join('');
     return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
   };

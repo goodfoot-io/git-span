@@ -53,10 +53,10 @@ export function createHandler(
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
       const command = narrowCommand(input.tool_input);
-      if (command === null) return preToolUseOutput({});
+      if (command === null) return null;
 
       const parsed = parseGitCommand(command);
-      if (parsed.kind === 'none') return preToolUseOutput({});
+      if (parsed.kind === 'none') return null;
 
       const cwd = input.cwd ?? '';
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
@@ -82,11 +82,11 @@ export function createHandler(
       if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
         return preToolUseOutput({ systemMessage: result.reason });
       }
-      return preToolUseOutput({});
+      return null;
     } catch (err) {
       // Adapter-level fail-open: never let a gate error block the command.
       ctx.logger.warn('git-span gate failed open on an uncaught error', { err });
-      return preToolUseOutput({});
+      return null;
     }
   };
 }

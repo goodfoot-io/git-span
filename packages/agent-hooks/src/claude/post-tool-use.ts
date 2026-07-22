@@ -69,18 +69,18 @@ export function createHandler(
     const toolInput = (input.tool_input ?? {}) as ToolInput;
 
     const absPath = derivePath(toolInput, cwd);
-    if (!absPath) return postToolUseOutput({});
+    if (!absPath) return null;
 
     // Bound the touch to the CWD repo (drops cross-repo, gitignored, and span
     // documents). Fail closed on an unresolvable CWD repo.
     const scope = resolveTouchScope(cwd, absPath);
-    if (!scope) return postToolUseOutput({});
+    if (!scope) return null;
 
     const touch = toTouchInput(toolName, toolInput, sessionId, cwd, absPath);
-    if (!touch) return postToolUseOutput({});
+    if (!touch) return null;
 
     const output = await runTouchHook(touch, executors, memo);
-    if (!output.additionalContext) return postToolUseOutput({});
+    if (!output.additionalContext) return null;
 
     return postToolUseOutput({
       hookSpecificOutput: { additionalContext: output.additionalContext },

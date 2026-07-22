@@ -161,8 +161,9 @@ kept consistent with other locations that nothing links to it:
   - src/new-module.ts
 
 If one exists: `git span add <name> <path#Lstart-Lend>` then `git span why
-<name> -m "one sentence: the subsystem, what it does across locations"`.
-Otherwise retry the command to proceed (one-time check).
+<name> -m "<one present-tense sentence naming the subsystem and what it
+does across the anchors>"`. Otherwise retry the command to proceed
+(one-time check).
 ```
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in

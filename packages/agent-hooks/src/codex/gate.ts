@@ -95,10 +95,10 @@ export function createHandler(
       ctx.logger.info('git-span gate observed shell tool', { tool_name: input.tool_name });
 
       const command = extractShellCommand(input.tool_input);
-      if (command === null) return preToolUseOutput({});
+      if (command === null) return undefined;
 
       const parsed = parseGitCommand(command);
-      if (parsed.kind === 'none') return preToolUseOutput({});
+      if (parsed.kind === 'none') return undefined;
 
       const cwd = input.cwd ?? '';
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
@@ -119,7 +119,7 @@ export function createHandler(
         if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
           return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
         }
-        return preToolUseOutput({});
+        return undefined;
       }
 
       if (hardDeny) {
@@ -136,7 +136,7 @@ export function createHandler(
       return preToolUseOutput({ additionalContext: warning, systemMessage: warning });
     } catch (err) {
       ctx.logger.warn('git-span gate failed open on an uncaught error', { err });
-      return preToolUseOutput({});
+      return undefined;
     }
   };
 }
