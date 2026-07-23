@@ -8,3 +8,4 @@
  */
 
 export { default as rawPathInclusion } from './raw-path-inclusion.js';
+export { default as treeSitterReference } from './tree-sitter-reference.js';

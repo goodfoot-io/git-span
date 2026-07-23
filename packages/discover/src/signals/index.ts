@@ -6,4 +6,10 @@
  * Stage 1's fan-out of six new files from being flagged as unused exports.
  */
 
+export { default as associationRules } from './association-rules.js';
+export { default as commitMessageSimilarity } from './commit-message-similarity.js';
+export { default as conceptualSimilarity } from './conceptual-similarity.js';
+export { default as releaseTagDelta } from './release-tag-delta.js';
+export { default as sameAuthorSession } from './same-author-session.js';
+export { default as sharedConfigKeys } from './shared-config-keys.js';
 export { default as timeWindow } from './time-window.js';

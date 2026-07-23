@@ -2,9 +2,7 @@
   "name": "git-span-discover",
   "version": "1.0.137",
   "type": "module",
-  "bin": {
-    "git-span-discover": "./dist/cli.js"
-  },
+  "bin": "./dist/cli.js",
   "scripts": {
     "build": "node scripts/build.js",
     "test": "vitest run",
@@ -20,5 +18,9 @@
   },
   "engines": {
     "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.25.10"
   }
 }

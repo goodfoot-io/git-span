@@ -1,0 +1,9 @@
+pub struct Widget {
+    pub size: u32,
+}
+
+impl Widget {
+    pub fn new() -> Widget {
+        Widget { size: 0 }
+    }
+}
