@@ -91,6 +91,48 @@ describe('createRepoContext against fixture repos', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Annotated tags (e.g. `git tag -a`/`-s`, what GitHub-created release tags
+// use) must resolve to the commit they point at, not the tag object's own
+// SHA — regression coverage for the `%(*objectname)` peeling in tags().
+// ---------------------------------------------------------------------------
+
+describe('tags() resolves annotated tags to their target commit', () => {
+  let repoRoot: string;
+
+  beforeEach(() => {
+    repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'git-span-discover-annotated-tag-'));
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main'], { cwd: repoRoot, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'fixture@example.com'], { cwd: repoRoot, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Fixture Builder'], { cwd: repoRoot, stdio: 'ignore' });
+
+    fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'hello\n');
+    execFileSync('git', ['add', '-A'], { cwd: repoRoot, stdio: 'ignore' });
+    execFileSync('git', ['commit', '--quiet', '-m', 'Initial commit'], { cwd: repoRoot, stdio: 'ignore' });
+    execFileSync('git', ['tag', '-a', 'v1', '-m', 'Release v1'], { cwd: repoRoot, stdio: 'ignore' });
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it("returns the tagged commit's SHA, not the annotated tag object's own SHA", async () => {
+    const tagObjectSha = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'v1'], { encoding: 'utf8' }).trim();
+    const commitSha = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'v1^{commit}'], { encoding: 'utf8' }).trim();
+    // An annotated tag's own object SHA and the commit SHA it points at must
+    // differ — otherwise this test wouldn't actually exercise the peeling bug.
+    expect(tagObjectSha).not.toBe(commitSha);
+
+    const ctx = createRepoContext(repoRoot);
+    const tags = await ctx.tags();
+
+    expect(tags).toHaveLength(1);
+    expect(tags[0].name).toBe('v1');
+    expect(tags[0].sha).toBe(commitSha);
+    expect(tags[0].sha).not.toBe(tagObjectSha);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // .span/ guard (design decision 5) — the history-walk exclusion is
 // independent from, and in addition to, the content-read guard.
 // ---------------------------------------------------------------------------

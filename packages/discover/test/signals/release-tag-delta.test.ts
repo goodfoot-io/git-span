@@ -41,6 +41,10 @@ function tag(dir: string, name: string): void {
   git(dir, ['tag', name]);
 }
 
+function annotatedTag(dir: string, name: string): void {
+  git(dir, ['tag', '-a', name, '-m', `Release ${name}`]);
+}
+
 describe('release-tag-delta signal', () => {
   let repoRoot: string;
 
@@ -133,6 +137,32 @@ describe('release-tag-delta signal', () => {
       return paths.includes('x.ts') && paths.includes('y.ts');
     });
     expect(xyPair).toBeUndefined();
+  });
+
+  it('groups co-changed files across ANNOTATED tag intervals, not just lightweight ones', async () => {
+    // Regression coverage: annotated tags (git tag -a/-s — what GitHub-created
+    // release tags use) resolve %(objectname) to the tag object's own SHA,
+    // not the commit it points at. If tags() ever regresses to using that
+    // raw SHA, commitsInInterval's `fromTag.sha === commit.sha` lookup never
+    // matches, and this signal silently emits zero groups.
+    writeAndCommit(repoRoot, { 'a.ts': 'v0\n', 'b.ts': 'v0\n' }, 'Initial commit');
+    annotatedTag(repoRoot, 'v1');
+
+    writeAndCommit(repoRoot, { 'a.ts': 'v1\n', 'b.ts': 'v1\n' }, 'Update a and b');
+    annotatedTag(repoRoot, 'v2');
+
+    writeAndCommit(repoRoot, { 'a.ts': 'v2\n', 'b.ts': 'v2\n' }, 'Update a and b again');
+    annotatedTag(repoRoot, 'v3');
+
+    const ctx = createRepoContext(repoRoot);
+    const groups = await releaseTagDeltaSignal(ctx);
+
+    const abPair = groups.find((group) => {
+      const paths = group.anchors.map((anchor) => anchor.path);
+      return paths.includes('a.ts') && paths.includes('b.ts');
+    });
+    expect(abPair).toBeDefined();
+    expect(abPair?.evidence[0].tags).toEqual(['v2', 'v3']);
   });
 
   it('produces no groups when there are fewer than two tags', async () => {

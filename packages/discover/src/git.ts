@@ -135,16 +135,22 @@ export async function showNameOnly(repoRoot: string, sha: string): Promise<strin
   return stdout.split('\n').filter((line) => line.length > 0);
 }
 
-/** All tags, oldest-created first, resolved to their commit SHA and date. Empty array on a repo with no tags. */
+/**
+ * All tags, oldest-created first, resolved to their commit SHA and date.
+ * Empty array on a repo with no tags. An annotated tag's `%(objectname)` is
+ * the tag object's own SHA, not the commit it points at — `%(*objectname)`
+ * peels it to the target commit, and is empty for lightweight tags (nothing
+ * to peel), so it falls back to `%(objectname)` in that case.
+ */
 export async function tags(repoRoot: string): Promise<Tag[]> {
-  const format = `%(refname:short)${FIELD_SEP}%(objectname)${FIELD_SEP}%(creatordate:iso-strict)`;
+  const format = `%(refname:short)${FIELD_SEP}%(objectname)${FIELD_SEP}%(*objectname)${FIELD_SEP}%(creatordate:iso-strict)`;
   const stdout = await runGit(repoRoot, ['tag', '--sort=creatordate', `--format=${format}`]);
   return stdout
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [name, sha, date] = line.split(FIELD_SEP);
-      return { name, sha, date };
+      const [name, objectname, peeled, date] = line.split(FIELD_SEP);
+      return { name, sha: peeled.length > 0 ? peeled : objectname, date };
     });
 }
 
