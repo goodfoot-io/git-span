@@ -458,6 +458,98 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('these files carry');
     });
 
+    it('names the covered file that shares this changeset as a related span, using a line-range anchor', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        // `src/other.ts` is covered by `billing/checkout-request-flow`;
+        // `src/uncovered.ts` has no span at all.
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('deny');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain('Other files in this change already belong to spans');
+      expect(result.reason).toContain('## billing/checkout-request-flow');
+      expect(result.reason).toContain('- src/other.ts#L5-L20');
+    });
+
+    it('renders a bare path for a whole-file anchor in the related-spans section', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 0, end: 0 })],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain('- src/other.ts');
+      expect(result.reason).not.toContain('src/other.ts#L');
+    });
+
+    it('groups multiple covered files under one shared span name, and lists multiple span names separately, sorted', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'alpha/solo', path: 'src/a1.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      const alphaIndex = result.reason.indexOf('## alpha/solo');
+      const zetaIndex = result.reason.indexOf('## zeta/pair');
+      expect(alphaIndex).toBeGreaterThan(-1);
+      expect(zetaIndex).toBeGreaterThan(alphaIndex);
+      expect(result.reason).toContain('- src/z1.ts#L1-L5');
+      expect(result.reason).toContain('- src/z2.ts#L1-L5');
+    });
+
+    it('omits the related-spans section entirely when no other file in the changeset carries any span coverage', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other-uncovered.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).not.toContain('Other files in this change already belong to spans');
+      expect(result.reason).not.toContain('---');
+    });
+
+    it('carries the related-spans section into the `inform` (status) preview and the condensed already-seen retry', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      expect(info.reason).toContain('- src/other.ts#L5-L20');
+
+      // The status preview already marked this debt state's "seen" key, so
+      // this first real commit attempt renders the condensed alreadySeen form.
+      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      if (deny.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(deny.reason).toContain('Already flagged for git-span review above.');
+      expect(deny.reason).toContain('- src/other.ts#L5-L20');
+    });
+
     it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, does not repeat the full checklist verbatim', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({

@@ -689,14 +689,14 @@ export async function evaluateGate(
           reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
         };
       }
-      const uncovered = await computeUncoveredPaths(paths, cwd, executors);
+      const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
       if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
       const seen = wasAlreadySeen(memoState, gateStateDigest([], uncovered));
       return {
         decision: 'allow',
         kind: 'uncovered-writes-info',
         uncovered,
-        reason: renderUncoveredReason(uncovered, 'inform', seen)
+        reason: renderUncoveredReason(uncovered, covering, 'inform', seen)
       };
     }
 
@@ -739,7 +739,7 @@ export async function evaluateGate(
     // (span repairs ride the same commit and must never self-trigger the gate)
     // and paths the repo's user-owned `.span/.gateignore` excludes. Gitignored
     // paths never reach here — git does not stage/publish them.
-    const uncovered = await computeUncoveredPaths(paths, cwd, executors);
+    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
     if (uncovered.length === 0) {
       // A retry that fell through past an already-presented semantic-staleness
       // digest ends clean here: surface already-presented rather than a bare
@@ -753,7 +753,10 @@ export async function evaluateGate(
     // pass the retry with an unchanged state. (No semantic rows survive to
     // here unpresented — the semantic branch above has already returned for
     // that case — so the digest's findings component is empty and the state
-    // is keyed by the uncovered set.)
+    // is keyed by the uncovered set.) `covering` — which spans for the rest of
+    // this changeset the message goes on to name — never feeds the digest: it
+    // never changes what's denied, only what's explained, so it can't spawn a
+    // fresh deny on its own.
     const digest = gateStateDigest([], uncovered);
     if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
     // A non-persisting memo write would turn "deny once, then allow the retry"
@@ -764,7 +767,7 @@ export async function evaluateGate(
       decision: 'deny',
       kind: 'uncovered-writes',
       uncovered,
-      reason: renderUncoveredReason(uncovered, 'enforce', seen)
+      reason: renderUncoveredReason(uncovered, covering, 'enforce', seen)
     };
   } catch (err) {
     // A scan that could not COMPLETE is not a clean result, but it is not
@@ -781,6 +784,22 @@ export async function evaluateGate(
 }
 
 /**
+ * {@link computeUncoveredPaths}'s result: the uncovered complement the gate
+ * denies/advises on, plus the `covering` rows the same `executors.list` call
+ * already resolved for the rest of the changeset — every anchor, in any span,
+ * whose path is one of the paths passed in. `covering` is never empty only
+ * when `uncovered` is; the two partition the changeset (minus `.span/**`/
+ * gateignored paths, which appear in neither). Kept together so a caller
+ * needing both (the uncovered-writes reason, which now also names spans
+ * already covering the changeset's other files — see
+ * {@link renderUncoveredReason}) makes one call instead of two.
+ */
+interface ChangesetCoverage {
+  uncovered: string[];
+  covering: PorcelainRow[];
+}
+
+/**
  * The changed paths with zero covering span — minus `.span/**` (span repairs
  * ride the same commit and must never self-trigger the gate) and paths the
  * repo's user-owned `.span/.gateignore` excludes (fail-open when absent/
@@ -791,23 +810,37 @@ export async function evaluateGate(
  * A changeset of fewer than two files can never carry an implicit *cross-file*
  * dependency — git-span records couplings between file/line ranges across
  * files — so a single-file (or empty) changeset short-circuits to no
- * uncovered paths rather than prompting for a coupling that cannot exist.
+ * uncovered paths (and no covering rows) rather than prompting for a coupling
+ * that cannot exist.
  */
-async function computeUncoveredPaths(paths: string[], cwd: string, executors: GateExecutors): Promise<string[]> {
-  if (paths.length < 2) return [];
+async function computeUncoveredPaths(
+  paths: string[],
+  cwd: string,
+  executors: GateExecutors
+): Promise<ChangesetCoverage> {
+  if (paths.length < 2) return { uncovered: [], covering: [] };
   const covering = await executors.list(paths, cwd);
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
-  return paths.filter((path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path));
+  const uncovered = paths.filter(
+    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path)
+  );
+  return { uncovered, covering };
 }
 
 // ---------------------------------------------------------------------------
 // Debt-state digest and reason rendering
 // ---------------------------------------------------------------------------
 
-/** `path#Lstart-Lend`, or a bare path for a whole-file anchor. */
-function anchorText(row: StalePorcelainRow): string {
+/**
+ * `path#Lstart-Lend`, or a bare path for a whole-file anchor. Typed against
+ * the fields shared by {@link StalePorcelainRow} and {@link PorcelainRow}
+ * (rather than either specifically) so both the staleness/environmental
+ * renderers and the uncovered-writes related-spans section ({@link
+ * groupCoveringByName}) can format an anchor the same way.
+ */
+function anchorText(row: { path: string; start: number; end: number }): string {
   if (row.start === 0 && row.end === 0) return row.path;
   return `${row.path}#L${row.start}-L${row.end}`;
 }
@@ -1049,17 +1082,71 @@ function renderScanFailedReason(detail: string): string {
 }
 
 /**
+ * Group `covering` — the rows {@link computeUncoveredPaths} already resolved
+ * for the rest of the changeset — by span name, each anchor rendered via
+ * {@link anchorText}. Only anchors whose `path` is one of the paths
+ * `executors.list` was scoped to appear here; a span's *other* anchors (in
+ * files outside this changeset) never do, since `covering` never contained
+ * them to begin with. Deduped (two covered files under the same name collapse
+ * to one entry each) and sorted — span names, then anchors within a
+ * name — so the rendered order is stable across runs over the same state.
+ */
+function groupCoveringByName(covering: PorcelainRow[]): { name: string; anchors: string[] }[] {
+  const byName = new Map<string, Set<string>>();
+  for (const row of covering) {
+    const anchors = byName.get(row.name) ?? new Set<string>();
+    anchors.add(anchorText(row));
+    byName.set(row.name, anchors);
+  }
+  return [...byName.keys()].sort().map((name) => ({ name, anchors: [...(byName.get(name) ?? [])].sort() }));
+}
+
+/**
+ * The "other files in this change already belong to spans" section appended
+ * to {@link renderUncoveredReason}'s output — empty (renders nothing) when
+ * `covering` is empty, i.e. no other file in the changeset has any span
+ * coverage. Deliberately tighter than the staleness/environmental blocks
+ * elsewhere in this file: no `why` sentence, no anchors outside this
+ * changeset, no `listBlocks` round-trip — just the name and the in-changeset
+ * anchor(s), read straight from data `computeUncoveredPaths` already fetched.
+ * Uncapped by design: every qualifying span/anchor is listed.
+ */
+function renderRelatedSpansSection(covering: PorcelainRow[]): string[] {
+  if (covering.length === 0) return [];
+  const lines = [
+    '',
+    '---',
+    '',
+    'Other files in this change already belong to spans — an uncovered file above might belong with one of these instead of a new one:'
+  ];
+  for (const { name, anchors } of groupCoveringByName(covering)) {
+    lines.push('', `## ${name}`, ...anchors.map((anchor) => `- ${anchor}`));
+  }
+  return lines;
+}
+
+/**
  * The list an uncovered-writes `deny` (or, in `'inform'` mode, a `status`
  * advisory) renders into `reason`, wrapped in a `<git-span>` block matching the
  * touch hook's block styling. The "retry the command to proceed (one-time
  * check)" sentence drops entirely in `'inform'` mode: a `status` check never
  * held anything, so there is nothing to retry and no consider-once state to
- * clear.
+ * clear. `covering` — the rest of the changeset's existing span coverage,
+ * from the same {@link computeUncoveredPaths} call — renders as a related-
+ * spans section (via {@link renderRelatedSpansSection}) in both the full and
+ * `alreadySeen` condensed forms: it's supplementary context about the
+ * changeset, not itself part of what's flagged or consider-once'd.
  */
-function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce', alreadySeen = false): string {
+function renderUncoveredReason(
+  uncovered: string[],
+  covering: PorcelainRow[],
+  mode: GateMode = 'enforce',
+  alreadySeen = false
+): string {
   const lines = uncovered.map((path) => `- ${path}`);
   if (alreadySeen) {
     const body = ['<git-span>', ...lines, '', 'Already flagged for git-span review above.'];
+    body.push(...renderRelatedSpansSection(covering));
     if (mode === 'enforce') {
       body.push('', 'If none exist, retry the command to proceed (one-time check).');
     }
@@ -1079,6 +1166,7 @@ function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce', 
     '',
     'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
   ];
+  body.push(...renderRelatedSpansSection(covering));
   if (mode === 'enforce') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
   }

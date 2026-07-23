@@ -157,7 +157,10 @@ pluralizes, and the closing commands use a `<name>` placeholder.
 
 **Uncovered writes** — a changed file no span anchors at all. Denied once per
 distinct debt state (a digest of the sorted findings/uncovered paths); an
-unchanged retry passes:
+unchanged retry passes. When another file in the same changeset already
+belongs to a span, a related-spans section follows the checklist — every
+qualifying anchor (no cap), restricted to paths in this changeset, rendered as
+a line range wherever the covering row carries one:
 
 ```
 <git-span>
@@ -173,11 +176,26 @@ The "<why>" is a single present-tense sentence naming what the ranges form
 together, specific enough to tell whether an edit lands inside it, with no
 rules or reminders.
 
+---
+
+Other files in this change already belong to spans — an uncovered file above
+might belong with one of these instead of a new one:
+
+## checkout-flow
+- web/checkout.tsx#L4-L6
+
 If none exist, retry the command to proceed (one-time check).
 
 Load the `git-span:git-span` skill for guidance.
 </git-span>
 ```
+
+The related-spans section is grouped by span name (sorted), then by anchor
+within a name (also sorted), and is omitted entirely when no other file in the
+changeset carries any span coverage. It carries into the `git status` advisory
+and the condensed "Already flagged" retry form the same way — it's
+supplementary context about the changeset, not part of what's flagged or
+consider-once'd, so it never affects the debt-state digest.
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
 either checklist and never deny. `.span/**` writes are excluded from the

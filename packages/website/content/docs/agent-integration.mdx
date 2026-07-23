@@ -44,7 +44,7 @@ Update the drifted locations or the description — `git span add checkout-flow
 dependency no longer holds, tell the user instead.
 ```
 
-**Uncovered writes** — a changed file no span anchors at all, denied once per distinct debt state; an unchanged retry passes:
+**Uncovered writes** — a changed file no span anchors at all, denied once per distinct debt state; an unchanged retry passes. When the rest of the changeset already belongs to spans, a related-spans section follows the checklist — only anchors that are part of *this* changeset, as line ranges wherever possible, uncapped:
 
 ```
 <git-span>
@@ -59,6 +59,14 @@ document them:
 The "<why>" is a single present-tense sentence naming what the ranges form
 together, specific enough to tell whether an edit lands inside it, with no
 rules or reminders.
+
+---
+
+Other files in this change already belong to spans — an uncovered file above
+might belong with one of these instead of a new one:
+
+## checkout-flow
+- web/checkout.tsx#L4-L6
 
 If none exist, retry the command to proceed (one-time check).
 

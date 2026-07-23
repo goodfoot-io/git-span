@@ -1,5 +1,9 @@
 packages/agent-hooks/src/common/gate-core.ts#L927-L1034 rk64:a589343a27346740
+packages/agent-hooks/src/common/gate-core.ts#L960-L1067 rk64:a589343a27346740
 packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
+packages/website/content/docs/agent-integration.mdx rk64:70ccfd311d0e7a88
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:7e1f912c70e23661
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:5b4090b6212681a6
 
 packages/website/content/docs/agent-integration.mdx rk64:70ccfd311d0e7a88
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:7e1f912c70e23661
