@@ -1,0 +1,8 @@
+packages/website/package.json#L11-L11 rk64:67af3061dc553eb1
+packages/website/package.json#L41-L41 rk64:8a089753500a174a
+packages/website/public/apple-touch-icon.png rk64:070c7f0508c466b6
+packages/website/public/favicon.png rk64:08a00641383d4d07
+packages/website/public/og-image.png rk64:8086d09b86c0dfb3
+packages/website/scripts/generate-metadata-images.mjs#L1-L183 rk64:11267107b64f8c87
+
+The generate:images script entry, playwright devDependency, generate-metadata-images.mjs, and its three rendered PNGs form the site's metadata-image pipeline, so a change to how images are produced or which images exist crosses all of them.

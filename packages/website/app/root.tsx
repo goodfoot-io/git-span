@@ -20,7 +20,13 @@ export const links: LinksFunction = () => [
 export const meta: MetaFunction = () => [
   { name: 'theme-color', content: '#f4f1e8' },
   { property: 'og:type', content: 'website' },
-  { property: 'og:site_name', content: 'git-span' }
+  { property: 'og:site_name', content: 'git-span' },
+  { property: 'og:image', content: 'https://git-span.com/og-image.png' },
+  { property: 'og:image:width', content: '1200' },
+  { property: 'og:image:height', content: '630' },
+  { property: 'og:image:alt', content: 'Git tracks changes. Spans track connections.' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: 'https://git-span.com/og-image.png' }
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {

@@ -1,4 +1,4 @@
-packages/website/app/root.tsx#L36-L36 rk64:638aa5f834009633
+packages/website/app/root.tsx#L42-L42 rk64:638aa5f834009633
 packages/website/app/routes/docs/page.tsx#L56-L56 rk64:18652837a0c624a4
 
 The docs sidebar's themeSwitch.enabled toggle and RootProvider's theme.enabled flag are the single on/off switch for the site's theme picker, kept in the same state so a rendered toggle always has a theme provider behind it.
