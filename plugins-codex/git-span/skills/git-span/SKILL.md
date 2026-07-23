@@ -84,40 +84,6 @@ git add .span && git commit -m "..."
 If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
 with `wc -l` and write the new range).
 
-## Handling a gate denial
-
-A `git commit`/`git push` can come back denied with a checklist in its
-`permissionDecisionReason`. Two shapes:
-
-- **Semantic staleness** — one or more anchors drifted for real. Resolve each
-  listed span with the recipes above (usually Re-anchor), then re-run the
-  exact same commit. This check is also consider-once: it denies once per
-  distinct set of findings, so an identical retry with the same findings
-  passes. Editing a span's anchors changes the findings and earns one fresh
-  deny.
-- **Uncovered writes** — a changed file has no covering span at all. Either
-  declare the coupling with `git span add`, or just retry the identical
-  command: this check is consider-once, so an unchanged debt state passes on
-  the second attempt.
-
-There's no override for a gate denial — every deny resolves on its own by
-either fixing the underlying debt or retrying once the finding has already
-been shown. A scan that fails to complete never blocks the command either:
-the gate warns that span debt wasn't verified and lets the command proceed;
-resolve the underlying read/scan error if the coupling still needs
-verifying.
-
-`.span/.gateignore` is a standing, committed, path-scoped opt-out of the
-uncovered-writes check specifically (a gitignore-style pattern list, same
-grammar as `.hookignore`) — see `references/hookignore.md`'s `.gateignore`
-section. It never suppresses the semantic-staleness check.
-
-**Codex caveat**: whether a denial actually blocks the shell tool here was
-never confirmed live in this repo (`references/codex-install-and-trust.md`); if
-the same `git commit`/`git push` you expected to be denied instead runs, treat
-the checklist as advisory and fix it anyway rather than assuming the gate is
-inert — the CI gate recipe (`references/ci-and-sync.md`) is the confirmed
-backstop.
 
 ## Where to go next
 Pick the first that fits:
@@ -151,7 +117,3 @@ Pick the first that fits:
 15. Sweeping `.span/**` (or a large slice of it) up to the why-writing standard, not just
     one drifted span → `references/why-cleanup-campaign.md`.
 
-## Not in this build — don't burn a `--help` call
-`move` subcommand; `stale --patch/--stat/--worktree/--staged/--head/--search`;
-`why --at/-F/--edit`; `show --patch/--at`; `add --replace`; `list --search/--batch`;
-`doctor --strict`.
