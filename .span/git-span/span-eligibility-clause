@@ -1,0 +1,14 @@
+packages/git-span/README.md#L3-L3 rk64:0ff153ec28375be2
+packages/git-span/man/git-span.1#L14-L16 rk64:6686b7f4381ab3f3
+packages/git-span/src/bin/gen-manpage.rs#L63-L65 rk64:6686b7f4381ab3f3
+packages/git-span/src/cli/mod.rs#L45-L45 rk64:c8c5ab2fb1412387
+packages/website/content/docs/concepts.mdx#L8-L8 rk64:1ac0a79214fbd3e9
+plugins-claude/git-span/skills/git-span/SKILL.md#L3-L3 rk64:40506b53fe436a65
+plugins-claude/git-span/skills/git-span/SKILL.md#L50-L51 rk64:957fc0c245e1f57f
+plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md#L3-L5 rk64:0a7e232df6ed507e
+plugins-codex/git-span/skills/git-span/SKILL.md#L3-L3 rk64:40506b53fe436a65
+plugins-codex/git-span/skills/git-span/SKILL.md#L50-L51 rk64:957fc0c245e1f57f
+plugins-codex/git-span/skills/git-span/references/finding-span-candidates.md#L3-L5 rk64:0a7e232df6ed507e
+wiki/meta/git-span-documentation-touchpoints.md#L44-L57 rk64:5dab509ead700438
+
+The span-eligibility clause excludes generated/build output from coupling and is restated in its own register by the README, concepts doc, both SKILL.md files, both finding-span-candidates references, the CLI help text, the man page generator, and the touchpoints page's own eligibility section.

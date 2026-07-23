@@ -41,6 +41,23 @@ If a documentation update changes the recommended operator workflow, all of thes
 - The positional why text placeholder rendered by the gate hook's uncovered-writes reason in [packages/agent-hooks/src/common/gate-core.ts](/packages/agent-hooks/src/common/gate-core.ts). That string is quoted verbatim by the `agent-hooks/hook-message-copy` span's doc mirrors — reword it, run `yarn build` in `packages/agent-hooks`, and update every mirror byte-for-byte.
 - The `why`-writing line in [.claude/rules/wiki.md](/.claude/rules/wiki.md).
 
+## What A Span Is (Eligibility)
+
+The canonical span definition — "coupled by nothing a schema, type, test, or build/generator
+step enforces" — excludes generated/build output (compiled artifacts, generated images,
+lockfiles, the man page); span their inputs instead. This clause is restated in its own
+register in each surface below and must move as one unit:
+
+- [packages/git-span/README.md](/packages/git-span/README.md#L3) opening sentence.
+- [concepts.mdx](/packages/website/content/docs/concepts.mdx) `## Span` section.
+- Both `SKILL.md` frontmatter `description` and the `Core gotchas` bullet, in **both**
+  plugin trees (`plugins-claude/` and `plugins-codex/`).
+- [finding-span-candidates.md](/plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md),
+  in both plugin trees.
+- Clap `after_help` in [cli/mod.rs](/packages/git-span/src/cli/mod.rs#L45).
+- `DESCRIPTION_SECTION` in [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs) —
+  run `yarn build:man` after, never edit `man/git-span.1` directly.
+
 ## Update Order
 
 When git-span CLI behavior or documentation changes, use this order:

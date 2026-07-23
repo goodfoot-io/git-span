@@ -5,7 +5,7 @@ description: Precise definitions for spans, anchors, the why, drift, and the tru
 
 ## Span
 
-A span is a named, declared coupling between file or line-range locations — a group of **anchors** that participate in something no schema, type, or test enforces, plus a **why** that says what those anchors collectively form. A span is identified by a kebab-case name (segments separated by `/`, each segment starting with a letter or digit — e.g. `checkout/min-amount`).
+A span is a named, declared coupling — a group of **anchors** coupled by nothing a schema, type, test, or build/generator step enforces — plus a **why** naming what those anchors form. A span is identified by a kebab-case name (segments separated by `/`, each segment starting with a letter or digit — e.g. `checkout/min-amount`).
 
 ## Anchor
 

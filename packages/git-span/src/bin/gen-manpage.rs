@@ -61,8 +61,8 @@ fn main() -> anyhow::Result<()> {
 const DESCRIPTION_SECTION: &str = r#".SH DESCRIPTION
 .B git span
 tracks implicit semantic dependencies in a Git repository: couplings between
-line ranges (or whole files), in code or prose, that no schema, type, or test
-enforces.
+line ranges (or whole files), in code or prose, coupled by nothing a schema,
+type, test, or build/generator step enforces.
 Each
 .B span
 anchors the participating anchors and carries a durable

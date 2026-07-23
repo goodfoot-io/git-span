@@ -42,7 +42,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-span",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A span holds the anchors — line-anchor or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why`: one complete present-tense sentence defining the subsystem those anchors form together, specific enough that a reader who just edited one anchor can tell whether their change lands inside it. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in comments at the anchor sites, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
+    after_help = "A span holds the anchors — line-anchor or whole-file, in code or prose — coupled by nothing a schema, type, test, or build/generator step enforces, and carries a `why`: one complete present-tense sentence defining the subsystem those anchors form together, specific enough that a reader who just edited one anchor can tell whether their change lands inside it. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in comments at the anchor sites, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
 )]
 pub struct Cli {
     /// Emit performance timings for major git-span operation groups to stderr.

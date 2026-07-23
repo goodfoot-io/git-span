@@ -1,6 +1,6 @@
 ---
 name: git-span
-description: Track, declare, and reconcile implicit semantic couplings between file/line ranges in a git repo via anchored spans.
+description: Track, declare, and reconcile implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
 ---
 
 # git-span
@@ -47,6 +47,8 @@ output and stop.
 - `stale`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
   not an error — that is not proof the span doesn't exist; confirm with `git span list`.
 - `stale` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
+- Don't span generated/build output (compiled artifacts, generated images, lockfiles, the
+  man page) — span its inputs instead.
 
 ## Recipes
 
@@ -60,7 +62,8 @@ The why is a definition, not a work order: a complete sentence (subject + verb, 
 `label:`) in role words, not file names, specific enough that someone who just edited one
 anchor can tell whether their change lands inside it. No rules, warnings, or review steps
 — put those in comments at the load-bearing anchor sites. A span isn't done until those
-comments exist.
+comments exist. Good example: "Product-listing pagination is a continuation-token flow
+defined by the API and mirrored by each client library."
 
 ### Re-anchor + retire (stale names the drifted anchor; fix is obvious)
 ```

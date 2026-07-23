@@ -1,7 +1,8 @@
 # Finding span candidates by mining git history
 
 An *implicit semantic dependency* is a load-bearing relationship between two
-files that the type system, test suite, and build graph do not enforce. This
+files that the type system, test suite, build graph, or generator tooling do
+not enforce. This
 section mines git history to surface those pairs, combining 13 signals
 (co-change, lagged co-change, defect propagation, churn correlation,
 cross-language symbol overlap, branch topology, reviewer overlap, and more)

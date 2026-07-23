@@ -1,4 +1,4 @@
-packages/git-span/src/cli/mod.rs#L39-L189 rk64:38631683f0a4abd3
+packages/git-span/src/cli/mod.rs#L39-L189 rk64:438be7ed598de6db
 packages/git-span/src/cli/mod.rs#L416-L484 rk64:d0ce16cc031b6cf0
 packages/git-span/src/main.rs#L49-L113 rk64:c05ed91bbc3814dc
 packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420

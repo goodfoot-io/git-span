@@ -83,7 +83,7 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
   trust-boundary violations (re-verifying `stale` output via `git log`/`git show`,
   ~50k wasted chars per occurrence), unbatched history calls, and silent router misses in
   multi-file skills. The bred-in countermeasures are visible in the winner's dispatch
-  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L115-L143) —
+  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L90-L118) —
   which routes on countable conditions with a catch-all else-branch.
 
 ## Outcome

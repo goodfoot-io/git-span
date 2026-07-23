@@ -1,6 +1,6 @@
 # git span
 
-`git span` tracks implicit semantic dependencies in a git repository — line-range or whole-file anchors that participate in a coupling no schema, type, or test enforces. Each span names its anchors, optionally carries a `why` — one present-tense sentence defining the subsystem they form together (recommended on every span), and surfaces drift via `git span stale` when those anchors diverge from their anchored state.
+`git span` tracks implicit semantic dependencies — line-range or whole-file anchors coupled by nothing a schema, type, test, or build/generator step enforces. Each span names its anchors, optionally carries a `why` — one present-tense sentence defining the subsystem they form together (recommended on every span), and surfaces drift via `git span stale` when those anchors diverge from their anchored state.
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git span stale --help` for flag reference.
 
