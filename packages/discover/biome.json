@@ -1,0 +1,27 @@
+{
+  "root": false,
+  "$schema": "https://biomejs.dev/schemas/2.4.11/schema.json",
+  "extends": ["../../biome.json"],
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "files": {
+    "includes": ["src/**/*.ts", "test/**/*.ts", "*.ts", "scripts/**/*.js"]
+  }
+}

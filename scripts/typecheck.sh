@@ -31,6 +31,14 @@ else
   echo "Warning: packages/extension not found, skipping TypeScript typecheck." >&2
 fi
 
+if [ -d "$WORKSPACE_ROOT/packages/discover" ]; then
+  echo "Running discover typecheck..."
+  (cd "$WORKSPACE_ROOT/packages/discover" && yarn typecheck) &
+  PIDS+=($!)
+else
+  echo "Warning: packages/discover not found, skipping TypeScript typecheck." >&2
+fi
+
 for PID in "${PIDS[@]}"; do
   wait "$PID" || EXIT=1
 done

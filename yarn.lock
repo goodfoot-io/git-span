@@ -7136,6 +7136,20 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"git-span-discover@workspace:packages/discover":
+  version: 0.0.0-use.local
+  resolution: "git-span-discover@workspace:packages/discover"
+  dependencies:
+    "@biomejs/biome": "npm:2.4.12"
+    "@types/node": "npm:^22.0.0"
+    esbuild: "npm:^0.28.0"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.0.16"
+  bin:
+    git-span-discover: ./dist/cli.js
+  languageName: unknown
+  linkType: soft
+
 "git-span-extension@workspace:packages/extension":
   version: 0.0.0-use.local
   resolution: "git-span-extension@workspace:packages/extension"

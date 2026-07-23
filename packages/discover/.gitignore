@@ -1,0 +1,11 @@
+dist/
+node_modules/
+tsconfig.tsbuildinfo
+
+# Fixture repos are real git checkouts, generated at test time by
+# test/fixtures/build-fixture-repos.ts — never committed (a nested .git
+# directory would be tracked as a gitlink, not real content).
+test/fixtures/single-commit-repo/
+test/fixtures/no-tags-repo/
+test/fixtures/shallow-clone-repo/
+test/fixtures/.shallow-clone-origin/

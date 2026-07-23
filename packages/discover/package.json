@@ -1,0 +1,24 @@
+{
+  "name": "git-span-discover",
+  "version": "1.0.137",
+  "type": "module",
+  "bin": {
+    "git-span-discover": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}
