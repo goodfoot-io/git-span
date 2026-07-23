@@ -755,7 +755,8 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 // ---------------------------------------------------------------------------
 
 pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
-    // Positional text → write mode. Piped stdin → write mode.
+    // Positional text → write mode. Piped stdin → write mode (only when
+    // data is actually present — an empty stdin falls through to read).
     // Terminal stdin with no positional → read mode (print current why).
     if let Some(m) = args.why_text {
         crate::validation::validate_span_name(&args.name)?;
@@ -764,12 +765,14 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result
         return print_why_written(&args.name);
     }
     if !std::io::stdin().is_terminal() {
-        crate::validation::validate_span_name(&args.name)?;
-        let _perf = crate::perf::span("why.write");
         let mut body = String::new();
         std::io::stdin().read_to_string(&mut body)?;
-        run_why_writer(repo, &args.name, &body, span_root)?;
-        return print_why_written(&args.name);
+        if !body.is_empty() {
+            crate::validation::validate_span_name(&args.name)?;
+            let _perf = crate::perf::span("why.write");
+            run_why_writer(repo, &args.name, &body, span_root)?;
+            return print_why_written(&args.name);
+        }
     }
     let _perf = crate::perf::span("why.read");
     run_why_reader(repo, &args.name, span_root)
