@@ -1,7 +1,9 @@
 packages/git-span/src/resolver/engine/mod.rs#L928-L930 rk64:ffe5049cf110d674
 packages/git-span/src/resolver/engine/mod.rs#L1519-L1523 rk64:0b67bdc3e215b462
 packages/git-span/src/resolver/mod.rs#L36-L36 rk64:fbf80b9853416cb1
+packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L40-L305 rk64:b4f60526ef0bd9e3
 packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L40-L306 rk64:72bfb44b7ee0418a
 packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L556-L657 rk64:1a63ab9fbf38de80
+packages/git-span/tests/cases/cli_stale_fix_perf_equivalence.rs#L566-L655 rk64:f493a084a1131c9a
 
 The stale --fix output-equivalence subsystem is the splice path that renders byte-identical to a full re-resolve, keeping span_is_reportable_in_stale_discovery's fresh-span omission and sort_spans_by_anchor_path's stable tie-break consistent between the read-only and --fix passes, exercised by the perf-equivalence test suite's stdout/stderr/exit-code assertions.
