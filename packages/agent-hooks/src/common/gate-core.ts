@@ -37,6 +37,7 @@ import {
   isEnvironmentalStatus,
   isInsideSpanRoot,
   type PorcelainRow,
+  type PorcelainStatus,
   parsePorcelain,
   parseStalePorcelain,
   resolveRepoRoot,
@@ -861,6 +862,31 @@ async function fetchSpanBlocks(executors: GateExecutors, rows: StalePorcelainRow
 }
 
 /**
+ * Collapse rows that name the same anchor address into one entry, combining
+ * their distinct statuses (sorted) and preserving first-seen order. The CLI's
+ * `stale --format porcelain` emits one row per *drifting layer* for a single
+ * anchor (e.g. both worktree and index changed) — a distinction the `src`
+ * column carries but {@link parseStalePorcelain} deliberately drops — so
+ * without this collapse the same anchor would otherwise render as two (or
+ * more) identical bullets instead of one bullet with every status it earned.
+ */
+function dedupeByAnchor(rows: StalePorcelainRow[]): { addr: string; statuses: PorcelainStatus[] }[] {
+  const order: string[] = [];
+  const byAddr = new Map<string, Set<PorcelainStatus>>();
+  for (const row of rows) {
+    const addr = anchorText(row);
+    let statuses = byAddr.get(addr);
+    if (!statuses) {
+      statuses = new Set();
+      byAddr.set(addr, statuses);
+      order.push(addr);
+    }
+    statuses.add(row.status);
+  }
+  return order.map((addr) => ({ addr, statuses: [...(byAddr.get(addr) ?? [])].sort() }));
+}
+
+/**
  * Annotate `git span list` human blocks with per-anchor drift labels: each
  * bullet whose anchor matches a finding gains ` — <label>`. Bullets are only
  * the contiguous `- ` run directly under a `## <name>` header, so a
@@ -868,6 +894,10 @@ async function fetchSpanBlocks(executors: GateExecutors, rows: StalePorcelainRow
  * Findings whose anchor has no matching bullet are appended to their span's
  * bullet run; spans absent from `blocksText` entirely (or an empty/failed
  * list read) get a synthesized minimal block — no finding is ever dropped.
+ * Every finding matching (or appended for) a given anchor address is
+ * collapsed via {@link dedupeByAnchor} first, so a single anchor never
+ * renders as more than one bullet regardless of how many drifting-layer rows
+ * the CLI emitted for it.
  */
 function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   const remaining = new Map<string, StalePorcelainRow[]>();
@@ -881,7 +911,9 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   let pending: StalePorcelainRow[] = [];
   let inBullets = false;
   const closeBullets = (): void => {
-    for (const row of pending) out.push(`- ${anchorText(row)} — ${humanStatusLabel(row.status)}`);
+    for (const { addr, statuses } of dedupeByAnchor(pending)) {
+      out.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+    }
     pending = [];
     inBullets = false;
   };
@@ -900,11 +932,14 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
       }
       if (inBullets && line.startsWith('- ')) {
         const addr = line.slice(2);
-        let idx = pending.findIndex((row) => anchorText(row) === addr);
-        if (idx === -1) idx = pending.findIndex((row) => addr === row.path || addr.startsWith(`${row.path}#`));
-        if (idx >= 0) {
-          const [row] = pending.splice(idx, 1);
-          out.push(`${line} — ${humanStatusLabel(row.status)}`);
+        const exact = pending.filter((row) => anchorText(row) === addr);
+        const matched =
+          exact.length > 0 ? exact : pending.filter((row) => addr === row.path || addr.startsWith(`${row.path}#`));
+        if (matched.length > 0) {
+          const matchedSet = new Set(matched);
+          pending = pending.filter((row) => !matchedSet.has(row));
+          const statuses = [...new Set(matched.map((row) => row.status))].sort();
+          out.push(`${line} — ${statuses.map(humanStatusLabel).join(', ')}`);
         } else {
           out.push(line);
         }
@@ -919,7 +954,9 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   for (const [name, group] of remaining) {
     if (out.length > 0) out.push('', '---', '');
     out.push(`## ${name}`);
-    for (const row of group) out.push(`- ${anchorText(row)} — ${humanStatusLabel(row.status)}`);
+    for (const { addr, statuses } of dedupeByAnchor(group)) {
+      out.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+    }
   }
 
   return out.join('\n');
@@ -964,6 +1001,20 @@ function renderStalenessReason(
     '',
     closing
   ].join('\n');
+}
+
+/**
+ * Wrap `text` for delivery as a harness's `additionalContext`, so every such
+ * payload this gate emits sits inside a `<git-span>...</git-span>` block —
+ * matching the touch hook's block styling — never bare prose. A no-op when
+ * `text` already carries a `<git-span>` tag somewhere (e.g.
+ * {@link renderUncoveredReason}'s output already wraps itself), so a caller
+ * can apply this unconditionally without ever nesting one block inside
+ * another.
+ */
+export function wrapGitSpanContext(text: string): string {
+  if (text.includes('<git-span>')) return text;
+  return `<git-span>\n${text}\n</git-span>`;
 }
 
 /**

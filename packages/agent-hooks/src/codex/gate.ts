@@ -45,7 +45,8 @@ import {
   type GateMemoState,
   type GitExecutor,
   parseGitCommand,
-  resolveChangeset
+  resolveChangeset,
+  wrapGitSpanContext
 } from '../common/gate-core.js';
 
 /**
@@ -112,12 +113,18 @@ export function createHandler(
         // additional context.
         if (result.kind === 'environmental' || result.kind === 'scan-failed') {
           ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
-          return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
+          return preToolUseOutput({
+            additionalContext: wrapGitSpanContext(result.reason),
+            systemMessage: result.reason
+          });
         }
         // `status`-only advisory kinds: span debt exists, but a status check
         // never holds the command — surface it as information, not a warning.
         if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
-          return preToolUseOutput({ additionalContext: result.reason, systemMessage: result.reason });
+          return preToolUseOutput({
+            additionalContext: wrapGitSpanContext(result.reason),
+            systemMessage: result.reason
+          });
         }
         return undefined;
       }
@@ -133,7 +140,7 @@ export function createHandler(
       // Fallback path (CARD.md contingency): cannot block, so surface the same
       // checklist as a loud warning and allow — the CI recipe enforces for Codex.
       const warning = `Could not block this command — the issue below still needs resolving:\n${result.reason}`;
-      return preToolUseOutput({ additionalContext: warning, systemMessage: warning });
+      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
     } catch (err) {
       ctx.logger.warn('git-span gate failed open on an uncaught error', { err });
       return undefined;
