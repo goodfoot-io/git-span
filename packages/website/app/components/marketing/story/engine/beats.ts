@@ -21,7 +21,7 @@ export const FRONT_SCALE = 1.25; // gear's oversized scale while its mismatch be
 // same as every other red/green color on the page -- keeping this pair's own S/L, only the hue
 // moved (from a teal-leaning emerald to true green, negligibly for the red).
 export const HIGHLIGHT_GREEN = '#05962c'; // the shared "resolved" color every mismatch part settles into, and the bounding box's tint
-export const HIGHLIGHT_RED = '#dc3426';
+export const HIGHLIGHT_RED = '#b8170a'; // darker, more saturated than the original '#dc3426' -- that value's ~50% lightness read as pink once lit and tinted onto the metal
 export const HIGHLIGHT_BLUE = '#2563eb'; // the ring gear's own first-stage transition color
 // A pre-highlight pulse on the gear + pistons + engineBackCover right around when the camera
 // settles into its canonical framing (see CAMERA_SETTLE_T), fading directly into the mismatch

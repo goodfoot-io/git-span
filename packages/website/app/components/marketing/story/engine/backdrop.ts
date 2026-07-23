@@ -22,13 +22,13 @@ interface Beat {
 const HOLD_HALF_WIDTH = 2;
 const FADE_WIDTH = 3;
 
-// Red and green share the same S/L (S45%/L35%) and are each hued to match --color-negative /
+// Red and green share the same S/L (S85%/L35%) and are each hued to match --color-negative /
 // --color-positive exactly (4.5° / 135.95°, see global.css) so they read as a matched pair and
 // stay aligned with every other red/green color on the page -- keep any future retune of one
 // mirrored in the other, on those same two hues.
 const BEATS: readonly Beat[] = [
-  { t: 45, color: '#813731' }, // muted but bright brick red
-  { t: 88, color: '#318146' } // muted but bright sage green -- same S/L as the t45 red
+  { t: 45, color: '#a5190d' }, // heavily saturated brick red
+  { t: 88, color: '#0da536' } // heavily saturated sage green -- same S/L as the t45 red
 ];
 
 type Rgb = readonly [number, number, number];
@@ -159,7 +159,7 @@ function hslToRgb(h: number, s: number, l: number): Rgb {
 // swatch/mockup artifact from the design discussion for the visual comparison this was picked
 // against.
 const CORE_LIGHTNESS_LIFT_FRACTION = 0.09; // of the distance from edge L to 100%
-const CORE_SATURATION_LIFT_FRACTION = 0.12; // of the distance from edge S to 100%
+const CORE_SATURATION_LIFT_FRACTION = 0.25; // of the distance from edge S to 100%
 
 function coreColorFor(edgeHex: string): string {
   const [h, s, l] = rgbToHsl(hexToRgb(edgeHex));

@@ -35,17 +35,17 @@ interface CtaLink {
 
 function CtaButtons({ primary, secondary }: { primary: CtaLink; secondary: CtaLink }) {
   return (
-    <div className="flex flex-wrap items-center gap-4">
+    <div className="flex flex-nowrap items-center gap-2 sm:gap-4">
       <Link
         to={primary.href}
-        className="inline-flex items-center gap-2 rounded-radius bg-accent px-5 py-3 font-mono text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+        className="inline-flex items-center gap-2 whitespace-nowrap rounded-radius bg-accent px-3 py-3 font-mono text-xs font-medium text-white transition-colors hover:bg-accent-hover sm:px-5 sm:text-sm"
       >
         <DownloadIcon size={16} />
         {primary.label}
       </Link>
       <Link
         to={secondary.href}
-        className="inline-flex items-center gap-2 rounded-radius border border-rule px-5 py-3 font-mono text-sm font-medium text-ink-primary transition-colors hover:bg-ground-raised"
+        className="inline-flex items-center gap-2 whitespace-nowrap rounded-radius border border-rule bg-white px-3 py-3 font-mono text-xs font-medium text-ink-primary transition-colors hover:bg-ground-raised sm:px-5 sm:text-sm"
       >
         <GithubInvertedIcon size={16} />
         {secondary.label}
@@ -62,16 +62,9 @@ function HeroIntro() {
     // whatever space is available instead of clamping to a fixed max-width.
     <div className="mx-auto w-full max-w-xl lg:mx-0 lg:max-w-none">
       <h1 className="text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.02em] text-balance text-ink-primary sm:text-5xl lg:text-[2rem] xl:text-[2.75rem]">
-        {HERO.headline.map((segment, index) => (
+        {HERO.headline.map((segment) => (
           <span key={segment.text}>
             {segment.code ? <span className="font-mono">{segment.text}</span> : segment.text}
-            {/* A hard break at the sentence boundary -- text-balance alone isn't reliable here
-                because the column's width swings from a capped centered measure to a direct
-                fraction of the viewport (see the comment on this component's wrapper div), so the
-                two sentences need to land on their own lines regardless of where that measure
-                falls. text-balance stays on to balance any further soft-wrap within a sentence at
-                narrow widths. */}
-            {index === 0 && <br />}
           </span>
         ))}
       </h1>
@@ -161,9 +154,9 @@ export default function Index() {
       {/* Closing. The full-width top rule terminates the split layout's column rule and the
           engine's scroll-away tail with a clean sectioning line. */}
       <section className="border-t border-rule bg-ground">
-        <div className="mx-auto max-w-2xl px-6 py-24 text-center">
+        <div className="mx-auto max-w-2xl px-6 py-24 text-left sm:text-center">
           <h2 className="text-3xl font-semibold tracking-tight text-ink-primary sm:text-4xl">{CLOSING.headline}</h2>
-          <div className="mt-8 flex justify-center">
+          <div className="mt-8 flex justify-start sm:justify-center">
             <CtaButtons primary={CLOSING.primaryCta} secondary={CLOSING.secondaryCta} />
           </div>
         </div>

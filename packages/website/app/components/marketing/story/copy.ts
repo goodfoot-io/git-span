@@ -37,23 +37,19 @@ const GITHUB_URL = 'https://github.com/goodfoot-io/git-span';
 const GETTING_STARTED_URL = '/docs/getting-started';
 
 const PRIMARY_CTA: Cta = { label: 'Install git-span', href: GETTING_STARTED_URL };
-const SECONDARY_CTA: Cta = { label: 'View on GitHub', href: GITHUB_URL };
+const SECONDARY_CTA: Cta = { label: 'Star on GitHub', href: GITHUB_URL };
 
 export const HERO: HeroCopy = {
-  headline: [
-    { text: 'Git tracks changes. ', code: false },
-    { text: 'Spans', code: false },
-    { text: ' track connections.', code: false }
-  ],
+  headline: [{ text: 'Agents should read between the lines.', code: false }],
   supporting:
-    'Spans document implicit dependencies, the invisible connections in your project that type systems cannot see. ' +
-    'Coding agents using git-span understand how the changes they make will affect other parts of the repository.',
+    'git-span documents implicit dependencies, the invisible connections in your project that type systems cannot see. ' +
+    'Coding agents using git-span understand how the changes they make will affect other parts of your project.',
   primaryCta: PRIMARY_CTA,
   secondaryCta: SECONDARY_CTA
 };
 
 export const CLOSING: ClosingCopy = {
-  headline: 'Give agents the context they need.',
+  headline: 'Give your agents the tools to read between the lines.',
   primaryCta: PRIMARY_CTA,
   secondaryCta: SECONDARY_CTA
 };
@@ -89,7 +85,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   traverse: {
     prose: {
-      headline: 'Some files depend on each other but are not directly connected.',
+      headline: 'Some files depend on each other without being directly connected.',
       body: 'Separate parts of a repository often participate in the same behavior. An API response and the client code that reads it. SDKs written in different languages. No import, type, or reference connects these sections, but changing one can require attention elsewhere. Without a place to record the connection, it survives only as long as someone remembers it.'
     },
     caption:
@@ -97,7 +93,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   change: {
     prose: {
-      headline: 'Coding agents change files without understanding the consequences.',
+      headline: 'Coding agents make changes without understanding the consequences.',
       body: 'Your coding agent renames an API response field, implemented in TypeScript, from “page” to “cursor.” Git records the edited line exactly. Nothing in the commit points to the Python client that still reads “page.”'
     },
     caption:
@@ -105,7 +101,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   failure: {
     prose: {
-      headline: "By the time you notice it's already too late.",
+      headline: 'By the time you notice the integration problems, it’s too late.',
       body: 'The API change looks complete. Then the catalog sync reaches the untouched client and crashes. The connection becomes visible only after the work looked finished, when rediscovering it costs the most.'
     },
     caption:
@@ -113,15 +109,15 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   second: {
     prose: {
-      headline: 'Spans help coding agents understand hidden connections.',
-      body: 'A span gives the connection a name, identifies the exact file and line locations involved, and explains why those sections belong together. It lives in .span/ as ordinary tracked text, so it can be reviewed, committed, and shared with the code.'
+      headline: 'Spans document these indirect connections and monitor changes.',
+      body: 'A span gives the connection a name, identifies the files and line ranges involved, and explains why those sections belong together. It lives in .span/ as ordinary tracked text, so it can be reviewed, committed, and shared with the code. Content hashes of the range are stored to detect changes.'
     },
     caption:
       'The engine settles back into its exploded view as the color drains away from the ring gear, the pistons, and the rear cover and the ring gear shrinks back to its normal size; once everything is back in place, a box of green glass fades in tightly around the three of them'
   },
   span: {
     prose: {
-      headline: 'Spans document code when and where agents need it, but not before.',
+      headline: 'git-span notifies coding agents when they read or write connected files.',
       body: 'When a coding agent reads or edits a recorded line range, git-span puts the span into its context before the tool runs. The agent receives the span’s name, every connected location, and the explanation of how those sections relate. The client that was absent from the diff is now part of the work.'
     },
     caption:
@@ -129,7 +125,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   related: {
     prose: {
-      headline: 'Understanding connections leads to better decisions.',
+      headline: 'Connected files are now updated together, so integration never breaks.',
       body: 'The agent follows the surfaced location, reads the client code, and updates it to use “cursor.” git-span never edits source code or chooses the fix. It brings recorded knowledge into the work while there is still time to act on it.'
     },
     caption:
@@ -137,7 +133,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   },
   success: {
     prose: {
-      headline: 'Agents succeed with the right context.',
+      headline: 'Agents using git-span complete tasks faster, with fewer mistakes.',
       body: 'The API and client now agree on “cursor.” The catalog sync passes. No late crash. No return to work everyone thought was finished. Git tracked the edits. The span kept the connection visible.'
     },
     caption:

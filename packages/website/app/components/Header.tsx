@@ -77,7 +77,7 @@ export function Header() {
             className={`hidden items-center gap-1.5 rounded-radius px-3.5 py-2 font-mono text-xs font-medium whitespace-nowrap transition-colors sm:inline-flex ${
               emphasized
                 ? 'border border-accent bg-accent text-white hover:border-accent-hover hover:bg-accent-hover'
-                : 'border border-rule text-ink-primary hover:bg-ground-raised'
+                : 'border border-rule bg-white text-ink-primary hover:bg-ground-raised'
             }`}
           >
             <DownloadIcon size={14} />

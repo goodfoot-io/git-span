@@ -73,7 +73,7 @@ All of it is under `packages/website/app/components/marketing/story/`:
   studio-lighting HDRI (`studio_small_08_1k.hdr`, Poly Haven, CC0) used as the environment map. No
   albedo/color texture ships — see [Materials](#materials-why-there-is-no-albedo-texture).
 
-Mounted in [`_index.tsx`](../../packages/website/app/routes/_index.tsx#L131-L137) inside the
+Mounted in [`_index.tsx`](../../packages/website/app/routes/_index.tsx#L124-L130) inside the
 pinned right column, and enabled for `.glb`/`.hdr` imports by
 [`vite.config.ts`](../../packages/website/vite.config.ts#L22-L25)'s `assetsInclude`.
 

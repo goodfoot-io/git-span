@@ -74,10 +74,10 @@ export function PhaseSpecimen({ state }: { state: PhaseId }) {
             {row.text}
           </div>
         ))}
-        <div className="text-terminal-ink-faint">{`  ⎿  ${specimen.hookLabel}`}</div>
+        <div className="text-white">{`  ⎿  ${specimen.hookLabel}`}</div>
         {/* pl-[5ch] instead of a space prefix keeps the why lines indented flush under the ⎿ marker's text column. */}
         {specimen.hookLines.map((line) => (
-          <div key={line} className="pl-[5ch] text-terminal-ink-faint">
+          <div key={line} className="pl-[5ch] text-white">
             {line}
           </div>
         ))}

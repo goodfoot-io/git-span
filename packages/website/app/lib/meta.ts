@@ -6,7 +6,7 @@ export const DEFAULT_DESCRIPTION =
   'Git-native code annotations that ship with every commit. Keep context where it belongs -- in your source tree, not your brain.';
 export const DEFAULT_OG_IMAGE = {
   path: '/og-image.png',
-  alt: 'Git tracks changes. Spans track connections.'
+  alt: 'Agents should read between the lines.'
 };
 const OG_IMAGE_WIDTH = 1200;
 const OG_IMAGE_HEIGHT = 630;
