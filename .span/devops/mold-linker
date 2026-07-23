@@ -1,7 +1,7 @@
 .devcontainer/Dockerfile#L7-L44 rk64:03dd4c8c355514b0
 README.md#L96-L103 rk64:c1462e5cceb63e63
 packages/git-span-core/.cargo/config.toml rk64:5305ed937b7a6692
-packages/git-span/.cargo/config.toml#L12-L19 rk64:6b6292996333b660
+packages/git-span/.cargo/config.toml#L19-L26 rk64:6b6292996333b660
 packages/git-span/scripts/cc.mold-wrapper.sh#L2-L13 rk64:46a91d24e15050d1
 
 The devcontainer image installs and verifies the mold linker, both Rust packages' cargo configs select it through the shared cc wrapper as a per-target linker key that RUSTFLAGS cannot override, and the README documents the equivalent manual install for machines outside the devcontainer.
