@@ -1,4 +1,5 @@
 packages/agent-hooks/src/common/gate-core.ts#L927-L1034 rk64:a589343a27346740
+packages/agent-hooks/src/common/gate-core.ts#L927-L1085 rk64:3b1935d52d4591a5
 packages/agent-hooks/src/common/gate-core.ts#L964-L1085 rk64:78ae9b45c3204d14
 packages/agent-hooks/src/common/touch-core.ts#L234-L254 rk64:631e2e60bfb1c1b1
 packages/agent-hooks/src/common/touch-core.ts#L245-L265 rk64:631e2e60bfb1c1b1
