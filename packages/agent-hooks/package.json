@@ -1,6 +1,6 @@
 {
   "name": "agent-hooks",
-  "version": "1.0.136",
+  "version": "1.0.137",
   "type": "module",
   "scripts": {
     "build": "yarn build:claude && yarn build:codex",
