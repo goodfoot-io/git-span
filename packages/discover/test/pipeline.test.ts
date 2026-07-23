@@ -12,9 +12,36 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { discover } from '../src/cli.js';
 import { toJson, toMarkdown } from '../src/output.js';
+import type { AnchorGroup, RepoContext, Signal } from '../src/types.js';
+
+/**
+ * Signal-mocking seam for the rename-tracking-dedup test below: `discover()`
+ * builds `ALL_SIGNALS` once from this module's exports at import time, so a
+ * per-test override has to live *inside* a wrapper function captured at
+ * import time, not swap which functions are exported. When
+ * `signalOverride.value` is set, the first wrapped signal returns exactly
+ * those groups (every other wrapped signal returns `[]`, so the override
+ * fires once per `discover()` call, not once per real signal); otherwise
+ * every wrapped signal delegates to the real implementation, leaving every
+ * other test in this file running the genuine pipeline.
+ */
+const signalOverride: { value: AnchorGroup[] | null } = { value: null };
+
+vi.mock('../src/signals/index.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, Signal>>();
+  const keys = Object.keys(actual);
+  const wrapped: Record<string, Signal> = {};
+  keys.forEach((key, index) => {
+    wrapped[key] = async (ctx: RepoContext) => {
+      if (signalOverride.value) return index === 0 ? signalOverride.value : [];
+      return actual[key](ctx);
+    };
+  });
+  return wrapped;
+});
 
 function git(cwd: string, args: string[], isoDate?: string): void {
   const env = isoDate ? { ...process.env, GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate } : process.env;
@@ -55,6 +82,7 @@ describe('full pipeline', () => {
 
   afterEach(() => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
+    signalOverride.value = null;
   });
 
   it('mines a fixture repo end-to-end, leaving .span/ untouched and emitting path#Lstart-Lend anchors', async () => {
@@ -128,5 +156,51 @@ describe('full pipeline', () => {
     // repoRoot from beforeEach is `git init`'d but has zero commits — the
     // natural boundary case a fresh, unused project would hit (finding 1).
     await expect(discover(repoRoot)).resolves.toEqual([]);
+  });
+
+  it('dedupes two distinct pass-2 survivor groups that resolve to the same surviving anchor set at HEAD', async () => {
+    // a.ts and b.ts survive to HEAD; x.ts and y.ts are each deleted in a
+    // later commit. Two synthetic pass-1/pass-2 survivor groups — {a,b,x} and
+    // {a,b,y} — are distinct pre-resolution (grouping's full-match check
+    // doesn't merge them: x and y don't overlap), but rename-tracking drops
+    // the deleted third anchor from each, so both resolve to the identical
+    // {a,b} pair at HEAD. discover()'s output must contain exactly one entry
+    // for that pair, not two — the gap this test was written to close.
+    write(repoRoot, 'a.ts', 'const a = 1;\n');
+    write(repoRoot, 'b.ts', 'const b = 2;\n');
+    write(repoRoot, 'x.ts', 'const x = 3;\n');
+    write(repoRoot, 'y.ts', 'const y = 4;\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add a.ts, b.ts, x.ts, y.ts'], T0);
+
+    fs.rmSync(path.join(repoRoot, 'x.ts'));
+    fs.rmSync(path.join(repoRoot, 'y.ts'));
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'delete x.ts and y.ts'], T0_1M);
+
+    const groupWithX: AnchorGroup = {
+      anchors: [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'x.ts' }],
+      evidence: [{ signal: 'association-rules', strength: 1, detail: 'synthetic: a+b+x' }],
+      score: 0
+    };
+    const groupWithY: AnchorGroup = {
+      anchors: [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'y.ts' }],
+      evidence: [{ signal: 'association-rules', strength: 1, detail: 'synthetic: a+b+y' }],
+      score: 0
+    };
+    signalOverride.value = [groupWithX, groupWithY];
+
+    const groups = await discover(repoRoot);
+
+    const abPair = groups.filter(
+      (g) =>
+        g.anchors.length === 2 && g.anchors.some((a) => a.path === 'a.ts') && g.anchors.some((a) => a.path === 'b.ts')
+    );
+    expect(abPair).toHaveLength(1);
+
+    // Evidence from both original groups survived the merge.
+    const details = abPair[0].signals.map((e) => e.detail);
+    expect(details).toContain('synthetic: a+b+x');
+    expect(details).toContain('synthetic: a+b+y');
   });
 });

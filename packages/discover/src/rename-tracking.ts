@@ -349,6 +349,60 @@ function mergeEvidence(groups: readonly AnchorGroup[]): SignalEvidence[] {
   return [...seen.values()].sort((a, b) => evidenceKey(a).localeCompare(evidenceKey(b)));
 }
 
+/** One resolved group paired with an arbitrary per-group payload the caller wants carried through dedup (e.g. cli.ts's disqualifier results). */
+export interface ResolvedWithPayload<T> {
+  group: AnchorGroup;
+  payload: T;
+}
+
+/**
+ * Buckets already-HEAD-resolved groups by canonical anchor-set key and merges
+ * any bucket with more than one member into a single entry: anchors from the
+ * bucket's first member, evidence unioned across the bucket (mirrors
+ * grouping.ts's unionEvidence), score as the bucket max, and payload merged
+ * via the caller-supplied `mergePayloads` (e.g. cli.ts unions disqualifier
+ * results the same way evidence is unioned). Order-preserving on each key's
+ * first occurrence. This is the shared dedup step both
+ * {@link resolveGroupsToHead} and cli.ts's `discover()` run through, so
+ * production and tests exercise the identical logic rather than cli.ts
+ * re-implementing it inline.
+ */
+export function dedupeResolvedByAnchorSet<T>(
+  items: readonly ResolvedWithPayload<T>[],
+  mergePayloads: (payloads: readonly T[]) => T
+): ResolvedWithPayload<T>[] {
+  const byAnchorSet = new Map<string, ResolvedWithPayload<T>[]>();
+  const order: string[] = [];
+  for (const item of items) {
+    const key = anchorSetKey(item.group.anchors);
+    const bucket = byAnchorSet.get(key);
+    if (bucket) {
+      bucket.push(item);
+    } else {
+      byAnchorSet.set(key, [item]);
+      order.push(key);
+    }
+  }
+
+  const out: ResolvedWithPayload<T>[] = [];
+  for (const key of order) {
+    const bucket = byAnchorSet.get(key)!;
+    if (bucket.length === 1) {
+      out.push(bucket[0]);
+      continue;
+    }
+    out.push({
+      group: {
+        anchors: bucket[0].group.anchors,
+        evidence: mergeEvidence(bucket.map((item) => item.group)),
+        score: Math.max(...bucket.map((item) => item.group.score))
+      },
+      payload: mergePayloads(bucket.map((item) => item.payload))
+    });
+  }
+  return out;
+}
+
 /**
  * Resolves every group's anchors to HEAD, dropping groups whose files were all
  * deleted and never replaced (or that resolve to a single surviving anchor —
@@ -358,37 +412,16 @@ function mergeEvidence(groups: readonly AnchorGroup[]): SignalEvidence[] {
  * the one surviving anchor) are merged into a single output entry, unioning
  * their evidence, rather than appearing as separate ranked report rows for
  * what is now the identical coupling. Convenience wrapper over
- * {@link createRenameResolver}.
+ * {@link createRenameResolver} and {@link dedupeResolvedByAnchorSet} (payload
+ * is unused here — cli.ts's `discover()` is the caller that threads a real
+ * payload, per-group disqualifier results, through the same dedup step).
  */
 export async function resolveGroupsToHead(groups: readonly AnchorGroup[], ctx: RepoContext): Promise<AnchorGroup[]> {
   const resolver = await createRenameResolver(ctx);
-  const byAnchorSet = new Map<string, AnchorGroup[]>();
-  const order: string[] = [];
+  const resolved: ResolvedWithPayload<null>[] = [];
   for (const group of groups) {
-    const resolved = await resolver.resolve(group);
-    if (!resolved) continue;
-    const key = anchorSetKey(resolved.anchors);
-    const bucket = byAnchorSet.get(key);
-    if (bucket) {
-      bucket.push(resolved);
-    } else {
-      byAnchorSet.set(key, [resolved]);
-      order.push(key);
-    }
+    const next = await resolver.resolve(group);
+    if (next) resolved.push({ group: next, payload: null });
   }
-
-  const out: AnchorGroup[] = [];
-  for (const key of order) {
-    const bucket = byAnchorSet.get(key)!;
-    if (bucket.length === 1) {
-      out.push(bucket[0]);
-      continue;
-    }
-    out.push({
-      anchors: bucket[0].anchors,
-      evidence: mergeEvidence(bucket),
-      score: Math.max(...bucket.map((g) => g.score))
-    });
-  }
-  return out;
+  return dedupeResolvedByAnchorSet(resolved, () => null).map((item) => item.group);
 }

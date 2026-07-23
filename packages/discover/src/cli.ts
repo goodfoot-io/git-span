@@ -25,10 +25,27 @@ import { isNotAGitRepoError } from './git.js';
 import { mergeAnchorGroups } from './grouping.js';
 import { type DiscoveredGroup, toJson, toMarkdown } from './output.js';
 import { createRepoContext } from './prefilter.js';
-import { createRenameResolver } from './rename-tracking.js';
+import { createRenameResolver, dedupeResolvedByAnchorSet, type ResolvedWithPayload } from './rename-tracking.js';
 import { scoreEvidence } from './scoring.js';
 import * as signals from './signals/index.js';
-import type { Disqualifier, RepoContext, Signal } from './types.js';
+import type { Disqualifier, DisqualifierEvidence, RepoContext, Signal } from './types.js';
+
+/** Identifies a `DisqualifierEvidence` for exact-duplicate dropping, mirrors rename-tracking.ts's evidenceKey. */
+function disqualifierKey(d: DisqualifierEvidence): string {
+  return JSON.stringify([d.disqualifier, d.strength, d.inconclusive ?? false, d.detail ?? '']);
+}
+
+/** Unions per-group disqualifier results across a merged bucket, dropping only exact duplicates — same pattern as rename-tracking.ts's mergeEvidence. */
+function mergeDisqualifiers(results: readonly DisqualifierEvidence[][]): DisqualifierEvidence[] {
+  const seen = new Map<string, DisqualifierEvidence>();
+  for (const dq of results) {
+    for (const d of dq) {
+      const key = disqualifierKey(d);
+      if (!seen.has(key)) seen.set(key, d);
+    }
+  }
+  return [...seen.values()].sort((a, b) => disqualifierKey(a).localeCompare(disqualifierKey(b)));
+}
 
 /**
  * Emits a stage-boundary breadcrumb to stderr — cheap visibility for long
@@ -119,20 +136,25 @@ export async function discover(
     return group.score >= PASS2_THRESHOLD;
   });
 
-  // Rename-tracking to HEAD, dropping groups whose files were all deleted.
+  // Rename-tracking to HEAD, dropping groups whose files were all deleted,
+  // then deduping groups that converge on the same surviving anchor set —
+  // carrying each group's disqualifier results through as the dedup payload,
+  // unioned across merged buckets the same way evidence is unioned.
   reportProgress('resolving renames to HEAD');
   const resolver = await createRenameResolver(ctx);
-  const discovered: DiscoveredGroup[] = [];
+  const resolved: ResolvedWithPayload<DisqualifierEvidence[]>[] = [];
   for (const { group, disqualifiers: dq } of passed) {
-    const resolved = await resolver.resolve(group);
-    if (!resolved) continue;
-    discovered.push({
-      anchors: resolved.anchors,
-      score: resolved.score,
-      signals: resolved.evidence,
-      disqualifiers: dq
-    });
+    const next = await resolver.resolve(group);
+    if (next) resolved.push({ group: next, payload: dq });
   }
+  const deduped = dedupeResolvedByAnchorSet(resolved, mergeDisqualifiers);
+
+  const discovered: DiscoveredGroup[] = deduped.map(({ group, payload }) => ({
+    anchors: group.anchors,
+    score: group.score,
+    signals: group.evidence,
+    disqualifiers: payload
+  }));
 
   discovered.sort((a, b) => b.score - a.score);
   return discovered;
