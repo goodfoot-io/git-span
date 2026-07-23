@@ -22,7 +22,7 @@ only see it after the commit lands on a shared branch.
 ## `why` never gates on the span existing
 
 A bare `git span why <name>` on an unknown name does not error — it prints
-`` `<name>` has no why recorded. `` at exit 0. Worse, `git span why <name> -m
+`` `<name>` has no why recorded. `` at exit 0. Worse, `git span why <name>
 "..."` on an unknown name silently **creates** a new, anchor-less span with
 that why instead of failing. A why that looks freshly created (rather than
 updated) usually means the target name was mistyped — check with

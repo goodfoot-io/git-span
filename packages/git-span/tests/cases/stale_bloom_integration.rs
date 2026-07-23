@@ -31,7 +31,7 @@ fn stale_spans_succeeds_without_commit_graph() -> Result<()> {
     // File-backed model: `add`/`why` write the worktree span file;
     // commit it so the resolver has a HEAD-layer span to walk.
     repo.run_span(["add", "test/span", "f.txt#L1-L1"])?;
-    repo.run_span(["why", "test/span", "-m", "test"])?;
+    repo.run_span(["why", "test/span", "test"])?;
     repo.commit_all("seed span")?;
 
     let gix = repo.gix_repo()?;
@@ -78,7 +78,7 @@ fn bloom_false_positive_counter_is_zero_for_true_positives() -> Result<()> {
     repo.commit_all("initial commit with A and B")?;
     repo.run_span(["add", "test/span", "A.txt#L1-L1"])?;
     repo.run_span(["add", "test/span", "B.txt#L1-L1"])?;
-    repo.run_span(["why", "test/span", "-m", "test"])?;
+    repo.run_span(["why", "test/span", "test"])?;
     repo.commit_all("seed span")?;
 
     // Modify both files in a second commit — both anchors now drift.

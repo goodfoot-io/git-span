@@ -7,7 +7,7 @@ use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -18,7 +18,7 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
 /// Seed a span anchoring lines 6-10, which the `drift` helper does not mutate.
 fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", name, "-m", "seed stable"])?;
+    repo.span_stdout(["why", name, "seed stable"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -56,13 +56,13 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
     // Verify the stale output includes the span heading.
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "shared why text"])?;
+    repo.span_stdout(["why", "m", "shared why text"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
     }
     drift(&repo, "mutate")?;
-    repo.span_stdout(["why", "m", "-m", "shared why text"])?;
+    repo.span_stdout(["why", "m", "shared why text"])?;
     let stdout = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
     // The block heading is the span name.
     assert!(
@@ -228,7 +228,7 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Seed span with one anchor on lines 1-5.
     repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "regression test span"])?;
+    repo.span_stdout(["why", "m", "regression test span"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -292,7 +292,7 @@ fn workspace_scan_hides_fully_fresh_span() -> Result<()> {
 fn workspace_scan_stale_span_shows_fresh_sibling_and_why() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "spans two files"])?;
+    repo.span_stdout(["why", "m", "spans two files"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -325,7 +325,7 @@ fn workspace_scan_stale_span_shows_fresh_sibling_and_why() -> Result<()> {
 
 fn commit_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.span_stdout(["add", name, anchor])?;
-    repo.span_stdout(["why", name, "-m", why])?;
+    repo.span_stdout(["why", name, why])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;

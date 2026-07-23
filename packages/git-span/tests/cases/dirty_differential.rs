@@ -170,13 +170,13 @@ fn build_base_corpus() -> Result<TestRepo> {
     // Real `git span add`/`why` compute the canonical rk64 fingerprint, so each
     // anchor is genuinely Fresh at creation.
     repo.run_span(["add", "alpha", "src/a.txt#L1-L3"])?;
-    repo.run_span(["why", "alpha", "-m", "why alpha"])?;
+    repo.run_span(["why", "alpha", "why alpha"])?;
     repo.run_span(["add", "beta", "src/b.txt#L1-L3"])?;
-    repo.run_span(["why", "beta", "-m", "why beta"])?;
+    repo.run_span(["why", "beta", "why beta"])?;
     repo.run_span(["add", "epsilon", "src/e.txt#L1-L3"])?;
-    repo.run_span(["why", "epsilon", "-m", "why epsilon"])?;
+    repo.run_span(["why", "epsilon", "why epsilon"])?;
     repo.run_span(["add", "gamma", "src/c.txt#L1-L3"])?;
-    repo.run_span(["why", "gamma", "-m", "why gamma"])?;
+    repo.run_span(["why", "gamma", "why gamma"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "spans"])?;
 
@@ -329,7 +329,7 @@ fn dirty_span_definition_parity() -> Result<()> {
 
     // Rewrite alpha's span definition (its `why`) in the worktree without
     // committing — `git span why` writes `.span/alpha` and leaves it dirty.
-    repo.run_span(["why", "alpha", "-m", "why alpha REVISED"])?;
+    repo.run_span(["why", "alpha", "why alpha REVISED"])?;
 
     let perf = assert_parity_all_formats(&repo, &snap, "dirty-span-def");
     assert_dirty_tier_reused(&perf, "dirty-span-def");
@@ -416,7 +416,7 @@ fn untracked_span_parity() -> Result<()> {
 
     // A brand-new, uncommitted span anchoring an existing source (Fresh).
     repo.run_span(["add", "delta", "src/b.txt#L2-L4"])?;
-    repo.run_span(["why", "delta", "-m", "why delta"])?;
+    repo.run_span(["why", "delta", "why delta"])?;
 
     assert_parity_all_formats(&repo, &snap, "untracked-span");
     Ok(())
@@ -430,7 +430,7 @@ fn ignored_span_parity() -> Result<()> {
     // A new span whose file is matched by `.gitignore` (untracked + ignored).
     repo.write_file(".gitignore", ".span/delta\n")?;
     repo.run_span(["add", "delta", "src/b.txt#L2-L4"])?;
-    repo.run_span(["why", "delta", "-m", "why delta"])?;
+    repo.run_span(["why", "delta", "why delta"])?;
 
     assert_parity_all_formats(&repo, &snap, "ignored-span");
     Ok(())
@@ -448,9 +448,9 @@ fn conflict_parity() -> Result<()> {
     repo.write_file("src/b.txt", "base-b1\nb2\nb3\nb4\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "alpha", "src/a.txt#L1-L3"])?;
-    repo.run_span(["why", "alpha", "-m", "why alpha"])?;
+    repo.run_span(["why", "alpha", "why alpha"])?;
     repo.run_span(["add", "beta", "src/b.txt#L1-L3"])?;
-    repo.run_span(["why", "beta", "-m", "why beta"])?;
+    repo.run_span(["why", "beta", "why beta"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "spans"])?;
 
@@ -565,7 +565,7 @@ fn whole_file_multilayer_drift_blocked_upstream() -> Result<()> {
     repo.commit_all("seed")?;
     // Whole-file anchor (no line range) records the V1 fingerprint.
     repo.run_span(["add", "s", "foo.txt"])?;
-    repo.run_span(["why", "s", "-m", "why s"])?;
+    repo.run_span(["why", "s", "why s"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span"])?;
     // Commit a drift so HEAD == index == worktree all differ from the fingerprint

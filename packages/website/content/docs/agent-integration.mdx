@@ -40,7 +40,7 @@ Stripe-backed server.
 ---
 
 Update the drifted locations or the description — `git span add checkout-flow
-<path#Lstart-Lend>` / `git span why checkout-flow -m "..."` — then retry. If a
+<path#Lstart-Lend>` / `git span why checkout-flow "..."` — then retry. If a
 dependency no longer holds, tell the user instead.
 ```
 
@@ -54,7 +54,7 @@ Determine if these files carry implicit dependencies, then use `git span` to
 document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
-`git span why <name> -m "<why>"`
+`git span why <name> "<why>"`
 
 The "<why>" is a single present-tense sentence naming what the ranges form
 together, specific enough to tell whether an edit lands inside it, with no
@@ -80,7 +80,7 @@ There's no override for a gate deny — every deny path resolves on its own: a f
 ### Resolving a denied commit
 
 1. Semantic staleness: fix each listed span (`git span add` the drifted anchors, or `git span delete` if the coupling is gone), then retry the same commit — or just retry with the findings unchanged, since an identical set of findings only denies once.
-2. Uncovered writes: either declare the coupling (`git span add` then `git span why -m "..."`) or just retry — a second attempt at an unchanged debt state passes.
+2. Uncovered writes: either declare the coupling (`git span add` then `git span why <name> "..."`) or just retry — a second attempt at an unchanged debt state passes.
 
 See [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for the full triage workflow.
 

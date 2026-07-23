@@ -145,7 +145,7 @@ fn add_span(repo: &TestRepo, name: &str, anchors: &[String]) -> Result<()> {
     let mut args: Vec<String> = vec!["add".into(), name.into()];
     args.extend(anchors.iter().cloned());
     repo.span_stdout(args)?;
-    repo.span_stdout(["why", name, "-m", name])?;
+    repo.span_stdout(["why", name, name])?;
     Ok(())
 }
 

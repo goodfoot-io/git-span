@@ -33,7 +33,7 @@ ls path/to/file1 path/to/file2   # check existence
    - The related code diverged → fix it first, then re-anchor. Both sides land
      in the same commit.
    - The subsystem itself changed → write a new why
-     (`git span why <name> -m "..."`), then re-anchor.
+     (`git span why <name> "..."`), then re-anchor.
    - The relationship no longer exists → `git span delete <name>`.
    - Several spans need this at once → `references/triage.md`.
 4. **Persist:**

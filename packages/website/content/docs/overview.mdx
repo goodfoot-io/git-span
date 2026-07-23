@@ -21,7 +21,7 @@ None of these are enforced. The compiler doesn't know about them, tests rarely c
 A span makes the coupling explicit without pretending to enforce it:
 
 1. **Declare** it: `git span add` names a group of anchors — whole files or `path#Lstart-Lend` line ranges — that form one subsystem or concern.
-2. **Explain** it: `git span why -m "..."` attaches a sentence saying what the anchors collectively do. The why is the payload; a span without one is just a list of locations.
+2. **Explain** it: `git span why <name> "..."` attaches a sentence saying what the anchors collectively do. The why is the payload; a span without one is just a list of locations.
 3. **Commit** it: span data lives in a `.span/` directory tracked by git, so declarations travel with the code, merge with branches, and appear in history.
 4. **Audit** it: `git span stale` reports every anchor whose code has drifted since it was declared — moved, changed, or gone — so a reviewer or CI job can ask "did you mean to break this coupling?"
 

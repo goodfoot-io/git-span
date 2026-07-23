@@ -64,7 +64,7 @@ fn read_span(repo: &TestRepo, name: &str) -> Result<String> {
 /// Create a span with one line-range anchor and commit it.
 fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.span_stdout(["add", name, anchor])?;
-    repo.span_stdout(["why", name, "-m", why])?;
+    repo.span_stdout(["why", name, why])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
     Ok(())

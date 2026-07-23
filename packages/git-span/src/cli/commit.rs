@@ -22,6 +22,8 @@ use fs4::fs_std::FileExt;
 use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
+use std::io::IsTerminal;
+use std::io::Read;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -753,11 +755,20 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 // ---------------------------------------------------------------------------
 
 pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
-    // `-m` sets the why text; otherwise read and print the current why.
-    if let Some(m) = args.m {
+    // Positional text → write mode. Piped stdin → write mode.
+    // Terminal stdin with no positional → read mode (print current why).
+    if let Some(m) = args.why_text {
         crate::validation::validate_span_name(&args.name)?;
         let _perf = crate::perf::span("why.write");
         run_why_writer(repo, &args.name, &m, span_root)?;
+        return print_why_written(&args.name);
+    }
+    if !std::io::stdin().is_terminal() {
+        crate::validation::validate_span_name(&args.name)?;
+        let _perf = crate::perf::span("why.write");
+        let mut body = String::new();
+        std::io::stdin().read_to_string(&mut body)?;
+        run_why_writer(repo, &args.name, &body, span_root)?;
         return print_why_written(&args.name);
     }
     let _perf = crate::perf::span("why.read");

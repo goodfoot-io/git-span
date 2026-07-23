@@ -11,7 +11,7 @@ use support::TestRepo;
 /// worktree span file directly; a git commit makes it part of HEAD.
 fn commit_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.span_stdout(["add", name, anchor])?;
-    repo.span_stdout(["why", name, "-m", why])?;
+    repo.span_stdout(["why", name, why])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", &format!("span {name}")])?;
     Ok(())
@@ -147,7 +147,7 @@ fn ls_pending_marker_on_staging_only_span() -> Result<()> {
     // directly (no git commit needed). The span is immediately visible
     // in `list` as a normal span — no "pending"/"staged" state exists.
     repo.span_stdout(["add", "pending-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "pending-span", "-m", "pending relationship"])?;
+    repo.span_stdout(["why", "pending-span", "pending relationship"])?;
     let out = repo.span_stdout(["list"])?;
     assert!(
         out.contains("## pending-span"),
@@ -180,7 +180,7 @@ fn ls_multiline_why_renders_all_lines() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "multi", "file1.txt#L1-L5"])?;
     // Use -m with newline embedded.
-    repo.span_stdout(["why", "multi", "-m", "line one\nline two\nline three"])?;
+    repo.span_stdout(["why", "multi", "line one\nline two\nline three"])?;
     let out = repo.span_stdout(["list"])?;
     // Every line of why is rendered verbatim.
     assert!(out.contains("line one"), "expected line one: {out}");
@@ -210,7 +210,7 @@ fn ls_staged_flag_removed_and_spans_listed_plainly() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_span(&repo, "clean", "file1.txt#L1-L3", "clean span")?;
     repo.span_stdout(["add", "pending-m", "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", "pending-m", "-m", "no more staging"])?;
+    repo.span_stdout(["why", "pending-m", "no more staging"])?;
     commit_span(&repo, "dirty", "file2.txt#L5-L7", "dirty span")?;
     repo.span_stdout(["add", "dirty", "file1.txt#L5-L6"])?;
 
@@ -265,7 +265,7 @@ fn ls_path_filter_renders_full_anchor_list() -> Result<()> {
     // alpha has two anchors; filter by file1.txt.
     repo.span_stdout(["add", "alpha", "file1.txt#L1-L5"])?;
     repo.span_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", "alpha", "-m", "dual anchor"])?;
+    repo.span_stdout(["why", "alpha", "dual anchor"])?;
     let out = repo.span_stdout(["list", "file1.txt"])?;
     // Both anchors should appear in the bullet list, not just the matching one.
     assert!(
@@ -337,7 +337,7 @@ fn ls_porcelain_whole_file_is_zero_zero() -> Result<()> {
 fn ls_porcelain_pending_span_appears() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "pend", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "pend", "-m", "pending"])?;
+    repo.span_stdout(["why", "pend", "pending"])?;
     let out = repo.span_stdout(["list", "--porcelain"])?;
     assert!(
         out.contains("pend\tfile1.txt\t1-5"),
@@ -368,7 +368,7 @@ fn ls_filtered_porcelain_renders_full_anchor_list() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "alpha", "file1.txt#L1-L5"])?;
     repo.span_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", "alpha", "-m", "dual anchor"])?;
+    repo.span_stdout(["why", "alpha", "dual anchor"])?;
 
     let out = repo.span_stdout(["list", "file1.txt", "--porcelain"])?;
 
@@ -522,7 +522,7 @@ fn ls_porcelain_pagination_emits_selected_span_rows() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "alpha", "file1.txt#L1-L3"])?;
     repo.span_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", "alpha", "-m", "alpha why"])?;
+    repo.span_stdout(["why", "alpha", "alpha why"])?;
     commit_span(&repo, "beta", "file2.txt#L4-L5", "beta why")?;
     // --offset 1 selects beta in porcelain.
     let out = repo.span_stdout(["list", "--porcelain", "--offset", "1"])?;

@@ -855,9 +855,9 @@ function driftHeader(driftedCount) {
 function driftFooter(driftedNames) {
   if (driftedNames.length === 1) {
     const name = driftedNames[0];
-    return `Update the changed anchors or description before committing \u2014 \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\` \u2014 and check the other anchors for knock-on changes. If the coupling no longer holds, tell the user instead.`;
+    return `Update the changed anchors or description before committing \u2014 \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\` \u2014 and check the other anchors for knock-on changes. If the coupling no longer holds, tell the user instead.`;
   }
-  return 'For each out-of-date span above: update the changed anchors or description before committing \u2014 `git span add <name> <path#Lstart-Lend>` / `git span why <name> -m "..."` \u2014 and check the other anchors for knock-on changes. If a coupling no longer holds, tell the user instead.';
+  return 'For each out-of-date span above: update the changed anchors or description before committing \u2014 `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` \u2014 and check the other anchors for knock-on changes. If a coupling no longer holds, tell the user instead.';
 }
 function anchorBullets(anchors, debtRows) {
   return anchors.map((anchor) => {

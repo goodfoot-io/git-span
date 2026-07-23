@@ -19,7 +19,7 @@ use support::TestRepo;
 /// Seed a committed line-anchor span.
 fn seed_line(repo: &TestRepo, span: &str, file: &str, s: u32, e: u32) -> Result<()> {
     repo.span_stdout(["add", span, &format!("{file}#L{s}-L{e}")])?;
-    repo.span_stdout(["why", span, "-m", "seed"])?;
+    repo.span_stdout(["why", span, "seed"])?;
     repo.commit_all("seed span")?;
     Ok(())
 }
@@ -71,7 +71,7 @@ fn committed_git_mv_whole_file_subdir_is_moved() -> Result<()> {
     repo.commit_all("init")?;
     repo.write_commit_graph()?;
     repo.span_stdout(["add", "m", "orig.ts"])?;
-    repo.span_stdout(["why", "m", "-m", "seed"])?;
+    repo.span_stdout(["why", "m", "seed"])?;
     repo.commit_all("seed span")?;
     repo.write_commit_graph()?;
 
@@ -137,15 +137,15 @@ fn merge_conflicted_span_file_is_conflict_and_fails_closed() -> Result<()> {
     repo.write_file("file.txt", "content\n")?;
     repo.commit_all("init")?;
     repo.span_stdout(["add", "m/a", "file.txt"])?;
-    repo.span_stdout(["why", "m/a", "-m", "main version"])?;
+    repo.span_stdout(["why", "m/a", "main version"])?;
     repo.commit_all("span on main")?;
 
     repo.run_git(["checkout", "-b", "feature"])?;
-    repo.span_stdout(["why", "m/a", "-m", "feature DIVERGENT version"])?;
+    repo.span_stdout(["why", "m/a", "feature DIVERGENT version"])?;
     repo.commit_all("span on feature")?;
 
     repo.run_git(["checkout", "main"])?;
-    repo.span_stdout(["why", "m/a", "-m", "main CHANGED version"])?;
+    repo.span_stdout(["why", "m/a", "main CHANGED version"])?;
     repo.commit_all("span changed on main")?;
 
     // Diverged why text on both sides → content merge conflict.

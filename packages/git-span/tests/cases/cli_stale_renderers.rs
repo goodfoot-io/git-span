@@ -16,7 +16,7 @@ use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -26,7 +26,7 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
 
 fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", name, "-m", "stable seed"])?;
+    repo.span_stdout(["why", name, "stable seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -206,7 +206,7 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
     // (the renderer is silent when there is nothing stale).
     let repo = TestRepo::seeded()?;
     seed(&repo, "clean-with-pending")?;
-    repo.span_stdout(["why", "clean-with-pending", "-m", "updated reason"])?;
+    repo.span_stdout(["why", "clean-with-pending", "updated reason"])?;
 
     let out = repo.run_span(["stale", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
@@ -272,7 +272,7 @@ fn named_stale_clean_new_span_reports_zero_stale() -> Result<()> {
 /// Helper: seed a line-range anchor on file1.txt#L1-L5 and commit.
 fn seed_line_range(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -311,7 +311,7 @@ fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
     // New: unified block shows all anchors. Stale get suffix, fresh appear bare.
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "seed"])?;
+    repo.span_stdout(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -540,7 +540,7 @@ fn all_args_resolve_to_clean_span_exits_zero() -> Result<()> {
 /// halves of `file1.txt`, so a span seeded here is expected to go stale too.
 fn seed_file1_lower(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -551,7 +551,7 @@ fn seed_file1_lower(repo: &TestRepo, name: &str) -> Result<()> {
 /// Seed a span anchored on `file2.txt#L1-L5`, unrelated to `file1.txt`.
 fn seed_file2_upper(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -718,12 +718,12 @@ fn seed_comma_fixture(repo: &TestRepo) -> Result<()> {
     repo.commit_all("initial commit with comma file")?;
 
     repo.span_stdout(["add", "m", "file,with,commas.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "span m"])?;
+    repo.span_stdout(["why", "m", "span m"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m commit"])?;
 
     repo.span_stdout(["add", "n", "file,with,commas.txt#L6-L10"])?;
-    repo.span_stdout(["why", "n", "-m", "span n"])?;
+    repo.span_stdout(["why", "n", "span n"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span n commit"])?;
 

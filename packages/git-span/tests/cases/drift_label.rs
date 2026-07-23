@@ -25,7 +25,7 @@ fn seed_span(repo: &TestRepo, span: &str, file: &str, start: u32, end: u32) -> R
     // File-backed model: `add`/`why` write the worktree span file
     // directly; commit it alongside the (pristine) source.
     repo.span_stdout(["add", span, &format!("{file}#L{start}-L{end}")])?;
-    repo.span_stdout(["why", span, "-m", "seed"])?;
+    repo.span_stdout(["why", span, "seed"])?;
     repo.commit_all("seed span")?;
     Ok(())
 }

@@ -31,7 +31,7 @@ fn seed_line_range_span(repo: &TestRepo, span: &str) -> Result<()> {
     // commit it so the resolver sees a HEAD-layer span while later
     // source mutations create the drift under test.
     repo.run_span(["add", span, "file1.txt#L1-L5"])?;
-    repo.run_span(["why", span, "-m", "seed"])?;
+    repo.run_span(["why", span, "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", &format!("span {span}")])?;
     Ok(())
@@ -90,7 +90,7 @@ fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Re
     repo.write_file("same.txt", "intro\na\ntarget\nc\n")?;
     repo.commit_all("anchor two")?;
     repo.run_span(["add", "timeline-key", "same.txt#L3-L3"])?;
-    repo.run_span(["why", "timeline-key", "-m", "timeline cache key regression"])?;
+    repo.run_span(["why", "timeline-key", "timeline cache key regression"])?;
 
     // Commit the span file alongside an unrelated change so HEAD's
     // same.txt stays at State B.
@@ -451,7 +451,7 @@ fn add_under_eol_normalization_freshly_added_anchors_are_fresh() -> Result<()> {
     // resolver sees a HEAD-layer span with the add-time stored hash.
     repo.run_span(["add", "m", "src.txt#L2-L5"])?;
     repo.run_span(["add", "m", "src.txt"])?;
-    repo.run_span(["why", "m", "-m", "eol normalization regression"])?;
+    repo.run_span(["why", "m", "eol normalization regression"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
 
@@ -511,7 +511,7 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     repo.commit_all("add binary")?;
     // Pin the whole file (CLI omits `#L...` for whole-file per D2).
     let _ = repo.run_span(["add", "m", "hero.png"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -538,7 +538,7 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
     let inner = add_submodule_gitlink(&repo, "sub")?;
     // Pin the gitlink path itself (whole-file allowed per D2).
     let _ = repo.run_span(["add", "m", "sub"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -585,7 +585,7 @@ fn line_range_anchor_inside_submodule_promoted_directory_reports_submodule() -> 
     )?;
     repo.commit_all("init lib/util.ts")?;
     repo.run_span(["add", "util/add", "lib/util.ts#L1-L3"])?;
-    repo.run_span(["why", "util/add", "-m", "add function contract"])?;
+    repo.run_span(["why", "util/add", "add function contract"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span util/add"])?;
 
@@ -655,7 +655,7 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     repo.commit_all("add symlink")?;
     // Whole-file pin allowed.
     let _ = repo.run_span(["add", "m", "link"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -691,7 +691,7 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_a, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_span(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -719,7 +719,7 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_c, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_span(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -753,7 +753,7 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_e, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_span(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -807,7 +807,7 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     repo.write_file("config.secret", "secret payload\n")?;
     repo.commit_all("add filtered file")?;
     let _ = repo.run_span(["add", "m", "config.secret#L1-L1"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -856,7 +856,7 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     repo.run_git(["add", "data.tsv"])?;
     repo.run_git(["commit", "-m", "data"])?;
     let _ = repo.run_span(["add", "pn", "data.tsv#L1-L10"])?;
-    repo.run_span(["why", "pn", "-m", "seed"])?;
+    repo.run_span(["why", "pn", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -947,7 +947,7 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
     // Span anchor on one of the bulk paths so it lives inside the
     // candidate-path set and the bulk-rename commit can't be skipped.
     repo.run_span(["add", "m", "bulk/a_0.txt#L1-L1"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
     for i in 0..1100u32 {
@@ -1088,7 +1088,7 @@ fn stale_spans_filters_clean_leaves_stale() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // "quiet" anchors lines 6-10 (stable); "noisy" anchors lines 1-5 (mutated below).
     repo.run_span(["add", "quiet", "file1.txt#L6-L10"])?;
-    repo.run_span(["why", "quiet", "-m", "stable anchor"])?;
+    repo.run_span(["why", "quiet", "stable anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span quiet"])?;
     seed_line_range_span(&repo, "noisy")?;

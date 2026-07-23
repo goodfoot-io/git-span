@@ -33,14 +33,14 @@ fn seed_interior_anchor_corpus(repo: &TestRepo) -> Result<()> {
 
     // Normal span: two anchors, one will be drifted (partial drift).
     repo.run_span(["add", "normal", "a.txt#L1-L3", "b.txt#L1-L3"])?;
-    repo.run_span(["why", "normal", "-m", "normal partially drifted span"])?;
+    repo.run_span(["why", "normal", "normal partially drifted span"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span normal"])?;
 
     // Interior-anchor span: its anchor path is under `.span/`, pointing at the
     // committed `normal` span file. This trips the whole-result store gate.
     repo.run_span(["add", "interior", ".span/normal#L1-L2"])?;
-    repo.run_span(["why", "interior", "-m", "interior anchor watches normal"])?;
+    repo.run_span(["why", "interior", "interior anchor watches normal"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span interior"])?;
     repo.write_commit_graph()?;

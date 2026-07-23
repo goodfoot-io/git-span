@@ -43,7 +43,7 @@ Classify each span, skip `clean`:
    context). If the anchor's file format can't carry comments (JSON, etc.),
    the retrofit must land on a sibling anchor or an already-documenting file —
    confirm one exists rather than skipping silently.
-5. Apply: all `git span why <name> -m "..."` in one chained command, then
+5. Apply: all `git span why <name> "..."` in one chained command, then
    comment edits, then re-anchoring (comments before re-anchoring so one pass
    covers both). A comment edit that shifts an anchor's line count needs its
    own re-anchor check immediately after — don't assume a later blanket
@@ -75,7 +75,7 @@ Classify each span, skip `clean`:
 ## Operations
 | Operation | Command |
 |---|---|
-| Rewrite/write why | `git span why <name> -m "..."` |
+| Rewrite/write why | `git span why <name> "..."` |
 | Re-anchor, pure line-shift | `git span stale --fix` |
 | Re-anchor, range/content changed | `git span add <name> <path#Lnew>` then `git span remove <name> <path#Lold>` — add appends, never replaces |
 | Re-hash whole-file anchor | `git span add <name> <path>` |

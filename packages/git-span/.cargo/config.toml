@@ -9,6 +9,13 @@ incremental = true
 [profile.test]
 incremental = true
 
+# Single test thread: the test suite uses process-wide mutable state (env
+# vars, global statics for call counters) that is not safe under concurrent
+# test execution.  Running serially eliminates flaky failures from state
+# leakage between test threads.
+[env]
+RUST_TEST_THREADS = "1"
+
 # Linux links run through the mold cc wrapper (scripts/cc.mold-wrapper.sh, installed
 # and verified in .devcontainer/Dockerfile; README "Linker (Linux only)" covers
 # non-devcontainer installs). The [target.*].linker key is deliberately RUSTFLAGS-immune.

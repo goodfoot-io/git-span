@@ -125,7 +125,7 @@ fn seed_two_anchors(repo: &TestRepo) -> Result<()> {
     repo.commit_all("init")?;
     repo.span_stdout(["add", "demo/flow", "src/foo.txt#L2-L4"])?;
     repo.span_stdout(["add", "demo/flow", "src/bar.txt"])?;
-    repo.span_stdout(["why", "demo/flow", "-m", "seed"])?;
+    repo.span_stdout(["why", "demo/flow", "seed"])?;
     repo.commit_all("seed span")?;
     Ok(())
 }

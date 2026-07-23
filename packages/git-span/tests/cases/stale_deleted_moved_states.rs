@@ -29,7 +29,7 @@ fn stale_succeeds_without_commit_graph() -> Result<()> {
     repo.write_file("api/charge.ts", "a\nb\nc\nd\ne\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "charge", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "charge", "-m", "charge flow"])?;
+    repo.run_span(["why", "charge", "charge flow"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span charge"])?;
 
@@ -65,7 +65,7 @@ fn whole_file_path_removed_reads_deleted() -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -92,7 +92,7 @@ fn whole_file_path_committed_deletion_is_deleted() -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -117,7 +117,7 @@ fn line_range_path_removed_reads_deleted() -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\ndelta\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "lr", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "lr", "-m", "line range"])?;
+    repo.run_span(["why", "lr", "line range"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span lr"])?;
 
@@ -143,7 +143,7 @@ fn line_range_path_committed_deletion_is_deleted() -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\ndelta\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "lr", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "lr", "-m", "line range"])?;
+    repo.run_span(["why", "lr", "line range"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span lr"])?;
 
@@ -169,7 +169,7 @@ fn whole_file_content_relocated_is_moved() -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -201,7 +201,7 @@ fn line_range_shifted_extent_is_moved() -> Result<()> {
     repo.write_file("api/charge.ts", "anchor-a\nanchor-b\nanchor-c\ntail\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "lr", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "lr", "-m", "line range"])?;
+    repo.run_span(["why", "lr", "line range"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span lr"])?;
 
@@ -229,7 +229,7 @@ fn whole_file_relocated_in_index_is_moved() -> Result<()> {
     repo.write_file("api/charge.ts", "x1\nx2\nx3\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -267,7 +267,7 @@ fn seed_renamed_whole_file(repo: &TestRepo) -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -285,7 +285,7 @@ fn seed_true_deletion_whole_file(repo: &TestRepo) -> Result<()> {
     repo.write_file("api/charge.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/charge.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 
@@ -397,7 +397,7 @@ fn seed_renamed_with_comma(repo: &TestRepo) -> Result<()> {
     repo.write_file("api/old,name.ts", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("seed")?;
     repo.run_span(["add", "wf", "api/old,name.ts"])?;
-    repo.run_span(["why", "wf", "-m", "whole file"])?;
+    repo.run_span(["why", "wf", "whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span wf"])?;
 

@@ -133,7 +133,7 @@ Anchor a new span alongside a code change:
 git span add billing/charge-request-contract \e
     docs/api/charge.md#L40-L88 api/charge.ts#L30-L76
 git span why billing/charge-request-contract \e
-    -m "The charge request body shape is stated by the doc \e
+    "The charge request body shape is stated by the doc \e
 and honored by the parser that reads it."
 git add .span
 git commit -m "Wire checkout to charge API"
@@ -148,7 +148,7 @@ git span add auth/token-contract --at HEAD \e
     packages/auth/token.ts#L88-L104 \e
     packages/auth/crypto.ts#L12-L40
 git span why auth/token-contract \e
-    -m "Session token verification checks signatures with the \e
+    "Session token verification checks signatures with the \e
 algorithm and key encoding the crypto helper defines."
 git add .span && git commit -m "Document token/crypto coupling"
 .fi

@@ -83,11 +83,11 @@ fn seed(repo: &TestRepo) -> Result<PathBuf> {
     // aaa drifts (its anchored region changes at HEAD); bbb stays fresh; ccc
     // is orphaned (its file is deleted at HEAD).
     repo.run_span(["add", "aaa", "a.txt#L1-L3"])?;
-    repo.run_span(["why", "aaa", "-m", "tracks a"])?;
+    repo.run_span(["why", "aaa", "tracks a"])?;
     repo.run_span(["add", "bbb", "b.txt#L1-L3"])?;
-    repo.run_span(["why", "bbb", "-m", "tracks b"])?;
+    repo.run_span(["why", "bbb", "tracks b"])?;
     repo.run_span(["add", "ccc", "c.txt#L1-L3"])?;
-    repo.run_span(["why", "ccc", "-m", "tracks c"])?;
+    repo.run_span(["why", "ccc", "tracks c"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "spans"])?;
 

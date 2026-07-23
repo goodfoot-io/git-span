@@ -248,9 +248,9 @@ function driftHeader(driftedCount: number): string {
 function driftFooter(driftedNames: string[]): string {
   if (driftedNames.length === 1) {
     const name = driftedNames[0];
-    return `Update the changed anchors or description before committing — \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\` — and check the other anchors for knock-on changes. If the coupling no longer holds, tell the user instead.`;
+    return `Update the changed anchors or description before committing — \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\` — and check the other anchors for knock-on changes. If the coupling no longer holds, tell the user instead.`;
   }
-  return 'For each out-of-date span above: update the changed anchors or description before committing — `git span add <name> <path#Lstart-Lend>` / `git span why <name> -m "..."` — and check the other anchors for knock-on changes. If a coupling no longer holds, tell the user instead.';
+  return 'For each out-of-date span above: update the changed anchors or description before committing — `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the other anchors for knock-on changes. If a coupling no longer holds, tell the user instead.';
 }
 
 /**

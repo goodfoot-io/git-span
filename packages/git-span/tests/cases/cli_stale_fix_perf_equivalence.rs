@@ -81,25 +81,25 @@ fn equivalence_bare_scan_arm() -> Result<()> {
     repo.run_git(["commit", "-m", "add src.txt"])?;
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
     repo.span_stdout(["add", "moved-span", "src.txt#L1-L3"])?;
-    repo.span_stdout(["why", "moved-span", "-m", "moved anchor"])?;
+    repo.span_stdout(["why", "moved-span", "moved anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add moved-span"])?;
 
     // Span "changed-span": one anchor with a whitespace-only change.
     repo.span_stdout(["add", "changed-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "changed-span", "-m", "changed anchor"])?;
+    repo.span_stdout(["why", "changed-span", "changed anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add changed-span"])?;
 
     // Span "deleted-span": one anchor whose file will be deleted.
     repo.span_stdout(["add", "deleted-span", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "deleted-span", "-m", "deleted anchor"])?;
+    repo.span_stdout(["why", "deleted-span", "deleted anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add deleted-span"])?;
 
     // Span "coalesce-span": two contiguous same-path anchors.
     repo.span_stdout(["add", "coalesce-span", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", "coalesce-span", "-m", "coalesce anchors"])?;
+    repo.span_stdout(["why", "coalesce-span", "coalesce anchors"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add coalesce-span"])?;
 
@@ -174,7 +174,7 @@ fn equivalence_named_scope_fully_freshened() -> Result<()> {
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
 
     repo.span_stdout(["add", "fresh-span", "origin.txt#L1-L3"])?;
-    repo.span_stdout(["why", "fresh-span", "-m", "single moved anchor"])?;
+    repo.span_stdout(["why", "fresh-span", "single moved anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add fresh-span"])?;
 
@@ -243,7 +243,7 @@ fn equivalence_warning_stderr_parity() -> Result<()> {
     // be renamed (Moved — but with budget=0 rename detection is disabled so
     // it stays as Deleted/unreachable too).
     repo.span_stdout(["add", "warn-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "warn-span", "-m", "warn parity guard"])?;
+    repo.span_stdout(["why", "warn-span", "warn parity guard"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add warn-span"])?;
 
@@ -340,7 +340,7 @@ fn golden_cold_path_bare_scan() -> Result<()> {
     repo.run_git(["commit", "-m", "add src.txt"])?;
     repo.write_commit_graph()?;
     repo.span_stdout(["add", "mover", "src.txt#L1-L3"])?;
-    repo.span_stdout(["why", "mover", "-m", "moved anchor"])?;
+    repo.span_stdout(["why", "mover", "moved anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add mover"])?;
     repo.write_commit_graph()?;
@@ -406,7 +406,7 @@ fn golden_named_scope_single_warning() -> Result<()> {
     repo.write_commit_graph()?;
 
     repo.span_stdout(["add", "warn-span", "file1.txt#L1-L3"])?;
-    repo.span_stdout(["why", "warn-span", "-m", "warn parity guard"])?;
+    repo.span_stdout(["why", "warn-span", "warn parity guard"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add warn-span"])?;
 
@@ -487,7 +487,7 @@ fn golden_interior_anchor_forces_full_reresolve() -> Result<()> {
 
     // Sibling span with a Moved anchor (will be re-anchored by --fix).
     repo.span_stdout(["add", "aaa-victim", "victim.txt#L1-L3"])?;
-    repo.span_stdout(["why", "aaa-victim", "-m", "victim moved anchor"])?;
+    repo.span_stdout(["why", "aaa-victim", "victim moved anchor"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add aaa-victim"])?;
     repo.write_commit_graph()?;
@@ -588,9 +588,9 @@ fn golden_near_tie_ordering_stable() -> Result<()> {
     // Names are intentionally in reverse-alphabetical order (zzz before aaa)
     // to distinguish argument order from name order.
     repo.span_stdout(["add", "zzz-tie", "shared.txt#L1-L3"])?;
-    repo.span_stdout(["why", "zzz-tie", "-m", "zzz ties with aaa"])?;
+    repo.span_stdout(["why", "zzz-tie", "zzz ties with aaa"])?;
     repo.span_stdout(["add", "aaa-tie", "shared.txt#L1-L3"])?;
-    repo.span_stdout(["why", "aaa-tie", "-m", "aaa ties with zzz"])?;
+    repo.span_stdout(["why", "aaa-tie", "aaa ties with zzz"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add zzz-tie and aaa-tie spans"])?;
     repo.write_commit_graph()?;

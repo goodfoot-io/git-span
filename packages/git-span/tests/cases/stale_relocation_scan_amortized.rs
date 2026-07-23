@@ -47,7 +47,7 @@ fn relocation_scan_reads_are_linear_in_candidate_paths() -> Result<()> {
         let span = format!("m{i:02}");
         let pinned = format!("src/file{i:02}.txt#L1-L3");
         repo.run_span(["add", &span, &pinned])?;
-        repo.run_span(["why", &span, "-m", "seed"])?;
+        repo.run_span(["why", &span, "seed"])?;
     }
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "seed spans"])?;

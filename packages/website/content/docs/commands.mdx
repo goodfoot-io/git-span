@@ -47,10 +47,10 @@ Removes anchors from a span, editing the span file under the span root. Each anc
 
 ```bash
 git span why <name>
-git span why <name> -m "<sentence>"
+git span why <name> "<sentence>"
 ```
 
-Reads or stages a span's why — a one-sentence definition of the subsystem, flow, or concern the anchors collectively form. Bare `git span why <name>` prints the current why. `-m "<msg>"` writes a new why into the span file; commit it with `git add .span && git commit`.
+Reads or stages a span's why — a one-sentence definition of the subsystem, flow, or concern the anchors collectively form. Bare `git span why <name>` prints the current why. A positional argument writes a new why into the span file; piped stdin also writes. Commit with `git add .span && git commit`.
 
 The why is evergreen: it's inherited across routine re-anchors, and you only write a new one when the subsystem itself changes.
 

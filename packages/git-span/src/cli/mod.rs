@@ -116,9 +116,10 @@ pub enum Commands {
     /// routine re-anchors; only write a new one when the subsystem
     /// itself changes.
     ///
-    /// Bare `git span why <name>` prints the current why; the writer
-    /// flags `-m`/`-F`/`--edit` write a new one into the span file
-    /// (commit it with `git add .span && git commit`).
+    /// Bare `git span why <name>` prints the current why; a
+    /// positional argument writes a new why into the span file;
+    /// piped stdin also writes. Commit with `git add .span &&
+    /// git commit`.
     Why(WhyArgs),
 
     /// Delete a span.
@@ -306,17 +307,16 @@ pub struct RemoveArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct WhyArgs {
-    /// Span whose why text to read (no writer flag) or stage
-    /// (`-m`). The why defines the subsystem the anchors form
-    /// together.
+    /// Span whose why text to read or stage. The why defines the
+    /// subsystem the anchors form together.
     pub name: String,
 
-    /// Inline why text (`-m "..."`). Writer flag. One complete
-    /// present-tense sentence defining the subsystem the anchors
-    /// form together — no rules, warnings, or review steps;
-    /// evergreen and inherited across routine re-anchors.
-    #[arg(short = 'm', value_name = "MSG")]
-    pub m: Option<String>,
+    /// Why text to write into the span. One complete present-tense
+    /// sentence defining the subsystem the anchors form together —
+    /// no rules, warnings, or review steps; evergreen and inherited
+    /// across routine re-anchors. Omit to read from stdin (when
+    /// piped) or print the current why (when stdin is a terminal).
+    pub why_text: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

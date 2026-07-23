@@ -58,7 +58,7 @@ Stripe-backed server.
 
 Update the changed anchors or description before committing —
 `git span add billing/checkout-request-flow <path#Lstart-Lend>` /
-`git span why billing/checkout-request-flow -m "..."` — and check the other
+`git span why billing/checkout-request-flow "..."` — and check the other
 anchors for knock-on changes. If the coupling no longer holds, tell the user
 instead.
 </git-span>
@@ -75,7 +75,7 @@ singular form above for one drifted span, and `This edit put implicit
 dependencies out of date:` for more than one. With several drifted spans the
 footer generalizes: "For each out-of-date span above: update the changed
 anchors or description before committing — `git span add <name>
-<path#Lstart-Lend>` / `git span why <name> -m "..."` — and check the other
+<path#Lstart-Lend>` / `git span why <name> "..."` — and check the other
 anchors for knock-on changes. If a coupling no longer holds, tell the user
 instead." The block carries everything needed to act — anchors, statuses,
 and the description — so no follow-up `git span` read is required.
@@ -144,7 +144,7 @@ Stripe-backed server.
 
 Update the drifted locations or the description — `git span add
 billing/checkout-request-flow <path#Lstart-Lend>` / `git span why
-billing/checkout-request-flow -m "..."` — then retry. If a dependency no
+billing/checkout-request-flow "..."` — then retry. If a dependency no
 longer holds, tell the user instead.
 ```
 
@@ -163,7 +163,7 @@ Determine if these files carry implicit dependencies, then use `git span` to
 document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
-`git span why <name> -m "<why>"`
+`git span why <name> "<why>"`
 
 The "<why>" is a single present-tense sentence naming what the ranges form
 together, specific enough to tell whether an edit lands inside it, with no
@@ -201,7 +201,7 @@ a later real `git commit`/`git push` with the same debt depends on.
    retry the same commit — or just retry with the findings unchanged, since
    an identical set of findings only denies once.
 2. Uncovered writes: either declare the coupling (`git span add` then
-   `git span why -m "..."`) or just retry — the second attempt at an
+   `git span why <name> "..."`) or just retry — the second attempt at an
    unchanged debt state passes.
 3. Scan failure: resolve the underlying read/scan error if the span coupling
    still needs verifying — the command itself already proceeded.

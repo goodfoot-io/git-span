@@ -23,7 +23,7 @@ use support::TestRepo;
 /// stage only the span file.
 fn reanchor_unstaged_source(repo: &TestRepo) -> Result<()> {
     repo.run_span(["add", "m", "file1.txt#L1-L5"])?;
-    repo.run_span(["why", "m", "-m", "seed"])?;
+    repo.run_span(["why", "m", "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
 

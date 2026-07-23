@@ -123,11 +123,11 @@ fn build_committed_corpus() -> Result<TestRepo> {
     repo.commit_all("seed")?;
 
     repo.run_span(["add", "alpha", "src/a.txt#L1-L3"])?;
-    repo.run_span(["why", "alpha", "-m", "why alpha"])?;
+    repo.run_span(["why", "alpha", "why alpha"])?;
     repo.run_span(["add", "beta", "src/b.txt#L1-L3"])?;
-    repo.run_span(["why", "beta", "-m", "why beta"])?;
+    repo.run_span(["why", "beta", "why beta"])?;
     repo.run_span(["add", "gamma", "src/c.txt#L1-L3"])?;
-    repo.run_span(["why", "gamma", "-m", "why gamma"])?;
+    repo.run_span(["why", "gamma", "why gamma"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "spans"])?;
     repo.write_commit_graph()?;
@@ -195,7 +195,7 @@ fn added_uncommitted_span_reuses_committed_corpus() -> Result<()> {
     // window. It is Fresh at creation, so drift its worktree source to make it a
     // reported finding (the committed spans stay clean and unreported).
     repo.run_span(["add", "newbie", "src/n.txt#L1-L3"])?;
-    repo.run_span(["why", "newbie", "-m", "why newbie"])?;
+    repo.run_span(["why", "newbie", "why newbie"])?;
     repo.write_file("src/n.txt", "n-1CHANGED\nn-2x\nn-3x\nn-4\n")?;
 
     let perf = assert_parity_all_formats(&repo, &snap, "added-uncommitted");
@@ -234,7 +234,7 @@ fn repeated_uncommitted_state_is_exact_hit() -> Result<()> {
     let _ = publish_and_snapshot(&repo);
 
     repo.run_span(["add", "newbie", "src/n.txt#L1-L3"])?;
-    repo.run_span(["why", "newbie", "-m", "why newbie"])?;
+    repo.run_span(["why", "newbie", "why newbie"])?;
     repo.write_file("src/n.txt", "n-1CHANGED\nn-2x\nn-3x\nn-4\n")?;
 
     // First run publishes the fully-keyed generation for this uncommitted state.
@@ -275,7 +275,7 @@ fn deleted_uncommitted_span_not_replayed_and_corpus_intact() -> Result<()> {
     let snap = publish_and_snapshot(&repo);
 
     repo.run_span(["add", "newbie", "src/n.txt#L1-L3"])?;
-    repo.run_span(["why", "newbie", "-m", "why newbie"])?;
+    repo.run_span(["why", "newbie", "why newbie"])?;
     repo.write_file("src/n.txt", "n-1CHANGED\nn-2x\nn-3x\nn-4\n")?;
 
     // Warm the store with the uncommitted-span state present.

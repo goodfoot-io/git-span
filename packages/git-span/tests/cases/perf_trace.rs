@@ -10,7 +10,7 @@ use support::TestRepo;
 /// (removed); instead commits the span file directly via git.
 fn seed_and_drift(repo: &TestRepo, span: &str) -> Result<()> {
     repo.span_stdout(["add", span, "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", span, "-m", "seed"])?;
+    repo.span_stdout(["why", span, "seed"])?;
     repo.commit_all(&format!("span: {span}"))?;
     repo.write_file(
         "file1.txt",
@@ -85,7 +85,7 @@ fn perf_trace_columns_match_schema() -> Result<()> {
 fn perf_trace_includes_clean_pinned_span() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "clean-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "clean-span", "-m", "clean span"])?;
+    repo.span_stdout(["why", "clean-span", "clean span"])?;
     repo.commit_all("span: clean-span")?;
 
     let trace_path = repo.path().join("trace.csv");

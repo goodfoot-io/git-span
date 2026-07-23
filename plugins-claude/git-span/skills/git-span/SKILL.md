@@ -8,13 +8,13 @@ description: Track, declare, and reconcile implicit semantic couplings between f
 ```
 git span stale [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
 git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
-git span why <name> [-m "..."]           # bare = read; -m = write, after add/remove
+git span why <name> ["..."]           # bare = read; positional or stdin = write, after add/remove
 git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
 git span delete <name>                   # whole span gone; NAME only, no anchor args
 git span list [<target>...] [--oneline]  # positional filter on name or path
 git span show <name>                     # == bare `git span <name>`
 ```
-After any `add`/`remove`/`why -m`/`delete`: `git add .span && git commit -m "..."`.
+After any `add`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
 
 ## Same-commit workflow
 
@@ -53,7 +53,7 @@ output and stop.
 ### Declare a new coupling
 ```
 git span add <name> <anchor>...
-git span why <name> -m "<one present-tense sentence naming the subsystem and what it does across the anchors>"
+git span why <name> "<one present-tense sentence naming the subsystem and what it does across the anchors>"
 git add .span && git commit -m "..."
 ```
 The why is a definition, not a work order: a complete sentence (subject + verb, never
@@ -69,7 +69,7 @@ git span stale <name>                     # see which anchor(s) drifted and how
 # Changed, coupling still holds:   keep the SAME range unless the file's line count moved
 git span remove <name> <old-anchor>       # only if path or range actually changed
 git span add <name> <new-anchor>          # wc -l <path> first
-git span why <name> -m "..."              # only if the relationship itself changed
+git span why <name> "..."              # only if the relationship itself changed
 git span stale <name>                     # must exit 0 before commit
 git add .span && git commit -m "..."
 ```

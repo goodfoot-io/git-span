@@ -55,7 +55,7 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     // C1: create the span.
     repo.span_stdout(["add", span, "file1.txt#L1-L5"])?;
     repo.span_stdout(["add", span, "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "-m", "First why: tracks the two source files."])?;
+    repo.span_stdout(["why", span, "First why: tracks the two source files."])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C1: create span"])?;
 
@@ -66,7 +66,7 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     )?;
     repo.commit_all("C2 source: mutate file2")?;
     repo.span_stdout(["add", span, "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "-m", "Second why: file2 lines updated."])?;
+    repo.span_stdout(["why", span, "Second why: file2 lines updated."])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C2: update why and re-anchor file2"])?;
 
@@ -287,7 +287,7 @@ fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
 
     // Anchor lines 1-3 and commit the span.
     repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "-m", "tracks the head of src.txt"])?;
+    repo.span_stdout(["why", span, "tracks the head of src.txt"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span"])?;
 
@@ -344,7 +344,7 @@ fn current_moved_anchor_uses_moved_phrase_and_relocated_block() -> Result<()> {
 
     // Anchor the TARGET block (lines 3-5) and commit the span.
     repo.span_stdout(["add", span, "src.txt#L3-L5"])?;
-    repo.span_stdout(["why", span, "-m", "tracks the TARGET block"])?;
+    repo.span_stdout(["why", span, "tracks the TARGET block"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span"])?;
 
@@ -401,7 +401,7 @@ fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
     repo.commit_all("initial")?;
 
     repo.span_stdout(["add", span, "whole.txt"])?;
-    repo.span_stdout(["why", span, "-m", "tracks the whole file"])?;
+    repo.span_stdout(["why", span, "tracks the whole file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create whole-file span"])?;
 
@@ -432,7 +432,7 @@ fn degradation_note_file_absent_at_commit() -> Result<()> {
 
     // C1: anchor src.txt.
     repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "-m", "initial why"])?;
+    repo.span_stdout(["why", span, "initial why"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C1: create span with src.txt"])?;
 
@@ -444,7 +444,7 @@ fn degradation_note_file_absent_at_commit() -> Result<()> {
     // history walk reads the anchor's content from this commit's tree, where
     // src.txt is absent — so the timeline must degrade that anchor to a note
     // rather than aborting the whole report.
-    repo.span_stdout(["why", span, "-m", "why after source deletion"])?;
+    repo.span_stdout(["why", span, "why after source deletion"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C3: edit why after src.txt is gone"])?;
 
@@ -484,7 +484,7 @@ fn incomplete_walk_exits_nonzero_with_warning() -> Result<()> {
     repo.write_file("f.txt", "x\n")?;
     repo.commit_all("init")?;
     repo.span_stdout(["add", "m", "f.txt#L1-L1"])?;
-    repo.span_stdout(["why", "m", "-m", "why"])?;
+    repo.span_stdout(["why", "m", "why"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -680,7 +680,7 @@ fn current_surfaces_worktree_added_anchor() -> Result<()> {
     repo.write_file("b.txt", "one\ntwo\nthree\n")?;
     repo.commit_all("initial files")?;
     repo.span_stdout(["add", span, "a.txt#L1-L2"])?;
-    repo.span_stdout(["why", span, "-m", "tracks a.txt head"])?;
+    repo.span_stdout(["why", span, "tracks a.txt head"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span"])?;
 
@@ -720,7 +720,7 @@ fn current_surfaces_worktree_removed_anchor() -> Result<()> {
     repo.commit_all("initial files")?;
     repo.span_stdout(["add", span, "a.txt#L1-L2"])?;
     repo.span_stdout(["add", span, "b.txt#L1-L2"])?;
-    repo.span_stdout(["why", span, "-m", "tracks both files"])?;
+    repo.span_stdout(["why", span, "tracks both files"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span with two anchors"])?;
 

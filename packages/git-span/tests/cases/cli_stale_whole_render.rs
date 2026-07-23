@@ -13,7 +13,7 @@ fn seed_whole_file_drift(repo: &TestRepo) -> Result<()> {
     std::fs::write(repo.path().join("hero.png"), [0u8, 1, 2, 3, 4, 5, 6, 7])?;
     repo.commit_all("seed")?;
     let _ = repo.run_span(["add", "m", "hero.png"])?;
-    repo.span_stdout(["why", "m", "-m", "describes hero"])?;
+    repo.span_stdout(["why", "m", "describes hero"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -27,7 +27,7 @@ fn seed_whole_file_drift(repo: &TestRepo) -> Result<()> {
 /// line ranges must still render as `#L1-L5`).
 fn seed_line_range_drift(repo: &TestRepo) -> Result<()> {
     repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "seed"])?;
+    repo.span_stdout(["why", "m", "seed"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
@@ -89,7 +89,7 @@ fn whole_pin_show_renders_whole() -> Result<()> {
     std::fs::write(repo.path().join("hero.png"), [0u8, 1, 2, 3, 4, 5, 6, 7])?;
     repo.commit_all("seed")?;
     let _ = repo.run_span(["add", "m", "hero.png"])?;
-    repo.span_stdout(["why", "m", "-m", "describes hero"])?;
+    repo.span_stdout(["why", "m", "describes hero"])?;
     {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;

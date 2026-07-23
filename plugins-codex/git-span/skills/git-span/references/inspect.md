@@ -5,7 +5,7 @@ Match the question to the command, don't reflexively mutate:
 - Existence / what's currently anchored → `git span list [<target>...]` (all spans if no
   target; `--oneline` for terse `<span-name> <path>#Lx-Ly` rows) or `git span show <name>`
   (== bare `git span <name>`) for one span's full anchors+why+config.
-- Rationale / definition → `git span why <name>` (bare, no `-m`, just prints the why).
+- Rationale / definition → `git span why <name>` (bare, just prints the why).
 - Timeline / when something changed → `git span history <name>` — XML by default,
   `--format json` for JSON.
 - Drift check without fixing anything → `git span stale [<name-or-path>]` — read-only

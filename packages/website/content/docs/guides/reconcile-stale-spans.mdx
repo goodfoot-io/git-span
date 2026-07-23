@@ -85,5 +85,5 @@ A merge can leave a span file with conflict markers. `git span stale` reports th
 - A renamed or deleted source path with no readable same-line-range counterpart on the other side, or more than one, is reported as a conflict — the warning names the unreadable path (and, when ambiguous, the candidate paths it could not choose between).
 
 <Callout type="warn">
-After a `--fix` during a merge, always re-run `git span stale` — a `--fix` exit code of 0 does not guarantee the span came out fully clean. Also re-check `git span why <name>`: a merge resolution can leave the why empty even when both sides carried the same text; if it's blank, re-set it with `git span why <name> -m "..."`. Git still expects you to finish the merge with `git commit`.
+After a `--fix` during a merge, always re-run `git span stale` — a `--fix` exit code of 0 does not guarantee the span came out fully clean. Also re-check `git span why <name>`: a merge resolution can leave the why empty even when both sides carried the same text; if it's blank, re-set it with `git span why <name> "..."`. Git still expects you to finish the merge with `git commit`.
 </Callout>

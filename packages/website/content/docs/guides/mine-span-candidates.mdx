@@ -65,7 +65,7 @@ Once you've confirmed the coupling, anchor both sides and write the why:
 
 ```bash
 git span add checkout-flow web/checkout.tsx#L88-L120 api/charge.ts#L30-L76
-git span why checkout-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+git span why checkout-flow "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 ```
 
 Anchor the narrowest range that carries the coupling — a whole file if the dependency is diffuse, a line range if you can point at the specific function or block. Write the why as a plain definition of what the anchors form together, not as a warning or changelog entry; see [Concepts](/docs/concepts) for what belongs in the why versus in a code comment.

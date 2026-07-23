@@ -120,7 +120,7 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
     run_git(p, &["commit", "-m", "seed"]);
 
     run_span(p, &["add", "m", "file1.txt#L1-L5"]);
-    run_span(p, &["why", "m", "-m", "seed"]);
+    run_span(p, &["why", "m", "seed"]);
     run_git(p, &["add", ".span"]);
     run_git(p, &["commit", "-m", "span"]);
 

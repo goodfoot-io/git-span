@@ -90,7 +90,7 @@ newest N commits.
 git span add <name> <anchor>... [--at <commit-ish>]   # write anchors into .span/<name>
 git span remove <name> <anchor>...                    # remove anchors from .span/<name>
 git span why <name>                                   # print current why
-git span why <name> [-m <text>]                       # write a new why into .span/<name>
+git span why <name> [<text>]                       # write a new why into .span/<name>
 git add .span && git commit                           # persist the edits
 ```
 
@@ -101,7 +101,7 @@ git add .span && git commit                           # persist the edits
 
 `git span why <name>` never gates on the span existing: a bare read of an
 unknown name prints `` `<name>` has no why recorded. `` at exit 0, and
-`-m` on an unknown name silently **creates** a new, anchor-less span with that
+a positional argument (or piped stdin) on an unknown name silently **creates** a new, anchor-less span with that
 why. If a `why` you expected to update instead reads as freshly created,
 double-check the span name for typos with `git span list`.
 

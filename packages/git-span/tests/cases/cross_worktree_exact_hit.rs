@@ -78,7 +78,7 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     // finding and the parity check is meaningful (an exact hit serves a drifted
     // committed corpus so long as the worktree is clean).
     run_span(&main, &["add", "m", "src.txt#L1-L3"], false, false);
-    run_span(&main, &["why", "m", "-m", "seed"], false, false);
+    run_span(&main, &["why", "m", "seed"], false, false);
     run_git(&main, &["add", ".span"]);
     run_git(&main, &["commit", "-m", "span"]);
     std::fs::write(main.join("src.txt"), "s1CHANGED\ns2\ns3\ns4\n").expect("write drift");

@@ -29,7 +29,7 @@ Common command shape:
 ```bash
 git span doctor
 git span add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
-git span why checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+git span why checkout-request-flow "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 git add .span && git commit -m "Record checkout-request-flow span"
 git span stale checkout-request-flow
 ```

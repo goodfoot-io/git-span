@@ -30,7 +30,7 @@ fn seed_spans(repo: &TestRepo, count: usize) -> Result<Vec<String>> {
         repo.commit_all(&format!("add {path}"))?;
         let span = format!("span{i}");
         repo.span_stdout(["add", &span, &format!("{path}#L1-L5")])?;
-        repo.span_stdout(["why", &span, "-m", "seed"])?;
+        repo.span_stdout(["why", &span, "seed"])?;
         repo.commit_all(&format!("span: {span}"))?;
         names.push(span);
     }

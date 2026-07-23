@@ -18,7 +18,7 @@ A span holds one or more anchors, mixing whole-file and line-range forms freely.
 
 ## The why
 
-The why is a one-sentence definition of the subsystem, flow, or concern the anchors collectively form — written with `git span why <name> -m "..."`. It's evergreen: write it once, and it's **inherited across routine re-anchors** (moving an anchor to follow code that shifted doesn't require a new why). Only write a new why when the subsystem itself changes, not when its anchors move.
+The why is a one-sentence definition of the subsystem, flow, or concern the anchors collectively form — written with `git span why <name> "..."`. It's evergreen: write it once, and it's **inherited across routine re-anchors** (moving an anchor to follow code that shifted doesn't require a new why). Only write a new why when the subsystem itself changes, not when its anchors move.
 
 The why is the payload. Everything else — invariants, caveats, ownership, review triggers — belongs in source comments, commit messages, CODEOWNERS, and PR descriptions, not in the why.
 

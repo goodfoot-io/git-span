@@ -33,7 +33,7 @@ fn seed_subdir_lfs_corpus(repo: &TestRepo) -> Result<()> {
     repo.commit_all("seed")?;
 
     repo.run_span(["add", "m", "sub/big.txt#L1-L3"])?;
-    repo.run_span(["why", "m", "-m", "anchors an LFS-tracked file"])?;
+    repo.run_span(["why", "m", "anchors an LFS-tracked file"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 

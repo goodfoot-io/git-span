@@ -71,7 +71,7 @@ the subsystem itself changes.
 
 A span is not finished until it has a why and a comment at each
 load-bearing anchor site stating what must hold there. Run
-`git span why <name> -m "<sentence>"` after confirming the relationship,
+`git span why <name> "<sentence>"` after confirming the relationship,
 then commit the span file before adding new anchors that reference it.
 
 ## Reconciliation discipline

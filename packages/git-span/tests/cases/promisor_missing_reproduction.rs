@@ -79,7 +79,7 @@ fn promisor_missing_blob_misclassified_as_deleted() -> Result<()> {
 
     // Set up a span pointing to file1.txt.
     repo.span_stdout(["add", "test-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "test-span", "-m", "promisor reproduction test"])?;
+    repo.span_stdout(["why", "test-span", "promisor reproduction test"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
     repo.write_commit_graph()?;

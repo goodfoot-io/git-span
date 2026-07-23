@@ -84,7 +84,7 @@ fn autocrlf_change_between_publish_and_same_head_reuse_falls_through_to_cold() {
     run_git(p, &["commit", "-m", "seed"]);
     let (_o, e) = run_span(p, &["add", "m", "file1.txt#L1-L5"], false, false);
     assert!(e.is_empty() || !e.contains("error"), "add failed: {e}");
-    run_span(p, &["why", "m", "-m", "seed"], false, false);
+    run_span(p, &["why", "m", "seed"], false, false);
     run_git(p, &["add", ".span"]);
     run_git(p, &["commit", "-m", "span"]);
     // Resolver entry points require a commit-graph with changed-path filters.

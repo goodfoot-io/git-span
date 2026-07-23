@@ -71,7 +71,7 @@ Confirm the span now lists the new range and no longer lists the old one.
 Re-anchoring doesn't touch the span's `why` — it carries forward unchanged, which is correct for a routine re-anchor where the subsystem's meaning hasn't changed. Only write a new why if the edit changed what the subsystem *is*, not just where it lives:
 
 ```bash
-git span why checkout-flow -m "Updated definition of the subsystem, if it actually changed."
+git span why checkout-flow "Updated definition of the subsystem, if it actually changed."
 ```
 
 ## Commit

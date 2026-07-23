@@ -38,7 +38,7 @@ If a documentation update changes the recommended operator workflow, all of thes
 - The hand-authored `Writing the why` section in [packages/git-span/src/bin/gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs), which generates the man page (`yarn build:man`) — never edit `man/git-span.1` directly.
 - The `Declare a new coupling` recipe in the git-span skill and the `<one sentence>` placeholder in the reconcile skill, in **both** plugin trees (`plugins-claude/` and `plugins-codex/`).
 - The `Why-writing discipline` section of `git-span/agents/expert.md`, kept byte-identical across both plugin trees.
-- The `-m` placeholder rendered by the gate hook's uncovered-writes reason in [packages/agent-hooks/src/common/gate-core.ts](/packages/agent-hooks/src/common/gate-core.ts). That string is quoted verbatim by the `agent-hooks/hook-message-copy` span's doc mirrors — reword it, run `yarn build` in `packages/agent-hooks`, and update every mirror byte-for-byte.
+- The positional why text placeholder rendered by the gate hook's uncovered-writes reason in [packages/agent-hooks/src/common/gate-core.ts](/packages/agent-hooks/src/common/gate-core.ts). That string is quoted verbatim by the `agent-hooks/hook-message-copy` span's doc mirrors — reword it, run `yarn build` in `packages/agent-hooks`, and update every mirror byte-for-byte.
 - The `why`-writing line in [.claude/rules/wiki.md](/.claude/rules/wiki.md).
 
 ## Update Order

@@ -16,7 +16,7 @@ use support::TestRepo;
 /// `--at` history walks have something to resolve.
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.span_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", name, "-m", "seed"])?;
+    repo.span_stdout(["why", name, "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", &format!("span {name}")])?;
     Ok(())

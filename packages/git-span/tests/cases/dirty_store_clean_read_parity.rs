@@ -36,7 +36,7 @@ fn seed_committed_drift(repo: &TestRepo) -> Result<()> {
     repo.commit_all("seed")?;
 
     repo.run_span(["add", "m", "a.txt#L1-L3", "b.txt#L1-L3", "c.txt#L1-L3"])?;
-    repo.run_span(["why", "m", "-m", "spans three files"])?;
+    repo.run_span(["why", "m", "spans three files"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 

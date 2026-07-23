@@ -71,7 +71,6 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
     let out = repo.run_span([
         "why",
         "billing/checkout-request-flow",
-        "-m",
         "Checkout request flow.",
     ])?;
     assert!(out.status.success(), "why failed");
@@ -121,7 +120,7 @@ fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
         "stage failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let out = repo.run_span(["why", name, "-m", "Checkout request flow."])?;
+    let out = repo.run_span(["why", name, "Checkout request flow."])?;
     assert!(out.status.success(), "why failed");
 
     assert!(span_exists(&repo, name), "expected span `{name}`");

@@ -37,7 +37,7 @@ fn deleted_gitignored_span_is_not_served_from_cache() -> Result<()> {
 
     // Create a gitignored span (never tracked) anchored to charge.ts.
     repo.run_span(["add", "bld/build", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "bld/build", "-m", "ignored build span"])?;
+    repo.run_span(["why", "bld/build", "ignored build span"])?;
     assert!(
         repo.path().join(".span/bld/build").exists(),
         "precondition: the gitignored span file exists on disk"
@@ -94,7 +94,7 @@ fn deleted_untracked_span_is_not_served_from_cache() -> Result<()> {
 
     // Untracked span file (never `git add`ed), anchored to charge.ts.
     repo.run_span(["add", "untracked", "api/charge.ts#L1-L3"])?;
-    repo.run_span(["why", "untracked", "-m", "untracked span"])?;
+    repo.run_span(["why", "untracked", "untracked span"])?;
 
     // Drift the anchored content at HEAD so the span is `changed`.
     repo.write_file("api/charge.ts", "A\nB\nC\nd\ne\n")?;

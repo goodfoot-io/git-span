@@ -13,7 +13,7 @@ use support::TestRepo;
 #[test]
 fn rejects_path_traversal_name_in_why_m() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let out = repo.run_span(["why", "../escape", "-m", "test body"])?;
+    let out = repo.run_span(["why", "../escape", "test body"])?;
 
     // The -m path does not call validate_span_name, so it currently
     // accepts path-traversal names.  Once validation is added this

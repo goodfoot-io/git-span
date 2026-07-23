@@ -40,7 +40,8 @@
 //! [`ExeDigestMemo`]'s own doc comment specifies for the trait in general.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -200,15 +201,37 @@ impl SharedExeDigestStore {
 /// there is no cross-invocation staleness to reason about). `None` means
 /// "failed to open" — cached too, so a broken environment doesn't retry the
 /// open on every call within one run.
-static SHARED: OnceLock<Mutex<Option<SharedExeDigestStore>>> = OnceLock::new();
+///
+/// Uses `AtomicBool` + `Mutex` instead of `OnceLock` so that
+/// `#[cfg(test)] reset_shared_store()` can clear the singleton between tests
+/// (the `OnceLock`-based predecessor leaked state across unit tests sharing
+/// the same process).
+static INIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static SHARED: Mutex<Option<SharedExeDigestStore>> = Mutex::new(None);
 
 /// Run `f` against the shared store if one is open. A poisoned lock (another
 /// thread panicked while holding it) or a failed open both fail closed to
 /// `None` — never a panic or a wrong digest.
 fn with_shared_store<T>(f: impl FnOnce(&SharedExeDigestStore) -> T) -> Option<T> {
-    let cell = SHARED.get_or_init(|| Mutex::new(SharedExeDigestStore::open()));
-    let guard = cell.lock().ok()?;
-    guard.as_ref().map(f)
+    if !INIT_ATTEMPTED.load(Ordering::Acquire) {
+        let mut guard = SHARED.lock().ok()?;
+        if !INIT_ATTEMPTED.load(Ordering::Relaxed) {
+            *guard = SharedExeDigestStore::open();
+            INIT_ATTEMPTED.store(true, Ordering::Release);
+        }
+        guard.as_ref().map(f)
+    } else {
+        let guard = SHARED.lock().ok()?;
+        guard.as_ref().map(f)
+    }
+}
+
+/// Reset the shared store so a subsequent call opens a fresh connection.
+/// Used by unit tests that need to isolate their singleton state.
+#[cfg(test)]
+pub(crate) fn reset_shared_store() {
+    *SHARED.lock().expect("reset_shared_store lock") = None;
+    INIT_ATTEMPTED.store(false, Ordering::Release);
 }
 
 /// [`ExeDigestMemo`] backed by the process-wide shared per-user store. A unit
@@ -368,6 +391,11 @@ mod tests {
     /// direct store does.
     #[test]
     fn shared_memo_round_trips_through_the_singleton() {
+        // Clear any singleton state left by an earlier test in the same
+        // process (the singleton uses env-var-driven paths that a prior test
+        // would have resolved against its own temp directory).
+        reset_shared_store();
+
         let dir = tempfile::tempdir().expect("tempdir");
         unsafe {
             std::env::set_var("GIT_SPAN_EXE_DIGEST_DB", dir.path().join(DB_BASENAME));

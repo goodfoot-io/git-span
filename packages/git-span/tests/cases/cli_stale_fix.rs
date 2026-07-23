@@ -29,7 +29,7 @@ fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
 
 fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.span_stdout(["add", name, anchor])?;
-    repo.span_stdout(["why", name, "-m", why])?;
+    repo.span_stdout(["why", name, why])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
     Ok(())
@@ -43,7 +43,7 @@ fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()>
 fn fully_fresh_span_is_absent_from_scan() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "all fresh"])?;
+    repo.span_stdout(["why", "m", "all fresh"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -72,7 +72,7 @@ fn lists_all_anchors_in_mixed_span_in_stored_order() -> Result<()> {
         "file1.txt#L6-L10",
         "file2.txt#L11-L15",
     ])?;
-    repo.span_stdout(["why", "m", "-m", "mixed"])?;
+    repo.span_stdout(["why", "m", "mixed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -457,7 +457,7 @@ fn fix_skips_deleted_anchor_and_keeps_in_listing() -> Result<()> {
 fn fix_exit_code_reflects_post_fix_drift() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "mix"])?;
+    repo.span_stdout(["why", "m", "mix"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -526,7 +526,7 @@ fn fix_preserves_span_file_anchor_order() -> Result<()> {
         "file1.txt#L1-L5",
         "file2.txt#L11-L15",
     ])?;
-    repo.span_stdout(["why", "m", "-m", "order"])?;
+    repo.span_stdout(["why", "m", "order"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -607,7 +607,7 @@ fn json_porcelain_unchanged_for_drifted_input() -> Result<()> {
 fn fix_coalesces_contiguous_authored_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", "m", "-m", "adjacent"])?;
+    repo.span_stdout(["why", "m", "adjacent"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -634,7 +634,7 @@ fn fix_coalesces_contiguous_authored_ranges() -> Result<()> {
 fn fix_coalesces_overlapping_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file2.txt#L1-L10", "file2.txt#L5-L15"])?;
-    repo.span_stdout(["why", "m", "-m", "overlap"])?;
+    repo.span_stdout(["why", "m", "overlap"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -658,7 +658,7 @@ fn fix_coalesces_overlapping_ranges() -> Result<()> {
 fn fix_leaves_non_contiguous_ranges_separate() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file2.txt#L1-L5", "file2.txt#L8-L12"])?;
-    repo.span_stdout(["why", "m", "-m", "gap"])?;
+    repo.span_stdout(["why", "m", "gap"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -678,7 +678,7 @@ fn fix_leaves_non_contiguous_ranges_separate() -> Result<()> {
 fn fix_does_not_coalesce_terminal_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", "m", "-m", "terminal"])?;
+    repo.span_stdout(["why", "m", "terminal"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -699,7 +699,7 @@ fn fix_does_not_coalesce_terminal_ranges() -> Result<()> {
 fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "mixed"])?;
+    repo.span_stdout(["why", "m", "mixed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -727,7 +727,7 @@ fn fix_coalesces_chain_of_three() -> Result<()> {
         "file2.txt#L6-L10",
         "file2.txt#L11-L15",
     ])?;
-    repo.span_stdout(["why", "m", "-m", "chain"])?;
+    repo.span_stdout(["why", "m", "chain"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -752,7 +752,7 @@ fn fix_coalesces_chain_of_three() -> Result<()> {
 fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", "m", "-m", "head-layer"])?;
+    repo.span_stdout(["why", "m", "head-layer"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -1631,7 +1631,7 @@ fn fix_prints_zero_summary_on_clean_tree() -> Result<()> {
 fn fix_prints_summary_with_remaining_drift() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "mixed"])?;
+    repo.span_stdout(["why", "m", "mixed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 

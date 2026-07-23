@@ -144,11 +144,11 @@ fn build_base_corpus() -> Result<TestRepo> {
     // Real `git span add`/`why` compute the canonical rk64 fingerprint, so each
     // anchor is genuinely Fresh at creation (unlike the sha256 support helper).
     repo.run_span(["add", "alpha", "src/a.txt#L1-L3"])?;
-    repo.run_span(["why", "alpha", "-m", "why alpha"])?;
+    repo.run_span(["why", "alpha", "why alpha"])?;
     repo.run_span(["add", "beta", "src/b.txt#L1-L3"])?;
-    repo.run_span(["why", "beta", "-m", "why beta"])?;
+    repo.run_span(["why", "beta", "why beta"])?;
     repo.run_span(["add", "gamma", "src/d.txt#L1-L3"])?;
-    repo.run_span(["why", "gamma", "-m", "why gamma"])?;
+    repo.run_span(["why", "gamma", "why gamma"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "spans"])?;
 
@@ -248,7 +248,7 @@ fn span_definition_only_change_parity() -> Result<()> {
     let snap = publish_and_snapshot(&repo);
 
     // Rewrite alpha's span definition (its `why`) only — no source change.
-    repo.run_span(["why", "alpha", "-m", "why alpha UPDATED"])?;
+    repo.run_span(["why", "alpha", "why alpha UPDATED"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span def change"])?;
     repo.write_commit_graph()?;

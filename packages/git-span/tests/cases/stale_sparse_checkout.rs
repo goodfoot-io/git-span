@@ -50,7 +50,7 @@ fn sparse_checkout_excluded_reports_content_unavailable() -> Result<()> {
 
     // Anchor src/data.txt with git span add (line-range anchor).
     repo.span_stdout(["add", "m", "src/data.txt#L1-L3"])?;
-    repo.span_stdout(["why", "m", "-m", "sparse test"])?;
+    repo.span_stdout(["why", "m", "sparse test"])?;
     repo.commit_all("span commit")?;
     repo.write_commit_graph()?;
 

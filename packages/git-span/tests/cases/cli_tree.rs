@@ -43,7 +43,7 @@ fn add_span(repo: &TestRepo, slug: &str, paths: &[&str]) -> Result<()> {
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     repo.span_stdout(arg_refs)?;
-    repo.span_stdout(["why", slug, "-m", &format!("why {slug}")])?;
+    repo.span_stdout(["why", slug, &format!("why {slug}")])?;
     repo.commit_all(&format!("span: {slug}"))?;
     Ok(())
 }

@@ -5,6 +5,7 @@
 //! typed results via [`crate::Result`].
 
 use crate::{Error, Result};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
@@ -781,7 +782,7 @@ pub fn tree_entry_at(
     commit_ish: &str,
     path: &Path,
 ) -> Result<Option<(gix::objs::tree::EntryMode, ObjectId)>> {
-    TREE_ENTRY_AT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    TREE_ENTRY_AT_CALL_COUNT.with(|c| c.set(c.get() + 1));
     let id = match repo.rev_parse_single(commit_ish) {
         Ok(id) => id,
         Err(_) => return Ok(None),
@@ -802,21 +803,22 @@ pub fn tree_entry_at(
 // Call counter for tree_entry_at — used by the reproduction test for card
 // main-157 F4 (the warm-hit dirty-tree withhold check re-walked HEAD's tree
 // once per relevant path via this function instead of reusing one traversal;
-// see `resolver::dirty::head_blob_path_map`). Always compiled; the atomic
-// increment on a hot path has negligible cost.
+// see `resolver::dirty::head_blob_path_map`). Always compiled; the
+// thread-local increment on a hot path has negligible cost.
 // ---------------------------------------------------------------------------
 
-static TREE_ENTRY_AT_CALL_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static TREE_ENTRY_AT_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Reset the call counter.
 pub fn reset_tree_entry_at_call_count() {
-    TREE_ENTRY_AT_CALL_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+    TREE_ENTRY_AT_CALL_COUNT.with(|c| c.set(0));
 }
 
 /// Read the call counter.
 pub fn tree_entry_at_call_count() -> usize {
-    TREE_ENTRY_AT_CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+    TREE_ENTRY_AT_CALL_COUNT.with(|c| c.get())
 }
 
 /// Snapshot of an index entry used by callers that previously parsed

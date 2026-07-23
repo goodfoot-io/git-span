@@ -34,12 +34,12 @@ fn seed_fixture(repo: &TestRepo) -> Result<()> {
     repo.run_git(["commit", "-m", "add aaa.txt"])?;
 
     repo.span_stdout(["add", "clean-span", "aaa.txt#L1-L5", "file1.txt#L6-L10"])?;
-    repo.span_stdout(["why", "clean-span", "-m", "clean across two files"])?;
+    repo.span_stdout(["why", "clean-span", "clean across two files"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "clean-span commit"])?;
 
     repo.span_stdout(["add", "drifted-span", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "drifted-span", "-m", "will drift"])?;
+    repo.span_stdout(["why", "drifted-span", "will drift"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "drifted-span commit"])?;
     Ok(())

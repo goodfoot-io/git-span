@@ -46,7 +46,7 @@ fn fix_rewrites_both_anchors_mid_merge() -> Result<()> {
 
     // Span both anchors.
     repo.span_stdout(["add", "parse/pair", "f.js#L1-L3", "f.js#L4-L6"])?;
-    repo.span_stdout(["why", "parse/pair", "-m", "parse/serialize inverse pair"])?;
+    repo.span_stdout(["why", "parse/pair", "parse/serialize inverse pair"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 

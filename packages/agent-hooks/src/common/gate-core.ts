@@ -940,7 +940,7 @@ function renderStalenessReason(
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
-  const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} -m "..."\``;
+  const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\``;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
     const closing =
@@ -1022,7 +1022,7 @@ function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce', 
     'Determine if these files carry implicit dependencies, then use `git span` to document them:',
     '',
     '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
-    '`git span why <name> -m "<why>"`',
+    '`git span why <name> "<why>"`',
     '',
     'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
   ];

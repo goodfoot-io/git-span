@@ -44,7 +44,7 @@ fn read_span(repo: &TestRepo, name: &str) -> Result<String> {
 /// is committed (worktree-only vs staged-but-uncommitted).
 fn seed_and_shift(repo: &TestRepo) -> Result<()> {
     repo.span_stdout(["add", "m", "file1.txt#L3-L5"])?;
-    repo.span_stdout(["why", "m", "-m", "seed"])?;
+    repo.span_stdout(["why", "m", "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
 

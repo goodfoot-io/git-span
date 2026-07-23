@@ -30,7 +30,7 @@ fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
 
 fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()> {
     repo.span_stdout(["add", name, anchor])?;
-    repo.span_stdout(["why", name, "-m", why])?;
+    repo.span_stdout(["why", name, why])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
     Ok(())
