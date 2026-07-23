@@ -122,6 +122,38 @@ export async function diffNameOnly(repoRoot: string, fromRev: string, toRev: str
   return stdout.split('\n').filter((line) => line.length > 0);
 }
 
+/** One `git diff --name-status -M` row: a change to a path, with the pre-rename path when it moved/was copied. */
+export interface NameStatusEntry {
+  status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
+  path: string;
+  /** The source path for a rename (`R`) or copy (`C`); undefined otherwise. */
+  oldPath?: string;
+}
+
+/**
+ * Net name-status changes between two revisions with rename/copy detection
+ * (`-M`). A multi-step rename chain (`A → B → C`) across `fromRev..toRev`
+ * collapses to a single `R` row (`A → C`), which is exactly what
+ * rename-tracking needs to carry an anchor forward to HEAD in one hop. Added
+ * for Stage 2 (rename-tracking) — the one genuinely missing git primitive; all
+ * other reads compose the existing wrappers.
+ */
+export async function diffNameStatus(repoRoot: string, fromRev: string, toRev: string): Promise<NameStatusEntry[]> {
+  const stdout = await runGit(repoRoot, ['diff', '-M', '--name-status', fromRev, toRev]);
+  const entries: NameStatusEntry[] = [];
+  for (const line of stdout.split('\n')) {
+    if (line.length === 0) continue;
+    const parts = line.split('\t');
+    const kind = parts[0].charAt(0) as NameStatusEntry['status'];
+    if ((kind === 'R' || kind === 'C') && parts.length >= 3) {
+      entries.push({ status: kind, oldPath: parts[1], path: parts[2] });
+    } else if (parts.length >= 2) {
+      entries.push({ status: kind, path: parts[1] });
+    }
+  }
+  return entries;
+}
+
 const MISSING_PATH_PATTERN = /does not exist|exists on disk, but not in/;
 
 /** File content at a given revision, or null if the path did not exist at that revision (deleted, not-yet-created, or renamed away). */

@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -42,9 +43,23 @@ fs.chmodSync(path.join(DIST, 'cli.js'), 0o755);
 const grammarsOut = path.join(DIST, 'grammars');
 fs.mkdirSync(grammarsOut, { recursive: true });
 
-const grammarSourceDir = path.join(PACKAGE_ROOT, 'node_modules/tree-sitter-wasms/out');
+// Resolve each grammar through Node's module resolution rather than a
+// hardcoded package-local node_modules path: in this Yarn workspace the
+// `tree-sitter-wasms` dependency is hoisted to the workspace root, so a fixed
+// `packages/discover/node_modules/...` path does not exist. This mirrors how
+// src/disqualifiers/tree-sitter-reference.ts resolves the same grammars at
+// runtime (`require.resolve('tree-sitter-wasms/out/...')`).
+const require = createRequire(import.meta.url);
 for (const name of ['tree-sitter-rust.wasm', 'tree-sitter-typescript.wasm']) {
-  fs.copyFileSync(path.join(grammarSourceDir, name), path.join(grammarsOut, name));
+  fs.copyFileSync(require.resolve(`tree-sitter-wasms/out/${name}`), path.join(grammarsOut, name));
 }
+
+// web-tree-sitter's own runtime core (`tree-sitter.wasm`, distinct from the
+// grammar `.wasm` files above) is loaded by `Parser.init()` from a path
+// relative to the loading module. In the bundle that module is `dist/cli.js`,
+// so the runtime wasm must sit next to it at `dist/tree-sitter.wasm`; in
+// node_modules web-tree-sitter finds it on its own, which is why the test suite
+// needs no copy step.
+fs.copyFileSync(require.resolve('web-tree-sitter/tree-sitter.wasm'), path.join(DIST, 'tree-sitter.wasm'));
 
 console.log('[build] Done.');

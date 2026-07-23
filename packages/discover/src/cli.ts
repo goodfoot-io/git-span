@@ -1,0 +1,162 @@
+/**
+ * `git-span-discover` entrypoint — runs the full implicit-dependency mining
+ * pipeline against a target repository and prints a ranked report.
+ *
+ * Pipeline (plans/initial.md's mermaid diagram):
+ *
+ *   all 7 signals (parallel, via RepoContext)
+ *     → grouping (union-find fuzzy merge)
+ *     → scoring pass 1 + threshold
+ *     → both disqualifiers against survivors (parallel)
+ *     → scoring pass 2 + threshold
+ *     → rename-tracking to HEAD
+ *     → JSON + markdown output
+ *
+ * `.span/` is never read or written: all history/content access goes through
+ * `RepoContext` (src/prefilter.ts), which excludes `.span/` at both the
+ * history-walk and content-read seams (design decisions 5). The CLI adds no
+ * separate `.span/` access path of its own.
+ */
+
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as disqualifiers from './disqualifiers/index.js';
+import { mergeAnchorGroups } from './grouping.js';
+import { type DiscoveredGroup, toJson, toMarkdown } from './output.js';
+import { createRepoContext } from './prefilter.js';
+import { createRenameResolver } from './rename-tracking.js';
+import { scoreEvidence } from './scoring.js';
+import * as signals from './signals/index.js';
+import type { Disqualifier, RepoContext, Signal } from './types.js';
+
+/**
+ * Pass-1 threshold: a cheap prune over signal-only scores before the more
+ * expensive disqualifiers run. Kept just above the 0.5 neutral point so a
+ * group needs more than a single weak signal to advance.
+ */
+const PASS1_THRESHOLD = 0.55;
+
+/** Pass-2 threshold: the final reporting cut, after disqualifiers may have pulled a score down. */
+const PASS2_THRESHOLD = 0.5;
+
+const ALL_SIGNALS: Signal[] = Object.values(signals);
+const ALL_DISQUALIFIERS: Disqualifier[] = Object.values(disqualifiers);
+
+/**
+ * Runs the full pipeline against `repoRoot` and returns the surviving,
+ * HEAD-resolved candidate groups. Exposed (rather than only `main`) so the
+ * integration test can drive the whole pipeline in-process.
+ */
+export async function discover(
+  repoRoot: string,
+  ctx: RepoContext = createRepoContext(repoRoot)
+): Promise<DiscoveredGroup[]> {
+  const signalResults = await Promise.all(ALL_SIGNALS.map((signal) => signal(ctx)));
+  const merged = mergeAnchorGroups(signalResults.flat());
+
+  // Pass 1 — signal evidence only.
+  const survivors = merged.filter((group) => {
+    group.score = scoreEvidence(group.evidence);
+    return group.score >= PASS1_THRESHOLD;
+  });
+
+  // Disqualifiers against pass-1 survivors.
+  const withDisqualifiers = await Promise.all(
+    survivors.map(async (group) => ({
+      group,
+      disqualifiers: await Promise.all(ALL_DISQUALIFIERS.map((disqualifier) => disqualifier(group, ctx)))
+    }))
+  );
+
+  // Pass 2 — signal + disqualifier evidence.
+  const passed = withDisqualifiers.filter(({ group, disqualifiers: dq }) => {
+    group.score = scoreEvidence(group.evidence, dq);
+    return group.score >= PASS2_THRESHOLD;
+  });
+
+  // Rename-tracking to HEAD, dropping groups whose files were all deleted.
+  const resolver = await createRenameResolver(ctx);
+  const discovered: DiscoveredGroup[] = [];
+  for (const { group, disqualifiers: dq } of passed) {
+    const resolved = await resolver.resolve(group);
+    if (!resolved) continue;
+    discovered.push({
+      anchors: resolved.anchors,
+      score: resolved.score,
+      signals: resolved.evidence,
+      disqualifiers: dq
+    });
+  }
+
+  discovered.sort((a, b) => b.score - a.score);
+  return discovered;
+}
+
+interface CliOptions {
+  repoRoot: string;
+  format: 'markdown' | 'json';
+  help: boolean;
+}
+
+function parseArgs(argv: readonly string[]): CliOptions {
+  const options: CliOptions = { repoRoot: process.cwd(), format: 'markdown', help: false };
+  let repoSet = false;
+  for (const arg of argv) {
+    if (arg === '--help' || arg === '-h') options.help = true;
+    else if (arg === '--json') options.format = 'json';
+    else if (arg === '--markdown' || arg === '--md') options.format = 'markdown';
+    else if (!arg.startsWith('-') && !repoSet) {
+      options.repoRoot = path.resolve(arg);
+      repoSet = true;
+    }
+  }
+  return options;
+}
+
+const HELP = `git-span-discover — mine implicit file/line-range couplings from local git history.
+
+Usage:
+  git-span-discover [repo] [--json | --markdown]
+
+Arguments:
+  repo            Path to the target git repository (default: current directory).
+
+Options:
+  --json          Emit machine-readable JSON instead of the markdown summary.
+  --markdown      Emit the human-readable markdown summary (default).
+  -h, --help      Show this help.
+
+Reads only local git history and file content; never reads or writes .span/.`;
+
+export async function main(argv: readonly string[]): Promise<number> {
+  const options = parseArgs(argv);
+  if (options.help) {
+    process.stdout.write(`${HELP}\n`);
+    return 0;
+  }
+
+  const groups = await discover(options.repoRoot);
+  const rendered = options.format === 'json' ? toJson(groups) : toMarkdown(groups);
+  process.stdout.write(`${rendered}\n`);
+  return 0;
+}
+
+/**
+ * Only auto-run the pipeline when this module is the process entrypoint (the
+ * built bin), not when it is imported — e.g. by the integration test, which
+ * drives {@link discover} directly and must not trigger a full run against the
+ * test process's cwd on import.
+ */
+const invokedPath = process.argv[1];
+const isEntrypoint = invokedPath !== undefined && path.resolve(invokedPath) === fileURLToPath(import.meta.url);
+
+if (isEntrypoint) {
+  main(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err: unknown) => {
+      process.stderr.write(`git-span-discover: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+    });
+}
