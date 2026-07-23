@@ -35,8 +35,9 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Write a span whose anchors carry the *canonical* rk64 fingerprint of their
 /// current content, so each anchor is genuinely `Fresh` (matches at HEAD) —
-/// unlike the exact-path test harness, whose sha256 hashes never match the
-/// resolver's rk64 freshness check and so always read as drifted.
+/// unlike the exact-path test harness, whose deliberately-wrong rk64
+/// fingerprints never match the resolver's freshness check and so always
+/// read as drifted.
 fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &str) {
     use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 

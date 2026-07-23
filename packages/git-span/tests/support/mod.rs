@@ -315,9 +315,9 @@ pub fn mode(_path: &Path) -> Option<u32> {
 /// commit it with ordinary git (file-backed model).
 ///
 /// Each anchor is `(path, start, end)`; `(file, 0, 0)` means whole-file.
-/// The content hash matches `git span add` exactly: whole-file hashes
-/// the entire file bytes; a line range hashes the `\n`-joined slice of
-/// lines `[start, end]` with no trailing newline.
+/// The content hash matches `git span add` exactly: the canonical rk64
+/// fingerprint of the whole file, or of the `\n`-joined slice of lines
+/// `[start, end]` with no trailing newline.
 pub fn create_and_commit_span(
     repo: &gix::Repository,
     name: &str,
@@ -331,23 +331,19 @@ pub fn create_and_commit_span(
     let mut records: Vec<git_span::span_file::AnchorRecord> = Vec::with_capacity(anchors.len());
     for (path, start, end) in anchors {
         let bytes = std::fs::read(workdir.join(path)).unwrap_or_else(|_| panic!("read {path}"));
-        let hashed: Vec<u8> = if *start == 0 && *end == 0 {
-            bytes.clone()
+        let extent = if *start == 0 && *end == 0 {
+            git_span::AnchorExtent::WholeFile
         } else {
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (*start as usize).saturating_sub(1);
-            let hi = (*end as usize).min(lines.len());
-            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-            slice.join("\n").into_bytes()
+            git_span::AnchorExtent::LineRange { start: *start, end: *end }
         };
-        let hash = format!("sha256:{}", git_span::types::sha256_hex(&hashed));
+        let fp = git_span_core::cheap_fingerprint_with_extent(&bytes, &extent);
+        let hash = git_span_core::rk64_to_hex(fp);
 
         records.push(git_span::span_file::AnchorRecord {
             path: path.to_string(),
             start_line: *start,
             end_line: *end,
-            algorithm: "rk64".into(),
+            algorithm: git_span_core::RK64_ALGORITHM.into(),
             content_hash: hash,
         });
     }

@@ -1,4 +1,0 @@
-packages/git-span-core/benches/scan.rs#L1-L155 rk64:d6e5816b46d5e051
-packages/git-span-core/src/lib.rs#L392-L942 rk64:b262219fba2be45c
-
-This benchmark measures whether git-span-core's cheap-fingerprint prefilter and related scanning optimizations hit their >=5x speedup target on the wiki CLI's hot path of resolving a single stale line-range anchor against a 2500-line LF file, comparing the pre-optimization lines().join("\n") matcher against the shipped scan_indexed_prefiltered/scan_indexed_rk64 family.

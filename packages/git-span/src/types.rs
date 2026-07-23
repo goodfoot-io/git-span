@@ -25,10 +25,10 @@ pub use git_span_core::AnchorExtent;
 
 /// In-memory representation of an Anchor derived from a span file anchor record.
 ///
-/// The anchor carries the content's SHA-256 hash (stored_hash) for freshness
-/// comparison instead of the old blob-OID / commit-based anchoring. Fields
-/// that were previously populated from commit metadata (anchor_sha, created_at,
-/// blob) are now empty strings.
+/// The anchor carries the content's rk64 fingerprint (stored_hash) for
+/// freshness comparison instead of the old blob-OID / commit-based anchoring.
+/// Fields that were previously populated from commit metadata (anchor_sha,
+/// created_at, blob) are now empty strings.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Anchor {
     /// Commit this anchor was anchored to at creation (empty in new model).
@@ -41,7 +41,7 @@ pub struct Anchor {
     pub extent: AnchorExtent,
     /// Blob OID of `path` at `anchor_sha` (empty in new model).
     pub blob: String,
-    /// Content hash from the span file anchor record (e.g. "sha256:<hex>").
+    /// Content hash from the span file anchor record (e.g. "rk64:<hex>").
     /// Used for freshness comparison instead of blob OID.
     pub stored_hash: String,
 }
@@ -1012,10 +1012,6 @@ fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
 pub(crate) fn sha1_hex(bytes: &[u8]) -> String {
     use_sha1::sha1_hex(bytes)
 }
-
-// `sha256_hex` is the leaf digest helper; it lives in `git-span-core` and
-// is re-exported here so every `crate::types::sha256_hex` path is unchanged.
-pub use git_span_core::sha256_hex;
 
 pub(crate) mod use_sha1 {
     /// Minimal SHA-1. Returns lowercase hex.

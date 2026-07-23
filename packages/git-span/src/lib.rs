@@ -32,8 +32,8 @@ pub use span::{
 };
 pub use resolver::{resolve_anchor, resolve_span, stale_spans};
 pub use types::*;
-// The gix-free kernel's matcher contract. `AnchorExtent` and `sha256_hex`
-// already reach the crate root via `types::*`; these are the remaining
-// pure-kernel items consumers share.
-pub use git_span_core::{Location, hash_bytes_with_extent, scan_for_content_hash};
+// The gix-free kernel's matcher contract. `AnchorExtent` already reaches the
+// crate root via `types::*`; `Location` is the remaining pure-kernel item
+// consumers share.
+pub use git_span_core::Location;
 pub use validation::{RESERVED_SPAN_NAMES, validate_anchor_id, validate_span_name};

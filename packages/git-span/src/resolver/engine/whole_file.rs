@@ -458,8 +458,8 @@ pub(crate) fn resolve_whole_file(
         Some(cur) => {
             // Determine if current content matches the anchored state.
             let cur_matches = if !r.stored_hash.is_empty() {
-                // File-backed model: compute SHA-256 of deepest-layer
-                // canonical content and compare against stored_hash.
+                // File-backed model: compute the rk64 fingerprint of
+                // deepest-layer canonical content and compare against stored_hash.
                 let text = if is_gitlink {
                     // Gitlink identity is the recorded commit OID hex.
                     cur.as_bytes().to_vec()

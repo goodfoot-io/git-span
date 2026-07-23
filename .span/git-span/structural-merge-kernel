@@ -1,4 +1,4 @@
-packages/git-span-core/src/lib.rs#L31-L32 rk64:925472c09f25dcae
+packages/git-span-core/src/lib.rs#L27-L28 rk64:925472c09f25dcae
 packages/git-span-core/src/span_file.rs#L16-L998 rk64:419311782370bc19
 packages/git-span-core/src/validation.rs#L27-L31 rk64:2796333a43593e93
 packages/git-span/src/cli/merge_driver.rs rk64:624b66599fb2bbe0

@@ -1,27 +1,23 @@
 //! `git-span-core` — the pure, gix-free kernel of git-span.
 //!
 //! This crate owns the parts of git-span that operate on **bytes and
-//! text**, not on a repository: the anchor [`AnchorExtent`] shape, the
-//! content-hash freshness rule ([`hash_bytes_with_extent`] /
-//! [`sha256_hex`]), and a stateless content-hash move matcher
-//! ([`scan_for_content_hash`]). None of its public API mentions gix,
-//! SQLite, or any I/O — callers supply bytes and the kernel computes.
+//! text**, not on a repository: the anchor [`AnchorExtent`] shape, and a
+//! stateless rk64 content-fingerprint move matcher
+//! ([`scan_for_content_hash_rk64`] / [`scan_indexed_rk64`]). None of its
+//! public API mentions gix, SQLite, or any I/O — callers supply bytes and
+//! the kernel computes.
 //!
 //! git-span re-exports every item below from its original public path, so
-//! the extraction is invisible to git-span's existing callers. Downstream
-//! consumers (e.g. the wiki CLI) depend on this leaf for the shared
-//! contract and drive their own orchestration, normalization, and caching
-//! on top of it.
+//! the extraction is invisible to git-span's existing callers.
 //!
-//! ## Hashing contract
+//! ## Fingerprint contract
 //!
-//! A line-range anchor hashes the `\n`-joined slice of lines
-//! `[start, end]` (1-based, inclusive); a whole-file anchor hashes the
-//! full byte buffer. The digest is SHA-256, lowercase hex, **with no
-//! `sha256:` prefix** — the prefix is a storage convention, applied by
-//! callers, not part of the digest.
+//! A line-range anchor fingerprints the `\n`-joined slice of lines
+//! `[start, end]` (1-based, inclusive); a whole-file anchor fingerprints the
+//! full byte buffer. The fingerprint is the 64-bit rk64 polynomial hash
+//! ([`cheap_fingerprint_with_extent`]), encoded as 16 lowercase hex digits
+//! by [`rk64_to_hex`], stored as an `rk64:<hex>` token.
 
-use sha2::{Digest, Sha256};
 use std::sync::{Arc, OnceLock};
 
 pub mod error;
@@ -44,49 +40,10 @@ pub enum AnchorExtent {
     LineRange { start: u32, end: u32 },
 }
 
-/// Lowercase hex SHA-256 of `bytes`.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    SHA256_HEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut h = Sha256::new();
-    h.update(bytes);
-    format!("{:x}", h.finalize())
-}
-
-/// Test instrumentation: count every [`sha256_hex`] call so tests can
-/// assert that non-canonical wants short-circuit before any hashing.
-pub static SHA256_HEX_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Hash `bytes` per the anchor's `extent`. Whole-file extents hash the
-/// full byte buffer; line ranges hash the `\n`-joined slice of lines
-/// `[start, end]` (1-based, inclusive).
-///
-/// Returns the lowercase hex SHA-256 digest (no `sha256:` prefix). This
-/// is the canonicalization every git-span and consumer freshness check
-/// must agree on — share it rather than re-implement it.
-///
-/// For a line range this scans only for the two newline offsets that bound
-/// the requested region (stopping at `end`) and, on the common
-/// LF-and-UTF-8 fast path, hashes a contiguous slice of the original buffer
-/// with **no intermediate allocation** — neither a `Vec<&str>` over the
-/// whole file nor a per-call `join`. CRLF, bare-CR, or non-UTF-8 regions
-/// fall back to the canonical `lines().join("\n")` path so the digest is
-/// byte-identical in every case. Callers checking many anchors against one
-/// file should build a [`LineIndex`] once and use [`hash_extent_indexed`]
-/// to amortize the newline scan.
-pub fn hash_bytes_with_extent(bytes: &[u8], extent: &AnchorExtent) -> String {
-    match extent {
-        AnchorExtent::WholeFile => sha256_hex(bytes),
-        AnchorExtent::LineRange { start, end } => match line_range_region(bytes, *start, *end) {
-            Some((rs, re)) => canonical_region(bytes, rs, re, *start, *end, sha256_hex),
-            None => sha256_hex(b""),
-        },
-    }
-}
-
 /// Window height (line count) of an inclusive 1-based `LineRange`, or `0` for a
 /// degenerate extent that selects no content. An extent is degenerate when
-/// `start == 0` (no 1-based line) or `end < start` (empty range); both hash as
-/// the empty string on the [`hash_bytes_with_extent`] side, so the scan family
+/// `start == 0` (no 1-based line) or `end < start` (empty range); both
+/// fingerprint as the empty content (fingerprint `0`), so the scan family
 /// must agree by treating them as a zero-height window (the reachable
 /// `extent == 0` guard). Computed before any arithmetic, so `start == 0,
 /// end == u32::MAX` can never overflow.
@@ -274,51 +231,6 @@ fn scan_files(
     }
 }
 
-/// Find every place `content_hash` (under `extent`'s shape) occurs in the
-/// caller-supplied file contents.
-///
-/// The matcher is pure and **caller-fed**: it never selects candidates,
-/// opens a repository, or caches. The caller decides which files to pass
-/// — typically the anchor's own file first, then a change set — and the
-/// kernel only matches.
-///
-/// `content_hash` may be given bare or `sha256:`-prefixed; the prefix is
-/// normalized away before comparison.
-///
-/// For a [`AnchorExtent::LineRange`] the window height is the extent's
-/// line count and every window of that height is scanned in each file.
-/// `near` biases the returned order toward the occurrence whose start is
-/// closest to that 1-based line — same-file callers pass the anchor's old
-/// start so a small edit-shift surfaces the nearest window first; ties
-/// break toward the lower start line. `near: None` yields pure positional
-/// order. A [`AnchorExtent::WholeFile`] extent ignores `near` and matches
-/// whole files.
-///
-/// Returns **all** matches; disambiguation and any auto-fix policy are the
-/// caller's. No gix, no SQLite, no I/O.
-pub fn scan_for_content_hash(
-    files: &[(String, Vec<u8>)],
-    content_hash: &str,
-    extent: AnchorExtent,
-    near: Option<u32>,
-) -> Vec<Location> {
-    // A whole-file scan hashes each candidate buffer outright, so building a
-    // line index for every file would be pure waste — match directly.
-    if let AnchorExtent::WholeFile = extent {
-        let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-        // A non-canonical `want` can never match a lowercase-hex digest, so
-        // short-circuit before any SHA-256 work.
-        let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
-        return whole_file_matches(files, |b| b.as_slice(), |b| {
-            let mut h = Sha256::new();
-            h.update(b);
-            h.finalize().as_slice() == target.as_slice()
-        });
-    }
-    let indexed = build_indexed(files);
-    scan_indexed(&indexed, content_hash, extent, near)
-}
-
 /// Cached rolling-fingerprint prefix hashes and powers for the file bytes.
 /// These are a pure function of the bytes and are computed at most once per
 /// `LineIndex` lifetime.
@@ -340,11 +252,11 @@ pub const PREFILTER_TABLES_MAX_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
 /// final empty line.
 ///
 /// Callers that read a file once and test **many** anchors against it build
-/// the index once and reuse it across [`hash_extent_indexed`] and
-/// [`scan_indexed`], paying the newline scan a single time instead of once
+/// the index once and reuse it across [`cheap_fingerprint_indexed`] and
+/// [`scan_indexed_rk64`], paying the newline scan a single time instead of once
 /// per anchor and once per window scan. The byte-slice entry points
-/// ([`hash_bytes_with_extent`], [`scan_for_content_hash`]) are thin wrappers
-/// that build a fresh index, so no existing caller has to change.
+/// ([`cheap_fingerprint_with_extent`], [`scan_for_content_hash_rk64`]) are thin
+/// wrappers that build a fresh index, so no existing caller has to change.
 #[derive(Clone)]
 pub struct LineIndex<'a> {
     bytes: &'a [u8],
@@ -451,29 +363,13 @@ impl<'a> LineIndex<'a> {
     }
 }
 
-/// [`hash_bytes_with_extent`] over a prebuilt [`LineIndex`]. Produces a
-/// byte-identical digest; the only difference is that the newline scan is
-/// already paid for.
-pub fn hash_extent_indexed(idx: &LineIndex, extent: &AnchorExtent) -> String {
-    match extent {
-        AnchorExtent::WholeFile => sha256_hex(idx.bytes),
-        AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
-            Some((rs, re)) => canonical_region(idx.bytes, rs, re, *start, *end, sha256_hex),
-            None => sha256_hex(b""),
-        },
-    }
-}
-
-// --- Cheap-fingerprint prefilter for the fail-closed uniqueness check ---
+// --- Cheap (rk64) content fingerprint ---
 //
-// A polynomial (Rabin–Karp) rolling hash over the *same canonical content* as
-// the SHA-256 digest. It is a non-cryptographic prefilter only: a window's
-// SHA is evaluated solely when its fingerprint equals the caller-stored
-// `cheap_fp`, so a fingerprint collision costs one extra SHA and never a wrong
-// answer. The SHA remains the single source of truth, which keeps the
-// whole-file occurrence count — and therefore the caller's fail-closed
-// ambiguity guarantee — exact while paying the per-window SHA only at genuine
-// candidates.
+// A polynomial (Rabin–Karp) rolling hash over the canonical content of an
+// anchor's extent. This is git-span's sole content-identity fingerprint: a
+// non-cryptographic, deterministic function of the canonical bytes, stored
+// as the `rk64:<hex>` token and compared directly — there is no stronger
+// digest backing it.
 
 /// The stored algorithm name for an rk64 fingerprint anchor: a line-format
 /// token of `rk64:<hex>` where `<hex>` is [`rk64_to_hex`] of the `u64`. This
@@ -526,16 +422,13 @@ fn horner(bytes: &[u8]) -> u64 {
 }
 
 
-/// Cheap (non-cryptographic) fingerprint of an extent's canonical content,
-/// over the **same** canonicalization as [`hash_bytes_with_extent`]
-/// (LF-normalized `lines().join("\n")`; whole-file extents fingerprint the
-/// full buffer). The caller stores this `u64` alongside the SHA-256 so later
-/// scans can prefilter windows in O(1) each via [`scan_indexed_prefiltered`].
-///
-/// It is a prefilter only — never a substitute for the SHA. Equal fingerprints
-/// do not prove equal content; the scan still confirms each candidate with
-/// SHA-256. Empty extents (a range selecting no line) fingerprint to `0`,
-/// matching the empty canonical content their digest is taken over.
+/// Cheap (non-cryptographic) fingerprint of an extent's canonical content:
+/// LF-normalized `lines().join("\n")` for line ranges; the full buffer for
+/// whole-file extents. This `u64` is git-span's sole content-identity
+/// fingerprint, encoded as the `rk64:<hex>` token and compared directly —
+/// there is no stronger digest confirming it. Empty extents (a range
+/// selecting no line) fingerprint to `0`, matching the empty canonical
+/// content.
 pub fn cheap_fingerprint_with_extent(bytes: &[u8], extent: &AnchorExtent) -> u64 {
     match extent {
         AnchorExtent::WholeFile => horner(bytes),
@@ -860,85 +753,23 @@ pub fn jaccard_window_scan_interned(
     results
 }
 
-/// Exhaustive, fail-closed match set — the **same** return contract as
-/// [`scan_indexed`] (all matches, same `near` ordering, ≥2 ⇒ ambiguous) —
-/// reached cheaply via a fingerprint prefilter.
-///
-/// A rolling polynomial fingerprint is computed per window in O(N·L) total
-/// (one prefix-hash pass over each file's bytes, then O(1) per window), and
-/// the source-of-truth SHA-256 is evaluated **only** for windows whose
-/// fingerprint equals `cheap_fp`. With unique content this is ~1 SHA (plus
-/// rare fingerprint collisions) instead of N, while the returned set stays
-/// byte-for-byte equal to [`scan_indexed`].
-///
-/// `cheap_fp` must be the caller-stored [`cheap_fingerprint_with_extent`] of
-/// the same canonical content behind `content_hash`. **Correctness does not
-/// depend on the fingerprint, only performance:** because every returned
-/// location is confirmed by SHA-256, a wrong or stale `cheap_fp` can only
-/// *reduce* the set of windows that reach the SHA check — it can never admit a
-/// false match. (It can, however, drop true matches, which is why the caller
-/// must store the fingerprint of the actual anchored content.) A whole-file
-/// extent has no per-window prefilter and defers to [`scan_indexed`].
-pub fn scan_indexed_prefiltered(
-    files: &[(String, LineIndex)],
-    content_hash: &str,
-    cheap_fp: u64,
-    extent: AnchorExtent,
-    near: Option<u32>,
-) -> Vec<Location> {
-    let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-
-    let AnchorExtent::LineRange { start, end } = extent else {
-        // A whole-file extent hashes one buffer per file; there is nothing to
-        // prefilter, so the exhaustive whole-file matcher is already optimal.
-        return scan_indexed(files, content_hash, extent, near);
-    };
-
-    let extent = line_range_extent(start, end);
-    if extent == 0 {
-        return Vec::new();
-    }
-    let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
-    let mut out: Vec<Location> = Vec::new();
-    scan_files(
-        files,
-        extent,
-        |n| Some((0, n - extent)),
-        |path, idx, w, out| {
-            // Confirm each fingerprint candidate with the authoritative SHA-256.
-            let confirm = |slice: &[u8]| {
-                let mut h = Sha256::new();
-                h.update(slice);
-                h.finalize().as_slice() == target.as_slice()
-            };
-            scan_one_file_fp_filtered(path, idx, extent, w, cheap_fp, confirm, out);
-        },
-        &mut out,
-    );
-    if let Some(near) = near {
-        sort_near(&mut out, near);
-    }
-    out
-}
-
 /// Find every window whose rk64 fingerprint
-/// ([`cheap_fingerprint_with_extent`]) equals `cheap_fp`, with **no SHA-256
-/// confirmation** — the 64-bit fingerprint is the sole content identity.
+/// ([`cheap_fingerprint_with_extent`]) equals `cheap_fp` — the 64-bit
+/// fingerprint is the sole content identity, with no stronger confirmation.
 ///
-/// Same return contract as [`scan_indexed`] — all matches, same `near`
-/// ordering, ≥2 ⇒ ambiguous — but a returned location is a window whose
-/// *fingerprint* matches, not one proven byte-identical. Callers accept a
-/// ~`2⁻⁶⁴`-per-comparison chance that a hit is a fingerprint collision rather
-/// than the anchored content.
+/// All matches, ordered nearest-`near`-first (ties toward the lower start
+/// line) when `near` is given, else positional order; ≥2 matches means the
+/// content is ambiguous within the scanned files. A returned location is a
+/// window whose *fingerprint* matches, not one proven byte-identical.
+/// Callers accept a ~`2⁻⁶⁴`-per-comparison chance that a hit is a
+/// fingerprint collision rather than the anchored content.
 ///
 /// rk64 is a 64-bit, **non-cryptographic**, linear (polynomial/Rabin–Karp)
-/// fingerprint — fine for prefiltering or for content where a rare wrong/missed
-/// match is self-correcting (e.g. documentation-link tracking), but **not** a
-/// content-integrity hash. For byte-exact matching use [`scan_indexed`] or the
-/// SHA-confirmed [`scan_indexed_prefiltered`]. The work is the prefilter's
-/// rolling pass with the verify step removed: O(N·L) per file, no SHA-256,
-/// pure and caller-fed. A whole-file extent matches whole files by their
-/// fingerprint (the rk64 of the full buffer).
+/// fingerprint — fine for content where a rare wrong/missed match is
+/// self-correcting (e.g. documentation-link tracking), but **not** a
+/// content-integrity hash. The work is a rolling pass over each file: O(N·L)
+/// per file, pure and caller-fed. A whole-file extent matches whole files by
+/// their fingerprint (the rk64 of the full buffer).
 pub fn scan_indexed_rk64(
     files: &[(String, LineIndex)],
     cheap_fp: u64,
@@ -1023,8 +854,7 @@ pub fn scan_indexed_rk64_one(
 }
 
 /// [`scan_indexed_rk64`] over `Vec<u8>` inputs, building each [`LineIndex`]
-/// internally — mirrors the [`scan_for_content_hash`]/[`scan_indexed`] pair for
-/// callers that have not already indexed their files.
+/// internally, for callers that have not already indexed their files.
 pub fn scan_for_content_hash_rk64(
     files: &[(String, Vec<u8>)],
     cheap_fp: u64,
@@ -1041,8 +871,7 @@ pub fn scan_for_content_hash_rk64(
 /// over the buffer makes each window's fingerprint an O(1) subtraction;
 /// `\r`/non-UTF-8 files fingerprint the canonical lossy join per window so
 /// results stay byte-identical to the reference matcher. `confirm` receives the
-/// window's canonical content bytes — the SHA-confirmed prefilter passes a
-/// digest check, the rk64-only matcher passes `|_| true`.
+/// window's canonical content bytes; the rk64-only matcher passes `|_| true`.
 fn scan_one_file_fp_filtered(
     path: &str,
     idx: &LineIndex,
@@ -1111,221 +940,9 @@ fn prefix_hashes_and_powers(bytes: &[u8]) -> (Vec<u64>, Vec<u64>) {
     (ph, pow)
 }
 
-/// [`scan_for_content_hash`] over prebuilt [`LineIndex`] values. Identical
-/// matches, ordering, and ambiguity semantics; callers reusing one index
-/// across many anchors avoid re-splitting each file per scan.
-pub fn scan_indexed(
-    files: &[(String, LineIndex)],
-    content_hash: &str,
-    extent: AnchorExtent,
-    near: Option<u32>,
-) -> Vec<Location> {
-    let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-
-    match extent {
-        AnchorExtent::WholeFile => {
-            let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
-            whole_file_matches(files, |idx| idx.bytes, |b| {
-                let mut h = Sha256::new();
-                h.update(b);
-                h.finalize().as_slice() == target.as_slice()
-            })
-        }
-        AnchorExtent::LineRange { start, end } => {
-            let extent = line_range_extent(start, end);
-            if extent == 0 {
-                return Vec::new();
-            }
-            // Decode the wanted digest once so each window compares 32 bytes
-            // instead of formatting a fresh 64-char hex string. A non-canonical
-            // `want` can never equal a real lowercase-hex digest, so
-            // short-circuit before any window iteration.
-            let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
-            let mut out: Vec<Location> = Vec::new();
-            scan_files(
-                files,
-                extent,
-                |n| Some((0, n - extent)),
-                |path, idx, w, out| {
-                    scan_one_file(path, idx, extent, w, &target, out);
-                },
-                &mut out,
-            );
-            if let Some(near) = near {
-                // Stable sort over windows already collected in ascending
-                // (path, start) order, so equal distances keep the lower
-                // start line first — matching git-span's nearest-window
-                // preference.
-                sort_near(&mut out, near);
-            }
-            out
-        }
-    }
-}
-
-/// Bounded same-file variant of [`scan_for_content_hash`]: scan only the
-/// windows whose 1-based start line falls within `radius` lines of `near`.
-///
-/// A same-file shift detection (`near = old_start`) almost always finds the
-/// relocated window within a few lines of where it used to be, so scanning a
-/// `near ± radius` band instead of the whole file turns an O(N·S) pass into
-/// O(radius·S). This is the measured hot path's biggest lever: callers that
-/// follow the same-file probe with a full change-set pass
-/// ([`scan_for_content_hash`] with `near = None`) keep exact move-follow
-/// coverage — a block displaced by more than `radius` within its own file is
-/// still found by the (unbounded) change-set scan, since a dirty file is in
-/// the change set.
-///
-/// **This is opt-in and intentionally narrower than the exhaustive matcher:**
-/// it returns only matches inside the band (ordered nearest-first, ties
-/// toward the lower start line). For exhaustive, semantics-preserving
-/// matching use [`scan_for_content_hash`].
-pub fn scan_for_content_hash_near_radius(
-    files: &[(String, Vec<u8>)],
-    content_hash: &str,
-    extent: AnchorExtent,
-    near: u32,
-    radius: u32,
-) -> Vec<Location> {
-    let indexed = build_indexed(files);
-    scan_indexed_near_radius(&indexed, content_hash, extent, near, radius)
-}
-
-/// [`scan_for_content_hash_near_radius`] over prebuilt [`LineIndex`] values.
-pub fn scan_indexed_near_radius(
-    files: &[(String, LineIndex)],
-    content_hash: &str,
-    extent: AnchorExtent,
-    near: u32,
-    radius: u32,
-) -> Vec<Location> {
-    let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-    let AnchorExtent::LineRange { start, end } = extent else {
-        // A whole-file extent has no notion of a line band; defer to the
-        // exhaustive whole-file matcher.
-        return scan_indexed(files, content_hash, extent, None);
-    };
-
-    let extent = line_range_extent(start, end);
-    if extent == 0 {
-        return Vec::new();
-    }
-    let Some(target) = decode_lower_hex32(want) else { return Vec::new() };
-    // The window whose 1-based start line is `s` has window index `s - 1`.
-    // Bound the band to `[near - radius, near + radius]` in start-line space.
-    let near0 = near.saturating_sub(1) as usize; // 0-based center window index
-    let band = radius as usize;
-    let mut out: Vec<Location> = Vec::new();
-    scan_files(
-        files,
-        extent,
-        |n| {
-            let last_win = n - extent;
-            let win_lo = near0.saturating_sub(band);
-            let win_hi = (near0 + band).min(last_win);
-            (win_lo <= win_hi).then_some((win_lo, win_hi))
-        },
-        |path, idx, w, out| {
-            scan_one_file(path, idx, extent, w, &target, out);
-        },
-        &mut out,
-    );
-    sort_near(&mut out, near);
-    out
-}
-
-/// Scan one file for every `extent`-high window whose canonical content hashes
-/// to the wanted digest, appending matches in ascending start order.
-///
-/// LF-and-UTF-8-clean files (the overwhelmingly common case) take the fast
-/// path: each window is a contiguous buffer slice hashed with no allocation
-/// and compared against the decoded 32-byte target. Files containing `\r`
-/// or invalid UTF-8 fall back to the canonical `lines().join("\n")` loop so
-/// results are byte-identical to the reference matcher.
-fn scan_one_file(
-    path: &str,
-    idx: &LineIndex,
-    extent: usize,
-    wins: (usize, usize),
-    target: &[u8; 32],
-    out: &mut Vec<Location>,
-) {
-    let (win_lo, win_hi) = wins;
-    let bytes = idx.bytes;
-    let simple = idx.lf_clean;
-
-    if simple {
-        for win in win_lo..=win_hi {
-            let rs = idx.starts[win] as usize;
-            let re = idx.ends[win + extent - 1] as usize;
-            let slice = &bytes[rs..re];
-            let mut h = Sha256::new();
-            h.update(slice);
-            if h.finalize().as_slice() == target.as_slice() {
-                out.push(Location {
-                    path: path.to_string(),
-                    start_line: (win as u32) + 1,
-                    end_line: (win as u32) + extent as u32,
-                });
-            }
-        }
-    } else {
-        let text = String::from_utf8_lossy(bytes);
-        let lines: Vec<&str> = text.lines().collect();
-        for win in win_lo..=win_hi {
-            let slice_text = lines[win..win + extent].join("\n");
-            let mut h = Sha256::new();
-            h.update(slice_text.as_bytes());
-            if h.finalize().as_slice() == target.as_slice() {
-                out.push(Location {
-                    path: path.to_string(),
-                    start_line: (win as u32) + 1,
-                    end_line: (win as u32) + extent as u32,
-                });
-            }
-        }
-    }
-}
-
-/// Decode 64 lowercase-hex characters into 32 bytes. Returns `None` for any
-/// other length or any non-`[0-9a-f]` character, so the caller falls back to
-/// string comparison and preserves the exact (lowercase-only) matching
-/// behavior of the reference matcher.
-fn decode_lower_hex32(s: &str) -> Option<[u8; 32]> {
-    let b = s.as_bytes();
-    if b.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let hi = lower_hex_val(b[2 * i])?;
-        let lo = lower_hex_val(b[2 * i + 1])?;
-        *slot = (hi << 4) | lo;
-    }
-    Some(out)
-}
-
-fn lower_hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn line_range_hash_matches_known_canonicalization() {
-        // lines 1..=3 joined by \n, sha256, lowercase hex, no prefix.
-        let text = b"a\nb\nc\nd\n";
-        let h = hash_bytes_with_extent(text, &AnchorExtent::LineRange { start: 1, end: 3 });
-        assert_eq!(h, sha256_hex(b"a\nb\nc"));
-        assert_eq!(h.len(), 64);
-        assert!(!h.starts_with("sha256:"));
-    }
 
     /// A buffer whose byte offsets exceed `u32::MAX` cannot be represented in
     /// the `u32` offset store, so `LineIndex::build` must refuse it (fail
@@ -1341,174 +958,6 @@ mod tests {
         let mut bytes = vec![b'a'; len];
         *bytes.last_mut().unwrap() = b'\n';
         let _ = LineIndex::build(&bytes);
-    }
-
-    #[test]
-    fn whole_file_hash_is_full_buffer() {
-        let text = b"a\nb\nc\n";
-        assert_eq!(
-            hash_bytes_with_extent(text, &AnchorExtent::WholeFile),
-            sha256_hex(text)
-        );
-    }
-
-    #[test]
-    fn scan_relocates_block_shifted_within_one_file() {
-        // The 3-line block "x/y/z" was anchored at lines 1-3 but a header
-        // was inserted above it, shifting it to lines 3-5.
-        let hash = sha256_hex(b"x\ny\nz");
-        let file = ("a.txt".to_string(), b"h1\nh2\nx\ny\nz\n".to_vec());
-        let hits = scan_for_content_hash(
-            std::slice::from_ref(&file),
-            &hash,
-            AnchorExtent::LineRange { start: 1, end: 3 },
-            Some(1),
-        );
-        assert_eq!(
-            hits,
-            vec![Location {
-                path: "a.txt".into(),
-                start_line: 3,
-                end_line: 5
-            }]
-        );
-    }
-
-    #[test]
-    fn scan_relocates_block_moved_to_another_file_in_change_set() {
-        let hash = format!("sha256:{}", sha256_hex(b"x\ny\nz"));
-        let files = vec![
-            ("unchanged.txt".to_string(), b"p\nq\nr\n".to_vec()),
-            ("moved-here.txt".to_string(), b"lead\nx\ny\nz\ntail\n".to_vec()),
-        ];
-        let hits = scan_for_content_hash(&files, &hash, AnchorExtent::LineRange { start: 10, end: 12 }, None);
-        assert_eq!(
-            hits,
-            vec![Location {
-                path: "moved-here.txt".into(),
-                start_line: 2,
-                end_line: 4
-            }]
-        );
-    }
-
-    #[test]
-    fn near_biases_toward_closest_window() {
-        // Two identical blocks; `near` decides which comes first.
-        let hash = sha256_hex(b"d\nd");
-        let file = ("a.txt".to_string(), b"d\nd\nx\nd\nd\n".to_vec());
-        let near_top =
-            scan_for_content_hash(std::slice::from_ref(&file), &hash, AnchorExtent::LineRange { start: 1, end: 2 }, Some(1));
-        assert_eq!(near_top[0].start_line, 1);
-        let near_bottom =
-            scan_for_content_hash(std::slice::from_ref(&file), &hash, AnchorExtent::LineRange { start: 1, end: 2 }, Some(4));
-        assert_eq!(near_bottom[0].start_line, 4);
-    }
-
-    #[test]
-    fn near_window_at_exact_old_start_wins_over_line_above() {
-        // Two identical 1-line blocks at start lines 2 and 3. With
-        // `near = 3` (the anchor's 1-based old start), the window sitting at
-        // the exact old start (line 3, distance 0) must outrank the window
-        // one line above (line 2, distance 1). A 0-based sort center would
-        // skew every distance toward the line above and flip this order.
-        let hash = sha256_hex(b"d");
-        let file = ("a.txt".to_string(), b"x\nd\nd\nx\n".to_vec());
-        let hits = scan_for_content_hash(
-            std::slice::from_ref(&file),
-            &hash,
-            AnchorExtent::LineRange { start: 3, end: 3 },
-            Some(3),
-        );
-        assert_eq!(hits[0].start_line, 3);
-    }
-
-    #[test]
-    fn whole_file_scan_matches_whole_files() {
-        let hash = sha256_hex(b"whole\ncontent\n");
-        let files = vec![
-            ("nope.txt".to_string(), b"other\n".to_vec()),
-            ("yes.txt".to_string(), b"whole\ncontent\n".to_vec()),
-        ];
-        let hits = scan_for_content_hash(&files, &hash, AnchorExtent::WholeFile, None);
-        assert_eq!(
-            hits,
-            vec![Location {
-                path: "yes.txt".into(),
-                start_line: 0,
-                end_line: 0
-            }]
-        );
-    }
-
-    // --- Reference implementations (the pre-optimization canonicalization) ---
-    //
-    // These reproduce the original `lines().join("\n")` matcher verbatim and
-    // are the oracle the optimized fast paths must agree with byte-for-byte.
-
-    fn ref_hash(bytes: &[u8], extent: &AnchorExtent) -> String {
-        let hashed: Vec<u8> = match extent {
-            AnchorExtent::WholeFile => bytes.to_vec(),
-            AnchorExtent::LineRange { start, end } => {
-                let text = String::from_utf8_lossy(bytes);
-                let lines: Vec<&str> = text.lines().collect();
-                let lo = (*start as usize).saturating_sub(1);
-                let hi = (*end as usize).min(lines.len());
-                // A degenerate extent (`start == 0` or `end < start`) selects
-                // no content, matching `line_range_region`.
-                let slice = if *start != 0 && lo < hi { &lines[lo..hi] } else { &[][..] };
-                slice.join("\n").into_bytes()
-            }
-        };
-        sha256_hex(&hashed)
-    }
-
-    fn ref_scan(
-        files: &[(String, Vec<u8>)],
-        content_hash: &str,
-        extent: AnchorExtent,
-        near: Option<u32>,
-    ) -> Vec<Location> {
-        let want = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
-        match extent {
-            AnchorExtent::WholeFile => files
-                .iter()
-                .filter(|(_, bytes)| sha256_hex(bytes) == want)
-                .map(|(path, _)| Location {
-                    path: path.clone(),
-                    start_line: 0,
-                    end_line: 0,
-                })
-                .collect(),
-            AnchorExtent::LineRange { start, end } => {
-                let extent = line_range_extent(start, end);
-                if extent == 0 {
-                    return Vec::new();
-                }
-                let mut out: Vec<Location> = Vec::new();
-                for (path, bytes) in files {
-                    let text = String::from_utf8_lossy(bytes);
-                    let lines: Vec<&str> = text.lines().collect();
-                    if lines.len() < extent {
-                        continue;
-                    }
-                    for win in 0..=(lines.len() - extent) {
-                        let slice_text = lines[win..win + extent].join("\n");
-                        if sha256_hex(slice_text.as_bytes()) == want {
-                            out.push(Location {
-                                path: path.clone(),
-                                start_line: (win as u32) + 1,
-                                end_line: (win as u32) + extent as u32,
-                            });
-                        }
-                    }
-                }
-                if let Some(near) = near {
-                    out.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
-                }
-                out
-            }
-        }
     }
 
     // --- Hand-built test vectors over every endings/UTF-8 case ---
@@ -1529,34 +978,6 @@ mod tests {
         b"\n\n\n",
         b"x\ny\nz\nx\ny\nz\n", // repeated block (ambiguity)
     ];
-
-    #[test]
-    fn hash_matches_reference_across_vectors_and_ranges() {
-        for &bytes in VECTORS {
-            assert_eq!(
-                hash_bytes_with_extent(bytes, &AnchorExtent::WholeFile),
-                ref_hash(bytes, &AnchorExtent::WholeFile),
-                "whole-file digest drifted for {bytes:?}"
-            );
-            let idx = LineIndex::build(bytes);
-            for start in 0u32..=8 {
-                for end in 0u32..=10 {
-                    let extent = AnchorExtent::LineRange { start, end };
-                    let expected = ref_hash(bytes, &extent);
-                    assert_eq!(
-                        hash_bytes_with_extent(bytes, &extent),
-                        expected,
-                        "hash_bytes_with_extent drifted for {bytes:?} range {start}..={end}"
-                    );
-                    assert_eq!(
-                        hash_extent_indexed(&idx, &extent),
-                        expected,
-                        "hash_extent_indexed drifted for {bytes:?} range {start}..={end}"
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn line_range_region_and_lineindex_region_agree() {
@@ -1596,175 +1017,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn hash_property_fuzz_matches_reference() {
-        let mut state = 0x9e3779b97f4a7c15u64;
-        for _ in 0..4000 {
-            let bytes = random_bytes(&mut state, 40);
-            let start = (lcg(&mut state) % 12) as u32;
-            let end = (lcg(&mut state) % 12) as u32;
-            let extent = AnchorExtent::LineRange { start, end };
-            let idx = LineIndex::build(&bytes);
-            assert_eq!(
-                hash_bytes_with_extent(&bytes, &extent),
-                ref_hash(&bytes, &extent),
-                "fuzz hash drift: bytes={bytes:?} range {start}..={end}"
-            );
-            assert_eq!(
-                hash_extent_indexed(&idx, &extent),
-                ref_hash(&bytes, &extent),
-                "fuzz indexed-hash drift: bytes={bytes:?} range {start}..={end}"
-            );
-        }
-    }
-
-    #[test]
-    fn scan_property_fuzz_matches_reference() {
-        let mut state = 0x1234567812345678u64;
-        for _ in 0..3000 {
-            // A small multi-file change set.
-            let files: Vec<(String, Vec<u8>)> = (0..3)
-                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
-                .collect();
-            let start = 1 + (lcg(&mut state) % 6) as u32;
-            let end = start + (lcg(&mut state) % 4) as u32;
-            let extent = AnchorExtent::LineRange { start, end };
-
-            // Derive the wanted hash from one of the files' windows so real
-            // matches occur, but sometimes use a random miss.
-            let want = if lcg(&mut state).is_multiple_of(4) {
-                sha256_hex(b"definitely-absent-content")
-            } else {
-                let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
-                let extent_lines = (end - start + 1) as usize;
-                let text = String::from_utf8_lossy(pick);
-                let lines: Vec<&str> = text.lines().collect();
-                if lines.len() >= extent_lines {
-                    let w = (lcg(&mut state) as usize) % (lines.len() - extent_lines + 1);
-                    sha256_hex(lines[w..w + extent_lines].join("\n").as_bytes())
-                } else {
-                    sha256_hex(b"no-window")
-                }
-            };
-
-            let near = if lcg(&mut state).is_multiple_of(2) {
-                None
-            } else {
-                Some((lcg(&mut state) % 12) as u32)
-            };
-
-            let expected = ref_scan(&files, &want, extent, near);
-            let got = scan_for_content_hash(&files, &want, extent, near);
-            assert_eq!(got, expected, "scan drift: files={files:?} want={want} {extent:?} near={near:?}");
-        }
-    }
-
-    #[test]
-    fn scan_handles_crlf_and_non_utf8_files() {
-        // CRLF file: the canonical window strips \r\n, so the wanted hash is
-        // computed the canonical way and must still be located.
-        let want = sha256_hex(b"b\nc");
-        let files = vec![("crlf.txt".to_string(), b"a\r\nb\r\nc\r\nd\r\n".to_vec())];
-        let hits = scan_for_content_hash(&files, &want, AnchorExtent::LineRange { start: 1, end: 2 }, None);
-        assert_eq!(
-            hits,
-            vec![Location { path: "crlf.txt".into(), start_line: 2, end_line: 3 }]
-        );
-
-        // Invalid UTF-8 file routed through the lossy fallback.
-        let bytes = b"x\xffy\nz\n".to_vec();
-        let lossy = String::from_utf8_lossy(&bytes);
-        let first: Vec<&str> = lossy.lines().take(1).collect();
-        let want2 = sha256_hex(first[0].as_bytes());
-        let files2 = vec![("bad.txt".to_string(), bytes)];
-        let hits2 = scan_for_content_hash(&files2, &want2, AnchorExtent::LineRange { start: 1, end: 1 }, None);
-        assert_eq!(
-            hits2,
-            vec![Location { path: "bad.txt".into(), start_line: 1, end_line: 1 }]
-        );
-    }
-
-    #[test]
-    fn near_radius_scan_finds_band_and_skips_far_matches() {
-        // Same 2-line block at the top and bottom of a 9-line file.
-        let file = (
-            "a.txt".to_string(),
-            b"d\nd\nx\nx\nx\nx\nx\nd\nd\n".to_vec(),
-        );
-        let files = std::slice::from_ref(&file);
-        let want = sha256_hex(b"d\nd");
-        let extent = AnchorExtent::LineRange { start: 1, end: 2 };
-
-        // A wide radius still finds both, nearest-first.
-        let wide = scan_for_content_hash_near_radius(files, &want, extent, 1, 100);
-        assert_eq!(
-            wide,
-            scan_for_content_hash(files, &want, extent, Some(1)),
-        );
-        assert_eq!(wide.len(), 2);
-
-        // A tight radius around line 1 finds only the top block; the bottom
-        // block (start line 8) is outside the band.
-        let tight = scan_for_content_hash_near_radius(files, &want, extent, 1, 3);
-        assert_eq!(
-            tight,
-            vec![Location { path: "a.txt".into(), start_line: 1, end_line: 2 }]
-        );
-    }
-
-    #[test]
-    fn near_radius_property_matches_filtered_full_scan() {
-        let mut state = 0xfeedfacecafef00du64;
-        for _ in 0..2000 {
-            let bytes = random_bytes(&mut state, 30);
-            let file = vec![("f.txt".to_string(), bytes.clone())];
-            let start = 1 + (lcg(&mut state) % 5) as u32;
-            let end = start + (lcg(&mut state) % 3) as u32;
-            let extent = AnchorExtent::LineRange { start, end };
-            let extent_lines = (end - start + 1) as usize;
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            if lines.len() < extent_lines {
-                continue;
-            }
-            let w = (lcg(&mut state) as usize) % (lines.len() - extent_lines + 1);
-            let want = sha256_hex(lines[w..w + extent_lines].join("\n").as_bytes());
-            let near = 1 + (lcg(&mut state) % 10) as u32;
-            let radius = (lcg(&mut state) % 6) as u32;
-
-            let got = scan_for_content_hash_near_radius(&file, &want, extent, near, radius);
-
-            // Oracle: full scan, then keep only matches whose start line is
-            // within `radius` of `near`, re-sorted nearest-first.
-            let near0 = near.saturating_sub(1);
-            let mut expected: Vec<Location> = scan_for_content_hash(&file, &want, extent, Some(near))
-                .into_iter()
-                .filter(|l| l.start_line.saturating_sub(1).abs_diff(near0) <= radius)
-                .collect();
-            expected.sort_by_key(|l| (l.start_line.abs_diff(near), l.start_line));
-
-            assert_eq!(got, expected, "radius drift: bytes={bytes:?} {extent:?} near={near} r={radius}");
-        }
-    }
-
-    #[test]
-    fn indexed_scan_matches_byte_slice_scan() {
-        let files = vec![
-            ("a.txt".to_string(), b"h1\nh2\nx\ny\nz\nx\ny\nz\n".to_vec()),
-            ("b.txt".to_string(), b"x\ny\nz\n".to_vec()),
-        ];
-        let want = sha256_hex(b"x\ny\nz");
-        let indexed: Vec<(String, LineIndex)> =
-            files.iter().map(|(p, b)| (p.clone(), LineIndex::build(b))).collect();
-        for near in [None, Some(1), Some(6)] {
-            let extent = AnchorExtent::LineRange { start: 1, end: 3 };
-            assert_eq!(
-                scan_indexed(&indexed, &want, extent, near),
-                scan_for_content_hash(&files, &want, extent, near),
-            );
-        }
-    }
-
     // --- Cheap-fingerprint prefilter ---
 
     fn index_all(files: &[(String, Vec<u8>)]) -> Vec<(String, LineIndex<'_>)> {
@@ -1801,7 +1053,7 @@ mod tests {
     #[test]
     fn fingerprint_canonicalizes_like_the_hash() {
         // A CRLF file and its LF-normalized twin share canonical content, so
-        // both their digest *and* their fingerprint must coincide.
+        // their fingerprint must coincide.
         let crlf = b"a\r\nb\r\nc\r\n".to_vec();
         let lf = b"a\nb\nc\n".to_vec();
         for extent in [
@@ -1813,151 +1065,12 @@ mod tests {
                 // Whole-file hashes raw bytes (CRLF differs); only line ranges
                 // canonicalize, so compare those.
                 assert_eq!(
-                    hash_bytes_with_extent(&crlf, &extent),
-                    hash_bytes_with_extent(&lf, &extent),
-                    "canonical digest drifted between CRLF and LF for {extent:?}"
-                );
-                assert_eq!(
                     cheap_fingerprint_with_extent(&crlf, &extent),
                     cheap_fingerprint_with_extent(&lf, &extent),
                     "canonical fingerprint drifted between CRLF and LF for {extent:?}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn prefiltered_scan_equals_scan_indexed_with_correct_fingerprint() {
-        // With the fingerprint of the actual anchored content, the prefiltered
-        // scan must return byte-for-byte the same set as the exhaustive scan,
-        // including the fail-closed ≥2 duplicate case.
-        let files = vec![
-            // Two byte-identical blocks in one file: the fail-closed ambiguity.
-            ("dup.txt".to_string(), b"x\ny\nz\nq\nx\ny\nz\n".to_vec()),
-            ("other.txt".to_string(), b"x\ny\nz\n".to_vec()),
-        ];
-        let indexed = index_all(&files);
-        let want = sha256_hex(b"x\ny\nz");
-        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
-        let fp = cheap_fingerprint_with_extent(b"x\ny\nz", &AnchorExtent::WholeFile);
-        for near in [None, Some(1), Some(5)] {
-            let got = scan_indexed_prefiltered(&indexed, &want, fp, extent, near);
-            let expected = scan_indexed(&indexed, &want, extent, near);
-            assert_eq!(got, expected, "prefiltered drift near={near:?}");
-            // The duplicate makes the whole-file count ≥2 — the guarantee the
-            // caller relies on to refuse an ambiguous auto-rewrite.
-            let in_dup = got.iter().filter(|l| l.path == "dup.txt").count();
-            assert_eq!(in_dup, 2, "fail-closed duplicate count lost");
-        }
-    }
-
-    #[test]
-    fn prefiltered_scan_property_matches_scan_indexed() {
-        let mut state = 0xabad1deac0ffee11u64;
-        for _ in 0..3000 {
-            let files: Vec<(String, Vec<u8>)> = (0..3)
-                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
-                .collect();
-            let indexed = index_all(&files);
-            let start = 1 + (lcg(&mut state) % 6) as u32;
-            let end = start + (lcg(&mut state) % 4) as u32;
-            let extent = AnchorExtent::LineRange { start, end };
-            let extent_lines = (end - start + 1) as usize;
-
-            // Pick a real window so genuine (and possibly duplicated) matches
-            // occur, and store the fingerprint of that exact content.
-            let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
-            let text = String::from_utf8_lossy(pick);
-            let lines: Vec<&str> = text.lines().collect();
-            if lines.len() < extent_lines {
-                continue;
-            }
-            let w = (lcg(&mut state) as usize) % (lines.len() - extent_lines + 1);
-            let content = lines[w..w + extent_lines].join("\n");
-            let want = sha256_hex(content.as_bytes());
-            let fp = cheap_fingerprint_with_extent(content.as_bytes(), &AnchorExtent::WholeFile);
-
-            let near = if lcg(&mut state).is_multiple_of(2) {
-                None
-            } else {
-                Some((lcg(&mut state) % 12) as u32)
-            };
-
-            let expected = scan_indexed(&indexed, &want, extent, near);
-            let got = scan_indexed_prefiltered(&indexed, &want, fp, extent, near);
-            assert_eq!(
-                got, expected,
-                "prefiltered drift: files={files:?} {extent:?} near={near:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn wrong_fingerprint_only_drops_matches_never_invents_them() {
-        // Soundness: a wrong/stale fingerprint can only *reduce* the set that
-        // reaches the SHA check. The result is always a subset of the
-        // exhaustive scan, and every returned location is a real SHA match —
-        // a fingerprint collision can never produce a false positive.
-        let mut state = 0x0123456789abcdefu64;
-        for _ in 0..3000 {
-            let files: Vec<(String, Vec<u8>)> = (0..3)
-                .map(|i| (format!("f{i}.txt"), random_bytes(&mut state, 30)))
-                .collect();
-            let indexed = index_all(&files);
-            let start = 1 + (lcg(&mut state) % 6) as u32;
-            let end = start + (lcg(&mut state) % 4) as u32;
-            let extent = AnchorExtent::LineRange { start, end };
-            let extent_lines = (end - start + 1) as usize;
-
-            let pick = &files[(lcg(&mut state) as usize) % files.len()].1;
-            let text = String::from_utf8_lossy(pick);
-            let lines: Vec<&str> = text.lines().collect();
-            if lines.len() < extent_lines {
-                continue;
-            }
-            let w = (lcg(&mut state) as usize) % (lines.len() - extent_lines + 1);
-            let want = sha256_hex(lines[w..w + extent_lines].join("\n").as_bytes());
-            // Deliberately arbitrary fingerprint, unrelated to the content.
-            let bogus_fp = lcg(&mut state);
-
-            let truth = scan_indexed(&indexed, &want, extent, None);
-            let got = scan_indexed_prefiltered(&indexed, &want, bogus_fp, extent, None);
-
-            for loc in &got {
-                assert!(
-                    truth.contains(loc),
-                    "prefilter invented a non-match {loc:?} (collision must not produce a false positive)"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn prefiltered_scan_handles_crlf_and_non_utf8_files() {
-        // The fallback path must prefilter and match identically to the
-        // canonical reference on `\r`/non-UTF-8 files.
-        let files = vec![("crlf.txt".to_string(), b"a\r\nb\r\nc\r\nd\r\n".to_vec())];
-        let indexed = index_all(&files);
-        let extent = AnchorExtent::LineRange { start: 1, end: 2 };
-        let want = sha256_hex(b"a\nb");
-        let fp = cheap_fingerprint_with_extent(b"a\nb", &AnchorExtent::WholeFile);
-        assert_eq!(
-            scan_indexed_prefiltered(&indexed, &want, fp, extent, None),
-            scan_indexed(&indexed, &want, extent, None),
-        );
-
-        let bytes = b"x\xffy\nz\n".to_vec();
-        let files2 = vec![("bad.txt".to_string(), bytes.clone())];
-        let indexed2 = index_all(&files2);
-        let lossy = String::from_utf8_lossy(&bytes);
-        let first: Vec<&str> = lossy.lines().take(1).collect();
-        let want2 = sha256_hex(first[0].as_bytes());
-        let extent2 = AnchorExtent::LineRange { start: 1, end: 1 };
-        let fp2 = cheap_fingerprint_indexed(&indexed2[0].1, &extent2);
-        assert_eq!(
-            scan_indexed_prefiltered(&indexed2, &want2, fp2, extent2, None),
-            scan_indexed(&indexed2, &want2, extent2, None),
-        );
     }
 
     // --- rk64-only (SHA-free) matcher ---
@@ -2066,28 +1179,6 @@ mod tests {
     }
 
     #[test]
-    fn rk64_equals_prefiltered_minus_the_sha_step_on_unique_content() {
-        // With genuinely unique content (no fingerprint collision in the file),
-        // the rk64-only matcher and the SHA-confirmed prefilter agree — the SHA
-        // is confirming a match the fingerprint already isolated.
-        let files = vec![
-            ("a.txt".to_string(), b"h1\nh2\nx\ny\nz\n".to_vec()),
-            ("b.txt".to_string(), b"p\nq\nr\ns\n".to_vec()),
-        ];
-        let indexed = index_all(&files);
-        let extent = AnchorExtent::LineRange { start: 1, end: 3 };
-        let content = b"x\ny\nz";
-        let fp = cheap_fingerprint_with_extent(content, &AnchorExtent::WholeFile);
-        let sha = sha256_hex(content);
-        for near in [None, Some(1), Some(3)] {
-            assert_eq!(
-                scan_indexed_rk64(&indexed, fp, extent, near),
-                scan_indexed_prefiltered(&indexed, &sha, fp, extent, near),
-            );
-        }
-    }
-
-    #[test]
     fn rk64_whole_file_matches_by_fingerprint() {
         let files = vec![
             ("yes.txt".to_string(), b"whole\ncontent\n".to_vec()),
@@ -2125,14 +1216,11 @@ mod tests {
 
     #[test]
     fn degenerate_end_before_start_hashes_empty_and_scans_nothing() {
-        // `end < start` selects no line, so the digest falls back to the empty
-        // string. A scan for that "empty content" must never locate the empty
-        // line that happens to hash to the same digest.
+        // `end < start` selects no line, so the fingerprint falls back to the
+        // empty-content value. A scan for that must never locate a match.
         let bytes = b"a\n\nb\n".to_vec();
         let extent = AnchorExtent::LineRange { start: 5, end: 3 };
 
-        let hash = hash_bytes_with_extent(&bytes, &extent);
-        assert_eq!(hash, sha256_hex(b""), "end < start must hash as empty content");
         assert_eq!(
             cheap_fingerprint_with_extent(&bytes, &extent),
             0,
@@ -2143,11 +1231,7 @@ mod tests {
         let indexed = index_all(&files);
         let fp = cheap_fingerprint_with_extent(&bytes, &extent);
 
-        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
-        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
-        assert!(scan_indexed_prefiltered(&indexed, &hash, fp, extent, None).is_empty());
         assert!(scan_indexed_rk64(&indexed, fp, extent, None).is_empty());
-        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
     }
 
     #[test]
@@ -2158,25 +1242,15 @@ mod tests {
         let extent = AnchorExtent::LineRange { start: 0, end: 3 };
 
         assert_eq!(
-            hash_bytes_with_extent(&bytes, &extent),
-            sha256_hex(b""),
-            "start == 0 must hash as empty content",
-        );
-        assert_eq!(
             cheap_fingerprint_with_extent(&bytes, &extent),
             0,
             "start == 0 must fingerprint as empty content",
         );
 
-        let hash = sha256_hex(b"");
         let files = vec![("f.txt".to_string(), bytes.clone())];
         let indexed = index_all(&files);
 
-        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
-        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
-        assert!(scan_indexed_prefiltered(&indexed, &hash, 0, extent, None).is_empty());
         assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
-        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
     }
 
     #[test]
@@ -2188,13 +1262,8 @@ mod tests {
         let files = vec![("f.txt".to_string(), bytes.clone())];
         let indexed = index_all(&files);
         let extent = AnchorExtent::LineRange { start: 0, end: u32::MAX };
-        let hash = sha256_hex(b"");
 
-        assert!(scan_for_content_hash(&files, &hash, extent, None).is_empty());
-        assert!(scan_indexed(&indexed, &hash, extent, None).is_empty());
-        assert!(scan_indexed_prefiltered(&indexed, &hash, 0, extent, None).is_empty());
         assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
-        assert!(scan_indexed_near_radius(&indexed, &hash, extent, 1, 3).is_empty());
     }
 
     // --- Jaccard similarity ---

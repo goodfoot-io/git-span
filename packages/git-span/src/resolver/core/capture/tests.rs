@@ -33,25 +33,23 @@ fn git(dir: &Path, args: &[&str]) {
 /// `(_, 0, 0)` = whole file). The content hash is computed faithfully but is
 /// irrelevant to capture (capture never resolves).
 fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &str) {
+    use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
+
     let mut records = Vec::new();
     for (path, start, end) in anchors {
         let bytes = std::fs::read(workdir.join(path)).expect("read anchored file");
-        let hashed: Vec<u8> = if *start == 0 && *end == 0 {
-            bytes.clone()
+        let extent = if *start == 0 && *end == 0 {
+            crate::types::AnchorExtent::WholeFile
         } else {
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (*start as usize).saturating_sub(1);
-            let hi = (*end as usize).min(lines.len());
-            let slice = if lo < hi { &lines[lo..hi] } else { &[][..] };
-            slice.join("\n").into_bytes()
+            crate::types::AnchorExtent::LineRange { start: *start, end: *end }
         };
+        let fp = cheap_fingerprint_with_extent(&bytes, &extent);
         records.push(crate::span_file::AnchorRecord {
             path: path.to_string(),
             start_line: *start,
             end_line: *end,
-            algorithm: "rk64".into(),
-            content_hash: format!("sha256:{}", crate::types::sha256_hex(&hashed)),
+            algorithm: RK64_ALGORITHM.to_string(),
+            content_hash: rk64_to_hex(fp),
         });
     }
     let sf = crate::span_file::SpanFile {
