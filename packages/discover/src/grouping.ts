@@ -1,23 +1,36 @@
 /**
  * Fuzzy anchor-group merging (design decision 8).
  *
- * All seven signals independently emit `AnchorGroup[]`; this module flattens
- * and merges them into a single deduplicated set of candidate groups. Two
- * groups merge when any anchor in one overlaps any anchor in the other on a
- * shared path, where "overlap" is:
+ * All seven signals independently emit `AnchorGroup[]`, each describing one
+ * candidate coupling as a small set of anchors (in practice, one per
+ * participant file/range — see each signal's pairwise emission). This module
+ * flattens and merges them into a single deduplicated set of candidate
+ * groups.
+ *
+ * Two groups merge only when their anchor sets are the **same candidate
+ * coupling**: every anchor in one has a distinct, corresponding overlapping
+ * anchor in the other (a perfect bipartite matching under `anchorsOverlap`),
+ * and vice versa. "Overlap" between two individual anchors is:
  *
  *   - ≥80% intersection-over-union of two line ranges on the same path, or
  *   - 100% (always) when either anchor is whole-file (no range) — a whole-file
  *     candidate always merges into a more specific range candidate on that
  *     path rather than crashing or silently failing to merge.
  *
- * Merging is done with **union-find over the transitive-overlap relation**,
- * not a greedy pairwise pass, so the order in which the parallel signals ran
- * never changes which groups form (constraint: order-independence). Merging
- * **unions** the contributing groups' `evidence` arrays — it never overwrites
- * one side's evidence with the other's — so every signal's original entries
- * (with their commit/tag refs intact) survive a merge, preserving the
- * evidence trail a human reviewer needs.
+ * Requiring a full correspondence (not just *any* shared anchor) is what
+ * keeps a hub file from transitively chaining unrelated pairs together: a
+ * group `{X, A}` and a group `{X, B}` both touch `X`, but `A` has no
+ * counterpart in `{X, B}` (and `B` has none in `{X, A}`), so they do not
+ * merge — only groups describing the *same* pair (e.g. two signals each
+ * independently observing `{X, A}`) do.
+ *
+ * Merging is done with **union-find over the transitive full-match
+ * relation**, not a greedy pairwise pass, so the order in which the parallel
+ * signals ran never changes which groups form (constraint:
+ * order-independence). Merging **unions** the contributing groups' `evidence`
+ * arrays — it never overwrites one side's evidence with the other's — so
+ * every signal's original entries (with their commit/tag refs intact)
+ * survive a merge, preserving the evidence trail a human reviewer needs.
  *
  * Output is deterministic (anchors, evidence, and groups are all sorted) so a
  * shuffled input order produces byte-identical output.
@@ -167,72 +180,70 @@ function groupSortKey(group: AnchorGroup): string {
   return group.anchors.map((a) => `${a.path}:${a.startLine ?? ''}:${a.endLine ?? ''}`).join('|');
 }
 
-/** One range-anchor occurrence on a path: which group it belongs to and its inclusive line range. */
-interface RangedOccurrence {
-  index: number;
-  start: number;
-  end: number;
-}
+/**
+ * True when every anchor in `a` has a distinct, overlapping counterpart in
+ * `b` and vice versa (a perfect bipartite matching under `anchorsOverlap`) —
+ * i.e. `a` and `b` describe the *same* candidate coupling, not merely a
+ * coupling that happens to share one participant anchor. Group sizes are
+ * small in practice (each signal emits one anchor per participant
+ * file/range), so a straightforward backtracking search is cheap; this is
+ * what a single shared hub anchor (e.g. a whole-file anchor on a hot path)
+ * fails, since its group's *other* anchor still needs its own match.
+ */
+function anchorSetsFullyMatch(a: readonly Anchor[], b: readonly Anchor[]): boolean {
+  if (a.length !== b.length) return false;
+  const usedB = new Array<boolean>(b.length).fill(false);
 
-/** All anchor occurrences on a single path, split by whole-file vs. ranged. */
-interface PathBucket {
-  /** Group indices carrying a whole-file (no-range) anchor on this path. */
-  wholeFile: number[];
-  /** Ranged anchor occurrences on this path. */
-  ranged: RangedOccurrence[];
+  function backtrack(i: number): boolean {
+    if (i === a.length) return true;
+    for (let j = 0; j < b.length; j++) {
+      if (usedB[j] || !anchorsOverlap(a[i], b[j])) continue;
+      usedB[j] = true;
+      if (backtrack(i + 1)) return true;
+      usedB[j] = false;
+    }
+    return false;
+  }
+
+  return backtrack(0);
 }
 
 /**
- * Unions groups whose anchors overlap, without the naive all-pairs
- * (O(groups²)) scan. `anchorsOverlap` can only be true for anchors on the
- * *same path*, so grouping the anchors by path and unioning within each path
- * bucket yields the identical transitive-overlap components while skipping
- * every pair that shares no path (the overwhelming majority on a real repo,
- * where the all-pairs scan is 10^10+ comparisons and exhausts the time
- * budget). Within a bucket:
- *
- *   - A whole-file anchor overlaps *every* anchor on its path (design decision
- *     8), so a single whole-file anchor collapses the whole bucket into one
- *     component in O(bucket) — no pairwise range work needed.
- *   - An all-ranged path unions only range pairs clearing the 80% IoU
- *     threshold; sorting by start lets each range compare against just the
- *     ranges that can still intersect it (disjoint ranges have IoU 0 and never
- *     union), so the pairwise cost tracks actual overlaps rather than bucket
- *     size squared.
+ * Unions groups that describe the same candidate coupling, without the naive
+ * all-pairs (O(groups²)) scan over the whole input. `anchorsOverlap` can only
+ * be true for anchors on the *same path*, so bucketing group indices by every
+ * path they touch and only comparing groups that share a bucket skips every
+ * pair with no path in common — the overwhelming majority on a real repo.
+ * Within a bucket, groups are compared pairwise with `anchorSetsFullyMatch`
+ * (not just "some anchor overlaps"): a hub file pulls many otherwise-unrelated
+ * pairs into the same bucket, but the full-match check keeps them from
+ * unioning transitively through it — only pairs whose *entire* anchor set
+ * corresponds (e.g. two signals independently observing the same file pair)
+ * union. Bucket sizes track how many candidate couplings share a given path,
+ * not the total number of groups, so this stays far cheaper than the
+ * quadratic scan it replaces even on a large real-world run.
  */
 function unionOverlappingGroups(list: readonly AnchorGroup[], uf: UnionFind): void {
-  const buckets = new Map<string, PathBucket>();
+  const buckets = new Map<string, Set<number>>();
   for (let i = 0; i < list.length; i++) {
     for (const anchor of list[i].anchors) {
       let bucket = buckets.get(anchor.path);
       if (!bucket) {
-        bucket = { wholeFile: [], ranged: [] };
+        bucket = new Set();
         buckets.set(anchor.path, bucket);
       }
-      if (hasRange(anchor)) bucket.ranged.push({ index: i, start: anchor.startLine, end: anchor.endLine });
-      else bucket.wholeFile.push(i);
+      bucket.add(i);
     }
   }
 
   for (const bucket of buckets.values()) {
-    if (bucket.wholeFile.length > 0) {
-      const root = bucket.wholeFile[0];
-      for (let k = 1; k < bucket.wholeFile.length; k++) uf.union(root, bucket.wholeFile[k]);
-      for (const occ of bucket.ranged) uf.union(root, occ.index);
-      continue;
-    }
-
-    const ranged = bucket.ranged;
-    ranged.sort((a, b) => a.start - b.start || a.end - b.end);
-    for (let a = 0; a < ranged.length; a++) {
-      const ra = ranged[a];
-      for (let b = a + 1; b < ranged.length; b++) {
-        const rb = ranged[b];
-        // Sorted by start: once a later range starts past ra's end, neither it
-        // nor any range after it can intersect ra (IoU 0), so stop.
-        if (rb.start > ra.end) break;
-        if (uf.find(ra.index) === uf.find(rb.index)) continue;
-        if (rangeIoU(ra.start, ra.end, rb.start, rb.end) >= OVERLAP_THRESHOLD) uf.union(ra.index, rb.index);
+    const indices = [...bucket];
+    for (let a = 0; a < indices.length; a++) {
+      const i = indices[a];
+      for (let b = a + 1; b < indices.length; b++) {
+        const j = indices[b];
+        if (uf.find(i) === uf.find(j)) continue;
+        if (anchorSetsFullyMatch(list[i].anchors, list[j].anchors)) uf.union(i, j);
       }
     }
   }

@@ -53,6 +53,98 @@ const MIN_CORPUS_DOCUMENTS = 2;
 
 const WORD_PATTERN = /[A-Za-z]+/g;
 
+/**
+ * Generic/boilerplate commit-message filler words. These carry essentially no
+ * information about *what* changed and are common across unrelated files in
+ * any real repo (`fix`, `update`, `wip`, `chore`, ...). Left in the vocabulary
+ * they can dominate a file's TF-IDF vector to the point that two files whose
+ * commits only ever said things like "fix", "update", "wip" score a
+ * near-maximal cosine similarity purely from shared filler — not from any
+ * real coupling. Filtering them out of *this signal's* per-file token stream
+ * (not the shared corpus IDF table, which other signals/tests may depend on)
+ * means a file contributes no vector at all once its vocabulary is reduced to
+ * nothing but boilerplate, so it can't be spuriously grouped with anything.
+ */
+const BOILERPLATE_STOPWORDS = new Set([
+  'fix',
+  'fixes',
+  'fixed',
+  'fixing',
+  'update',
+  'updates',
+  'updated',
+  'updating',
+  'wip',
+  'chore',
+  'chores',
+  'minor',
+  'typo',
+  'typos',
+  'misc',
+  'cleanup',
+  'clean',
+  'refactor',
+  'refactoring',
+  'refactored',
+  'change',
+  'changes',
+  'changed',
+  'tweak',
+  'tweaks',
+  'tweaked',
+  'small',
+  'various',
+  'stuff',
+  'commit',
+  'commits',
+  'committed',
+  'initial',
+  'add',
+  'added',
+  'adding',
+  'remove',
+  'removed',
+  'removing',
+  'merge',
+  'revert',
+  'reverted',
+  'reverting',
+  'test',
+  'tests',
+  'testing',
+  'tested',
+  'bump',
+  'bumped',
+  'bumping',
+  'style',
+  'formatting',
+  'format',
+  'formatted',
+  'lint',
+  'linting',
+  'linted',
+  'todo',
+  'temp',
+  'temporary',
+  'improve',
+  'improvement',
+  'improvements',
+  'improved',
+  'work',
+  'progress',
+  'final',
+  'more',
+  'general',
+  'some',
+  'things',
+  'thing',
+  'stub',
+  'placeholder',
+  'draft',
+  'checkpoint',
+  'snapshot'
+]);
+
 /** Splits `camelCase`/`PascalCase`/`snake_case`/`kebab-case` identifiers into their constituent words. */
 function splitIdentifierWords(word: string): string[] {
   return word
@@ -63,7 +155,10 @@ function splitIdentifierWords(word: string): string[] {
 
 /**
  * Tokenizes free-text commit message content, matching the tokenization the
- * shared `commit-messages` corpus was built with (src/prefilter.ts).
+ * shared `commit-messages` corpus was built with (src/prefilter.ts), then
+ * drops generic/boilerplate filler words (see `BOILERPLATE_STOPWORDS`) that
+ * would otherwise let files with no real shared vocabulary score
+ * near-maximal similarity.
  */
 function tokenize(text: string): string[] {
   const words = text.match(WORD_PATTERN) ?? [];
@@ -71,7 +166,7 @@ function tokenize(text: string): string[] {
   for (const word of words) {
     for (const part of splitIdentifierWords(word)) {
       const lower = part.toLowerCase();
-      if (lower.length > 1) tokens.push(lower);
+      if (lower.length > 1 && !BOILERPLATE_STOPWORDS.has(lower)) tokens.push(lower);
     }
   }
   return tokens;

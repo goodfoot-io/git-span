@@ -5,12 +5,22 @@
  * slower coupling than time-window's 6-hour window can see (plans/initial.md,
  * "Release-tag delta co-occurrence"). For each pair of consecutive tags
  * (ordered oldest to newest, per `RepoContext.tags()`), computes the set of
- * files changed in that interval via `git diff --name-only tagA..tagB`
- * (`diffNameOnly` in src/git.ts). Two files that repeatedly land in the same
- * tag-interval diff together are reported as a candidate anchor group, scored
- * by how many of the intervals they co-occurred in.
+ * files changed in that interval from `RepoContext.commits()` — already
+ * sweep-commit-filtered and `.span/`-excluded (design decisions 4 and 5) —
+ * restricted to the commits whose author date falls in `(fromTag.date,
+ * toTag.date]`, rather than a raw `git diff --name-only tagA..tagB`. A raw
+ * tree diff can't distinguish "these files co-occurred because of a repeating
+ * pattern" from "these files were both touched by one large sweep/refactor
+ * commit between the two tags" — exactly the false-positive source the
+ * sweep-commit pre-filter exists to remove everywhere else in the pipeline.
+ * Reading through `ctx.commits()` means that filter applies here too, instead
+ * of this signal duplicating it.
  *
- * Anchors are whole-file: a tag-interval diff only tells us a file changed
+ * Two files that repeatedly land in the same tag-interval file set together
+ * are reported as a candidate anchor group, scored by how many of the
+ * intervals they co-occurred in.
+ *
+ * Anchors are whole-file: a tag-interval only tells us a file changed
  * somewhere between two tags, not which lines within it, so there is no
  * hunk-level range to anchor to (unlike time-window's per-hunk anchors).
  *
@@ -20,9 +30,7 @@
  * compare — this signal returns `[]` in that case rather than throwing.
  */
 
-import { diffNameOnly } from '../git.js';
-import { isSpanPath } from '../prefilter.js';
-import type { AnchorGroup, RepoContext, Signal, SignalEvidence, Tag } from '../types.js';
+import type { AnchorGroup, Commit, RepoContext, Signal, SignalEvidence, Tag } from '../types.js';
 
 /** Evidence label for this signal's output. */
 const EVIDENCE_LABEL = 'release-tag-delta';
@@ -42,15 +50,34 @@ interface TagInterval {
   files: string[];
 }
 
+/**
+ * Commits from the already-filtered `ctx.commits()` history that fall in the
+ * range `(fromTag, toTag]` — the pre-filtered stand-in for `git diff
+ * fromTag..toTag`'s raw tree comparison. `commits()` lists history newest
+ * first (git log's default order), so with `toTag` newer than `fromTag`,
+ * that range is the slice from `toTag`'s commit up to (excluding) `fromTag`'s
+ * commit. Either tag's commit missing from `commits()` (e.g. excluded as a
+ * sweep commit itself) yields no commits for the interval rather than
+ * guessing a range.
+ */
+function commitsInInterval(commits: readonly Commit[], fromTag: Tag, toTag: Tag): Commit[] {
+  const fromIndex = commits.findIndex((commit) => commit.sha === fromTag.sha);
+  const toIndex = commits.findIndex((commit) => commit.sha === toTag.sha);
+  if (fromIndex === -1 || toIndex === -1 || toIndex > fromIndex) return [];
+  return commits.slice(toIndex, fromIndex);
+}
+
 /** The changed-file set for each consecutive pair of tags, oldest to newest. */
-async function buildIntervals(repoRoot: string, orderedTags: readonly Tag[]): Promise<TagInterval[]> {
+function buildIntervals(commits: readonly Commit[], orderedTags: readonly Tag[]): TagInterval[] {
   const intervals: TagInterval[] = [];
   for (let i = 0; i + 1 < orderedTags.length; i++) {
     const fromTag = orderedTags[i];
     const toTag = orderedTags[i + 1];
-    const changed = await diffNameOnly(repoRoot, fromTag.sha, toTag.sha);
-    const files = [...new Set(changed.filter((path) => !isSpanPath(path)))].sort();
-    intervals.push({ fromTag, toTag, files });
+    const files = new Set<string>();
+    for (const commit of commitsInInterval(commits, fromTag, toTag)) {
+      for (const file of commit.files) files.add(file.path);
+    }
+    intervals.push({ fromTag, toTag, files: [...files].sort() });
   }
   return intervals;
 }
@@ -67,7 +94,8 @@ const releaseTagDeltaSignal: Signal = async (ctx: RepoContext): Promise<AnchorGr
   // Design decision 9: zero or one tags means zero intervals to compare.
   if (orderedTags.length < 2) return [];
 
-  const intervals = await buildIntervals(ctx.repoRoot, orderedTags);
+  const commits = await ctx.commits();
+  const intervals = buildIntervals(commits, orderedTags);
   const totalIntervals = intervals.length;
   if (totalIntervals === 0) return [];
 

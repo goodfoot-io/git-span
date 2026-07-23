@@ -12,9 +12,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRepoContext } from '../src/prefilter.js';
-import { buildNoTagsRepo, buildShallowCloneRepo, buildSingleCommitRepo } from './fixtures/build-fixture-repos.js';
+import {
+  buildNoTagsRepo,
+  buildShallowCloneRepo,
+  buildSingleCommitRepo,
+  buildZeroCommitRepo
+} from './fixtures/build-fixture-repos.js';
 
 describe('createRepoContext against fixture repos', () => {
+  it('returns an empty commit list for a zero-commit repo instead of throwing', async () => {
+    const repoRoot = buildZeroCommitRepo();
+    const ctx = createRepoContext(repoRoot);
+
+    await expect(ctx.commits()).resolves.toEqual([]);
+  });
+
   it('sees the one commit and no tags in the single-commit fixture', async () => {
     const repoRoot = buildSingleCommitRepo();
     const ctx = createRepoContext(repoRoot);

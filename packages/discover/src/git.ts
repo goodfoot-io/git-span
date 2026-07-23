@@ -24,6 +24,27 @@ const MAX_BUFFER = 256 * 1024 * 1024;
 const RECORD_SEP = '\x1e';
 const FIELD_SEP = '\x1f';
 
+/**
+ * True when a git failure message indicates the target path is not a git
+ * repository at all (missing directory, or a directory with no `.git`) —
+ * as opposed to a git error inside a real repo (bad rev, permission denied,
+ * etc). The CLI uses this to print a short, clean message instead of the raw
+ * internal command line (finding 2).
+ */
+export function isNotAGitRepoError(message: string): boolean {
+  return /not a git repository|cannot change to .*: No such file or directory/.test(message);
+}
+
+/**
+ * True when a git failure message indicates the repo has zero reachable
+ * commits (a fresh `git init` with nothing committed yet) — the degenerate
+ * case `log()` degrades to an empty array for, per design decision 9, rather
+ * than throwing.
+ */
+function isNoCommitsYetError(message: string): boolean {
+  return /does not have any commits yet/.test(message);
+}
+
 async function runGit(repoRoot: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await execFile('git', ['-C', repoRoot, ...args], {
@@ -91,7 +112,18 @@ function parseCommitRecord(record: string): Commit {
  */
 export async function log(repoRoot: string): Promise<Commit[]> {
   const format = `${RECORD_SEP}%H${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%B${FIELD_SEP}`;
-  const stdout = await runGit(repoRoot, ['log', '--unified=0', `--format=${format}`, '-p', '--no-color']);
+  let stdout: string;
+  try {
+    stdout = await runGit(repoRoot, ['log', '--unified=0', `--format=${format}`, '-p', '--no-color']);
+  } catch (err) {
+    // A repo with zero reachable commits (a fresh `git init`, nothing
+    // committed yet) is a degenerate-but-valid input, not an error (design
+    // decision 9) — degrade to an empty history rather than propagating the
+    // rejection through every signal's `Promise.all`.
+    const message = err instanceof Error ? err.message : String(err);
+    if (isNoCommitsYetError(message)) return [];
+    throw err;
+  }
   // stdout starts with RECORD_SEP (the format string's leading byte), so the
   // first split chunk is always empty — drop it.
   return stdout.split(RECORD_SEP).slice(1).map(parseCommitRecord);

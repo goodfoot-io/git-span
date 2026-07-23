@@ -1,9 +1,10 @@
 /**
- * Builds the three shared degenerate-repo fixtures (design decision 9): a
- * single-commit repo, a repo with commits but no tags, and a shallow clone.
- * Every Stage-1 signal's test suite must additionally run its concrete
- * signal against all three and assert `[]` — this module is the shared
- * builder those suites (and Stage 0's own skipped contract tests) import.
+ * Builds the shared degenerate-repo fixtures (design decision 9): a
+ * single-commit repo, a repo with commits but no tags, a shallow clone, and a
+ * freshly-`git init`'d repo with zero commits. Every Stage-1 signal's test
+ * suite must additionally run its concrete signal against the first three
+ * and assert `[]` — this module is the shared builder those suites (and
+ * Stage 0's own skipped contract tests) import.
  *
  * Fixtures are real git checkouts, built fresh on demand under this
  * directory (gitignored — a nested `.git` committed into this repo would be
@@ -52,6 +53,13 @@ export function buildSingleCommitRepo(): string {
   const dir = uniqueDir('single-commit-repo');
   initRepo(dir);
   writeAndCommit(dir, { 'a.txt': 'hello\n', 'b.txt': 'world\n' }, 'Initial commit');
+  return dir;
+}
+
+/** A freshly-initialized repo with zero commits — degenerate-repo fixture #0. `git log` exits non-zero here ("does not have any commits yet"); the whole point of this fixture is to hit that boundary. */
+export function buildZeroCommitRepo(): string {
+  const dir = uniqueDir('zero-commit-repo');
+  initRepo(dir);
   return dir;
 }
 

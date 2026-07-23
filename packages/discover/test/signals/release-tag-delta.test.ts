@@ -93,6 +93,48 @@ describe('release-tag-delta signal', () => {
     expect(unrelatedPair).toBeUndefined();
   });
 
+  it('does not surface a file pair whose only co-occurrence between two tags comes from a sweep commit', async () => {
+    // v1..v2: a sweep commit (more files than maxFilesPerCommit) touches
+    // x.ts and y.ts alongside a pile of unrelated files. Read through
+    // RepoContext.commits(), this commit is excluded from history entirely
+    // (design decision 4), so it must not count as an x.ts/y.ts co-occurrence
+    // for this interval.
+    writeAndCommit(repoRoot, { 'x.ts': 'v0\n', 'y.ts': 'v0\n' }, 'Initial commit');
+    tag(repoRoot, 'v1');
+
+    writeAndCommit(
+      repoRoot,
+      {
+        'x.ts': 'v1\n',
+        'y.ts': 'v1\n',
+        'extra1.ts': 'v1\n',
+        'extra2.ts': 'v1\n'
+      },
+      'Sweep commit touching many unrelated files'
+    );
+    tag(repoRoot, 'v2');
+
+    // v2..v3: a real, legitimate co-change of x.ts and y.ts alone.
+    writeAndCommit(repoRoot, { 'x.ts': 'v2\n', 'y.ts': 'v2\n' }, 'Update x and y together');
+    tag(repoRoot, 'v3');
+
+    // maxFilesPerCommit: 3 makes the 4-file sweep commit above exceed the
+    // threshold while the 2-file real co-change commit does not.
+    const ctx = createRepoContext(repoRoot, { maxFilesPerCommit: 3 });
+    const groups = await releaseTagDeltaSignal(ctx);
+
+    // Without the sweep-commit exclusion, x.ts/y.ts would have co-occurred
+    // in both intervals (v1..v2 via the sweep commit, v2..v3 via the real
+    // change), clearing MIN_CO_OCCURRENCES. With the exclusion, the sweep
+    // commit contributes nothing, leaving only one real co-occurrence —
+    // below threshold — so the pair must not be reported.
+    const xyPair = groups.find((group) => {
+      const paths = group.anchors.map((anchor) => anchor.path);
+      return paths.includes('x.ts') && paths.includes('y.ts');
+    });
+    expect(xyPair).toBeUndefined();
+  });
+
   it('produces no groups when there are fewer than two tags', async () => {
     writeAndCommit(repoRoot, { 'a.ts': 'v0\n' }, 'Initial commit');
     tag(repoRoot, 'only-tag');

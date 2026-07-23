@@ -113,12 +113,11 @@ describe('mergeAnchorGroups', () => {
     expect(mergeAnchorGroups([g1, g2])).toHaveLength(2);
   });
 
-  it('collapses many groups sharing a whole-file anchor on one path into a single component', () => {
-    // Exercises the path-bucketed union's whole-file fast path: a whole-file
-    // anchor overlaps every anchor on its path, so a large fan-in on a hot path
-    // (e.g. package.json touched by hundreds of release-tag pairs) must merge
-    // into exactly one group — the scalable equivalent of the former O(groups²)
-    // all-pairs scan.
+  it('does not collapse many distinct pairs sharing a hub whole-file anchor into one mega-group', () => {
+    // Regression for the whole-file transitive over-merge: package.json
+    // co-occurring with hundreds of unrelated files in independent pairs must
+    // NOT transitively chain those files together. Each {package.json, other-N}
+    // pair is a distinct candidate coupling and must stay its own group.
     const groups: AnchorGroup[] = [];
     for (let i = 0; i < 500; i++) {
       groups.push(
@@ -129,10 +128,59 @@ describe('mergeAnchorGroups', () => {
       );
     }
     const merged = mergeAnchorGroups(groups);
-    // All 500 share package.json (whole-file) → one transitive component.
-    expect(merged).toHaveLength(1);
-    expect(merged[0].evidence).toHaveLength(500);
-    expect(merged[0].anchors.some((anchor) => anchor.path === 'package.json')).toBe(true);
+    expect(merged).toHaveLength(500);
+    for (const g of merged) {
+      expect(g.anchors).toHaveLength(2);
+      expect(g.evidence).toHaveLength(1);
+    }
+  });
+
+  it('does not merge 3+ distinct pairs sharing a common hub file/anchor', () => {
+    // hub.ts co-occurs with a.ts, b.ts, and c.ts in three separate,
+    // unrelated candidate couplings. None of these pairs share a second
+    // participant, so they must remain three separate groups rather than
+    // transitively unioning through the shared hub anchor.
+    const hubA = group([{ path: 'hub.ts' }, { path: 'a.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
+    const hubB = group([{ path: 'hub.ts' }, { path: 'b.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
+    const hubC = group([{ path: 'hub.ts' }, { path: 'c.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
+
+    const merged = mergeAnchorGroups([hubA, hubB, hubC]);
+    expect(merged).toHaveLength(3);
+    const participantSets = merged.map((g) =>
+      g.anchors
+        .map((a) => a.path)
+        .sort()
+        .join(',')
+    );
+    expect(new Set(participantSets)).toEqual(new Set(['a.ts,hub.ts', 'b.ts,hub.ts', 'c.ts,hub.ts']));
+  });
+
+  it('still merges the same two-file pairing independently observed by two different signals', () => {
+    // The legitimate case design decision 8 exists for: both association-rules
+    // and time-window flag {a.ts, b.ts} as coupled — this must still merge
+    // into one group with unioned evidence, even under the stricter full-match rule.
+    const viaAssociation = group(
+      [{ path: 'a.ts' }, { path: 'b.ts' }],
+      [{ signal: 'association-rules', strength: 0.9, commits: ['c1'] }]
+    );
+    const viaTimeWindow = group(
+      [
+        { path: 'a.ts', startLine: 10, endLine: 20 },
+        { path: 'b.ts', startLine: 10, endLine: 20 }
+      ],
+      [{ signal: 'time-window-co-edit', strength: 0.8, commits: ['c2'] }]
+    );
+    // A distinct, unrelated pair sharing only a.ts with the above — must not merge in.
+    const unrelated = group([{ path: 'a.ts' }, { path: 'z.ts' }], [{ signal: 'association-rules', strength: 0.7 }]);
+
+    const merged = mergeAnchorGroups([viaAssociation, viaTimeWindow, unrelated]);
+    expect(merged).toHaveLength(2);
+
+    const abGroup = merged.find((g) => g.anchors.some((a) => a.path === 'b.ts'));
+    expect(abGroup?.evidence.map((e) => e.signal).sort()).toEqual(['association-rules', 'time-window-co-edit']);
+
+    const azGroup = merged.find((g) => g.anchors.some((a) => a.path === 'z.ts'));
+    expect(azGroup?.evidence).toHaveLength(1);
   });
 
   it('does not merge groups whose ranges on a shared path fall below the IoU threshold', () => {

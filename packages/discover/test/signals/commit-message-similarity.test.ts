@@ -101,6 +101,28 @@ describe('commit-message-similarity signal', () => {
     expect(synonymPair).toBeUndefined();
   });
 
+  it('does not report near-maximal similarity for files touched only by generically-messaged commits', async () => {
+    // Reproduces the false-positive: two unrelated files whose commits are
+    // all boilerplate ("fix", "update", "wip") share no real vocabulary but
+    // previously vectorized to a cosine similarity at or near 1.0 purely
+    // from the shared filler words.
+    writeAndCommit(repoRoot, { 'alpha.ts': 'v1\n' }, 'fix');
+    writeAndCommit(repoRoot, { 'alpha.ts': 'v2\n' }, 'update');
+    writeAndCommit(repoRoot, { 'alpha.ts': 'v3\n' }, 'wip');
+    writeAndCommit(repoRoot, { 'beta.ts': 'v1\n' }, 'fix');
+    writeAndCommit(repoRoot, { 'beta.ts': 'v2\n' }, 'update');
+    writeAndCommit(repoRoot, { 'beta.ts': 'v3\n' }, 'wip');
+
+    const ctx = createRepoContext(repoRoot);
+    const groups = await commitMessageSimilaritySignal(ctx);
+
+    const boilerplatePair = groups.find((group) => {
+      const paths = group.anchors.map((anchor) => anchor.path);
+      return paths.includes('alpha.ts') && paths.includes('beta.ts');
+    });
+    expect(boilerplatePair).toBeUndefined();
+  });
+
   it('produces no groups when there is only one file in history', async () => {
     writeAndCommit(repoRoot, { 'only.ts': 'v1\n' }, 'Add the only file');
 

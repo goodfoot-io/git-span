@@ -64,4 +64,20 @@ describe('scoreEvidence', () => {
     };
     expect(scoreEvidence(signals, [inconclusive])).toBeCloseTo(base, 10);
   });
+
+  it('does not saturate toward 1.0 purely from redundant same-signal entry count', () => {
+    const manyRedundant = Array.from({ length: 15 }, () => signal('lexical-similarity', 0.35));
+    const score = scoreEvidence(manyRedundant);
+    const single = scoreEvidence([signal('lexical-similarity', 0.35)]);
+
+    expect(score).toBeCloseTo(single, 10);
+    expect(score).toBeLessThan(0.9);
+  });
+
+  it('ranks a single strong association-rules entry above a cluster of many weak same-signal entries', () => {
+    const strongSingle = scoreEvidence([signal('association-rules', 0.9)]);
+    const weakCluster = scoreEvidence(Array.from({ length: 15 }, () => signal('lexical-similarity', 0.35)));
+
+    expect(strongSingle).toBeGreaterThan(weakCluster);
+  });
 });

@@ -21,6 +21,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as disqualifiers from './disqualifiers/index.js';
+import { isNotAGitRepoError } from './git.js';
 import { mergeAnchorGroups } from './grouping.js';
 import { type DiscoveredGroup, toJson, toMarkdown } from './output.js';
 import { createRepoContext } from './prefilter.js';
@@ -28,6 +29,15 @@ import { createRenameResolver } from './rename-tracking.js';
 import { scoreEvidence } from './scoring.js';
 import * as signals from './signals/index.js';
 import type { Disqualifier, RepoContext, Signal } from './types.js';
+
+/**
+ * Emits a stage-boundary breadcrumb to stderr — cheap visibility for long
+ * runs (finding 3). No percentage/ETA tracking, just "still making progress"
+ * markers at the pipeline stages already present below.
+ */
+function reportProgress(message: string): void {
+  process.stderr.write(`git-span-discover: ${message}\n`);
+}
 
 /**
  * Pass-1 threshold: a cheap prune over signal-only scores before the more
@@ -51,16 +61,21 @@ export async function discover(
   repoRoot: string,
   ctx: RepoContext = createRepoContext(repoRoot)
 ): Promise<DiscoveredGroup[]> {
+  reportProgress('walking commit history and running signals');
   const signalResults = await Promise.all(ALL_SIGNALS.map((signal) => signal(ctx)));
+
+  reportProgress('grouping candidates');
   const merged = mergeAnchorGroups(signalResults.flat());
 
   // Pass 1 — signal evidence only.
+  reportProgress('scoring (pass 1)');
   const survivors = merged.filter((group) => {
     group.score = scoreEvidence(group.evidence);
     return group.score >= PASS1_THRESHOLD;
   });
 
   // Disqualifiers against pass-1 survivors.
+  reportProgress('running disqualifiers');
   const withDisqualifiers = await Promise.all(
     survivors.map(async (group) => ({
       group,
@@ -69,12 +84,14 @@ export async function discover(
   );
 
   // Pass 2 — signal + disqualifier evidence.
+  reportProgress('scoring (pass 2)');
   const passed = withDisqualifiers.filter(({ group, disqualifiers: dq }) => {
     group.score = scoreEvidence(group.evidence, dq);
     return group.score >= PASS2_THRESHOLD;
   });
 
   // Rename-tracking to HEAD, dropping groups whose files were all deleted.
+  reportProgress('resolving renames to HEAD');
   const resolver = await createRenameResolver(ctx);
   const discovered: DiscoveredGroup[] = [];
   for (const { group, disqualifiers: dq } of passed) {
@@ -135,7 +152,19 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  const groups = await discover(options.repoRoot);
+  let groups: DiscoveredGroup[];
+  try {
+    groups = await discover(options.repoRoot);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (isNotAGitRepoError(message)) {
+      process.stderr.write(`git-span-discover: not a git repository: ${options.repoRoot}\n`);
+      return 1;
+    }
+    throw err;
+  }
+
+  reportProgress('rendering report');
   const rendered = options.format === 'json' ? toJson(groups) : toMarkdown(groups);
   process.stdout.write(`${rendered}\n`);
   return 0;

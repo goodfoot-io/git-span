@@ -89,6 +89,28 @@ function strengthToLogOdds(strength: number): number {
 }
 
 /**
+ * Reduces a group's signal evidence to at most one entry per signal — the
+ * strongest — before scoring. Grouping's evidence-union only drops
+ * byte-exact duplicates, so a merged group can carry many entries from the
+ * same signal (correlated observations of the same underlying pair, not
+ * independent evidence); summing every one of them lets score grow with
+ * entry *count* rather than coupling *strength*, saturating the score and
+ * inverting rank order against fewer-but-stronger candidates.
+ */
+function strongestPerSignal(signals: readonly SignalEvidence[]): SignalEvidence[] {
+  const strongestBySignal = new Map<string, SignalEvidence>();
+
+  for (const evidence of signals) {
+    const current = strongestBySignal.get(evidence.signal);
+    if (!current || evidence.strength > current.strength) {
+      strongestBySignal.set(evidence.signal, evidence);
+    }
+  }
+
+  return [...strongestBySignal.values()];
+}
+
+/**
  * Combines a group's signal evidence (and, in pass 2, its disqualifier
  * evidence) into one score in (0, 1). Inconclusive disqualifiers (design
  * decision 6 — e.g. a tree-sitter parse failure) contribute nothing in either
@@ -100,7 +122,7 @@ export function scoreEvidence(
 ): number {
   let logOdds = 0;
 
-  for (const evidence of signals) {
+  for (const evidence of strongestPerSignal(signals)) {
     const weight = SIGNAL_WEIGHTS[evidence.signal] ?? DEFAULT_SIGNAL_WEIGHT;
     logOdds += weight * strengthToLogOdds(evidence.strength);
   }

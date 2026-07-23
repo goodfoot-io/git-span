@@ -110,4 +110,10 @@ describe('full pipeline', () => {
     expect(json.groups[0].anchors.every((a: string) => anchorPattern.test(a))).toBe(true);
     expect(toMarkdown(groups)).toContain('# Implicit dependency candidates');
   });
+
+  it('degrades to an empty groups result for a zero-commit repo instead of throwing', async () => {
+    // repoRoot from beforeEach is `git init`'d but has zero commits — the
+    // natural boundary case a fresh, unused project would hit (finding 1).
+    await expect(discover(repoRoot)).resolves.toEqual([]);
+  });
 });
