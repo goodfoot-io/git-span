@@ -1,0 +1,12 @@
+{
+  "agent-integration": "/og/docs/agent-integration.png",
+  "ci": "/og/docs/ci.png",
+  "commands": "/og/docs/commands.png",
+  "concepts": "/og/docs/concepts.png",
+  "getting-started": "/og/docs/getting-started.png",
+  "guides/mine-span-candidates": "/og/docs/guides/mine-span-candidates.png",
+  "guides/re-anchor-after-an-edit": "/og/docs/guides/re-anchor-after-an-edit.png",
+  "guides/reconcile-stale-spans": "/og/docs/guides/reconcile-stale-spans.png",
+  "overview": "/og/docs/overview.png",
+  "reference": "/og/docs/reference.png"
+}

@@ -18,7 +18,7 @@
  *   node scripts/generate-metadata-images.mjs
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,9 @@ import { chromium } from 'playwright';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
+const DOCS_CONTENT_DIR = path.resolve(__dirname, '..', 'content', 'docs');
+const DOCS_OG_DIR = path.join(PUBLIC_DIR, 'og', 'docs');
+const DOC_OG_IMAGES_MANIFEST = path.resolve(__dirname, '..', 'app', 'lib', 'doc-og-images.json');
 
 const FONT_FILE_URL = fileURLToPath(
   import.meta.resolve('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-standard-normal.woff2')
@@ -150,6 +153,44 @@ const IMAGE_SETS = [
   },
 ];
 
+/**
+ * Recursively collects every `.mdx` file under `dir`, returning paths relative to `dir`
+ * with POSIX separators (e.g. `guides/mine-span-candidates.mdx`), regardless of host OS.
+ *
+ * @param {string} dir - Directory to walk.
+ * @param {string} [baseDir] - The root `dir` passed on the initial call, used to compute
+ *   relative paths on recursive calls.
+ * @returns {string[]} Relative `.mdx` file paths.
+ */
+function findMdxFiles(dir, baseDir = dir) {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...findMdxFiles(fullPath, baseDir));
+    } else if (entry.isFile() && entry.name.endsWith('.mdx')) {
+      files.push(path.relative(baseDir, fullPath).split(path.sep).join('/'));
+    }
+  }
+  return files;
+}
+
+/**
+ * Extracts the frontmatter `title` from an `.mdx` file's contents. The frontmatter here
+ * is flat `key: value` strings only (verified across every `content/docs` mdx file),
+ * so a small regex suffices -- a full YAML parser is unwarranted.
+ *
+ * @param {string} contents - The `.mdx` file's raw text.
+ * @returns {string | undefined} The frontmatter title, if present.
+ */
+function extractFrontmatterTitle(contents) {
+  const frontmatterMatch = contents.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontmatterMatch) return undefined;
+  const titleMatch = frontmatterMatch[1].match(/^title:\s*(.+?)\s*$/m);
+  return titleMatch ? titleMatch[1] : undefined;
+}
+
 async function main() {
   const browser = await chromium.launch();
   // Chromium refuses to load file:// resources (the logo SVG, the font file) from a
@@ -174,6 +215,49 @@ async function main() {
         await page.close();
       }
     }
+
+    mkdirSync(DOCS_OG_DIR, { recursive: true });
+    const docOgImages = {};
+    for (const relativePath of findMdxFiles(DOCS_CONTENT_DIR)) {
+      const absolutePath = path.join(DOCS_CONTENT_DIR, ...relativePath.split('/'));
+      const contents = readFileSync(absolutePath, 'utf-8');
+      const title = extractFrontmatterTitle(contents);
+      if (!title) {
+        console.warn(`Skipping ${relativePath}: no frontmatter title found`);
+        continue;
+      }
+
+      const slug = relativePath.replace(/\.mdx$/, '');
+      const outputPath = path.join(DOCS_OG_DIR, `${slug}.png`);
+      mkdirSync(path.dirname(outputPath), { recursive: true });
+
+      const page = await browser.newPage({
+        viewport: { width: 1200, height: 630 },
+        deviceScaleFactor: 1,
+      });
+      try {
+        const html = renderTemplate({
+          logoSrc: logoAccentUrl,
+          tagline: title,
+          backgroundColor: GROUND,
+          inkColor: INK_PRIMARY,
+          width: 1200,
+          height: 630,
+        });
+        const htmlPath = path.join(workDir, `doc-${slug.replace(/\//g, '-')}.html`);
+        writeFileSync(htmlPath, html);
+        await page.goto(`file://${htmlPath}`);
+        await page.screenshot({ path: outputPath, omitBackground: false });
+        console.log(`Wrote ${outputPath} (1200x630)`);
+      } finally {
+        await page.close();
+      }
+
+      docOgImages[slug] = `/og/docs/${slug}.png`;
+    }
+
+    writeFileSync(DOC_OG_IMAGES_MANIFEST, `${JSON.stringify(docOgImages, null, 2)}\n`);
+    console.log(`Wrote ${DOC_OG_IMAGES_MANIFEST} (${Object.keys(docOgImages).length} docs)`);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
     await browser.close();

@@ -6,16 +6,15 @@ import { CLOSING, HERO, PHASE_COPY } from '~/components/marketing/story/copy';
 import { EngineStage } from '~/components/marketing/story/EngineStage';
 import { deriveScene, TIMELINE, TimelineReadout, useTimeline } from '~/components/marketing/story/index';
 import { PhaseSpecimen } from '~/components/marketing/story/Specimen';
+import { buildRouteMeta } from '~/lib/meta';
 import { useMediaQuery } from '~/lib/useMediaQuery';
 
-export const meta: MetaFunction = () => [
-  { title: 'git-span -- Semantic code annotations for git' },
-  {
-    name: 'description',
-    content:
-      'Git-native code annotations that ship with every commit. Keep context where it belongs -- in your source tree, not your brain.'
-  }
-];
+const HOMEPAGE_TITLE = 'git-span -- Semantic code annotations for git';
+const HOMEPAGE_DESCRIPTION =
+  'Git-native code annotations that ship with every commit. Keep context where it belongs -- in your source tree, not your brain.';
+
+export const meta: MetaFunction = ({ location }) =>
+  buildRouteMeta({ title: HOMEPAGE_TITLE, description: HOMEPAGE_DESCRIPTION, pathname: location.pathname });
 
 // The narrative states, one scrolling step each. The hero is the unmeasured lead-in above them.
 const STORY_STEPS = TIMELINE.filter((phase) => phase.id !== 'hero');

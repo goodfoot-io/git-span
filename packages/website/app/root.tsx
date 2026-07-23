@@ -3,10 +3,11 @@ import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
 import { RootProvider } from 'fumadocs-ui/provider/react-router';
-import type { LinksFunction } from 'react-router';
+import type { LinksFunction, MetaFunction } from 'react-router';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router';
 import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
+import { buildRouteMeta, DEFAULT_TITLE } from '~/lib/meta';
 import globalStyles from '~/styles/global.css?url';
 
 export const links: LinksFunction = () => [
@@ -16,10 +17,15 @@ export const links: LinksFunction = () => [
   { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }
 ];
 
-// None of this site-wide meta is declared via the `meta` export: a leaf route's `meta`
-// export replaces the root's entirely, so any route defining `meta` (as every real route
-// here does, for title/description) would silently drop it. These are document-level
-// invariants and are rendered unconditionally in <head> below instead.
+// The fallback layer: a leaf route's `meta` export replaces the running meta array
+// entirely rather than merging with it, so any route that doesn't define its own `meta`
+// (current or future) inherits this array verbatim via `buildRouteMeta`.
+export const meta: MetaFunction = ({ location }) =>
+  buildRouteMeta({ title: DEFAULT_TITLE, pathname: location.pathname });
+
+// charset/viewport/theme-color and og:type/og:site_name/twitter:card never vary per route,
+// so they're rendered unconditionally here instead of going through the `meta` export --
+// unlike og:title/description/url/image, which do vary and are handled by `buildRouteMeta`.
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -29,12 +35,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="theme-color" content="#f4f1e8" />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="git-span" />
-        <meta property="og:image" content="https://git-span.com/og-image.png" />
-        <meta property="og:image:width" content="1200" />
-        <meta property="og:image:height" content="630" />
-        <meta property="og:image:alt" content="Git tracks changes. Spans track connections." />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:image" content="https://git-span.com/og-image.png" />
         <Meta />
         <Links />
       </head>

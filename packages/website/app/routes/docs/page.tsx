@@ -4,6 +4,8 @@ import { DocsBody, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { LoaderFunctionArgs, MetaFunction } from 'react-router';
 import { redirect, useLoaderData } from 'react-router';
+import docOgImages from '~/lib/doc-og-images.json';
+import { buildRouteMeta } from '~/lib/meta';
 import { source } from '~/lib/source';
 
 const clientLoader = browserCollections.docs.createClientLoader({
@@ -25,21 +27,28 @@ export async function loader({ params }: LoaderFunctionArgs) {
     throw new Response('Not found', { status: 404 });
   }
 
+  const slugKey = page.slugs.join('/');
+  const ogImagePath = (docOgImages as Record<string, string>)[slugKey];
+  const title = page.data.title as string;
+
   return {
     path: page.path,
-    title: page.data.title as string,
+    title,
     description: page.data.description as string | undefined,
     toc: page.data.toc,
-    tree: source.pageTree
+    tree: source.pageTree,
+    ogImage: ogImagePath ? { path: ogImagePath, alt: title } : undefined
   };
 }
 
-export const meta: MetaFunction<typeof loader> = ({ loaderData }) => {
-  if (!loaderData) return [{ title: 'Docs — git-span' }];
-  return [
-    { title: `${loaderData.title} — git-span docs` },
-    ...(loaderData.description ? [{ name: 'description', content: loaderData.description }] : [])
-  ];
+export const meta: MetaFunction<typeof loader> = ({ loaderData, location }) => {
+  if (!loaderData) return buildRouteMeta({ title: 'Docs — git-span', pathname: location.pathname });
+  return buildRouteMeta({
+    title: `${loaderData.title} — git-span docs`,
+    description: loaderData.description,
+    pathname: location.pathname,
+    image: loaderData.ogImage
+  });
 };
 
 export default function DocsRoute() {

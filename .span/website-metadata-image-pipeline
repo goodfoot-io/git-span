@@ -1,8 +1,19 @@
+packages/website/app/lib/doc-og-images.json rk64:6fe21eec3bee9cb3
 packages/website/package.json#L11-L11 rk64:67af3061dc553eb1
 packages/website/package.json#L41-L41 rk64:8a089753500a174a
 packages/website/public/apple-touch-icon.png rk64:070c7f0508c466b6
 packages/website/public/favicon.png rk64:08a00641383d4d07
 packages/website/public/og-image.png rk64:8086d09b86c0dfb3
-packages/website/scripts/generate-metadata-images.mjs#L1-L183 rk64:11267107b64f8c87
+packages/website/public/og/docs/agent-integration.png rk64:f1f12f749d58941b
+packages/website/public/og/docs/ci.png rk64:ef0f945da7d80ce1
+packages/website/public/og/docs/commands.png rk64:3a6eaf5b9740effc
+packages/website/public/og/docs/concepts.png rk64:2ac7f859193cdfb2
+packages/website/public/og/docs/getting-started.png rk64:a5845d254e67b44c
+packages/website/public/og/docs/guides/mine-span-candidates.png rk64:c38577ef8319e2e4
+packages/website/public/og/docs/guides/re-anchor-after-an-edit.png rk64:588a2e8b0f74897c
+packages/website/public/og/docs/guides/reconcile-stale-spans.png rk64:7b57d176fb1eae38
+packages/website/public/og/docs/overview.png rk64:3df8e70564c9415f
+packages/website/public/og/docs/reference.png rk64:a0f742c3348b38a4
+packages/website/scripts/generate-metadata-images.mjs#L1-L267 rk64:1e9f320dfd2d9c73
 
-The generate:images script entry, playwright devDependency, generate-metadata-images.mjs, and its three rendered PNGs form the site's metadata-image pipeline, so a change to how images are produced or which images exist crosses all of them.
+The generate:images script entry, playwright devDependency, generate-metadata-images.mjs, its three site-wide rendered PNGs, its per-doc og:docs PNGs, and the doc-og-images.json manifest form the site's metadata-image pipeline, so a change to how images are produced or which images exist crosses all of them.

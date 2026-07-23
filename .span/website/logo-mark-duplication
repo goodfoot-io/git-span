@@ -2,6 +2,6 @@ packages/website/app/components/Header.tsx#L8-L34 rk64:3a8127902478d54d
 packages/website/public/favicon.svg rk64:26bae7863ecb1f37
 packages/website/public/logo-accent.svg rk64:08dc7c489302520a
 packages/website/public/logo-negative.svg rk64:4c65e9332bfe7673
-packages/website/scripts/generate-metadata-images.mjs rk64:73de971ac92bc970
+packages/website/scripts/generate-metadata-images.mjs rk64:361e80c53480d774
 
 The header's inline logo mark hardcodes the same ring-and-span path data as the negative logo's mark, and the favicon recolors the identical geometry, so redrawing the mark means copying the new path data into all three by hand.
