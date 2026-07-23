@@ -41,13 +41,42 @@ function reportProgress(message: string): void {
 
 /**
  * Pass-1 threshold: a cheap prune over signal-only scores before the more
- * expensive disqualifiers run. Kept just above the 0.5 neutral point so a
- * group needs more than a single weak signal to advance.
+ * expensive disqualifiers run.
+ *
+ * `0.55` (just above the 0.5 neutral point) turned out to be far too
+ * permissive at real-repo scale: with the old `scoring.ts` weights, a single
+ * circumstantial signal (`time-window-co-edit`, `same-author-session`,
+ * `lexical-similarity`) at its typical real-repo strength cleared it alone,
+ * so ~97% of the 118k merged groups from a 658-file/1072-commit monorepo
+ * probe advanced to the disqualifier stage.
+ *
+ * `scoring.ts`'s `SIGNAL_WEIGHTS` were recalibrated (see its comment) so that
+ * even a *maximal-strength* single circumstantial signal caps out well short
+ * of 1.0. `0.94` is derived, not fitted: it is (just above) the score all
+ * four circumstantial signals (`time-window-co-edit`, `same-author-session`,
+ * `lexical-similarity`, `release-tag-delta`) reach *together* when each is
+ * near its own strong-tail (~p90) strength in the probe corpus — i.e. the
+ * point at which a group needs either full corroboration across every weak
+ * signal this pipeline has, or at least one structural signal
+ * (`association-rules`/`shared-config-key`, which already gate on
+ * statistical/rarity significance before emitting at all) to advance. Rerunning
+ * the same monorepo probe post-recalibration: 118,288 merged groups, of which
+ * 375 (0.32%) clear `0.94` pre-disqualifier — down from 114,481 (97%) at the
+ * old threshold/weights.
  */
-const PASS1_THRESHOLD = 0.55;
+const PASS1_THRESHOLD = 0.94;
 
-/** Pass-2 threshold: the final reporting cut, after disqualifiers may have pulled a score down. */
-const PASS2_THRESHOLD = 0.5;
+/**
+ * Pass-2 threshold: the final reporting cut, after disqualifiers may have
+ * pulled a score down. Kept below `PASS1_THRESHOLD` by roughly the same
+ * log-odds gap as the pre-recalibration pair (`logit(0.55) - logit(0.5) ≈
+ * 0.2`), so a group that cleared pass 1 isn't dropped by pass 2 purely
+ * because its disqualifier evidence is weakly-inconclusive rather than a
+ * genuine explicit reference — but a disqualifier that actually fires (an
+ * explicit tree-sitter or raw-path reference) still has enough weight
+ * (1.4-1.5, see `DISQUALIFIER_WEIGHTS`) to drop a group below it.
+ */
+const PASS2_THRESHOLD = 0.9;
 
 const ALL_SIGNALS: Signal[] = Object.values(signals);
 const ALL_DISQUALIFIERS: Disqualifier[] = Object.values(disqualifiers);

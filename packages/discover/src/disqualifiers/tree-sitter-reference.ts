@@ -220,12 +220,33 @@ function extractRustReferences(root: Node, _fromPath: string): FileReferences {
 type ParseOutcome = { ok: true; refs: FileReferences } | { ok: false };
 
 /**
- * Parses one anchor file and extracts its explicit references. Returns
- * `{ ok: false }` on any parse failure — unsupported extension, missing
- * content, grammar load failure, or a syntax error (`rootNode.hasError`) — so
- * every failure mode funnels into the same evidence-neutral path.
+ * Memoizes `parseFile` per `(RepoContext, path)`. A single run always reads
+ * the same anchor path at the same revision (`HEAD`), but a "hub" file can
+ * appear as an anchor in a very large number of groups — without this cache,
+ * each occurrence re-parses the same unchanged content from scratch, which is
+ * the dominant cost of the disqualifier stage on a real repo (a fresh WASM
+ * parse per group, not per distinct file). Scoped per `RepoContext` instance
+ * (via `WeakMap`, so it never outlives or leaks across runs) rather than
+ * keyed on path alone, since two different repos/tests can share a relative
+ * path (e.g. `src/a.ts`) with unrelated content.
  */
-async function parseFile(filePath: string, ctx: RepoContext): Promise<ParseOutcome> {
+const parseCacheByContext = new WeakMap<RepoContext, Map<string, Promise<ParseOutcome>>>();
+
+function parseFile(filePath: string, ctx: RepoContext): Promise<ParseOutcome> {
+  let cache = parseCacheByContext.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    parseCacheByContext.set(ctx, cache);
+  }
+  let cached = cache.get(filePath);
+  if (!cached) {
+    cached = parseFileUncached(filePath, ctx);
+    cache.set(filePath, cached);
+  }
+  return cached;
+}
+
+async function parseFileUncached(filePath: string, ctx: RepoContext): Promise<ParseOutcome> {
   const grammar = grammarForPath(filePath);
   if (!grammar) return { ok: false };
 

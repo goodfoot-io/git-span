@@ -41,6 +41,7 @@ function snapshotTree(root: string): Map<string, string> {
 const T0 = '2024-03-01T00:00:00+00:00';
 const T0_1M = '2024-03-01T00:01:00+00:00';
 const T0_2M = '2024-03-01T00:02:00+00:00';
+const T0_3M = '2024-03-01T00:03:00+00:00';
 
 describe('full pipeline', () => {
   let repoRoot: string;
@@ -60,9 +61,14 @@ describe('full pipeline', () => {
     // A pre-existing .span/ record — the pipeline must never read or write it.
     write(repoRoot, '.span/records/legacy.json', '{"anchor":"do-not-touch"}\n');
 
-    // Three files created in separate, close-in-time commits: the time-window
-    // signal pairs them (range-anchored) since each pair is < 6h apart and in
-    // different commits.
+    // alpha.ts and beta.ts are created in separate, close-in-time commits
+    // (time-window/same-author-session evidence, range-anchored), then
+    // touched together in the same commit twice more (association-rules
+    // evidence — a real repeated co-change, not mere temporal coincidence).
+    // After the pass-1/pass-2 threshold recalibration (this card), no single
+    // circumstantial signal — however strong — clears the bar alone; a
+    // fixture needs genuine multi-signal corroboration to produce a
+    // surviving group, same as it would on a real repository.
     write(repoRoot, 'alpha.ts', 'const alpha = 1;\n');
     git(repoRoot, ['add', '-A']);
     git(repoRoot, ['commit', '--quiet', '-m', 'add alpha.ts and a span record'], T0);
@@ -72,8 +78,15 @@ describe('full pipeline', () => {
     git(repoRoot, ['commit', '--quiet', '-m', 'add beta.ts'], T0_1M);
 
     write(repoRoot, 'gamma.ts', 'const gamma = 3;\n');
+    write(repoRoot, 'alpha.ts', 'const alpha = 1;\nconst alphaAgain = 1;\n');
+    write(repoRoot, 'beta.ts', 'const beta = 2;\nconst betaAgain = 2;\n');
     git(repoRoot, ['add', '-A']);
-    git(repoRoot, ['commit', '--quiet', '-m', 'add gamma.ts'], T0_2M);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add gamma.ts, touch alpha.ts and beta.ts together'], T0_2M);
+
+    write(repoRoot, 'alpha.ts', 'const alpha = 1;\nconst alphaAgain = 1;\nconst alphaThird = 1;\n');
+    write(repoRoot, 'beta.ts', 'const beta = 2;\nconst betaAgain = 2;\nconst betaThird = 2;\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'touch alpha.ts and beta.ts together again'], T0_3M);
 
     const spanBefore = snapshotTree(path.join(repoRoot, '.span'));
     expect(spanBefore.size).toBeGreaterThan(0);

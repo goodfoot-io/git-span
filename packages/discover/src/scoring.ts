@@ -35,23 +35,49 @@ const EPSILON = 0.02;
 
 /**
  * Hand-tuned per-signal log-likelihood-ratio weights, keyed by the evidence
- * label each signal emits. Repeated co-change (`association-rules`) and a
- * shared config key are the strongest structural signals; temporal proximity
- * and shared-authorship the weakest. Both TF-IDF signals emit the
- * `lexical-similarity` label (they are explicitly lexical, not semantic — see
- * design decision 2) and share one weight.
+ * label each signal emits.
+ *
+ * `strengthToLogOdds` maps a strength of 1 to `logit(1 - EPSILON) ≈ 3.89` —
+ * so *any* weight above ~0.05 lets a single, isolated, max-strength
+ * observation cross a threshold set "just above neutral". A real-repo probe
+ * (1072 commits / 658 files, see the card's investigation notes) showed
+ * `time-window-co-edit`, `same-author-session`, and `lexical-similarity` each
+ * firing tens of thousands of times with typical (median) strengths of
+ * 0.49-0.83 — because a repo this size naturally produces huge incidental
+ * co-occurrence (busy edit sessions, shared vocabulary, temporal proximity)
+ * that has nothing to do with a genuine implicit dependency. At the old
+ * weights (0.5-0.7), that typical strength alone cleared `PASS1_THRESHOLD`
+ * for ~97% of all merged groups.
+ *
+ * These signals are split into two tiers reflecting how much one isolated
+ * observation should move belief:
+ *
+ * - **Structural** (`association-rules`, `shared-config-key`): each already
+ *   filters for statistical/rarity significance before emitting evidence at
+ *   all (`MIN_SUPPORT`/`MIN_CONFIDENCE`/`MIN_COOCCURRENCE_COUNT` in
+ *   association-rules.ts; the rare-token filter in shared-config-keys.ts), so
+ *   a single strong observation is real, corroborated evidence and deserves
+ *   a weight that alone can cross the pass threshold.
+ * - **Circumstantial** (`release-tag-delta`, `lexical-similarity`,
+ *   `time-window-co-edit`, `same-author-session`): individually common and
+ *   noisy at repo scale — proximity or vocabulary overlap alone is
+ *   suggestive, not conclusive. Weights are sized so that even a
+ *   maximal-strength single observation lands short of `PASS1_THRESHOLD`
+ *   (~0.65 alone, see scoring.test.ts), while two or more corroborating
+ *   circumstantial signals — or one circumstantial signal alongside a
+ *   structural one — combine to clear it.
  */
 const SIGNAL_WEIGHTS: Readonly<Record<string, number>> = {
-  'association-rules': 1.2,
-  'shared-config-key': 1.1,
-  'release-tag-delta': 1.0,
-  'lexical-similarity': 0.7,
-  'time-window-co-edit': 0.6,
-  'same-author-session': 0.5
+  'association-rules': 1.3,
+  'shared-config-key': 0.55,
+  'release-tag-delta': 0.35,
+  'lexical-similarity': 0.25,
+  'time-window-co-edit': 0.15,
+  'same-author-session': 0.2
 };
 
-/** Weight applied to a signal whose label is not in {@link SIGNAL_WEIGHTS}. */
-const DEFAULT_SIGNAL_WEIGHT = 0.5;
+/** Weight applied to a signal whose label is not in {@link SIGNAL_WEIGHTS} — treated as circumstantial by default (fail closed). */
+const DEFAULT_SIGNAL_WEIGHT = 0.2;
 
 /**
  * Hand-tuned per-disqualifier weights. An explicit reference (a tree-sitter
