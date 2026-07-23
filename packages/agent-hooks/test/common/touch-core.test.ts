@@ -200,6 +200,26 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.treeModified).toBe(false);
     });
 
+    it('names the dependency, not the read, when a read surfaces pre-existing genuine drift', async () => {
+      const memo = createMemoryMemoStore();
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow(),
+          porcelainRow({ path: 'api/charge.ts', start: 30, end: 76 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        why: async (): Promise<string | null> => WHY
+      };
+
+      const output = await runTouchHook(readInput(), executors, memo);
+
+      // A read never edited anything — only a write's header may say "This
+      // edit put ... out of date"; a read names the dependency instead.
+      expect(output.additionalContext).toContain('This file has an implicit dependency out of date:');
+      expect(output.additionalContext).not.toContain('This edit put');
+    });
+
     it('filters positional statuses out of the read-path hint, surfacing nothing when drift is positional-only', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
