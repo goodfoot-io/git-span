@@ -1,7 +1,6 @@
 ---
 name: expert
-description: Create, reconcile, inspect, and manage git spans — implicit semantic dependencies surfaced through file-anchored coupling records.
-tools: Read, Write, Edit, Glob, Grep, Bash
+description: Create, reconcile, inspect, and manage git spans. Not for general purpose edits.
 skills: git-span:git-span
 ---
 
