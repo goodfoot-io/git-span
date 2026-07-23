@@ -14,7 +14,8 @@ PACKAGE_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Get version from package.json
 VERSION=$(node -p "require('$PACKAGE_DIR/package.json').version")
-VSIX_FILE="$PACKAGE_DIR/git-span-${VERSION}.vsix"
+NAME=$(node -p "require('$PACKAGE_DIR/package.json').name")
+VSIX_FILE="$PACKAGE_DIR/${NAME}-${VERSION}.vsix"
 
 # Check if VSIX file exists
 if [ ! -f "$VSIX_FILE" ]; then
