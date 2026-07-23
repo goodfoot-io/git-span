@@ -103,6 +103,35 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(plan, { kind: 'reconciled', historical: null, current: 'brand new content' });
     });
 
+    it('returns drifted with current: null when the current entry has no content (removed in the working tree)', () => {
+      const history = historyFixture({
+        commits: [
+          {
+            hash: 'c1',
+            date: '2026-01-01',
+            summary: 'Add',
+            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'added', content: 'historical content' }]
+          }
+        ],
+        current: {
+          anchors: [{ path: 'web/checkout.tsx#L1-L5', status: 'removed in the working tree' }]
+        }
+      });
+      const plan = matchAnchor('web/checkout.tsx#L1-L5', history);
+      assert.deepStrictEqual(plan, { kind: 'drifted', historical: 'historical content', current: null });
+    });
+
+    it('returns reconciled with current: null when the current entry has no content (removed in the working tree)', () => {
+      const history = historyFixture({
+        commits: [],
+        current: {
+          anchors: [{ path: 'web/new-file.tsx#L1-L3', status: 'removed in the working tree' }]
+        }
+      });
+      const plan = matchAnchor('web/new-file.tsx#L1-L3', history);
+      assert.deepStrictEqual(plan, { kind: 'reconciled', historical: null, current: null });
+    });
+
     it('returns dangling when the most recent event at the address is removed and no current entry exists', () => {
       const history = historyFixture({
         commits: [

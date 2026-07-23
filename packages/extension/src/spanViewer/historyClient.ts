@@ -85,10 +85,10 @@ function mapCurrentAnchor(raw: unknown, index: number): CurrentAnchor {
   if (typeof status !== 'string') {
     throw new HistoryFormatError(`current.anchors[${index}]: missing or invalid "status"`);
   }
-  if (typeof content !== 'string') {
-    throw new HistoryFormatError(`current.anchors[${index}]: missing or invalid "content"`);
+  if (content !== undefined && typeof content !== 'string') {
+    throw new HistoryFormatError(`current.anchors[${index}]: "content" must be a string when present`);
   }
-  return { path, status, content };
+  return content === undefined ? { path, status } : { path, status, content };
 }
 
 /**

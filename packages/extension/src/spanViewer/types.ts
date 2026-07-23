@@ -45,11 +45,15 @@ export interface HistoryCommit {
  * A single entry in the `current` block: an anchor whose live worktree state
  * differs from HEAD. Absence from `current.anchors[]` means "unchanged from
  * HEAD," not "no current state."
+ *
+ * `content` is omitted (key absent) when the CLI has no readable current
+ * content to report -- e.g. `status` is `"removed in the working tree"`, or
+ * the anchor's resolved location could not be read.
  */
 export interface CurrentAnchor {
   path: string;
   status: string;
-  content: string;
+  content?: string;
 }
 
 /** The fully-typed, camelCase shape of `git span history --format json`'s stdout. */
@@ -69,8 +73,8 @@ export interface HistoryDocument {
  */
 export type AnchorPlan =
   | { kind: 'clean'; content: string }
-  | { kind: 'drifted'; historical: string | null; current: string }
-  | { kind: 'reconciled'; historical: string | null; current: string }
+  | { kind: 'drifted'; historical: string | null; current: string | null }
+  | { kind: 'reconciled'; historical: string | null; current: string | null }
   | { kind: 'dangling' };
 
 /** Query-string parameters encoded into a `gitspan-anchor:` virtual document URI. */

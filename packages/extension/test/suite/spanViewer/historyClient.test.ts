@@ -68,6 +68,34 @@ describe('historyClient', () => {
       assert.strictEqual(doc.current.anchors[0]?.content, 'live content');
     });
 
+    it('parses a current.anchors[] entry with no content key when status is "removed in the working tree"', () => {
+      const stdout = JSON.stringify({
+        schema_version: 1,
+        span: 'web/checkout.tsx',
+        commits: [],
+        current: {
+          anchors: [{ path: 'web/checkout.tsx#L1-L5', status: 'removed in the working tree' }]
+        }
+      });
+      const doc = parseHistoryJson(stdout);
+      assert.ok(doc.current);
+      assert.strictEqual(doc.current.anchors[0]?.status, 'removed in the working tree');
+      assert.strictEqual(doc.current.anchors[0]?.content, undefined);
+      assert.strictEqual('content' in doc.current.anchors[0]!, false);
+    });
+
+    it('throws HistoryFormatError when a current.anchors[] "content" is present but not a string', () => {
+      const stdout = JSON.stringify({
+        schema_version: 1,
+        span: 'web/checkout.tsx',
+        commits: [],
+        current: {
+          anchors: [{ path: 'web/checkout.tsx#L1-L5', status: 'edited', content: 42 }]
+        }
+      });
+      assert.throws(() => parseHistoryJson(stdout), HistoryFormatError);
+    });
+
     it('leaves commit.why undefined when the wire object omits it', () => {
       const stdout = JSON.stringify({
         schema_version: 1,

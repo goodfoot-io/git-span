@@ -36,13 +36,13 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
 
   if (mostRecentEvent === 'added' || mostRecentEvent === 'modified') {
     if (currentEntry !== undefined) {
-      return { kind: 'drifted', historical: mostRecentContent ?? null, current: currentEntry.content };
+      return { kind: 'drifted', historical: mostRecentContent ?? null, current: currentEntry.content ?? null };
     }
     return { kind: 'clean', content: mostRecentContent ?? '' };
   }
 
   if (mostRecentEvent === undefined && currentEntry !== undefined) {
-    return { kind: 'reconciled', historical: null, current: currentEntry.content };
+    return { kind: 'reconciled', historical: null, current: currentEntry.content ?? null };
   }
 
   return { kind: 'dangling' };
