@@ -28,6 +28,14 @@
         "title": "Open Terminal",
         "category": "Git Span"
       }
+    ],
+    "customEditors": [
+      {
+        "viewType": "gitSpan.spanFileViewer",
+        "displayName": "Git Span Anchor Diff",
+        "selector": [{ "filenamePattern": "**/.span/**" }],
+        "priority": "default"
+      }
     ]
   },
   "scripts": {

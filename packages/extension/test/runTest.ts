@@ -263,6 +263,27 @@ if (args[0] === 'list' && args[1] === '--format' && args[2] === 'json') {
   process.exit(0);
 }
 
+if (args[0] === 'span' && args[1] === 'history' && args[3] === '--format' && args[4] === 'json') {
+  const spanName = args[2];
+  if (spanName === 'fixture-span-test') {
+    writeJson({
+      schema_version: 1,
+      span: spanName,
+      commits: [
+        {
+          hash: 'abc123',
+          date: '2024-01-01T00:00:00Z',
+          summary: 'Add fixture anchor',
+          anchors: [{ path: 'README.md', event: 'added', content: 'hello from fixture' }]
+        }
+      ]
+    });
+    process.exit(0);
+  }
+  process.stderr.write('git-span-fixture: unknown fixture span ' + spanName + '\\n');
+  process.exit(1);
+}
+
 writeJson([]);
 process.exit(0);
 `,

@@ -8,12 +8,17 @@
  */
 
 import * as vscode from 'vscode';
+import { AnchorContentProvider } from './spanViewer/anchorContentProvider.js';
+import { SPAN_FILE_VIEW_TYPE, SpanFileEditorProvider } from './spanViewer/spanFileEditorProvider.js';
 import {
   GitSpanBinaryError,
   getGitSpanBinaryErrorMessage,
   resolveGitSpanBinaryOnPath,
   runGitSpanCommand
 } from './utils/gitSpanBinary.js';
+
+/** Scheme served by the `.span/**` Multi-Diff viewer's virtual anchor documents. */
+const ANCHOR_URI_SCHEME = 'gitspan-anchor';
 
 const MISSING_GIT_SPAN_MESSAGE =
   'git-span is not on PATH. Install it from https://github.com/goodfoot-io/git-span/releases, or via npm / Homebrew (see installation docs at the repository).';
@@ -61,6 +66,15 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         void vscode.window.showErrorMessage(`Git Span: ${getGitSpanBinaryErrorMessage(error)}`);
       }
+    })
+  );
+
+  const anchorContentProvider = new AnchorContentProvider();
+  context.subscriptions.push(
+    anchorContentProvider,
+    vscode.workspace.registerTextDocumentContentProvider(ANCHOR_URI_SCHEME, anchorContentProvider),
+    vscode.window.registerCustomEditorProvider(SPAN_FILE_VIEW_TYPE, new SpanFileEditorProvider(anchorContentProvider), {
+      supportsMultipleEditorsPerDocument: false
     })
   );
 }
