@@ -250,10 +250,19 @@ function cleanFooter(fileName: string): string {
   return `If you change ${fileName} check the other files to confirm they still work together.`;
 }
 
-function driftHeader(driftedCount: number): string {
+/**
+ * The write path names the edit as the cause; the read path only surfaces
+ * pre-existing drift it didn't create, so it names the dependency instead.
+ */
+function driftHeader(driftedCount: number, kind: TouchInput['kind']): string {
+  if (kind === 'write') {
+    return driftedCount === 1
+      ? 'This edit put an implicit dependency out of date:'
+      : 'This edit put implicit dependencies out of date:';
+  }
   return driftedCount === 1
-    ? 'This edit put an implicit dependency out of date:'
-    : 'This edit put implicit dependencies out of date:';
+    ? 'This file has an implicit dependency out of date:'
+    : 'This file has implicit dependencies out of date:';
 }
 
 function driftFooter(driftedNames: string[]): string {
@@ -453,7 +462,7 @@ async function computeSurface(
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
   const fileName = basename(input.filePath);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length) : cleanHeader(fileName);
+  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
   return buildBlock(sections, header, footer);
 }

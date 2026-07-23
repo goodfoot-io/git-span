@@ -79,14 +79,18 @@ by the span's why sentence when one is recorded. Only genuine (semantic or
 terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
 has implicit dependencies:` (naming the touched file) when nothing did, the
-singular form above for one drifted span, and `This edit put implicit
-dependencies out of date:` for more than one. With several drifted spans the
-footer generalizes: "For each out-of-date span above: update the changed
-anchors or description before committing — `git span add <name>
-<path#Lstart-Lend>` / `git span why <name> "..."` — and check the other
-anchors for knock-on changes. If a coupling no longer holds, tell the user
-instead." The block carries everything needed to act — anchors, statuses,
-and the description — so no follow-up `git span` read is required.
+singular form above for one drifted span on a write, and `This edit put
+implicit dependencies out of date:` for more than one. A read never edited
+anything — it only surfaces drift that was already there — so its drifted
+header names the dependency instead of the touch: `This file has an implicit
+dependency out of date:` (singular) or `This file has implicit dependencies
+out of date:` (plural). With several drifted spans the footer generalizes:
+"For each out-of-date span above: update the changed anchors or description
+before committing — `git span add <name> <path#Lstart-Lend>` / `git span why
+<name> "..."` — and check the other anchors for knock-on changes. If a
+coupling no longer holds, tell the user instead." The block carries
+everything needed to act — anchors, statuses, and the description — so no
+follow-up `git span` read is required.
 
 ### Positional drift is healed, not surfaced
 
@@ -167,7 +171,7 @@ unchanged retry passes:
 <git-span>
 - src/new-module.ts
 
-Determine if these files carry implicit dependencies, then use `git span` to
+Determine if this file carries implicit dependencies, then use `git span` to
 document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
