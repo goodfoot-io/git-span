@@ -36,6 +36,17 @@ export class AnchorContentProvider implements vscode.TextDocumentContentProvider
   }
 
   /**
+   * Remove the previously-set content for `uri`, if any.
+   *
+   * @param uri - The `gitspan-anchor:` URI to remove.
+   * @returns Nothing.
+   * @throws Never.
+   */
+  delete(uri: vscode.Uri): void {
+    this.contents.delete(uri.toString());
+  }
+
+  /**
    * VS Code's `TextDocumentContentProvider` contract entry point.
    *
    * @param uri - The `gitspan-anchor:` URI being read.

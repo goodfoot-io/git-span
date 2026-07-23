@@ -263,8 +263,8 @@ if (args[0] === 'list' && args[1] === '--format' && args[2] === 'json') {
   process.exit(0);
 }
 
-if (args[0] === 'span' && args[1] === 'history' && args[3] === '--format' && args[4] === 'json') {
-  const spanName = args[2];
+if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
+  const spanName = args[1];
   if (spanName === 'fixture-span-test') {
     writeJson({
       schema_version: 1,

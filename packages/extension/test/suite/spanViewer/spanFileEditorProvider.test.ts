@@ -12,6 +12,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { testOnlyRenderOutcomes } from '../../../src/spanViewer/spanFileEditorProvider.js';
 
 const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
 
@@ -60,15 +61,31 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   });
 
-  it('opens a valid-looking span file with no thrown exception', async () => {
+  it('opens a valid-looking span file with a real Multi-Diff editor, not the error fallback', async () => {
     const spanFilePath = path.join(spanDir, 'fixture-span-test');
     fs.writeFileSync(spanFilePath, 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
 
     const uri = vscode.Uri.file(spanFilePath);
+    testOnlyRenderOutcomes.delete(uri.toString());
     await vscode.commands.executeCommand('vscode.openWith', uri, SPAN_FILE_VIEW_TYPE);
 
     const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
     assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open for a valid-looking span file');
+
+    const rendered = await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
+    assert.ok(rendered, 'Expected a render outcome to be recorded for the opened span document');
+
+    const outcome = testOnlyRenderOutcomes.get(uri.toString());
+    assert.ok(
+      outcome?.ok,
+      `Expected the Multi-Diff editor to open successfully (no "Failed to load span history" fallback), got: ${JSON.stringify(outcome)}`
+    );
+    assert.strictEqual(outcome.resourceCount, 1, 'Expected exactly one anchor pane to be opened');
+    assert.strictEqual(outcome.danglingCount, 0, 'Expected no dangling anchors for this fixture span');
+    assert.ok(
+      !outcome.message.includes('Failed to load span history'),
+      `Expected no error message, got: ${outcome.message}`
+    );
   });
 
   it('falls back gracefully for non-span content under .span/', async () => {

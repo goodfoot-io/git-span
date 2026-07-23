@@ -30,6 +30,52 @@ export const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
 const ANCHOR_URI_SCHEME = 'gitspan-anchor';
 
 /**
+ * The outcome of a single `render()` pass, keyed by span document URI in
+ * {@linkcode testOnlyRenderOutcomes}. Exists purely so end-to-end tests can
+ * assert a real Multi-Diff open happened (as opposed to the error-fallback
+ * pane, which also satisfies "a `gitSpan.spanFileViewer` tab is open") --
+ * the installed `@types/vscode` has no `TabInputTextMultiDiff`-equivalent
+ * type to assert against directly.
+ */
+export interface SpanRenderOutcome {
+  /** True when the Multi-Diff editor was opened with at least one pane. */
+  readonly ok: boolean;
+  /** Number of `vscode.changes` resource tuples opened. */
+  readonly resourceCount: number;
+  /** Number of anchors omitted from the diff as dangling. */
+  readonly danglingCount: number;
+  /** The message rendered into this document's own webview panel. */
+  readonly message: string;
+}
+
+/**
+ * Key under which {@linkcode testOnlyRenderOutcomes}'s backing `Map` is
+ * stashed on `globalThis`. Each test file and the extension itself are
+ * bundled as separate esbuild outputs (see `scripts/build/build-testing.js`),
+ * so a plain module-scoped `Map` would not be shared between the running
+ * extension's bundle and a test file's own bundle even though both execute
+ * in the same extension-host process -- `globalThis` is the one thing they
+ * actually share.
+ */
+const TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyRenderOutcomes__';
+
+/**
+ * Test-only hook recording the most recent {@linkcode SpanRenderOutcome} for
+ * each open span document, keyed by `uri.toString()`. Not read by any
+ * production code path.
+ */
+export const testOnlyRenderOutcomes: Map<string, SpanRenderOutcome> = ((): Map<string, SpanRenderOutcome> => {
+  const globalRecord = globalThis as unknown as Record<string, Map<string, SpanRenderOutcome> | undefined>;
+  const existing = globalRecord[TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY];
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, SpanRenderOutcome>();
+  globalRecord[TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY] = created;
+  return created;
+})();
+
+/**
  * Signature of {@linkcode runGitSpanCommand}, injectable so tests can
  * substitute a fake CLI response without touching the real process-spawning
  * wrapper or the real `git-span` binary on `PATH`.
@@ -121,7 +167,7 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
   const nonce = makeNonce();
   const warningsHtml =
     warnings.length > 0
-      ? `<h2>Dangling anchors</h2><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
+      ? `<h2>${warnings.length} anchor(s) omitted from the diff</h2><p>git-span's history could not account for the following anchor(s) -- they may reference content this span's history has no record of. They are not shown in the Multi-Diff editor.</p><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
       : '';
   webview.html = `<!DOCTYPE html>
 <html>
@@ -213,6 +259,17 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
    */
   async resolveCustomEditor(document: SpanCustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
     webviewPanel.webview.options = { enableScripts: true };
+    renderPanel(webviewPanel.webview, 'Loading span history…', []);
+
+    let disposed = false;
+    let inFlightController: AbortController | null = null;
+    document.addDisposable(
+      webviewPanel.onDidDispose(() => {
+        disposed = true;
+        inFlightController?.abort();
+      })
+    );
+
     webviewPanel.webview.onDidReceiveMessage((message: unknown) => {
       if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'reopenAsText') {
         void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
@@ -220,6 +277,9 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     });
 
     const bytes = await vscode.workspace.fs.readFile(document.uri);
+    if (disposed) {
+      return;
+    }
     const text = new TextDecoder('utf-8').decode(bytes);
 
     const parsed = parseSpanFile(text);
@@ -239,10 +299,16 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     }
 
     const repository = await getRepositoryForUri(document.uri);
+    if (disposed) {
+      return;
+    }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const repoRoot = repository?.rootUri.fsPath ?? workspaceFolder?.uri.fsPath ?? path.dirname(document.uri.fsPath);
 
     const binaryPath = await resolveGitSpanBinaryOnPath();
+    if (disposed) {
+      return;
+    }
     if (binaryPath === null) {
       renderPanel(webviewPanel.webview, 'git-span is not on PATH; cannot load this span’s history.', []);
       return;
@@ -250,27 +316,35 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
 
     const liveAnchors: LiveAnchor[] = parsed.anchors.map((anchor) => ({ path: anchor.path, range: anchor.range }));
 
+    /** URIs ever published to `this.contentProvider` for this document, pruned on dispose. */
+    const publishedAnchorUris = new Set<string>();
+    /** Filesystem paths already watched, so re-renders only add watchers for newly-seen paths. */
+    const watchers = new Map<string, vscode.Disposable>();
+
     /**
-     * Fetch history, match anchors, publish anchor content, and (on the
-     * initial call only) open the Multi-Diff editor. Re-invoked by file
-     * watchers on subsequent changes, which only refresh already-published
-     * content -- per the spike, re-invoking `vscode.changes` is unnecessary.
+     * Fetch history, match anchors, publish anchor content, and open (or
+     * re-open) the Multi-Diff editor with the current resource set.
+     * Re-invoked by file watchers on subsequent changes -- `vscode.changes`
+     * is safe to re-invoke on every render since VS Code dedupes identical
+     * repeat calls, which keeps newly-added/removed anchors' panes in sync.
      *
-     * @param invokeChanges - Whether to call `vscode.changes` after
-     *   publishing anchor content (true on initial open, false on
-     *   watcher-triggered refreshes).
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every non-dangling anchor's real file), or `null` when
-     *   history could not be loaded.
+     *   history could not be loaded or the tab was disposed before this
+     *   render could complete.
      * @throws Never -- failures render as a pane rather than propagating.
      */
-    const render = async (invokeChanges: boolean): Promise<Set<string> | null> => {
+    const render = async (): Promise<Set<string> | null> => {
+      const controller = new AbortController();
+      inFlightController = controller;
+      const timeout = setTimeout(() => controller.abort(), 10000);
+
       let history: ReturnType<typeof parseHistoryJson>;
       try {
         const result = await this.runCommand(
           binaryPath,
-          ['span', 'history', spanName, '--format', 'json'],
-          undefined,
+          ['history', spanName, '--format', 'json'],
+          controller.signal,
           repoRoot
         );
         if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
@@ -280,11 +354,21 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         }
         history = parseHistoryJson(result.stdout);
       } catch (error) {
-        renderPanel(
-          webviewPanel.webview,
-          `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`,
-          []
-        );
+        if (disposed) {
+          return null;
+        }
+        const message = `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`;
+        renderPanel(webviewPanel.webview, message, []);
+        testOnlyRenderOutcomes.set(document.uri.toString(), { ok: false, resourceCount: 0, danglingCount: 0, message });
+        return null;
+      } finally {
+        clearTimeout(timeout);
+        if (inFlightController === controller) {
+          inFlightController = null;
+        }
+      }
+
+      if (disposed) {
         return null;
       }
 
@@ -309,7 +393,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         watchedPaths.add(realFileUri.fsPath);
 
         const originalText = plan.kind === 'clean' ? plan.content : (plan.historical ?? '');
-        const modifiedText = plan.kind === 'clean' ? plan.content : plan.current;
+        const modifiedText = plan.kind === 'clean' ? plan.content : (plan.current ?? '');
 
         const originalBuilt = buildAnchorUri({
           spanPath: spanName,
@@ -338,39 +422,87 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         this.contentProvider.setContent(modifiedUri, modifiedText);
         this.contentProvider.refresh(originalUri);
         this.contentProvider.refresh(modifiedUri);
+        publishedAnchorUris.add(originalUri.toString());
+        publishedAnchorUris.add(modifiedUri.toString());
 
         resources.push([originalUri, modifiedUri, realFileUri]);
       });
 
+      if (disposed) {
+        return null;
+      }
+
       if (resources.length > 0) {
-        renderPanel(webviewPanel.webview, `Span "${spanName}" opened in the Multi-Diff editor.`, dangling);
-        if (invokeChanges) {
-          await vscode.commands.executeCommand('vscode.changes', spanName, resources);
-        }
+        const danglingNote =
+          dangling.length > 0 ? ` ${dangling.length} anchor(s) could not be matched -- see below.` : '';
+        const message = `Span "${spanName}" opened in the Multi-Diff editor.${danglingNote}`;
+        renderPanel(webviewPanel.webview, message, dangling);
+        await vscode.commands.executeCommand('vscode.changes', spanName, resources);
+        testOnlyRenderOutcomes.set(document.uri.toString(), {
+          ok: true,
+          resourceCount: resources.length,
+          danglingCount: dangling.length,
+          message
+        });
       } else {
         // Every anchor is dangling: keep this placeholder tab visible with
         // its warning rather than opening an empty Multi-Diff editor.
-        renderPanel(
-          webviewPanel.webview,
-          `No anchors in span "${spanName}" could be matched against its history.`,
-          dangling
-        );
+        const message = `No anchors in span "${spanName}" could be matched against its history.`;
+        renderPanel(webviewPanel.webview, message, dangling);
+        testOnlyRenderOutcomes.set(document.uri.toString(), {
+          ok: false,
+          resourceCount: 0,
+          danglingCount: dangling.length,
+          message
+        });
       }
 
       return watchedPaths;
     };
 
-    const watchedPaths = await render(true);
+    /**
+     * Add a filesystem watcher for `watchedPath` if one isn't already
+     * tracked, wiring it to trigger `render` and registering its disposal
+     * with `document`.
+     *
+     * @param watchedPath - The filesystem path to watch.
+     * @returns Nothing.
+     * @throws Never.
+     */
+    const ensureWatcher = (watchedPath: string): void => {
+      if (watchers.has(watchedPath)) {
+        return;
+      }
+      const watcher = vscode.workspace.createFileSystemWatcher(watchedPath);
+      const onChange = (): void => {
+        void render().then((renderedPaths) => {
+          if (renderedPaths !== null) {
+            for (const renderedPath of renderedPaths) {
+              ensureWatcher(renderedPath);
+            }
+          }
+        });
+      };
+      watcher.onDidChange(onChange);
+      watcher.onDidCreate(onChange);
+      watcher.onDidDelete(onChange);
+      watchers.set(watchedPath, watcher);
+      document.addDisposable(watcher);
+    };
+
+    document.addDisposable(
+      new vscode.Disposable(() => {
+        for (const uri of publishedAnchorUris) {
+          this.contentProvider.delete(vscode.Uri.parse(uri));
+        }
+        testOnlyRenderOutcomes.delete(document.uri.toString());
+      })
+    );
+
+    const watchedPaths = await render();
     if (watchedPaths !== null) {
       for (const watchedPath of watchedPaths) {
-        const watcher = vscode.workspace.createFileSystemWatcher(watchedPath);
-        const onChange = (): void => {
-          void render(false);
-        };
-        watcher.onDidChange(onChange);
-        watcher.onDidCreate(onChange);
-        watcher.onDidDelete(onChange);
-        document.addDisposable(watcher);
+        ensureWatcher(watchedPath);
       }
     }
   }
