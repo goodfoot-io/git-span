@@ -439,6 +439,25 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
+    it('a two-file changeset with only one uncovered path uses singular wording — "this file", not "these files"', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        // `src/other.ts` is covered; `src/uncovered.ts` is the only uncovered path.
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts' })],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('deny');
+      expect(result.kind).toBe('uncovered-writes');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.uncovered).toEqual(['src/uncovered.ts']);
+      expect(result.reason).toContain('Determine if this file carries implicit dependencies');
+      expect(result.reason).not.toContain('these files carry');
+    });
+
     it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, does not repeat the full checklist verbatim', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({

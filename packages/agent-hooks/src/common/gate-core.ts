@@ -1070,7 +1070,9 @@ function renderUncoveredReason(uncovered: string[], mode: GateMode = 'enforce', 
     '<git-span>',
     ...lines,
     '',
-    'Determine if these files carry implicit dependencies, then use `git span` to document them:',
+    uncovered.length === 1
+      ? 'Determine if this file carries implicit dependencies, then use `git span` to document them:'
+      : 'Determine if these files carry implicit dependencies, then use `git span` to document them:',
     '',
     '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
     '`git span why <name> "<why>"`',
@@ -1186,10 +1188,11 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs
         });
-      } catch {
+      } catch (err) {
         // `git span stale` exits 1 on drift even after healing, and non-zero on
         // genuine failure; either way the subsequent `stale` read is the source
         // of truth, so the exit code is ignored here.
+        void err;
       }
     },
     stale: async (paths, cwd) => {

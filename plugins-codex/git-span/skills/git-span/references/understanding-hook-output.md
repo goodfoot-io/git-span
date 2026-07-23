@@ -167,7 +167,7 @@ unchanged retry passes:
 <git-span>
 - src/new-module.ts
 
-Determine if these files carry implicit dependencies, then use `git span` to
+Determine if this file carries implicit dependencies, then use `git span` to
 document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
