@@ -19,17 +19,32 @@
  *     stale original line numbers.
  *
  * A group whose files were all deleted and never replaced (no anchor resolves
- * to a path that still exists at HEAD) is dropped from the output.
+ * to a path that still exists at HEAD), or that resolves to fewer than 2
+ * surviving anchors (a lone anchor is a leftover file, not a coupling), is
+ * dropped from the output. Distinct input groups that resolve to the exact
+ * same anchor set are merged into one output entry (evidence unioned) rather
+ * than reported as separate rows.
  *
- * The reference revision is the newest commit (or tag) the group's evidence
- * cites — the state around which the signals observed the coupling. It is
- * looked up against `RepoContext.commits()` / `.tags()` (both already
- * `.span/`-excluded and sweep-filtered), never by a fresh git call, so no new
- * `.span/` access path is introduced here.
+ * The reference revision is per-*anchor*, not per-group: a group's anchors can
+ * legitimately have been observed at different commits (e.g. a
+ * `time-window-co-edit`/`same-author-session` pairing cites one commit per
+ * side of the pair, each corresponding to a different anchor), so diffing
+ * every anchor against one shared "newest cited ref" can pick a base that is
+ * too new for an anchor whose real origin commit is older, shifting its
+ * carried-forward range incorrectly. For each anchor, the reference revision
+ * is the newest cited commit/tag *that actually touched that anchor's path*
+ * (checked against `RepoContext.commits()`'s per-commit file list) among the
+ * group's evidence; when no evidence entry is attributable to the anchor at
+ * all (e.g. after grouping merges evidence from multiple signal emissions and
+ * attribution becomes ambiguous), it falls back to the group-wide newest
+ * cited ref, same as before this per-anchor split existed. Both are looked up
+ * against `RepoContext.commits()` / `.tags()` (both already `.span/`-excluded
+ * and sweep-filtered), never by a fresh git call, so no new `.span/` access
+ * path is introduced here.
  */
 
 import { diffNameStatus, type NameStatusEntry } from './git.js';
-import type { Anchor, AnchorGroup, RepoContext } from './types.js';
+import type { Anchor, AnchorGroup, RepoContext, SignalEvidence } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Line-range carrying (LCS diff → hunk shifts → range remap)
@@ -163,13 +178,19 @@ export interface RenameResolver {
 
 export async function createRenameResolver(ctx: RepoContext): Promise<RenameResolver> {
   const time = new Map<string, number>();
+  /** sha -> paths that commit's hunks touch, so a cited commit can be checked for whether it actually pertains to a given anchor. */
+  const commitPaths = new Map<string, Set<string>>();
   for (const commit of await ctx.commits()) {
     const t = Date.parse(commit.date);
     if (Number.isFinite(t)) time.set(commit.sha, t);
+    commitPaths.set(commit.sha, new Set(commit.files.map((f) => f.path)));
   }
+  /** tag name -> sha, so a cited tag can be resolved to the commit it points at for the same path check. */
+  const tagSha = new Map<string, string>();
   for (const tag of await ctx.tags()) {
     const t = Date.parse(tag.date);
     if (Number.isFinite(t)) time.set(tag.sha, t);
+    tagSha.set(tag.name, tag.sha);
   }
 
   const renameCache = new Map<string, RenameInfo>();
@@ -217,6 +238,38 @@ export async function createRenameResolver(ctx: RepoContext): Promise<RenameReso
     return best ?? 'HEAD';
   }
 
+  /**
+   * Newest evidence SHA/tag that actually touched `anchor.path`, per
+   * `commitPaths`/`tagSha`, else the group-wide `referenceRevision` fallback
+   * documented in the module header (evidence attribution is ambiguous, or no
+   * cited ref touches this anchor's path at all — e.g. a whole-file anchor
+   * whose evidence only cites commits for its paired anchor).
+   */
+  function anchorReferenceRevision(anchor: Anchor, group: AnchorGroup): string {
+    let best: string | null = null;
+    let bestTime = Number.NEGATIVE_INFINITY;
+    for (const evidence of group.evidence) {
+      for (const sha of evidence.commits ?? []) {
+        if (!commitPaths.get(sha)?.has(anchor.path)) continue;
+        const t = time.get(sha);
+        if (t !== undefined && t > bestTime) {
+          bestTime = t;
+          best = sha;
+        }
+      }
+      for (const name of evidence.tags ?? []) {
+        const sha = tagSha.get(name);
+        if (sha === undefined || !commitPaths.get(sha)?.has(anchor.path)) continue;
+        const t = time.get(sha);
+        if (t !== undefined && t > bestTime) {
+          bestTime = t;
+          best = name;
+        }
+      }
+    }
+    return best ?? referenceRevision(group);
+  }
+
   async function resolveAnchor(anchor: Anchor, refRev: string, info: RenameInfo): Promise<Anchor | null> {
     const currentPath = info.renamed.get(anchor.path);
     if (currentPath === undefined && info.deleted.has(anchor.path)) return null;
@@ -250,29 +303,92 @@ export async function createRenameResolver(ctx: RepoContext): Promise<RenameReso
 
   return {
     async resolve(group: AnchorGroup): Promise<AnchorGroup | null> {
-      const refRev = referenceRevision(group);
-      const info = await renameInfoFor(refRev);
       const resolved: Anchor[] = [];
       for (const anchor of group.anchors) {
+        const refRev = anchorReferenceRevision(anchor, group);
+        const info = await renameInfoFor(refRev);
         const next = await resolveAnchor(anchor, refRev, info);
         if (next) resolved.push(next);
       }
-      if (resolved.length === 0) return null; // all files deleted and never replaced
+      // A resolved group needs at least 2 surviving anchors to still describe
+      // a *coupling*: a lone survivor (its partner(s) deleted and never
+      // replaced) is just a leftover file, not a relationship between two
+      // things, so it is dropped rather than reported.
+      if (resolved.length < 2) return null;
       return { anchors: resolved, evidence: group.evidence, score: group.score };
     }
   };
 }
 
+function anchorSetKey(anchors: readonly Anchor[]): string {
+  return [...anchors]
+    .map((a) => `${a.path}:${a.startLine ?? ''}:${a.endLine ?? ''}`)
+    .sort()
+    .join('|');
+}
+
+function evidenceKey(evidence: SignalEvidence): string {
+  return JSON.stringify([
+    evidence.signal,
+    evidence.strength,
+    evidence.commits ?? [],
+    evidence.tags ?? [],
+    evidence.detail ?? ''
+  ]);
+}
+
+/** Unions evidence arrays, dropping only exact duplicates, then sorts deterministically — mirrors grouping.ts's unionEvidence. */
+function mergeEvidence(groups: readonly AnchorGroup[]): SignalEvidence[] {
+  const seen = new Map<string, SignalEvidence>();
+  for (const group of groups) {
+    for (const evidence of group.evidence) {
+      const key = evidenceKey(evidence);
+      if (!seen.has(key)) seen.set(key, evidence);
+    }
+  }
+  return [...seen.values()].sort((a, b) => evidenceKey(a).localeCompare(evidenceKey(b)));
+}
+
 /**
  * Resolves every group's anchors to HEAD, dropping groups whose files were all
- * deleted and never replaced. Convenience wrapper over {@link createRenameResolver}.
+ * deleted and never replaced (or that resolve to a single surviving anchor —
+ * a lone anchor is a leftover file, not a coupling). Distinct input groups
+ * that resolve to the exact same anchor set at HEAD (e.g. two originally
+ * distinct pairs that each lost a different, now-deleted partner and share
+ * the one surviving anchor) are merged into a single output entry, unioning
+ * their evidence, rather than appearing as separate ranked report rows for
+ * what is now the identical coupling. Convenience wrapper over
+ * {@link createRenameResolver}.
  */
 export async function resolveGroupsToHead(groups: readonly AnchorGroup[], ctx: RepoContext): Promise<AnchorGroup[]> {
   const resolver = await createRenameResolver(ctx);
-  const out: AnchorGroup[] = [];
+  const byAnchorSet = new Map<string, AnchorGroup[]>();
+  const order: string[] = [];
   for (const group of groups) {
     const resolved = await resolver.resolve(group);
-    if (resolved) out.push(resolved);
+    if (!resolved) continue;
+    const key = anchorSetKey(resolved.anchors);
+    const bucket = byAnchorSet.get(key);
+    if (bucket) {
+      bucket.push(resolved);
+    } else {
+      byAnchorSet.set(key, [resolved]);
+      order.push(key);
+    }
+  }
+
+  const out: AnchorGroup[] = [];
+  for (const key of order) {
+    const bucket = byAnchorSet.get(key)!;
+    if (bucket.length === 1) {
+      out.push(bucket[0]);
+      continue;
+    }
+    out.push({
+      anchors: bucket[0].anchors,
+      evidence: mergeEvidence(bucket),
+      score: Math.max(...bucket.map((g) => g.score))
+    });
   }
   return out;
 }

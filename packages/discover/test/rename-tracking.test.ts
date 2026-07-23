@@ -83,7 +83,7 @@ describe('resolveGroupsToHead', () => {
     expect(resolved.anchors.map((a) => a.path).sort()).toEqual(['bar.ts', 'other.ts']);
   });
 
-  it('drops an anchor whose file was deleted and never replaced, keeping surviving anchors', async () => {
+  it('drops the whole group when only one anchor would survive — a lone anchor is not a coupling', async () => {
     write(repoRoot, 'gone.ts', 'g1\ng2\n');
     write(repoRoot, 'keep.ts', 'k1\n');
     git(repoRoot, ['add', '-A']);
@@ -101,8 +101,86 @@ describe('resolveGroupsToHead', () => {
     };
 
     const ctx = createRepoContext(repoRoot);
+    expect(await resolveGroupsToHead([group], ctx)).toEqual([]);
+  });
+
+  it('keeps a group whose 3 anchors lose only 1 partner, proving the >=2 threshold rather than an all-or-nothing rule', async () => {
+    write(repoRoot, 'gone.ts', 'g1\ng2\n');
+    write(repoRoot, 'keepA.ts', 'ka1\n');
+    write(repoRoot, 'keepB.ts', 'kb1\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add gone.ts, keepA.ts, keepB.ts']);
+    const c1 = revParse(repoRoot, 'HEAD');
+
+    fs.rmSync(path.join(repoRoot, 'gone.ts'));
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'delete gone.ts']);
+
+    const group: AnchorGroup = {
+      anchors: [{ path: 'gone.ts' }, { path: 'keepA.ts' }, { path: 'keepB.ts' }],
+      evidence: [{ signal: 'association-rules', strength: 0.9, commits: [c1] }],
+      score: 0.9
+    };
+
+    const ctx = createRepoContext(repoRoot);
     const [resolved] = await resolveGroupsToHead([group], ctx);
-    expect(resolved.anchors.map((a) => a.path)).toEqual(['keep.ts']);
+    expect(resolved.anchors.map((a) => a.path).sort()).toEqual(['keepA.ts', 'keepB.ts']);
+  });
+
+  it('dedups distinct groups that resolve to the same surviving anchor set, unioning their evidence', async () => {
+    write(repoRoot, 'goneA.ts', 'ga1\n');
+    write(repoRoot, 'goneB.ts', 'gb1\n');
+    write(repoRoot, 'hub.ts', 'h1\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add goneA.ts, goneB.ts, hub.ts']);
+    const c1 = revParse(repoRoot, 'HEAD');
+
+    fs.rmSync(path.join(repoRoot, 'goneA.ts'));
+    fs.rmSync(path.join(repoRoot, 'goneB.ts'));
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'delete goneA.ts and goneB.ts']);
+
+    // Two originally distinct pairs, {goneA, hub} and {goneB, hub}, each lose
+    // their deleted partner and both resolve down to the lone survivor hub.ts.
+    const groupA: AnchorGroup = {
+      anchors: [{ path: 'goneA.ts' }, { path: 'hub.ts' }],
+      evidence: [{ signal: 'association-rules', strength: 0.9, commits: [c1] }],
+      score: 0.9
+    };
+    const groupB: AnchorGroup = {
+      anchors: [{ path: 'goneB.ts' }, { path: 'hub.ts' }],
+      evidence: [{ signal: 'same-author-session', strength: 0.7, commits: [c1] }],
+      score: 0.7
+    };
+
+    const ctx = createRepoContext(repoRoot);
+    // Each individual group would resolve to a lone hub.ts anchor and be
+    // dropped by the >=2-anchor rule — but this test isn't about that path;
+    // it's about a third, real pair that keeps hub.ts alongside another
+    // surviving anchor, observed twice from two different original groups.
+    write(repoRoot, 'peer.ts', 'p1\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add peer.ts']);
+
+    const groupC: AnchorGroup = {
+      anchors: [{ path: 'goneA.ts' }, { path: 'hub.ts' }, { path: 'peer.ts' }],
+      evidence: [{ signal: 'association-rules', strength: 0.9, commits: [c1] }],
+      score: 0.9
+    };
+    const groupD: AnchorGroup = {
+      anchors: [{ path: 'goneB.ts' }, { path: 'hub.ts' }, { path: 'peer.ts' }],
+      evidence: [{ signal: 'same-author-session', strength: 0.7, commits: [c1] }],
+      score: 0.7
+    };
+
+    const resolved = await resolveGroupsToHead([groupA, groupB, groupC, groupD], ctx);
+    // groupA and groupB each drop to a lone hub.ts survivor and are dropped
+    // entirely; groupC and groupD both resolve to the same {hub.ts, peer.ts}
+    // anchor set and must merge into exactly one reported entry.
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].anchors.map((a) => a.path).sort()).toEqual(['hub.ts', 'peer.ts']);
+    expect(resolved[0].score).toBe(0.9);
+    expect(resolved[0].evidence.map((e) => e.signal).sort()).toEqual(['association-rules', 'same-author-session']);
   });
 
   it('drops a group entirely when all its files were deleted', async () => {
@@ -126,6 +204,55 @@ describe('resolveGroupsToHead', () => {
 
     const ctx = createRepoContext(repoRoot);
     expect(await resolveGroupsToHead([group], ctx)).toEqual([]);
+  });
+
+  it('resolves each anchor from its own origin commit, not the group-wide newest cited ref', async () => {
+    // c1: foo.ts created; this anchor's true origin commit.
+    write(repoRoot, 'foo.ts', 'a\nb\nc\nd\ne\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add foo.ts']);
+    const c1 = revParse(repoRoot, 'HEAD');
+
+    // An intervening commit inserts two header lines into foo.ts, upstream of
+    // the c/d anchor range, shifting it from 3-4 to 5-6 by HEAD. This commit
+    // happens after c1 but before c2, and is deliberately NOT cited by any
+    // evidence — only c1 and c2 are, simulating two signal emissions that
+    // each observed one anchor at its own commit.
+    write(repoRoot, 'foo.ts', 'h1\nh2\na\nb\nc\nd\ne\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'insert header lines into foo.ts']);
+
+    // c2: bar.ts created; this anchor's true origin commit, and also HEAD —
+    // no further changes after this, so bar.ts needs no shifting at all.
+    write(repoRoot, 'bar.ts', 'x\ny\nz\n');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '--quiet', '-m', 'add bar.ts']);
+    const c2 = revParse(repoRoot, 'HEAD');
+
+    const group: AnchorGroup = {
+      anchors: [
+        { path: 'foo.ts', startLine: 3, endLine: 4 },
+        { path: 'bar.ts', startLine: 2, endLine: 2 }
+      ],
+      evidence: [{ signal: 'time-window-co-edit', strength: 0.8, commits: [c1, c2] }],
+      score: 0.8
+    };
+
+    const ctx = createRepoContext(repoRoot);
+    const [resolved] = await resolveGroupsToHead([group], ctx);
+
+    const foo = resolved.anchors.find((a) => a.path === 'foo.ts');
+    const bar = resolved.anchors.find((a) => a.path === 'bar.ts');
+    // foo.ts must be diffed from c1 (its own origin), picking up the header
+    // insertion and shifting 3-4 to 5-6. Diffing it from the group-wide
+    // newest cited ref (c2, which postdates the insertion) would wrongly
+    // report the stale, unshifted 3-4 instead.
+    expect(foo?.startLine).toBe(5);
+    expect(foo?.endLine).toBe(6);
+    // bar.ts's own origin is c2 itself (== HEAD here), so it is correctly
+    // reported unshifted regardless of which reference revision is used.
+    expect(bar?.startLine).toBe(2);
+    expect(bar?.endLine).toBe(2);
   });
 
   it('leaves an unchanged range untouched', async () => {
