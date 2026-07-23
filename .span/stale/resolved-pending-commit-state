@@ -5,6 +5,6 @@ packages/git-span/src/resolver/engine/anchor.rs#L766-L847 rk64:180b606c8377332d
 packages/git-span/src/resolver/engine/mod.rs#L621-L631 rk64:7295ab71bbfc00c4
 packages/git-span/src/resolver/store/dto.rs#L133-L164 rk64:8a039deeb78b5e10
 packages/git-span/src/types.rs#L149-L153 rk64:082445f40723535d
-packages/git-span/tests/cases/stale_resolved_pending_commit.rs rk64:c6461a211d2d6250
+packages/git-span/tests/cases/stale_resolved_pending_commit.rs rk64:2034d7ad78968b7c
 
 The ResolvedPendingCommit anchor status is a distinct non-drift state that every AnchorStatus consumer classifies as resolved: tallied with Fresh, excluded from the exit code, labeled consistently across renderers, and round-tripped through the cache DTO.
