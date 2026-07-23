@@ -56,4 +56,33 @@ describe('toMarkdown', () => {
   it('renders an explicit empty-report line for no groups', () => {
     expect(toMarkdown([])).toContain('No candidate groups met the reporting threshold');
   });
+
+  it('omits a disqualifier from the report when it only reports its no-match floor strength', () => {
+    // raw-path-inclusion (and similarly-shaped disqualifiers) clamp their "no match" result away
+    // from exactly 0 (design decision 7) rather than returning 0 like tree-sitter-reference does.
+    // The report must treat that floor as "didn't fire," not as an active disqualifier.
+    const group: DiscoveredGroup[] = [
+      {
+        anchors: [{ path: 'a.ts' }, { path: 'b.ts' }],
+        score: 0.9,
+        signals: [{ signal: 'association-rules', strength: 0.9 }],
+        disqualifiers: [{ disqualifier: 'raw-path-inclusion', strength: 0.02 }]
+      }
+    ];
+    const md = toMarkdown(group);
+    expect(md).not.toContain('Disqualifiers:');
+  });
+
+  it('lists a disqualifier that actually found a match, even at a clamped-below-1 strength', () => {
+    const group: DiscoveredGroup[] = [
+      {
+        anchors: [{ path: 'a.ts' }, { path: 'b.ts' }],
+        score: 0.1,
+        signals: [{ signal: 'association-rules', strength: 0.9 }],
+        disqualifiers: [{ disqualifier: 'raw-path-inclusion', strength: 0.98 }]
+      }
+    ];
+    const md = toMarkdown(group);
+    expect(md).toContain('Disqualifiers: raw-path-inclusion');
+  });
 });

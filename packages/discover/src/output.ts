@@ -106,7 +106,11 @@ export function toMarkdown(groups: readonly DiscoveredGroup[]): string {
     const signalLabels = [...new Set(group.signals.map((e) => e.signal))].sort();
     lines.push(`Signals: ${signalLabels.length > 0 ? signalLabels.join(', ') : '(none)'}`);
 
-    const activeDisqualifiers = group.disqualifiers.filter((d) => !d.inconclusive && d.strength > 0);
+    // `strength` is a probability the group is NOT a real coupling (types.ts) — disqualifiers
+    // that found nothing still report a nonzero floor (design decision 7, see
+    // raw-path-inclusion.ts), so ">0.5" (more likely disqualifying than not) is the correct
+    // "did this actually fire" test, not ">0".
+    const activeDisqualifiers = group.disqualifiers.filter((d) => !d.inconclusive && d.strength > 0.5);
     if (activeDisqualifiers.length > 0) {
       lines.push(`Disqualifiers: ${[...new Set(activeDisqualifiers.map((d) => d.disqualifier))].sort().join(', ')}`);
     }
