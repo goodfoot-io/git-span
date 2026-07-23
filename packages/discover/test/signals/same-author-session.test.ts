@@ -96,6 +96,32 @@ describe('same-author-session signal', () => {
     expect(bAnchor).toEqual({ path: 'b.ts', startLine: 1, endLine: 3 });
   });
 
+  it('aggregates a file pair observed via several same-author pairings into a single group', async () => {
+    // The same author touches a.ts, then b.ts, then a.ts again, all inside the
+    // 2h window. The {a.ts, b.ts} coupling is observable through more than one
+    // pairing; the signal must emit exactly one group for that file pair rather
+    // than one per hunk-pair (the regression guard for the O(edits²) memory
+    // blowup on a real repository).
+    writeAndCommitAt(repoRoot, { 'a.ts': 'line1\n' }, 'Add a.ts', { date: '2024-01-01T09:00:00-05:00' });
+    writeAndCommitAt(repoRoot, { 'b.ts': 'line1\n' }, 'Add b.ts', { date: '2024-01-01T09:20:00-05:00' });
+    writeAndCommitAt(repoRoot, { 'a.ts': 'line1\nline2\n' }, 'Extend a.ts', { date: '2024-01-01T09:40:00-05:00' });
+
+    const ctx = createRepoContext(repoRoot);
+    const groups = await sameAuthorSessionSignal(ctx);
+
+    const abGroups = groups.filter((group) => {
+      const paths = group.anchors
+        .map((anchor) => anchor.path)
+        .sort()
+        .join('+');
+      return paths === 'a.ts+b.ts';
+    });
+    expect(abGroups).toHaveLength(1);
+    // A file is never paired with itself, even across two commits in the session.
+    const selfPairs = groups.filter((group) => group.anchors.every((anchor) => anchor.path === 'a.ts'));
+    expect(selfPairs).toEqual([]);
+  });
+
   it('does not pair two hunks by the same author when they fall outside the tight window', async () => {
     writeAndCommitAt(repoRoot, { 'a.ts': 'line1\n' }, 'Add a.ts', { date: '2024-01-01T09:00:00-05:00' });
     // 3 hours later — outside the 2h tight window, even though it is the same author.

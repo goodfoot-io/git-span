@@ -20,10 +20,19 @@
  * exactly one commit's worth of hunks, and a window with no *other* commit's
  * edits inside it produces no pairs.
  *
- * Every pair becomes its own AnchorGroup (not merged/aggregated across
- * pairs), carrying both hunks' real ranges and the two source commits as
- * evidence. Strength decays linearly from 1 (same instant) to 0 (6h apart) —
- * closer in time is stronger evidence of an implicit relationship.
+ * Each *distinct unordered file pair* becomes one AnchorGroup, carrying the
+ * hunk ranges and source commits of the single strongest (closest-in-time)
+ * observed pairing between those two files, with strength decaying linearly
+ * from 1 (same instant) to 0 (6h apart) — closer in time is stronger evidence
+ * of an implicit relationship. The pairing is aggregated to the file-pair
+ * level rather than emitting one group per hunk-pair: on a real repository a
+ * busy 6h window contains thousands of hunk edits, and pairing every hunk
+ * with every other hunk is O(edits²) — millions of near-duplicate groups that
+ * (a) exhaust memory before grouping ever runs and (b) all collapse back onto
+ * the same file-pair coupling once `grouping.ts` merges same-path anchors.
+ * Keeping only the strongest observation per file pair bounds the output to
+ * the number of genuinely distinct co-edited file pairs while preserving the
+ * range-anchored evidence and the strongest signal each pair carries.
  */
 
 import type { AnchorGroup, Commit, RepoContext, Signal, SignalEvidence } from '../types.js';
@@ -57,13 +66,29 @@ function collectEdits(commits: readonly Commit[]): Edit[] {
   return edits.sort((a, b) => a.timeMs - b.timeMs);
 }
 
+/** The strongest (closest-in-time) pairing observed so far for one unordered file pair. */
+interface BestPairing {
+  strength: number;
+  anchorA: Edit;
+  anchorB: Edit;
+  deltaMs: number;
+}
+
+/** Unordered key for a file pair, stable regardless of which edit is `anchor` vs `other`. */
+function filePairKey(a: string, b: string): string {
+  return a < b ? `${a}\x00${b}` : `${b}\x00${a}`;
+}
+
 const timeWindowSignal: Signal = async (ctx: RepoContext): Promise<AnchorGroup[]> => {
   try {
     const commits = await ctx.commits();
     const edits = collectEdits(commits);
     if (edits.length < 2) return [];
 
-    const groups: AnchorGroup[] = [];
+    // Aggregate to one entry per distinct file pair, keeping only the strongest
+    // (closest-in-time) pairing — see the module doc for why per-hunk-pair
+    // emission is not viable on a real repository.
+    const best = new Map<string, BestPairing>();
 
     for (let i = 0; i < edits.length; i++) {
       const anchor = edits[i];
@@ -72,27 +97,37 @@ const timeWindowSignal: Signal = async (ctx: RepoContext): Promise<AnchorGroup[]
         const deltaMs = other.timeMs - anchor.timeMs;
         if (deltaMs > WINDOW_MS) break; // edits is sorted, so nothing further in j can fall inside the window either
         if (other.sha === anchor.sha) continue; // same-commit co-change isn't "implicit" — see module doc
+        if (other.path === anchor.path) continue; // a file's temporal proximity to itself is not a coupling
 
         const strength = Math.min(1, Math.max(0, 1 - deltaMs / WINDOW_MS));
         if (!Number.isFinite(strength)) continue;
 
-        const deltaHours = deltaMs / (60 * 60 * 1000);
-        const evidence: SignalEvidence = {
-          signal: EVIDENCE_LABEL,
-          strength,
-          commits: [anchor.sha, other.sha],
-          detail: `${anchor.path} (commit ${anchor.sha.slice(0, 7)}) and ${other.path} (commit ${other.sha.slice(0, 7)}) were edited ${deltaHours.toFixed(2)}h apart, inside the 6h co-edit window`
-        };
-
-        groups.push({
-          anchors: [
-            { path: anchor.path, startLine: anchor.startLine, endLine: anchor.endLine },
-            { path: other.path, startLine: other.startLine, endLine: other.endLine }
-          ],
-          evidence: [evidence],
-          score: strength
-        });
+        const key = filePairKey(anchor.path, other.path);
+        const existing = best.get(key);
+        if (existing === undefined || strength > existing.strength) {
+          best.set(key, { strength, anchorA: anchor, anchorB: other, deltaMs });
+        }
       }
+    }
+
+    const groups: AnchorGroup[] = [];
+    for (const { strength, anchorA, anchorB, deltaMs } of best.values()) {
+      const deltaHours = deltaMs / (60 * 60 * 1000);
+      const evidence: SignalEvidence = {
+        signal: EVIDENCE_LABEL,
+        strength,
+        commits: [anchorA.sha, anchorB.sha],
+        detail: `${anchorA.path} (commit ${anchorA.sha.slice(0, 7)}) and ${anchorB.path} (commit ${anchorB.sha.slice(0, 7)}) were edited ${deltaHours.toFixed(2)}h apart, inside the 6h co-edit window`
+      };
+
+      groups.push({
+        anchors: [
+          { path: anchorA.path, startLine: anchorA.startLine, endLine: anchorA.endLine },
+          { path: anchorB.path, startLine: anchorB.startLine, endLine: anchorB.endLine }
+        ],
+        evidence: [evidence],
+        score: strength
+      });
     }
 
     return groups;

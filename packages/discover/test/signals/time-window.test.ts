@@ -120,6 +120,32 @@ describe('time-window signal', () => {
     expect(bGroups).toHaveLength(2);
   });
 
+  it('aggregates a file pair observed via several qualifying pairings into a single group', async () => {
+    // a.ts and b.ts are temporally coupled through two distinct pairings inside
+    // the window: (a@c1, b@c2) and (b@c2, a@c3). Per-hunk-pair emission would
+    // produce two near-duplicate groups for the same {a.ts, b.ts} coupling; the
+    // signal must instead emit exactly one group per distinct file pair (the
+    // regression guard for the O(edits²) memory blowup on a real repository).
+    writeAndCommitAt(repoRoot, { 'a.ts': 'line1\n' }, 'Add a.ts', T0);
+    writeAndCommitAt(repoRoot, { 'b.ts': 'line1\n' }, 'Add b.ts', T0_PLUS_2H);
+    writeAndCommitAt(repoRoot, { 'a.ts': 'line1\nline2\n' }, 'Extend a.ts', '2024-01-01T04:00:00+00:00');
+
+    const ctx = createRepoContext(repoRoot);
+    const groups = await timeWindowSignal(ctx);
+
+    const abGroups = groups.filter((group) => {
+      const paths = group.anchors
+        .map((anchor) => anchor.path)
+        .sort()
+        .join('+');
+      return paths === 'a.ts+b.ts';
+    });
+    expect(abGroups).toHaveLength(1);
+    // A file is never paired with itself, even across two commits inside the window.
+    const selfPairs = groups.filter((group) => group.anchors.every((anchor) => anchor.path === 'a.ts'));
+    expect(selfPairs).toEqual([]);
+  });
+
   it('never pairs two hunks from the same commit — co-change within one commit is not "implicit"', async () => {
     writeAndCommitAt(repoRoot, { 'a.ts': 'line1\n', 'b.ts': 'line1\n' }, 'Add both together', T0);
 

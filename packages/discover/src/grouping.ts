@@ -52,15 +52,6 @@ export function anchorsOverlap(a: Anchor, b: Anchor): boolean {
   return rangeIoU(a.startLine, a.endLine, b.startLine, b.endLine) >= OVERLAP_THRESHOLD;
 }
 
-function groupsOverlap(a: AnchorGroup, b: AnchorGroup): boolean {
-  for (const anchorA of a.anchors) {
-    for (const anchorB of b.anchors) {
-      if (anchorsOverlap(anchorA, anchorB)) return true;
-    }
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Union-find
 // ---------------------------------------------------------------------------
@@ -176,6 +167,77 @@ function groupSortKey(group: AnchorGroup): string {
   return group.anchors.map((a) => `${a.path}:${a.startLine ?? ''}:${a.endLine ?? ''}`).join('|');
 }
 
+/** One range-anchor occurrence on a path: which group it belongs to and its inclusive line range. */
+interface RangedOccurrence {
+  index: number;
+  start: number;
+  end: number;
+}
+
+/** All anchor occurrences on a single path, split by whole-file vs. ranged. */
+interface PathBucket {
+  /** Group indices carrying a whole-file (no-range) anchor on this path. */
+  wholeFile: number[];
+  /** Ranged anchor occurrences on this path. */
+  ranged: RangedOccurrence[];
+}
+
+/**
+ * Unions groups whose anchors overlap, without the naive all-pairs
+ * (O(groups²)) scan. `anchorsOverlap` can only be true for anchors on the
+ * *same path*, so grouping the anchors by path and unioning within each path
+ * bucket yields the identical transitive-overlap components while skipping
+ * every pair that shares no path (the overwhelming majority on a real repo,
+ * where the all-pairs scan is 10^10+ comparisons and exhausts the time
+ * budget). Within a bucket:
+ *
+ *   - A whole-file anchor overlaps *every* anchor on its path (design decision
+ *     8), so a single whole-file anchor collapses the whole bucket into one
+ *     component in O(bucket) — no pairwise range work needed.
+ *   - An all-ranged path unions only range pairs clearing the 80% IoU
+ *     threshold; sorting by start lets each range compare against just the
+ *     ranges that can still intersect it (disjoint ranges have IoU 0 and never
+ *     union), so the pairwise cost tracks actual overlaps rather than bucket
+ *     size squared.
+ */
+function unionOverlappingGroups(list: readonly AnchorGroup[], uf: UnionFind): void {
+  const buckets = new Map<string, PathBucket>();
+  for (let i = 0; i < list.length; i++) {
+    for (const anchor of list[i].anchors) {
+      let bucket = buckets.get(anchor.path);
+      if (!bucket) {
+        bucket = { wholeFile: [], ranged: [] };
+        buckets.set(anchor.path, bucket);
+      }
+      if (hasRange(anchor)) bucket.ranged.push({ index: i, start: anchor.startLine, end: anchor.endLine });
+      else bucket.wholeFile.push(i);
+    }
+  }
+
+  for (const bucket of buckets.values()) {
+    if (bucket.wholeFile.length > 0) {
+      const root = bucket.wholeFile[0];
+      for (let k = 1; k < bucket.wholeFile.length; k++) uf.union(root, bucket.wholeFile[k]);
+      for (const occ of bucket.ranged) uf.union(root, occ.index);
+      continue;
+    }
+
+    const ranged = bucket.ranged;
+    ranged.sort((a, b) => a.start - b.start || a.end - b.end);
+    for (let a = 0; a < ranged.length; a++) {
+      const ra = ranged[a];
+      for (let b = a + 1; b < ranged.length; b++) {
+        const rb = ranged[b];
+        // Sorted by start: once a later range starts past ra's end, neither it
+        // nor any range after it can intersect ra (IoU 0), so stop.
+        if (rb.start > ra.end) break;
+        if (uf.find(ra.index) === uf.find(rb.index)) continue;
+        if (rangeIoU(ra.start, ra.end, rb.start, rb.end) >= OVERLAP_THRESHOLD) uf.union(ra.index, rb.index);
+      }
+    }
+  }
+}
+
 /**
  * Merges the flattened output of all signals into one deduplicated set of
  * candidate groups via union-find over the anchor-overlap relation. The
@@ -187,11 +249,7 @@ export function mergeAnchorGroups(groups: readonly AnchorGroup[]): AnchorGroup[]
   if (list.length === 0) return [];
 
   const uf = new UnionFind(list.length);
-  for (let i = 0; i < list.length; i++) {
-    for (let j = i + 1; j < list.length; j++) {
-      if (groupsOverlap(list[i], list[j])) uf.union(i, j);
-    }
-  }
+  unionOverlappingGroups(list, uf);
 
   const components = new Map<number, number[]>();
   for (let i = 0; i < list.length; i++) {

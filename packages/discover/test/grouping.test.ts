@@ -113,6 +113,39 @@ describe('mergeAnchorGroups', () => {
     expect(mergeAnchorGroups([g1, g2])).toHaveLength(2);
   });
 
+  it('collapses many groups sharing a whole-file anchor on one path into a single component', () => {
+    // Exercises the path-bucketed union's whole-file fast path: a whole-file
+    // anchor overlaps every anchor on its path, so a large fan-in on a hot path
+    // (e.g. package.json touched by hundreds of release-tag pairs) must merge
+    // into exactly one group — the scalable equivalent of the former O(groups²)
+    // all-pairs scan.
+    const groups: AnchorGroup[] = [];
+    for (let i = 0; i < 500; i++) {
+      groups.push(
+        group(
+          [{ path: 'package.json' }, { path: `other-${i}.ts`, startLine: 1, endLine: 5 }],
+          [{ signal: 'release-tag-delta', strength: 0.6, tags: [`v${i}`] }]
+        )
+      );
+    }
+    const merged = mergeAnchorGroups(groups);
+    // All 500 share package.json (whole-file) → one transitive component.
+    expect(merged).toHaveLength(1);
+    expect(merged[0].evidence).toHaveLength(500);
+    expect(merged[0].anchors.some((anchor) => anchor.path === 'package.json')).toBe(true);
+  });
+
+  it('does not merge groups whose ranges on a shared path fall below the IoU threshold', () => {
+    // Same path, but disjoint/low-overlap ranges and no whole-file anchor to
+    // bridge them — the all-ranged branch must keep them as separate components.
+    const g1 = group([{ path: 'a.ts', startLine: 1, endLine: 10 }], [{ signal: 'time-window-co-edit', strength: 0.5 }]);
+    const g2 = group(
+      [{ path: 'a.ts', startLine: 500, endLine: 510 }],
+      [{ signal: 'time-window-co-edit', strength: 0.5 }]
+    );
+    expect(mergeAnchorGroups([g1, g2])).toHaveLength(2);
+  });
+
   it('returns [] for empty input', () => {
     expect(mergeAnchorGroups([])).toEqual([]);
   });
