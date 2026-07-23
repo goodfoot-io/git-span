@@ -8,6 +8,7 @@
  * surfacing / cadence logic itself is covered by test/common/touch-core.test.ts.
  */
 
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -154,6 +155,36 @@ describe('claude post-tool-use touch signal', () => {
     expect(calls.fix).toBe(0); // read path never heals
     expect(result.stdout.systemMessage).toBeUndefined();
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+  });
+
+  it('scopes a Read to its offset/limit window, not surfacing a span anchored outside it', async () => {
+    const filePath = join(repo.root, 'mod.rs');
+    writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 371, end: 387 }] });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: filePath, offset: 39, limit: 60 }
+    });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+  });
+
+  it('surfaces a span anchored inside a Read offset/limit window', async () => {
+    const filePath = join(repo.root, 'mod.rs');
+    writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }] });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: filePath, offset: 39, limit: 60 }
+    });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
   });
 
   it('fails open (empty output, no throw) when every executor rejects', async () => {

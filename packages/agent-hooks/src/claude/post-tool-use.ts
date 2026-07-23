@@ -2,12 +2,13 @@
  * Claude PostToolUse touch hook — thin SDK-bound entry point.
  *
  * Fires after a successful `Read`/`Edit`/`Write`. The Claude-specific job is
- * translating the structured `tool_input` (`file_path`, `new_string`/`content`)
- * and `tool_name` into a harness-agnostic {@link TouchInput}, then handing off to
- * the shared {@link runTouchHook} core: on a write it heals positional span drift
- * in the working tree (`git span stale <file> --fix`) and folds any semantic
- * residue into one `<git-span>` block; on a read it surfaces overlapping spans
- * with positional statuses filtered out and never mutates the tree.
+ * translating the structured `tool_input` (`file_path`, `new_string`/`content`,
+ * `offset`/`limit`) and `tool_name` into a harness-agnostic {@link TouchInput},
+ * then handing off to the shared {@link runTouchHook} core: on a write it heals
+ * positional span drift in the working tree (`git span stale <file> --fix`) and
+ * folds any semantic residue into one `<git-span>` block; on a read it surfaces
+ * spans overlapping the read's `offset`/`limit` window (whole-file when neither
+ * is given) with positional statuses filtered out, and never mutates the tree.
  *
  * The block reaches the model loop via `hookSpecificOutput.additionalContext` and
  * the user-facing UI via `systemMessage`. Fail-open is load-bearing: an absent
@@ -33,8 +34,15 @@ import {
 
 type ToolInput = Record<string, unknown>;
 
+/** Read a `ToolInput` field as a positive integer, or `undefined` when absent/invalid. */
+function positiveIntField(toolInput: ToolInput, field: string): number | undefined {
+  const raw = toolInput[field];
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined;
+}
+
 /**
- * Translate a Claude tool call into a {@link TouchInput}. `Read` is a read touch;
+ * Translate a Claude tool call into a {@link TouchInput}. `Read` is a read touch
+ * carrying its `offset`/`limit` (when present) for range-precise scoping;
  * `Edit`/`Write` are write touches whose `written` block is the new content the
  * tool just applied (`new_string` for Edit, `content` for Write). An unknown tool
  * or a non-string content field yields `null` (nothing to do).
@@ -47,7 +55,9 @@ function toTouchInput(
   filePath: string
 ): TouchInput | null {
   if (toolName === 'Read') {
-    return { kind: 'read', sessionId, cwd, filePath };
+    const offset = positiveIntField(toolInput, 'offset');
+    const limit = positiveIntField(toolInput, 'limit');
+    return { kind: 'read', sessionId, cwd, filePath, offset, limit };
   }
   if (toolName === 'Edit' || toolName === 'Write') {
     const raw = toolName === 'Edit' ? toolInput.new_string : toolInput.content;

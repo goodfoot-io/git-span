@@ -122,6 +122,17 @@ interface TouchInputBase {
 /** A read touch (Claude `Read`, or a read-shaped Codex event). */
 export interface TouchReadInput extends TouchInputBase {
   kind: 'read';
+  /**
+   * 1-based starting line of the read, from the Claude `Read` tool's `offset`
+   * input. `undefined` when the read had no `offset` (reads from line 1).
+   */
+  offset?: number;
+  /**
+   * Line count of the read, from the Claude `Read` tool's `limit` input.
+   * `undefined` when the read had no `limit` — see {@link DEFAULT_READ_LIMIT}
+   * for how the range is computed in that case.
+   */
+  limit?: number;
 }
 
 /** A write touch (Claude `Edit`/`Write`, Codex `apply_patch`). */
@@ -329,6 +340,41 @@ function recoverRangeFromDisk(written: string, filePath: string): LineRange | 'w
 }
 
 /**
+ * The Claude `Read` tool's documented default line count when `offset` is
+ * given without `limit` ("By default, it reads up to 2000 lines"). Named so
+ * the assumption is visible and easy to update if that default ever changes.
+ */
+export const DEFAULT_READ_LIMIT = 2000;
+
+/**
+ * Compute the touched range for a read from the Claude `Read` tool's
+ * `offset`/`limit` inputs. Neither present means a genuine whole-file read —
+ * every covering span stays in scope, matching today's behavior. Otherwise
+ * the range starts at `offset` (default line 1) and runs for `limit` lines
+ * (default {@link DEFAULT_READ_LIMIT}), clamped to the file's actual line
+ * count so a short file with a large `offset`/`limit` doesn't overshoot.
+ * Clamping requires reading the file; an unreadable file degrades to
+ * `'whole-file'` — the same fail-open behavior the write path uses.
+ */
+function recoverReadRange(
+  offset: number | undefined,
+  limit: number | undefined,
+  filePath: string
+): LineRange | 'whole-file' {
+  if (offset === undefined && limit === undefined) return 'whole-file';
+  const start = offset ?? 1;
+  let lineCount: number;
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    lineCount = content.length === 0 ? 0 : content.split('\n').length;
+  } catch {
+    return 'whole-file';
+  }
+  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount, start));
+  return { start, end };
+}
+
+/**
  * Whether a covering row is an anchor in the touched file itself. `list
  * --porcelain <file>` returns every anchor of each matching span — cross-file
  * anchors included — but only anchors in the touched file participate in the
@@ -422,7 +468,9 @@ async function computeSurface(
  *   semantic drift status-suffixed on its anchors. Cadence is deduped through
  *   `memo` per span name and per (span, status).
  * - **Read path**: never invokes `fix` and never mutates the tree; surfaces the
- *   overlapping spans with positional statuses filtered out via `isDebt()`.
+ *   spans overlapping the read's `offset`/`limit` window (see
+ *   {@link recoverReadRange}; a read with neither is whole-file, matching
+ *   today's behavior) with positional statuses filtered out via `isDebt()`.
  *
  * Fails open: any executor rejection or internal error yields
  * `additionalContext: null` (no signal, editing never blocked) rather than
@@ -441,6 +489,8 @@ export async function runTouchHook(
       const fix = await executors.fix(input.filePath, input.cwd);
       treeModified = fix.modified;
       range = recoverRangeFromDisk(input.written, input.filePath);
+    } else {
+      range = recoverReadRange(input.offset, input.limit, input.filePath);
     }
     const additionalContext = await computeSurface(input, executors, memo, range);
     return { additionalContext, treeModified };

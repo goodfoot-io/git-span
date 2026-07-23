@@ -14,11 +14,14 @@
  * contract-ergonomics finding, not something to work around.
  */
 
-import { describe, expect, it } from 'vitest';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
 import { recoverRange, runTouchHook } from '../../src/common/touch-core.js';
+import { makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -213,6 +216,88 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
       expect(output.additionalContext).toBeNull();
       expect(output.treeModified).toBe(false);
+    });
+
+    describe('range-precise scoping', () => {
+      let repo: { root: string; cleanup: () => void };
+
+      afterEach(() => {
+        repo?.cleanup();
+      });
+
+      /** A file with `lineCount` numbered lines, for range-precision fixtures. */
+      function writeNumberedFile(lineCount: number): string {
+        repo = makeTempRepo();
+        const filePath = join(repo.root, 'mod.rs');
+        const lines = Array.from({ length: lineCount }, (_, i) => `line ${i + 1}`);
+        writeFileSync(filePath, lines.join('\n'));
+        return filePath;
+      }
+
+      it('does not surface a span whose anchor sits outside the read offset/limit window', async () => {
+        // Reproduces the git-span/history-command false positive: reading
+        // mod.rs#L39-98 must not surface a span anchored at mod.rs#L371-387.
+        const filePath = writeNumberedFile(500);
+        const memo = createMemoryMemoStore();
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 371, end: 387 })],
+          stale: async (): Promise<StalePorcelainRow[]> => [],
+          why: async (): Promise<string | null> => WHY
+        };
+
+        const output = await runTouchHook(readInput({ filePath, offset: 39, limit: 60 }), executors, memo);
+
+        expect(output.additionalContext).toBeNull();
+      });
+
+      it('surfaces a span whose anchor intersects the read offset/limit window', async () => {
+        const filePath = writeNumberedFile(500);
+        const memo = createMemoryMemoStore();
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 39, end: 189 })],
+          stale: async (): Promise<StalePorcelainRow[]> => [],
+          why: async (): Promise<string | null> => WHY
+        };
+
+        const output = await runTouchHook(readInput({ filePath, offset: 39, limit: 60 }), executors, memo);
+
+        expect(output.additionalContext).not.toBeNull();
+        expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      });
+
+      it('uses the default 2000-line window when offset is given without limit', async () => {
+        const filePath = writeNumberedFile(2500);
+        const memo = createMemoryMemoStore();
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          // Just past a 2000-line window starting at offset 1 — must not surface.
+          list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 2001, end: 2010 })],
+          stale: async (): Promise<StalePorcelainRow[]> => [],
+          why: async (): Promise<string | null> => WHY
+        };
+
+        const output = await runTouchHook(readInput({ filePath, offset: 1 }), executors, memo);
+
+        expect(output.additionalContext).toBeNull();
+      });
+
+      it('stays whole-file (surfaces every covering span) when neither offset nor limit is given', async () => {
+        const filePath = writeNumberedFile(500);
+        const memo = createMemoryMemoStore();
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 371, end: 387 })],
+          stale: async (): Promise<StalePorcelainRow[]> => [],
+          why: async (): Promise<string | null> => WHY
+        };
+
+        const output = await runTouchHook(readInput({ filePath }), executors, memo);
+
+        expect(output.additionalContext).not.toBeNull();
+        expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      });
     });
   });
 
