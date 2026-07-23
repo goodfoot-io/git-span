@@ -88,6 +88,44 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     );
   });
 
+  it('does not steal editor focus on a content-only refresh triggered by the watched anchor file', async () => {
+    const spanFilePath = path.join(spanDir, 'fixture-span-test');
+    fs.writeFileSync(spanFilePath, 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
+    const readmePath = path.join(workspacePath, 'README.md');
+
+    const uri = vscode.Uri.file(spanFilePath);
+    testOnlyRenderOutcomes.delete(uri.toString());
+    await vscode.commands.executeCommand('vscode.openWith', uri, SPAN_FILE_VIEW_TYPE);
+    const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
+    assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open for a valid-looking span file');
+    await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
+
+    const otherFilePath = path.join(workspacePath, 'focus-steal-other.txt');
+    fs.writeFileSync(otherFilePath, 'unrelated content\n');
+    const otherUri = vscode.Uri.file(otherFilePath);
+    const otherDoc = await vscode.workspace.openTextDocument(otherUri);
+    await vscode.window.showTextDocument(otherDoc);
+    assert.strictEqual(
+      vscode.window.activeTextEditor?.document.uri.toString(),
+      otherUri.toString(),
+      'Expected the unrelated file to be focused before triggering the refresh'
+    );
+
+    // Content-only change to the anchor's real file: the watched file changes,
+    // but the anchor set (and thus the vscode.changes resource set) does not.
+    // Re-invoking vscode.changes on every render steals focus even when the
+    // resource set is unchanged -- confirmed by a targeted spike -- so a
+    // correct implementation must skip the re-invocation here.
+    fs.writeFileSync(readmePath, '# Test Workspace (touched)\n');
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    assert.strictEqual(
+      vscode.window.activeTextEditor?.document.uri.toString(),
+      otherUri.toString(),
+      'Expected focus to remain on the unrelated file after a content-only span refresh'
+    );
+  });
+
   it('falls back gracefully for non-span content under .span/', async () => {
     const nonSpanFilePath = path.join(spanDir, 'not-a-span.txt');
     fs.writeFileSync(nonSpanFilePath, 'hello world\n\nsome random prose that is not an anchor line\n');

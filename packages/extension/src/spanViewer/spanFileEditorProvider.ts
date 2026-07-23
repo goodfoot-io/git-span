@@ -320,13 +320,24 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     const publishedAnchorUris = new Set<string>();
     /** Filesystem paths already watched, so re-renders only add watchers for newly-seen paths. */
     const watchers = new Map<string, vscode.Disposable>();
+    /**
+     * Stable key for the resource set opened by the most recent
+     * `vscode.changes` invocation, or `null` before the first one. Compared
+     * against each render's own key so pure content-only refreshes (an
+     * anchor's underlying file changed, but no anchor was added or removed)
+     * skip re-invoking `vscode.changes` entirely -- confirmed by spike that
+     * *any* repeat invocation steals editor focus away from whatever the
+     * user is currently working in, even when passed an identical resource
+     * set. Content-only refreshes are already reflected live via
+     * `AnchorContentProvider`'s `onDidChange` emitter.
+     */
+    let lastResourceKey: string | null = null;
 
     /**
      * Fetch history, match anchors, publish anchor content, and open (or
-     * re-open) the Multi-Diff editor with the current resource set.
-     * Re-invoked by file watchers on subsequent changes -- `vscode.changes`
-     * is safe to re-invoke on every render since VS Code dedupes identical
-     * repeat calls, which keeps newly-added/removed anchors' panes in sync.
+     * re-open) the Multi-Diff editor only when the resource set actually
+     * changed since the last render. Re-invoked by file watchers on
+     * subsequent changes.
      *
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every non-dangling anchor's real file), or `null` when
@@ -437,7 +448,16 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           dangling.length > 0 ? ` ${dangling.length} anchor(s) could not be matched -- see below.` : '';
         const message = `Span "${spanName}" opened in the Multi-Diff editor.${danglingNote}`;
         renderPanel(webviewPanel.webview, message, dangling);
-        await vscode.commands.executeCommand('vscode.changes', spanName, resources);
+        const resourceKey = resources
+          .map(
+            ([originalUri, modifiedUri, realFileUri]) =>
+              `${originalUri.toString()}|${modifiedUri.toString()}|${realFileUri.toString()}`
+          )
+          .join(',');
+        if (resourceKey !== lastResourceKey) {
+          lastResourceKey = resourceKey;
+          await vscode.commands.executeCommand('vscode.changes', spanName, resources);
+        }
         testOnlyRenderOutcomes.set(document.uri.toString(), {
           ok: true,
           resourceCount: resources.length,
@@ -446,7 +466,10 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         });
       } else {
         // Every anchor is dangling: keep this placeholder tab visible with
-        // its warning rather than opening an empty Multi-Diff editor.
+        // its warning rather than opening an empty Multi-Diff editor. Reset
+        // the resource key so a later render with real resources reopens
+        // the Multi-Diff editor instead of treating it as unchanged.
+        lastResourceKey = null;
         const message = `No anchors in span "${spanName}" could be matched against its history.`;
         renderPanel(webviewPanel.webview, message, dangling);
         testOnlyRenderOutcomes.set(document.uri.toString(), {
