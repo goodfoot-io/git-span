@@ -1,6 +1,6 @@
 packages/website/app/components/marketing/story/EngineStage.tsx#L83-L83 rk64:5b164932d005136e
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L1269-L1269 rk64:4575892dc7e54172
-packages/website/app/components/marketing/story/engine/backdrop.ts rk64:fd7b787723bdd8bb
+packages/website/app/components/marketing/story/engine/backdrop.ts rk64:b71a93cfd1b469be
 packages/website/app/components/marketing/story/engine/stage.ts rk64:e2598e2254b7bcf8
 
 engine/backdrop.ts is the single source of truth for the stage's t-varying color, threaded identically into the CSS panel background and the WebGL fog color so the transparent canvas's edges blend into the panel behind it with no seam.
