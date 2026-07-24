@@ -285,16 +285,26 @@ function referencesTarget(from: FileReferences, toPath: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Stage 1 bridge: this disqualifier still evaluates the whole group and
- * early-returns one verdict (unchanged pairwise logic) — Stage 3 converts it
- * to per-edge collection. The single verdict is wrapped in an array here only
- * to satisfy the new `Disqualifier` return shape.
+ * Evaluates every internal edge (every unordered pair of distinct-path
+ * anchors) of the candidate group exactly once, returning exactly one
+ * `DisqualifierEvidence` per edge, always. Never early-returns on the first
+ * firing pair (near-clique grouping plan, "Per-edge disqualifiers — exact
+ * no-match floor semantics").
+ *
+ * Per pair, in priority order: a reference in either direction disqualifies
+ * that edge at `REFERENCE_STRENGTH`; otherwise, if either anchor in the pair
+ * failed to parse, the edge is evidence-neutral and `inconclusive` (design
+ * decision 6 — a parse failure blocking *this specific pair*'s conclusion
+ * must never masquerade as "no reference found" for that pair, even if some
+ * other pair in the same group parsed cleanly); otherwise the edge gets
+ * today's clean floor (strength 0, not inconclusive).
  */
 const treeSitterReferenceDisqualifier: Disqualifier = async (
   group: AnchorGroup,
   ctx: RepoContext
 ): Promise<DisqualifierEvidence[]> => {
-  const paths = distinctAnchorPaths(group.anchors);
+  const anchorsByPath = distinctAnchorsByPath(group.anchors);
+  const paths = [...anchorsByPath.keys()];
 
   // A reference connects *two* anchors — a group over a single file (or none)
   // has nothing to connect. Evidence-neutral, and not a parse failure.
@@ -304,58 +314,66 @@ const treeSitterReferenceDisqualifier: Disqualifier = async (
 
   const outcomes = await Promise.all(paths.map((filePath) => parseFile(filePath, ctx)));
   const parsed = new Map<string, FileReferences>();
-  let anyParseFailed = false;
+  const failed = new Set<string>();
   for (let i = 0; i < paths.length; i++) {
     const outcome = outcomes[i];
     if (outcome.ok) parsed.set(paths[i], outcome.refs);
-    else anyParseFailed = true;
+    else failed.add(paths[i]);
   }
 
-  // An explicit reference from any parsed file to any other anchor disqualifies.
-  for (const [fromPath, refs] of parsed) {
-    for (const toPath of paths) {
-      if (toPath === fromPath) continue;
-      if (referencesTarget(refs, toPath)) {
-        return [
-          {
-            disqualifier: DISQUALIFIER_NAME,
-            strength: REFERENCE_STRENGTH,
-            detail: `explicit reference: ${fromPath} -> ${toPath}`
-          }
-        ];
+  const results: DisqualifierEvidence[] = [];
+  for (let i = 0; i < paths.length; i++) {
+    for (let j = i + 1; j < paths.length; j++) {
+      const pathA = paths[i];
+      const pathB = paths[j];
+      const anchorA = anchorsByPath.get(pathA)!;
+      const anchorB = anchorsByPath.get(pathB)!;
+
+      const refsA = parsed.get(pathA);
+      const refsB = parsed.get(pathB);
+
+      let direction: string | null = null;
+      if (refsA && referencesTarget(refsA, pathB)) direction = `${pathA} -> ${pathB}`;
+      else if (refsB && referencesTarget(refsB, pathA)) direction = `${pathB} -> ${pathA}`;
+
+      if (direction) {
+        results.push({
+          disqualifier: DISQUALIFIER_NAME,
+          strength: REFERENCE_STRENGTH,
+          detail: `explicit reference: ${direction}`,
+          edge: { a: anchorA, b: anchorB }
+        });
+        continue;
       }
+
+      const failedHere = [pathA, pathB].filter((p) => failed.has(p));
+      if (failedHere.length > 0) {
+        results.push({
+          disqualifier: DISQUALIFIER_NAME,
+          strength: 0,
+          inconclusive: true,
+          detail: `parse_failed: ${failedHere.join(', ')}`,
+          edge: { a: anchorA, b: anchorB }
+        });
+        continue;
+      }
+
+      // Both anchors parsed cleanly and neither referenced the other:
+      // evaluated, nothing to disqualify.
+      results.push({ disqualifier: DISQUALIFIER_NAME, strength: 0, edge: { a: anchorA, b: anchorB } });
     }
   }
 
-  // No reference found. If a parse failure blocked a file, we cannot conclude
-  // "no reference" — surface it as inconclusive (evidence-neutral, visible)
-  // rather than silently reporting a clean zero (design decision 6).
-  if (anyParseFailed) {
-    const failedPaths = paths.filter((filePath) => !parsed.has(filePath));
-    return [
-      {
-        disqualifier: DISQUALIFIER_NAME,
-        strength: 0,
-        inconclusive: true,
-        detail: `parse_failed: ${failedPaths.join(', ')}`
-      }
-    ];
-  }
-
-  // Every anchor parsed cleanly and none referenced another: evaluated,
-  // nothing to disqualify.
-  return [{ disqualifier: DISQUALIFIER_NAME, strength: 0 }];
+  return results;
 };
 
-function distinctAnchorPaths(anchors: Anchor[]): string[] {
-  const seen = new Set<string>();
-  const paths: string[] = [];
+/** First anchor encountered per distinct path, preserving `anchors`' original order. */
+function distinctAnchorsByPath(anchors: Anchor[]): Map<string, Anchor> {
+  const byPath = new Map<string, Anchor>();
   for (const anchor of anchors) {
-    if (seen.has(anchor.path)) continue;
-    seen.add(anchor.path);
-    paths.push(anchor.path);
+    if (!byPath.has(anchor.path)) byPath.set(anchor.path, anchor);
   }
-  return paths;
+  return byPath;
 }
 
 export default treeSitterReferenceDisqualifier;

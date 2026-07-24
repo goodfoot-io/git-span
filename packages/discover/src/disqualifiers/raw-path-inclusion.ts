@@ -116,43 +116,82 @@ function containsAsToken(haystack: string, needle: string): boolean {
   }
 }
 
+/** First anchor encountered per distinct path, preserving `anchors`' original order (mirrors tree-sitter-reference.ts's `distinctAnchorPaths`). */
+function distinctAnchorsByPath(anchors: Anchor[]): Map<string, Anchor> {
+  const byPath = new Map<string, Anchor>();
+  for (const anchor of anchors) {
+    if (!byPath.has(anchor.path)) byPath.set(anchor.path, anchor);
+  }
+  return byPath;
+}
+
+interface Match {
+  source: string;
+  target: string;
+  candidate: string;
+}
+
+/** True when `sourcePath`'s content (if read) contains a reference candidate derived from `targetPath`. */
+function findMatch(sourcePath: string, targetPath: string, contents: ReadonlyMap<string, string | null>): Match | null {
+  const content = contents.get(sourcePath);
+  if (content === null || content === undefined) return null;
+
+  for (const candidate of referenceCandidates({ path: targetPath })) {
+    if (containsAsToken(content, candidate)) return { source: sourcePath, target: targetPath, candidate };
+  }
+  return null;
+}
+
 /**
- * Stage 1 bridge: this disqualifier still evaluates the whole group and
- * early-returns one verdict (unchanged pairwise logic) — Stage 3 converts it
- * to per-edge collection. The single verdict is wrapped in an array here only
- * to satisfy the new `Disqualifier` return shape.
+ * Evaluates every internal edge (every unordered pair of distinct-path
+ * anchors) of the candidate group exactly once, returning exactly one
+ * `DisqualifierEvidence` per edge, always — a firing pair gets
+ * `MATCH_STRENGTH`, a non-firing pair gets today's `NO_MATCH_STRENGTH` floor.
+ * Never early-returns on the first firing pair (near-clique grouping plan,
+ * "Per-edge disqualifiers — exact no-match floor semantics").
  */
 const rawPathInclusionDisqualifier: Disqualifier = async (
   group: AnchorGroup,
   ctx: RepoContext
 ): Promise<DisqualifierEvidence[]> => {
-  const { anchors } = group;
-  if (anchors.length < 2) {
+  const anchorsByPath = distinctAnchorsByPath(group.anchors);
+  const paths = [...anchorsByPath.keys()];
+
+  if (paths.length < 2) {
     return [{ disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH }];
   }
 
-  for (const source of anchors) {
-    const content = await ctx.fileAt(source.path, 'HEAD');
-    if (content === null) continue;
+  const contents = new Map<string, string | null>();
+  await Promise.all(
+    paths.map(async (filePath) => {
+      contents.set(filePath, await ctx.fileAt(filePath, 'HEAD'));
+    })
+  );
 
-    for (const target of anchors) {
-      if (target.path === source.path) continue;
+  const results: DisqualifierEvidence[] = [];
+  for (let i = 0; i < paths.length; i++) {
+    for (let j = i + 1; j < paths.length; j++) {
+      const pathA = paths[i];
+      const pathB = paths[j];
+      const anchorA = anchorsByPath.get(pathA)!;
+      const anchorB = anchorsByPath.get(pathB)!;
 
-      for (const candidate of referenceCandidates(target)) {
-        if (containsAsToken(content, candidate)) {
-          return [
-            {
-              disqualifier: EVIDENCE_LABEL,
-              strength: MATCH_STRENGTH,
-              detail: `${source.path} references ${target.path} via literal substring "${candidate}"`
-            }
-          ];
-        }
+      const match = findMatch(pathA, pathB, contents) ?? findMatch(pathB, pathA, contents);
+
+      if (match) {
+        results.push({
+          disqualifier: EVIDENCE_LABEL,
+          strength: MATCH_STRENGTH,
+          detail: `${match.source} references ${match.target} via literal substring "${match.candidate}"`,
+          edge: { a: anchorA, b: anchorB }
+        });
+      } else {
+        results.push({ disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH, edge: { a: anchorA, b: anchorB } });
       }
     }
   }
 
-  return [{ disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH }];
+  return results;
 };
 
 export default rawPathInclusionDisqualifier;
