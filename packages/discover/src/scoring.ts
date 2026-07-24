@@ -161,3 +161,84 @@ export function scoreEvidence(
 
   return sigmoid(logOdds);
 }
+
+// ---------------------------------------------------------------------------
+// Reporting thresholds (near-clique grouping plan, "Scoring" + "Threshold
+// reconciliation").
+// ---------------------------------------------------------------------------
+
+/**
+ * Pass-1 threshold: a cheap prune over signal-only scores before the more
+ * expensive disqualifiers run, retained here as the pre-disqualifier gate for
+ * the **2-node/0-missing-edge degenerate case only** (a plain pairwise group,
+ * indistinguishable in shape from what the old `mergeAnchorGroups` produced).
+ *
+ * `0.55` (just above the 0.5 neutral point) turned out to be far too
+ * permissive at real-repo scale: with the old `SIGNAL_WEIGHTS`, a single
+ * circumstantial signal (`time-window-co-edit`, `same-author-session`,
+ * `lexical-similarity`) at its typical real-repo strength cleared it alone, so
+ * ~97% of the 118k merged groups from a 658-file/1072-commit monorepo probe
+ * advanced to the disqualifier stage. The weights above were recalibrated so
+ * that even a *maximal-strength* single circumstantial signal caps out well
+ * short of 1.0; `0.94` is derived, not fitted: it is (just above) the score all
+ * four circumstantial signals reach *together* when each is near its own
+ * strong-tail (~p90) strength in the probe corpus.
+ *
+ * Not deleted by the n-ary redesign (must-have 5's byte-equivalence bar): it
+ * keeps governing the 2-node degenerate case verbatim, while
+ * {@link EDGE_THRESHOLD}/{@link reportThreshold} govern topology inclusion and
+ * 3+-node candidates.
+ */
+export const PASS1_THRESHOLD = 0.94;
+
+/**
+ * Pass-2 threshold: the final reporting cut for the 2-node/0-missing-edge
+ * degenerate case, after disqualifiers may have pulled a score down. Kept below
+ * {@link PASS1_THRESHOLD} by roughly the same log-odds gap as the
+ * pre-recalibration pair (`logit(0.55) - logit(0.5) ≈ 0.2`), so a group that
+ * cleared pass 1 isn't dropped by pass 2 purely because its disqualifier
+ * evidence is weakly-inconclusive rather than a genuine explicit reference —
+ * but a disqualifier that actually fires still has enough weight (1.4-1.5, see
+ * `DISQUALIFIER_WEIGHTS`) to drop a group below it.
+ */
+export const PASS2_THRESHOLD = 0.9;
+
+/**
+ * Governs graph-edge/topology inclusion only — which edges are eligible to
+ * participate in the near-clique search at all (near-clique grouping plan,
+ * "Near-clique extraction" step 1). It does NOT gate the final report decision
+ * for a 2-node group; see {@link reportThreshold}. Fixed by
+ * `notes/rejected-grouping-alternatives.md`'s four-alternative search — not
+ * re-derived here.
+ */
+export const EDGE_THRESHOLD = 0.85;
+
+/**
+ * Linear per-allowed-missing-edge penalty subtracted from {@link EDGE_THRESHOLD}
+ * to derive a near-clique's final gate. Fixed at `0.1` by the same
+ * four-alternative search — not re-derived here.
+ */
+export const MISSING_EDGE_PENALTY = 0.1;
+
+/**
+ * The final report gate for a candidate group.
+ *
+ * - **2-node** (a plain pairwise group): reuses today's literal
+ *   {@link PASS2_THRESHOLD} rather than deriving from {@link EDGE_THRESHOLD}.
+ *   Must-have 5 requires byte-for-byte-equivalent output to the old pipeline,
+ *   and `notes/two-file-threshold-equivalence-spike.md` showed the derived
+ *   `EDGE_THRESHOLD` value admits 8.5x more 2-file groups than today. The
+ *   caller applies this post-disqualifier, alongside a {@link PASS1_THRESHOLD}
+ *   pre-disqualifier gate — the unchanged dual gate (see the plan's "Threshold
+ *   reconciliation").
+ * - **3+-node** (the new capability): `EDGE_THRESHOLD − missingEdges ×
+ *   MISSING_EDGE_PENALTY`, applied to the candidate's min-edge weight. There is
+ *   no historical byte-equivalence bar for a shape that never existed in output
+ *   before, so no dual pre/post staging.
+ */
+export function reportThreshold(nodeCount: number, missingEdges: number): number {
+  if (nodeCount === 2) {
+    return PASS2_THRESHOLD;
+  }
+  return EDGE_THRESHOLD - missingEdges * MISSING_EDGE_PENALTY;
+}

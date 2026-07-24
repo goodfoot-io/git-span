@@ -3,7 +3,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { scoreEvidence } from '../src/scoring.js';
+import {
+  EDGE_THRESHOLD,
+  MISSING_EDGE_PENALTY,
+  PASS1_THRESHOLD,
+  PASS2_THRESHOLD,
+  reportThreshold,
+  scoreEvidence
+} from '../src/scoring.js';
 import type { DisqualifierEvidence, SignalEvidence } from '../src/types.js';
 
 function signal(name: string, strength: number): SignalEvidence {
@@ -79,5 +86,32 @@ describe('scoreEvidence', () => {
     const weakCluster = scoreEvidence(Array.from({ length: 15 }, () => signal('lexical-similarity', 0.35)));
 
     expect(strongSingle).toBeGreaterThan(weakCluster);
+  });
+});
+
+describe('reporting thresholds', () => {
+  it('fixes the n-ary constants at their derived values', () => {
+    expect(EDGE_THRESHOLD).toBe(0.85);
+    expect(MISSING_EDGE_PENALTY).toBe(0.1);
+    // The 2-node degenerate gates are retained (must-have 5), not deleted.
+    expect(PASS1_THRESHOLD).toBe(0.94);
+    expect(PASS2_THRESHOLD).toBe(0.9);
+  });
+
+  it('gates a 2-node group at the literal PASS2_THRESHOLD, not a value derived from EDGE_THRESHOLD', () => {
+    // Byte-equivalence: the derived value (0.85) is decisively NOT equivalent
+    // to today's 2-file gate — the reconciliation keeps PASS2_THRESHOLD here.
+    expect(reportThreshold(2, 0)).toBe(PASS2_THRESHOLD);
+    expect(reportThreshold(2, 0)).not.toBe(EDGE_THRESHOLD);
+  });
+
+  it('gates a full 3+-node clique at EDGE_THRESHOLD (0 missing edges)', () => {
+    expect(reportThreshold(3, 0)).toBeCloseTo(0.85, 10);
+    expect(reportThreshold(4, 0)).toBeCloseTo(0.85, 10);
+  });
+
+  it('applies MISSING_EDGE_PENALTY per allowed missing edge for 3+-node near-cliques', () => {
+    expect(reportThreshold(3, 1)).toBeCloseTo(0.75, 10);
+    expect(reportThreshold(5, 1)).toBeCloseTo(0.75, 10);
   });
 });

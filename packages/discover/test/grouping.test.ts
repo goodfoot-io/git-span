@@ -1,15 +1,14 @@
 /**
- * Tests for src/grouping.ts — union-find fuzzy merging of the flattened
- * signal output (design decision 8). Pure over AnchorGroup[]; no git needed.
+ * Tests for src/grouping.ts — the anchor-overlap primitives retained after the
+ * n-ary redesign deleted `mergeAnchorGroups`/`UnionFind`: `anchorsOverlap`,
+ * `collapseAnchors`, and `anchorSetsFullyMatch` (kept, per the
+ * Testable-Uncertainty-2 spike, as `cli.ts`'s 2-node secondary reportability
+ * gate). Pure over anchors; no git needed.
  */
 
 import { describe, expect, it } from 'vitest';
-import { anchorsOverlap, mergeAnchorGroups } from '../src/grouping.js';
-import type { AnchorGroup } from '../src/types.js';
-
-function group(anchors: AnchorGroup['anchors'], evidence: AnchorGroup['evidence']): AnchorGroup {
-  return { anchors, evidence, score: 0 };
-}
+import { anchorSetsFullyMatch, anchorsOverlap, collapseAnchors } from '../src/grouping.js';
+import type { Anchor } from '../src/types.js';
 
 describe('anchorsOverlap', () => {
   it('is false across different paths', () => {
@@ -35,166 +34,62 @@ describe('anchorsOverlap', () => {
   });
 });
 
-describe('mergeAnchorGroups', () => {
-  it('merges a whole-file anchor and a line-range anchor on the same path into one group', () => {
-    // e.g. association-rules emits whole-file a.ts+b.ts; time-window emits a.ts#L10-L20 + b.ts#L10-L20.
-    const wholeFile = group(
-      [{ path: 'a.ts' }, { path: 'b.ts' }],
-      [{ signal: 'association-rules', strength: 0.9, commits: ['c1'] }]
-    );
-    const ranged = group(
-      [
-        { path: 'a.ts', startLine: 10, endLine: 20 },
-        { path: 'b.ts', startLine: 10, endLine: 20 }
-      ],
-      [{ signal: 'time-window-co-edit', strength: 0.8, commits: ['c2', 'c3'] }]
-    );
+describe('collapseAnchors', () => {
+  it('drops a whole-file anchor superseded by a range anchor on the same path', () => {
+    const collapsed = collapseAnchors([{ path: 'a.ts' }, { path: 'a.ts', startLine: 10, endLine: 20 }]);
+    expect(collapsed).toEqual([{ path: 'a.ts', startLine: 10, endLine: 20 }]);
+  });
 
-    const merged = mergeAnchorGroups([wholeFile, ranged]);
-    expect(merged).toHaveLength(1);
+  it('merges overlapping/touching ranges into their bounding range and keeps disjoint ranges separate', () => {
+    const collapsed = collapseAnchors([
+      { path: 'a.ts', startLine: 1, endLine: 10 },
+      { path: 'a.ts', startLine: 8, endLine: 15 },
+      { path: 'a.ts', startLine: 500, endLine: 510 }
+    ]);
+    expect(collapsed).toEqual([
+      { path: 'a.ts', startLine: 1, endLine: 15 },
+      { path: 'a.ts', startLine: 500, endLine: 510 }
+    ]);
+  });
 
-    // The whole-file anchor is superseded by the more specific range anchor.
-    const anchors = merged[0].anchors;
-    expect(anchors).toEqual([
+  it('sorts anchors deterministically by path then range', () => {
+    const collapsed = collapseAnchors([{ path: 'b.ts' }, { path: 'a.ts', startLine: 5, endLine: 6 }]);
+    expect(collapsed).toEqual([{ path: 'a.ts', startLine: 5, endLine: 6 }, { path: 'b.ts' }]);
+  });
+});
+
+describe('anchorSetsFullyMatch', () => {
+  function pair(pathA: string, pathB: string): Anchor[] {
+    return [{ path: pathA }, { path: pathB }];
+  }
+
+  it('matches two identical two-file pairings (the legitimate merge case)', () => {
+    expect(anchorSetsFullyMatch(pair('a.ts', 'b.ts'), pair('a.ts', 'b.ts'))).toBe(true);
+  });
+
+  it('matches a whole-file pairing against the same pair anchored by ranges on both paths', () => {
+    const whole = pair('a.ts', 'b.ts');
+    const ranged: Anchor[] = [
       { path: 'a.ts', startLine: 10, endLine: 20 },
       { path: 'b.ts', startLine: 10, endLine: 20 }
-    ]);
+    ];
+    expect(anchorSetsFullyMatch(whole, ranged)).toBe(true);
   });
 
-  it('unions evidence on merge — the merged group carries both signals with their original refs', () => {
-    const g1 = group(
-      [{ path: 'a.ts', startLine: 5, endLine: 15 }],
-      [{ signal: 'time-window-co-edit', strength: 0.7, commits: ['sha-A', 'sha-B'] }]
-    );
-    const g2 = group(
-      [{ path: 'a.ts', startLine: 5, endLine: 15 }],
-      [{ signal: 'release-tag-delta', strength: 0.6, tags: ['v1.0.0', 'v1.1.0'] }]
-    );
-
-    const merged = mergeAnchorGroups([g1, g2]);
-    expect(merged).toHaveLength(1);
-
-    const signalsSeen = merged[0].evidence.map((e) => e.signal).sort();
-    expect(signalsSeen).toEqual(['release-tag-delta', 'time-window-co-edit']);
-
-    const timeWindow = merged[0].evidence.find((e) => e.signal === 'time-window-co-edit');
-    const releaseTag = merged[0].evidence.find((e) => e.signal === 'release-tag-delta');
-    expect(timeWindow?.commits).toEqual(['sha-A', 'sha-B']);
-    expect(releaseTag?.tags).toEqual(['v1.0.0', 'v1.1.0']);
+  it('does NOT match two pairs sharing only one hub anchor — the anti-chaining rule', () => {
+    // {hub, a} vs {hub, b}: hub matches hub, but a has no counterpart in the
+    // other and b has none here. This is exactly the hub-bridged pooling the
+    // 2-node secondary gate must reject.
+    expect(anchorSetsFullyMatch(pair('hub.ts', 'a.ts'), pair('hub.ts', 'b.ts'))).toBe(false);
   });
 
-  it('is order-independent — a shuffled input produces identical final groups', () => {
-    const a = group([{ path: 'x.ts', startLine: 1, endLine: 10 }], [{ signal: 'time-window-co-edit', strength: 0.5 }]);
-    const b = group([{ path: 'x.ts', startLine: 1, endLine: 10 }], [{ signal: 'association-rules', strength: 0.9 }]);
-    const c = group([{ path: 'x.ts' }], [{ signal: 'lexical-similarity', strength: 0.4 }]);
-    // Unrelated group on a different path — must stay its own component.
-    const d = group([{ path: 'y.ts' }, { path: 'z.ts' }], [{ signal: 'shared-config-key', strength: 0.8 }]);
-
-    const forward = mergeAnchorGroups([a, b, c, d]);
-    const shuffled = mergeAnchorGroups([d, c, b, a]);
-    const reversed = mergeAnchorGroups([c, a, d, b]);
-
-    expect(forward).toEqual(shuffled);
-    expect(forward).toEqual(reversed);
-
-    // a, b, c all overlap on x.ts → one component; d is separate → 2 groups.
-    expect(forward).toHaveLength(2);
-    const xGroup = forward.find((g) => g.anchors.some((anchor) => anchor.path === 'x.ts'));
-    expect(xGroup?.evidence.map((e) => e.signal).sort()).toEqual([
-      'association-rules',
-      'lexical-similarity',
-      'time-window-co-edit'
-    ]);
+  it('does NOT match sets of different sizes', () => {
+    expect(anchorSetsFullyMatch(pair('a.ts', 'b.ts'), [{ path: 'a.ts' }])).toBe(false);
   });
 
-  it('keeps non-overlapping groups separate', () => {
-    const g1 = group([{ path: 'a.ts' }, { path: 'b.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
-    const g2 = group([{ path: 'c.ts' }, { path: 'd.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
-    expect(mergeAnchorGroups([g1, g2])).toHaveLength(2);
-  });
-
-  it('does not collapse many distinct pairs sharing a hub whole-file anchor into one mega-group', () => {
-    // Regression for the whole-file transitive over-merge: package.json
-    // co-occurring with hundreds of unrelated files in independent pairs must
-    // NOT transitively chain those files together. Each {package.json, other-N}
-    // pair is a distinct candidate coupling and must stay its own group.
-    const groups: AnchorGroup[] = [];
-    for (let i = 0; i < 500; i++) {
-      groups.push(
-        group(
-          [{ path: 'package.json' }, { path: `other-${i}.ts`, startLine: 1, endLine: 5 }],
-          [{ signal: 'release-tag-delta', strength: 0.6, tags: [`v${i}`] }]
-        )
-      );
-    }
-    const merged = mergeAnchorGroups(groups);
-    expect(merged).toHaveLength(500);
-    for (const g of merged) {
-      expect(g.anchors).toHaveLength(2);
-      expect(g.evidence).toHaveLength(1);
-    }
-  });
-
-  it('does not merge 3+ distinct pairs sharing a common hub file/anchor', () => {
-    // hub.ts co-occurs with a.ts, b.ts, and c.ts in three separate,
-    // unrelated candidate couplings. None of these pairs share a second
-    // participant, so they must remain three separate groups rather than
-    // transitively unioning through the shared hub anchor.
-    const hubA = group([{ path: 'hub.ts' }, { path: 'a.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
-    const hubB = group([{ path: 'hub.ts' }, { path: 'b.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
-    const hubC = group([{ path: 'hub.ts' }, { path: 'c.ts' }], [{ signal: 'association-rules', strength: 0.9 }]);
-
-    const merged = mergeAnchorGroups([hubA, hubB, hubC]);
-    expect(merged).toHaveLength(3);
-    const participantSets = merged.map((g) =>
-      g.anchors
-        .map((a) => a.path)
-        .sort()
-        .join(',')
-    );
-    expect(new Set(participantSets)).toEqual(new Set(['a.ts,hub.ts', 'b.ts,hub.ts', 'c.ts,hub.ts']));
-  });
-
-  it('still merges the same two-file pairing independently observed by two different signals', () => {
-    // The legitimate case design decision 8 exists for: both association-rules
-    // and time-window flag {a.ts, b.ts} as coupled — this must still merge
-    // into one group with unioned evidence, even under the stricter full-match rule.
-    const viaAssociation = group(
-      [{ path: 'a.ts' }, { path: 'b.ts' }],
-      [{ signal: 'association-rules', strength: 0.9, commits: ['c1'] }]
-    );
-    const viaTimeWindow = group(
-      [
-        { path: 'a.ts', startLine: 10, endLine: 20 },
-        { path: 'b.ts', startLine: 10, endLine: 20 }
-      ],
-      [{ signal: 'time-window-co-edit', strength: 0.8, commits: ['c2'] }]
-    );
-    // A distinct, unrelated pair sharing only a.ts with the above — must not merge in.
-    const unrelated = group([{ path: 'a.ts' }, { path: 'z.ts' }], [{ signal: 'association-rules', strength: 0.7 }]);
-
-    const merged = mergeAnchorGroups([viaAssociation, viaTimeWindow, unrelated]);
-    expect(merged).toHaveLength(2);
-
-    const abGroup = merged.find((g) => g.anchors.some((a) => a.path === 'b.ts'));
-    expect(abGroup?.evidence.map((e) => e.signal).sort()).toEqual(['association-rules', 'time-window-co-edit']);
-
-    const azGroup = merged.find((g) => g.anchors.some((a) => a.path === 'z.ts'));
-    expect(azGroup?.evidence).toHaveLength(1);
-  });
-
-  it('does not merge groups whose ranges on a shared path fall below the IoU threshold', () => {
-    // Same path, but disjoint/low-overlap ranges and no whole-file anchor to
-    // bridge them — the all-ranged branch must keep them as separate components.
-    const g1 = group([{ path: 'a.ts', startLine: 1, endLine: 10 }], [{ signal: 'time-window-co-edit', strength: 0.5 }]);
-    const g2 = group(
-      [{ path: 'a.ts', startLine: 500, endLine: 510 }],
-      [{ signal: 'time-window-co-edit', strength: 0.5 }]
-    );
-    expect(mergeAnchorGroups([g1, g2])).toHaveLength(2);
-  });
-
-  it('returns [] for empty input', () => {
-    expect(mergeAnchorGroups([])).toEqual([]);
+  it('does NOT match same-path ranges whose IoU falls below the threshold', () => {
+    const first: Anchor[] = [{ path: 'a.ts', startLine: 1, endLine: 10 }, { path: 'b.ts' }];
+    const second: Anchor[] = [{ path: 'a.ts', startLine: 500, endLine: 510 }, { path: 'b.ts' }];
+    expect(anchorSetsFullyMatch(first, second)).toBe(false);
   });
 });
