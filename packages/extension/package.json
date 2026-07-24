@@ -2,7 +2,7 @@
   "name": "git-span-extension",
   "displayName": "Git Span",
   "description": "Exposes the Git Span CLI in VS Code.",
-  "version": "1.0.137",
+  "version": "1.0.138",
   "publisher": "goodfoot",
   "type": "module",
   "engines": {
@@ -33,7 +33,11 @@
       {
         "viewType": "gitSpan.spanFileViewer",
         "displayName": "Git Span Anchor Diff",
-        "selector": [{ "filenamePattern": "**/.span/**" }],
+        "selector": [
+          {
+            "filenamePattern": "**/.span/**"
+          }
+        ],
         "priority": "default"
       }
     ]
