@@ -7,7 +7,8 @@
     "build": "node scripts/build.js",
     "test": "vitest run",
     "lint": "biome check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "evaluate-recovery": "node --import tsx scripts/evaluate-recovery.mts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",

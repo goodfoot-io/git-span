@@ -22,6 +22,6 @@
     }
   },
   "files": {
-    "includes": ["src/**/*.ts", "test/**/*.ts", "*.ts", "scripts/**/*.js"]
+    "includes": ["src/**/*.ts", "test/**/*.ts", "*.ts", "scripts/**/*.js", "scripts/**/*.mts"]
   }
 }
