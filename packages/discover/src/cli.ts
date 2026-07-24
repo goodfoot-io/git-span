@@ -125,7 +125,7 @@ export async function discover(
   const withDisqualifiers = await Promise.all(
     survivors.map(async (group) => ({
       group,
-      disqualifiers: await Promise.all(ALL_DISQUALIFIERS.map((disqualifier) => disqualifier(group, ctx)))
+      disqualifiers: (await Promise.all(ALL_DISQUALIFIERS.map((disqualifier) => disqualifier(group, ctx)))).flat()
     }))
   );
 

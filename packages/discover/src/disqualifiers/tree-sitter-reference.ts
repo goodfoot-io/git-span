@@ -284,16 +284,22 @@ function referencesTarget(from: FileReferences, toPath: string): boolean {
 // Disqualifier
 // ---------------------------------------------------------------------------
 
+/**
+ * Stage 1 bridge: this disqualifier still evaluates the whole group and
+ * early-returns one verdict (unchanged pairwise logic) — Stage 3 converts it
+ * to per-edge collection. The single verdict is wrapped in an array here only
+ * to satisfy the new `Disqualifier` return shape.
+ */
 const treeSitterReferenceDisqualifier: Disqualifier = async (
   group: AnchorGroup,
   ctx: RepoContext
-): Promise<DisqualifierEvidence> => {
+): Promise<DisqualifierEvidence[]> => {
   const paths = distinctAnchorPaths(group.anchors);
 
   // A reference connects *two* anchors — a group over a single file (or none)
   // has nothing to connect. Evidence-neutral, and not a parse failure.
   if (paths.length < 2) {
-    return { disqualifier: DISQUALIFIER_NAME, strength: 0 };
+    return [{ disqualifier: DISQUALIFIER_NAME, strength: 0 }];
   }
 
   const outcomes = await Promise.all(paths.map((filePath) => parseFile(filePath, ctx)));
@@ -310,11 +316,13 @@ const treeSitterReferenceDisqualifier: Disqualifier = async (
     for (const toPath of paths) {
       if (toPath === fromPath) continue;
       if (referencesTarget(refs, toPath)) {
-        return {
-          disqualifier: DISQUALIFIER_NAME,
-          strength: REFERENCE_STRENGTH,
-          detail: `explicit reference: ${fromPath} -> ${toPath}`
-        };
+        return [
+          {
+            disqualifier: DISQUALIFIER_NAME,
+            strength: REFERENCE_STRENGTH,
+            detail: `explicit reference: ${fromPath} -> ${toPath}`
+          }
+        ];
       }
     }
   }
@@ -324,17 +332,19 @@ const treeSitterReferenceDisqualifier: Disqualifier = async (
   // rather than silently reporting a clean zero (design decision 6).
   if (anyParseFailed) {
     const failedPaths = paths.filter((filePath) => !parsed.has(filePath));
-    return {
-      disqualifier: DISQUALIFIER_NAME,
-      strength: 0,
-      inconclusive: true,
-      detail: `parse_failed: ${failedPaths.join(', ')}`
-    };
+    return [
+      {
+        disqualifier: DISQUALIFIER_NAME,
+        strength: 0,
+        inconclusive: true,
+        detail: `parse_failed: ${failedPaths.join(', ')}`
+      }
+    ];
   }
 
   // Every anchor parsed cleanly and none referenced another: evaluated,
   // nothing to disqualify.
-  return { disqualifier: DISQUALIFIER_NAME, strength: 0 };
+  return [{ disqualifier: DISQUALIFIER_NAME, strength: 0 }];
 };
 
 function distinctAnchorPaths(anchors: Anchor[]): string[] {

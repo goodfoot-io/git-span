@@ -116,13 +116,19 @@ function containsAsToken(haystack: string, needle: string): boolean {
   }
 }
 
+/**
+ * Stage 1 bridge: this disqualifier still evaluates the whole group and
+ * early-returns one verdict (unchanged pairwise logic) — Stage 3 converts it
+ * to per-edge collection. The single verdict is wrapped in an array here only
+ * to satisfy the new `Disqualifier` return shape.
+ */
 const rawPathInclusionDisqualifier: Disqualifier = async (
   group: AnchorGroup,
   ctx: RepoContext
-): Promise<DisqualifierEvidence> => {
+): Promise<DisqualifierEvidence[]> => {
   const { anchors } = group;
   if (anchors.length < 2) {
-    return { disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH };
+    return [{ disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH }];
   }
 
   for (const source of anchors) {
@@ -134,17 +140,19 @@ const rawPathInclusionDisqualifier: Disqualifier = async (
 
       for (const candidate of referenceCandidates(target)) {
         if (containsAsToken(content, candidate)) {
-          return {
-            disqualifier: EVIDENCE_LABEL,
-            strength: MATCH_STRENGTH,
-            detail: `${source.path} references ${target.path} via literal substring "${candidate}"`
-          };
+          return [
+            {
+              disqualifier: EVIDENCE_LABEL,
+              strength: MATCH_STRENGTH,
+              detail: `${source.path} references ${target.path} via literal substring "${candidate}"`
+            }
+          ];
         }
       }
     }
   }
 
-  return { disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH };
+  return [{ disqualifier: EVIDENCE_LABEL, strength: NO_MATCH_STRENGTH }];
 };
 
 export default rawPathInclusionDisqualifier;

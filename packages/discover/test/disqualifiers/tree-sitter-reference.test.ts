@@ -35,7 +35,7 @@ describe('tree-sitter-reference disqualifier', () => {
   });
 
   it('disqualifies a group whose files are connected by a TypeScript import', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('importer.ts', 'helper.ts'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('importer.ts', 'helper.ts'), ctx);
     expect(evidence.disqualifier).toBe('tree-sitter-reference');
     expect(evidence.strength).toBeGreaterThan(0);
     expect(evidence.inconclusive).toBeFalsy();
@@ -43,14 +43,14 @@ describe('tree-sitter-reference disqualifier', () => {
   });
 
   it('disqualifies a group whose files are connected by a Rust `use`', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('main.rs', 'widget.rs'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('main.rs', 'widget.rs'), ctx);
     expect(evidence.strength).toBeGreaterThan(0);
     expect(evidence.inconclusive).toBeFalsy();
     expect(evidence.detail).toContain('main.rs -> widget.rs');
   });
 
   it('is evidence-neutral (zero strength, not inconclusive) when two parseable files reference nothing', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('alpha.ts', 'beta.ts'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('alpha.ts', 'beta.ts'), ctx);
     expect(evidence.strength).toBe(0);
     expect(evidence.inconclusive).toBeFalsy();
   });
@@ -58,7 +58,7 @@ describe('tree-sitter-reference disqualifier', () => {
   // The parse-failure obligation: a file that cannot be parsed contributes
   // zero evidence in EITHER direction — not disqualifying, not corroborating.
   it('contributes zero evidence and flags inconclusive when an anchor is an unparseable .ts (syntax error)', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('broken.ts', 'alpha.ts'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('broken.ts', 'alpha.ts'), ctx);
     expect(evidence.strength).toBe(0);
     expect(evidence.inconclusive).toBe(true);
     expect(evidence.detail).toContain('parse_failed');
@@ -66,7 +66,7 @@ describe('tree-sitter-reference disqualifier', () => {
   });
 
   it('contributes zero evidence and flags inconclusive for unsupported-language anchors (.md / binary)', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('notes.md', 'blob.bin'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('notes.md', 'blob.bin'), ctx);
     expect(evidence.strength).toBe(0);
     expect(evidence.inconclusive).toBe(true);
     expect(evidence.detail).toContain('parse_failed');
@@ -75,20 +75,20 @@ describe('tree-sitter-reference disqualifier', () => {
   it('never lets a parse failure masquerade as a found reference (mixed parseable + unparseable, no real link)', async () => {
     // broken.ts fails to parse; alpha.ts parses but imports nothing. The
     // disqualifier must not invent a reference — strength stays 0.
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('broken.ts', 'alpha.ts', 'beta.ts'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('broken.ts', 'alpha.ts', 'beta.ts'), ctx);
     expect(evidence.strength).toBe(0);
     expect(evidence.inconclusive).toBe(true);
   });
 
   it('is evidence-neutral for a single-file group (nothing to connect)', async () => {
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('importer.ts'), ctx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('importer.ts'), ctx);
     expect(evidence.strength).toBe(0);
     expect(evidence.inconclusive).toBeFalsy();
   });
 
   it('does not throw on a degenerate repo with only unsupported files', async () => {
     const degenerateCtx = createRepoContext(buildSingleCommitRepo());
-    const evidence = await treeSitterReferenceDisqualifier(groupOf('a.txt', 'b.txt'), degenerateCtx);
+    const [evidence] = await treeSitterReferenceDisqualifier(groupOf('a.txt', 'b.txt'), degenerateCtx);
     expect(evidence.strength).toBe(0);
     expect(Number.isNaN(evidence.strength)).toBe(false);
     expect(evidence.inconclusive).toBe(true);

@@ -72,7 +72,7 @@ describe('raw-path-inclusion disqualifier', () => {
       score: 0
     };
 
-    const evidence = await rawPathInclusionDisqualifier(group, ctx);
+    const [evidence] = await rawPathInclusionDisqualifier(group, ctx);
     expect(evidence.disqualifier).toBe('raw-path-inclusion');
     expect(evidence.strength).toBeGreaterThan(0.5);
     expect(evidence.strength).toBeLessThan(1);
@@ -87,7 +87,7 @@ describe('raw-path-inclusion disqualifier', () => {
       evidence: [],
       score: 0
     };
-    const evidence = await rawPathInclusionDisqualifier(group, ctx);
+    const [evidence] = await rawPathInclusionDisqualifier(group, ctx);
     expect(evidence.strength).toBeGreaterThan(0);
     expect(evidence.strength).toBeLessThan(0.1);
   });
@@ -109,7 +109,7 @@ describe('raw-path-inclusion disqualifier', () => {
       score: 0
     };
 
-    const evidence = await rawPathInclusionDisqualifier(group, ctx);
+    const [evidence] = await rawPathInclusionDisqualifier(group, ctx);
     expect(evidence.strength).toBeGreaterThan(0);
     expect(evidence.strength).toBeLessThan(0.1);
   });

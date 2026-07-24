@@ -57,6 +57,28 @@ export interface DisqualifierEvidence {
    * not corroborating and not disqualifying.
    */
   inconclusive?: boolean;
+  /**
+   * The specific internal edge this verdict applies to. Absent only for the
+   * legacy <2-anchor no-op case (mirrors today's `anchors.length < 2` early
+   * return).
+   */
+  edge?: { a: Anchor; b: Anchor };
+}
+
+/**
+ * One node-pair's pooled evidence in the weighted graph (new `graph.ts`,
+ * must-have 1/2). Every signal's `AnchorGroup` already *is* one edge (exactly
+ * 2 anchors) — `Edge` is the container that carries that pair identity
+ * forward once evidence from multiple signals/groups is pooled per
+ * node-pair.
+ */
+export interface Edge {
+  a: Anchor;
+  b: Anchor;
+  /** Every signal's evidence observed for this specific anchor pair. */
+  evidence: SignalEvidence[];
+  /** `scoreEvidence(evidence)` — this edge's own score. */
+  weight: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,4 +202,4 @@ export interface RepoContext {
 
 export type Signal = (ctx: RepoContext) => Promise<AnchorGroup[]>;
 
-export type Disqualifier = (group: AnchorGroup, ctx: RepoContext) => Promise<DisqualifierEvidence>;
+export type Disqualifier = (group: AnchorGroup, ctx: RepoContext) => Promise<DisqualifierEvidence[]>;

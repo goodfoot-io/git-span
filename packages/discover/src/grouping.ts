@@ -107,7 +107,7 @@ class UnionFind {
  * bounding range so the group carries one anchor per distinct region rather
  * than a pile of near-duplicates.
  */
-function collapseAnchors(anchors: Anchor[]): Anchor[] {
+export function collapseAnchors(anchors: Anchor[]): Anchor[] {
   const ranges = new Map<string, Array<[number, number]>>();
   const wholeFile = new Set<string>();
 
