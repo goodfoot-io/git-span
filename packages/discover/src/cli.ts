@@ -39,7 +39,7 @@ import { edgeKey, resolveCandidate } from './disqualifier-resolution.js';
 import * as disqualifiers from './disqualifiers/index.js';
 import { isNotAGitRepoError } from './git.js';
 import { buildGraph, type GraphNode, type WeightedGraph } from './graph.js';
-import { anchorSetsFullyMatch, collapseAnchors } from './grouping.js';
+import { anchorSetsFullyMatch, anchorsOverlap, collapseAnchors } from './grouping.js';
 import { type DiscoveredGroup, toJson, toMarkdown } from './output.js';
 import { createRepoContext } from './prefilter.js';
 import { createRenameResolver, dedupeResolvedByAnchorSet, type ResolvedWithPayload } from './rename-tracking.js';
@@ -291,18 +291,42 @@ export async function discover(
     // 3+-node candidate: per-edge disqualifier resolution, then reportThreshold
     // on the min-edge weight. A disqualified edge becomes one more missing edge
     // (never a score subtraction); >1 total gaps drop the candidate.
-    const pathToNodeId = new Map<string, number>();
+    //
+    // Node identity is per-path but NOT one-node-per-path: two disjoint
+    // same-path range anchors with no whole-file anchor to bridge them fuse
+    // into two distinct GraphNodes sharing an identical path (graph.ts's
+    // node-identity note). A plain `Map<path, nodeId>` silently drops one of
+    // them on a same-path collision, misattributing that node's disqualifier
+    // verdicts onto the other same-path node's edges. Group candidate node ids
+    // by path instead, and disambiguate a collision by checking which node's
+    // own anchors the verdict's edge anchor actually overlaps.
+    const nodeIdsByPath = new Map<string, number[]>();
     for (const id of sortedIds) {
       const nodePath = nodePathById.get(id);
-      if (nodePath !== undefined) pathToNodeId.set(nodePath, id);
+      if (nodePath === undefined) continue;
+      const list = nodeIdsByPath.get(nodePath) ?? [];
+      list.push(id);
+      nodeIdsByPath.set(nodePath, list);
+    }
+
+    function resolveNodeIdForAnchor(anchor: Anchor): number | undefined {
+      const ids = nodeIdsByPath.get(anchor.path);
+      if (!ids) return undefined;
+      if (ids.length === 1) return ids[0];
+      return ids.find((id) => {
+        for (const nodeAnchors of graph.nodes[id].anchorsByEdge.values()) {
+          if (nodeAnchors.some((a) => anchorsOverlap(a, anchor))) return true;
+        }
+        return false;
+      });
     }
 
     const dq = await runDisqualifiers(anchors);
     const disqualifiersByEdge = new Map<string, DisqualifierEvidence[]>();
     for (const d of dq) {
       if (!d.edge) continue;
-      const na = pathToNodeId.get(d.edge.a.path);
-      const nb = pathToNodeId.get(d.edge.b.path);
+      const na = resolveNodeIdForAnchor(d.edge.a);
+      const nb = resolveNodeIdForAnchor(d.edge.b);
       if (na === undefined || nb === undefined) continue;
       const key = edgeKey(na, nb);
       const list = disqualifiersByEdge.get(key) ?? [];

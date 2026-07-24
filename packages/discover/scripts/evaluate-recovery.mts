@@ -41,6 +41,50 @@
  * a `.ts` extension both fail in some sandboxes (missing top-level-await
  * support under esbuild's cjs output) — `.mts` + `node --import tsx` is the
  * combination confirmed to work, per `notes/rejected-grouping-alternatives.md`.
+ *
+ * ---------------------------------------------------------------------------
+ * READ THIS BEFORE COMPARING THE "final pipeline" ROW TO ANY ALTERNATIVE ROW:
+ * the columns below are NOT computed by equivalent functions over equivalent
+ * substrates, and a naive side-by-side reading gets the rejection rationale
+ * backwards.
+ *
+ *  - The final-pipeline row is **blind extraction**: `discover()` runs
+ *    end-to-end and must find each ground-truth group among *every* file in
+ *    the repo, subject to every real constraint that exists in production —
+ *    `EDGE_THRESHOLD`, near-clique extraction, disqualifier resolution,
+ *    subset suppression, rename resolution, PASS1/PASS2 gating, and (the
+ *    dominant one on this repo) `MAX_CLIQUE_COMPONENT_SIZE` skipping n-ary
+ *    search entirely for the repo's one oversized hub component — any
+ *    ground-truth span living in that component is structurally unrecoverable
+ *    as an n-ary group regardless of threshold tuning. The script prints the
+ *    live-measured size of that skipped component (captured from
+ *    `clique-extraction.ts`'s own stderr diagnostic, not hardcoded) right
+ *    above the final-pipeline row so this isn't left for a reader to infer.
+ *  - Every "rejected alternative" row is **oracle-fed cohesion checking**:
+ *    `classifyByQualifyingRule` / `classifyBySeededGrowth` are handed the
+ *    ground-truth span's own file set directly (`[...span.paths]`) and only
+ *    ask whether that span's *own internal pairs* qualify under the rule —
+ *    they never search the repo, never compete against the hub component,
+ *    never run suppression/rename/gating. This is an upper bound on
+ *    qualification, not a real extractor's output, and it is why two of the
+ *    four alternatives can show higher raw recall than the shipped pipeline
+ *    on this run despite being rejected — they were never tested against the
+ *    same obstacles.
+ *  - The two column families also don't share a substrate: `computePairwiseEvidence`
+ *    pools evidence per **whole-file** path pair (`anchors.length !== 2` is
+ *    dropped), not the range-aware per-path-fused node identity the real
+ *    `graph.ts` builds, so even where an alternative's rule and the shipped
+ *    pipeline agree conceptually, they are scoring different graphs.
+ *
+ * CARD.md's real rejection rationale for these alternatives is about
+ * **density**, not recall alone (e.g. two-tier: 105,365 -> 67,961 qualifying
+ * repo-wide edges for a *worse* recall outcome; see
+ * `notes/rejected-grouping-alternatives.md`). Each alternative row below now
+ * prints a live-computed repo-wide qualifying-edge count (or, for seeded
+ * growth, an explosion count against the same 50-node density cap the
+ * original studies used) alongside strict/near recall, so the density half
+ * of the rejection is visible in the same place as the recall half.
+ * ---------------------------------------------------------------------------
  */
 
 import * as fs from 'node:fs';
@@ -217,6 +261,43 @@ function formatSummary(label: string, summary: RecoverySummary): string {
   return `${label}: ${summary.strict}/${summary.total} strict, ${summary.near}/${summary.total} near`;
 }
 
+/**
+ * Runs `fn`, capturing every line written to `process.stderr` while it runs,
+ * without suppressing it from the real stderr stream (the caller still sees
+ * anything logged). Used to capture `clique-extraction.ts`'s
+ * `MAX_CLIQUE_COMPONENT_SIZE` skip diagnostic live, so the final-pipeline
+ * row's hub-component caveat reports this run's real component size instead
+ * of a number frozen at spike time.
+ */
+async function captureStderr<T>(fn: () => Promise<T>): Promise<{ result: T; stderrLines: string[] }> {
+  const lines: string[] = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((
+    chunk: string | Uint8Array,
+    ...rest: Parameters<typeof originalWrite> extends [unknown, ...infer Rest] ? Rest : never[]
+  ): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+    return originalWrite(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  try {
+    const result = await fn();
+    return { result, stderrLines: lines };
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+}
+
+/** Parses the oversized-component size(s) out of clique-extraction.ts's own skip diagnostic, live from this run's stderr — not hardcoded from any historical spike. */
+function parseSkippedHubComponentSizes(stderrLines: readonly string[]): number[] {
+  const sizes: number[] = [];
+  const pattern = /component of (\d+) nodes exceeds MAX_CLIQUE_COMPONENT_SIZE/;
+  for (const line of stderrLines) {
+    const match = pattern.exec(line);
+    if (match) sizes.push(Number(match[1]));
+  }
+  return sizes;
+}
+
 // ---------------------------------------------------------------------------
 // Shared pairwise-weight computation for the four rejected alternatives.
 //
@@ -270,6 +351,29 @@ function computePairwiseWeights(evidenceByPair: ReadonlyMap<string, SignalEviden
     out.set(key, { weight: scoreEvidence(evidence), labels: new Set(evidence.map((e) => e.signal)) });
   }
   return out;
+}
+
+/**
+ * Repo-wide count of scored pairs satisfying `qualifies` — the density
+ * indicator `notes/rejected-grouping-alternatives.md`'s original studies
+ * used to reject these alternatives (e.g. two-tier: 105,365 -> 67,961
+ * qualifying edges repo-wide), computed live here rather than quoted from
+ * that historical note, so it tracks this run's real repo state.
+ */
+function countQualifyingEdges(
+  weights: ReadonlyMap<string, PairInfo>,
+  qualifies: (a: string, b: string) => boolean
+): { qualifying: number; total: number } {
+  let qualifying = 0;
+  let total = 0;
+  for (const key of weights.keys()) {
+    // pairKey() joins with a NUL separator (not a space — file paths can
+    // legitimately contain spaces), matching buildAdjacency()'s own split.
+    const [a, b] = key.split('\0');
+    total++;
+    if (qualifies(a, b)) qualifying++;
+  }
+  return { qualifying, total };
 }
 
 /** Raw pairwise weight, defaulting to the neutral `scoreEvidence([]) = 0.5` for a pair with no evidence at all. */
@@ -419,21 +523,29 @@ function bestSeedPair(weights: ReadonlyMap<string, PairInfo>, paths: readonly st
   return best;
 }
 
-function classifyBySeededGrowth(
+/**
+ * Returns both the recovery verdict and whether growth hit the
+ * `SEEDED_GROWTH_MAX_SIZE` density cap — the density indicator for this
+ * alternative (mirroring the original studies' "density stress test",
+ * `notes/rejected-grouping-alternatives.md` section 4: growth exploding past
+ * the same 50-node cap even from a strong seed is itself the rejection
+ * reason, independent of recall).
+ */
+function classifyBySeededGrowthWithDensity(
   weights: ReadonlyMap<string, PairInfo>,
   adjacency: ReadonlyMap<string, { neighbor: string; weight: number }[]>,
   span: GroundTruthSpan,
   params: SeededGrowthParams
-): RecoveryVerdict {
+): { verdict: RecoveryVerdict; exploded: boolean } {
   const paths = [...span.paths];
-  if (paths.length < 2) return 'none';
+  if (paths.length < 2) return { verdict: 'none', exploded: false };
   const [seedA, seedB] = bestSeedPair(weights, paths);
   const { members, exploded } = growSeededCluster(weights, adjacency, seedA, seedB, params);
-  if (exploded) return 'none';
+  if (exploded) return { verdict: 'none', exploded: true };
   const diff = symmetricDifferenceSize(members, span.paths);
-  if (diff === 0) return 'strict';
-  if (diff <= 1) return 'near';
-  return 'none';
+  if (diff === 0) return { verdict: 'strict', exploded: false };
+  if (diff <= 1) return { verdict: 'near', exploded: false };
+  return { verdict: 'none', exploded: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,8 +585,18 @@ async function run(repoRoot: string): Promise<void> {
   log();
 
   // -- Final pipeline (the shipped implementation) ---------------------------
-  log('-- Final pipeline (discover()) --');
-  const finalGroups = await discover(repoRoot);
+  log('-- Final pipeline (discover()) — BLIND EXTRACTION over the whole real repo --');
+  const { result: finalGroups, stderrLines } = await captureStderr(() => discover(repoRoot));
+  const skippedHubSizes = parseSkippedHubComponentSizes(stderrLines);
+  if (skippedHubSizes.length > 0) {
+    log(
+      `NOTE: this run skipped n-ary search entirely for ${skippedHubSizes.length === 1 ? 'a' : skippedHubSizes.length} ` +
+        `hub component(s) of size ${skippedHubSizes.join(', ')} node(s) (MAX_CLIQUE_COMPONENT_SIZE guard). Any ` +
+        'ground-truth span living inside that component cannot be recovered as an n-ary group this run, no matter ' +
+        'how the threshold is tuned — this alone depresses the row below relative to every "rejected alternative" ' +
+        'row (none of which are subject to this or any other real extraction constraint; see the module doc comment).'
+    );
+  }
   const finalVerdicts = groundTruth.map((span) => classifyRecovery(span, finalGroups));
   log(formatSummary('final pipeline', summarize(finalVerdicts)));
   for (const [span, verdict] of groundTruth.map((s, i) => [s, finalVerdicts[i]] as const)) {
@@ -483,45 +605,69 @@ async function run(repoRoot: string): Promise<void> {
   log();
 
   // -- Rejected alternatives (executed live, not hardcoded) ------------------
+  log(
+    'NOTE ON EVERY ROW BELOW: these are ORACLE-FED COHESION CHECKS, not blind extraction. Each rule is handed a ' +
+      "ground-truth span's own file set directly and only asks whether that span's internal pairs qualify — it " +
+      'never searches the repo for the group, never competes against the hub component skipped above, and never ' +
+      'runs subset suppression/rename resolution/PASS1-PASS2 gating. Treat these as an upper bound on ' +
+      'qualification under each rule, not as what a real extractor built on that rule would actually report. ' +
+      'They also score a different substrate than the final pipeline: whole-file pairwise evidence, not the ' +
+      'range-aware fused node graph.ts builds. Recall numbers here are therefore not directly comparable to the ' +
+      "final-pipeline row above — the density/edge-count figures printed alongside each rule are what CARD.md's " +
+      'rejection rationale actually turns on.'
+  );
+  log();
   const ctx = createRepoContext(repoRoot);
   const evidenceByPair = await computePairwiseEvidence(ctx);
   const weights = computePairwiseWeights(evidenceByPair);
   const adjacency = buildAdjacency(weights);
 
-  log('-- Rejected alternative 1: two-tier qualification --');
+  log('-- Rejected alternative 1: two-tier qualification (oracle-fed cohesion check) --');
   const twoTierVerdicts = groundTruth.map((span) =>
     classifyByQualifyingRule([...span.paths], (a, b) => twoTierQualifies(weights, a, b))
   );
+  const twoTierDensity = countQualifyingEdges(weights, (a, b) => twoTierQualifies(weights, a, b));
   log(formatSummary('two-tier', summarize(twoTierVerdicts)));
+  log(`  density: ${twoTierDensity.qualifying}/${twoTierDensity.total} repo-wide pairs qualify`);
   log();
 
-  log('-- Rejected alternative 2: mutual top-K sparsification --');
+  log('-- Rejected alternative 2: mutual top-K sparsification (oracle-fed cohesion check) --');
   for (const k of TOP_K_VALUES) {
     const verdicts = groundTruth.map((span) =>
       classifyByQualifyingRule([...span.paths], (a, b) => mutualTopKQualifies(adjacency, k, a, b))
     );
+    const density = countQualifyingEdges(weights, (a, b) => mutualTopKQualifies(adjacency, k, a, b));
+    const nodeCount = adjacency.size;
+    const avgDegree = nodeCount > 0 ? ((2 * density.qualifying) / nodeCount).toFixed(1) : '0.0';
     log(formatSummary(`  K=${k}`, summarize(verdicts)));
+    log(`    density: ${density.qualifying}/${density.total} repo-wide pairs qualify, avg degree ${avgDegree}`);
   }
   log();
 
-  log('-- Rejected alternative 3: naive seeded local growth --');
+  log('-- Rejected alternative 3: naive seeded local growth (oracle-fed cohesion check) --');
   for (const highT of NAIVE_HIGH_T) {
     for (const lowT of NAIVE_LOW_T) {
-      const verdicts = groundTruth.map((span) =>
-        classifyBySeededGrowth(weights, adjacency, span, { highT, lowT, allMemberAdmission: false })
+      const results = groundTruth.map((span) =>
+        classifyBySeededGrowthWithDensity(weights, adjacency, span, { highT, lowT, allMemberAdmission: false })
       );
+      const verdicts = results.map((r) => r.verdict);
+      const explodedCount = results.filter((r) => r.exploded).length;
       log(formatSummary(`  highT=${highT}, lowT=${lowT}`, summarize(verdicts)));
+      log(`    density: ${explodedCount}/${groundTruth.length} span-seeded clusters exploded past the 50-node cap`);
     }
   }
   log();
 
-  log('-- Rejected alternative 4: corrected all-member seeded growth --');
+  log('-- Rejected alternative 4: corrected all-member seeded growth (oracle-fed cohesion check) --');
   for (const highT of CORRECTED_HIGH_T) {
     for (const lowT of CORRECTED_LOW_T) {
-      const verdicts = groundTruth.map((span) =>
-        classifyBySeededGrowth(weights, adjacency, span, { highT, lowT, allMemberAdmission: true })
+      const results = groundTruth.map((span) =>
+        classifyBySeededGrowthWithDensity(weights, adjacency, span, { highT, lowT, allMemberAdmission: true })
       );
+      const verdicts = results.map((r) => r.verdict);
+      const explodedCount = results.filter((r) => r.exploded).length;
       log(formatSummary(`  highT=${highT}, lowT=${lowT}`, summarize(verdicts)));
+      log(`    density: ${explodedCount}/${groundTruth.length} span-seeded clusters exploded past the 50-node cap`);
     }
   }
 

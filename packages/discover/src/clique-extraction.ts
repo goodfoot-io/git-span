@@ -23,14 +23,7 @@
  */
 
 import type { WeightedGraph } from './graph.js';
-
-/**
- * Governs which edges participate in the clique search's topology (plan
- * "Near-clique extraction" step 1). Duplicated locally rather than imported
- * from `scoring.ts` — Stage 4 centralizes this constant there alongside
- * `reportThreshold`; Stage 2's file ownership is scoped to this module only.
- */
-const EDGE_THRESHOLD = 0.85;
+import { EDGE_THRESHOLD } from './scoring.js';
 
 /**
  * Connected components larger than this are logged to stderr and skipped

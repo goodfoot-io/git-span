@@ -446,4 +446,77 @@ describe('Stage 4 n-ary near-clique grouping', () => {
     // No 2-node subset leaked through.
     expect(groups.every((g) => g.anchors.length === 3)).toBe(true);
   });
+
+  // -- (g) --------------------------------------------------------------------
+  it('(g) attributes a firing disqualifier to the specific same-path node it names, not an arbitrary same-path collision', async () => {
+    // romeo.ts contributes two disjoint, non-overlapping range anchors (a
+    // 40-line gap — no whole-file anchor bridges them) — two distinct
+    // GraphNodes sharing one path (graph.ts's node-identity note). sierra.ts
+    // references romeo.ts by filename, so raw-path-inclusion fires exactly
+    // once for the (romeo.ts, sierra.ts) *path* pair — the disqualifier
+    // dedupes to one anchor per distinct path, always the lower-range anchor
+    // (romeo.ts#1-10) as its representative, never romeo.ts#50-60.
+    //
+    // A same-path-collision bug in evaluateCandidate's path→node lookup would
+    // misattribute that verdict to whichever romeo.ts node happens to
+    // overwrite the map last, rather than the node the verdict's anchor
+    // actually names — silently swapping which of the two romeo.ts–sierra.ts
+    // edges gets demoted and changing the reported score.
+    const romeoLines = `${Array.from({ length: 80 }, (_, i) => `// romeo line ${i + 1}`).join('\n')}\n`;
+    commitFiles({
+      'romeo.ts': romeoLines,
+      'sierra.ts': '// references romeo.ts elsewhere\nconst sierra = 1;\n'
+    });
+
+    const rangeA = { path: 'romeo.ts', startLine: 1, endLine: 10 };
+    const rangeB = { path: 'romeo.ts', startLine: 50, endLine: 60 };
+    const nodeM = { path: 'sierra.ts' };
+    const sig = (signal: string, strength: number): SignalEvidence => ({ signal, strength });
+    // Strong enough (three corroborating signals) that its post-disqualifier
+    // weight (~0.877) still clears EDGE_THRESHOLD (0.85) — margin chosen so
+    // the edge survives demotion rather than becoming a second missing edge,
+    // isolating the attribution question from the missing-edge budget.
+    const mAssocs = [assoc(1), sig('shared-config-key', 1), sig('release-tag-delta', 0.3)];
+    // Deliberately between rangeA–sierra's post-disqualifier weight (~0.877)
+    // and rangeA–romeo's raw weight (~0.994), so whichever edge the
+    // disqualifier actually lands on determines the candidate's min-edge
+    // score.
+    const bAssocs = [assoc(0.85)];
+
+    signalOverride.value = [
+      // romeo.ts's two ranges: a real (test-only) edge between them so the
+      // candidate isn't dropped by their otherwise-unavoidable structural
+      // gap — isolating the disqualifier-attribution behavior under test.
+      { anchors: [rangeA, rangeB], evidence: [assoc(1)], score: 0 },
+      // rangeA–sierra: multi-signal evidence strong enough to survive even a
+      // firing raw-path-inclusion disqualifier (correctly attributed here,
+      // this edge stays present, just demoted in weight).
+      { anchors: [rangeA, nodeM], evidence: mAssocs, score: 0 },
+      // rangeB–sierra: a single, weaker signal that collapses well below
+      // EDGE_THRESHOLD if the disqualifier is (wrongly) attributed here
+      // instead.
+      { anchors: [rangeB, nodeM], evidence: bAssocs, score: 0 }
+    ];
+
+    const groups = await discover(repoRoot);
+    expect(groups).toHaveLength(1);
+
+    // Both romeo.ts ranges are reported as distinct anchors alongside
+    // sierra.ts — the same-path multi-node shape this fix targets.
+    const json = JSON.parse(toJson(groups));
+    expect([...json.groups[0].anchors].sort()).toEqual(['romeo.ts#L1-L10', 'romeo.ts#L50-L60', 'sierra.ts'].sort());
+
+    const dqVerdict = { disqualifier: 'raw-path-inclusion', strength: 1 - 0.02 };
+    // Correct attribution: rangeA–sierra is demoted but survives (strong
+    // multi-signal evidence) → 0 missing edges → score is the min present
+    // edge, landing on the demoted rangeA–sierra weight.
+    const correctScore = scoreEvidence(mAssocs, [dqVerdict]);
+    // The misattribution bug instead wrongly demotes rangeB–sierra below
+    // EDGE_THRESHOLD (a real missing edge) while leaving rangeA–sierra at its
+    // full, undemoted weight — 1 missing edge, and a score pinned to the
+    // gap's raw (undisqualified) weight instead.
+    const buggyScore = Math.min(scoreEvidence([assoc(1)]), scoreEvidence(mAssocs), scoreEvidence(bAssocs));
+    expect(correctScore).toBeLessThan(buggyScore - 0.05);
+    expect(groups[0].score).toBeCloseTo(correctScore, 3);
+  });
 });

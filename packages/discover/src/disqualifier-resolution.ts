@@ -23,17 +23,8 @@
  */
 
 import type { WeightedGraph } from './graph.js';
-import { scoreEvidence } from './scoring.js';
+import { EDGE_THRESHOLD, scoreEvidence } from './scoring.js';
 import type { DisqualifierEvidence } from './types.js';
-
-/**
- * Governs whether a candidate's internal edge survives disqualifier
- * resolution. Duplicated locally rather than imported from `scoring.ts` —
- * Stage 4 centralizes this constant there alongside `reportThreshold`;
- * Stage 3's file ownership is scoped to this module (and the disqualifiers)
- * only.
- */
-const EDGE_THRESHOLD = 0.85;
 
 /**
  * The subset of `clique-extraction.ts`'s `Candidate` this module needs —
