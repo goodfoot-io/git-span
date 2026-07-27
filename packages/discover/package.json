@@ -1,0 +1,29 @@
+{
+  "name": "discover",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": "./src/bin/discover.ts",
+  "scripts": {
+    "test": "vitest-unchanged",
+    "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test && jsdoczoom -l",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "tsx": "^4.19.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.14",
+    "@types/node": "24.x",
+    "@typescript/native-preview": "^7.0.0-dev",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

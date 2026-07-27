@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Standalone `claude` launcher preloaded with the HeyGen HyperFrames plugin
+# and the official Figma plugin (MCP server + Agent Skills).
+#
+# Runs Claude Code against its own config dir so the marketplaces and plugins
+# installed here never touch ~/.claude. On first run (and whenever a plugin
+# is missing) it adds each plugin's marketplace and installs the plugin,
+# then execs claude with every argument passed through.
+#
+#   hyperframes                       # interactive session with the plugins loaded
+#   hyperframes -p "make a promo"     # non-interactive
+#   HYPERFRAMES_UPDATE=1 hyperframes  # refresh marketplaces + plugins first
+#
+# Figma's MCP server still needs a one-time OAuth authorization after
+# install: run `/plugin`, open the Installed tab, select the figma server,
+# and follow the browser prompt to click "Allow access".
+
+set -euo pipefail
+
+# marketplace-source:marketplace-name:plugin@marketplace-name
+PLUGINS=(
+  "heygen-com/hyperframes:hyperframes:hyperframes@hyperframes"
+  ":claude-plugins-official:figma@claude-plugins-official"
+)
+
+CONFIG_DIR="${HYPERFRAMES_CONFIG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hyperframes-cli/claude}"
+export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR"
+
+command -v claude >/dev/null 2>&1 || {
+  echo "hyperframes: 'claude' CLI not found on PATH" >&2
+  exit 127
+}
+
+# Reuse the ambient login instead of forcing a second `claude /login` in the
+# isolated config dir. Symlink so a re-auth in ~/.claude carries over.
+HOST_CREDS="${HOME}/.claude/.credentials.json"
+if [[ -f "$HOST_CREDS" && ! -e "$CONFIG_DIR/.credentials.json" ]]; then
+  ln -s "$HOST_CREDS" "$CONFIG_DIR/.credentials.json"
+fi
+
+plugin_ready() {
+  claude plugin list 2>/dev/null | grep -qF "$1"
+}
+
+bootstrap() {
+  local marketplace="$1" marketplace_name="$2" plugin="$3"
+  if [[ -n "$marketplace" ]] && ! claude plugin marketplace list 2>/dev/null | grep -qF "$marketplace"; then
+    echo "hyperframes: adding marketplace $marketplace…" >&2
+    claude plugin marketplace add "$marketplace" >&2
+  fi
+  echo "hyperframes: installing plugin $plugin…" >&2
+  claude plugin install "$plugin" --scope user >&2
+}
+
+for entry in "${PLUGINS[@]}"; do
+  IFS=: read -r marketplace marketplace_name plugin <<<"$entry"
+  if [[ "${HYPERFRAMES_UPDATE:-0}" == "1" ]]; then
+    claude plugin marketplace update "$marketplace_name" >&2 || true
+    plugin_ready "$plugin" && claude plugin update "$plugin" >&2 || bootstrap "$marketplace" "$marketplace_name" "$plugin"
+  elif ! plugin_ready "$plugin"; then
+    bootstrap "$marketplace" "$marketplace_name" "$plugin"
+  fi
+done
+
+exec env claude "$@"
