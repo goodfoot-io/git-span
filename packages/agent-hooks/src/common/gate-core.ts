@@ -519,7 +519,8 @@ export interface GateMemoState {
  *   the gate fails open and must never brick a commit.
  * - `allow` / `already-presented` — debt is present, but this exact debt state
  *   was already presented once (semantic-staleness or uncovered-writes
- *   consider-once, or an unchanged state). The command passes.
+ *   consider-once, an unchanged retry, or a state already shown in full by a
+ *   prior `'inform'` preview). The command passes.
  * - `allow` / `environmental` — the changeset's only staleness rows are
  *   terminal/environmental conditions (`CONFLICT`, `SUBMODULE`, `LFS_*`,
  *   `PROMISOR_MISSING`, `SPARSE_EXCLUDED`, `FILTER_FAILED`, `IO_ERROR`) the CLI
@@ -538,16 +539,22 @@ export interface GateMemoState {
  *   instead of staying silent. There is no debt-state to memoize: every
  *   evaluation of a still-failing scan warns again.
  * - `deny` / `semantic-staleness` — the changeset carries semantic staleness,
- *   and this exact findings digest has not been presented before. Deny
- *   **once**, listing `findings` as a checklist in `reason`; an identical
- *   retry (unchanged findings) falls through to the environmental and
- *   uncovered checks and resolves to `already-presented` when otherwise
- *   clean. Changed findings (a new digest) deny fresh (consider-once per
- *   distinct debt state, per design-decisions.md #1).
+ *   and this exact findings digest has not been presented before *and* was
+ *   not already shown in full by a prior `'inform'` preview. Deny **once**,
+ *   listing `findings` as a checklist in `reason`; an identical retry
+ *   (unchanged findings) falls through to the environmental and uncovered
+ *   checks and resolves to `already-presented` when otherwise clean. Changed
+ *   findings (a new digest) deny fresh (consider-once per distinct debt
+ *   state, per design-decisions.md #1). The gate is informational, not a hard
+ *   block — a bare retry already gets past a deny — so a state the agent has
+ *   already seen via `'inform'` resolves straight to `already-presented`
+ *   instead of denying a second time for no gain.
  * - `deny` / `uncovered-writes` — the changeset has changed files no span
- *   covers, and this state has not been presented before. Deny **once**, listing
- *   `uncovered`; the retry with an unchanged state resolves to `already-presented`
- *   and passes (consider-once, per design-decisions.md #3).
+ *   covers, and this state has not been presented before *and* was not
+ *   already shown in full by a prior `'inform'` preview. Deny **once**,
+ *   listing `uncovered`; the retry with an unchanged state — or a state
+ *   already shown via `'inform'` — resolves to `already-presented` and
+ *   passes (consider-once, per design-decisions.md #3).
  * - `allow` / `semantic-staleness-info`, `allow` / `uncovered-writes-info` —
  *   `'inform'`-mode-only counterparts of the two `deny` kinds above: same
  *   `findings`/`uncovered`/`reason` payload, but never denies and never
@@ -610,10 +617,14 @@ export type GateMode = 'enforce' | 'inform';
  * minus `.span/**`, and paths matched by the repo's `.span/.gateignore` — see
  * {@link file://./gate-ignore.ts}, loaded directly from disk via
  * `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
- * `deny`/`uncovered-writes` the first time that state is seen, then
- * `allow`/`already-presented` on retry. `MOVED` and `RESOLVED_PENDING_COMMIT`
- * never contribute to any branch and never deny. Any internal error resolves
- * to `allow`/`silent` — the gate fails open and never bricks a commit.
+ * `deny`/`uncovered-writes` the first time that state is both unpresented and
+ * unseen, then `allow`/`already-presented` on retry — or immediately, if a
+ * prior `'inform'` preview already showed this exact state in full: the gate
+ * is informational (a bare retry already gets past a deny), so there is
+ * nothing to gain from denying a state the agent has already been told
+ * about. `MOVED` and `RESOLVED_PENDING_COMMIT` never contribute to any branch
+ * and never deny. Any internal error resolves to `allow`/`silent` — the gate
+ * fails open and never bricks a commit.
  *
  * A {@link GateScanError} from `executors.stale` is the one case handled
  * outside that flow: a scan that *could not complete* (e.g. an unreadable
@@ -696,7 +707,13 @@ export async function evaluateGate(
         decision: 'allow',
         kind: 'uncovered-writes-info',
         uncovered,
-        reason: renderUncoveredReason(uncovered, covering, 'inform', seen)
+        reason: renderUncoveredReason(
+          uncovered,
+          covering,
+          await fetchSpanBlocks(executors, covering, cwd),
+          'inform',
+          seen
+        )
       };
     }
 
@@ -706,19 +723,28 @@ export async function evaluateGate(
     let semanticAlreadyPresented = false;
     if (semantic.length > 0) {
       const semanticDigest = gateStateDigest(semantic, []);
-      if (!memoState.has(semanticDigest)) {
+      if (memoState.has(semanticDigest)) {
+        semanticAlreadyPresented = true;
+      } else if (memoState.has(`seen-${semanticDigest}`)) {
+        // Already explained in full by a prior `inform` (status) preview. The
+        // gate is informational, not a hard block — it can already be gotten
+        // past by simply retrying the command, so denying a state the agent
+        // has already been shown buys nothing; record the deny credit too so
+        // this digest reads as presented from here on, and let it through.
+        memoState.record(semanticDigest);
+        semanticAlreadyPresented = true;
+      } else {
         // A non-persisting memo write would turn "deny once, then allow the
         // retry" into "deny every time" with no escape — fail open instead.
         if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
-        const seen = wasAlreadySeen(memoState, semanticDigest);
+        memoState.record(`seen-${semanticDigest}`);
         return {
           decision: 'deny',
           kind: 'semantic-staleness',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'enforce', seen)
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'enforce')
         };
       }
-      semanticAlreadyPresented = true;
     }
 
     // Environmental conditions are not a span edit away from resolution: fail
@@ -759,15 +785,24 @@ export async function evaluateGate(
     // fresh deny on its own.
     const digest = gateStateDigest([], uncovered);
     if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
+    if (memoState.has(`seen-${digest}`)) {
+      // Already explained in full by a prior `inform` (status) preview — the
+      // gate is informational and a retry alone already gets past it, so
+      // denying a state the agent has already been shown buys nothing.
+      // Record the deny credit so this digest reads as presented from here
+      // on, and let it through.
+      memoState.record(digest);
+      return { decision: 'allow', kind: 'already-presented' };
+    }
     // A non-persisting memo write would turn "deny once, then allow the retry"
     // into "deny every time" with no escape — fail open rather than deny.
     if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
-    const seen = wasAlreadySeen(memoState, digest);
+    memoState.record(`seen-${digest}`);
     return {
       decision: 'deny',
       kind: 'uncovered-writes',
       uncovered,
-      reason: renderUncoveredReason(uncovered, covering, 'enforce', seen)
+      reason: renderUncoveredReason(uncovered, covering, await fetchSpanBlocks(executors, covering, cwd), 'enforce')
     };
   } catch (err) {
     // A scan that could not COMPLETE is not a clean result, but it is not
@@ -859,18 +894,18 @@ function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): st
 /**
  * Whether this debt-state digest has already been explained to the agent in
  * full — orthogonal to (and independent of) the enforce-only consider-once
- * deny credit `evaluateGate` reads/writes on the same `digest` value. A single
- * `git status`/`git add` preview and the `git commit`/`push` that follows it
- * moments later resolve to the same digest but reach `evaluateGate` through
- * different modes (`'inform'` never touches the deny credit); without a
- * separate "seen" axis, both would render the identical checklist verbatim in
- * the same turn — which is exactly what a captured session showed: a status
- * preview immediately followed by a commit attempt on the same two files,
- * the second message differing only by the appended retry sentence. Marking
- * "seen" here (and consulting it before rendering) lets both `renderStalenessReason`
- * and `renderUncoveredReason` fall back to a condensed reminder on the second
- * showing, in either direction (inform-then-enforce or enforce-then-inform),
- * without changing whether `enforce` denies or allows.
+ * deny credit `evaluateGate` reads/writes on the same `digest` value under its
+ * own `seen-`-prefixed key. A single `git status`/`git add` preview and the
+ * `git commit`/`push` that follows it moments later resolve to the same
+ * digest but reach `evaluateGate` through different modes (`'inform'` never
+ * touches the deny credit). The gate is informational — a bare retry already
+ * gets past a deny — so `evaluateGate` consults this "seen" axis directly
+ * (via `memoState.has`/`record` on the `seen-` key, inline, not through this
+ * helper) before an enforce deny: already seen → resolve straight to
+ * `allow`/`already-presented` instead of denying a state the agent has
+ * already been shown. `wasAlreadySeen` itself remains for `'inform'` mode,
+ * where a repeated preview of the same state still renders a condensed
+ * reminder rather than the full checklist twice.
  */
 function wasAlreadySeen(memoState: GateMemoState, digest: string): boolean {
   const seenKey = `seen-${digest}`;
@@ -883,15 +918,42 @@ function wasAlreadySeen(memoState: GateMemoState, digest: string): boolean {
  * Fetch the human-format `## <name>` blocks for the spans named in `rows`,
  * failing to `''` (never throwing) so a list failure can never turn a deny
  * into a silent allow via {@link evaluateGate}'s outer catch —
- * {@link annotateBlocks} synthesizes minimal blocks from the rows instead.
+ * {@link annotateBlocks} synthesizes minimal blocks from the rows instead, and
+ * {@link renderRelatedSpansSection} simply omits a `why` sentence it can't
+ * find. Typed against `{ name: string }` (rather than {@link StalePorcelainRow}
+ * specifically) so both the staleness/environmental renderers and the
+ * uncovered-writes related-spans section can share this one fetch.
  */
-async function fetchSpanBlocks(executors: GateExecutors, rows: StalePorcelainRow[], cwd: string): Promise<string> {
+async function fetchSpanBlocks(executors: GateExecutors, rows: { name: string }[], cwd: string): Promise<string> {
   const names = [...new Set(rows.map((row) => row.name))].sort();
+  if (names.length === 0) return '';
   try {
     return await executors.listBlocks(names, cwd);
   } catch {
     return '';
   }
+}
+
+/**
+ * Pull one span's `why` paragraph out of `blocksText` (the `git span list
+ * <names...>` human format {@link fetchSpanBlocks} returns) — everything
+ * after `name`'s anchor bullets, up to the next `---`-separated block or the
+ * end of the text. Returns `''` when the block isn't found or the span
+ * simply has no `why` recorded (the CLI omits it entirely rather than
+ * printing an empty line — see `render_list_block` in `cli/show.rs`).
+ */
+function extractWhy(blocksText: string, name: string): string {
+  const trimmed = blocksText.trim();
+  if (trimmed.length === 0) return '';
+  for (const block of trimmed.split('\n\n---\n\n')) {
+    const lines = block.split('\n');
+    if (lines[0] !== `## ${name}`) continue;
+    let i = 1;
+    while (i < lines.length && (lines[i].startsWith('- ') || lines[i] === '*Span has no anchors*')) i++;
+    if (lines[i] === '') i++;
+    return lines.slice(i).join('\n').trim();
+  }
+  return '';
 }
 
 /**
@@ -1013,10 +1075,7 @@ function renderStalenessReason(
   const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\``;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
-    const closing =
-      mode === 'enforce'
-        ? `Already flagged above — update the drifted locations or the description, then retry.`
-        : `Already flagged above — update the drifted locations or the description.`;
+    const closing = `Already flagged above — update the drifted locations or the description.`;
     return [`This change still leaves ${subject} out of date:`, ...paths.map((path) => `- ${path}`), '', closing].join(
       '\n'
     );
@@ -1105,13 +1164,15 @@ function groupCoveringByName(covering: PorcelainRow[]): { name: string; anchors:
  * The "other files in this change already belong to spans" section appended
  * to {@link renderUncoveredReason}'s output — empty (renders nothing) when
  * `covering` is empty, i.e. no other file in the changeset has any span
- * coverage. Deliberately tighter than the staleness/environmental blocks
- * elsewhere in this file: no `why` sentence, no anchors outside this
- * changeset, no `listBlocks` round-trip — just the name and the in-changeset
- * anchor(s), read straight from data `computeUncoveredPaths` already fetched.
- * Uncapped by design: every qualifying span/anchor is listed.
+ * coverage. Still tighter than the staleness/environmental blocks elsewhere
+ * in this file — no anchors outside this changeset — but each `## <name>`
+ * group's `why` sentence (via {@link extractWhy} against `coveringBlocksText`)
+ * follows its anchors, same as those blocks, since that's the sentence that
+ * actually tells the agent whether an uncovered file belongs here. Omitted
+ * for a span that has none recorded, or when `coveringBlocksText` couldn't be
+ * fetched. Uncapped by design: every qualifying span/anchor is listed.
  */
-function renderRelatedSpansSection(covering: PorcelainRow[]): string[] {
+function renderRelatedSpansSection(covering: PorcelainRow[], coveringBlocksText: string): string[] {
   if (covering.length === 0) return [];
   const lines = [
     '',
@@ -1121,6 +1182,8 @@ function renderRelatedSpansSection(covering: PorcelainRow[]): string[] {
   ];
   for (const { name, anchors } of groupCoveringByName(covering)) {
     lines.push('', `## ${name}`, ...anchors.map((anchor) => `- ${anchor}`));
+    const why = extractWhy(coveringBlocksText, name);
+    if (why.length > 0) lines.push('', why);
   }
   return lines;
 }
@@ -1140,16 +1203,14 @@ function renderRelatedSpansSection(covering: PorcelainRow[]): string[] {
 function renderUncoveredReason(
   uncovered: string[],
   covering: PorcelainRow[],
+  coveringBlocksText: string,
   mode: GateMode = 'enforce',
   alreadySeen = false
 ): string {
   const lines = uncovered.map((path) => `- ${path}`);
   if (alreadySeen) {
     const body = ['<git-span>', ...lines, '', 'Already flagged for git-span review above.'];
-    body.push(...renderRelatedSpansSection(covering));
-    if (mode === 'enforce') {
-      body.push('', 'If none exist, retry the command to proceed (one-time check).');
-    }
+    body.push(...renderRelatedSpansSection(covering, coveringBlocksText));
     body.push('</git-span>');
     return body.join('\n');
   }
@@ -1166,7 +1227,7 @@ function renderUncoveredReason(
     '',
     'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
   ];
-  body.push(...renderRelatedSpansSection(covering));
+  body.push(...renderRelatedSpansSection(covering, coveringBlocksText));
   if (mode === 'enforce') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
   }

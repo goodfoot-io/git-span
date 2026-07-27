@@ -1,4 +1,5 @@
 # Ignore dispatcher-generated runtime artifacts. The reconciler's
-# agent-hooks dispatcher writes log files alongside spans; these are
-# not meant to be committed.
+# agent-hooks dispatcher writes log files and manual-run dispatch
+# scripts alongside spans; none of these are meant to be committed.
 *.log
+manual-hook-dispatch-*.sh

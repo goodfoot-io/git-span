@@ -132,7 +132,11 @@ visible in the transcript) is one of two shapes:
 **Semantic staleness** — the same human span format the touch hook renders
 (full anchor list, drifted anchors labeled, the description), denied once per
 distinct set of findings; an identical retry (same findings) passes, and
-editing a span's anchors changes the findings and earns one fresh deny:
+editing a span's anchors changes the findings and earns one fresh deny. The
+gate is informational, not a hard block — an identical retry alone already
+gets past a deny — so if a `git status` preview already showed this exact
+finding set in full, the following `git commit`/`git push` passes too,
+without denying a state the agent has already been told about:
 
 ```
 This change leaves an implicit dependency out of date:
@@ -157,10 +161,13 @@ pluralizes, and the closing commands use a `<name>` placeholder.
 
 **Uncovered writes** — a changed file no span anchors at all. Denied once per
 distinct debt state (a digest of the sorted findings/uncovered paths); an
-unchanged retry passes. When another file in the same changeset already
+unchanged retry passes, and so does a `git commit`/`git push` whose exact
+debt state a prior `git status` already showed in full — same reasoning as
+semantic staleness above. When another file in the same changeset already
 belongs to a span, a related-spans section follows the checklist — every
 qualifying anchor (no cap), restricted to paths in this changeset, rendered as
-a line range wherever the covering row carries one:
+a line range wherever the covering row carries one, followed by that span's
+`why` sentence when it has one recorded:
 
 ```
 <git-span>
@@ -184,6 +191,9 @@ might belong with one of these instead of a new one:
 ## checkout-flow
 - web/checkout.tsx#L4-L6
 
+Checkout request flow that carries a charge attempt from the browser to the
+Stripe-backed server.
+
 If none exist, retry the command to proceed (one-time check).
 
 Load the `git-span:git-span` skill for guidance.
@@ -191,11 +201,20 @@ Load the `git-span:git-span` skill for guidance.
 ```
 
 The related-spans section is grouped by span name (sorted), then by anchor
-within a name (also sorted), and is omitted entirely when no other file in the
-changeset carries any span coverage. It carries into the `git status` advisory
-and the condensed "Already flagged" retry form the same way — it's
-supplementary context about the changeset, not part of what's flagged or
-consider-once'd, so it never affects the debt-state digest.
+within a name (also sorted), each group followed by that span's `why`
+sentence (omitted for a span that has none recorded), and is omitted
+entirely when no other file in the changeset carries any span coverage. It
+carries into the `git status` advisory the same way — it's supplementary
+context about the changeset, not part of what's flagged or consider-once'd,
+so it never affects the debt-state digest.
+
+A condensed "Already flagged for git-span review above." form of both
+checklists exists, but only ever appears in the `git status` advisory: a
+second `git status` on an unchanged debt state shows the condensed form
+instead of repeating the full checklist. A `git commit`/`git push` never
+renders it — either the state is genuinely new (full checklist, denied once)
+or it was already shown by a preceding `git status`, in which case the
+command passes silently rather than denying with a shorter message.
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
 either checklist and never deny. `.span/**` writes are excluded from the
@@ -212,9 +231,14 @@ difference: each drops its retry phrasing — staleness drops `— then retry`
 from its closing sentence, and uncovered writes drops the whole `If none
 exist, retry the command to proceed (one-time check).` sentence — since a
 status preview never held the command and there's nothing to retry. A `git
-status` call also never reads or writes the consider-once memo — it always
-reports whatever debt is live right now, and it can't spend the one-time deny
-a later real `git commit`/`git push` with the same debt depends on.
+status` call also never reads or writes the consider-once *deny-credit* memo
+— it always reports whatever debt is live right now, and it can't spend the
+one-time deny a later real `git commit`/`git push` with the same debt depends
+on. It does mark the debt state as already-explained on a separate axis,
+though: a `git commit`/`git push` that follows a `git status` on the same
+unchanged debt state passes rather than denying, since the gate is
+informational and there's nothing left to tell the agent that the status
+preview didn't already say.
 
 ### Resolving a denied commit
 

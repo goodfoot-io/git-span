@@ -215,7 +215,7 @@ describe('codex gate adapter', () => {
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 
-  it('`git status` never consumes the consider-once credit a later `git commit` with the same debt depends on', async () => {
+  it('`git status` never consumes the consider-once deny credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
     const memoFactory = sharedMemoFactory();
@@ -224,8 +224,12 @@ describe('codex gate adapter', () => {
     const status = toResult(await handler(preInput('git status') as never, { logger } as never));
     expect(status.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
 
+    // The gate is informational, not a hard block — the status preview
+    // already explained this debt state in full, so the commit passes
+    // silently instead of denying a state the agent has already been shown.
     const commit = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
-    expect(commit.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(commit.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    expect(commit.stdout.systemMessage).toBeUndefined();
   });
 
   it('allows `git status` silently when the changeset is clean', async () => {

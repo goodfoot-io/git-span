@@ -515,6 +515,59 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).toContain('- src/z2.ts#L1-L5');
     });
 
+    it("includes each related span's `why` sentence, fetched via `listBlocks`, under its anchor group", async () => {
+      const memo = createMemoryGateMemoState();
+      const blocks = [
+        [
+          '## alpha/solo',
+          '- src/a1.ts#L1-L5',
+          '',
+          'Alpha solo carries a single implicit dependency worth tracking on its own.'
+        ].join('\n'),
+        ['## zeta/pair', '- src/z1.ts#L1-L5', '- src/z2.ts#L1-L5', '', 'Zeta pair keeps two files in lockstep.'].join(
+          '\n'
+        )
+      ].join('\n\n---\n\n');
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'alpha/solo', path: 'src/a1.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => [],
+        listBlocks: async (): Promise<string> => blocks
+      });
+      const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain('Alpha solo carries a single implicit dependency worth tracking on its own.');
+      expect(result.reason).toContain('Zeta pair keeps two files in lockstep.');
+      // Each why sentence follows its own group's anchors, not the other's.
+      const alphaWhyIndex = result.reason.indexOf('Alpha solo carries');
+      const zetaHeaderIndex = result.reason.indexOf('## zeta/pair');
+      expect(alphaWhyIndex).toBeGreaterThan(-1);
+      expect(alphaWhyIndex).toBeLessThan(zetaHeaderIndex);
+    });
+
+    it("omits a related span's `why` line when the span has none recorded", async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
+        stale: async (): Promise<StalePorcelainRow[]> => [],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/other.ts#L5-L20'].join('\n')
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain('## billing/checkout-request-flow');
+      expect(result.reason).toContain('- src/other.ts#L5-L20');
+    });
+
     it('omits the related-spans section entirely when no other file in the changeset carries any span coverage', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
@@ -530,7 +583,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('---');
     });
 
-    it('carries the related-spans section into the `inform` (status) preview and the condensed already-seen retry', async () => {
+    it('an `inform` (status) preview that already showed a debt state lets the following `enforce` attempt through instead of denying it again', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
@@ -542,15 +595,16 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
       expect(info.reason).toContain('- src/other.ts#L5-L20');
 
-      // The status preview already marked this debt state's "seen" key, so
-      // this first real commit attempt renders the condensed alreadySeen form.
-      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
-      if (deny.kind !== 'uncovered-writes') throw new Error('unreachable');
-      expect(deny.reason).toContain('Already flagged for git-span review above.');
-      expect(deny.reason).toContain('- src/other.ts#L5-L20');
+      // The gate is informational, not a hard block — a bare retry already
+      // gets past a deny — so once the status preview has shown this exact
+      // debt state in full, the real commit attempt right after it passes
+      // instead of denying a state the agent has already been told about.
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('already-presented');
     });
 
-    it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, does not repeat the full checklist verbatim', async () => {
+    it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, lets the commit through', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -565,16 +619,12 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
       expect(info.reason).toContain('Determine if these files carry implicit dependencies');
 
-      // `git commit` moments later, same unresolved debt state — still denies
-      // (the commit must still be held), but must not re-print the identical
-      // explanatory checklist the status preview just showed.
-      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
-      expect(deny.decision).toBe('deny');
-      expect(deny.kind).toBe('uncovered-writes');
-      if (deny.kind !== 'uncovered-writes') throw new Error('unreachable');
-      expect(deny.reason).not.toContain('Determine if these files carry implicit dependencies');
-      expect(deny.reason).toContain('If none exist, retry the command to proceed (one-time check).');
-      for (const path of paths) expect(deny.reason).toContain(path);
+      // `git commit` moments later, same unresolved debt state — already
+      // explained in full by the status preview, so it passes rather than
+      // denying a second time for no gain.
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('already-presented');
     });
 
     it('an `enforce` (commit) deny of a semantic-staleness group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
@@ -970,7 +1020,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('scan-failed');
     });
 
-    it('never reads or writes the enforce deny-credit digest — an inform call never spends the consider-once credit a later enforce call depends on', async () => {
+    it('never reads or writes the enforce deny-credit digest directly — an inform call only ever touches the orthogonal "seen" marker', async () => {
       const digestCalls: string[] = [];
       const backing = createMemoryGateMemoState();
       const spyingMemo: GateMemoState = {
@@ -997,11 +1047,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(digestCalls.length).toBeGreaterThan(0);
 
       // The identical debt state, now evaluated in 'enforce' mode against the
-      // very same memoState, still denies fresh — the inform pass above did
-      // not consume the digest's one-time deny.
+      // very same memoState: the inform pass above did not consume the
+      // digest's one-time deny credit, but it did mark the state as already
+      // explained in full, so the gate — informational, not a hard block —
+      // lets it through rather than denying a state the agent has already
+      // seen.
       const enforceResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'enforce');
-      expect(enforceResult.decision).toBe('deny');
-      expect(enforceResult.kind).toBe('semantic-staleness');
+      expect(enforceResult.decision).toBe('allow');
+      expect(enforceResult.kind).toBe('already-presented');
     });
 
     it('the rendered reason never contains deny/retry-flavored phrasing — a status preview held nothing, so there is nothing to retry', async () => {
