@@ -1,5 +1,0 @@
-import { help } from './helper';
-
-export function run(): string {
-  return help();
-}

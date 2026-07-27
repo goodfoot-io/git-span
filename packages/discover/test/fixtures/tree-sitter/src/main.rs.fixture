@@ -1,5 +1,0 @@
-use crate::widget::Widget;
-
-fn main() {
-    let _w = Widget::new();
-}
