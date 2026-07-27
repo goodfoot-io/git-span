@@ -398,8 +398,7 @@ fn list_skips_dotfile_config_under_span_root() {
 }
 
 /// The reconciler dispatcher's generated artifacts under the span root
-/// (`dispatcher.log`, `agent-<claimId>.log`, and generated
-/// `manual-hook-dispatch-<datetime>.sh` scripts -- see
+/// (`dispatcher.log`, `agent-<claimId>.log` -- see
 /// `packages/agent-hooks/src/dispatcher.ts`) must be skipped by discovery
 /// and must NOT be parsed as spans.
 #[test]
@@ -411,11 +410,6 @@ fn list_skips_dispatcher_generated_artifacts_under_span_root() {
     repo.write_file(
         ".span/agent-daf06226-85d1-471c-b59c-43733590a3f0.log",
         "some agent output\n",
-    )
-    .unwrap();
-    repo.write_file(
-        ".span/manual-hook-dispatch-2026-07-08T21-02-05-537Z.sh",
-        "#!/bin/sh\nexec claude -p '...' --settings '...'\n",
     )
     .unwrap();
 
