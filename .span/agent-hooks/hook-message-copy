@@ -1,7 +1,5 @@
 packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 rk64:0a52ab2b949313f9
 packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
-packages/website/content/docs/agent-integration.mdx rk64:f5af9957166d25d4
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:14206d40f2ed2607
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:d0ecc7d8774b4d52
-
-The hook-facing message copy: the implicit-dependency wording rendered by the touch hook's block and the gate's four reasons, quoted verbatim in both plugin skill references and the website's agent-integration doc — reword one and the others must follow.
+packages/website/content/docs/agent-integration.mdx rk64:34c2f95c65143b3d
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:eb3ed563e709d0d3
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:930d58de0203f276
