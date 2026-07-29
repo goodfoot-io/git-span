@@ -829,8 +829,10 @@ export async function evaluateGate(
 /**
  * {@link computeUncoveredPaths}'s result: the uncovered complement the gate
  * denies/advises on, plus the `covering` rows the same `executors.list` call
- * already resolved for the rest of the changeset — every anchor, in any span,
- * whose path is one of the paths passed in. `covering` is never empty only
+ * already resolved for the rest of the changeset, filtered down to every
+ * anchor, in any span, whose path is one of the paths passed in — the CLI
+ * itself returns matching spans whole, so that narrowing happens in
+ * {@link computeUncoveredPaths} rather than being free. `covering` is never empty only
  * when `uncovered` is; the two partition the changeset (minus `.span/**`/
  * gateignored paths, which appear in neither). Kept together so a caller
  * needing both (the uncovered-writes reason, which now also names spans
@@ -862,7 +864,19 @@ async function computeUncoveredPaths(
   executors: GateExecutors
 ): Promise<ChangesetCoverage> {
   if (paths.length < 2) return { uncovered: [], covering: [] };
-  const covering = await executors.list(paths, cwd);
+  // `git span list --porcelain <paths...>` matches spans by path but returns
+  // each matching span *whole* — every anchor it has, including anchors in
+  // files nowhere near this changeset. Narrow to the intersection here, once,
+  // at the single place that has the changeset in hand: everything downstream
+  // (the related-spans ranking's co-occurrence key, its proximity tie-break,
+  // and the per-span bullets rendered under a header that promises "other
+  // files in this change") is only meaningful over in-changeset anchors.
+  const changeset = new Set(paths);
+  const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
+  // Every row dropped above has a path outside `paths`, and `covered` is only
+  // ever probed with members of `paths`, so the filter cannot change which
+  // paths are flagged uncovered. It also cannot drop a span name: a span is in
+  // the CLI's output only because one of `paths` matched it.
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
@@ -1168,8 +1182,22 @@ function dirParts(path: string): string[] {
 /**
  * Normalized directory proximity of two repo-relative paths, in `[0,1]`:
  * shared leading directory components over the deeper path's directory depth.
- * `1` is the same directory (including two repo-root files, which share a
- * depth of zero out of zero); `0` is nothing in common below the root.
+ * `1` is the same directory; `0` is nothing in common below the root.
+ *
+ * Two repo-root files score `0`, not `1`: their shared "directory" is the
+ * whole repository, which says nothing about co-location, and treating it as a
+ * perfect match lets a lockfile or root config riding along in a changeset
+ * outrank a span anchored in the uncovered file's own subtree. `0` also makes
+ * the rule uniform — a root-level anchor carries no proximity signal against
+ * anything, root-level or nested — rather than trading one special case for
+ * another.
+ *
+ * The card's prototype ranker used the opposite convention, so the published
+ * measurement could not speak to this case. Re-running that harness with `0`
+ * is never worse across top-1/top-3/MRR, which rules out a regression; the
+ * margin itself is well inside bootstrap noise and is deliberately not the
+ * justification here. Do not "correct" this back to `1` on a future harness
+ * run that lands a fraction the other way.
  */
 function pathProximity(a: string, b: string): number {
   const x = dirParts(a);
@@ -1177,7 +1205,7 @@ function pathProximity(a: string, b: string): number {
   let shared = 0;
   while (shared < x.length && shared < y.length && x[shared] === y[shared]) shared++;
   const deepest = Math.max(x.length, y.length);
-  if (deepest === 0) return 1;
+  if (deepest === 0) return 0;
   return shared / deepest;
 }
 
@@ -1186,8 +1214,10 @@ function pathProximity(a: string, b: string): number {
  * for the rest of the changeset — by span name, each anchor rendered via
  * {@link anchorText}. Only anchors whose `path` is one of the paths
  * `executors.list` was scoped to appear here; a span's *other* anchors (in
- * files outside this changeset) never do, since `covering` never contained
- * them to begin with. Deduped: two covered files under the same name collapse
+ * files outside this changeset) never do, because {@link
+ * computeUncoveredPaths} filtered them out — the CLI returns matching spans
+ * whole, so without that filter the co-occurrence key below would measure span
+ * *size* instead of changeset overlap. Deduped: two covered files under the same name collapse
  * to one entry each, anchors within a name staying alphabetical.
  *
  * Groups are ordered by relevance to the *uncovered* paths, best first, on
@@ -1282,8 +1312,12 @@ function renderRelatedSpansSection(
     lines.push(
       '',
       hidden === 1
-        ? "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
-        : `${hidden} more spans cover files in this change and are not shown — \`git span list <path>\` shows a path's spans.`
+        ? // The hidden spans cover *covered* paths, which this message never
+          // names — so a `<path>` placeholder would leave the reader with
+          // nothing to substitute. Bare `git span list` needs no argument and
+          // is guaranteed to include them.
+          '1 more span covers files in this change and is not shown — `git span list` lists every span in the repository.'
+        : `${hidden} more spans cover files in this change and are not shown — \`git span list\` lists every span in the repository.`
     );
   }
   return lines;

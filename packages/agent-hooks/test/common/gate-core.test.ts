@@ -610,6 +610,59 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(farIndex).toBeGreaterThan(nearIndex);
     });
 
+    it('ranks by how much of the changeset a span covers, not by how many anchors it has', async () => {
+      const memo = createMemoryGateMemoState();
+      // `git span list` returns matching spans *whole*, so `big/span` arrives
+      // with five anchors even though only one of them is in this changeset.
+      // `small/span` covers three changed files. Overlap must win.
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'big/span', path: 'src/b1.ts', start: 1, end: 5 }),
+          ...Array.from({ length: 4 }, (_, index) =>
+            porcelainRow({ name: 'big/span', path: `elsewhere/x${index}.ts`, start: 1, end: 5 })
+          ),
+          porcelainRow({ name: 'small/span', path: 'src/s1.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'small/span', path: 'src/s2.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'small/span', path: 'src/s3.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/b1.ts', 'src/s1.ts', 'src/s2.ts', 'src/s3.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason.indexOf('## small/span')).toBeLessThan(result.reason.indexOf('## big/span'));
+      // And the anchors outside this changeset are never rendered under a
+      // header that promises "other files in this change".
+      expect(result.reason).not.toContain('elsewhere/');
+      // The in-changeset anchor of the big span survives the filter, and
+      // filtering does not change which paths are flagged uncovered.
+      expect(result.reason).toContain('- src/b1.ts#L1-L5');
+      expect(result.reason).toContain('src/uncovered.ts');
+    });
+
+    it('does not treat two repo-root files as maximally proximate', async () => {
+      const memo = createMemoryGateMemoState();
+      // Both spans cover one changed file, so co-occurrence ties. `root/cfg`
+      // is anchored at the repo root (zero directory depth) and sorts first
+      // alphabetically; `sub/tree` shares a real directory with the uncovered
+      // file and must lead.
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'root/cfg', path: 'package.json', start: 0, end: 0 }),
+          porcelainRow({ name: 'sub/tree', path: 'src/billing/other.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/billing/uncovered.ts', 'package.json', 'src/billing/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason.indexOf('## sub/tree')).toBeLessThan(result.reason.indexOf('## root/cfg'));
+    });
+
     it('orders a fully-tied set by span name, so identical state always renders identically', async () => {
       const memo = createMemoryGateMemoState();
       // Same co-occurrence (one file each) and same proximity (same
@@ -671,7 +724,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(overCap.reason).toContain('## span/07');
       expect(overCap.reason).not.toContain('## span/08');
       expect(overCap.reason).toContain(
-        "3 more spans cover files in this change and are not shown — `git span list <path>` shows a path's spans."
+        '3 more spans cover files in this change and are not shown — `git span list` lists every span in the repository.'
       );
 
       const oneOver = await evaluateGate(
@@ -685,7 +738,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       );
       if (oneOver.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(oneOver.reason).toContain(
-        "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
+        '1 more span covers files in this change and is not shown — `git span list` lists every span in the repository.'
       );
     });
 
@@ -728,7 +781,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(condensed.reason.indexOf('## zeta/pair')).toBeLessThan(condensed.reason.indexOf('## span/00'));
       expect(condensed.reason).not.toContain('## span/07');
       expect(condensed.reason).toContain(
-        "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
+        '1 more span covers files in this change and is not shown — `git span list` lists every span in the repository.'
       );
     });
 
