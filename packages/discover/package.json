@@ -9,7 +9,7 @@
   },
   "bin": "./src/bin/discover.ts",
   "scripts": {
-    "test": "vitest-unchanged",
+    "test": "vitest run",
     "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test && jsdoczoom -l",
     "typecheck": "tsgo --noEmit"
   },

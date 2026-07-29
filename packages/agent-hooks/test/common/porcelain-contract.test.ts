@@ -84,7 +84,7 @@ suite('Porcelain contract (git span)', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
     });
-    execFileSync('git', ['span', 'why', name, '-m', `span ${name}`], {
+    execFileSync('git', ['span', 'why', name, `span ${name}`], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
