@@ -1,0 +1,177 @@
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+index a6d07633..55269d4a 100644
+--- a/.claude-plugin/marketplace.json
++++ b/.claude-plugin/marketplace.json
+@@ -15 +15 @@
+-      "version": "1.0.140",
++      "version": "1.0.141",
+diff --git a/npm/git-span-darwin-arm64/package.json b/npm/git-span-darwin-arm64/package.json
+index f33998e4..a982e0d2 100644
+--- a/npm/git-span-darwin-arm64/package.json
++++ b/npm/git-span-darwin-arm64/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/npm/git-span-darwin-x64/package.json b/npm/git-span-darwin-x64/package.json
+index 04a51ae0..489f3e36 100644
+--- a/npm/git-span-darwin-x64/package.json
++++ b/npm/git-span-darwin-x64/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/npm/git-span-linux-arm64/package.json b/npm/git-span-linux-arm64/package.json
+index f9557463..4f935801 100644
+--- a/npm/git-span-linux-arm64/package.json
++++ b/npm/git-span-linux-arm64/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/npm/git-span-linux-x64/package.json b/npm/git-span-linux-x64/package.json
+index 2311acd3..333b9aad 100644
+--- a/npm/git-span-linux-x64/package.json
++++ b/npm/git-span-linux-x64/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/npm/git-span-win32-x64/package.json b/npm/git-span-win32-x64/package.json
+index 947b8014..74db0b23 100644
+--- a/npm/git-span-win32-x64/package.json
++++ b/npm/git-span-win32-x64/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/package.json b/package.json
+index f2dbfcf8..320d20a3 100644
+--- a/package.json
++++ b/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/packages/agent-hooks/package.json b/packages/agent-hooks/package.json
+index 19387c24..75a2f101 100644
+--- a/packages/agent-hooks/package.json
++++ b/packages/agent-hooks/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/packages/agent-hooks/test/common/porcelain-contract.test.ts b/packages/agent-hooks/test/common/porcelain-contract.test.ts
+index e1e1739c..be782a4b 100644
+--- a/packages/agent-hooks/test/common/porcelain-contract.test.ts
++++ b/packages/agent-hooks/test/common/porcelain-contract.test.ts
+@@ -87 +87 @@ suite('Porcelain contract (git span)', () => {
+-    execFileSync('git', ['span', 'why', name, '-m', `span ${name}`], {
++    execFileSync('git', ['span', 'why', name, `span ${name}`], {
+diff --git a/packages/discover/package.json b/packages/discover/package.json
+index b9be77ad..a1aa6278 100644
+--- a/packages/discover/package.json
++++ b/packages/discover/package.json
+@@ -12 +12 @@
+-    "test": "vitest-unchanged",
++    "test": "vitest run",
+diff --git a/packages/extension/package.json b/packages/extension/package.json
+index 23c3abe9..6d939fec 100644
+--- a/packages/extension/package.json
++++ b/packages/extension/package.json
+@@ -5 +5 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/packages/git-span-core/package.json b/packages/git-span-core/package.json
+index 55c668f9..a32ac711 100644
+--- a/packages/git-span-core/package.json
++++ b/packages/git-span-core/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/packages/git-span/Cargo.lock b/packages/git-span/Cargo.lock
+index 26e902d7..fff9ef38 100644
+--- a/packages/git-span/Cargo.lock
++++ b/packages/git-span/Cargo.lock
+@@ -696 +696 @@ name = "git-span"
+-version = "1.0.140"
++version = "1.0.141"
+diff --git a/packages/git-span/Cargo.toml b/packages/git-span/Cargo.toml
+index 096a3491..608e459e 100644
+--- a/packages/git-span/Cargo.toml
++++ b/packages/git-span/Cargo.toml
+@@ -3 +3 @@ name = "git-span"
+-version = "1.0.140"
++version = "1.0.141"
+diff --git a/packages/git-span/man/git-span.1 b/packages/git-span/man/git-span.1
+index 66d82111..3a4e5961 100644
+--- a/packages/git-span/man/git-span.1
++++ b/packages/git-span/man/git-span.1
+@@ -3 +3 @@
+-.TH git-span 1  "git-span 1.0.140" 
++.TH git-span 1  "git-span 1.0.141" 
+@@ -132 +132 @@ Print this message or the help of the given subcommand(s)
+-v1.0.140
++v1.0.141
+diff --git a/packages/git-span/package.json b/packages/git-span/package.json
+index 69239437..06a7fd21 100644
+--- a/packages/git-span/package.json
++++ b/packages/git-span/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+@@ -27,5 +27,5 @@
+-    "git-span-darwin-arm64": "1.0.140",
+-    "git-span-darwin-x64": "1.0.140",
+-    "git-span-linux-arm64": "1.0.140",
+-    "git-span-linux-x64": "1.0.140",
+-    "git-span-win32-x64": "1.0.140"
++    "git-span-darwin-arm64": "1.0.141",
++    "git-span-darwin-x64": "1.0.141",
++    "git-span-linux-arm64": "1.0.141",
++    "git-span-linux-x64": "1.0.141",
++    "git-span-win32-x64": "1.0.141"
+diff --git a/packages/website/package.json b/packages/website/package.json
+index c265d6e4..ca510f35 100644
+--- a/packages/website/package.json
++++ b/packages/website/package.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/plugins-claude/git-span/.claude-plugin/plugin.json b/plugins-claude/git-span/.claude-plugin/plugin.json
+index df495e79..8526d025 100644
+--- a/plugins-claude/git-span/.claude-plugin/plugin.json
++++ b/plugins-claude/git-span/.claude-plugin/plugin.json
+@@ -4 +4 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/plugins-codex/git-span/.codex-plugin/plugin.json b/plugins-codex/git-span/.codex-plugin/plugin.json
+index fc3066b1..2158459a 100644
+--- a/plugins-codex/git-span/.codex-plugin/plugin.json
++++ b/plugins-codex/git-span/.codex-plugin/plugin.json
+@@ -3 +3 @@
+-  "version": "1.0.140",
++  "version": "1.0.141",
+diff --git a/yarn.lock b/yarn.lock
+index ee6a4eeb..c3b3301e 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -7315 +7315 @@ __metadata:
+-"git-span-darwin-arm64@npm:1.0.140, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
++"git-span-darwin-arm64@npm:1.0.141, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
+@@ -7321 +7321 @@ __metadata:
+-"git-span-darwin-x64@npm:1.0.140, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
++"git-span-darwin-x64@npm:1.0.141, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
+@@ -7347 +7347 @@ __metadata:
+-"git-span-linux-arm64@npm:1.0.140, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
++"git-span-linux-arm64@npm:1.0.141, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
+@@ -7353 +7353 @@ __metadata:
+-"git-span-linux-x64@npm:1.0.140, git-span-linux-x64@workspace:npm/git-span-linux-x64":
++"git-span-linux-x64@npm:1.0.141, git-span-linux-x64@workspace:npm/git-span-linux-x64":
+@@ -7359 +7359 @@ __metadata:
+-"git-span-win32-x64@npm:1.0.140, git-span-win32-x64@workspace:npm/git-span-win32-x64":
++"git-span-win32-x64@npm:1.0.141, git-span-win32-x64@workspace:npm/git-span-win32-x64":
+@@ -7369,5 +7369,5 @@ __metadata:
+-    git-span-darwin-arm64: "npm:1.0.140"
+-    git-span-darwin-x64: "npm:1.0.140"
+-    git-span-linux-arm64: "npm:1.0.140"
+-    git-span-linux-x64: "npm:1.0.140"
+-    git-span-win32-x64: "npm:1.0.140"
++    git-span-darwin-arm64: "npm:1.0.141"
++    git-span-darwin-x64: "npm:1.0.141"
++    git-span-linux-arm64: "npm:1.0.141"
++    git-span-linux-x64: "npm:1.0.141"
++    git-span-win32-x64: "npm:1.0.141"

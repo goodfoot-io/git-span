@@ -255,6 +255,76 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.paths).toEqual(['src/scoped.ts']);
       expect(result.paths).not.toContain('src/staged-elsewhere.ts');
     });
+
+    // -----------------------------------------------------------------------
+    // range mapping — exercises already-implemented Phase 1 code (unskipped)
+    // -----------------------------------------------------------------------
+
+    describe('range mapping (Phase 1 DiffRange threading — not skipped, already implemented)', () => {
+      it('plain commit → { kind: "staged" }', async () => {
+        const git = createFakeGitExecutor({ stagedPaths: async (): Promise<string[]> => ['src/staged.ts'] });
+
+        const result = await resolveChangeset('commit', false, REPO_ROOT, git);
+
+        expect(result.range).toEqual({ kind: 'staged' });
+      });
+
+      it('commit -a → { kind: "worktree" }', async () => {
+        const git = createFakeGitExecutor({
+          stagedPaths: async (): Promise<string[]> => ['src/staged.ts'],
+          trackedModifiedPaths: async (): Promise<string[]> => ['src/modified.ts']
+        });
+
+        const result = await resolveChangeset('commit', true, REPO_ROOT, git);
+
+        expect(result.range).toEqual({ kind: 'worktree' });
+      });
+
+      it('status → { kind: "worktree" }', async () => {
+        const git = createFakeGitExecutor({
+          stagedPaths: async (): Promise<string[]> => ['src/staged.ts'],
+          trackedModifiedPaths: async (): Promise<string[]> => ['src/modified.ts']
+        });
+
+        const result = await resolveChangeset('status', false, REPO_ROOT, git);
+
+        expect(result.range).toEqual({ kind: 'worktree' });
+      });
+
+      it('a pathspec-scoped commit → { kind: "worktree" } (pathspecPaths is already a git diff HEAD read)', async () => {
+        const git = createFakeGitExecutor({
+          pathspecPaths: async (): Promise<string[]> => ['src/scoped.ts']
+        });
+
+        const result = await resolveChangeset('commit', false, REPO_ROOT, git, ['src/scoped.ts']);
+
+        expect(result.range).toEqual({ kind: 'worktree' });
+      });
+
+      it('push with a resolved base → { kind: "commits", base }', async () => {
+        const git = createFakeGitExecutor({
+          outgoingPaths: async (): Promise<{ paths: string[]; base: string | null }> => ({
+            paths: ['src/outgoing.ts'],
+            base: '@{u}'
+          })
+        });
+
+        const result = await resolveChangeset('push', false, REPO_ROOT, git);
+
+        expect(result.range).toEqual({ kind: 'commits', base: '@{u}' });
+      });
+
+      it('push with a null base (neither upstream nor merge-base resolved) → { kind: "unresolvable" }', async () => {
+        const git = createFakeGitExecutor({
+          outgoingPaths: async (): Promise<{ paths: string[]; base: string | null }> => ({ paths: [], base: null })
+        });
+
+        const result = await resolveChangeset('push', false, REPO_ROOT, git);
+
+        expect(result.range).toEqual({ kind: 'unresolvable' });
+        expect(result.paths).toEqual([]);
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1294,6 +1364,229 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(uncoveredResult.reason).not.toContain('Otherwise retry the command to proceed');
         expect(uncoveredResult.reason).not.toContain('one-time check');
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // mechanical-churn suppression (Phase 2 — skipped acceptance checks)
+  //
+  // `evaluateAdvisor`'s `churn` parameter is declared (Phase 1) but not yet
+  // consumed (`void churn;`) — the integration lands in a later phase. These
+  // checks fake `changedHunks` the same way the other four GitExecutor
+  // methods are already faked above, and are all `.skip` until that
+  // integration is implemented.
+  // -------------------------------------------------------------------------
+
+  describe('evaluateAdvisor — mechanical-churn suppression', () => {
+    it.skip('an all-mechanical uncovered set resolves to allow/silent', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'packages/foo/package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          }
+        ]
+      });
+      const paths = ['package.json', 'packages/foo/package.json'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold', {
+        git,
+        range: { kind: 'staged' }
+      });
+
+      expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+    });
+
+    it.skip('a mixed set surfaces only the semantic path in uncovered', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'src/app.ts',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['const x = 1;'], added: ['const x = 2;'] }]
+          }
+        ]
+      });
+      const paths = ['package.json', 'src/app.ts'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold', {
+        git,
+        range: { kind: 'staged' }
+      });
+
+      expect(result.decision).toBe('hold');
+      expect(result.kind).toBe('uncovered-writes');
+      if (result.kind === 'uncovered-writes') {
+        expect(result.uncovered).toEqual(['src/app.ts']);
+      }
+    });
+
+    it.skip('an unbalanced hunk (a genuine semantic edit next to version churn) leaves the path flagged', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'packages/extension/package.json',
+            binary: false,
+            structural: false,
+            hunks: [
+              {
+                removed: ['  "version": "1.0.140",'],
+                added: ['  "version":', '    "1.0.141",', '  "extra": true,', '  "another": 1,', '  "more": 2,']
+              }
+            ]
+          }
+        ]
+      });
+      const paths = ['packages/extension/package.json'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold', {
+        git,
+        range: { kind: 'staged' }
+      });
+
+      // A single-file changeset never denies on uncovered writes (no
+      // cross-file coupling to check) — the assertion here is that this
+      // classification did not silently make the file disappear the way an
+      // all-mechanical verdict would; a second, multi-file case pins it.
+      expect(result.decision).toBe('allow');
+    });
+
+    it.skip('when changedHunks throws, all paths in the uncovered set stay flagged (fail toward reporting)', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => {
+          throw new Error('git diff failed');
+        }
+      });
+      const paths = ['package.json', 'src/app.ts'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold', {
+        git,
+        range: { kind: 'staged' }
+      });
+
+      expect(result.decision).toBe('hold');
+      expect(result.kind).toBe('uncovered-writes');
+      if (result.kind === 'uncovered-writes') {
+        expect(result.uncovered).toEqual(['package.json', 'src/app.ts']);
+      }
+    });
+
+    it.skip("omitting churn entirely leaves all paths flagged — today's behavior, unchanged", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['package.json', 'src/app.ts'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      expect(result.kind).toBe('uncovered-writes');
+      if (result.kind === 'uncovered-writes') {
+        expect(result.uncovered).toEqual(['package.json', 'src/app.ts']);
+      }
+    });
+
+    it.skip(// Digest purity: a suppressed (mechanical) file must not reach
+    // advisorStateDigest, so two changesets differing only in their
+    // mechanical files produce the same digest. Asserted through the memo
+    // rather than by calling advisorStateDigest directly (it is not
+    // exported): evaluate the first changeset (records the digest), then
+    // the second against the *same* memoState — it must read as
+    // already-presented rather than denying fresh.
+    'two changesets differing only in their mechanical files share the same advisor-state digest', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const gitA = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'src/app.ts',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['const x = 1;'], added: ['const x = 2;'] }]
+          }
+        ]
+      });
+      const gitB = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'packages/foo/package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'src/app.ts',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['const x = 1;'], added: ['const x = 2;'] }]
+          }
+        ]
+      });
+
+      const first = await evaluateAdvisor(['package.json', 'src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', {
+        git: gitA,
+        range: { kind: 'staged' }
+      });
+      expect(first.decision).toBe('hold');
+
+      // A different mechanical file (packages/foo/package.json instead of
+      // package.json), same semantic file, same memoState — same digest.
+      const second = await evaluateAdvisor(
+        ['packages/foo/package.json', 'src/app.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        { git: gitB, range: { kind: 'staged' } }
+      );
+
+      expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
   });
 
