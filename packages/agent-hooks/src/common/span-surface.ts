@@ -34,9 +34,17 @@ import {
 } from './agent-hooks-common.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
 
-/** Minimal logger surface this module uses; both SDK loggers satisfy it. */
+/**
+ * Minimal logger surface the `common/` layer logs through; both SDK loggers
+ * satisfy it. `warn` is required — every existing call site reports a failure.
+ * `info` is optional so a fake carrying only `warn` still satisfies the
+ * interface: it exists for the diagnostic breadcrumbs a *successful* run leaves
+ * behind (advisor-core's churn-suppression count), which are not warnings and
+ * must not read as failures in the hook log.
+ */
 export interface CoreLogger {
   warn(message: string, context?: Record<string, unknown>): void;
+  info?(message: string, context?: Record<string, unknown>): void;
 }
 
 // ---------------------------------------------------------------------------

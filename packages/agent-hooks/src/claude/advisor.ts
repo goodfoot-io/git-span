@@ -69,7 +69,10 @@ export function createHandler(
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
       const result = await evaluateAdvisor(changeset.paths, cwd, executors, memoFactory(cwd), mode, {
         git,
-        range: changeset.range
+        range: changeset.range,
+        // The hook logger is the only place a suppressed file leaves a trace —
+        // the agent-facing output of a suppression is nothing at all.
+        logger: ctx.logger
       });
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the

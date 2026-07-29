@@ -1588,6 +1588,116 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
+
+    // The two checks below pin the interaction the memo digest has with a failed
+    // hunk read, which is where a read failure stops being merely a lost
+    // suppression and starts *undoing* a mitigation the design built on purpose.
+    // The digest is keyed on the post-filter uncovered set, so a file left in
+    // the list because its diff could not be read reaches the digest and mints a
+    // new one. A `git status` that suppressed churn followed by a `git commit`
+    // whose diff read failed therefore looks like an unseen debt state and holds
+    // — re-presenting, in full, the wall the agent already acknowledged in
+    // filtered form moments earlier. `wasAlreadySeen`'s doc names that exact
+    // status→commit sequence as the thing it exists to prevent.
+    //
+    // Both failure shapes are covered because both are reachable and they take
+    // different code paths into the same outcome: production reaches the *empty*
+    // one (an over-1MiB diff throws `ENOBUFS` inside `gitText`, which returns
+    // `''`, so `changedHunks` resolves to `[]`), while a throw exercises
+    // `computeUncoveredPaths`' `catch` arm.
+    const failedReadCases: { label: string; failingRead: () => Promise<FileDiff[]> }[] = [
+      { label: 'resolves empty (the ENOBUFS-through-gitText path production takes)', failingRead: async () => [] },
+      {
+        label: 'throws',
+        failingRead: async () => {
+          throw new Error('ENOBUFS');
+        }
+      }
+    ];
+
+    for (const { label, failingRead } of failedReadCases) {
+      it(`a status preview then a commit whose batched hunk read ${label} still reads as already-presented`, async () => {
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+        const paths = ['package.json', 'src/app.ts'];
+        const hunks: FileDiff[] = [
+          {
+            path: 'package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'src/app.ts',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['const x = 1;'], added: ['const x = 2;'] }]
+          }
+        ];
+
+        // Only the *second* invocation fails — the batched read the `git commit`
+        // issues. Everything after it is the per-file fallback, which is what
+        // keeps one oversized file from costing the whole changeset its
+        // classification; a fake that failed forever would assert the absence of
+        // that fallback instead of its presence.
+        let call = 0;
+        const git = createFakeGitExecutor({
+          changedHunks: async (requested: string[]): Promise<FileDiff[]> => {
+            call++;
+            if (call === 2) return failingRead();
+            return hunks.filter((file) => requested.includes(file.path));
+          }
+        });
+
+        const preview = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only', {
+          git,
+          range: { kind: 'worktree' }
+        });
+        expect(preview.kind).toBe('uncovered-writes-report');
+        if (preview.kind === 'uncovered-writes-report') {
+          expect(preview.uncovered).toEqual(['src/app.ts']);
+        }
+
+        // Second call (the `git commit` moments later): the batched read fails,
+        // so the per-file fallback re-reads each path on its own. The fallback
+        // read fails the same way here, so nothing is classified — but the state
+        // the agent has already been shown must not be re-presented as new.
+        const commit = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold', {
+          git,
+          range: { kind: 'worktree' }
+        });
+
+        expect(commit).toEqual({ decision: 'allow', kind: 'already-presented' });
+      });
+    }
+
+    it('a lockfile is suppressed by path shape alone, even when the hunk read fails entirely', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      // Every read fails, batched and per-file alike: the category layer must
+      // reach its verdict from the path, before any diff is requested.
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => {
+          throw new Error('git diff failed');
+        }
+      });
+
+      const result = await evaluateAdvisor(['yarn.lock', 'src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', {
+        git,
+        range: { kind: 'staged' }
+      });
+
+      expect(result.kind).toBe('uncovered-writes');
+      if (result.kind === 'uncovered-writes') {
+        expect(result.uncovered).toEqual(['src/app.ts']);
+      }
+    });
   });
 
   // -------------------------------------------------------------------------

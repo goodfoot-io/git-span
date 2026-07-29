@@ -46,7 +46,14 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
-import { classifyMechanical, type FileDiff, parseUnifiedDiff } from './mechanical-change.js';
+import {
+  classifyMechanical,
+  type FileDiff,
+  isClassifiablePath,
+  isNeverSpannedPath,
+  parseUnifiedDiff
+} from './mechanical-change.js';
+import type { CoreLogger } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
 // Scan-failure signal
@@ -358,6 +365,25 @@ export interface Changeset {
 }
 
 /**
+ * The mechanical-churn suppression surface {@link evaluateAdvisor} threads into
+ * its uncovered-writes check: the {@link GitExecutor} to read hunk content from,
+ * the {@link DiffRange} {@link resolveChangeset} resolved the changeset from
+ * (see {@link DiffRange}'s doc — reading a `push` against the working tree would
+ * classify the wrong content), and an optional logger.
+ *
+ * `logger` is the only window onto suppression there is. Everything else the
+ * feature does is *subtractive*: a suppressed file is one the agent is never
+ * told about, so a correct suppression, a wrong one, and a read that failed and
+ * suppressed nothing all look identical from outside. The adapters pass their
+ * hook logger here; omitting it loses the breadcrumb, not the behavior.
+ */
+export interface ChurnSuppression {
+  git: GitExecutor;
+  range: DiffRange;
+  logger?: CoreLogger;
+}
+
+/**
  * The injected git surface {@link resolveChangeset} needs to turn a parsed
  * command into the concrete list of paths that would land. Kept as narrow async
  * functions (rather than a raw command runner) following `touch-core.ts`'s
@@ -410,6 +436,12 @@ export interface GitExecutor {
    * unparseable output, `range.kind === 'unresolvable'`): `[]` means
    * "classify nothing," which means "suppress nothing," so a read failure
    * here can never make a file disappear from the uncovered-writes list.
+   *
+   * A `[]` (or short) answer is therefore indistinguishable from "these files
+   * have no diff", which is why {@link computeUncoveredPaths} re-reads each
+   * absent path individually: the failure this guards against is a *whole-batch*
+   * one — an oversized diff exceeding the subprocess buffer — and a per-file
+   * retry keeps that from costing every other file its classification.
    */
   changedHunks(paths: string[], range: DiffRange, cwd: string): Promise<FileDiff[]>;
 }
@@ -742,11 +774,9 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * @param memoState The per-changeset debt-state memo. Unused in `'report-only'` mode.
  * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
  *   delivers the same report and never holds. Neither enforces.
- * @param churn The optional mechanical-churn suppression surface — the
- *   {@link GitExecutor} to read hunk content from and the {@link DiffRange}
- *   {@link resolveChangeset} resolved the changeset from. Not yet consumed in
- *   this phase (declared for the adapters to thread through ahead of the
- *   integration landing in a later phase). Omitting it disables suppression
+ * @param churn The optional mechanical-churn suppression surface (see
+ *   {@link ChurnSuppression}), consumed by the uncovered-writes check via
+ *   {@link computeUncoveredPaths}. Omitting it disables suppression
  *   entirely — the pre-change behavior, and the safe direction: "forgot to
  *   wire it" degrades to today's behavior rather than to silence.
  */
@@ -756,7 +786,7 @@ export async function evaluateAdvisor(
   executors: AdvisorExecutors,
   memoState: AdvisorMemoState,
   mode: AdvisorMode = 'may-hold',
-  churn?: { git: GitExecutor; range: DiffRange }
+  churn?: ChurnSuppression
 ): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
@@ -953,7 +983,7 @@ async function computeUncoveredPaths(
   paths: string[],
   cwd: string,
   executors: AdvisorExecutors,
-  churn?: { git: GitExecutor; range: DiffRange }
+  churn?: ChurnSuppression
 ): Promise<ChangesetCoverage> {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   // `git span list --porcelain <paths...>` matches spans by path but returns
@@ -987,21 +1017,73 @@ async function computeUncoveredPaths(
   // files whose diff content is genuinely semantic, scoped only to what came
   // back uncovered so a fully-covered changeset never spawns the diff
   // subprocess. Absent `churn` skips filtering entirely (today's behavior —
-  // "forgot to wire it" degrades safely rather than to silence). Any failure
-  // here — a throw, an unparseable diff — falls back to the unfiltered
-  // uncovered list: fail toward reporting, never toward suppression.
+  // "forgot to wire it" degrades safely rather than to silence).
   if (churn && uncovered.length > 0) {
-    try {
-      const hunks = await churn.git.changedHunks(uncovered, churn.range, cwd);
-      const byPath = new Map(hunks.map((f) => [f.path, f]));
+    const before = uncovered.length;
+
+    // The category layer runs *ahead of the diff read*, not after it. A lockfile
+    // is suppressed by path shape alone — that is what
+    // {@link file://./mechanical-change.ts}'s header promises — and deciding it
+    // after the read made the promise conditional on the read succeeding: the
+    // per-file fallback below keeps an unread file flagged, so a lockfile in a
+    // changeset whose diff read failed was reported anyway. Suppression must not
+    // depend on an environmental accident.
+    //
+    // The predicate composed here is exactly `classifyMechanical`'s own
+    // path-only verdict (`isClassifiablePath` gate first, then the category
+    // layer) rather than a bare {@link isNeverSpannedPath} call. That ordering is
+    // load-bearing and belongs to the classifier: the gate is what keeps a
+    // hand-authored file under a noise-shaped path (`.map`/`.min.js`/a vendored
+    // segment) from being silenced with no content ever read. Hoisting only the
+    // inner layer would widen suppression well past lockfiles.
+    uncovered = uncovered.filter((path) => !(isClassifiablePath(path) && isNeverSpannedPath(path)));
+    const suppressedByPath = before - uncovered.length;
+
+    // The content layer, over whatever the path layer left. One batched
+    // `git diff -U0` covers the whole set; a file the batch did not return is
+    // re-read on its own so a single oversized or unreadable file costs only
+    // its own suppression rather than the whole changeset's — an over-1MiB
+    // diff used to come back as `''` from `gitText` and collapse suppression
+    // for every file at once. Any failure leaves the file flagged: fail toward
+    // reporting, never toward suppression.
+    const byPath = new Map<string, FileDiff>();
+    let readOutcome: 'clean' | 'per-file-fallback' | 'failed' = 'clean';
+    if (uncovered.length > 0) {
+      try {
+        for (const file of await churn.git.changedHunks(uncovered, churn.range, cwd)) byPath.set(file.path, file);
+      } catch {
+        readOutcome = 'failed';
+      }
+      const missing = uncovered.filter((path) => !byPath.has(path));
+      if (missing.length > 0) {
+        if (readOutcome === 'clean') readOutcome = 'per-file-fallback';
+        for (const path of missing) {
+          try {
+            for (const file of await churn.git.changedHunks([path], churn.range, cwd)) byPath.set(file.path, file);
+          } catch {
+            // this one file stays flagged; the rest of the set is unaffected
+            readOutcome = 'failed';
+          }
+        }
+      }
       uncovered = uncovered.filter((path) => {
         const file = byPath.get(path);
         if (!file) return true;
         return !classifyMechanical(file).mechanical;
       });
-    } catch {
-      // fall back to the unfiltered uncovered list computed above
     }
+
+    // The only thing a user observes about suppression is an absent prompt, so
+    // "suppressed correctly", "suppressed wrongly", and "gave up on a failed
+    // read" are indistinguishable from outside without this line. It goes to the
+    // hook logger, never to stdout: the advisor's normal path emits nothing.
+    churn.logger?.info?.('git-span advisor churn suppression', {
+      candidates: before,
+      suppressedByPath,
+      suppressedByContent: before - suppressedByPath - uncovered.length,
+      reported: uncovered.length,
+      read: readOutcome
+    });
   }
 
   return { uncovered, covering };
@@ -1507,6 +1589,39 @@ function renderUncoveredReason(
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/**
+ * The stdout ceiling every `execFileSync` read below runs under, replacing
+ * Node's 1 MiB default.
+ *
+ * 1 MiB is not a hypothetical limit for these reads: four of the last three
+ * hundred commits in this repository produce a `git diff -U0` larger than that,
+ * and this card's own `ded75b8d` is 1.16 MB. Past the ceiling `execFileSync`
+ * throws `ENOBUFS`, {@link gitText} converts the throw to `''`, and the caller
+ * reads an empty diff as "nothing to classify" — silently switching churn
+ * suppression off for the entire changeset rather than for the one file that
+ * overflowed. The same collapse applies to the coverage reads, where an empty
+ * result reads as "nothing is covered" and yields a maximal, wrong hold.
+ *
+ * 64 MiB is deliberately far above any plausible real diff: the point is that a
+ * read either succeeds or fails for a reason worth surfacing, never because of
+ * an arbitrary buffer size. It is a ceiling, not an allocation — Node grows the
+ * buffer as output arrives.
+ */
+const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Git global options prefixed to every read: `core.quotepath=false` keeps
+ * non-ASCII paths verbatim instead of C-quoted (`"pkg/caf\303\251.ts"`).
+ * Quoted paths mis-parse against `parseUnifiedDiff`'s
+ * `^diff --git a/(.+) b/(.+)$` and never match a path from the name-only reads,
+ * so the whole pipeline has to speak one path vocabulary. Under the old
+ * post-read category layer a mangled path was merely fail-safe — it missed the
+ * lookup and stayed flagged — but the category layer now decides *before* the
+ * read, from the name alone, so a mangled name is a name the classifier reads
+ * wrongly rather than one it fails to find.
+ */
+const GIT_READ_OPTS = ['-c', 'core.quotepath=false'];
+
 /** Run a git command at `cwd`, returning its raw stdout as-is (empty string on any failure). */
 function gitText(args: string[], cwd: string, timeoutMs: number): string {
   try {
@@ -1514,7 +1629,8 @@ function gitText(args: string[], cwd: string, timeoutMs: number): string {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
     });
   } catch {
     return '';
@@ -1528,7 +1644,8 @@ function gitLines(args: string[], cwd: string, timeoutMs: number): string[] {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
     });
     return out
       .split('\n')
@@ -1552,7 +1669,8 @@ function gitLinesOrNull(args: string[], cwd: string, timeoutMs: number): string[
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
     });
     return out
       .split('\n')
@@ -1570,24 +1688,32 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
     stagedPaths: async (cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(['-C', repoRoot, 'diff', '--cached', '--name-only'], repoRoot, timeoutMs);
+      return gitLines(['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--cached', '--name-only'], repoRoot, timeoutMs);
     },
     trackedModifiedPaths: async (cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(['-C', repoRoot, 'diff', '--name-only'], repoRoot, timeoutMs);
+      return gitLines(['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only'], repoRoot, timeoutMs);
     },
     outgoingPaths: async (cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return { paths: [], base: null };
-      const upstream = gitLinesOrNull(['-C', repoRoot, 'diff', '--name-only', '@{u}..HEAD'], repoRoot, timeoutMs);
+      const upstream = gitLinesOrNull(
+        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only', '@{u}..HEAD'],
+        repoRoot,
+        timeoutMs
+      );
       if (upstream !== null) return { paths: upstream, base: '@{u}' };
       // No upstream configured: fall back to the merge-base with the default
       // remote branch (`origin/HEAD`). If that too is unresolvable, fail open.
       const base = gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs)[0];
       if (!base) return { paths: [], base: null };
       return {
-        paths: gitLines(['-C', repoRoot, 'diff', '--name-only', `${base}..HEAD`], repoRoot, timeoutMs),
+        paths: gitLines(
+          ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only', `${base}..HEAD`],
+          repoRoot,
+          timeoutMs
+        ),
         base
       };
     },
@@ -1596,7 +1722,11 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       if (!repoRoot || paths.length === 0) return [];
       // Working-tree content vs HEAD, scoped to the pathspecs — the files a
       // `git commit -- <pathspec>` would actually change (staged or not).
-      return gitLines(['-C', repoRoot, 'diff', 'HEAD', '--name-only', '--', ...paths], repoRoot, timeoutMs);
+      return gitLines(
+        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', 'HEAD', '--name-only', '--', ...paths],
+        repoRoot,
+        timeoutMs
+      );
     },
     changedHunks: async (paths, range, cwd) => {
       if (range.kind === 'unresolvable' || paths.length === 0) return [];
@@ -1604,7 +1734,11 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       if (!repoRoot) return [];
       const rangeArgs =
         range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
-      const text = gitText(['-C', repoRoot, 'diff', '-U0', ...rangeArgs, '--', ...paths], repoRoot, timeoutMs);
+      const text = gitText(
+        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...rangeArgs, '--', ...paths],
+        repoRoot,
+        timeoutMs
+      );
       if (text.trim().length === 0) return [];
       try {
         return parseUnifiedDiff(text);
@@ -1626,7 +1760,8 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
         });
       } catch (err) {
         // `git span stale` exits 1 on drift even after healing, and non-zero on
@@ -1644,7 +1779,8 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
         });
       } catch (err) {
         // `git span stale` exits non-zero in two very different ways, and they
@@ -1676,7 +1812,8 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
         });
       } catch (err) {
         // The coverage read is the source of the *covered* set, so an empty
@@ -1706,7 +1843,8 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
         });
       } catch {
         // A failed human-format read only degrades the rendered message
