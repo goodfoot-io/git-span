@@ -30,6 +30,7 @@ import {
   resolveChangeset
 } from '../../src/common/advisor-core.js';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { FileDiff } from '../../src/common/mechanical-change.js';
 import { makeTempRepo } from '../helpers.js';
 
 const REPO_ROOT = '/repo';
@@ -57,8 +58,9 @@ function createFakeGitExecutor(overrides: Partial<GitExecutor> = {}): GitExecuto
   return {
     stagedPaths: async (): Promise<string[]> => [],
     trackedModifiedPaths: async (): Promise<string[]> => [],
-    outgoingPaths: async (): Promise<string[]> => [],
+    outgoingPaths: async (): Promise<{ paths: string[]; base: string | null }> => ({ paths: [], base: '@{u}' }),
     pathspecPaths: async (): Promise<string[]> => [],
+    changedHunks: async (): Promise<FileDiff[]> => [],
     ...overrides
   };
 }
@@ -197,8 +199,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const result = await resolveChangeset('commit', false, REPO_ROOT, git);
 
-      expect(result).toEqual(['src/staged.ts']);
-      expect(result).not.toContain('src/unstaged-modified.ts');
+      expect(result.paths).toEqual(['src/staged.ts']);
+      expect(result.paths).not.toContain('src/unstaged-modified.ts');
     });
 
     it('commit, all: true → staged paths plus tracked-modified paths, deduplicated', async () => {
@@ -209,20 +211,23 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const result = await resolveChangeset('commit', true, REPO_ROOT, git);
 
-      expect(new Set(result)).toEqual(new Set(['src/staged.ts', 'src/both.ts', 'src/modified.ts']));
-      expect(result.filter((p) => p === 'src/both.ts')).toHaveLength(1);
+      expect(new Set(result.paths)).toEqual(new Set(['src/staged.ts', 'src/both.ts', 'src/modified.ts']));
+      expect(result.paths.filter((p) => p === 'src/both.ts')).toHaveLength(1);
     });
 
     it('push → the outgoing range paths, ignoring `all`', async () => {
       const git = createFakeGitExecutor({
         stagedPaths: async (): Promise<string[]> => ['src/staged.ts'],
         trackedModifiedPaths: async (): Promise<string[]> => ['src/modified.ts'],
-        outgoingPaths: async (): Promise<string[]> => ['src/outgoing.ts']
+        outgoingPaths: async (): Promise<{ paths: string[]; base: string | null }> => ({
+          paths: ['src/outgoing.ts'],
+          base: '@{u}'
+        })
       });
 
       const result = await resolveChangeset('push', true, REPO_ROOT, git);
 
-      expect(result).toEqual(['src/outgoing.ts']);
+      expect(result.paths).toEqual(['src/outgoing.ts']);
     });
 
     it('status → staged paths plus tracked-modified paths, deduplicated, ignoring `all`/pathspecs', async () => {
@@ -233,8 +238,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const result = await resolveChangeset('status', false, REPO_ROOT, git);
 
-      expect(new Set(result)).toEqual(new Set(['src/staged.ts', 'src/both.ts', 'src/modified.ts']));
-      expect(result.filter((p) => p === 'src/both.ts')).toHaveLength(1);
+      expect(new Set(result.paths)).toEqual(new Set(['src/staged.ts', 'src/both.ts', 'src/modified.ts']));
+      expect(result.paths.filter((p) => p === 'src/both.ts')).toHaveLength(1);
     });
 
     it('commit with explicit pathspecs → the pathspec working-tree content only, never the full staged set', async () => {
@@ -247,8 +252,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const result = await resolveChangeset('commit', false, REPO_ROOT, git, ['src/scoped.ts']);
 
-      expect(result).toEqual(['src/scoped.ts']);
-      expect(result).not.toContain('src/staged-elsewhere.ts');
+      expect(result.paths).toEqual(['src/scoped.ts']);
+      expect(result.paths).not.toContain('src/staged-elsewhere.ts');
     });
   });
 
@@ -1100,7 +1105,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         pathspecPaths: async (): Promise<string[]> => ['src/scoped.ts']
       });
       const changeset = await resolveChangeset('commit', false, REPO_ROOT, git, parsed.paths);
-      expect(changeset).toEqual(['src/scoped.ts']);
+      expect(changeset.paths).toEqual(['src/scoped.ts']);
 
       const executors = createFakeAdvisorExecutors({
         // The scoped path is covered and clean; the (unevaluated) debt file is not in scope.
@@ -1109,7 +1114,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           paths.includes('src/debt.ts') ? [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })] : []
       });
 
-      const result = await evaluateAdvisor(changeset, REPO_ROOT, executors, createMemoryAdvisorMemoState());
+      const result = await evaluateAdvisor(changeset.paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
       expect(result.decision).toBe('allow');
     });
@@ -1128,7 +1133,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })]
       });
 
-      const result = await evaluateAdvisor(changeset, REPO_ROOT, executors, createMemoryAdvisorMemoState());
+      const result = await evaluateAdvisor(changeset.paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
       expect(result.decision).toBe('hold');
       expect(result.kind).toBe('semantic-staleness');

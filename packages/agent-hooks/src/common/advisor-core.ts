@@ -46,6 +46,7 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
+import type { FileDiff } from './mechanical-change.js';
 
 // ---------------------------------------------------------------------------
 // Scan-failure signal
@@ -326,6 +327,37 @@ function matchGitInvocation(tokens: string[]): GitInvocation | null {
 // ---------------------------------------------------------------------------
 
 /**
+ * The diff range {@link resolveChangeset} resolved a changeset's paths from —
+ * threaded alongside `paths` (as {@link Changeset}) so the mechanical-churn
+ * classifier ({@link file://./mechanical-change.ts}) can read hunks from the
+ * *same* range that produced the path list, never a different one (a `push`
+ * classified against the working tree would be wrong). `'unresolvable'` is
+ * the fail-toward-reporting answer for the one case where range fidelity
+ * cannot be guaranteed — an `outgoingPaths` call whose base came back
+ * `null` (neither `@{u}` nor a merge-base resolved) — and it skips the
+ * classifier entirely, leaving every uncovered path in that changeset
+ * flagged.
+ */
+export type DiffRange =
+  | { kind: 'staged' }
+  | { kind: 'worktree' }
+  | { kind: 'commits'; base: string }
+  | { kind: 'unresolvable' };
+
+/**
+ * {@link resolveChangeset}'s result: the resolved paths plus the
+ * {@link DiffRange} they were resolved from, kept together so a caller
+ * threading both into the mechanical-churn classifier (via `evaluateAdvisor`'s
+ * optional `churn` parameter) makes one call instead of re-deriving the
+ * range separately — re-deriving `push`'s range in particular risks a
+ * different answer than the one `outgoingPaths` actually used.
+ */
+export interface Changeset {
+  paths: string[];
+  range: DiffRange;
+}
+
+/**
  * The injected git surface {@link resolveChangeset} needs to turn a parsed
  * command into the concrete list of paths that would land. Kept as narrow async
  * functions (rather than a raw command runner) following `touch-core.ts`'s
@@ -349,9 +381,14 @@ export interface GitExecutor {
   /**
    * Paths in the outgoing push range — the files changed by `@{u}..HEAD`, with
    * a merge-base-against-the-default-remote-branch fallback when no upstream is
-   * configured. These are what a `git push` would publish.
+   * configured. These are what a `git push` would publish. Also returns the
+   * `base` it resolved the range against — `'@{u}'` when the upstream diff
+   * succeeded, the merge-base SHA when it fell back, or `null` when neither
+   * resolved (fail-open: `paths` is `[]` in that case too) — so
+   * {@link resolveChangeset} can carry the exact same range into its returned
+   * {@link Changeset} rather than re-deriving it and risking a different answer.
    */
-  outgoingPaths(cwd: string): Promise<string[]>;
+  outgoingPaths(cwd: string): Promise<{ paths: string[]; base: string | null }>;
   /**
    * Paths under the given explicit pathspecs whose working-tree content differs
    * from `HEAD` — `git diff HEAD --name-only -- <pathspecs>`. This is what a
@@ -363,6 +400,18 @@ export interface GitExecutor {
    * named in the pathspec (which `git diff --cached` would never surface).
    */
   pathspecPaths(paths: string[], cwd: string): Promise<string[]>;
+  /**
+   * The parsed per-file diff content for `paths` over `range` — the fifth
+   * method, and the first that returns content rather than names, feeding the
+   * mechanical-churn classifier in {@link file://./mechanical-change.ts}.
+   * `range` must be the *same* range that produced `paths` (see
+   * {@link DiffRange}'s doc) — a `push` classified against the working tree
+   * would be wrong. Returns `[]` on any failure (absent binary, timeout,
+   * unparseable output, `range.kind === 'unresolvable'`): `[]` means
+   * "classify nothing," which means "suppress nothing," so a read failure
+   * here can never make a file disappear from the uncovered-writes list.
+   */
+  changedHunks(paths: string[], range: DiffRange, cwd: string): Promise<FileDiff[]>;
 }
 
 /**
@@ -389,6 +438,13 @@ export interface GitExecutor {
  * `paths` is {@link ParsedGitCommand.paths}, and `all` (which {@link ParsedGitCommand}
  * intentionally does not carry) comes from {@link commitStagesAll}.
  *
+ * The returned {@link Changeset.range} follows the kind→range mapping table
+ * (design-decisions/plan): plain `commit` → `staged`; `-a`/`-am` `commit` and
+ * `status` → `worktree` (`git diff HEAD` spans staged *and* unstaged); a
+ * pathspec-scoped `commit` → `worktree` (`pathspecPaths` is already a `git
+ * diff HEAD` read); `push` → `commits` with the base `outgoingPaths` resolved,
+ * or `unresolvable` when that base came back `null`.
+ *
  * @param kind Whether the changeset is a commit's staged set, a push's range, or a status preview.
  * @param all Whether the commit was an `-a`/`-am` form (ignored for `push`/`status`).
  * @param cwd The working directory the git command ran in.
@@ -401,23 +457,24 @@ export async function resolveChangeset(
   cwd: string,
   git: GitExecutor,
   paths?: string[]
-): Promise<string[]> {
+): Promise<Changeset> {
   if (kind === 'push') {
-    return git.outgoingPaths(cwd);
+    const { paths: outgoing, base } = await git.outgoingPaths(cwd);
+    return { paths: outgoing, range: base === null ? { kind: 'unresolvable' } : { kind: 'commits', base } };
   }
   if (kind === 'status') {
     const [staged, tracked] = await Promise.all([git.stagedPaths(cwd), git.trackedModifiedPaths(cwd)]);
-    return mergeUniquePaths(staged, tracked);
+    return { paths: mergeUniquePaths(staged, tracked), range: { kind: 'worktree' } };
   }
   // A pathspec-scoped commit lands only the working-tree content at those
   // pathspecs — scope the changeset to exactly that, never the full staged set.
   if (paths && paths.length > 0) {
-    return git.pathspecPaths(paths, cwd);
+    return { paths: await git.pathspecPaths(paths, cwd), range: { kind: 'worktree' } };
   }
   const staged = await git.stagedPaths(cwd);
-  if (!all) return staged;
+  if (!all) return { paths: staged, range: { kind: 'staged' } };
   const tracked = await git.trackedModifiedPaths(cwd);
-  return mergeUniquePaths(staged, tracked);
+  return { paths: mergeUniquePaths(staged, tracked), range: { kind: 'worktree' } };
 }
 
 /** Concatenate path lists in order, dropping later duplicates of an earlier path. */
@@ -685,14 +742,23 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * @param memoState The per-changeset debt-state memo. Unused in `'report-only'` mode.
  * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
  *   delivers the same report and never holds. Neither enforces.
+ * @param churn The optional mechanical-churn suppression surface — the
+ *   {@link GitExecutor} to read hunk content from and the {@link DiffRange}
+ *   {@link resolveChangeset} resolved the changeset from. Not yet consumed in
+ *   this phase (declared for the adapters to thread through ahead of the
+ *   integration landing in a later phase). Omitting it disables suppression
+ *   entirely — the pre-change behavior, and the safe direction: "forgot to
+ *   wire it" degrades to today's behavior rather than to silence.
  */
 export async function evaluateAdvisor(
   paths: string[],
   cwd: string,
   executors: AdvisorExecutors,
   memoState: AdvisorMemoState,
-  mode: AdvisorMode = 'may-hold'
+  mode: AdvisorMode = 'may-hold',
+  churn?: { git: GitExecutor; range: DiffRange }
 ): Promise<AdvisorResult> {
+  void churn;
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
     // Belt-and-braces heal, then classify against the healed state.
@@ -1477,14 +1543,17 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
     },
     outgoingPaths: async (cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
-      if (!repoRoot) return [];
+      if (!repoRoot) return { paths: [], base: null };
       const upstream = gitLinesOrNull(['-C', repoRoot, 'diff', '--name-only', '@{u}..HEAD'], repoRoot, timeoutMs);
-      if (upstream !== null) return upstream;
+      if (upstream !== null) return { paths: upstream, base: '@{u}' };
       // No upstream configured: fall back to the merge-base with the default
       // remote branch (`origin/HEAD`). If that too is unresolvable, fail open.
       const base = gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs)[0];
-      if (!base) return [];
-      return gitLines(['-C', repoRoot, 'diff', '--name-only', `${base}..HEAD`], repoRoot, timeoutMs);
+      if (!base) return { paths: [], base: null };
+      return {
+        paths: gitLines(['-C', repoRoot, 'diff', '--name-only', `${base}..HEAD`], repoRoot, timeoutMs),
+        base
+      };
     },
     pathspecPaths: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
@@ -1492,6 +1561,12 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       // Working-tree content vs HEAD, scoped to the pathspecs — the files a
       // `git commit -- <pathspec>` would actually change (staged or not).
       return gitLines(['-C', repoRoot, 'diff', 'HEAD', '--name-only', '--', ...paths], repoRoot, timeoutMs);
+    },
+    changedHunks: async (paths, range, cwd) => {
+      void paths;
+      void range;
+      void cwd;
+      throw new Error('Not Implemented');
     }
   };
 }

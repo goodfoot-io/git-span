@@ -67,7 +67,10 @@ export function createHandler(
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
-      const result = await evaluateAdvisor(changeset, cwd, executors, memoFactory(cwd), mode);
+      const result = await evaluateAdvisor(changeset.paths, cwd, executors, memoFactory(cwd), mode, {
+        git,
+        range: changeset.range
+      });
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the
         // one-time interruption is expressed as `permissionDecision: 'deny'`.

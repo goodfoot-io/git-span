@@ -30,8 +30,9 @@ function fakeGit(overrides: Partial<GitExecutor> = {}): GitExecutor {
   return {
     stagedPaths: async () => [],
     trackedModifiedPaths: async () => [],
-    outgoingPaths: async () => [],
+    outgoingPaths: async () => ({ paths: [], base: '@{u}' }),
     pathspecPaths: async () => [],
+    changedHunks: async () => [],
     ...overrides
   };
 }

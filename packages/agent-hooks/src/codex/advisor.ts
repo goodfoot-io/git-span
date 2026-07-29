@@ -107,7 +107,10 @@ export function createHandler(
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
-      const result = await evaluateAdvisor(changeset, cwd, executors, memoFactory(cwd), mode);
+      const result = await evaluateAdvisor(changeset.paths, cwd, executors, memoFactory(cwd), mode, {
+        git,
+        range: changeset.range
+      });
       if (result.decision !== 'hold') {
         // Environmental staleness and a failed staleness scan both allow
         // (fail-open) but must not be swallowed: log and surface the reason as
