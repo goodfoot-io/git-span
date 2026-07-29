@@ -33,8 +33,13 @@
  *   lines differing only in a version token.
  *
  * {@link classifyMechanical} composes the two: a path matching the category
- * layer short-circuits to mechanical without reading hunk content; otherwise
- * the content layer decides. Every function here is a pure predicate over
+ * layer short-circuits to mechanical without reading hunk content; a path that
+ * is not manifest-shaped ({@link isClassifiablePath}) is refused before any
+ * line rule runs; otherwise the content layer decides. Each of the three
+ * content rules is additionally gated on a *context* predicate — a
+ * version-adjacent line shape, a checksum field name, a timestamp field name —
+ * because an ungated line rule masked semantic edits to buffer sizes,
+ * timeouts, pinned date-versions, IP literals, and version comparisons. Every function here is a pure predicate over
  * its input — fail toward reporting means an *uncertain* verdict (parse
  * failure, empty diff read, classifier not reached) must never suppress a
  * path; that fail-open behavior is the caller's responsibility, since this
@@ -141,7 +146,15 @@ export function parseUnifiedDiff(text: string): FileDiff[] {
       hunk = { removed: [], added: [] };
       continue;
     }
-    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    // No `---`/`+++` guard here, deliberately (finding 2). Those prefixes are
+    // only file headers *outside* a hunk, and the `!hunk` check below already
+    // discards everything outside a hunk. Testing the prefix first swallowed
+    // real content: inside a hunk a removed line whose text begins with `--`
+    // renders as `---…` and an added line beginning with `++` as `+++…`. Every
+    // YAML/MDX frontmatter block ends with a bare `---`, and a hunk that
+    // *deletes* one had that deletion erased — turning a 2-removed/1-added
+    // pure-deletion hunk into a balanced 1/1 pair and manufacturing the very
+    // balance the balanced-hunk rule exists to refuse.
     if (!hunk) continue;
     if (line.startsWith('-')) hunk.removed.push(line.slice(1));
     else if (line.startsWith('+')) hunk.added.push(line.slice(1));
@@ -158,10 +171,13 @@ export function parseUnifiedDiff(text: string): FileDiff[] {
 /**
  * Whether `repoRelPath` matches the path-shape denylist that is never
  * expected to carry a hand-authored implicit dependency — lockfiles,
- * generated output, vendored/noise segments — seeded from
- * `packages/discover/src/scan.ts`'s `NOISE_BASENAMES`, `NOISE_SUFFIXES`,
- * `NOISE_SEGMENTS`, and `GENERATED_SEGMENTS`. Those values are copied here
- * rather than imported — `agent-hooks` must not take a dependency on
+ * minified/sourcemap output, and vendored segments — seeded from
+ * `packages/discover/src/scan.ts`'s `NOISE_BASENAMES`, `NOISE_SUFFIXES`, and
+ * `NOISE_SEGMENTS`. That module's `GENERATED_SEGMENTS` (`dist`, `build`,
+ * `out`, `coverage`, `.next`) is deliberately **not** mirrored here; see
+ * {@link NOISE_SEGMENTS} for why a segment name that can shadow a
+ * hand-written file cannot be a suppression rule. Those values are copied
+ * here rather than imported — `agent-hooks` must not take a dependency on
  * `discover` — and none of them are glob-shaped (basenames, suffixes, and
  * bare path segments), so there is nothing here for {@link compilePattern}
  * (from `span-ignore.ts`, reused by `advisor-ignore.ts` for its glob-shaped
@@ -189,18 +205,41 @@ const NOISE_BASENAMES = new Set([
 /** Path suffixes that are noise regardless of location. */
 const NOISE_SUFFIXES = ['.log', '.tsbuildinfo', '.min.js', '.min.css', '.map'];
 
-/** Path segments that mark every file beneath them as noise. */
-const NOISE_SEGMENTS = new Set(['node_modules', '__pycache__', '.cache', '__snapshots__']);
-
-/** Path segments that mark every file beneath them as generated output. */
-const GENERATED_SEGMENTS = new Set(['dist', 'build', 'out', 'coverage', '.next']);
+/**
+ * Path segments that mark every file beneath them as noise.
+ *
+ * Deliberately narrow. The test each entry must pass is **"can this name
+ * shadow a hand-written file?"** — a match here is unconditional,
+ * content-blind silence, so a segment that a person might plausibly author
+ * under cannot be listed. `node_modules` and `__pycache__` pass: nobody
+ * hand-writes into either.
+ *
+ * The generated-output segments this list originally carried — `dist`,
+ * `build`, `out`, `coverage`, `.next` — all **fail** that test and were
+ * removed. `packages/extension/scripts/build/build-production.js` and its
+ * `build-testing.js` sibling are tracked, hand-authored esbuild drivers
+ * living under a `build` segment; suppressing them by segment name silenced
+ * real edits with no content ever read, and an *added* file under such a
+ * path was suppressed on first appearance because the short-circuit precedes
+ * the `structural` guard. `.cache` and `__snapshots__` were dropped for the
+ * same reason: a snapshot is a test fixture that can encode a real contract.
+ *
+ * These values came from `packages/discover/src/scan.ts`, where they answer
+ * "is this file worth *indexing*". That is a different question from "can
+ * this file carry an implicit dependency", and the lists did not survive the
+ * move: here a match means permanent silence rather than a skipped scan.
+ * Generated output under `dist/` is still caught by {@link NOISE_SUFFIXES}
+ * when it is minified or a sourcemap; an unminified bundle is merely
+ * reported, which costs one sentence of prompt.
+ */
+const NOISE_SEGMENTS = new Set(['node_modules', '__pycache__']);
 
 export function isNeverSpannedPath(repoRelPath: string): boolean {
   const parts = repoRelPath.split('/');
   const base = parts[parts.length - 1] ?? '';
   if (NOISE_BASENAMES.has(base)) return true;
   if (NOISE_SUFFIXES.some((s) => repoRelPath.endsWith(s))) return true;
-  if (parts.some((p) => NOISE_SEGMENTS.has(p) || GENERATED_SEGMENTS.has(p))) return true;
+  if (parts.some((p) => NOISE_SEGMENTS.has(p))) return true;
   return false;
 }
 
@@ -220,23 +259,119 @@ export function isNeverSpannedPath(repoRelPath: string): boolean {
  * Ported verbatim from the validated prototype (`att-b40d4ca0…_classify.ts`).
  */
 
-const SEMVER_RE = /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\b/g;
+/**
+ * A dotted version triple, optionally `v`-prefixed, with optional prerelease
+ * and build metadata. The trailing `(?!\.\d)` is a finding-1 narrowing: without
+ * it the first three groups of a dotted quad (`192.168.2.1`) matched as a
+ * semver, so an IP-address edit normalized to an unchanged line. The
+ * {@link DOTTED_QUAD_RE} guard below is the primary defense; this lookahead
+ * keeps the regex itself from claiming a token it does not own.
+ */
+const SEMVER_RE = /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\b(?!\.\d)/g;
 const HEXISH_RE = /\b[0-9a-f]{32,}\b|\bsha(?:256|512)-[A-Za-z0-9+/=]{20,}\b|\b[0-9a-f]{7,40}\/[0-9a-f]{7,40}\b/g;
 const CHECKSUM_FIELD_RE = /\b(checksum|integrity|resolution|hash|digest|sha\d*)\b/i;
+
+/**
+ * A dotted quad — an IPv4 address or netmask, never a version. Its presence on
+ * either side of a pair disqualifies the semver rule outright.
+ *
+ * The trigger this closes is narrower than "an IP changed" (finding 1):
+ * {@link SEMVER_RE} consumes only three octets, so an IP line normalized equal
+ * only when the *final* octet was untouched. `192.168.1.1` → `192.168.2.1` was
+ * suppressed; `192.168.1.1` → `10.0.4.27` was already flagged, its trailing
+ * `.1`/`.27` surviving the mask and differing. Excluding the shape outright is
+ * still the right rule — a dotted quad is not a version under any edit — but
+ * only the third-octet case was ever silently lost.
+ */
+const DOTTED_QUAD_RE = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+
+/**
+ * The version-adjacent line shapes the semver rule is gated on (finding 1: the
+ * accepted decision behind this rule was about *version pins*, but the code
+ * implementing it masked any dotted triple anywhere, in any file — so
+ * `if (v === "1.2.3")` → `"9.9.9"` read as churn). A pair qualifies only when
+ * one of these holds, or the file sits at a manifest-shaped path:
+ *
+ * - the line names a version (`"version":`, `ARG SCCACHE_VERSION=`);
+ * - the token sits in a *value* position after a `:` or a single `=`
+ *   (`"git-span-linux-x64": "1.0.141"`, `foo@npm:1.0.141`). The lookbehind and
+ *   lookahead exclude comparison operators (`===`, `!==`, `<=`), which are code,
+ *   not declarations;
+ * - the whole line is a bare version token (the `v1.0.140` man-page/VERSION-file
+ *   form);
+ * - the line is a roff macro (`.TH git-span 1 "git-span 1.0.140"`), where the
+ *   version is positional and carries no adjacent key.
+ */
+const VERSION_CONTEXT_RES = [
+  /version/i,
+  /(?<![=!<>+\-*/&|])[:=](?!=)\s*["'`]?v?\d+\.\d+\.\d+/,
+  /^\s*v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\s*$/,
+  /^\.[A-Za-z]{1,3}\s/
+];
+
+/** Basenames whose entire purpose is to declare versions and pinned dependencies. */
+const MANIFEST_BASENAMES = new Set([
+  'package.json',
+  'Cargo.toml',
+  'marketplace.json',
+  'plugin.json',
+  'pyproject.toml',
+  'composer.json',
+  'go.mod'
+]);
+
+/**
+ * Field names that make a number or date on the line a *timestamp* rather than
+ * merely a number. Finding 1: `TIMESTAMP_RE`'s epoch-integer and bare
+ * `YYYY-MM-DD` alternatives were applied with no field guard at all, so
+ * `MAX_BYTES = 1073741824`, `timeoutMs: 1000000000`, `TTL = 1000000000000`, and
+ * a pinned `apiVersion: '2024-01-01'` all normalized to unchanged lines. Those
+ * alternatives now exist only behind this gate — the way `CHECKSUM_FIELD_RE`
+ * already gates the checksum rule — so a bare integer or date on a line that
+ * does not name a time is never masked. The optional `Ms`/`_ms` tail admits
+ * millisecond variants (`builtAtMs`).
+ */
+const TIMESTAMP_FIELD_RE =
+  /\b(timestamps?|generated|generated_?at|built|built_?at|build_?time|date|datetime|time|created_?at|updated_?at|modified|last_?modified|expires|expires_?at|expiry|epoch|mtime|ctime|iat|exp|nbf)(?:Ms|MS|_ms)?\b/i;
+
 const TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{10,13}\b/g;
 
 function normalize(line: string, re: RegExp): string {
   return line.replace(re, ' ');
 }
 
-/** Whether this removed/added line pair is a mechanical rewrite under one of the three rules. */
-function pairIsMechanical(removed: string, added: string): boolean {
+/** Whether a semver token on this line sits in a version-declaring context. */
+function isVersionContext(line: string): boolean {
+  return VERSION_CONTEXT_RES.some((re) => re.test(line));
+}
+
+/** Whether `repoRelPath`'s basename is a manifest — a file whose job is declaring versions. */
+function isManifestPath(repoRelPath: string): boolean {
+  const parts = repoRelPath.split('/');
+  return MANIFEST_BASENAMES.has(parts[parts.length - 1] ?? '');
+}
+
+/**
+ * Whether this removed/added line pair is a mechanical rewrite under one of the
+ * three rules. `manifestPath` relaxes the semver rule's line-shape gate: in a
+ * manifest every dotted triple is a version by construction.
+ */
+function pairIsMechanical(removed: string, added: string, manifestPath: boolean): boolean {
   if (removed === added) return false;
-  if (normalize(removed, SEMVER_RE) === normalize(added, SEMVER_RE)) return true;
+  if (
+    !DOTTED_QUAD_RE.test(removed) &&
+    !DOTTED_QUAD_RE.test(added) &&
+    (manifestPath || isVersionContext(removed)) &&
+    normalize(removed, SEMVER_RE) === normalize(added, SEMVER_RE)
+  ) {
+    return true;
+  }
   if (CHECKSUM_FIELD_RE.test(removed) && normalize(removed, HEXISH_RE) === normalize(added, HEXISH_RE)) {
     return true;
   }
-  if (normalize(removed, TIMESTAMP_RE) === normalize(added, TIMESTAMP_RE)) return true;
+  if (TIMESTAMP_FIELD_RE.test(removed) && normalize(removed, TIMESTAMP_RE) === normalize(added, TIMESTAMP_RE)) {
+    return true;
+  }
   return false;
 }
 
@@ -245,13 +380,14 @@ export function isMechanicalDiff(file: FileDiff): MechanicalVerdict {
   if (file.structural) return { mechanical: false, reason: 'structural change (rename/add/delete)' };
   if (file.hunks.length === 0) return { mechanical: false, reason: 'no hunks' };
 
+  const manifestPath = isManifestPath(file.path);
   for (let h = 0; h < file.hunks.length; h++) {
     const hunk = file.hunks[h] as Hunk;
     if (hunk.removed.length !== hunk.added.length || hunk.removed.length === 0) {
       return { mechanical: false, reason: `hunk ${h + 1}: unbalanced removed/added counts` };
     }
     for (let i = 0; i < hunk.removed.length; i++) {
-      if (!pairIsMechanical(hunk.removed[i] as string, hunk.added[i] as string)) {
+      if (!pairIsMechanical(hunk.removed[i] as string, hunk.added[i] as string, manifestPath)) {
         return { mechanical: false, reason: `hunk ${h + 1}: no rule matched` };
       }
     }
@@ -271,7 +407,82 @@ export function isMechanicalDiff(file: FileDiff): MechanicalVerdict {
  * `advisor-core.ts` invokes — callers should not call the two layers directly.
  *
  */
+/**
+ * Basenames the content layer is permitted to classify: files whose whole job
+ * is declaring versions, pins, and checksums.
+ *
+ * This is an **allowlist, deliberately**, and it is the structural form of the
+ * property finding 1 showed the rules did not have.
+ *
+ * It gives up no measured recall: `notes/validation-results.md` locates the
+ * classifier's entire measured value in the 242 manifest, `Cargo.toml`,
+ * `plugin.json`, `marketplace.json`, and man-page files, and gating by path is a
+ * no-op on all three canonical commits (`79030d00`, `ad902127`, `d61155ba`) —
+ * every source-extension file in them was already flagged or already
+ * span-covered. The sweep's headline "zero source-extension files suppressed"
+ * result is *not* the justification: that was a property of the commits swept
+ * (all of them already churn), not a guarantee the rules enforced.
+ *
+ * The first repair drafted here was the
+ * mirror image, a denylist of source extensions, and it fails open: any
+ * extension nobody enumerated (`.kt`, `.tf`, `.proto`) would still be handed to
+ * the line rules, so the failure mode was silent suppression in an unlisted
+ * language. Inverting it costs nothing the card wanted — nothing asks for a
+ * `.ts` or `.rs` body to be classified at all — and makes an unrecognized path
+ * simply never suppressed.
+ */
+const CLASSIFIABLE_BASENAMES = new Set([
+  'package.json',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'Cargo.toml',
+  'Cargo.lock',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'plugin.json',
+  'marketplace.json',
+  'pyproject.toml',
+  'composer.json',
+  'composer.lock',
+  'Gemfile.lock',
+  'poetry.lock',
+  'Pipfile.lock',
+  'flake.lock',
+  'go.mod',
+  'go.sum'
+]);
+
+/** A roff man page (`man/git-span.1`) — generated from the CLI, version in its `.TH` header. */
+const MAN_PAGE_RE = /\.[1-9]$/;
+
+/**
+ * Whether the content layer may classify `repoRelPath` at all: a manifest,
+ * lockfile, man page, or Dockerfile. Anything else — including every source and
+ * prose file — is refused before a single line rule runs, so an unenumerated
+ * file type can only ever stay flagged.
+ *
+ * `Dockerfile` is here for the accepted decision plans/initial.md records: the
+ * `ARG SCCACHE_VERSION` bump in `e4fb3baf` is the intended reading of "obvious
+ * version bump".
+ */
+export function isClassifiablePath(repoRelPath: string): boolean {
+  const parts = repoRelPath.split('/');
+  const base = parts[parts.length - 1] ?? '';
+  if (CLASSIFIABLE_BASENAMES.has(base)) return true;
+  if (base === 'Dockerfile' || base.startsWith('Dockerfile.')) return true;
+  return MAN_PAGE_RE.test(base);
+}
+
 export function classifyMechanical(file: FileDiff): MechanicalVerdict {
+  // Fail-closed gate ahead of *both* layers, category included. Placing it
+  // after the category layer would leave a hand-authored esbuild script like
+  // `packages/extension/scripts/build/build-production.js` suppressed by its
+  // `build/` segment no matter how narrow the content rules became — a
+  // path-shape short-circuit is unconditional, content-blind silence.
+  if (!isClassifiablePath(file.path)) {
+    return { mechanical: false, reason: 'not a manifest-shaped path: the classifier does not apply' };
+  }
   if (isNeverSpannedPath(file.path)) return { mechanical: true };
   return isMechanicalDiff(file);
 }

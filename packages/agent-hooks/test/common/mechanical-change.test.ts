@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyMechanical,
   type FileDiff,
+  isClassifiablePath,
   isMechanicalDiff,
   isNeverSpannedPath,
   parseUnifiedDiff
@@ -438,22 +439,40 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — noise segments', () => {
-    it('matches node_modules, __pycache__, .cache, and __snapshots__ anywhere in the path', () => {
+    it('matches only vendored segments nobody hand-writes into', () => {
       expect(isNeverSpannedPath('node_modules/foo/index.js')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/node_modules/bar/index.js')).toBe(true);
       expect(isNeverSpannedPath('scripts/__pycache__/mod.pyc')).toBe(true);
-      expect(isNeverSpannedPath('packages/foo/.cache/entry')).toBe(true);
-      expect(isNeverSpannedPath('test/__snapshots__/foo.test.ts.snap')).toBe(true);
     });
   });
 
-  describe('isNeverSpannedPath — generated segments', () => {
-    it('matches dist, build, out, coverage, and .next anywhere in the path', () => {
-      expect(isNeverSpannedPath('packages/agent-hooks/dist/index.js')).toBe(true);
-      expect(isNeverSpannedPath('packages/extension/build/main.js')).toBe(true);
-      expect(isNeverSpannedPath('packages/cli/out/bin.js')).toBe(true);
-      expect(isNeverSpannedPath('coverage/lcov.info')).toBe(true);
-      expect(isNeverSpannedPath('packages/website/.next/server/pages.js')).toBe(true);
+  describe('isNeverSpannedPath — segments that can shadow hand-written files', () => {
+    // A match here is unconditional, content-blind silence, so the bar for
+    // listing a segment is "nobody could plausibly hand-author under this
+    // name". `dist`, `build`, `out`, `coverage`, and `.next` all fail that
+    // bar — this repo tracks hand-written esbuild drivers under
+    // `packages/extension/scripts/build/` — and `.cache`/`__snapshots__`
+    // fail it too, since a snapshot can encode a real contract. They were
+    // seeded from `packages/discover/src/scan.ts`, where a match only means
+    // "skip while indexing" rather than "stay silent forever".
+    it('does not match generated-output segment names', () => {
+      expect(isNeverSpannedPath('packages/agent-hooks/dist/index.js')).toBe(false);
+      expect(isNeverSpannedPath('packages/extension/build/main.js')).toBe(false);
+      expect(isNeverSpannedPath('packages/cli/out/bin.js')).toBe(false);
+      expect(isNeverSpannedPath('coverage/lcov.info')).toBe(false);
+      expect(isNeverSpannedPath('packages/website/.next/server/pages.js')).toBe(false);
+    });
+
+    it('does not match .cache or __snapshots__', () => {
+      expect(isNeverSpannedPath('packages/foo/.cache/entry')).toBe(false);
+      expect(isNeverSpannedPath('test/__snapshots__/foo.test.ts.snap')).toBe(false);
+    });
+
+    it('still suppresses minified and sourcemap output under a generated dir', () => {
+      // The suffix rules, not the segment name, are what carry generated
+      // output — a `.min.js` or `.map` cannot be hand-authored source.
+      expect(isNeverSpannedPath('packages/foo/dist/bundle.min.js')).toBe(true);
+      expect(isNeverSpannedPath('packages/foo/dist/bundle.js.map')).toBe(true);
     });
   });
 
@@ -515,6 +534,259 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       });
 
       expect(classifyMechanical(file)).toEqual({ mechanical: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Negative corpus — semantic edits the first implementation suppressed
+  // -------------------------------------------------------------------------
+
+  describe('classifyMechanical — semantic single-line edits must stay flagged', () => {
+    // Every input here is a real semantic edit the shipped rules classified
+    // mechanical (finding 1). Buffer sizes, timeouts/TTLs, pinned API
+    // date-versions, hostnames, and version-comparison constants are exactly
+    // the values most likely to carry an implicit coupling.
+    const cases: Array<[label: string, removed: string, added: string]> = [
+      ['a buffer-size constant', 'const MAX_BYTES = 1073741824;', 'const MAX_BYTES = 2147483648;'],
+      ['a 10-digit timeout', '  timeoutMs: 1000000000,', '  timeoutMs: 5000000000,'],
+      ['a 13-digit TTL', 'const TTL = 1000000000000;', 'const TTL = 9000000000000;'],
+      ['a pinned API date-version', "  apiVersion: '2024-01-01',", "  apiVersion: '2025-06-01',"],
+      // Narrow on purpose: only an IP edit leaving the *final* octet untouched
+      // was ever suppressed — SEMVER_RE consumes three octets, so a trailing-octet
+      // change survived the mask and was already flagged.
+      ['an IP literal whose final octet is unchanged', 'host = "192.168.2.1"', 'host = "192.168.1.1"'],
+      ['a version-comparison constant', 'if (v === "1.2.3") allow();', 'if (v === "9.9.9") allow();']
+    ];
+
+    for (const [label, removed, added] of cases) {
+      it(`${label} in a .ts source file is not mechanical`, () => {
+        const file = fileDiff({ path: 'packages/foo/src/limits.ts', hunks: [{ removed: [removed], added: [added] }] });
+
+        expect(classifyMechanical(file).mechanical).toBe(false);
+      });
+
+      it(`${label} is refused by the content rules themselves, not only by the manifest gate`, () => {
+        // Pinned separately so the narrowing of TIMESTAMP_RE and SEMVER_RE is
+        // load-bearing on its own: calling isMechanicalDiff directly bypasses
+        // classifyMechanical's path gate, so only the line rules can reject.
+        // (The path is non-manifest so the semver rule's line-shape gate also
+        // applies — inside a manifest a dotted triple *is* a version pin.)
+        const file = fileDiff({ path: 'config/limits.conf', hunks: [{ removed: [removed], added: [added] }] });
+
+        expect(isMechanicalDiff(file).mechanical).toBe(false);
+      });
+    }
+  });
+
+  describe('classifyMechanical — the content layer is gated on a manifest allowlist', () => {
+    it('refuses any non-manifest path even when the diff content would match a rule', () => {
+      // Fail-closed: an extension nobody enumerated (.kt, .tf, .proto) is
+      // refused for the same reason a .ts file is — not because it appears on a
+      // list, but because it does not appear on the allowlist.
+      const mechanicalLooking = { removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] };
+      for (const path of [
+        'src/a.ts',
+        'src/a.tsx',
+        'src/a.js',
+        'src/a.mjs',
+        'src/a.cjs',
+        'src/a.rs',
+        'README.md',
+        'docs/a.mdx',
+        'scripts/a.sh',
+        '.github/workflows/ci.yml',
+        'config/a.yaml',
+        'src/a.css',
+        'site/a.html',
+        'src/Main.kt',
+        'infra/main.tf',
+        'proto/api.proto',
+        'tsconfig.json',
+        'packages/foo/config.json'
+      ]) {
+        expect(classifyMechanical(fileDiff({ path, hunks: [mechanicalLooking] })).mechanical).toBe(false);
+      }
+    });
+
+    it('admits the manifest, lockfile, man-page, and Dockerfile shapes the classifier exists to suppress', () => {
+      expect(isClassifiablePath('packages/foo/package.json')).toBe(true);
+      expect(isClassifiablePath('packages/git-span/Cargo.toml')).toBe(true);
+      expect(isClassifiablePath('packages/git-span/Cargo.lock')).toBe(true);
+      expect(isClassifiablePath('packages/git-span/man/git-span.1')).toBe(true);
+      expect(isClassifiablePath('.devcontainer/Dockerfile')).toBe(true);
+      expect(isClassifiablePath('plugins-claude/git-span/.claude-plugin/plugin.json')).toBe(true);
+      expect(isClassifiablePath('.claude-plugin/marketplace.json')).toBe(true);
+      expect(isClassifiablePath('packages/foo/src/bar.ts')).toBe(false);
+      expect(isClassifiablePath('plugins-claude/git-span/hooks/bin/advisor.mjs')).toBe(false);
+    });
+
+    it('a hand-authored script under build/ is refused by both layers independently', () => {
+      // packages/extension/scripts/build/build-production.js is a tracked,
+      // hand-authored esbuild script whose only change here is version-shaped —
+      // so the content rules alone would call it mechanical. Two independent
+      // defenses must each refuse it, and this asserts both rather than
+      // relying on either:
+      //   1. the segment list no longer matches `build/` at all, so the
+      //      category layer cannot short-circuit it content-blind; and
+      //   2. the path is not manifest-shaped, so the allowlist gate refuses
+      //      it before any line rule runs.
+      // Defense 1 is what makes hoisting isNeverSpannedPath ahead of the diff
+      // read safe: hoisting a predicate that still matched `build/` would turn
+      // today's intermittent suppression into a deterministic one.
+      const file = fileDiff({
+        path: 'packages/extension/scripts/build/build-production.js',
+        hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+      });
+
+      expect(isNeverSpannedPath(file.path)).toBe(false);
+      expect(isClassifiablePath(file.path)).toBe(false);
+      expect(classifyMechanical(file).mechanical).toBe(false);
+    });
+
+    it('a lockfile still short-circuits the category layer, since a lockfile is allowlisted', () => {
+      const file = fileDiff({ path: 'packages/foo/yarn.lock', hunks: [] });
+
+      expect(classifyMechanical(file)).toEqual({ mechanical: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // parseUnifiedDiff — dash/plus-leading content lines (finding 2)
+  // -------------------------------------------------------------------------
+
+  describe('parseUnifiedDiff — content lines beginning with -- or ++', () => {
+    it('records a deleted bare "---" line that is a hunk\'s sole non-mechanical content', () => {
+      // The exact trigger, and it is narrow: the eaten dash line must be the
+      // *only* non-mechanical content in the hunk. A genuine 2-removed/1-added
+      // deletion is then fabricated into a balanced 1/1 semver pair — the
+      // parser manufacturing the very balance the balanced-hunk rule exists to
+      // refuse. The companion check below pins the adjacent shape that does not
+      // fire, so this pair marks the boundary rather than just the defect.
+      const text = [
+        'diff --git a/docs/ci.md b/docs/ci.md',
+        'index 111..222 100644',
+        '--- a/docs/ci.md',
+        '+++ b/docs/ci.md',
+        '@@ -2,2 +2 @@ title: CI & git integration',
+        '-version: 1.0.140',
+        '----',
+        '+version: 1.0.141'
+      ].join('\n');
+
+      const files = parseUnifiedDiff(text);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].hunks).toHaveLength(1);
+      // The counts are the assertion that matters — they are what the guard
+      // corrupted, and a verdict-only check would pass against a parser that got
+      // them wrong for a compensating reason.
+      expect(files[0].hunks[0].removed).toHaveLength(2);
+      expect(files[0].hunks[0].added).toHaveLength(1);
+      expect(files[0].hunks[0]).toEqual({ removed: ['version: 1.0.140', '---'], added: ['version: 1.0.141'] });
+      // Unbalanced once the deletion is recorded — rejected by the content rules
+      // alone, independently of classifyMechanical's manifest gate.
+      expect(isMechanicalDiff(files[0]).mechanical).toBe(false);
+    });
+
+    it('a dash-line deletion alongside surviving semantic content is already unbalanced (boundary companion)', () => {
+      // This adjacent shape does *not* trigger the defect: the surviving
+      // semantic line leaves the hunk 2-removed vs 1-added even after the dash
+      // line is eaten, so it was flagged before the parser fix too. Recorded to
+      // keep the trigger's narrowness explicit.
+      const text = [
+        'diff --git a/docs/ci.md b/docs/ci.md',
+        'index 111..222 100644',
+        '--- a/docs/ci.md',
+        '+++ b/docs/ci.md',
+        '@@ -2,3 +2 @@ title: CI',
+        '-version: 1.0.140',
+        '----',
+        '-Do not remove the sentinel; loader.ts parses up to it.',
+        '+version: 1.0.141'
+      ].join('\n');
+
+      const files = parseUnifiedDiff(text);
+
+      expect(files[0].hunks[0].removed).toHaveLength(3);
+      expect(files[0].hunks[0].added).toHaveLength(1);
+      expect(isMechanicalDiff(files[0]).mechanical).toBe(false);
+    });
+
+    it('records --/++-leading lines as content in a balanced hunk (CSS custom properties, CLI flags)', () => {
+      const text = [
+        'diff --git a/theme.txt b/theme.txt',
+        'index 111..222 100644',
+        '--- a/theme.txt',
+        '+++ b/theme.txt',
+        '@@ -1,2 +1,2 @@',
+        '---accent: #111;',
+        '---radius: 2px;',
+        '+++accent: #222;',
+        '+++radius: 4px;'
+      ].join('\n');
+
+      const files = parseUnifiedDiff(text);
+
+      expect(files[0].hunks).toHaveLength(1);
+      expect(files[0].hunks[0]).toEqual({
+        removed: ['--accent: #111;', '--radius: 2px;'],
+        added: ['++accent: #222;', '++radius: 4px;']
+      });
+      expect(isMechanicalDiff(files[0]).mechanical).toBe(false);
+    });
+
+    it('still parses file headers and hunk headers correctly when no hunk is open', () => {
+      const text = [
+        'diff --git a/a.json b/a.json',
+        'index 111..222 100644',
+        '--- a/a.json',
+        '+++ b/a.json',
+        '@@ -3 +3 @@',
+        '-  "version": "1.0.140",',
+        '+  "version": "1.0.141",'
+      ].join('\n');
+
+      const files = parseUnifiedDiff(text);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('a.json');
+      expect(files[0].hunks).toHaveLength(1);
+      expect(files[0].hunks[0].removed).toHaveLength(1);
+      expect(files[0].hunks[0].added).toHaveLength(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Rule gates (findings 1)
+  // -------------------------------------------------------------------------
+
+  describe('isMechanicalDiff — rule gates', () => {
+    it('masks an epoch integer only on a line naming a time', () => {
+      const timestamped = fileDiff({
+        path: 'meta.conf',
+        hunks: [{ removed: ['  builtAt: 1700000000'], added: ['  builtAt: 1712345678'] }]
+      });
+      const plainNumber = fileDiff({
+        path: 'meta.conf',
+        hunks: [{ removed: ['  maxBytes: 1700000000'], added: ['  maxBytes: 1712345678'] }]
+      });
+
+      expect(isMechanicalDiff(timestamped)).toEqual({ mechanical: true });
+      expect(isMechanicalDiff(plainNumber).mechanical).toBe(false);
+    });
+
+    it('masks a semver only in a version-adjacent context or a manifest-shaped path', () => {
+      const bareTripleInProse = fileDiff({
+        path: 'notes.txt',
+        hunks: [{ removed: ['see section 1.2.3 for details'], added: ['see section 9.9.9 for details'] }]
+      });
+      const manifest = fileDiff({
+        path: 'packages/foo/package.json',
+        hunks: [{ removed: ['    "git-span-linux-x64": "1.0.140",'], added: ['    "git-span-linux-x64": "1.0.141",'] }]
+      });
+
+      expect(isMechanicalDiff(bareTripleInProse).mechanical).toBe(false);
+      expect(isMechanicalDiff(manifest)).toEqual({ mechanical: true });
     });
   });
 
