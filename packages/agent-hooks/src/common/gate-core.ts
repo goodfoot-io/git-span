@@ -470,6 +470,13 @@ export interface GateExecutors {
    * covering rows here (minus `.span/**`, gitignored paths, and
    * `.span/.gateignore`-excluded paths — see {@link file://./gate-ignore.ts})
    * is an uncovered write.
+   *
+   * As with {@link GateExecutors.stale}, an empty result must mean the query
+   * *ran and found no covering anchors*, never that it *could not run* — here
+   * the stakes are inverted, since an empty covered set makes every changed
+   * path look uncovered. When the query aborts before completing, the
+   * implementation throws {@link GateScanError} rather than returning `[]`,
+   * so {@link evaluateGate} warns instead of issuing a maximal, wrong deny.
    */
   list(paths: string[], cwd: string): Promise<PorcelainRow[]>;
   /**
@@ -626,10 +633,11 @@ export type GateMode = 'enforce' | 'inform';
  * and never deny. Any internal error resolves to `allow`/`silent` — the gate
  * fails open and never bricks a commit.
  *
- * A {@link GateScanError} from `executors.stale` is the one case handled
- * outside that flow: a scan that *could not complete* (e.g. an unreadable
- * anchor file aborts the scoped query) yields an empty result that is NOT
- * evidence of a clean changeset. Reading that as `allow`/`silent` would
+ * A {@link GateScanError} from `executors.stale` or `executors.list` is the
+ * one case handled outside that flow: a scan that *could not complete* (e.g.
+ * an unreadable anchor file aborts the scoped query, or the coverage query
+ * cannot resolve an argument) yields an empty result that is NOT evidence of
+ * a clean changeset — nor, for coverage, of an uncovered one. Reading that as `allow`/`silent` would
  * silently swallow the fact that verification never happened, so it resolves
  * instead to its own `allow`/`scan-failed` — fail OPEN like `environmental`
  * (the command is not held), but with a distinct `kind` and `reason` so the
@@ -1379,17 +1387,33 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
     list: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
+      let out: string;
       try {
-        const out = execFileSync('git', ['span', 'list', '--porcelain', ...paths], {
+        out = execFileSync('git', ['span', 'list', '--porcelain', ...paths], {
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs
         });
-        return parsePorcelain(out);
-      } catch {
-        return [];
+      } catch (err) {
+        // The coverage read is the source of the *covered* set, so an empty
+        // result reads as "nothing is covered" — the most punitive answer the
+        // gate can give. A hard query failure (an unresolvable argument, say)
+        // writes an error to stderr and emits empty stdout; parsing that to
+        // `[]` would turn a failed scan into a confident, maximal deny with no
+        // related-spans section. Signal it distinctly instead, exactly as the
+        // `stale` executor above does, and let `evaluateGate` fail open with
+        // the `scan-failed` warning. Any partial stdout is still parsed.
+        const stdout = (err as { stdout?: string }).stdout;
+        const stderr = (err as { stderr?: string }).stderr;
+        const stdoutText = typeof stdout === 'string' ? stdout : '';
+        const stderrText = typeof stderr === 'string' ? stderr : '';
+        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
+          throw new GateScanError(stderrText.trim());
+        }
+        out = stdoutText;
       }
+      return parsePorcelain(out);
     },
     listBlocks: async (names, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);

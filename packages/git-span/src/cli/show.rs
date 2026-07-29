@@ -531,7 +531,9 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
 ///   - `#L` range → `parse_range_address` + path-index match with range
 ///   - span-name shape → check the pre-loaded name set, else fall through to
 ///     a path-index scan
-///   - glob / path → path-index scan, then a worktree existence check
+///   - glob / path → path-index scan, then a worktree existence check (a
+///     bracketed literal path resolves as a path even though it looks like a
+///     pattern)
 ///
 /// Zero-match args produce stderr diagnostics and an error.  Empty args return
 /// an empty vector immediately.
@@ -575,7 +577,14 @@ fn resolve_targets_from_index(
             let names = path_index.matching_names_glob(arg, None)?;
             if !names.is_empty() {
                 result.extend(names);
-            } else {
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                // `is_glob_pattern` is shape-based, so a literal path that
+                // merely contains `[`, `{`, `?` or `*` (e.g. a Next.js
+                // `app/[slug]/page.tsx` route) lands here.  If the argument
+                // names a real worktree file it is a path with no span, not a
+                // typo — the same fallback the other arms apply.  A genuine
+                // pattern matching nothing still has no such file and remains
+                // an error.
                 missing_args.push(arg);
             }
         } else {
