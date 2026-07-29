@@ -3,9 +3,10 @@
 Some spans are noise when browsing certain parts of the tree — wiki or
 marketing spans that anchor prose add little when surfaced inline while reading
 source. A repo can hold those back, **per path**, with a `.hookignore` file.
-This only affects the PreToolUse inline block (see
+This only affects the inline block the `PostToolUse` touch hook emits (see
 `./understanding-hook-output.md`); it never changes what `git span` commands
-report or how anchors resolve.
+report or how anchors resolve, and it has no effect on the `PreToolUse`
+advisor.
 
 ## Where it lives
 
@@ -61,8 +62,8 @@ file errs toward showing spans, not hiding them.
 
 ## Suppressing the advisor's uncovered-writes check: `.advisorignore`
 
-A separate file, `<repoRoot>/.span/.advisorignore`, controls the advisor's
-uncovered-writes leg (`references/understanding-hook-output.md` § "The advisor:
+A separate file, `<repoRoot>/.span/.advisorignore`, controls the `PreToolUse`
+advisor's uncovered-writes leg (`./understanding-hook-output.md` § "The advisor:
 what a held command sees") — a changed file no span anchors at all. It is
 **user-owned**: nothing creates or populates it (unlike `.hookignore`, which
 the `git-span` CLI auto-creates), so its absence is the normal, unconfigured

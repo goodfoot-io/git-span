@@ -25,7 +25,8 @@ that no longer matches what a span asserts) needs your action, and when it
 does, fold the `.span/` fix into the **same commit** as the code change that
 caused it — never a follow-up commit. Before `git commit`/`git push`, a
 `PreToolUse` advisor re-checks the changeset and holds the command once if
-real span debt remains; see "Handling an advisory hold" below.
+real span debt remains; see `references/understanding-hook-output.md` § "Resolving a
+held commit".
 
 ## Trust boundary
 `git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with

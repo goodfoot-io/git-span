@@ -15,8 +15,10 @@
  *
  * A span whose slug begins with `wiki` or `marketing` (the slug equals the
  * prefix, or is `<prefix>/…`) is then never surfaced for an anchor whose path
- * sits under `packages/agent-hooks/src` — neither inline by the PreToolUse hook
- * nor in the Stop hook's stale / related sections.
+ * sits under `packages/agent-hooks/src` — it is never surfaced in the inline
+ * `<git-span>` block the `PostToolUse` touch hook emits. It has no effect on
+ * the `PreToolUse` advisor, whose own uncovered-writes suppression lives in
+ * `.span/.advisorignore` (see `advisor-ignore.ts`).
  *
  * Pattern grammar is a deliberate subset of gitignore:
  *
