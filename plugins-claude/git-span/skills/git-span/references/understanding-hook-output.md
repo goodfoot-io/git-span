@@ -200,10 +200,15 @@ Load the `git-span:git-span` skill for guidance.
 </git-span>
 ```
 
-The related-spans section is grouped by span name (sorted), then by anchor
-within a name (also sorted), each group followed by that span's `why`
-sentence (omitted for a span that has none recorded), and is omitted
-entirely when no other file in the changeset carries any span coverage. It
+The related-spans section is grouped by span name, then by anchor within a
+name (sorted), each group followed by that span's `why` sentence (omitted
+for a span that has none recorded), and is omitted entirely when no other
+file in the changeset carries any span coverage. Groups are ordered by how
+much of the changeset each span covers (most first), then by how close its
+anchors sit to an uncovered file, then by name — so the span an uncovered
+file most plausibly belongs to leads, and identical state always renders in
+identical order. At most eight spans are listed; when more qualify, a
+closing line names how many are not shown and the command that shows them. It
 carries into the `git status` advisory the same way — it's supplementary
 context about the changeset, not part of what's flagged or consider-once'd,
 so it never affects the debt-state digest.

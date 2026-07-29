@@ -1149,23 +1149,93 @@ function renderScanFailedReason(detail: string): string {
 }
 
 /**
+ * Most spans the related-spans section lists before it truncates. Chosen from
+ * the tail of this repository's measured distribution (median 2 qualifying
+ * spans, p90 7, p99 15, max 41) rather than to maximize a hit rate: it engages
+ * on 5% of real rendering opportunities, where a tighter cap would drop the
+ * span the reader actually wanted far too often (N=5 drops it in 25% of
+ * non-bulk cases, N=3 in 40%).
+ */
+const RELATED_SPANS_CAP = 8;
+
+/** Directory components of a repo-relative posix path (basename dropped). */
+function dirParts(path: string): string[] {
+  const parts = path.split('/');
+  parts.pop();
+  return parts;
+}
+
+/**
+ * Normalized directory proximity of two repo-relative paths, in `[0,1]`:
+ * shared leading directory components over the deeper path's directory depth.
+ * `1` is the same directory (including two repo-root files, which share a
+ * depth of zero out of zero); `0` is nothing in common below the root.
+ */
+function pathProximity(a: string, b: string): number {
+  const x = dirParts(a);
+  const y = dirParts(b);
+  let shared = 0;
+  while (shared < x.length && shared < y.length && x[shared] === y[shared]) shared++;
+  const deepest = Math.max(x.length, y.length);
+  if (deepest === 0) return 1;
+  return shared / deepest;
+}
+
+/**
  * Group `covering` — the rows {@link computeUncoveredPaths} already resolved
  * for the rest of the changeset — by span name, each anchor rendered via
  * {@link anchorText}. Only anchors whose `path` is one of the paths
  * `executors.list` was scoped to appear here; a span's *other* anchors (in
  * files outside this changeset) never do, since `covering` never contained
- * them to begin with. Deduped (two covered files under the same name collapse
- * to one entry each) and sorted — span names, then anchors within a
- * name — so the rendered order is stable across runs over the same state.
+ * them to begin with. Deduped: two covered files under the same name collapse
+ * to one entry each, anchors within a name staying alphabetical.
+ *
+ * Groups are ordered by relevance to the *uncovered* paths, best first, on
+ * three keys:
+ *
+ * 1. **Co-occurrence, descending** — distinct changeset paths the span
+ *    covers. Measured against this repository's history it is the only signal
+ *    that carried a real win (28.8% vs. alphabetical's 15.0% top-1 on a
+ *    leave-one-out evaluation), so the span covering the most of what just
+ *    changed leads.
+ * 2. **Path proximity, descending** — the closest any of the span's
+ *    in-changeset anchors gets to any uncovered path, per
+ *    {@link pathProximity}. A small but real contribution, and free: no data
+ *    beyond `covering` and `uncovered` is consulted.
+ * 3. **Span name, ascending** — the former sole ordering, kept purely as the
+ *    determinism tie-break, so identical state always renders identically and
+ *    a retry never reshuffles the list under the reader.
+ *
+ * Anchor *counts outside the changeset* — span "focus" and "concentration" —
+ * were prototyped and rejected: both measurably degraded ranking, which is
+ * why this needs no parse of `coveringBlocksText` and no extra subprocess.
  */
-function groupCoveringByName(covering: PorcelainRow[]): { name: string; anchors: string[] }[] {
-  const byName = new Map<string, Set<string>>();
+function groupCoveringByName(covering: PorcelainRow[], uncovered: string[]): { name: string; anchors: string[] }[] {
+  const byName = new Map<string, { anchors: Set<string>; paths: Set<string> }>();
   for (const row of covering) {
-    const anchors = byName.get(row.name) ?? new Set<string>();
-    anchors.add(anchorText(row));
-    byName.set(row.name, anchors);
+    const group = byName.get(row.name) ?? { anchors: new Set<string>(), paths: new Set<string>() };
+    group.anchors.add(anchorText(row));
+    group.paths.add(row.path);
+    byName.set(row.name, group);
   }
-  return [...byName.keys()].sort().map((name) => ({ name, anchors: [...(byName.get(name) ?? [])].sort() }));
+  return [...byName.entries()]
+    .map(([name, group]) => {
+      let proximity = 0;
+      for (const path of group.paths) {
+        for (const target of uncovered) proximity = Math.max(proximity, pathProximity(path, target));
+      }
+      return { name, anchors: [...group.anchors].sort(), coOccurrence: group.paths.size, proximity };
+    })
+    .sort(
+      (a, b) =>
+        b.coOccurrence - a.coOccurrence ||
+        b.proximity - a.proximity ||
+        // Codepoint order, matching the plain `.sort()` this key replaced —
+        // `localeCompare` would make the tie-break locale-dependent, and the
+        // whole point of this key is that it is not.
+        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+    )
+    .map(({ name, anchors }) => ({ name, anchors }));
 }
 
 /**
@@ -1178,9 +1248,22 @@ function groupCoveringByName(covering: PorcelainRow[]): { name: string; anchors:
  * follows its anchors, same as those blocks, since that's the sentence that
  * actually tells the agent whether an uncovered file belongs here. Omitted
  * for a span that has none recorded, or when `coveringBlocksText` couldn't be
- * fetched. Uncapped by design: every qualifying span/anchor is listed.
+ * fetched.
+ *
+ * Ordered by {@link groupCoveringByName} — most of the changeset covered
+ * first, not alphabetically — and capped at {@link RELATED_SPANS_CAP} spans,
+ * with the overflow disclosed by name-count and the command that shows the
+ * rest. The cap is not there to shorten a typical two-entry list; it is there
+ * to stop the tail (this repository's history reaches 41 qualifying spans in
+ * one changeset), where the section stops being an answer and becomes a wall
+ * of text. A truncated list must never read as complete, hence the closing
+ * disclosure line rather than a silent slice.
  */
-function renderRelatedSpansSection(covering: PorcelainRow[], coveringBlocksText: string): string[] {
+function renderRelatedSpansSection(
+  covering: PorcelainRow[],
+  uncovered: string[],
+  coveringBlocksText: string
+): string[] {
   if (covering.length === 0) return [];
   const lines = [
     '',
@@ -1188,10 +1271,20 @@ function renderRelatedSpansSection(covering: PorcelainRow[], coveringBlocksText:
     '',
     'Other files in this change already belong to spans — an uncovered file above might belong with one of these instead of a new one:'
   ];
-  for (const { name, anchors } of groupCoveringByName(covering)) {
+  const groups = groupCoveringByName(covering, uncovered);
+  for (const { name, anchors } of groups.slice(0, RELATED_SPANS_CAP)) {
     lines.push('', `## ${name}`, ...anchors.map((anchor) => `- ${anchor}`));
     const why = extractWhy(coveringBlocksText, name);
     if (why.length > 0) lines.push('', why);
+  }
+  const hidden = groups.length - RELATED_SPANS_CAP;
+  if (hidden > 0) {
+    lines.push(
+      '',
+      hidden === 1
+        ? "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
+        : `${hidden} more spans cover files in this change and are not shown — \`git span list <path>\` shows a path's spans.`
+    );
   }
   return lines;
 }
@@ -1206,7 +1299,10 @@ function renderRelatedSpansSection(covering: PorcelainRow[], coveringBlocksText:
  * from the same {@link computeUncoveredPaths} call — renders as a related-
  * spans section (via {@link renderRelatedSpansSection}) in both the full and
  * `alreadySeen` condensed forms: it's supplementary context about the
- * changeset, not itself part of what's flagged or consider-once'd.
+ * changeset, not itself part of what's flagged or consider-once'd. Both forms
+ * pass the same `uncovered`/`covering` pair, so both rank and cap identically
+ * — a condensed retry reordering the message it condenses would be its own
+ * defect.
  */
 function renderUncoveredReason(
   uncovered: string[],
@@ -1218,7 +1314,7 @@ function renderUncoveredReason(
   const lines = uncovered.map((path) => `- ${path}`);
   if (alreadySeen) {
     const body = ['<git-span>', ...lines, '', 'Already flagged for git-span review above.'];
-    body.push(...renderRelatedSpansSection(covering, coveringBlocksText));
+    body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
     body.push('</git-span>');
     return body.join('\n');
   }
@@ -1235,7 +1331,7 @@ function renderUncoveredReason(
     '',
     'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
   ];
-  body.push(...renderRelatedSpansSection(covering, coveringBlocksText));
+  body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
   if (mode === 'enforce') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
   }

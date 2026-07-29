@@ -492,7 +492,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('src/other.ts#L');
     });
 
-    it('groups multiple covered files under one shared span name, and lists multiple span names separately, sorted', async () => {
+    it('groups multiple covered files under one shared span name, and ranks the span covering more of the changeset first even though its name sorts last', async () => {
       const memo = createMemoryGateMemoState();
       const executors = createFakeGateExecutors({
         list: async (): Promise<PorcelainRow[]> => [
@@ -509,8 +509,10 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       const alphaIndex = result.reason.indexOf('## alpha/solo');
       const zetaIndex = result.reason.indexOf('## zeta/pair');
-      expect(alphaIndex).toBeGreaterThan(-1);
-      expect(zetaIndex).toBeGreaterThan(alphaIndex);
+      expect(zetaIndex).toBeGreaterThan(-1);
+      // `zeta/pair` covers two of the changed files to `alpha/solo`'s one, so
+      // it leads despite sorting last alphabetically.
+      expect(alphaIndex).toBeGreaterThan(zetaIndex);
       expect(result.reason).toContain('- src/z1.ts#L1-L5');
       expect(result.reason).toContain('- src/z2.ts#L1-L5');
     });
@@ -545,10 +547,12 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).toContain('Alpha solo carries a single implicit dependency worth tracking on its own.');
       expect(result.reason).toContain('Zeta pair keeps two files in lockstep.');
       // Each why sentence follows its own group's anchors, not the other's.
-      const alphaWhyIndex = result.reason.indexOf('Alpha solo carries');
-      const zetaHeaderIndex = result.reason.indexOf('## zeta/pair');
-      expect(alphaWhyIndex).toBeGreaterThan(-1);
-      expect(alphaWhyIndex).toBeLessThan(zetaHeaderIndex);
+      // `zeta/pair` ranks first (it covers two changed files), so its why
+      // sentence lands above `alpha/solo`'s header.
+      const zetaWhyIndex = result.reason.indexOf('Zeta pair keeps');
+      const alphaHeaderIndex = result.reason.indexOf('## alpha/solo');
+      expect(zetaWhyIndex).toBeGreaterThan(-1);
+      expect(zetaWhyIndex).toBeLessThan(alphaHeaderIndex);
     });
 
     it("omits a related span's `why` line when the span has none recorded", async () => {
@@ -581,6 +585,151 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).not.toContain('Other files in this change already belong to spans');
       expect(result.reason).not.toContain('---');
+    });
+
+    it('breaks a co-occurrence tie by path proximity — the span anchored beside the uncovered file leads', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        // Both spans cover exactly one changed file, so co-occurrence ties.
+        // `far/away` sorts first alphabetically, but `near/by`'s anchor lives
+        // in the same directory as the uncovered file.
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'far/away', path: 'docs/guide/intro.md', start: 1, end: 5 }),
+          porcelainRow({ name: 'near/by', path: 'src/billing/other.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/billing/uncovered.ts', 'docs/guide/intro.md', 'src/billing/other.ts'];
+
+      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      const nearIndex = result.reason.indexOf('## near/by');
+      const farIndex = result.reason.indexOf('## far/away');
+      expect(nearIndex).toBeGreaterThan(-1);
+      expect(farIndex).toBeGreaterThan(nearIndex);
+    });
+
+    it('orders a fully-tied set by span name, so identical state always renders identically', async () => {
+      const memo = createMemoryGateMemoState();
+      // Same co-occurrence (one file each) and same proximity (same
+      // directory), fed in reverse-alphabetical order: only the name
+      // tie-break can decide, and it must decide the same way every run.
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'c/span', path: 'src/c.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'b/span', path: 'src/b.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'a/span', path: 'src/a.ts', start: 1, end: 5 })
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts'];
+
+      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const second = await evaluateGate(paths, REPO_ROOT, executors, createMemoryGateMemoState());
+
+      if (first.kind !== 'uncovered-writes') throw new Error('unreachable');
+      if (second.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(first.reason.indexOf('## a/span')).toBeLessThan(first.reason.indexOf('## b/span'));
+      expect(first.reason.indexOf('## b/span')).toBeLessThan(first.reason.indexOf('## c/span'));
+      expect(second.reason).toBe(first.reason);
+    });
+
+    it('lists all eight spans with no disclosure line at the cap, and truncates with an explicit count past it', async () => {
+      const spanRows = (count: number): PorcelainRow[] =>
+        Array.from({ length: count }, (_, index) =>
+          porcelainRow({ name: `span/${String(index).padStart(2, '0')}`, path: `src/f${index}.ts`, start: 1, end: 5 })
+        );
+      const changed = (count: number): string[] => [
+        'src/uncovered.ts',
+        ...Array.from({ length: count }, (_, index) => `src/f${index}.ts`)
+      ];
+
+      const atCap = await evaluateGate(
+        changed(8),
+        REPO_ROOT,
+        createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => spanRows(8),
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        }),
+        createMemoryGateMemoState()
+      );
+      if (atCap.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(atCap.reason).toContain('## span/07');
+      expect(atCap.reason).not.toContain('not shown');
+
+      const overCap = await evaluateGate(
+        changed(11),
+        REPO_ROOT,
+        createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => spanRows(11),
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        }),
+        createMemoryGateMemoState()
+      );
+      if (overCap.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(overCap.reason).toContain('## span/07');
+      expect(overCap.reason).not.toContain('## span/08');
+      expect(overCap.reason).toContain(
+        "3 more spans cover files in this change and are not shown — `git span list <path>` shows a path's spans."
+      );
+
+      const oneOver = await evaluateGate(
+        changed(9),
+        REPO_ROOT,
+        createFakeGateExecutors({
+          list: async (): Promise<PorcelainRow[]> => spanRows(9),
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        }),
+        createMemoryGateMemoState()
+      );
+      if (oneOver.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(oneOver.reason).toContain(
+        "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
+      );
+    });
+
+    it('the condensed `alreadySeen` form ranks and caps the related-spans section exactly as the full message it condenses', async () => {
+      const memo = createMemoryGateMemoState();
+      const executors = createFakeGateExecutors({
+        list: async (): Promise<PorcelainRow[]> => [
+          porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
+          porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
+          ...Array.from({ length: 8 }, (_, index) =>
+            porcelainRow({ name: `span/${String(index).padStart(2, '0')}`, path: `src/f${index}.ts`, start: 1, end: 5 })
+          )
+        ],
+        stale: async (): Promise<StalePorcelainRow[]> => []
+      });
+      const paths = [
+        'src/uncovered.ts',
+        'src/z1.ts',
+        'src/z2.ts',
+        ...Array.from({ length: 8 }, (_, index) => `src/f${index}.ts`)
+      ];
+
+      // First `inform` renders the full form; the second, on the unchanged
+      // debt state, renders the condensed one.
+      const full = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const condensed = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      if (full.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      if (condensed.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+
+      expect(condensed.reason).toContain('Already flagged for git-span review above.');
+      // Compare the section itself, stopping at the disclosure line — what
+      // trails it differs between the forms for reasons predating ranking
+      // (the full form closes with the skill-loading sentence).
+      const section = (reason: string): string => {
+        const body = reason.slice(reason.indexOf('Other files in this change'));
+        return body.slice(0, body.indexOf('not shown'));
+      };
+      expect(section(condensed.reason)).toBe(section(full.reason));
+      // The two-file span leads, the ninth-ranked span is cut, and the cut is disclosed.
+      expect(condensed.reason.indexOf('## zeta/pair')).toBeLessThan(condensed.reason.indexOf('## span/00'));
+      expect(condensed.reason).not.toContain('## span/07');
+      expect(condensed.reason).toContain(
+        "1 more span covers files in this change and is not shown — `git span list <path>` shows a path's spans."
+      );
     });
 
     it('an `inform` (status) preview that already showed a debt state lets the following `enforce` attempt through instead of denying it again', async () => {
