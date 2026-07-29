@@ -439,6 +439,8 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
     it('matches .tsbuildinfo, .min.js, .min.css, and JS/CSS sourcemaps', () => {
       expect(isNeverSpannedPath('packages/foo/dist/bundle.mjs.map')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.css.map')).toBe(true);
+      // `declarationMap: true` in the root and package tsconfigs emits this shape.
+      expect(isNeverSpannedPath('packages/foo/dist/index.d.ts.map')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/tsconfig.tsbuildinfo')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.js')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.css')).toBe(true);

@@ -31,9 +31,16 @@
 # depth. Scoping the claude side to `hooks/bin/` instead left
 # `plugins-claude/git-span/hooks/hooks.json` exposed — one generated file, on one
 # of the two shipped plugins, reachable by any build that touches hook
-# registration. That is the same failure in its worst shape: `hooks.json` is not a
-# classifiable basename, so nothing downstream catches it, and a one-entry
-# checklist naming a single generated file reads as far more credible than the
-# seven-entry list did.
+# registration. `hooks.json` is not a classifiable basename, so the classifier
+# refuses it on the gate and nothing downstream catches it.
+#
+# To be precise about the shape, since the obvious reading is wrong: a changeset
+# containing *only* that file is silent regardless, because the uncovered-writes
+# check short-circuits below two paths — a coupling needs two files to exist. The
+# exposure was any commit pairing the regenerated `hooks.json` with at least one
+# real edit, where it appears as a spurious extra entry beside a genuine one.
+# That is worse than it sounds: a short list mixing one actionable path with one
+# unactionable one is harder to dismiss correctly than a list that is uniformly
+# noise.
 plugins-claude/git-span/hooks/
 plugins-codex/git-span/hooks/
