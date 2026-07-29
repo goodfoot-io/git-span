@@ -29,6 +29,9 @@ const SPAN_GITIGNORE_CONTENTS: &str = "\
 # Ignore dispatcher-generated runtime artifacts. The reconciler's
 # agent-hooks dispatcher writes log files alongside spans; these are
 # not meant to be committed.
+#
+# git-span keeps the rules above present but leaves everything else in
+# this file alone -- your own rules are safe here.
 *.log
 ";
 
@@ -53,28 +56,68 @@ const HOOKIGNORE_CONTENTS: &str = "\
 # blank lines). Add rules below.
 ";
 
-/// Ensure the span root directory exists and contains the three `.span/`
-/// control files with their canonical content. Idempotent:
+/// Reconcile one control file toward its canonical form without
+/// discarding anything git-span did not write.
 ///
-/// * `.gitattributes`, `.gitignore` -- each is (re)written only when
-///   missing or when content differs from its canonical form.
+/// An absent or blank file is written verbatim from `canonical`, so a
+/// repository that has never been customized converges exactly. A file
+/// with content keeps every line it has; only the canonical *rules*
+/// (non-blank, non-comment lines) that are missing are appended. A rule
+/// git-span needs is therefore never absent, and a rule the user added
+/// is never removed.
+fn reconcile_control_file(path: &Path, canonical: &str) -> Result<()> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    if current.trim().is_empty() {
+        std::fs::write(path, canonical)?;
+        return Ok(());
+    }
+
+    let is_rule = |line: &&str| {
+        let t = line.trim();
+        !t.is_empty() && !t.starts_with('#')
+    };
+    let present: Vec<&str> = current.lines().map(str::trim_end).collect();
+    let missing: Vec<&str> = canonical
+        .lines()
+        .filter(is_rule)
+        .filter(|rule| !present.contains(&rule.trim_end()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut updated = current;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("\n# Restored by git-span: rules the CLI requires.\n");
+    for rule in &missing {
+        updated.push_str(rule);
+        updated.push('\n');
+    }
+    std::fs::write(path, updated)?;
+    eprintln!(
+        "git-span: appended {} missing rule(s) to `{}`; existing lines were left untouched.",
+        missing.len(),
+        path.display()
+    );
+    Ok(())
+}
+
+/// Ensure the span root directory exists and contains the three `.span/`
+/// control files. Idempotent, and never destructive:
+///
+/// * `.gitattributes`, `.gitignore` -- reconciled toward canonical form:
+///   written whole when missing or blank, otherwise only the missing
+///   canonical rules are appended, preserving any user-added rules.
 /// * `.hookignore` -- written only when missing (existence-only guard),
 ///   preserving any user-added rules.
 pub(crate) fn ensure_span_dir(workdir: &Path, span_root: &str) -> Result<()> {
     let span_dir = workdir.join(span_root);
     std::fs::create_dir_all(&span_dir)?;
 
-    let ga_path = span_dir.join(".gitattributes");
-    let ga_current = std::fs::read_to_string(&ga_path).unwrap_or_default();
-    if ga_current != GITATTRIBUTES_CONTENTS {
-        std::fs::write(&ga_path, GITATTRIBUTES_CONTENTS)?;
-    }
-
-    let gi_path = span_dir.join(".gitignore");
-    let gi_current = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    if gi_current != SPAN_GITIGNORE_CONTENTS {
-        std::fs::write(&gi_path, SPAN_GITIGNORE_CONTENTS)?;
-    }
+    reconcile_control_file(&span_dir.join(".gitattributes"), GITATTRIBUTES_CONTENTS)?;
+    reconcile_control_file(&span_dir.join(".gitignore"), SPAN_GITIGNORE_CONTENTS)?;
 
     let hi_path = span_dir.join(".hookignore");
     if !hi_path.exists() {
