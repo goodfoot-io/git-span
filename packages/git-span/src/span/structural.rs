@@ -254,6 +254,86 @@ mod tests {
         );
     }
 
+    /// A user-added rule in `.span/.gitignore` must survive
+    /// `ensure_span_dir`, and the canonical rules must still be present
+    /// alongside it.
+    #[test]
+    fn ensure_span_dir_gitignore_preserves_user_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        let span_dir = workdir.join(span_root);
+        std::fs::create_dir_all(&span_dir).expect("create .span");
+        let gi_path = span_dir.join(".gitignore");
+        std::fs::write(&gi_path, "# local\n*.log\nmy-generated-artifact-*.sh\n")
+            .expect("write user .gitignore");
+
+        ensure_span_dir(workdir, span_root).expect("call after user content");
+
+        let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
+        assert!(
+            content.lines().any(|l| l == "my-generated-artifact-*.sh"),
+            ".span/.gitignore must preserve user-added rules, got:\n{content}"
+        );
+        assert!(
+            content.lines().any(|l| l == "*.log"),
+            "canonical rules must remain present, got:\n{content}"
+        );
+    }
+
+    /// A `.span/.gitignore` missing a canonical rule must converge: the
+    /// missing rule is restored without discarding the user's lines.
+    #[test]
+    fn ensure_span_dir_gitignore_restores_missing_canonical_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        let span_dir = workdir.join(span_root);
+        std::fs::create_dir_all(&span_dir).expect("create .span");
+        let gi_path = span_dir.join(".gitignore");
+        std::fs::write(&gi_path, "my-generated-artifact-*.sh\n").expect("write user .gitignore");
+
+        ensure_span_dir(workdir, span_root).expect("call after user content");
+
+        let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
+        assert!(
+            content.lines().any(|l| l == "*.log"),
+            "missing canonical rule must be restored, got:\n{content}"
+        );
+        assert!(
+            content.lines().any(|l| l == "my-generated-artifact-*.sh"),
+            "user rule must survive canonical restoration, got:\n{content}"
+        );
+    }
+
+    /// A user-added rule in `.span/.gitattributes` must survive
+    /// `ensure_span_dir`, and the canonical LF pin must remain in force.
+    #[test]
+    fn ensure_span_dir_gitattributes_preserves_user_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let span_root = ".span";
+
+        let span_dir = workdir.join(span_root);
+        std::fs::create_dir_all(&span_dir).expect("create .span");
+        let ga_path = span_dir.join(".gitattributes");
+        std::fs::write(&ga_path, "* text eol=lf\n*.bin binary\n").expect("write user .gitattributes");
+
+        ensure_span_dir(workdir, span_root).expect("call after user content");
+
+        let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
+        assert!(
+            content.lines().any(|l| l == "*.bin binary"),
+            ".span/.gitattributes must preserve user-added rules, got:\n{content}"
+        );
+        assert!(
+            content.lines().any(|l| l == "* text eol=lf"),
+            "canonical LF pin must remain present, got:\n{content}"
+        );
+    }
+
     /// `.hookignore` with user-added content must NOT be overwritten by a
     /// subsequent call to `ensure_span_dir`.
     #[test]
