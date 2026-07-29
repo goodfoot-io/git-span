@@ -18,15 +18,12 @@ After any `add`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
 
 ## Same-commit workflow
 
-Positional drift (a pure line-shift from an edit) is healed inline by the
-`PostToolUse` touch hook the moment the edit lands — there is no separate
-"reconcile spans" commit to make for it. Only genuine semantic drift (content
-that no longer matches what a span asserts) needs your action, and when it
-does, fold the `.span/` fix into the **same commit** as the code change that
-caused it — never a follow-up commit. Before `git commit`/`git push`, a
-`PreToolUse` advisor re-checks the changeset and holds the command once if
-real span debt remains; see `references/understanding-hook-output.md` § "Resolving a
-held commit".
+The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
+reconcile commit is needed for it. Semantic drift — content no longer matching what a
+span asserts — needs your action: fold the `.span/` fix into the **same commit** as the
+code change, never a follow-up. Before `git commit`/`git push` a `PreToolUse` advisor
+re-checks the changeset and holds the command once if real span debt remains; see
+`references/understanding-hook-output.md` § "Resolving a held commit".
 
 ## Trust boundary
 `git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with
@@ -48,8 +45,18 @@ output and stop.
 - `stale`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
   not an error — that is not proof the span doesn't exist; confirm with `git span list`.
 - `stale` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
-- Don't span generated/build output (compiled artifacts, generated images, lockfiles, the
-  man page) — span its inputs instead.
+- Don't span a path that a script or generator writes and nobody hand-edits — span the
+  inputs instead. Committed output still counts: generated images, lockfiles, the man
+  page.
+- The same files mirrored across two platform roots are one directed coupling, not one span
+  per file (roots are directories; `add` rejects those). With a parity check: anchor the
+  normative side's files plus the check. Without one the span *is* the parity mechanism —
+  keep both sides of each pair and name the normative direction in the why; dropping the
+  mirror side removes the only drift detection. For a tree too large to enumerate (dozens
+  of pairs), anchor one representative pair and say in the why that it stands for the tree.
+  Never split into one span per pair, never delete.
+- Anchors all in one file usually means the counterparty the why names is missing — add it;
+  delete only if none exists.
 
 ## Recipes
 
@@ -59,12 +66,17 @@ git span add <name> <anchor>...
 git span why <name> "<one present-tense sentence naming the subsystem and what it does across the anchors>"
 git add .span && git commit -m "..."
 ```
+Before `add`: name one edit at one anchor that silently breaks or falsifies another — code
+behavior, doc accuracy, or a review obligation — with no compiler, test, or build catching
+it. If you cannot, there is no span; the exception is a covering span `wiki check --fix`
+creates, which the wiki tooling requires regardless.
+
 The why is a definition, not a work order: a complete sentence (subject + verb, never
 `label:`) in role words, not file names, specific enough that someone who just edited one
-anchor can tell whether their change lands inside it. No rules, warnings, or review steps
-— put those in comments at the load-bearing anchor sites. A span isn't done until those
-comments exist. Good example: "Product-listing pagination is a continuation-token flow
-defined by the API and mirrored by each client library."
+anchor can tell whether their change lands inside it. Rules, warnings, and review steps go
+in comments at the load-bearing anchor sites; a span isn't done until those exist. Good
+example: "Product-listing pagination is a continuation-token flow defined by the API and
+mirrored by each client library."
 
 ### Re-anchor + retire (stale names the drifted anchor; fix is obvious)
 ```

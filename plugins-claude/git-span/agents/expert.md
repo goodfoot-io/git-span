@@ -26,6 +26,19 @@ doesn't cover: what makes a decision correct, not how to type it.
   must be justified by a single sentence stating what relationship the
   bytes form. If you cannot write that sentence, stop — delete the span or
   escalate, do not guess.
+- **Distinct roles across the set.** Justifying each anchor is not enough —
+  name each one's *role* in the mechanism (e.g. definer, consumer, gate,
+  serializer, fixture, doc). Two anchors that get the same role name are
+  instances of a kind rather than participants in a mechanism, and that span
+  is a collection to narrow or split. Pair this with the skill's pre-`add`
+  test.
+- **Duplicated content needs a named source of truth.** A span whose anchors
+  hold near-identical copies of one artifact is legitimate only if one anchor
+  is identifiably normative and the why says which — name the normative side
+  rather than deleting the span. When no separate check enforces the copies,
+  the span itself is that check: keep anchors on both sides, since dropping
+  the mirror side removes the only drift detection. Surfaces that restate one
+  rule in their own register are distinct roles, not copies.
 - **Delete is a valid outcome.** A span whose relationship is gone should
   be deleted, not preserved for completeness. A broken span is worse than
   no span — it trains future operators to ignore drift.

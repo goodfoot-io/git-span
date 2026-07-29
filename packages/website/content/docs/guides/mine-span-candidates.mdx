@@ -39,6 +39,8 @@ Before treating a high-co-change pair as a candidate, check whether the coupling
 - **Test and the code it tests.** A file and its own test changing together is expected, not hidden.
 - **Manifest or doc entries.** A file and a line in `package.json`, a changelog, or a README that simply lists it are structurally coupled and visible to any reader — not implicit.
 - **Same author, same sweep.** If one person made both changes together as part of an unrelated refactor (renaming, formatting), that's incidental, not a real dependency. Check `git log --format='%an'` for the commits in question — if it's consistently one author making sweeping changes, discount the pair.
+- **Generated output.** If a script or generator writes the file and nobody hand-edits it, the build already enforces the correspondence — span the script's inputs instead. The test is whether the file is ever hand-edited, not whether it looks generated: committed images and checked-in generated docs both fail this test despite looking like ordinary source.
+- **Mirrored ports.** Copies of one file under two platform roots are a single directed coupling with a normative side, not one span per copy. Keep one span (a directory root can't be anchored), anchoring the normative side's files plus whatever verifies parity. If nothing else verifies parity, the span is what catches the drift — anchor both sides and name the normative direction in the why.
 
 What's left after filtering — pairs with no shared type, no test relationship, no manifest link, touched by more than one author over time — are worth reading.
 
@@ -56,6 +58,7 @@ Read the commit subjects and, where the reason isn't obvious from the subject al
 - Does one file rely on a contract the other defines, that nothing enforces? (e.g. a hand-maintained mapping, a protocol both sides assume, a numeric constant that has to match)
 - If someone changed the other side of this pair without knowing about the first, what would break silently?
 - Do the commit messages describe the same underlying concern, even though they touch different files?
+- If the codebase doubled in size, would this span gain anchors? A mechanism says no — it has the participants its design has; a list of instances says yes. A growing set is a prompt to look closer, not grounds to discard: a shared obligation ("every handler must emit this event") is a real span, while a listing obligation ("every handler is enumerated here") is better kept by the tooling that owns the list.
 
 A pair where every co-occurring commit tells a consistent story — the same feature, the same bug, the same constraint — is a real candidate. A pair where the commits are unrelated changes that happened to land together is a false positive; discard it.
 
