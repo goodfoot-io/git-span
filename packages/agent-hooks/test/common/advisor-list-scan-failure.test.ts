@@ -5,10 +5,10 @@
  * `computeUncoveredPaths` derives the covered set from `executors.list`, so an
  * empty result is indistinguishable from "nothing is covered" — a failed
  * coverage query is therefore converted into a maximal, confidently-wrong
- * "every changed path is uncovered" deny, and the related-spans section
+ * "every changed path is uncovered" hold, and the related-spans section
  * vanishes. The sibling `stale` executor already distinguishes the two cases:
  * empty stdout plus a non-empty stderr on a non-zero exit means the scan never
- * completed, and it throws `GateScanError` so `evaluateGate` can fail open with
+ * completed, and it throws `AdvisorScanError` so `evaluateAdvisor` can fail open with
  * the distinguishable `scan-failed` warning.
  *
  * This exercises the real CLI (matching the pattern in porcelain-contract.test.ts)
@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createDefaultGateExecutors, GateScanError } from '../../src/common/gate-core.js';
+import { AdvisorScanError, createDefaultAdvisorExecutors } from '../../src/common/advisor-core.js';
 
 const hasGitSpan = (() => {
   try {
@@ -47,11 +47,13 @@ const suite = hasGitSpan ? describe : describe.skip;
  */
 const MISSING_ARG = 'src/no-such-file-anywhere.ts';
 
-suite('createDefaultGateExecutors().list — hard CLI failure', () => {
+suite('createDefaultAdvisorExecutors().list — hard CLI failure', () => {
   let repoRoot: string;
 
   beforeEach(() => {
-    repoRoot = fs.realpathSync.native(fs.mkdtempSync(nodePath.join(fs.realpathSync.native('/tmp'), 'gate-list-fail-')));
+    repoRoot = fs.realpathSync.native(
+      fs.mkdtempSync(nodePath.join(fs.realpathSync.native('/tmp'), 'advisor-list-fail-'))
+    );
     execFileSync('git', ['init', '-q', '-b', 'main', repoRoot], { stdio: 'ignore' });
     execFileSync('git', ['-C', repoRoot, 'config', 'user.email', 'test@test.com'], { stdio: 'ignore' });
     execFileSync('git', ['-C', repoRoot, 'config', 'user.name', 'Test'], { stdio: 'ignore' });
@@ -87,8 +89,8 @@ suite('createDefaultGateExecutors().list — hard CLI failure', () => {
     expect(stderr.trim().length).toBeGreaterThan(0);
   });
 
-  it('throws GateScanError rather than reporting zero coverage', async () => {
-    const executors = createDefaultGateExecutors();
-    await expect(executors.list(['src/app.ts', MISSING_ARG], repoRoot)).rejects.toBeInstanceOf(GateScanError);
+  it('throws AdvisorScanError rather than reporting zero coverage', async () => {
+    const executors = createDefaultAdvisorExecutors();
+    await expect(executors.list(['src/app.ts', MISSING_ARG], repoRoot)).rejects.toBeInstanceOf(AdvisorScanError);
   });
 });
