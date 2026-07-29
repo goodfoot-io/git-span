@@ -214,11 +214,22 @@ const NOISE_BASENAMES = new Set([
  *
  * `.log` was dropped from this list. A tracked `test/fixtures/sample.log` is a
  * hand-authored fixture that can encode a real contract, so a `.log` suffix
- * fails the test — unlike the four below, it is a name a person plausibly
+ * fails the test — unlike the entries below, it is a name a person plausibly
  * writes. Logs are therefore merely reported, which costs one sentence of
  * prompt.
+ *
+ * Sourcemaps are enumerated by their full double extension rather than as a bare
+ * `.map`, because these are tested with `endsWith` against the **whole
+ * repo-relative path**, not the basename. A bare `.map` would claim every path
+ * ending in those four characters — a hand-authored `data/world.map` fixture or
+ * any domain format using the extension — and claiming it means unconditional
+ * content-blind silence. `.js.map`, `.mjs.map`, `.cjs.map`, and `.css.map` are
+ * emitted by build tools and essentially nothing else, which is the property the
+ * criterion above actually asks for. The narrower form gives up no real
+ * suppression: a sourcemap that is not for JS or CSS is not a shape this repo or
+ * its tooling produces.
  */
-const NOISE_SUFFIXES = ['.tsbuildinfo', '.min.js', '.min.css', '.map'];
+const NOISE_SUFFIXES = ['.tsbuildinfo', '.min.js', '.min.css', '.js.map', '.mjs.map', '.cjs.map', '.css.map'];
 
 /**
  * Path segments that mark every file beneath them as noise.

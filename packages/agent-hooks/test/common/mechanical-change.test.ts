@@ -429,7 +429,16 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — noise suffixes', () => {
-    it('matches .tsbuildinfo, .min.js, .min.css, and .map', () => {
+    it('does not match a bare .map — the suffixes test the whole path, not the basename', () => {
+      // A bare `.map` entry would claim any path ending in those four
+      // characters, and claiming it means unconditional content-blind silence.
+      expect(isNeverSpannedPath('packages/foo/test/fixtures/world.map')).toBe(false);
+      expect(isNeverSpannedPath('packages/foo/data/terrain.map')).toBe(false);
+    });
+
+    it('matches .tsbuildinfo, .min.js, .min.css, and JS/CSS sourcemaps', () => {
+      expect(isNeverSpannedPath('packages/foo/dist/bundle.mjs.map')).toBe(true);
+      expect(isNeverSpannedPath('packages/foo/dist/bundle.css.map')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/tsconfig.tsbuildinfo')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.js')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.css')).toBe(true);

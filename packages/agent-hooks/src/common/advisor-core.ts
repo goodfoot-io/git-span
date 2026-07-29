@@ -1062,7 +1062,14 @@ async function computeUncoveredPaths(
     // which is the only place that fanout can change an answer.
     const needsContent = uncovered.filter(isClassifiablePath);
     const byPath = new Map<string, FileDiff>();
-    let readOutcome: 'clean' | 'per-file-fallback' | 'failed' = 'clean';
+    // `skipped` rather than `clean` when nothing was classifiable: "the read
+    // succeeded" and "no read was attempted" are different facts, and since
+    // scoping the read to classifiable paths the second is the common case on a
+    // source-only changeset. A breadcrumb that reported `clean` for both would
+    // make the ordinary no-op indistinguishable from a real read that found
+    // nothing mechanical.
+    let readOutcome: 'clean' | 'skipped' | 'per-file-fallback' | 'failed' =
+      needsContent.length > 0 ? 'clean' : 'skipped';
     if (needsContent.length > 0) {
       try {
         for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
@@ -1637,6 +1644,37 @@ const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
  */
 const GIT_READ_OPTS = ['-c', 'core.quotepath=false'];
 
+/**
+ * Flags that pin the *content* read's output shape against the invoking user's
+ * own diff configuration. `parseUnifiedDiff` anchors on
+ * `^diff --git a/(.+) b/(.+)$`, and four ordinary personal settings rewrite that
+ * line or the body wholesale:
+ *
+ * | setting | header becomes |
+ * | --- | --- |
+ * | `diff.noprefix=true` | `diff --git f.txt f.txt` |
+ * | `diff.mnemonicPrefix=true` | `diff --git c/f.txt i/f.txt` |
+ * | `color.ui=always` | the header wrapped in SGR escapes |
+ * | `diff.external` | the entire body replaced by another tool's format |
+ *
+ * When the anchor misses, every hunk lands outside a recognized file and the
+ * parse yields no `FileDiff` for any path — which is indistinguishable from "the
+ * batch returned nothing", so it routes into the per-file fallback and each
+ * retry parses to nothing too. The direction is fail-toward-reporting, so no
+ * coupling is lost; the cost is that churn suppression silently does not exist
+ * for that user, with the breadcrumb honestly recording `suppressedByContent: 0`.
+ * Total feature loss with no symptom is worse than an outage that announces
+ * itself.
+ *
+ * These are diff-only flags and belong on this invocation rather than in
+ * {@link GIT_READ_OPTS}, which the `--name-only` reads also use. Those reads are
+ * already safe: `color.ui` does not colorize `--name-only` output, and
+ * `diff.relative` is neutral because every read passes `-C repoRoot`. Flags also
+ * close `diff.external` and `diff.mnemonicPrefix`, which a `-c` override list
+ * would have to enumerate one setting at a time.
+ */
+const GIT_DIFF_SHAPE_OPTS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
+
 /** Run a git command at `cwd`, returning its raw stdout as-is (empty string on any failure). */
 function gitText(args: string[], cwd: string, timeoutMs: number): string {
   try {
@@ -1750,7 +1788,7 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       const rangeArgs =
         range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
       const text = gitText(
-        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...rangeArgs, '--', ...paths],
+        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, '--', ...paths],
         repoRoot,
         timeoutMs
       );

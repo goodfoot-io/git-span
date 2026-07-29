@@ -26,5 +26,14 @@
 # Declaring them here is the intended mechanism rather than a workaround —
 # advisor-ignore.ts describes this file as the place a repo owner lists
 # "generated output, vendored code, anything that will never get a span."
-plugins-claude/git-span/hooks/bin/
+#
+# Both patterns name the whole `hooks/` directory, deliberately at the same
+# depth. Scoping the claude side to `hooks/bin/` instead left
+# `plugins-claude/git-span/hooks/hooks.json` exposed — one generated file, on one
+# of the two shipped plugins, reachable by any build that touches hook
+# registration. That is the same failure in its worst shape: `hooks.json` is not a
+# classifiable basename, so nothing downstream catches it, and a one-entry
+# checklist naming a single generated file reads as far more credible than the
+# seven-entry list did.
+plugins-claude/git-span/hooks/
 plugins-codex/git-span/hooks/
