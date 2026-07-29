@@ -1,7 +1,7 @@
-packages/agent-hooks/src/common/advisor-core.ts#L1286-L1578 rk64:e0f3bd75ca314e07
+packages/agent-hooks/src/common/advisor-core.ts#L1301-L1593 rk64:e0f3bd75ca314e07
 packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
-packages/website/content/docs/agent-integration.mdx rk64:3400934810c64df4
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:fb1afe606047a7f1
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:361488fba7a92f84
+packages/website/content/docs/agent-integration.mdx rk64:c72d9b4ab1d9225b
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:a25d525fbf0ec47b
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:19fb068718db1f83
 
 The hook-facing message copy: the implicit-dependency wording rendered by the touch hook's block and the advisor's four reasons, quoted verbatim in both plugin skill references and the website's agent-integration doc — reword one and the others must follow.

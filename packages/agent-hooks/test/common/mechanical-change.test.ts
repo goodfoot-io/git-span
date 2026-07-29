@@ -429,12 +429,44 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — noise suffixes', () => {
-    it('matches .log, .tsbuildinfo, .min.js, .min.css, and .map', () => {
-      expect(isNeverSpannedPath('packages/foo/debug.log')).toBe(true);
+    it('matches .tsbuildinfo, .min.js, .min.css, and .map', () => {
       expect(isNeverSpannedPath('packages/foo/tsconfig.tsbuildinfo')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.js')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.css')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.js.map')).toBe(true);
+    });
+
+    it('does not match .log — a tracked log can be a hand-authored fixture', () => {
+      expect(isNeverSpannedPath('packages/foo/debug.log')).toBe(false);
+      expect(isNeverSpannedPath('packages/foo/test/fixtures/sample.log')).toBe(false);
+    });
+
+    // The suffixes above are only reachable because the category layer runs
+    // ahead of the manifest gate. While the gate came first, a `.map` was
+    // refused as non-manifest-shaped before its suffix was ever tested, and
+    // these `isNeverSpannedPath` assertions passed while the composed verdict
+    // was the opposite — the suite read as covering behavior no user saw.
+    it('suppresses minified output and sourcemaps through the composed verdict, not just the inner layer', () => {
+      for (const path of [
+        'packages/foo/dist/bundle.min.js',
+        'packages/foo/dist/bundle.min.css',
+        'packages/foo/dist/bundle.js.map',
+        'packages/foo/tsconfig.tsbuildinfo'
+      ]) {
+        const file = fileDiff({
+          path,
+          hunks: [{ removed: ['export const a=1;'], added: ['export const a=1,b=2;'] }]
+        });
+        expect(classifyMechanical(file).mechanical).toBe(true);
+      }
+    });
+
+    it('reports a .log through the composed verdict', () => {
+      const file = fileDiff({
+        path: 'packages/foo/test/fixtures/sample.log',
+        hunks: [{ removed: ['2024-01-01 ok'], added: ['2024-01-02 ok'] }]
+      });
+      expect(classifyMechanical(file).mechanical).toBe(false);
     });
   });
 

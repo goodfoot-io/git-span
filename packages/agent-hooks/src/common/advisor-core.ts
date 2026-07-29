@@ -1029,14 +1029,17 @@ async function computeUncoveredPaths(
     // changeset whose diff read failed was reported anyway. Suppression must not
     // depend on an environmental accident.
     //
-    // The predicate composed here is exactly `classifyMechanical`'s own
-    // path-only verdict (`isClassifiablePath` gate first, then the category
-    // layer) rather than a bare {@link isNeverSpannedPath} call. That ordering is
-    // load-bearing and belongs to the classifier: the gate is what keeps a
-    // hand-authored file under a noise-shaped path (`.map`/`.min.js`/a vendored
-    // segment) from being silenced with no content ever read. Hoisting only the
-    // inner layer would widen suppression well past lockfiles.
-    uncovered = uncovered.filter((path) => !(isClassifiablePath(path) && isNeverSpannedPath(path)));
+    // The predicate is the bare category layer, matching `classifyMechanical`'s
+    // own path-only verdict exactly. It was briefly composed here as
+    // `isClassifiablePath(path) && isNeverSpannedPath(path)`, mirroring an
+    // ordering the classifier itself no longer uses; that conjunction refused
+    // `.map` and `.min.js` as non-manifest-shaped before their suffix was ever
+    // tested, so it silently dropped three of the four categories CARD.md
+    // assigns to this layer. Duplicating the classifier's ordering at its call
+    // site was the underlying mistake — the sequencing rationale lives in
+    // {@link classifyMechanical} and only there, and this site now defers to it
+    // with a single predicate that cannot drift out of agreement.
+    uncovered = uncovered.filter((path) => !isNeverSpannedPath(path));
     const suppressedByPath = before - uncovered.length;
 
     // The content layer, over whatever the path layer left. One batched
@@ -1046,15 +1049,27 @@ async function computeUncoveredPaths(
     // diff used to come back as `''` from `gitText` and collapse suppression
     // for every file at once. Any failure leaves the file flagged: fail toward
     // reporting, never toward suppression.
+    // Scoped to the paths the content layer is *permitted* to classify. A
+    // non-manifest path's verdict is `classifyMechanical`'s gate refusal, which
+    // is knowable from the path string, so reading its diff buys a foregone
+    // conclusion. Leaving it in the read set made the ordinary source-only
+    // changeset pay the whole feature's cost to learn nothing: this card's own
+    // `ded75b8d` has 7 uncovered paths, none classifiable, and was buffering
+    // and parsing 1.16 MB before refusing all 7 on the gate. This is the half
+    // of "decide suppression before reading the diff" that the hoist above
+    // missed — path-*suppression* moved ahead of the read, gate-*refusal* did
+    // not. It also bounds the fallback fanout below to the classifiable subset,
+    // which is the only place that fanout can change an answer.
+    const needsContent = uncovered.filter(isClassifiablePath);
     const byPath = new Map<string, FileDiff>();
     let readOutcome: 'clean' | 'per-file-fallback' | 'failed' = 'clean';
-    if (uncovered.length > 0) {
+    if (needsContent.length > 0) {
       try {
-        for (const file of await churn.git.changedHunks(uncovered, churn.range, cwd)) byPath.set(file.path, file);
+        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
       } catch {
         readOutcome = 'failed';
       }
-      const missing = uncovered.filter((path) => !byPath.has(path));
+      const missing = needsContent.filter((path) => !byPath.has(path));
       if (missing.length > 0) {
         if (readOutcome === 'clean') readOutcome = 'per-file-fallback';
         for (const path of missing) {

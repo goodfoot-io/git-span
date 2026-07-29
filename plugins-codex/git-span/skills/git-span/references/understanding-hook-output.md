@@ -277,6 +277,39 @@ classifying the changeset. Only genuine semantic drift — content that no
 longer matches what a span asserts — ever surfaces in a block or holds a
 command.
 
+## Mechanical churn is suppressed before the list is built
+
+The uncovered-writes checklist omits files whose change is recognizably
+mechanical, so a release bump touching twenty manifests doesn't bury the one or
+two files carrying real edits. Two layers decide this, both before any list is
+rendered:
+
+- **By path** — lockfiles, minified output, sourcemaps, `.tsbuildinfo`, and
+  anything under `node_modules/` or `__pycache__/` never reach the list, whatever
+  their contents.
+- **By content** — for manifest-shaped files only (`package.json`, `Cargo.toml`,
+  lockfiles, `Dockerfile`, man pages), a diff that changes nothing but a version
+  token, a checksum, or a timestamp is treated as churn. Every other path,
+  including every source and prose file, is refused before these rules run: an
+  unrecognized file type can only ever stay listed.
+
+Suppression is deliberately invisible — a suppressed file is simply one the
+agent is never told about. That means a correct suppression, a wrong one, and a
+diff read that failed and suppressed nothing all look identical from outside.
+When you need to tell them apart, set `CODEX_HOOKS_LOG_FILE` to a path and
+re-run the command; each advisor invocation appends a `git-span advisor churn
+suppression` record with the candidate count, how many were dropped by path,
+how many by content, how many were reported, and whether the diff read
+succeeded. Without that variable set the hook logger has no destination and the
+record is discarded, which is why a missing file cannot be explained from the
+hook's normal output alone.
+
+If a listed path is generated output that will never carry a span, the fix is
+not to span it — add it to `.span/.advisorignore`, which excludes paths from
+this check entirely. Generated bundles are the common case: the classifier only
+ever inspects manifest-shaped files, so it cannot recognize a regenerated bundle
+on its own, and spanning build output contradicts the guidance in `SKILL.md`.
+
 ## Failure behaviour
 
 Both hooks fail open at every layer: a missing `git span` binary, a timeout,

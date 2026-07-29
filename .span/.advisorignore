@@ -6,3 +6,25 @@
 # advisor should ask for a git span — a commit that only re-anchors a drifted
 # wiki mesh file is not an uncovered implicit dependency.
 .wiki/
+
+# The plugin hook bundles are esbuild output from packages/agent-hooks/src,
+# regenerated wholesale by `yarn build` and committed only so the plugins are
+# installable. Every file under these two directories is generated, including
+# each hooks.json.
+#
+# They are excluded because a checklist naming them is unactionable, not merely
+# noisy: the skill these very bundles ship tells the agent "don't span
+# generated/build output — span its inputs instead"
+# (plugins-claude/git-span/skills/git-span/SKILL.md), so an agent held on a
+# pure bundle-regeneration commit had no compliant move available. Every entry
+# was a file it was forbidden to span, and the only exit was the bare retry the
+# one-shot hold permits — which teaches dismissing the advisor outright. That is
+# the opposite of what this list is for.
+#
+# The classifier cannot reach these on its own by design: it only classifies
+# manifest-shaped paths, so a regenerated bundle is never suppressed by content.
+# Declaring them here is the intended mechanism rather than a workaround —
+# advisor-ignore.ts describes this file as the place a repo owner lists
+# "generated output, vendored code, anything that will never get a span."
+plugins-claude/git-span/hooks/bin/
+plugins-codex/git-span/hooks/

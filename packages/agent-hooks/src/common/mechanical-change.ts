@@ -202,8 +202,23 @@ const NOISE_BASENAMES = new Set([
   '.DS_Store'
 ]);
 
-/** Path suffixes that are noise regardless of location. */
-const NOISE_SUFFIXES = ['.log', '.tsbuildinfo', '.min.js', '.min.css', '.map'];
+/**
+ * Path suffixes that are noise regardless of location.
+ *
+ * Each entry must pass the same test as {@link NOISE_SEGMENTS} — "can this
+ * name shadow a hand-written file?" — and a *suffix* passes it far more easily
+ * than a segment does. Nobody hand-authors `bundle.min.js`, `bundle.js.map`,
+ * or a `.tsbuildinfo` incremental-cache blob; those names are produced by a
+ * tool or not at all. That is precisely the property `build`, `dist`, and
+ * `out` lacked, and it is why they were cut while these stay.
+ *
+ * `.log` was dropped from this list. A tracked `test/fixtures/sample.log` is a
+ * hand-authored fixture that can encode a real contract, so a `.log` suffix
+ * fails the test — unlike the four below, it is a name a person plausibly
+ * writes. Logs are therefore merely reported, which costs one sentence of
+ * prompt.
+ */
+const NOISE_SUFFIXES = ['.tsbuildinfo', '.min.js', '.min.css', '.map'];
 
 /**
  * Path segments that mark every file beneath them as noise.
@@ -229,8 +244,11 @@ const NOISE_SUFFIXES = ['.log', '.tsbuildinfo', '.min.js', '.min.css', '.map'];
  * this file carry an implicit dependency", and the lists did not survive the
  * move: here a match means permanent silence rather than a skipped scan.
  * Generated output under `dist/` is still caught by {@link NOISE_SUFFIXES}
- * when it is minified or a sourcemap; an unminified bundle is merely
- * reported, which costs one sentence of prompt.
+ * when it is minified or a sourcemap — but only because the category layer
+ * runs ahead of {@link isClassifiablePath}; while the gate came first, that
+ * claim was false, since a `.map` was refused as non-manifest-shaped before
+ * its suffix was ever tested. An unminified bundle is merely reported, which
+ * costs one sentence of prompt.
  */
 const NOISE_SEGMENTS = new Set(['node_modules', '__pycache__']);
 
@@ -475,14 +493,29 @@ export function isClassifiablePath(repoRelPath: string): boolean {
 }
 
 export function classifyMechanical(file: FileDiff): MechanicalVerdict {
-  // Fail-closed gate ahead of *both* layers, category included. Placing it
-  // after the category layer would leave a hand-authored esbuild script like
-  // `packages/extension/scripts/build/build-production.js` suppressed by its
-  // `build/` segment no matter how narrow the content rules became — a
-  // path-shape short-circuit is unconditional, content-blind silence.
+  // Category layer first, then the fail-closed gate, then content.
+  //
+  // The gate briefly sat ahead of *both* layers, on the reasoning that a
+  // path-shape short-circuit is unconditional content-blind silence and so
+  // must be the more guarded of the two. That was the right instinct applied
+  // to the wrong list: it was true only while {@link NOISE_SEGMENTS} still
+  // carried `build`, `dist`, and `out`, which let a hand-authored esbuild
+  // driver like `packages/extension/scripts/build/build-production.js` be
+  // silenced by a segment name. Narrowing that list to names nobody authors
+  // under removed the hazard at its source, and the two fixes turned out to
+  // be alternatives rather than complements — keeping both left the gate
+  // refusing `.min.js` and `.map` before {@link NOISE_SUFFIXES} was ever
+  // consulted, so three of the four categories CARD.md assigns to this layer
+  // silently stopped suppressing.
+  //
+  // Ordering therefore encodes a standing constraint: the category layer runs
+  // first *because* every remaining entry in it is a name that cannot shadow
+  // hand-written source. Adding an entry that can — any of the generated-output
+  // segments, or a suffix like `.log` a person might author — reintroduces
+  // content-blind silence here with nothing downstream to catch it.
+  if (isNeverSpannedPath(file.path)) return { mechanical: true };
   if (!isClassifiablePath(file.path)) {
     return { mechanical: false, reason: 'not a manifest-shaped path: the classifier does not apply' };
   }
-  if (isNeverSpannedPath(file.path)) return { mechanical: true };
   return isMechanicalDiff(file);
 }

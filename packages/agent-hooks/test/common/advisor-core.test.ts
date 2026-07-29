@@ -1698,6 +1698,58 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.uncovered).toEqual(['src/app.ts']);
       }
     });
+
+    // The hoisted predicate decides path-suppression in production, and every
+    // other assertion about it exercises the classifier's functions directly.
+    // These pin it *here*, because the two failure directions it guards are
+    // both silent: widening it re-silences a hand-authored build script with no
+    // diff ever read, and narrowing it re-reports generated output the card
+    // assigns to the category layer. Neither shows up anywhere downstream.
+    const hoistCases: { label: string; path: string; reported: boolean }[] = [
+      { label: 'a lockfile is suppressed', path: 'yarn.lock', reported: false },
+      { label: 'a sourcemap is suppressed', path: 'web/static/b.js.map', reported: false },
+      { label: 'a minified bundle is suppressed', path: 'web/static/b.min.js', reported: false },
+      { label: 'a vendored file is suppressed', path: 'node_modules/dep/index.js', reported: false },
+      {
+        label: 'a hand-authored script under build/ is reported',
+        path: 'packages/extension/scripts/build/build-production.js',
+        reported: true
+      },
+      {
+        label: 'an unminified bundle is reported',
+        path: 'plugins-claude/git-span/hooks/bin/advisor.mjs',
+        reported: true
+      },
+      { label: 'a tracked log is reported', path: 'test/fixtures/sample.log', reported: true }
+    ];
+
+    for (const { label, path, reported } of hoistCases) {
+      it(`path-shape suppression at the call site: ${label}`, async () => {
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          stale: async (): Promise<StalePorcelainRow[]> => []
+        });
+        // No diff is ever available — the exact no-diff-read path where the
+        // per-file fallback's `if (!file) return true` is the only other guard.
+        // Whatever survives here was decided by path shape and nothing else.
+        const git = createFakeGitExecutor({ changedHunks: async (): Promise<FileDiff[]> => [] });
+
+        // `src/app.ts` is a companion, not decoration: `computeUncoveredPaths`
+        // short-circuits a changeset of fewer than two paths, since a coupling
+        // needs two files to exist. A one-path probe of this predicate reports
+        // `silent` for every input and would pass while asserting nothing.
+        const result = await evaluateAdvisor([path, 'src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', {
+          git,
+          range: { kind: 'staged' }
+        });
+
+        expect(result.kind).toBe('uncovered-writes');
+        if (result.kind === 'uncovered-writes') {
+          expect(result.uncovered).toEqual(reported ? [path, 'src/app.ts'] : ['src/app.ts']);
+        }
+      });
+    }
   });
 
   // -------------------------------------------------------------------------
