@@ -23,6 +23,7 @@ import {
   type AdvisorExecutors,
   type AdvisorMemoState,
   AdvisorScanError,
+  buildHunkReadArgs,
   commitStagesAll,
   evaluateAdvisor,
   type GitExecutor,
@@ -1771,6 +1772,45 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
     it('is false for a plain staged commit', () => {
       expect(commitStagesAll('git commit -m "wip"')).toBe(false);
+    });
+  });
+
+  describe('buildHunkReadArgs', () => {
+    // The content read is the classifier's only source of diff text, and
+    // parseUnifiedDiff anchors on a header dialect git does not guarantee: four
+    // ordinary personal settings (diff.noprefix, diff.mnemonicPrefix,
+    // color.ui=always, diff.external) each rewrite it, at which point every path
+    // parses to nothing and churn suppression silently ceases to exist. Nothing
+    // errors, so these assertions are the only thing standing between that and a
+    // green suite.
+    //
+    // Each flag is asserted on its own rather than as a whole-argv snapshot: a
+    // snapshot fails on any unrelated argv edit and gets re-recorded, which is
+    // how a pin like this stops pinning anything.
+    for (const flag of ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/']) {
+      it(`pins ${flag} against the reader's own git config`, () => {
+        expect(buildHunkReadArgs('/repo', { kind: 'staged' }, ['a.ts'])).toContain(flag);
+      });
+    }
+
+    it('runs the read at the repo root so diff.relative cannot rewrite paths', () => {
+      // Unlike the four flags above there is no --no-relative to ask for; `-C
+      // repoRoot` is what neutralizes diff.relative, so it is load-bearing for
+      // the same reason and equally invisible if dropped.
+      expect(buildHunkReadArgs('/repo', { kind: 'staged' }, ['a.ts']).slice(0, 2)).toEqual(['-C', '/repo']);
+    });
+
+    it('selects the range git actually needs for each changeset kind', () => {
+      expect(buildHunkReadArgs('/repo', { kind: 'staged' }, ['a.ts'])).toContain('--cached');
+      expect(buildHunkReadArgs('/repo', { kind: 'worktree' }, ['a.ts'])).toContain('HEAD');
+      expect(buildHunkReadArgs('/repo', { kind: 'commits', base: 'origin/main' }, ['a.ts'])).toContain(
+        'origin/main..HEAD'
+      );
+    });
+
+    it('separates pathspecs with -- so a path can never be read as a revision', () => {
+      const args = buildHunkReadArgs('/repo', { kind: 'staged' }, ['app/[slug]/page.tsx', 'HEAD']);
+      expect(args.slice(args.indexOf('--') + 1)).toEqual(['app/[slug]/page.tsx', 'HEAD']);
     });
   });
 });

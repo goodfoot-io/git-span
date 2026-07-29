@@ -1675,6 +1675,29 @@ const GIT_READ_OPTS = ['-c', 'core.quotepath=false'];
  */
 const GIT_DIFF_SHAPE_OPTS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
 
+/**
+ * Build the argv for the content read that feeds {@link parseUnifiedDiff}.
+ *
+ * This exists as a separate exported function purely so a check can assert the
+ * argv, because the failure it guards against has no symptom: drop the
+ * {@link GIT_DIFF_SHAPE_OPTS} spread, or add a second diff-parsing read that
+ * forgets it, and churn suppression stops existing for any user carrying one of
+ * the settings tabulated above while every check still passes. The read itself
+ * closes over `execFileSync`, so an argv assertion is not reachable through
+ * {@link createGitExecutors} — hence the seam.
+ *
+ * That is not a hypothetical shape of bug for this module. Its history already
+ * contains one instance of two fixes cancelling each other while a doc comment
+ * and a green unit check both asserted the surviving behavior, so a claim about
+ * this read that only a comment enforces is precisely the thing not to leave
+ * standing again.
+ */
+export function buildHunkReadArgs(repoRoot: string, range: DiffRange, paths: string[]): string[] {
+  const rangeArgs =
+    range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
+  return ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, '--', ...paths];
+}
+
 /** Run a git command at `cwd`, returning its raw stdout as-is (empty string on any failure). */
 function gitText(args: string[], cwd: string, timeoutMs: number): string {
   try {
@@ -1785,13 +1808,7 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       if (range.kind === 'unresolvable' || paths.length === 0) return [];
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      const rangeArgs =
-        range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
-      const text = gitText(
-        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, '--', ...paths],
-        repoRoot,
-        timeoutMs
-      );
+      const text = gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs);
       if (text.trim().length === 0) return [];
       try {
         return parseUnifiedDiff(text);
