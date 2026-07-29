@@ -40,6 +40,7 @@ pub mod doctor_deletion_tombstone;
 pub mod drift_label;
 pub mod editmsg_orphan_enumerated;
 pub mod incremental_differential;
+pub mod list_bracketed_literal_path;
 pub mod list_loads_corpus_once;
 pub mod manpage;
 pub mod span_file_format;
