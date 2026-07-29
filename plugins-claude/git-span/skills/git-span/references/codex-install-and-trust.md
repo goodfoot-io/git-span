@@ -3,7 +3,7 @@
 ## Overview
 
 Under OpenAI Codex, git-span ships as a hook-bundling plugin rather than a
-Claude Code plugin. Getting its hooks (the touch hook and the gate) running
+Claude Code plugin. Getting its hooks (the touch hook and the advisor) running
 takes three steps plus one prerequisite — registering a marketplace,
 installing the plugin, and explicitly **trusting** the hooks are three
 distinct steps, none of which happen automatically.

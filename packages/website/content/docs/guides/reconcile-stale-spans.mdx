@@ -4,7 +4,7 @@ description: Find drifted anchors with git span stale, auto-resolve what's mecha
 ---
 
 <Callout type="info">
-Under an agent session, most positional drift never reaches this guide — the touch hook heals a pure line-shift the moment the edit lands, and the commit gate re-runs a scoped `stale --fix` before classifying a changeset. What follows is for what neither can heal automatically: genuine semantic drift (content that no longer matches what a span asserts), a denied commit's checklist, or reconciling outside a hooked session entirely (a human-authored commit, CI, or a harness without the hooks wired up). See [Agent integration](/docs/agent-integration) for the hook mechanics.
+Under an agent session, most positional drift never reaches this guide — the touch hook heals a pure line-shift the moment the edit lands, and the commit advisor re-runs a scoped `stale --fix` before classifying a changeset. What follows is for what neither can heal automatically: genuine semantic drift (content that no longer matches what a span asserts), a held command's checklist, or reconciling outside a hooked session entirely (a human-authored commit, CI, or a harness without the hooks wired up). See [Agent integration](/docs/agent-integration) for the hook mechanics.
 </Callout>
 
 ## Run the scan

@@ -24,7 +24,7 @@ When documentation changes are about subcommand behavior or exit-code semantics,
 These files are the public guidance surfaces most likely to drift when the CLI contract changes:
 
 - The [README CLI section](/README.md#L18-L55) is the reader-facing quick reference for common command shapes, exit code semantics, and `--format` placeholders.
-- The [website's agent integration doc](/packages/website/content/docs/agent-integration.mdx) is where agent-facing git-span workflow guidance lives — what the touch hook and gate do, and how a denied command gets resolved.
+- The [website's agent integration doc](/packages/website/content/docs/agent-integration.mdx) is where agent-facing git-span workflow guidance lives — what the touch hook and advisor do, and how a held command gets resolved.
 - The [git-span skill](/plugins-claude/git-span/skills/git-span/SKILL.md), bundled with the `git-span` plugin and tracked in this repo, is the highest-leverage agent workflow contract for creating, updating, and querying spans. Its [finding-span-candidates reference](/plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md) (backed by `scripts/mine.mjs`) is the topic within that same skill that guides agents through identifying and recording implicit semantic dependencies — coupling that has no schema or test enforcement.
 - The [man page](/packages/git-span/man/git-span.1) is the installed reference for the CLI. It is generated from the Clap config; changes to command signatures surface here automatically on the next build, but prose descriptions require manual attention.
 
@@ -38,7 +38,7 @@ If a documentation update changes the recommended operator workflow, all of thes
 - The hand-authored `Writing the why` section in [packages/git-span/src/bin/gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs), which generates the man page (`yarn build:man`) — never edit `man/git-span.1` directly.
 - The `Declare a new coupling` recipe in the git-span skill and the `<one sentence>` placeholder in the reconcile skill, in **both** plugin trees (`plugins-claude/` and `plugins-codex/`).
 - The `Why-writing discipline` section of `git-span/agents/expert.md`, kept byte-identical across both plugin trees.
-- The positional why text placeholder rendered by the gate hook's uncovered-writes reason in [packages/agent-hooks/src/common/gate-core.ts](/packages/agent-hooks/src/common/advisor-core.ts). That string is quoted verbatim by the `agent-hooks/hook-message-copy` span's doc mirrors — reword it, run `yarn build` in `packages/agent-hooks`, and update every mirror byte-for-byte.
+- The positional why text placeholder rendered by the advisor hook's uncovered-writes reason in [packages/agent-hooks/src/common/advisor-core.ts](/packages/agent-hooks/src/common/advisor-core.ts). That string is quoted verbatim by the `agent-hooks/hook-message-copy` span's doc mirrors — reword it, run `yarn build` in `packages/agent-hooks`, and update every mirror byte-for-byte.
 - The `why`-writing line in [.claude/rules/wiki.md](/.claude/rules/wiki.md).
 
 ## What A Span Is (Eligibility)

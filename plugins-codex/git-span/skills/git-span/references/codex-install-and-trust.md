@@ -3,7 +3,7 @@
 ## Overview
 
 Under OpenAI Codex, git-span ships as a hook-bundling plugin rather than a
-Claude Code plugin. Getting its hooks (the touch hook and the gate) running
+Claude Code plugin. Getting its hooks (the touch hook and the advisor) running
 takes three steps plus one prerequisite — registering a marketplace,
 installing the plugin, and explicitly **trusting** the hooks are three
 distinct steps, none of which happen automatically.
@@ -63,18 +63,18 @@ Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
 
-## Caveat: the gate's deny hasn't been verified live
+## Caveat: the advisor's hold hasn't been verified live
 
-Trusting the hooks makes the gate active, but whether its
-`permissionDecision: 'deny'` result actually blocks the shell tool under
-Codex has never been confirmed by direct execution in this repo — only by
-documentary evidence from the `@goodfoot/codex-hooks` SDK's own example. The
-gate still surfaces its `systemMessage` checklist either way, so you'll see
-the same span-debt listing whether or not the command is actually stopped.
-Don't treat a trusted gate as a guaranteed in-session block; rely on `git
-span stale` in CI (see `references/ci-and-sync.md`) as the real backstop, and
-see `references/understanding-hook-output.md` for what a denied command
-looks like.
+Trusting the hooks makes the advisor active, but whether the
+`permissionDecision: 'deny'` it emits for a hold actually stops the shell
+tool under Codex has never been confirmed by direct execution in this repo —
+only by documentary evidence from the `@goodfoot/codex-hooks` SDK's own
+example. The advisor surfaces its `systemMessage` checklist either way, so
+you'll see the same span-debt listing whether or not the command pauses.
+Don't count on a trusted advisor to stop anything; rely on `git span stale`
+in CI (see `references/ci-and-sync.md`) as the real backstop, and see
+`references/understanding-hook-output.md` for what a held command looks
+like.
 
 ## Windows caveat
 

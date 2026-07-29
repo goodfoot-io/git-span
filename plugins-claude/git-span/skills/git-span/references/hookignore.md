@@ -59,11 +59,11 @@ A missing or unreadable `.hookignore`, or a malformed line, yields no rule —
 spans surface as normal rather than being silently hidden. When in doubt the
 file errs toward showing spans, not hiding them.
 
-## Suppressing the gate's uncovered-writes check: `.gateignore`
+## Suppressing the advisor's uncovered-writes check: `.advisorignore`
 
-A separate file, `<repoRoot>/.span/.gateignore`, controls the gate's
-uncovered-writes leg (`references/understanding-hook-output.md` § "The gate:
-what a denied command sees") — a changed file no span anchors at all. It is
+A separate file, `<repoRoot>/.span/.advisorignore`, controls the advisor's
+uncovered-writes leg (`references/understanding-hook-output.md` § "The advisor:
+what a held command sees") — a changed file no span anchors at all. It is
 **user-owned**: nothing creates or populates it (unlike `.hookignore`, which
 the `git-span` CLI auto-creates), so its absence is the normal, unconfigured
 state.
@@ -71,9 +71,9 @@ state.
 Each non-comment line is a single gitignore-style path pattern — the same
 grammar as `.hookignore` above (blank lines and `#` comments skipped, trailing
 `/` for directory-only, anchored-vs-unanchored matching, `*`/`?`/`**`, no
-negation), but with **no trailing prefix list**: a `.gateignore` line either
-excludes a path from the uncovered-writes check or it doesn't, since the gate
-has no per-span-slug suppression concept.
+negation), but with **no trailing prefix list**: an `.advisorignore` line either
+excludes a path from the uncovered-writes check or it doesn't, since the
+advisor has no per-span-slug suppression concept.
 
 ```text
 # Generated output and vendored code never need a span.
@@ -89,20 +89,20 @@ never carry a coupling worth declaring (generated output, vendored code, pure
 config) and the one-time uncovered-writes prompt on those paths is pure noise
 rather than an occasional useful nudge.
 
-`.gateignore` never affects the gate's **semantic-staleness** check — a
-changeset that already carries a drifted anchor is still denied regardless of
+`.advisorignore` never affects the advisor's **semantic-staleness** check — a
+changeset that already carries a drifted anchor is still held regardless of
 this file (once per distinct set of findings; an identical retry passes on
 its own). It only silences the "nothing anchors this new/changed file"
 observation, and only for the paths it matches — a standing, committed,
 path-scoped exclusion from that one check.
 
-Fail-open: a missing or unreadable `.gateignore`, or a malformed line, yields
-no additional exclusion — the uncovered-writes check simply falls back to the
-gate's unconditional `.span/**` exclusion.
+Fail-open: a missing or unreadable `.advisorignore`, or a malformed line,
+yields no additional exclusion — the uncovered-writes check simply falls back
+to the advisor's unconditional `.span/**` exclusion.
 
 ```bash
-cat <<'EOF' > .span/.gateignore
+cat <<'EOF' > .span/.advisorignore
 vendor/
 EOF
-git add .span/.gateignore && git commit -m "Exclude vendored code from the gate's uncovered-writes nudge"
+git add .span/.advisorignore && git commit -m "Exclude vendored code from the advisor's uncovered-writes nudge"
 ```

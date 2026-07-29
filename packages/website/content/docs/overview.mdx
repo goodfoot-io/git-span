@@ -29,7 +29,7 @@ git-span never blocks an edit and never claims the coupling still holds. It keep
 
 ## Built for agents, usable by anyone
 
-git-span is designed to be operated by coding agents. It ships as plugins for Claude Code and OpenAI Codex whose in-session hooks keep spans honest as an agent works: a touch hook heals positional drift right after each edit, and a commit gate holds commits that carry real span debt. Every capability behind those hooks is still a plain, scriptable CLI — the same commands work by hand, and the same `git span stale` exit code is what CI checks at merge time.
+git-span is designed to be operated by coding agents. It ships as plugins for Claude Code and OpenAI Codex whose in-session hooks keep spans honest as an agent works: a touch hook heals positional drift right after each edit, and a commit advisor holds commits that carry real span debt so the report gets read. Every capability behind those hooks is still a plain, scriptable CLI — the same commands work by hand, and the same `git span stale` exit code is what CI checks at merge time.
 
 <Callout type="info">
 You don't have to use an agent to use git-span. The plugins are a convenience layer over a CLI that's complete on its own — see [Agent integration](/docs/agent-integration) if you're wiring an agent up, or skip straight to [Command reference](/docs/commands) if you're not.

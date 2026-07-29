@@ -24,8 +24,8 @@ Positional drift (a pure line-shift from an edit) is healed inline by the
 that no longer matches what a span asserts) needs your action, and when it
 does, fold the `.span/` fix into the **same commit** as the code change that
 caused it — never a follow-up commit. Before `git commit`/`git push`, a
-`PreToolUse` gate re-checks the changeset and holds the command if real span
-debt remains; see "Handling a gate denial" below.
+`PreToolUse` advisor re-checks the changeset and holds the command once if
+real span debt remains; see "Handling an advisory hold" below.
 
 ## Trust boundary
 `git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with
@@ -99,9 +99,9 @@ Pick the first that fits:
    (no `#L`) is in play → `references/whole-file-and-lfs.md`.
 5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
    of the three recipes above → do that, no section read.
-6. A `<git-span>` block appeared — or a `git commit`/`git push` was denied — during an
+6. A `<git-span>` block appeared — or a `git commit`/`git push` was held — during an
    `apply_patch` or shell call → `references/understanding-hook-output.md`.
-7. The touch hook's block surfaces spans that are noise for a path class, or the gate's
+7. The touch hook's block surfaces spans that are noise for a path class, or the advisor's
    uncovered-writes nudge is noise for the whole repo → `references/hookignore.md`.
 8. Mining git history for undeclared couplings (broad sweep, not one known pair) →
    `references/finding-span-candidates.md`.

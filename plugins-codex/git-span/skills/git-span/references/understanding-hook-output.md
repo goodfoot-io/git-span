@@ -7,21 +7,22 @@ moments. Neither waits for a commit:
   right after each `apply_patch` call completes, not after commit. It heals
   positional drift silently and, when it can't, injects a bounded
   `additionalContext` signal.
-- **Gate** (`PreToolUse`, matcher `Bash|shell|exec|local_shell`) — fires
+- **Advisor** (`PreToolUse`, matcher `Bash|shell|exec|local_shell`) — fires
   before `git commit`/`git push`/`git status` runs. For `git commit`/`git
-  push`, it holds the command when the resolved changeset carries real span
-  debt. Whether Codex's `permissionDecision: 'deny'` result actually blocks
-  the shell tool was never confirmed live in this repo (see
-  `references/codex-install-and-trust.md`) — the hook ships a hard-deny path per
-  its SDK's own documented example, with a one-constant fallback to a loud
-  `additionalContext` warning if a live session shows deny doesn't fire. Don't
-  assume a blocked command the way you would under Claude; if the same command
-  keeps landing after a supposed deny, treat the CI gate recipe
-  (`references/ci-and-sync.md`) as the real backstop. Either way — blocked or
+  push`, it holds the command once when the resolved changeset carries real
+  span debt, so the report gets read; it never enforces, and an identical
+  retry proceeds. Whether the `permissionDecision: 'deny'` a hold emits
+  actually pauses the Codex shell tool was never confirmed live in this repo
+  (see `references/codex-install-and-trust.md`) — the hook ships a hard-deny
+  path per its SDK's own documented example, with a one-constant fallback to a
+  loud `additionalContext` warning if a live session shows it doesn't fire.
+  Don't assume a paused command the way you would under Claude; if the same
+  command keeps landing after a supposed hold, treat the CI gate recipe
+  (`references/ci-and-sync.md`) as the real backstop. Either way — paused or
   not — the `systemMessage` checklist below is what's shown, so its presence
-  in the transcript is not itself proof the command was stopped. A plain `git
-  status` never denies (unconditionally, not just per the unconfirmed-deny
-  caveat) — it only ever advises via `additionalContext`/`systemMessage`.
+  in the transcript is not itself proof the command stopped. A plain `git
+  status` is never held (unconditionally, not just per the unconfirmed-deny
+  caveat) — it only ever reports via `additionalContext`/`systemMessage`.
 
 ## The touch hook: the merged `<git-span>` block
 
@@ -126,25 +127,26 @@ edits in one session, it renders once, not on every touch.
 - A span whose name and current drift statuses were all surfaced earlier
   this session.
 
-## The gate: what a denied command sees
+## The advisor: what a held command sees
 
-The gate inspects `git commit`/`git push`/`git status` before they run —
+The advisor inspects `git commit`/`git push`/`git status` before they run —
 never a Read, Edit, or Write. It resolves the actual changeset (staged files,
 plus tracked-modified files when the command uses `-a`/`-am`; for `git
 status`, staged plus tracked-modified — the same working-tree picture `git
 status` itself prints), reruns a scoped `stale --fix`, then classifies what's
-left. For `git commit`/`git push`, a deny becomes a `permissionDecision:
+left. For `git commit`/`git push`, a hold becomes a `permissionDecision:
 'deny'` result whose `permissionDecisionReason` (and `systemMessage`, so it's
 visible in the transcript) is one of two shapes:
 
 **Semantic staleness** — the same human span format the touch hook renders
-(full anchor list, drifted anchors labeled, the description), denied once per
+(full anchor list, drifted anchors labeled, the description), held once per
 distinct set of findings; an identical retry (same findings) passes, and
-editing a span's anchors changes the findings and earns one fresh deny. The
-gate is informational, not a hard block — an identical retry alone already
-gets past a deny — so if a `git status` preview already showed this exact
-finding set in full, the following `git commit`/`git push` passes too,
-without denying a state the agent has already been told about:
+editing a span's anchors changes the findings and earns one fresh hold. The
+advisor reports, it does not enforce — a hold exists only so the report is
+read once, and an identical retry alone already proceeds — so if a `git
+status` preview already showed this exact finding set in full, the following
+`git commit`/`git push` passes too, without holding on a state the agent has
+already been told about:
 
 ```
 This change leaves an implicit dependency out of date:
@@ -167,7 +169,7 @@ longer holds, tell the user instead.
 With several drifted spans the sections stack, separated by `---`, the header
 pluralizes, and the closing commands use a `<name>` placeholder.
 
-**Uncovered writes** — a changed file no span anchors at all. Denied once per
+**Uncovered writes** — a changed file no span anchors at all. Held once per
 distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes, and so does a `git commit`/`git push` whose exact
 debt state a prior `git status` already showed in full — same reasoning as
@@ -225,20 +227,20 @@ A condensed "Already flagged for git-span review above." form of both
 checklists exists, but only ever appears in the `git status` advisory: a
 second `git status` on an unchanged debt state shows the condensed form
 instead of repeating the full checklist. A `git commit`/`git push` never
-renders it — either the state is genuinely new (full checklist, denied once)
+renders it — either the state is genuinely new (full checklist, held once)
 or it was already shown by a preceding `git status`, in which case the
-command passes silently rather than denying with a shorter message.
+command passes silently rather than holding with a shorter message.
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
-either checklist and never deny. `.span/**` writes are excluded from the
-uncovered-writes check so a span repair riding the same commit never
-self-triggers the gate. If the scan itself can't complete (a `GateScanError`,
-e.g. an unreadable anchor file), the gate never denies on that account either
-— it allows with a warning that span debt was NOT verified for this
-changeset, naming the underlying failure; there's nothing to memoize because
-every evaluation of a still-failing scan warns again.
+either checklist and never cause a hold. `.span/**` writes are excluded from
+the uncovered-writes check so a span repair riding the same commit never
+self-triggers the advisor. If the scan itself can't complete (an
+`AdvisorScanError`, e.g. an unreadable anchor file), the advisor holds nothing
+on that account either — it allows with a warning that span debt was NOT
+verified for this changeset, naming the underlying failure; there's nothing
+to memoize because every evaluation of a still-failing scan warns again.
 
-**`git status`** never denies — it only advises. The same two checklists
+**`git status`** is never held — it only reports. The same two checklists
 above render as `additionalContext`/`systemMessage` (never
 `permissionDecision: 'deny'`, and not subject to the unconfirmed-deny caveat
 above since nothing is ever held), with one difference: each drops its retry
@@ -246,20 +248,20 @@ phrasing — staleness drops `— then retry` from its closing sentence, and
 uncovered writes drops the whole `If none exist, retry the command to proceed
 (one-time check).` sentence — since a status preview never held the command
 and there's nothing to retry. A `git status` call also never reads or writes
-the consider-once *deny-credit* memo — it always reports whatever debt is
-live right now, and it can't spend the one-time deny a later real `git
+the consider-once *hold-credit* memo — it always reports whatever debt is
+live right now, and it can't spend the one-time hold a later real `git
 commit`/`git push` with the same debt depends on. It does mark the debt
 state as already-explained on a separate axis, though: a `git commit`/`git
 push` that follows a `git status` on the same unchanged debt state passes
-rather than denying, since the gate is informational and there's nothing
+rather than holding, since the advisor only reports and there's nothing
 left to tell the agent that the status preview didn't already say.
 
-### Resolving a denied commit
+### Resolving a held commit
 
 1. Semantic staleness: fix each listed span the normal way (`git span add`
    the drifted anchors, or `git span delete` if the coupling is gone), then
    retry the same commit — or just retry with the findings unchanged, since
-   an identical set of findings only denies once.
+   an identical set of findings is only held on once.
 2. Uncovered writes: either declare the coupling (`git span add` then
    `git span why <name> "..."`) or just retry — the second attempt at an
    unchanged debt state passes.
@@ -270,10 +272,10 @@ left to tell the agent that the status preview didn't already say.
 
 Both hooks apply the same principle from opposite ends: positional-only drift
 never reaches the agent as something to act on. The touch hook heals it before
-building its block; the gate's `stale --fix` pre-pass heals it before
+building its block; the advisor's `stale --fix` pre-pass heals it before
 classifying the changeset. Only genuine semantic drift — content that no
-longer matches what a span asserts — ever surfaces in a block or blocks a
-commit.
+longer matches what a span asserts — ever surfaces in a block or holds a
+command.
 
 ## Failure behaviour
 
@@ -281,11 +283,11 @@ Both hooks fail open at every layer: a missing `git span` binary, a timeout,
 or a malformed/unexpected CLI result resolves to "allow silently, inject
 nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
-said — never an error condition. The one exception is the gate's own scoped
-scan failing to complete (see "The gate: what a denied command sees" above):
-that still fails open, but visibly — a warning names the failure instead of
-staying silent, since an unverified changeset is worth flagging even though
-it isn't blocked. Hook timeouts are configured in **seconds** under Codex's
-`hooks.json` (Claude Code's equivalent is milliseconds) — if you're comparing
-the two harnesses' hook definitions, don't read the raw number across without
-converting.
+said — never an error condition. The one exception is the advisor's own
+scoped scan failing to complete (see "The advisor: what a held command sees"
+above): that still fails open, but visibly — a warning names the failure
+instead of staying silent, since an unverified changeset is worth flagging
+even though nothing was held. Hook timeouts are configured in **seconds**
+under Codex's `hooks.json` (Claude Code's equivalent is milliseconds) — if
+you're comparing the two harnesses' hook definitions, don't read the raw
+number across without converting.

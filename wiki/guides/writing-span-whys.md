@@ -193,7 +193,7 @@ The ban is not a style preference; it follows from where whys are read.
   nobody needed.
 - **Invariants belong where they are checked.** If the edit *is* relevant, the
   reader opens the other anchors anyway — and a comment sitting at the anchor
-  site ("this wording is quoted verbatim in the gate message and both doc
+  site ("this wording is quoted verbatim in the advisor message and both doc
   mirrors") arrives exactly when it is needed. Comments also live in the
   reviewed diff next to the lines they govern, so normal review pressure keeps
   them honest; a rule buried in a span file has no such pressure.
