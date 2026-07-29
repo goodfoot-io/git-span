@@ -89,8 +89,8 @@ function ancestorPaths(path: string): string[] {
  * matches the file's path or any ancestor directory of it, so a directory
  * pattern suppresses everything beneath it.
  *
- * Exported so other path-scoped ignore-file conventions (e.g. `.gateignore`
- * in `gate-ignore.ts`) can reuse the exact matching semantics rather than
+ * Exported so other path-scoped ignore-file conventions (e.g. `.advisorignore`
+ * in `advisor-ignore.ts`) can reuse the exact matching semantics rather than
  * reimplementing them.
  */
 export function compilePattern(pattern: string): (repoRelPath: string) => boolean {

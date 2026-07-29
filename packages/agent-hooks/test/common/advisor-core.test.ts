@@ -1,16 +1,16 @@
 /**
- * Skipped acceptance checks for gate-core.ts (Phase 3.2 of the TDD bootstrap
+ * Skipped acceptance checks for advisor-core.ts (Phase 3.2 of the TDD bootstrap
  * described in plans/initial.md's Phase 3). Phase 3.1 declared
- * `parseGitCommand`, `resolveChangeset`, and `evaluateGate` as not-implemented
+ * `parseGitCommand`, `resolveChangeset`, and `evaluateAdvisor` as not-implemented
  * stubs; this file writes the contract's acceptance checks against those
  * stubs so the eventual Phase 3.3 implementation has a fixed target. Every
  * case here is marked `.skip` — none are expected to run (the stubs throw
  * `Not Implemented`); Phase 3.3 unskips them one by one while implementing
  * minimally against each.
  *
- * Fakes are constructed against the real exported types from gate-core.ts
- * (`GitExecutor`, `GateExecutors`, `GateMemoState`, `StalePorcelainRow`,
- * `PorcelainRow`, `ParsedGitCommand`, `GateResult`) rather than
+ * Fakes are constructed against the real exported types from advisor-core.ts
+ * (`GitExecutor`, `AdvisorExecutors`, `AdvisorMemoState`, `StalePorcelainRow`,
+ * `PorcelainRow`, `ParsedGitCommand`, `AdvisorResult`) rather than
  * loosened/`any`-typed shapes — that fidelity is the payoff of the bootstrap:
  * an awkward fake here is a contract-ergonomics finding, not something to
  * work around.
@@ -19,17 +19,17 @@
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import {
+  type AdvisorExecutors,
+  type AdvisorMemoState,
+  AdvisorScanError,
   commitStagesAll,
-  evaluateGate,
-  type GateExecutors,
-  type GateMemoState,
-  GateScanError,
+  evaluateAdvisor,
   type GitExecutor,
   parseGitCommand,
   resolveChangeset
-} from '../../src/common/gate-core.js';
+} from '../../src/common/advisor-core.js';
+import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { makeTempRepo } from '../helpers.js';
 
 const REPO_ROOT = '/repo';
@@ -38,8 +38,8 @@ const REPO_ROOT = '/repo';
 // Fakes
 // ---------------------------------------------------------------------------
 
-/** An in-memory GateMemoState fake — one Set of presented digests. */
-function createMemoryGateMemoState(): GateMemoState {
+/** An in-memory AdvisorMemoState fake — one Set of presented digests. */
+function createMemoryAdvisorMemoState(): AdvisorMemoState {
   const digests = new Set<string>();
   return {
     has(digest: string): boolean {
@@ -63,8 +63,8 @@ function createFakeGitExecutor(overrides: Partial<GitExecutor> = {}): GitExecuto
   };
 }
 
-/** A GateExecutors fake with independently overridable fix/stale/list results. */
-function createFakeGateExecutors(overrides: Partial<GateExecutors> = {}): GateExecutors {
+/** A AdvisorExecutors fake with independently overridable fix/stale/list results. */
+function createFakeAdvisorExecutors(overrides: Partial<AdvisorExecutors> = {}): AdvisorExecutors {
   return {
     fix: async (): Promise<void> => {},
     list: async (): Promise<PorcelainRow[]> => [],
@@ -91,7 +91,7 @@ function staleRow(overrides: Partial<StalePorcelainRow> = {}): StalePorcelainRow
   };
 }
 
-describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
+describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
   // parseGitCommand
   // -------------------------------------------------------------------------
@@ -253,14 +253,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // evaluateGate
+  // evaluateAdvisor
   // -------------------------------------------------------------------------
 
-  describe('evaluateGate', () => {
+  describe('evaluateAdvisor', () => {
     it('empty paths → allow/silent, and the injected executors are never invoked', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       let calls = 0;
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         fix: async (): Promise<void> => {
           calls += 1;
         },
@@ -274,22 +274,22 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         }
       });
 
-      const result = await evaluateGate([], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor([], REPO_ROOT, executors, memo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
       expect(calls).toBe(0);
     });
 
     it('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings once per digest, then falls through to allow/already-presented on an identical retry', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(first.decision).toBe('deny');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('hold');
       expect(first.kind).toBe('semantic-staleness');
       if (first.kind === 'semantic-staleness') {
         expect(first.findings).toHaveLength(1);
@@ -299,12 +299,12 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       // already memoized, so evaluation falls through past the semantic check
       // into the (clean) environmental and uncovered checks, ending in
       // already-presented rather than a bare silent allow.
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
     it('a semantic-staleness deny renders the full human span block with per-anchor drift labels', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       const blocks = [
         '## billing/checkout-request-flow',
         '- src/app.ts#L1-L10',
@@ -312,13 +312,13 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         '',
         'Checkout request flow that carries a charge attempt from the browser to the server.'
       ].join('\n');
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
@@ -332,8 +332,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('a failed human-format list read degrades to a synthesized block — the deny still carries every finding', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => {
@@ -341,9 +341,9 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         }
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('hold');
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
         expect(result.reason).toContain('## billing/checkout-request-flow');
@@ -352,9 +352,9 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('a changed findings set produces a fresh semantic-staleness deny (new digest) even after the prior digest was memoized', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       let call = 0;
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => {
           call += 1;
@@ -366,18 +366,18 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/app.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(first.decision).toBe('deny');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('hold');
       expect(first.kind).toBe('semantic-staleness');
 
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(second.decision).toBe('deny');
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(second.decision).toBe('hold');
       expect(second.kind).toBe('semantic-staleness');
     });
 
     it('a changeset carrying both unpresented semantic staleness and unpresented uncovered writes denies twice — staleness first, uncovered on the retry — then passes on the third attempt', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         // src/app.ts is covered but semantically stale; src/uncovered.ts has no
         // covering span at all.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/app.ts' })],
@@ -385,40 +385,40 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/app.ts', 'src/uncovered.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(first.decision).toBe('deny');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('hold');
       expect(first.kind).toBe('semantic-staleness');
 
       // The semantic digest is now memoized, so this retry falls through past
       // the (already-presented) semantic check into the uncovered check, which
       // has not been presented yet — a fresh deny for a distinct debt state.
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(second.decision).toBe('deny');
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(second.decision).toBe('hold');
       expect(second.kind).toBe('uncovered-writes');
       if (second.kind === 'uncovered-writes') {
         expect(second.uncovered).toEqual(['src/uncovered.ts']);
       }
 
       // Both digests are now memoized — the third attempt ends clean.
-      const third = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const third = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(third).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
     it('a memo that cannot persist (record returns false) fails OPEN on semantic staleness rather than denying with no escape', async () => {
-      const unwritableMemo: GateMemoState = { has: () => false, record: () => false };
-      const executors = createFakeGateExecutors({
+      const unwritableMemo: AdvisorMemoState = { has: () => false, record: () => false };
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, unwritableMemo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, unwritableMemo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('uncovered writes only → denies once and records state, then resolves to allow/already-presented on retry with unchanged memoState', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         // Zero covering rows for the changed paths — uncovered writes. Two
         // files, since a single-file changeset can never carry a cross-file
         // coupling and short-circuits to no uncovered paths.
@@ -427,30 +427,30 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      expect(first.decision).toBe('deny');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      expect(first.decision).toBe('hold');
       expect(first.kind).toBe('uncovered-writes');
       if (first.kind === 'uncovered-writes') {
         expect(first.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
       }
 
       // Identical paths/executor results and the same memoState — consider-once.
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
     it('a two-file changeset with only one uncovered path uses singular wording — "this file", not "these files"', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         // `src/other.ts` is covered; `src/uncovered.ts` is the only uncovered path.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts' })],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('hold');
       expect(result.kind).toBe('uncovered-writes');
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.uncovered).toEqual(['src/uncovered.ts']);
@@ -459,8 +459,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('names the covered file that shares this changeset as a related span, using a line-range anchor', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         // `src/other.ts` is covered by `billing/checkout-request-flow`;
         // `src/uncovered.ts` has no span at all.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
@@ -468,9 +468,9 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('hold');
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('Other files in this change already belong to spans');
       expect(result.reason).toContain('## billing/checkout-request-flow');
@@ -478,14 +478,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('renders a bare path for a whole-file anchor in the related-spans section', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 0, end: 0 })],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('- src/other.ts');
@@ -493,8 +493,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('groups multiple covered files under one shared span name, and ranks the span covering more of the changeset first even though its name sorts last', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
@@ -504,7 +504,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       const alphaIndex = result.reason.indexOf('## alpha/solo');
@@ -518,7 +518,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it("includes each related span's `why` sentence, fetched via `listBlocks`, under its anchor group", async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       const blocks = [
         [
           '## alpha/solo',
@@ -530,7 +530,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
           '\n'
         )
       ].join('\n\n---\n\n');
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
@@ -541,7 +541,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('Alpha solo carries a single implicit dependency worth tracking on its own.');
@@ -556,8 +556,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it("omits a related span's `why` line when the span has none recorded", async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
         stale: async (): Promise<StalePorcelainRow[]> => [],
         listBlocks: async (): Promise<string> =>
@@ -565,7 +565,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('## billing/checkout-request-flow');
@@ -573,14 +573,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('omits the related-spans section entirely when no other file in the changeset carries any span coverage', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other-uncovered.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).not.toContain('Other files in this change already belong to spans');
@@ -588,8 +588,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('breaks a co-occurrence tie by path proximity — the span anchored beside the uncovered file leads', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         // Both spans cover exactly one changed file, so co-occurrence ties.
         // `far/away` sorts first alphabetically, but `near/by`'s anchor lives
         // in the same directory as the uncovered file.
@@ -601,7 +601,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/billing/uncovered.ts', 'docs/guide/intro.md', 'src/billing/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       const nearIndex = result.reason.indexOf('## near/by');
@@ -611,11 +611,11 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('ranks by how much of the changeset a span covers, not by how many anchors it has', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       // `git span list` returns matching spans *whole*, so `big/span` arrives
       // with five anchors even though only one of them is in this changeset.
       // `small/span` covers three changed files. Overlap must win.
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'big/span', path: 'src/b1.ts', start: 1, end: 5 }),
           ...Array.from({ length: 4 }, (_, index) =>
@@ -629,7 +629,7 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/b1.ts', 'src/s1.ts', 'src/s2.ts', 'src/s3.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason.indexOf('## small/span')).toBeLessThan(result.reason.indexOf('## big/span'));
@@ -643,12 +643,12 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('does not treat two repo-root files as maximally proximate', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       // Both spans cover one changed file, so co-occurrence ties. `root/cfg`
       // is anchored at the repo root (zero directory depth) and sorts first
       // alphabetically; `sub/tree` shares a real directory with the uncovered
       // file and must lead.
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'root/cfg', path: 'package.json', start: 0, end: 0 }),
           porcelainRow({ name: 'sub/tree', path: 'src/billing/other.ts', start: 1, end: 5 })
@@ -657,18 +657,18 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/billing/uncovered.ts', 'package.json', 'src/billing/other.ts'];
 
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason.indexOf('## sub/tree')).toBeLessThan(result.reason.indexOf('## root/cfg'));
     });
 
     it('orders a fully-tied set by span name, so identical state always renders identically', async () => {
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       // Same co-occurrence (one file each) and same proximity (same
       // directory), fed in reverse-alphabetical order: only the name
       // tie-break can decide, and it must decide the same way every run.
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'c/span', path: 'src/c.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'b/span', path: 'src/b.ts', start: 1, end: 5 }),
@@ -678,8 +678,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/uncovered.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo);
-      const second = await evaluateGate(paths, REPO_ROOT, executors, createMemoryGateMemoState());
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
       if (first.kind !== 'uncovered-writes') throw new Error('unreachable');
       if (second.kind !== 'uncovered-writes') throw new Error('unreachable');
@@ -698,27 +698,27 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         ...Array.from({ length: count }, (_, index) => `src/f${index}.ts`)
       ];
 
-      const atCap = await evaluateGate(
+      const atCap = await evaluateAdvisor(
         changed(8),
         REPO_ROOT,
-        createFakeGateExecutors({
+        createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(8),
           stale: async (): Promise<StalePorcelainRow[]> => []
         }),
-        createMemoryGateMemoState()
+        createMemoryAdvisorMemoState()
       );
       if (atCap.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(atCap.reason).toContain('## span/07');
       expect(atCap.reason).not.toContain('not shown');
 
-      const overCap = await evaluateGate(
+      const overCap = await evaluateAdvisor(
         changed(11),
         REPO_ROOT,
-        createFakeGateExecutors({
+        createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(11),
           stale: async (): Promise<StalePorcelainRow[]> => []
         }),
-        createMemoryGateMemoState()
+        createMemoryAdvisorMemoState()
       );
       if (overCap.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(overCap.reason).toContain('## span/07');
@@ -727,14 +727,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         '3 more spans cover files in this change and are not shown — `git span list` lists every span in the repository.'
       );
 
-      const oneOver = await evaluateGate(
+      const oneOver = await evaluateAdvisor(
         changed(9),
         REPO_ROOT,
-        createFakeGateExecutors({
+        createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(9),
           stale: async (): Promise<StalePorcelainRow[]> => []
         }),
-        createMemoryGateMemoState()
+        createMemoryAdvisorMemoState()
       );
       if (oneOver.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(oneOver.reason).toContain(
@@ -743,8 +743,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('the condensed `alreadySeen` form ranks and caps the related-spans section exactly as the full message it condenses', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
           porcelainRow({ name: 'zeta/pair', path: 'src/z1.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
@@ -761,12 +761,12 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         ...Array.from({ length: 8 }, (_, index) => `src/f${index}.ts`)
       ];
 
-      // First `inform` renders the full form; the second, on the unchanged
+      // First `report-only` renders the full form; the second, on the unchanged
       // debt state, renders the condensed one.
-      const full = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
-      const condensed = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
-      if (full.kind !== 'uncovered-writes-info') throw new Error('unreachable');
-      if (condensed.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      const full = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+      const condensed = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+      if (full.kind !== 'uncovered-writes-report') throw new Error('unreachable');
+      if (condensed.kind !== 'uncovered-writes-report') throw new Error('unreachable');
 
       expect(condensed.reason).toContain('Already flagged for git-span review above.');
       // Compare the section itself, stopping at the disclosure line — what
@@ -786,83 +786,83 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('an `inform` (status) preview that already showed a debt state lets the following `enforce` attempt through instead of denying it again', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
-      if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+      if (info.kind !== 'uncovered-writes-report') throw new Error('unreachable');
       expect(info.reason).toContain('- src/other.ts#L5-L20');
 
-      // The gate is informational, not a hard block — a bare retry already
+      // The advisor is informational, not a hard block — a bare retry already
       // gets past a deny — so once the status preview has shown this exact
       // debt state in full, the real commit attempt right after it passes
       // instead of denying a state the agent has already been told about.
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold');
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('already-presented');
     });
 
     it('an `inform` (status) preview of an uncovered group, immediately followed by an `enforce` (commit) attempt on the same debt state, lets the commit through', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['packages/website/app/components/icons.tsx', 'packages/website/public/logo-positive.svg'];
 
       // `git add -A && git status` — a status preview, non-blocking.
-      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(info.decision).toBe('allow');
-      expect(info.kind).toBe('uncovered-writes-info');
-      if (info.kind !== 'uncovered-writes-info') throw new Error('unreachable');
+      expect(info.kind).toBe('uncovered-writes-report');
+      if (info.kind !== 'uncovered-writes-report') throw new Error('unreachable');
       expect(info.reason).toContain('Determine if these files carry implicit dependencies');
 
       // `git commit` moments later, same unresolved debt state — already
       // explained in full by the status preview, so it passes rather than
       // denying a second time for no gain.
-      const result = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold');
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('already-presented');
     });
 
     it('an `enforce` (commit) deny of a semantic-staleness group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
-      const deny = await evaluateGate(paths, REPO_ROOT, executors, memo, 'enforce');
-      expect(deny.decision).toBe('deny');
+      const deny = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold');
+      expect(deny.decision).toBe('hold');
       expect(deny.kind).toBe('semantic-staleness');
       if (deny.kind !== 'semantic-staleness') throw new Error('unreachable');
       expect(deny.reason).toContain('This change leaves an implicit dependency out of date');
 
-      const info = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(info.decision).toBe('allow');
-      expect(info.kind).toBe('semantic-staleness-info');
-      if (info.kind !== 'semantic-staleness-info') throw new Error('unreachable');
+      expect(info.kind).toBe('semantic-staleness-report');
+      if (info.kind !== 'semantic-staleness-report') throw new Error('unreachable');
       expect(info.reason).not.toContain('This change leaves an implicit dependency out of date');
     });
 
-    it('a `.span/.gateignore` match drops the sole uncovered path, resolving to allow/silent', async () => {
+    it('a `.span/.advisorignore` match drops the sole uncovered path, resolving to allow/silent', async () => {
       const repo = makeTempRepo();
       try {
         fs.mkdirSync(nodePath.join(repo.root, '.span'), { recursive: true });
-        fs.writeFileSync(nodePath.join(repo.root, '.span', '.gateignore'), 'src/generated\n');
+        fs.writeFileSync(nodePath.join(repo.root, '.span', '.advisorignore'), 'src/generated\n');
 
-        const memo = createMemoryGateMemoState();
-        const executors = createFakeGateExecutors({
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/generated/out.ts'], repo.root, executors, memo);
+        const result = await evaluateAdvisor(['src/generated/out.ts'], repo.root, executors, memo);
 
         expect(result).toEqual({ decision: 'allow', kind: 'silent' });
       } finally {
@@ -870,21 +870,21 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it('a `.span/.gateignore` present but not matching the uncovered path still denies', async () => {
+    it('a `.span/.advisorignore` present but not matching the uncovered path still denies', async () => {
       const repo = makeTempRepo();
       try {
         fs.mkdirSync(nodePath.join(repo.root, '.span'), { recursive: true });
-        fs.writeFileSync(nodePath.join(repo.root, '.span', '.gateignore'), 'src/generated\n');
+        fs.writeFileSync(nodePath.join(repo.root, '.span', '.advisorignore'), 'src/generated\n');
 
-        const memo = createMemoryGateMemoState();
-        const executors = createFakeGateExecutors({
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
+        const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
 
-        expect(result.decision).toBe('deny');
+        expect(result.decision).toBe('hold');
         expect(result.kind).toBe('uncovered-writes');
         if (result.kind === 'uncovered-writes') {
           expect(result.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
@@ -894,18 +894,18 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it('a missing `.span/.gateignore` fails open — no additional exclusion — and still denies the uncovered paths', async () => {
+    it('a missing `.span/.advisorignore` fails open — no additional exclusion — and still denies the uncovered paths', async () => {
       const repo = makeTempRepo();
       try {
-        const memo = createMemoryGateMemoState();
-        const executors = createFakeGateExecutors({
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
+        const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
 
-        expect(result.decision).toBe('deny');
+        expect(result.decision).toBe('hold');
         expect(result.kind).toBe('uncovered-writes');
       } finally {
         repo.cleanup();
@@ -915,13 +915,13 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('a single-file changeset never denies on uncovered writes — a lone file cannot form a cross-file coupling', async () => {
       const repo = makeTempRepo();
       try {
-        const memo = createMemoryGateMemoState();
-        const executors = createFakeGateExecutors({
+        const memo = createMemoryAdvisorMemoState();
+        const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
           stale: async (): Promise<StalePorcelainRow[]> => []
         });
 
-        const result = await evaluateGate(['src/uncovered.ts'], repo.root, executors, memo);
+        const result = await evaluateAdvisor(['src/uncovered.ts'], repo.root, executors, memo);
 
         expect(result).toEqual({ decision: 'allow', kind: 'silent' });
       } finally {
@@ -930,8 +930,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {
-      const freshMemo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const freshMemo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [
           staleRow({ status: 'MOVED' }),
@@ -940,56 +940,56 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/app.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, freshMemo);
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, freshMemo);
       expect(first.decision).toBe('allow');
 
       // A memoState that has already recorded some unrelated digest must not
       // change this outcome — positional-only drift never denies.
-      const primedMemo = createMemoryGateMemoState();
+      const primedMemo = createMemoryAdvisorMemoState();
       primedMemo.record('some-other-digest');
-      const second = await evaluateGate(paths, REPO_ROOT, executors, primedMemo);
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, primedMemo);
       expect(second.decision).toBe('allow');
     });
 
     it('an executor rejecting (internal/CLI error) resolves to allow/silent rather than throwing', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         }
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
-    it('a hard scan failure (GateScanError) allows with a scan-failed warning rather than reading the aborted scan as clean, even when a sibling anchor would have carried real CHANGED debt', async () => {
+    it('a hard scan failure (AdvisorScanError) allows with a scan-failed warning rather than reading the aborted scan as clean, even when a sibling anchor would have carried real CHANGED debt', async () => {
       // The scoped scan spans two paths; one anchor is unreadable, so the CLI
       // aborts the entire scoped query (empty stdout + an error on stderr, which
-      // the default executor surfaces as a GateScanError). Had the scan
+      // the default executor surfaces as a AdvisorScanError). Had the scan
       // completed, the sibling anchor would have surfaced CHANGED debt — but it
       // never ran, so an empty result here must NOT be silently read as
       // "clean" and swallowed: it allows (fail-open, matching the
       // `environmental` category), but with a distinct `scan-failed` kind and a
       // reason so the adapter can surface the warning instead of staying silent.
-      const memo = createMemoryGateMemoState();
+      const memo = createMemoryAdvisorMemoState();
       let recorded = false;
-      const guardedMemo: GateMemoState = {
+      const guardedMemo: AdvisorMemoState = {
         has: (d) => memo.has(d),
         record: (d) => {
           recorded = true;
           return memo.record(d);
         }
       };
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/sibling.ts' })],
         stale: async (): Promise<StalePorcelainRow[]> => {
-          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+          throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
 
-      const result = await evaluateGate(['src/app.ts', 'src/sibling.ts'], REPO_ROOT, executors, guardedMemo);
+      const result = await evaluateAdvisor(['src/app.ts', 'src/sibling.ts'], REPO_ROOT, executors, guardedMemo);
 
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('scan-failed');
@@ -1005,15 +1005,15 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('a hard scan failure keeps warning on repeated evaluations — no memo involvement', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {
-          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+          throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
 
-      const first = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
-      const second = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const first = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+      const second = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(first.decision).toBe('allow');
       expect(first.kind).toBe('scan-failed');
@@ -1022,26 +1022,26 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('a non-scan internal error (plain Error) still fails OPEN to allow/silent — only a scan failure fails closed', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         }
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('a terminal/environmental status (SPARSE_EXCLUDED) fails OPEN — allow/environmental with the condition surfaced, never deny', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('environmental');
@@ -1054,8 +1054,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('an environmental condition does not suppress a genuinely semantic finding in the same changeset (still denies)', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [
           staleRow({ status: 'LFS_NOT_FETCHED', name: 'infra/anchor' }),
@@ -1063,9 +1063,9 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
         ]
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo);
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('hold');
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
         // Only the semantic row is a finding; the environmental row is not.
@@ -1076,19 +1076,19 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
     it('a memo that cannot persist (record returns false) fails OPEN on an uncovered write rather than re-denying forever', async () => {
       // A memo whose record never persists would turn "deny once, then allow the
-      // identical retry" into "deny every time" — so the gate must fail open.
-      const unwritableMemo: GateMemoState = { has: () => false, record: () => false };
-      const executors = createFakeGateExecutors({
+      // identical retry" into "deny every time" — so the advisor must fail open.
+      const unwritableMemo: AdvisorMemoState = { has: () => false, record: () => false };
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
 
-      const result = await evaluateGate(['src/uncovered.ts', 'src/other.ts'], REPO_ROOT, executors, unwritableMemo);
+      const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], REPO_ROOT, executors, unwritableMemo);
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
-    it('a pathspec-scoped commit gates the pathspec content and ignores unrelated staged debt', async () => {
+    it('a pathspec-scoped commit scopes to the pathspec content and ignores unrelated staged debt', async () => {
       // Debt lives in an unrelated staged file; the commit names only a clean
       // pathspec. Resolving the changeset to the pathspec content, then gating,
       // must allow — the staged debt is not part of this commit.
@@ -1102,14 +1102,14 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       const changeset = await resolveChangeset('commit', false, REPO_ROOT, git, parsed.paths);
       expect(changeset).toEqual(['src/scoped.ts']);
 
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         // The scoped path is covered and clean; the (unevaluated) debt file is not in scope.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/scoped.ts' })],
         stale: async (paths): Promise<StalePorcelainRow[]> =>
           paths.includes('src/debt.ts') ? [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })] : []
       });
 
-      const result = await evaluateGate(changeset, REPO_ROOT, executors, createMemoryGateMemoState());
+      const result = await evaluateAdvisor(changeset, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
       expect(result.decision).toBe('allow');
     });
@@ -1123,100 +1123,100 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const changeset = await resolveChangeset('commit', false, REPO_ROOT, git, parsed.paths);
 
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/debt.ts' })],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })]
       });
 
-      const result = await evaluateGate(changeset, REPO_ROOT, executors, createMemoryGateMemoState());
+      const result = await evaluateAdvisor(changeset, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
-      expect(result.decision).toBe('deny');
+      expect(result.decision).toBe('hold');
       expect(result.kind).toBe('semantic-staleness');
     });
   });
 
   // -------------------------------------------------------------------------
-  // evaluateGate — 'inform' mode (git status)
+  // evaluateAdvisor — 'report-only' mode (git status)
   // -------------------------------------------------------------------------
 
-  describe("evaluateGate in 'inform' mode", () => {
-    it('semantic staleness → allow/semantic-staleness-info (never deny), and repeats identically on a second call', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+  describe("evaluateAdvisor in 'report-only' mode", () => {
+    it('semantic staleness → allow/semantic-staleness-report (never deny), and repeats identically on a second call', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(first.decision).toBe('allow');
-      expect(first.kind).toBe('semantic-staleness-info');
-      if (first.kind === 'semantic-staleness-info') {
+      expect(first.kind).toBe('semantic-staleness-report');
+      if (first.kind === 'semantic-staleness-report') {
         expect(first.findings).toHaveLength(1);
         expect(first.reason).toContain('This change leaves an implicit dependency out of date:');
       }
 
       // A status preview never memoizes, so an identical second call reports
       // the same live debt again rather than falling through to already-presented.
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(second.decision).toBe('allow');
-      expect(second.kind).toBe('semantic-staleness-info');
+      expect(second.kind).toBe('semantic-staleness-report');
     });
 
-    it('uncovered writes → allow/uncovered-writes-info (never deny), and repeats identically on a second call', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+    it('uncovered writes → allow/uncovered-writes-report (never deny), and repeats identically on a second call', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
-      const first = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(first.decision).toBe('allow');
-      expect(first.kind).toBe('uncovered-writes-info');
-      if (first.kind === 'uncovered-writes-info') {
+      expect(first.kind).toBe('uncovered-writes-report');
+      if (first.kind === 'uncovered-writes-report') {
         expect(first.uncovered).toEqual(['src/uncovered.ts', 'src/other.ts']);
       }
 
-      const second = await evaluateGate(paths, REPO_ROOT, executors, memo, 'inform');
+      const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(second.decision).toBe('allow');
-      expect(second.kind).toBe('uncovered-writes-info');
+      expect(second.kind).toBe('uncovered-writes-report');
     });
 
     it('a clean changeset → allow/silent, same as enforce mode', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
 
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('an environmental condition → allow/environmental, same as enforce mode', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
 
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('environmental');
     });
 
     it('a hard scan failure → allow/scan-failed, same as enforce mode', async () => {
-      const memo = createMemoryGateMemoState();
-      const executors = createFakeGateExecutors({
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
         stale: async (): Promise<StalePorcelainRow[]> => {
-          throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+          throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
 
-      const result = await evaluateGate(['src/app.ts'], REPO_ROOT, executors, memo, 'inform');
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
 
       expect(result.decision).toBe('allow');
       expect(result.kind).toBe('scan-failed');
@@ -1224,8 +1224,8 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
 
     it('never reads or writes the enforce deny-credit digest directly — an inform call only ever touches the orthogonal "seen" marker', async () => {
       const digestCalls: string[] = [];
-      const backing = createMemoryGateMemoState();
-      const spyingMemo: GateMemoState = {
+      const backing = createMemoryAdvisorMemoState();
+      const spyingMemo: AdvisorMemoState = {
         has: (d) => {
           digestCalls.push(d);
           return backing.has(d);
@@ -1235,57 +1235,57 @@ describe('gate-core (Phase 3.2 — skipped acceptance checks)', () => {
           return backing.record(d);
         }
       };
-      const executors = createFakeGateExecutors({
+      const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
-      const informResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'inform');
+      const informResult = await evaluateAdvisor(paths, REPO_ROOT, executors, spyingMemo, 'report-only');
       expect(informResult.decision).toBe('allow');
       // The inform pass only ever touches the orthogonal "seen" (rendering
       // verbosity) marker — never the bare deny-credit digest itself.
       expect(digestCalls.every((d) => d.startsWith('seen-'))).toBe(true);
       expect(digestCalls.length).toBeGreaterThan(0);
 
-      // The identical debt state, now evaluated in 'enforce' mode against the
+      // The identical debt state, now evaluated in 'may-hold' mode against the
       // very same memoState: the inform pass above did not consume the
       // digest's one-time deny credit, but it did mark the state as already
-      // explained in full, so the gate — informational, not a hard block —
+      // explained in full, so the advisor — informational, not a hard block —
       // lets it through rather than denying a state the agent has already
       // seen.
-      const enforceResult = await evaluateGate(paths, REPO_ROOT, executors, spyingMemo, 'enforce');
+      const enforceResult = await evaluateAdvisor(paths, REPO_ROOT, executors, spyingMemo, 'may-hold');
       expect(enforceResult.decision).toBe('allow');
       expect(enforceResult.kind).toBe('already-presented');
     });
 
     it('the rendered reason never contains deny/retry-flavored phrasing — a status preview held nothing, so there is nothing to retry', async () => {
-      const staleMemo = createMemoryGateMemoState();
-      const staleExecutors = createFakeGateExecutors({
+      const staleMemo = createMemoryAdvisorMemoState();
+      const staleExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
       });
-      const staleResult = await evaluateGate(['src/app.ts'], REPO_ROOT, staleExecutors, staleMemo, 'inform');
-      expect(staleResult.kind).toBe('semantic-staleness-info');
-      if (staleResult.kind === 'semantic-staleness-info') {
+      const staleResult = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, staleExecutors, staleMemo, 'report-only');
+      expect(staleResult.kind).toBe('semantic-staleness-report');
+      if (staleResult.kind === 'semantic-staleness-report') {
         expect(staleResult.reason).not.toContain('then retry');
         expect(staleResult.reason).not.toContain('Otherwise retry the command to proceed');
       }
 
-      const uncoveredMemo = createMemoryGateMemoState();
-      const uncoveredExecutors = createFakeGateExecutors({
+      const uncoveredMemo = createMemoryAdvisorMemoState();
+      const uncoveredExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
         stale: async (): Promise<StalePorcelainRow[]> => []
       });
-      const uncoveredResult = await evaluateGate(
+      const uncoveredResult = await evaluateAdvisor(
         ['src/uncovered.ts', 'src/other.ts'],
         REPO_ROOT,
         uncoveredExecutors,
         uncoveredMemo,
-        'inform'
+        'report-only'
       );
-      expect(uncoveredResult.kind).toBe('uncovered-writes-info');
-      if (uncoveredResult.kind === 'uncovered-writes-info') {
+      expect(uncoveredResult.kind).toBe('uncovered-writes-report');
+      if (uncoveredResult.kind === 'uncovered-writes-report') {
         expect(uncoveredResult.reason).not.toContain('Otherwise retry the command to proceed');
         expect(uncoveredResult.reason).not.toContain('one-time check');
       }

@@ -228,7 +228,7 @@ export interface StalePorcelainRow extends PorcelainRow {
 
 /**
  * The debt invariant (system-wide; consumed by both the future touch-core and
- * gate-core): only semantic statuses are debt. `CHANGED` and `DELETED` are
+ * advisor-core): only semantic statuses are debt. `CHANGED` and `DELETED` are
  * semantic drift; the remaining non-FRESH/MOVED/RESOLVED_PENDING_COMMIT tokens
  * are terminal/error conditions and are treated as debt too (they block on
  * their own merits — the CLI could not resolve the anchor at all). `FRESH`,
@@ -256,7 +256,7 @@ export function isDebt(status: PorcelainStatus): boolean {
 /**
  * Lowercase human label for a porcelain status token (`LFS_NOT_FETCHED` →
  * `lfs not fetched`). The single label mapping for every human-format anchor
- * suffix — both the touch hook's block and the gate's messages render through
+ * suffix — both the touch hook's block and the advisor's messages render through
  * this, so a status never reads differently between the two.
  */
 export function humanStatusLabel(status: PorcelainStatus): string {
@@ -274,12 +274,12 @@ export function humanStatusLabel(status: PorcelainStatus): string {
  *
  * These are a strict subset of {@link isDebt}: every environmental status is
  * also debt (it blocks on its own merits when surfaced in a status report), but
- * the gate must treat them differently from *semantic* drift (`CHANGED`,
- * `DELETED`). Semantic drift is fixable by editing a span, so the gate fails
+ * the advisor must treat them differently from *semantic* drift (`CHANGED`,
+ * `DELETED`). Semantic drift is fixable by editing a span, so the advisor fails
  * closed on it; an environmental condition is not something a span edit can
- * resolve, so the gate fails OPEN on it (allow, but surface the condition) —
+ * resolve, so the advisor fails OPEN on it (allow, but surface the condition) —
  * re-denying forever on an infra failure the user cannot clear from here would
- * contradict the fail-open contract the rest of the gate already honors for
+ * contradict the fail-open contract the rest of the advisor already honors for
  * CLI-absent/timeout/parse-failure conditions.
  */
 export function isEnvironmentalStatus(status: PorcelainStatus): boolean {
@@ -449,10 +449,10 @@ export function queueRoot(repoRoot: string): string {
 }
 
 /**
- * Directory for the gate's per-changeset state memos (digest of sorted
+ * Directory for the advisor's per-changeset state memos (digest of sorted
  * findings + uncovered paths), under the git common dir so it is shared
  * across worktrees.
  */
-export function gateMemoDir(repoRoot: string): string {
-  return nodePath.join(queueRoot(repoRoot), 'gate');
+export function advisorMemoDir(repoRoot: string): string {
+  return nodePath.join(queueRoot(repoRoot), 'advisor');
 }

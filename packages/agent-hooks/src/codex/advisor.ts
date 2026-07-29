@@ -1,10 +1,11 @@
 /**
- * Codex PreToolUse gate hook — hold `git commit`/`git push` on real span debt,
- * and advise (never hold) on a plain `git status`.
+ * Codex PreToolUse advisor hook — hold `git commit`/`git push` once on real
+ * span debt so the report is read, and report without holding on a plain
+ * `git status`. The hold never enforces: a bare retry proceeds.
  *
- * The Codex twin of [claude/gate.ts](./packages/agent-hooks/src/claude/gate.ts):
- * same shared gate-core pipeline ({@link parseGitCommand} → {@link resolveChangeset}
- * → {@link evaluateGate}), translated into Codex's PreToolUse output shape. Codex
+ * The Codex twin of [claude/advisor.ts](./packages/agent-hooks/src/claude/advisor.ts):
+ * same shared advisor-core pipeline ({@link parseGitCommand} → {@link resolveChangeset}
+ * → {@link evaluateAdvisor}), translated into Codex's PreToolUse output shape. Codex
  * delivers a shell command as an SDK-typed `unknown` `tool_input`; this handler
  * narrows it (string, or a `["bash","-lc","<script>"]`/argv array) into the
  * command string the core parses.
@@ -16,11 +17,11 @@
  * The only positive evidence is documentary — the `@goodfoot/codex-hooks` README
  * (the exact version this repo depends on) ships a worked `permissionDecision:
  * 'deny'` example matched on `"Bash"`. This adapter therefore ships the hard-deny
- * path per that README ({@link CODEX_GATE_HARD_DENY} = `true`), but keeps the
+ * path per that README ({@link CODEX_ADVISOR_HARD_DENY} = `true`), but keeps the
  * CARD.md-documented fallback — a loud `additionalContext` warning that allows
  * the command, with the CI recipe as Codex's enforcement backstop — as a clearly
  * separable branch behind that one constant. If a live session shows deny does
- * not fire, flip {@link CODEX_GATE_HARD_DENY} to `false`; nothing else changes.
+ * not fire, flip {@link CODEX_ADVISOR_HARD_DENY} to `false`; nothing else changes.
  *
  * The shell tool's exact `tool_name` is likewise unconfirmed (the README's
  * example uses `"Bash"`; Codex CLI transcripts in the spike labeled the call
@@ -28,26 +29,26 @@
  * hook actually fires, and every fire logs the observed `tool_name` so the first
  * live run reveals the literal string to narrow the matcher to.
  *
- * Fail-open at every layer: gate-core resolves internal errors to allow, and this
- * adapter wraps the whole path in a try/catch that allows-and-logs — the gate
+ * Fail-open at every layer: advisor-core resolves internal errors to allow, and this
+ * adapter wraps the whole path in a try/catch that allows-and-logs — the advisor
  * must never brick a commit. The timeout is milliseconds here (the Codex CLI
  * divides to seconds at emit).
  */
 
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/codex-hooks';
 import {
+  type AdvisorExecutors,
+  type AdvisorMemoState,
   commitStagesAll,
-  createDefaultGateExecutors,
+  createDefaultAdvisorExecutors,
   createDefaultGitExecutor,
-  createDiskGateMemoState,
-  evaluateGate,
-  type GateExecutors,
-  type GateMemoState,
+  createDiskAdvisorMemoState,
+  evaluateAdvisor,
   type GitExecutor,
   parseGitCommand,
   resolveChangeset,
   wrapGitSpanContext
-} from '../common/gate-core.js';
+} from '../common/advisor-core.js';
 
 /**
  * Whether Codex's `permissionDecision: 'deny'` is trusted to block the shell tool
@@ -56,7 +57,7 @@ import {
  * session shows deny does not fire — see notes/codex-deny-spike.md and this
  * file's header. This is the single switch that separates the two code paths.
  */
-const CODEX_GATE_HARD_DENY = true;
+const CODEX_ADVISOR_HARD_DENY = true;
 
 /**
  * Narrow Codex's `unknown` shell `tool_input` into the command string the core
@@ -81,19 +82,19 @@ export function extractShellCommand(toolInput: unknown): string | null {
 
 export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),
-  executors: GateExecutors = createDefaultGateExecutors(),
-  memoFactory: (cwd: string) => GateMemoState = createDiskGateMemoState,
+  executors: AdvisorExecutors = createDefaultAdvisorExecutors(),
+  memoFactory: (cwd: string) => AdvisorMemoState = createDiskAdvisorMemoState,
   // The hard-deny switch is a parameter (defaulting to the shipped constant) so
   // the documented fallback branch is directly exercisable in tests without
   // mutating a module-level const. Production wiring never passes this — the
   // default export below constructs the handler with the constant's value.
-  hardDeny: boolean = CODEX_GATE_HARD_DENY
+  hardDeny: boolean = CODEX_ADVISOR_HARD_DENY
 ) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
       // Log the observed shell tool_name so the first live run reveals the literal
       // string to narrow the matcher to (the spike never confirmed it empirically).
-      ctx.logger.info('git-span gate observed shell tool', { tool_name: input.tool_name });
+      ctx.logger.info('git-span advisor observed shell tool', { tool_name: input.tool_name });
 
       const command = extractShellCommand(input.tool_input);
       if (command === null) return undefined;
@@ -105,14 +106,14 @@ export function createHandler(
       const all = parsed.kind === 'commit' ? commitStagesAll(command) : false;
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
-      const mode = parsed.kind === 'status' ? 'inform' : 'enforce';
-      const result = await evaluateGate(changeset, cwd, executors, memoFactory(cwd), mode);
-      if (result.decision !== 'deny') {
+      const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
+      const result = await evaluateAdvisor(changeset, cwd, executors, memoFactory(cwd), mode);
+      if (result.decision !== 'hold') {
         // Environmental staleness and a failed staleness scan both allow
         // (fail-open) but must not be swallowed: log and surface the reason as
         // additional context.
         if (result.kind === 'environmental' || result.kind === 'scan-failed') {
-          ctx.logger.warn('git-span gate allowed with an unresolved condition', { reason: result.reason });
+          ctx.logger.warn('git-span advisor allowed with an unresolved condition', { reason: result.reason });
           return preToolUseOutput({
             additionalContext: wrapGitSpanContext(result.reason),
             systemMessage: result.reason
@@ -120,7 +121,7 @@ export function createHandler(
         }
         // `status`-only advisory kinds: span debt exists, but a status check
         // never holds the command — surface it as information, not a warning.
-        if (result.kind === 'semantic-staleness-info' || result.kind === 'uncovered-writes-info') {
+        if (result.kind === 'semantic-staleness-report' || result.kind === 'uncovered-writes-report') {
           return preToolUseOutput({
             additionalContext: wrapGitSpanContext(result.reason),
             systemMessage: result.reason
@@ -130,19 +131,22 @@ export function createHandler(
       }
 
       if (hardDeny) {
-        // Primary path (per the README): actually block the command.
+        // Primary path (per the README): translate our `hold` into Codex's own
+        // vocabulary and stop this one invocation. The memo has recorded the
+        // debt state, so an identical retry allows — this is a single
+        // interruption, not enforcement.
         return preToolUseOutput({
           permissionDecision: 'deny',
           permissionDecisionReason: result.reason,
           systemMessage: result.reason
         });
       }
-      // Fallback path (CARD.md contingency): cannot block, so surface the same
+      // Fallback path (CARD.md contingency): cannot hold, so surface the same
       // checklist as a loud warning and allow — the CI recipe enforces for Codex.
       const warning = `Could not block this command — the issue below still needs resolving:\n${result.reason}`;
       return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
     } catch (err) {
-      ctx.logger.warn('git-span gate failed open on an uncaught error', { err });
+      ctx.logger.warn('git-span advisor failed open on an uncaught error', { err });
       return undefined;
     }
   };

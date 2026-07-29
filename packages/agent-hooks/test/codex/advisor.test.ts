@@ -1,19 +1,24 @@
 /**
- * Tests for the Codex PreToolUse gate hook
- * (packages/agent-hooks/src/codex/gate.ts).
+ * Tests for the Codex PreToolUse advisor hook
+ * (packages/agent-hooks/src/codex/advisor.ts).
  *
  * The adapter narrows Codex's `unknown` shell tool_input into a command string,
- * drives the shared gate-core pipeline with injected executors and an in-memory
- * memo, and translates the GateResult into Codex's permissionDecision output
+ * drives the shared advisor-core pipeline with injected executors and an in-memory
+ * memo, and translates the AdvisorResult into Codex's permissionDecision output
  * (the hard-deny path this build ships). The debt-classification logic itself is
- * covered by test/common/gate-core.test.ts.
+ * covered by test/common/advisor-core.test.ts.
  */
 
 import { Logger } from '@goodfoot/codex-hooks';
 import { describe, expect, it } from 'vitest';
-import hook, { createHandler, extractShellCommand } from '../../src/codex/gate.js';
+import hook, { createHandler, extractShellCommand } from '../../src/codex/advisor.js';
+import {
+  type AdvisorExecutors,
+  type AdvisorMemoState,
+  AdvisorScanError,
+  type GitExecutor
+} from '../../src/common/advisor-core.js';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { type GateExecutors, type GateMemoState, GateScanError, type GitExecutor } from '../../src/common/gate-core.js';
 
 const logger = new Logger();
 
@@ -31,7 +36,7 @@ function fakeGit(overrides: Partial<GitExecutor> = {}): GitExecutor {
   };
 }
 
-function fakeExecutors(overrides: Partial<GateExecutors> = {}): GateExecutors {
+function fakeExecutors(overrides: Partial<AdvisorExecutors> = {}): AdvisorExecutors {
   return {
     fix: async () => {},
     list: async (): Promise<PorcelainRow[]> => [],
@@ -41,9 +46,9 @@ function fakeExecutors(overrides: Partial<GateExecutors> = {}): GateExecutors {
   };
 }
 
-function sharedMemoFactory(): (cwd: string) => GateMemoState {
+function sharedMemoFactory(): (cwd: string) => AdvisorMemoState {
   const digests = new Set<string>();
-  const state: GateMemoState = {
+  const state: AdvisorMemoState = {
     has: (d) => digests.has(d),
     record: (d) => {
       digests.add(d);
@@ -91,7 +96,7 @@ function toResult(raw: unknown): HookResult {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('codex gate hook registration', () => {
+describe('codex advisor hook registration', () => {
   it('registers PreToolUse and matches the plausible shell tool names', () => {
     expect(hook.hookEventName).toBe('PreToolUse');
     expect(hook.matcher).toBe('Bash|shell|exec|local_shell');
@@ -115,7 +120,7 @@ describe('extractShellCommand', () => {
   });
 });
 
-describe('codex gate adapter', () => {
+describe('codex advisor adapter', () => {
   it('allows a non-git command silently', async () => {
     const handler = createHandler(fakeGit(), fakeExecutors(), sharedMemoFactory());
     const result = toResult(await handler(preInput('ls -la') as never, { logger } as never));
@@ -134,7 +139,7 @@ describe('codex gate adapter', () => {
   });
 
   it('with hard-deny disabled, a semantic-staleness deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
-    // Exercises the CARD.md-documented fallback branch (CODEX_GATE_HARD_DENY =
+    // Exercises the CARD.md-documented fallback branch (CODEX_ADVISOR_HARD_DENY =
     // false): when deny is not trusted to block live, the same checklist is
     // surfaced as a loud warning and the command is allowed through, with the CI
     // recipe as Codex's enforcement backstop. Nothing must set a deny decision.
@@ -181,7 +186,7 @@ describe('codex gate adapter', () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       stale: async () => {
-        throw new GateScanError('fatal: unable to read src/app.ts: Permission denied');
+        throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
       }
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
@@ -215,7 +220,7 @@ describe('codex gate adapter', () => {
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 
-  it('`git status` never consumes the consider-once deny credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {
+  it('`git status` never consumes the one-time hold credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
     const memoFactory = sharedMemoFactory();
@@ -224,9 +229,9 @@ describe('codex gate adapter', () => {
     const status = toResult(await handler(preInput('git status') as never, { logger } as never));
     expect(status.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
 
-    // The gate is informational, not a hard block — the status preview
+    // A hold only ever buys one reading of the report — the status preview
     // already explained this debt state in full, so the commit passes
-    // silently instead of denying a state the agent has already been shown.
+    // silently instead of holding on a state the agent has already been shown.
     const commit = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
     expect(commit.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     expect(commit.stdout.systemMessage).toBeUndefined();

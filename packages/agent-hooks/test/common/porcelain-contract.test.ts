@@ -5,7 +5,7 @@
  * These tests exercise the actual `git span stale --format porcelain` and
  * `git span list --porcelain` commands against a real temporary git repo with
  * a span, then validate the output through the same parsers touch-core and
- * gate-core use. The two commands emit different porcelain shapes: `list --porcelain`
+ * advisor-core use. The two commands emit different porcelain shapes: `list --porcelain`
  * is `<name>\t<path>\t<start>-<end>`, while `stale --format porcelain` is a
  * `# porcelain v2` header followed by `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` rows.
  *

@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/gate.mjs",
+            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/advisor.mjs",
             "timeout": 10000
           }
         ],
@@ -28,8 +28,8 @@
   "__generated": {
     "files": [
       "post-tool-use.mjs",
-      "gate.mjs"
+      "advisor.mjs"
     ],
-    "timestamp": "2026-07-20T20:44:54.298Z"
+    "timestamp": "2026-07-29T17:34:20.425Z"
   }
 }

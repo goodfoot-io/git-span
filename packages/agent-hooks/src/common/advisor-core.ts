@@ -1,25 +1,26 @@
 /**
- * Harness-agnostic gate core (Phase 3.1 — contract and stubs).
+ * Harness-agnostic advisor core (Phase 3.1 — contract and stubs).
  *
- * This module declares the PreToolUse "gate" that both the Claude (`Bash`) and
+ * This module declares the PreToolUse advisor that both the Claude (`Bash`) and
  * Codex (shell/exec) adapters will drive: when the agent runs `git commit` or
  * `git push` and the changeset it is about to land carries real span debt, the
- * command is held with a checklist; positional drift the touch hook has been
- * healing all along never blocks. Like {@link file://./touch-core.ts} it imports
+ * command is held once with a checklist — a bare retry then proceeds, so the
+ * advisor reports rather than enforces; positional drift the touch hook has been
+ * healing all along is never reported at all. Like {@link file://./touch-core.ts} it imports
  * nothing from either hook SDK and is typed structurally, per the `common/`
  * layer convention: adapters translate their SDK-specific hook input into a
  * command string + cwd, inject execution/state dependencies, and translate the
- * returned {@link GateResult} into their own deny/allow output builder.
+ * returned {@link AdvisorResult} into their own hold/allow output builder.
  *
- * gate-core is a sibling of touch-core, not a dependent: the two cores are
+ * advisor-core is a sibling of touch-core, not a dependent: the two cores are
  * independent and this module imports nothing from `touch-core.ts`.
  *
  * Reused from the shared kernel (not redefined): `isDebt()` (the single
  * source of truth for the semantic-only debt invariant — `MOVED` and
  * `RESOLVED_PENDING_COMMIT` are never debt), the porcelain status vocabulary
- * (`PorcelainStatus`/`PorcelainRow`/`StalePorcelainRow`), and `gateMemoDir()`
- * (the `<git-common-dir>/git-span/gate/` path the disk-backed
- * {@link GateMemoState} will persist under) — all from agent-hooks-common.ts.
+ * (`PorcelainStatus`/`PorcelainRow`/`StalePorcelainRow`), and `advisorMemoDir()`
+ * (the `<git-common-dir>/git-span/advisor/` path the disk-backed
+ * {@link AdvisorMemoState} will persist under) — all from agent-hooks-common.ts.
  *
  * Every function whose result depends on real logic is a `Not Implemented` stub
  * in this phase; Phase 3.2 writes skipped checks against these signatures and
@@ -30,8 +31,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
+import { isAdvisorIgnored, loadAdvisorIgnore } from './advisor-ignore.js';
 import {
-  gateMemoDir,
+  advisorMemoDir,
   humanStatusLabel,
   isDebt,
   isEnvironmentalStatus,
@@ -44,7 +46,6 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
-import { isGateIgnored, loadGateIgnore } from './gate-ignore.js';
 
 // ---------------------------------------------------------------------------
 // Scan-failure signal
@@ -56,16 +57,16 @@ import { isGateIgnored, loadGateIgnore } from './gate-ignore.js';
  * exits non-zero in two very different situations: on legitimate drift (real
  * porcelain rows on stdout) and on a hard scan failure (e.g. an unreadable
  * anchor file aborts the whole scoped query, leaving stdout empty and an error
- * on stderr). Only the second throws this, so {@link evaluateGate} can tell a
+ * on stderr). Only the second throws this, so {@link evaluateAdvisor} can tell a
  * scan that *ran clean* (empty rows) from one that *never ran* (empty rows
  * because it aborted) and refuse to read the latter as a clean pass. `detail`
  * carries the CLI's stderr for the surfaced reason.
  */
-export class GateScanError extends Error {
+export class AdvisorScanError extends Error {
   readonly detail: string;
   constructor(detail: string) {
     super(`git span stale could not complete its scan: ${detail}`);
-    this.name = 'GateScanError';
+    this.name = 'AdvisorScanError';
     this.detail = detail;
   }
 }
@@ -75,17 +76,18 @@ export class GateScanError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * The kind of gated git command a shell command string resolves to. `'none'`
+ * The kind of git command a shell command string resolves to — the shapes the
+ * advisor inspects. `'none'`
  * is the conservative fail-open answer: any shape {@link parseGitCommand} does
  * not confidently recognize as a `git commit`/`git push`/`git status` maps to
- * `'none'` and the gate allows the command through untouched. `'status'` is
- * never denied — {@link evaluateGate}'s `'inform'` mode only ever allows,
+ * `'none'` and the advisor allows the command through untouched. `'status'` is
+ * never held — {@link evaluateAdvisor}'s `'report-only'` mode only ever allows,
  * surfacing any span debt as advisory context.
  */
 export type GitCommandKind = 'commit' | 'push' | 'status' | 'none';
 
 /**
- * The result of parsing a shell command string for a gated git invocation.
+ * The result of parsing a shell command string for an inspected git invocation.
  *
  * `paths` carries only what is parseable from the command line itself — the
  * explicit pathspecs a `git commit -- <path>…` form names. It is deliberately
@@ -110,13 +112,13 @@ export interface ParsedGitCommand {
  * `-a`/`-am` "commit all tracked-modified" forms, and invocation from a cwd
  * below the repo root. Matching is on word boundaries, never substring: a path
  * or message that merely contains the text `git commit` must not trip the
- * gate.
+ * advisor.
  *
  * Conservative by contract: this is the fail-open point at the parse layer, not
- * a place to guess. Any command whose shape is not confidently a gated
+ * a place to guess. Any command whose shape is not confidently an inspected
  * `git commit`/`git push`/`git status` — an unfamiliar subcommand, an alias, an
  * obfuscated or dynamically-built invocation — returns `{ kind: 'none' }` so the
- * gate allows it rather than denying on a shaky read. (See CARD.md "Risks and
+ * advisor allows it rather than holding on a shaky read. (See CARD.md "Risks and
  * required spikes → Command parsing" and design-decisions.md #1.)
  *
  * @param command The raw shell command string from the hook's tool input.
@@ -356,7 +358,7 @@ export interface GitExecutor {
    * pathspec-scoped commit (`git commit -- <pathspec>…`) actually lands: the
    * current working-tree content at those pathspecs, regardless of what else is
    * staged. Used to scope the changeset when {@link ParsedGitCommand.paths} is
-   * present, so the gate evaluates exactly the files this commit takes — never
+   * present, so the advisor evaluates exactly the files this commit takes — never
    * an unrelated staged file, and never missing a modified-but-unstaged file
    * named in the pathspec (which `git diff --cached` would never surface).
    */
@@ -364,8 +366,8 @@ export interface GitExecutor {
 }
 
 /**
- * Resolve the concrete list of repo-relative paths a gated command would land,
- * so the gate can scope its staleness/coverage check to exactly that changeset.
+ * Resolve the concrete list of repo-relative paths an inspected command would land,
+ * so the advisor can scope its staleness/coverage check to exactly that changeset.
  *
  * - `commit` with explicit `paths` (a `git commit -- <pathspec>…` form): only
  *   the working-tree content under those pathspecs (`pathspecPaths`), since a
@@ -433,21 +435,21 @@ function mergeUniquePaths(...groups: string[][]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Gate evaluation
+// Advisor evaluation
 // ---------------------------------------------------------------------------
 
 /**
- * The injected execution surface gate evaluation needs — the `fix`/`stale`/
+ * The injected execution surface advisor evaluation needs — the `fix`/`stale`/
  * `list` async functions, mirroring `touch-core.ts`'s `TouchExecutors`. Tests
  * inject fakes returning structured data; the core never spawns a subprocess
  * itself. All paths are repo-relative POSIX paths.
  */
-export interface GateExecutors {
+export interface AdvisorExecutors {
   /**
    * Run a scoped `git span stale <paths> --fix` — the belt-and-braces heal that
    * runs before classification (per CARD.md), re-anchoring any positional drift
    * in the changeset that the touch hook has not already healed. Reports nothing;
-   * its effect is on the working tree, and the subsequent {@link GateExecutors.stale}
+   * its effect is on the working tree, and the subsequent {@link AdvisorExecutors.stale}
    * read observes the healed state.
    */
   fix(paths: string[], cwd: string): Promise<void>;
@@ -455,12 +457,12 @@ export interface GateExecutors {
    * Run a scoped `git span stale --format porcelain <paths>` and return its
    * parsed rows — one per drifted anchor among the changeset's spans, empty when
    * clean. Debt is classified from these rows via `isDebt()`; positional
-   * (`MOVED`/`RESOLVED_PENDING_COMMIT`) rows are never debt and never deny.
+   * (`MOVED`/`RESOLVED_PENDING_COMMIT`) rows are never debt and never hold.
    *
    * An empty result must mean the scan *ran and found nothing*, never that the
    * scan *could not run*. When the scoped query aborts before completing (e.g.
-   * an unreadable anchor file), the implementation throws {@link GateScanError}
-   * rather than returning `[]`, so {@link evaluateGate} does not mistake an
+   * an unreadable anchor file), the implementation throws {@link AdvisorScanError}
+   * rather than returning `[]`, so {@link evaluateAdvisor} does not mistake an
    * aborted scan for a clean one and silently allow unverified debt through.
    */
   stale(paths: string[], cwd: string): Promise<StalePorcelainRow[]>;
@@ -468,21 +470,21 @@ export interface GateExecutors {
    * Run a scoped `git span list --porcelain <paths>` and return the covering
    * anchors. Used to compute *uncovered writes*: a changed path with zero
    * covering rows here (minus `.span/**`, gitignored paths, and
-   * `.span/.gateignore`-excluded paths — see {@link file://./gate-ignore.ts})
+   * `.span/.advisorignore`-excluded paths — see {@link file://./advisor-ignore.ts})
    * is an uncovered write.
    *
-   * As with {@link GateExecutors.stale}, an empty result must mean the query
+   * As with {@link AdvisorExecutors.stale}, an empty result must mean the query
    * *ran and found no covering anchors*, never that it *could not run* — here
    * the stakes are inverted, since an empty covered set makes every changed
    * path look uncovered. When the query aborts before completing, the
-   * implementation throws {@link GateScanError} rather than returning `[]`,
-   * so {@link evaluateGate} warns instead of issuing a maximal, wrong deny.
+   * implementation throws {@link AdvisorScanError} rather than returning `[]`,
+   * so {@link evaluateAdvisor} warns instead of issuing a maximal, wrong hold.
    */
   list(paths: string[], cwd: string): Promise<PorcelainRow[]>;
   /**
    * Run `git span list <names...>` (human format) and return its raw stdout —
    * one `## <name>` block per span (anchor bullets + description), blocks
-   * separated by `---`. The deny/advisory renderers annotate these blocks with
+   * separated by `---`. The hold/advisory renderers annotate these blocks with
    * per-anchor drift labels so the surfaced message carries the full span
    * (all locations + description), not just the drifted rows. Returns `''` on
    * any failure; {@link annotateBlocks} then synthesizes minimal blocks from
@@ -492,116 +494,139 @@ export interface GateExecutors {
 }
 
 /**
- * The gate's per-changeset memo — "have I already presented this exact debt
+ * The advisor's per-changeset memo — "have I already presented this exact debt
  * state once?" The persisted unit is a digest of the sorted staleness findings
- * plus the sorted uncovered paths (design-decisions.md #9's "gate once per
+ * plus the sorted uncovered paths (design-decisions.md #9's "hold once per
  * distinct debt-state"); the disk-backed implementation stores one marker per
- * digest under {@link gateMemoDir} (`<git-common-dir>/git-span/gate/`), where
+ * digest under {@link advisorMemoDir} (`<git-common-dir>/git-span/advisor/`), where
  * presence means "already presented once." Injected as a store abstraction
  * (like span-surface.ts's `MemoStore`) so Phase 3.2 fakes it in memory.
  */
-export interface GateMemoState {
+export interface AdvisorMemoState {
   /** Whether this exact debt-state digest has already been presented once. */
   has(digest: string): boolean;
   /**
    * Record that this debt-state digest has now been presented, returning
    * whether the record actually persisted. `false` means the memo could not be
-   * written (e.g. an unwritable memo directory) — the gate treats that as a
-   * fail-open signal rather than denying, because a non-persisting memo would
-   * silently turn "deny once, then allow the identical retry" into "deny every
+   * written (e.g. an unwritable memo directory) — the advisor treats that as a
+   * fail-open signal rather than holding, because a non-persisting memo would
+   * silently turn "hold once, then allow the identical retry" into "hold every
    * time" with no escape.
    */
   record(digest: string): boolean;
 }
 
 /**
- * The gate's decision for one command, as a discriminated union the adapter
- * translates into `permissionDecision: 'deny'`/allow (Claude) or a block/allow
- * (Codex). `decision` is the coarse allow/deny the harness acts on; `kind`
- * records *why*, so the adapter renders the right message and so tests assert
- * the exact branch.
+ * The advisor's outcome for one command, as a discriminated union the adapter
+ * translates into its harness's vocabulary — `decision: 'hold'` becomes
+ * Claude's `permissionDecision: 'deny'` and Codex's block. That translation is
+ * the adapter's business, not this type's: `'hold'` says what the advisor is
+ * asking for (stop long enough to read the report), and the harness's `deny`
+ * is merely the mechanism available for asking. Nothing here enforces
+ * anything — a held command succeeds on a bare retry, because the retry finds
+ * the debt state already recorded in the memo and resolves to
+ * `already-presented`. `kind` records *why*, so the adapter renders the right
+ * message and so tests assert the exact branch.
  *
  * - `allow` / `silent` — nothing to check (no paths) or the changeset is clean;
  *   allow with no output. Internal errors and parse failures also resolve here:
- *   the gate fails open and must never brick a commit.
+ *   the advisor fails open and must never brick a commit.
  * - `allow` / `already-presented` — debt is present, but this exact debt state
  *   was already presented once (semantic-staleness or uncovered-writes
  *   consider-once, an unchanged retry, or a state already shown in full by a
- *   prior `'inform'` preview). The command passes.
+ *   prior `'report-only'` preview). The command passes.
  * - `allow` / `environmental` — the changeset's only staleness rows are
  *   terminal/environmental conditions (`CONFLICT`, `SUBMODULE`, `LFS_*`,
  *   `PROMISOR_MISSING`, `SPARSE_EXCLUDED`, `FILTER_FAILED`, `IO_ERROR`) the CLI
  *   could not resolve at all — not span drift a user can fix by editing a span.
- *   The gate fails OPEN (allow) but carries `conditions`/`reason` so the adapter
- *   surfaces the condition instead of swallowing it. Denying here would re-deny
- *   forever on an infra failure the user cannot clear from the gate.
+ *   The advisor fails OPEN (allow) but carries `conditions`/`reason` so the adapter
+ *   surfaces the condition instead of swallowing it. Holding here would re-hold
+ *   forever on an infra failure the user cannot clear from the advisor.
  * - `allow` / `scan-failed` — `git span stale` could not *complete* its scoped
- *   scan (a {@link GateScanError}, e.g. an unreadable anchor file aborting the
+ *   scan (a {@link AdvisorScanError}, e.g. an unreadable anchor file aborting the
  *   whole query). This is distinct from both `environmental` (the scan completed
  *   and carried terminal rows) and a clean pass (the scan completed with zero
  *   rows): the scan never ran to completion, so its empty result is not evidence
- *   of "no debt." The gate fails OPEN here too — matching `environmental` —
+ *   of "no debt." The advisor fails OPEN here too — matching `environmental` —
  *   but keeps its own `kind` and a `reason` naming the failure, so the adapter
  *   surfaces a warning that span debt was NOT verified for this changeset
  *   instead of staying silent. There is no debt-state to memoize: every
  *   evaluation of a still-failing scan warns again.
- * - `deny` / `semantic-staleness` — the changeset carries semantic staleness,
+ * - `hold` / `semantic-staleness` — the changeset carries semantic staleness,
  *   and this exact findings digest has not been presented before *and* was
- *   not already shown in full by a prior `'inform'` preview. Deny **once**,
- *   listing `findings` as a checklist in `reason`; an identical retry
- *   (unchanged findings) falls through to the environmental and uncovered
- *   checks and resolves to `already-presented` when otherwise clean. Changed
- *   findings (a new digest) deny fresh (consider-once per distinct debt
- *   state, per design-decisions.md #1). The gate is informational, not a hard
- *   block — a bare retry already gets past a deny — so a state the agent has
- *   already seen via `'inform'` resolves straight to `already-presented`
- *   instead of denying a second time for no gain.
- * - `deny` / `uncovered-writes` — the changeset has changed files no span
+ *   not already shown in full by a prior `'report-only'` preview. Hold
+ *   **once**, listing `findings` as a checklist in `reason`. The hold exists
+ *   only to make the report land: repeating the same command, changing
+ *   nothing, proceeds — the identical retry falls through to the environmental
+ *   and uncovered checks and resolves to `already-presented` when otherwise
+ *   clean. A *different* debt state (a new digest) earns its own one-time
+ *   hold, so the agent sees each distinct problem once (per
+ *   design-decisions.md #1). A state the agent has already seen via
+ *   `'report-only'` resolves straight to `already-presented`: it has been read
+ *   already, and holding could not have compelled anything anyway.
+ * - `hold` / `uncovered-writes` — the changeset has changed files no span
  *   covers, and this state has not been presented before *and* was not
- *   already shown in full by a prior `'inform'` preview. Deny **once**,
+ *   already shown in full by a prior `'report-only'` preview. Hold **once**,
  *   listing `uncovered`; the retry with an unchanged state — or a state
- *   already shown via `'inform'` — resolves to `already-presented` and
- *   passes (consider-once, per design-decisions.md #3).
- * - `allow` / `semantic-staleness-info`, `allow` / `uncovered-writes-info` —
- *   `'inform'`-mode-only counterparts of the two `deny` kinds above: same
- *   `findings`/`uncovered`/`reason` payload, but never denies and never
- *   consults or writes `memoState` (a `git status` preview is not a debt state
- *   to hold or consider-once — it re-reports the same live debt on every call,
- *   exactly like `git status` itself does for the working tree).
+ *   already shown via `'report-only'` — resolves to `already-presented` and
+ *   passes (per design-decisions.md #3).
+ * - `allow` / `semantic-staleness-report`, `allow` / `uncovered-writes-report`
+ *   — the same two reports, delivered without the one-time hold. These are
+ *   what `'report-only'` mode returns: identical `findings`/`uncovered`/
+ *   `reason` payload, no `decision: 'hold'`, and no read or write of
+ *   `memoState`. A `git status` preview is a live picture, not a debt state to
+ *   hold on: it re-reports whatever debt exists on every call, exactly like
+ *   `git status` itself does for the working tree.
  */
-export type GateResult =
+export type AdvisorResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
   | { decision: 'allow'; kind: 'environmental'; conditions: StalePorcelainRow[]; reason: string }
   | { decision: 'allow'; kind: 'scan-failed'; reason: string }
-  | { decision: 'allow'; kind: 'semantic-staleness-info'; findings: StalePorcelainRow[]; reason: string }
-  | { decision: 'allow'; kind: 'uncovered-writes-info'; uncovered: string[]; reason: string }
-  | { decision: 'deny'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
-  | { decision: 'deny'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
+  | { decision: 'allow'; kind: 'semantic-staleness-report'; findings: StalePorcelainRow[]; reason: string }
+  | { decision: 'allow'; kind: 'uncovered-writes-report'; uncovered: string[]; reason: string }
+  | { decision: 'hold'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
+  | { decision: 'hold'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
 
 /**
- * Whether {@link evaluateGate} may hold the command (`'enforce'`, the default —
- * used for `commit`/`push`) or must only ever advise (`'inform'` — used for
- * `status`): every branch that would otherwise `deny` returns its `-info`
- * `allow` counterpart instead, and `memoState` is never read or written, since
- * an informational preview must not spend (or be blocked by) the consider-once
- * credit a real `commit`/`push` relies on.
+ * Whether {@link evaluateAdvisor} may hold the command once so its report is
+ * read (`'may-hold'`, the default — used for `commit`/`push`), or must deliver
+ * the report without holding at all (`'report-only'` — used for `status`).
+ *
+ * Neither mode enforces: `'may-hold'` is the stronger of the two only in that
+ * it can interrupt once per distinct debt state, and even that interruption
+ * clears on a bare retry. In `'report-only'` every branch that would otherwise
+ * return `decision: 'hold'` returns its `-report` `allow` counterpart carrying
+ * the identical payload, and `memoState` is never read or written — a `status`
+ * preview must not spend the one-time hold that a subsequent `commit`/`push`
+ * would otherwise use to get the same report read.
  */
-export type GateMode = 'enforce' | 'inform';
+export type AdvisorMode = 'may-hold' | 'report-only';
 
 /**
- * Evaluate the gate for a resolved changeset and decide whether to hold the
- * command.
+ * Evaluate the advisor for a resolved changeset: report the span debt the
+ * changeset carries, and decide whether to hold the command once so that
+ * report is read.
+ *
+ * **This function never enforces anything.** A `decision: 'hold'` asks the
+ * harness to stop the command a single time; running the very same command
+ * again succeeds, because the first evaluation recorded the debt state in
+ * `memoState` and the second finds it already presented. Nothing returned here
+ * can prevent a commit or a push. Every failure path below — an absent CLI, a
+ * timeout, an aborted scan, an unwritable memo, any uncaught error — resolves
+ * to `allow`. The one-time hold is an attention-grab, not a barrier, and it is
+ * spent per *distinct* debt state: change the debt and the advisor asks for
+ * attention once more; leave it unchanged and the advisor steps aside.
  *
  * Runs `executors.fix` (scoped belt-and-braces `stale --fix`), then reads
  * `executors.stale` and classifies each debt row (`isDebt()`) into *semantic*
  * drift and *environmental* conditions (`isEnvironmentalStatus()`).
  *
  * Semantic drift (`CHANGED`/`DELETED`) is checked against `memoState` via its
- * own digest (`gateStateDigest(semantic, [])`), the same distinct-debt-state
+ * own digest (`advisorStateDigest(semantic, [])`), the same distinct-debt-state
  * memo the uncovered-writes check already uses: not yet presented → record it
- * and `deny`/`semantic-staleness` (a `memoState.record` failure fails open to
- * `allow`/`silent`, since a non-persisting memo would re-deny the identical
+ * and `hold`/`semantic-staleness` (a `memoState.record` failure fails open to
+ * `allow`/`silent`, since a non-persisting memo would re-hold the identical
  * retry forever); already presented → **fall through** rather than returning,
  * so a retry still surfaces environmental advisories and still runs the
  * uncovered check. Whether the semantic state was already presented is
@@ -609,9 +634,10 @@ export type GateMode = 'enforce' | 'inform';
  * `allow`/`already-presented` rather than a bare `allow`/`silent` — mirroring
  * the uncovered branch's own memo-hit result. A changeset carrying both
  * unpresented semantic staleness and unpresented uncovered writes therefore
- * denies twice (staleness first, uncovered on the retry) before a third
- * attempt passes; editing one stale span while another remains stale produces
- * a new findings set, hence a new digest and one fresh deny. Digest collision
+ * holds twice (staleness first, uncovered on the retry) before a third
+ * attempt passes — two reports, two attention-grabs, no enforcement; editing
+ * one stale span while another remains stale produces a new findings set,
+ * hence a new digest and one fresh hold. Digest collision
  * between the two categories is impossible: the payload is
  * `JSON.stringify({findings, uncovered})`, and the semantic digest populates
  * `findings` while the uncovered digest populates `uncovered`.
@@ -619,21 +645,20 @@ export type GateMode = 'enforce' | 'inform';
  * Environmental conditions the CLI could not resolve at all
  * (`CONFLICT`/`SUBMODULE`/`LFS_*`/`PROMISOR_MISSING`/`SPARSE_EXCLUDED`/
  * `FILTER_FAILED`/`IO_ERROR`) → `allow`/`environmental`: fail OPEN, surfacing the
- * condition rather than denying on an infra failure a span edit cannot fix.
+ * condition rather than holding on an infra failure a span edit cannot fix.
  * Uncovered writes (changed paths with zero coverage from `executors.list`,
- * minus `.span/**`, and paths matched by the repo's `.span/.gateignore` — see
- * {@link file://./gate-ignore.ts}, loaded directly from disk via
+ * minus `.span/**`, and paths matched by the repo's `.span/.advisorignore` — see
+ * {@link file://./advisor-ignore.ts}, loaded directly from disk via
  * `resolveRepoRoot(cwd)`, fail-open when absent/unreadable) →
- * `deny`/`uncovered-writes` the first time that state is both unpresented and
+ * `hold`/`uncovered-writes` the first time that state is both unpresented and
  * unseen, then `allow`/`already-presented` on retry — or immediately, if a
- * prior `'inform'` preview already showed this exact state in full: the gate
- * is informational (a bare retry already gets past a deny), so there is
- * nothing to gain from denying a state the agent has already been told
- * about. `MOVED` and `RESOLVED_PENDING_COMMIT` never contribute to any branch
- * and never deny. Any internal error resolves to `allow`/`silent` — the gate
- * fails open and never bricks a commit.
+ * prior `'report-only'` preview already showed this exact state in full: a
+ * report already read is a report delivered, and holding could not have
+ * compelled a fix in any case. `MOVED` and `RESOLVED_PENDING_COMMIT` never
+ * contribute to any branch and never hold. Any internal error resolves to
+ * `allow`/`silent` — the advisor fails open and never bricks a commit.
  *
- * A {@link GateScanError} from `executors.stale` or `executors.list` is the
+ * A {@link AdvisorScanError} from `executors.stale` or `executors.list` is the
  * one case handled outside that flow: a scan that *could not complete* (e.g.
  * an unreadable anchor file aborts the scoped query, or the coverage query
  * cannot resolve an argument) yields an empty result that is NOT evidence of
@@ -645,28 +670,29 @@ export type GateMode = 'enforce' | 'inform';
  * changeset rather than staying silent. There is no debt-state to memoize
  * here: every evaluation of a still-failing scan warns again.
  *
- * In `'inform'` mode (`status`), the same classification runs but neither
- * `deny` branch fires and `memoState` is never read or written: semantic
- * staleness resolves to `allow`/`semantic-staleness-info` and uncovered
- * writes to `allow`/`uncovered-writes-info`, both carrying the same
- * `findings`/`uncovered`/`reason` payload the `deny` kinds would have. The
- * environmental/scan-failed/silent branches are unaffected by mode — they
+ * In `'report-only'` mode (`status`), the same classification runs but neither
+ * `hold` branch fires and `memoState` is never read or written: semantic
+ * staleness resolves to `allow`/`semantic-staleness-report` and uncovered
+ * writes to `allow`/`uncovered-writes-report` — the same reports, the same
+ * `findings`/`uncovered`/`reason` payload, simply without the one-time hold.
+ * The environmental/scan-failed/silent branches are unaffected by mode — they
  * already always allow.
  *
  * @param paths The resolved changeset from {@link resolveChangeset}. Empty →
  *   `allow`/`silent`.
  * @param cwd The working directory the git command ran in.
  * @param executors The injected `fix`/`stale`/`list` surface.
- * @param memoState The per-changeset debt-state memo. Unused in `'inform'` mode.
- * @param mode `'enforce'` (default) may deny; `'inform'` only ever advises.
+ * @param memoState The per-changeset debt-state memo. Unused in `'report-only'` mode.
+ * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
+ *   delivers the same report and never holds. Neither enforces.
  */
-export async function evaluateGate(
+export async function evaluateAdvisor(
   paths: string[],
   cwd: string,
-  executors: GateExecutors,
-  memoState: GateMemoState,
-  mode: GateMode = 'enforce'
-): Promise<GateResult> {
+  executors: AdvisorExecutors,
+  memoState: AdvisorMemoState,
+  mode: AdvisorMode = 'may-hold'
+): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
     // Belt-and-braces heal, then classify against the healed state.
@@ -683,21 +709,21 @@ export async function evaluateGate(
     const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
 
-    if (mode === 'inform') {
-      // A status preview never denies and never touches the enforce
-      // consider-once deny credit — it reports whatever debt is live right
+    if (mode === 'report-only') {
+      // A status preview never holds and never spends the `'may-hold'`
+      // one-time hold credit — it reports whatever debt is live right
       // now, every time it's asked. It does, however, mark the debt state as
-      // "seen" (a separate axis from the deny credit) so an enforce
+      // "seen" (a separate axis from the hold credit) so a `'may-hold'`
       // evaluation of the same unchanged state moments later — e.g. a `git
       // commit` right after the `git status` that just showed this — renders
       // a condensed reminder instead of repeating the identical checklist.
       if (semantic.length > 0) {
-        const seen = wasAlreadySeen(memoState, gateStateDigest(semantic, []));
+        const seen = wasAlreadySeen(memoState, advisorStateDigest(semantic, []));
         return {
           decision: 'allow',
-          kind: 'semantic-staleness-info',
+          kind: 'semantic-staleness-report',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'inform', seen)
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'report-only', seen)
         };
       }
       if (environmental.length > 0) {
@@ -710,56 +736,56 @@ export async function evaluateGate(
       }
       const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
       if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
-      const seen = wasAlreadySeen(memoState, gateStateDigest([], uncovered));
+      const seen = wasAlreadySeen(memoState, advisorStateDigest([], uncovered));
       return {
         decision: 'allow',
-        kind: 'uncovered-writes-info',
+        kind: 'uncovered-writes-report',
         uncovered,
         reason: renderUncoveredReason(
           uncovered,
           covering,
           await fetchSpanBlocks(executors, covering, cwd),
-          'inform',
+          'report-only',
           seen
         )
       };
     }
 
     // Semantic staleness joins the same distinct-debt-state memo the uncovered
-    // check uses: deny once per findings digest, then fall through (rather than
+    // check uses: hold once per findings digest, then fall through (rather than
     // returning) on an identical retry so the rest of the evaluation still runs.
     let semanticAlreadyPresented = false;
     if (semantic.length > 0) {
-      const semanticDigest = gateStateDigest(semantic, []);
+      const semanticDigest = advisorStateDigest(semantic, []);
       if (memoState.has(semanticDigest)) {
         semanticAlreadyPresented = true;
       } else if (memoState.has(`seen-${semanticDigest}`)) {
-        // Already explained in full by a prior `inform` (status) preview. The
-        // gate is informational, not a hard block — it can already be gotten
-        // past by simply retrying the command, so denying a state the agent
-        // has already been shown buys nothing; record the deny credit too so
-        // this digest reads as presented from here on, and let it through.
+        // Already explained in full by a prior `'report-only'` (status)
+        // preview. The report has landed, which is all a hold can accomplish —
+        // a hold never compels a fix, it only buys one reading — so holding
+        // again buys nothing; record the hold credit too so this digest reads
+        // as presented from here on, and let it through.
         memoState.record(semanticDigest);
         semanticAlreadyPresented = true;
       } else {
-        // A non-persisting memo write would turn "deny once, then allow the
-        // retry" into "deny every time" with no escape — fail open instead.
+        // A non-persisting memo write would turn "hold once, then allow the
+        // retry" into "hold every time" with no escape — fail open instead.
         if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
         memoState.record(`seen-${semanticDigest}`);
         return {
-          decision: 'deny',
+          decision: 'hold',
           kind: 'semantic-staleness',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'enforce')
+          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold')
         };
       }
     }
 
     // Environmental conditions are not a span edit away from resolution: fail
     // OPEN (allow) — but carry them so the adapter surfaces the condition rather
-    // than swallowing it. Denying would re-deny forever on an infra failure the
-    // user cannot clear from the gate, contradicting the fail-open contract the
-    // rest of the gate already honors for CLI-absent/timeout/parse failures.
+    // than swallowing it. Holding would re-hold forever on an infra failure the
+    // user cannot clear from the advisor, contradicting the fail-open contract the
+    // rest of the advisor already honors for CLI-absent/timeout/parse failures.
     if (environmental.length > 0) {
       return {
         decision: 'allow',
@@ -770,8 +796,8 @@ export async function evaluateGate(
     }
 
     // Uncovered writes: changed paths with zero covering span, minus `.span/**`
-    // (span repairs ride the same commit and must never self-trigger the gate)
-    // and paths the repo's user-owned `.span/.gateignore` excludes. Gitignored
+    // (span repairs ride the same commit and must never self-trigger the advisor)
+    // and paths the repo's user-owned `.span/.advisorignore` excludes. Gitignored
     // paths never reach here — git does not stage/publish them.
     const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
     if (uncovered.length === 0) {
@@ -783,58 +809,58 @@ export async function evaluateGate(
         : { decision: 'allow', kind: 'silent' };
     }
 
-    // Consider-once: deny the first time this exact debt state is seen, then
+    // Hold once: interrupt the first time this exact debt state is seen, then
     // pass the retry with an unchanged state. (No semantic rows survive to
     // here unpresented — the semantic branch above has already returned for
     // that case — so the digest's findings component is empty and the state
     // is keyed by the uncovered set.) `covering` — which spans for the rest of
     // this changeset the message goes on to name — never feeds the digest: it
-    // never changes what's denied, only what's explained, so it can't spawn a
-    // fresh deny on its own.
-    const digest = gateStateDigest([], uncovered);
+    // never changes what's reported on, only what's explained, so it can't
+    // spawn a fresh hold on its own.
+    const digest = advisorStateDigest([], uncovered);
     if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
     if (memoState.has(`seen-${digest}`)) {
-      // Already explained in full by a prior `inform` (status) preview — the
-      // gate is informational and a retry alone already gets past it, so
-      // denying a state the agent has already been shown buys nothing.
-      // Record the deny credit so this digest reads as presented from here
-      // on, and let it through.
+      // Already explained in full by a prior `'report-only'` (status) preview.
+      // The report has landed, which is the only thing a hold ever achieves —
+      // it never compels a fix — so holding again buys nothing. Record the
+      // hold credit so this digest reads as presented from here on, and let
+      // it through.
       memoState.record(digest);
       return { decision: 'allow', kind: 'already-presented' };
     }
-    // A non-persisting memo write would turn "deny once, then allow the retry"
-    // into "deny every time" with no escape — fail open rather than deny.
+    // A non-persisting memo write would turn "hold once, then allow the retry"
+    // into "hold every time" with no escape — fail open rather than hold.
     if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
     memoState.record(`seen-${digest}`);
     return {
-      decision: 'deny',
+      decision: 'hold',
       kind: 'uncovered-writes',
       uncovered,
-      reason: renderUncoveredReason(uncovered, covering, await fetchSpanBlocks(executors, covering, cwd), 'enforce')
+      reason: renderUncoveredReason(uncovered, covering, await fetchSpanBlocks(executors, covering, cwd), 'may-hold')
     };
   } catch (err) {
     // A scan that could not COMPLETE is not a clean result, but it is not
     // debt either — there is nothing here for a user to resolve by editing a
     // span. Fail OPEN with a distinguishable `scan-failed` warning instead of
     // silently reading the aborted scan's empty result as clean.
-    if (err instanceof GateScanError) {
+    if (err instanceof AdvisorScanError) {
       return { decision: 'allow', kind: 'scan-failed', reason: renderScanFailedReason(err.detail) };
     }
-    // Fail open: any other internal/CLI error resolves to allow. The gate must
+    // Fail open: any other internal/CLI error resolves to allow. The advisor must
     // never brick a commit on its own failure.
     return { decision: 'allow', kind: 'silent' };
   }
 }
 
 /**
- * {@link computeUncoveredPaths}'s result: the uncovered complement the gate
- * denies/advises on, plus the `covering` rows the same `executors.list` call
+ * {@link computeUncoveredPaths}'s result: the uncovered complement the advisor
+ * holds/advises on, plus the `covering` rows the same `executors.list` call
  * already resolved for the rest of the changeset, filtered down to every
  * anchor, in any span, whose path is one of the paths passed in — the CLI
  * itself returns matching spans whole, so that narrowing happens in
  * {@link computeUncoveredPaths} rather than being free. `covering` is never empty only
  * when `uncovered` is; the two partition the changeset (minus `.span/**`/
- * gateignored paths, which appear in neither). Kept together so a caller
+ * advisor-ignored paths, which appear in neither). Kept together so a caller
  * needing both (the uncovered-writes reason, which now also names spans
  * already covering the changeset's other files — see
  * {@link renderUncoveredReason}) makes one call instead of two.
@@ -846,11 +872,11 @@ interface ChangesetCoverage {
 
 /**
  * The changed paths with zero covering span — minus `.span/**` (span repairs
- * ride the same commit and must never self-trigger the gate) and paths the
- * repo's user-owned `.span/.gateignore` excludes (fail-open when absent/
- * unreadable). Shared by `evaluateGate`'s `'enforce'` and `'inform'` branches,
- * which differ only in what they do with the result (deny-once vs. an
- * always-fresh advisory).
+ * ride the same commit and must never self-trigger the advisor) and paths the
+ * repo's user-owned `.span/.advisorignore` excludes (fail-open when absent/
+ * unreadable). Shared by `evaluateAdvisor`'s `'may-hold'` and `'report-only'` branches,
+ * which differ only in what they do with the result (hold-once vs. an
+ * always-fresh report).
  *
  * A changeset of fewer than two files can never carry an implicit *cross-file*
  * dependency — git-span records couplings between file/line ranges across
@@ -861,7 +887,7 @@ interface ChangesetCoverage {
 async function computeUncoveredPaths(
   paths: string[],
   cwd: string,
-  executors: GateExecutors
+  executors: AdvisorExecutors
 ): Promise<ChangesetCoverage> {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   // `git span list --porcelain <paths...>` matches spans by path but returns
@@ -886,9 +912,9 @@ async function computeUncoveredPaths(
   // creates an entry for a span with none.
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
-  const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
+  const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
   const uncovered = paths.filter(
-    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isGateIgnored(gateIgnoreRules, path)
+    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
   );
   return { uncovered, covering };
 }
@@ -914,7 +940,7 @@ function anchorText(row: { path: string; start: number; end: number }): string {
  * sorted staleness findings plus the sorted uncovered paths. Presence in the
  * memo means "this exact state was already presented once."
  */
-function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): string {
+function advisorStateDigest(findings: StalePorcelainRow[], uncovered: string[]): string {
   const findingKeys = findings.map((row) => `${row.status}\t${row.name}\t${row.path}\t${row.start}\t${row.end}`).sort();
   const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
   return createHash('sha256').update(payload).digest('hex');
@@ -922,21 +948,22 @@ function gateStateDigest(findings: StalePorcelainRow[], uncovered: string[]): st
 
 /**
  * Whether this debt-state digest has already been explained to the agent in
- * full — orthogonal to (and independent of) the enforce-only consider-once
- * deny credit `evaluateGate` reads/writes on the same `digest` value under its
+ * full — orthogonal to (and independent of) the `'may-hold'`-only one-time
+ * hold credit `evaluateAdvisor` reads/writes on the same `digest` value under its
  * own `seen-`-prefixed key. A single `git status`/`git add` preview and the
  * `git commit`/`push` that follows it moments later resolve to the same
- * digest but reach `evaluateGate` through different modes (`'inform'` never
- * touches the deny credit). The gate is informational — a bare retry already
- * gets past a deny — so `evaluateGate` consults this "seen" axis directly
+ * digest but reach `evaluateAdvisor` through different modes (`'report-only'` never
+ * touches the hold credit). A hold only ever buys one reading of the report —
+ * it cannot compel a fix, and a bare retry proceeds regardless — so
+ * `evaluateAdvisor` consults this "seen" axis directly
  * (via `memoState.has`/`record` on the `seen-` key, inline, not through this
- * helper) before an enforce deny: already seen → resolve straight to
- * `allow`/`already-presented` instead of denying a state the agent has
- * already been shown. `wasAlreadySeen` itself remains for `'inform'` mode,
+ * helper) before a `'may-hold'` hold: already seen → resolve straight to
+ * `allow`/`already-presented` instead of holding on a state the agent has
+ * already been shown. `wasAlreadySeen` itself remains for `'report-only'` mode,
  * where a repeated preview of the same state still renders a condensed
  * reminder rather than the full checklist twice.
  */
-function wasAlreadySeen(memoState: GateMemoState, digest: string): boolean {
+function wasAlreadySeen(memoState: AdvisorMemoState, digest: string): boolean {
   const seenKey = `seen-${digest}`;
   const already = memoState.has(seenKey);
   memoState.record(seenKey);
@@ -945,15 +972,15 @@ function wasAlreadySeen(memoState: GateMemoState, digest: string): boolean {
 
 /**
  * Fetch the human-format `## <name>` blocks for the spans named in `rows`,
- * failing to `''` (never throwing) so a list failure can never turn a deny
- * into a silent allow via {@link evaluateGate}'s outer catch —
+ * failing to `''` (never throwing) so a list failure can never turn a hold
+ * into a silent allow via {@link evaluateAdvisor}'s outer catch —
  * {@link annotateBlocks} synthesizes minimal blocks from the rows instead, and
  * {@link renderRelatedSpansSection} simply omits a `why` sentence it can't
  * find. Typed against `{ name: string }` (rather than {@link StalePorcelainRow}
  * specifically) so both the staleness/environmental renderers and the
  * uncovered-writes related-spans section can share this one fetch.
  */
-async function fetchSpanBlocks(executors: GateExecutors, rows: { name: string }[], cwd: string): Promise<string> {
+async function fetchSpanBlocks(executors: AdvisorExecutors, rows: { name: string }[], cwd: string): Promise<string> {
   const names = [...new Set(rows.map((row) => row.name))].sort();
   if (names.length === 0) return '';
   try {
@@ -1087,15 +1114,15 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
 }
 
 /**
- * The full-span checklist a semantic-staleness `deny` (or, in `'inform'` mode,
+ * The full-span checklist a semantic-staleness `hold` (or, in `'report-only'` mode,
  * a `status` advisory) renders into `reason`. The closing sentence drops "—
- * then retry" in `'inform'` mode: a `status` check never held anything, so
+ * then retry" in `'report-only'` mode: a `status` check never held anything, so
  * there is nothing to retry.
  */
 function renderStalenessReason(
   findings: StalePorcelainRow[],
   blocksText: string,
-  mode: GateMode = 'enforce',
+  mode: AdvisorMode = 'may-hold',
   alreadySeen = false
 ): string {
   const names = [...new Set(findings.map((row) => row.name))];
@@ -1110,7 +1137,7 @@ function renderStalenessReason(
     );
   }
   const closing =
-    mode === 'enforce'
+    mode === 'may-hold'
       ? `Update the drifted locations or the description — ${action} — then retry. If a dependency no longer holds, tell the user instead.`
       : `Update the drifted locations or the description — ${action}. If a dependency no longer holds, tell the user instead.`;
   return [
@@ -1126,7 +1153,7 @@ function renderStalenessReason(
 
 /**
  * Wrap `text` for delivery as a harness's `additionalContext`, so every such
- * payload this gate emits sits inside a `<git-span>...</git-span>` block —
+ * payload this advisor emits sits inside a `<git-span>...</git-span>` block —
  * matching the touch hook's block styling — never bare prose. A no-op when
  * `text` already carries a `<git-span>` tag somewhere (e.g.
  * {@link renderUncoveredReason}'s output already wraps itself), so a caller
@@ -1140,7 +1167,7 @@ export function wrapGitSpanContext(text: string): string {
 
 /**
  * The advisory surfaced when the changeset's only staleness is environmental —
- * the gate allows but says why, so the unresolvable condition is not silently
+ * the advisor allows but says why, so the unresolvable condition is not silently
  * swallowed.
  */
 function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
@@ -1331,10 +1358,10 @@ function renderRelatedSpansSection(
 }
 
 /**
- * The list an uncovered-writes `deny` (or, in `'inform'` mode, a `status`
+ * The list an uncovered-writes `hold` (or, in `'report-only'` mode, a `status`
  * advisory) renders into `reason`, wrapped in a `<git-span>` block matching the
  * touch hook's block styling. The "retry the command to proceed (one-time
- * check)" sentence drops entirely in `'inform'` mode: a `status` check never
+ * check)" sentence drops entirely in `'report-only'` mode: a `status` check never
  * held anything, so there is nothing to retry and no consider-once state to
  * clear. `covering` — the rest of the changeset's existing span coverage,
  * from the same {@link computeUncoveredPaths} call — renders as a related-
@@ -1349,7 +1376,7 @@ function renderUncoveredReason(
   uncovered: string[],
   covering: PorcelainRow[],
   coveringBlocksText: string,
-  mode: GateMode = 'enforce',
+  mode: AdvisorMode = 'may-hold',
   alreadySeen = false
 ): string {
   const lines = uncovered.map((path) => `- ${path}`);
@@ -1373,7 +1400,7 @@ function renderUncoveredReason(
     'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
   ];
   body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
-  if (mode === 'enforce') {
+  if (mode === 'may-hold') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
   }
   body.push('', 'Load the `git-span:git-span` skill for guidance.', '</git-span>');
@@ -1388,7 +1415,7 @@ function renderUncoveredReason(
 // touch-core.ts's `createDefaultTouchExecutors` style: each captures stdout even
 // on a non-zero exit where the CLI still emits useful output, and every failure
 // mode (absent binary, timeout, no repo) surfaces as an empty/clean result so
-// the gate's fail-open contract holds without the adapter adding its own.
+// the advisor's fail-open contract holds without the adapter adding its own.
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -1469,8 +1496,8 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
   };
 }
 
-/** The production {@link GateExecutors}: scoped `git span` fix/stale/list at the repo root. */
-export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): GateExecutors {
+/** The production {@link AdvisorExecutors}: scoped `git span` fix/stale/list at the repo root. */
+export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): AdvisorExecutors {
   return {
     fix: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
@@ -1515,7 +1542,7 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
         const stdoutText = typeof stdout === 'string' ? stdout : '';
         const stderrText = typeof stderr === 'string' ? stderr : '';
         if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new GateScanError(stderrText.trim());
+          throw new AdvisorScanError(stderrText.trim());
         }
         out = stdoutText;
       }
@@ -1535,18 +1562,18 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
       } catch (err) {
         // The coverage read is the source of the *covered* set, so an empty
         // result reads as "nothing is covered" — the most punitive answer the
-        // gate can give. A hard query failure (an unresolvable argument, say)
+        // advisor can give. A hard query failure (an unresolvable argument, say)
         // writes an error to stderr and emits empty stdout; parsing that to
-        // `[]` would turn a failed scan into a confident, maximal deny with no
+        // `[]` would turn a failed scan into a confident, maximal hold with no
         // related-spans section. Signal it distinctly instead, exactly as the
-        // `stale` executor above does, and let `evaluateGate` fail open with
+        // `stale` executor above does, and let `evaluateAdvisor` fail open with
         // the `scan-failed` warning. Any partial stdout is still parsed.
         const stdout = (err as { stdout?: string }).stdout;
         const stderr = (err as { stderr?: string }).stderr;
         const stdoutText = typeof stdout === 'string' ? stdout : '';
         const stderrText = typeof stderr === 'string' ? stderr : '';
         if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new GateScanError(stderrText.trim());
+          throw new AdvisorScanError(stderrText.trim());
         }
         out = stdoutText;
       }
@@ -1564,7 +1591,7 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
         });
       } catch {
         // A failed human-format read only degrades the rendered message
-        // (annotateBlocks synthesizes minimal blocks); never a gate error.
+        // (annotateBlocks synthesizes minimal blocks); never an advisor error.
         return '';
       }
     }
@@ -1572,21 +1599,21 @@ export function createDefaultGateExecutors(timeoutMs: number = DEFAULT_TIMEOUT_M
 }
 
 /**
- * The production disk-backed {@link GateMemoState}: one marker file per debt-state
- * digest under {@link gateMemoDir} (`<git-common-dir>/git-span/gate/`), following
+ * The production disk-backed {@link AdvisorMemoState}: one marker file per debt-state
+ * digest under {@link advisorMemoDir} (`<git-common-dir>/git-span/advisor/`), following
  * span-surface.ts's file-backed `MemoStore` pattern. The digest is a hex sha256,
  * a safe filename. Best-effort and non-throwing: a memo whose repo cannot be
- * resolved degrades to a no-op store (never persists → uncovered would re-deny,
+ * resolved degrades to a no-op store (never persists → uncovered would re-hold,
  * but an unresolvable repo yields an empty changeset upstream anyway).
  */
-export function createDiskGateMemoState(cwd: string): GateMemoState {
+export function createDiskAdvisorMemoState(cwd: string): AdvisorMemoState {
   const repoRoot = resolveRepoRoot(cwd);
   if (!repoRoot) {
     // No resolvable repo → the memo cannot persist. Report `false` from
-    // `record` so the gate fails open rather than denying with no escape.
+    // `record` so the advisor fails open rather than holding with no escape.
     return { has: () => false, record: () => false };
   }
-  const dir = gateMemoDir(repoRoot);
+  const dir = advisorMemoDir(repoRoot);
   return {
     has: (digest) => {
       try {
@@ -1602,7 +1629,7 @@ export function createDiskGateMemoState(cwd: string): GateMemoState {
         return true;
       } catch {
         // A failed memo write must never brick the commit and must never
-        // silently re-deny forever: report the failure so the gate fails open.
+        // silently re-hold forever: report the failure so the advisor fails open.
         return false;
       }
     }

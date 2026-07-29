@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/hooks/gate.mjs\"",
+            "command": "node \"${PLUGIN_ROOT}/hooks/advisor.mjs\"",
             "timeout": 10
           }
         ]
