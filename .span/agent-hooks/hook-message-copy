@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/advisor-core.ts#L1182-L1474 rk64:e0f3bd75ca314e07
+packages/agent-hooks/src/common/advisor-core.ts#L1204-L1496 rk64:e0f3bd75ca314e07
 packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
 packages/website/content/docs/agent-integration.mdx rk64:3400934810c64df4
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:fb1afe606047a7f1

@@ -96,11 +96,59 @@ export type MechanicalVerdict = { mechanical: true } | { mechanical: false; reas
  * Recognizes multi-file diffs, binary file markers, renames, mode-only
  * changes, adds/deletes, and `-U0` hunk headers (`@@ -a,b +c,d @@`).
  *
- * Not implemented in this phase — Phase 3 ports the prototype parser.
+ * Ported verbatim from the validated prototype
+ * (`att-b40d4ca0…_classify.ts`), which swept 1132 commits producing the
+ * measured numbers plans/initial.md cites.
  */
 export function parseUnifiedDiff(text: string): FileDiff[] {
-  void text;
-  throw new Error('Not Implemented');
+  const files: FileDiff[] = [];
+  let current: FileDiff | null = null;
+  let hunk: Hunk | null = null;
+
+  const flushHunk = () => {
+    if (current && hunk) current.hunks.push(hunk);
+    hunk = null;
+  };
+
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      flushHunk();
+      if (current) files.push(current);
+      const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      const path = m ? (m[2] as string) : line.slice(11);
+      current = { path, hunks: [], binary: false, structural: false };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
+      current.binary = true;
+      continue;
+    }
+    if (
+      line.startsWith('new file mode') ||
+      line.startsWith('deleted file mode') ||
+      line.startsWith('rename from') ||
+      line.startsWith('rename to') ||
+      line.startsWith('old mode') ||
+      line.startsWith('new mode')
+    ) {
+      current.structural = true;
+      continue;
+    }
+    if (line.startsWith('index ')) continue;
+    if (line.startsWith('@@')) {
+      flushHunk();
+      hunk = { removed: [], added: [] };
+      continue;
+    }
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    if (!hunk) continue;
+    if (line.startsWith('-')) hunk.removed.push(line.slice(1));
+    else if (line.startsWith('+')) hunk.added.push(line.slice(1));
+  }
+  flushHunk();
+  if (current) files.push(current);
+  return files;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,17 +160,48 @@ export function parseUnifiedDiff(text: string): FileDiff[] {
  * expected to carry a hand-authored implicit dependency — lockfiles,
  * generated output, vendored/noise segments — seeded from
  * `packages/discover/src/scan.ts`'s `NOISE_BASENAMES`, `NOISE_SUFFIXES`,
- * `NOISE_SEGMENTS`, and `GENERATED_SEGMENTS` rather than reinvented.
- * Glob-shaped rules reuse {@link compilePattern}, the same matcher
- * `advisor-ignore.ts` already uses. Distinct from the user-owned
+ * `NOISE_SEGMENTS`, and `GENERATED_SEGMENTS`. Those values are copied here
+ * rather than imported — `agent-hooks` must not take a dependency on
+ * `discover` — and none of them are glob-shaped (basenames, suffixes, and
+ * bare path segments), so there is nothing here for {@link compilePattern}
+ * (from `span-ignore.ts`, reused by `advisor-ignore.ts` for its glob-shaped
+ * `.advisorignore` rules) to compile. Distinct from the user-owned
  * `.span/.advisorignore` (see {@link file://./advisor-ignore.ts}), which this
  * layer neither reads nor overrides.
- *
- * Not implemented in this phase — Phase 3 ports the prototype's denylist.
  */
+
+/** Basenames that are noise regardless of location: lockfiles and junk. */
+const NOISE_BASENAMES = new Set([
+  'yarn.lock',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'npm-shrinkwrap.json',
+  'Cargo.lock',
+  'poetry.lock',
+  'Pipfile.lock',
+  'go.sum',
+  'composer.lock',
+  'Gemfile.lock',
+  'flake.lock',
+  '.DS_Store'
+]);
+
+/** Path suffixes that are noise regardless of location. */
+const NOISE_SUFFIXES = ['.log', '.tsbuildinfo', '.min.js', '.min.css', '.map'];
+
+/** Path segments that mark every file beneath them as noise. */
+const NOISE_SEGMENTS = new Set(['node_modules', '__pycache__', '.cache', '__snapshots__']);
+
+/** Path segments that mark every file beneath them as generated output. */
+const GENERATED_SEGMENTS = new Set(['dist', 'build', 'out', 'coverage', '.next']);
+
 export function isNeverSpannedPath(repoRelPath: string): boolean {
-  void repoRelPath;
-  throw new Error('Not Implemented');
+  const parts = repoRelPath.split('/');
+  const base = parts[parts.length - 1] ?? '';
+  if (NOISE_BASENAMES.has(base)) return true;
+  if (NOISE_SUFFIXES.some((s) => repoRelPath.endsWith(s))) return true;
+  if (parts.some((p) => NOISE_SEGMENTS.has(p) || GENERATED_SEGMENTS.has(p))) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,12 +217,46 @@ export function isNeverSpannedPath(repoRelPath: string): boolean {
  * matching no rule — rejects the whole file: mechanical classification is
  * all-or-nothing per file, never partial.
  *
- * Not implemented in this phase — Phase 3 ports the prototype's rules
- * verbatim.
+ * Ported verbatim from the validated prototype (`att-b40d4ca0…_classify.ts`).
  */
+
+const SEMVER_RE = /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\b/g;
+const HEXISH_RE = /\b[0-9a-f]{32,}\b|\bsha(?:256|512)-[A-Za-z0-9+/=]{20,}\b|\b[0-9a-f]{7,40}\/[0-9a-f]{7,40}\b/g;
+const CHECKSUM_FIELD_RE = /\b(checksum|integrity|resolution|hash|digest|sha\d*)\b/i;
+const TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{10,13}\b/g;
+
+function normalize(line: string, re: RegExp): string {
+  return line.replace(re, ' ');
+}
+
+/** Whether this removed/added line pair is a mechanical rewrite under one of the three rules. */
+function pairIsMechanical(removed: string, added: string): boolean {
+  if (removed === added) return false;
+  if (normalize(removed, SEMVER_RE) === normalize(added, SEMVER_RE)) return true;
+  if (CHECKSUM_FIELD_RE.test(removed) && normalize(removed, HEXISH_RE) === normalize(added, HEXISH_RE)) {
+    return true;
+  }
+  if (normalize(removed, TIMESTAMP_RE) === normalize(added, TIMESTAMP_RE)) return true;
+  return false;
+}
+
 export function isMechanicalDiff(file: FileDiff): MechanicalVerdict {
-  void file;
-  throw new Error('Not Implemented');
+  if (file.binary) return { mechanical: false, reason: 'binary file' };
+  if (file.structural) return { mechanical: false, reason: 'structural change (rename/add/delete)' };
+  if (file.hunks.length === 0) return { mechanical: false, reason: 'no hunks' };
+
+  for (let h = 0; h < file.hunks.length; h++) {
+    const hunk = file.hunks[h] as Hunk;
+    if (hunk.removed.length !== hunk.added.length || hunk.removed.length === 0) {
+      return { mechanical: false, reason: `hunk ${h + 1}: unbalanced removed/added counts` };
+    }
+    for (let i = 0; i < hunk.removed.length; i++) {
+      if (!pairIsMechanical(hunk.removed[i] as string, hunk.added[i] as string)) {
+        return { mechanical: false, reason: `hunk ${h + 1}: no rule matched` };
+      }
+    }
+  }
+  return { mechanical: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,10 +270,8 @@ export function isMechanicalDiff(file: FileDiff): MechanicalVerdict {
  * decides from the hunk content. This is the single entry point
  * `advisor-core.ts` invokes — callers should not call the two layers directly.
  *
- * Not implemented in this phase — Phase 3 wires the composition per the
- * card's flowchart.
  */
 export function classifyMechanical(file: FileDiff): MechanicalVerdict {
-  void file;
-  throw new Error('Not Implemented');
+  if (isNeverSpannedPath(file.path)) return { mechanical: true };
+  return isMechanicalDiff(file);
 }

@@ -46,7 +46,7 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
-import type { FileDiff } from './mechanical-change.js';
+import { classifyMechanical, type FileDiff, parseUnifiedDiff } from './mechanical-change.js';
 
 // ---------------------------------------------------------------------------
 // Scan-failure signal
@@ -758,7 +758,6 @@ export async function evaluateAdvisor(
   mode: AdvisorMode = 'may-hold',
   churn?: { git: GitExecutor; range: DiffRange }
 ): Promise<AdvisorResult> {
-  void churn;
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
     // Belt-and-braces heal, then classify against the healed state.
@@ -800,7 +799,7 @@ export async function evaluateAdvisor(
           reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
         };
       }
-      const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
+      const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
       if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
       const seen = wasAlreadySeen(memoState, advisorStateDigest([], uncovered));
       return {
@@ -865,7 +864,7 @@ export async function evaluateAdvisor(
     // (span repairs ride the same commit and must never self-trigger the advisor)
     // and paths the repo's user-owned `.span/.advisorignore` excludes. Gitignored
     // paths never reach here — git does not stage/publish them.
-    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors);
+    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
     if (uncovered.length === 0) {
       // A retry that fell through past an already-presented semantic-staleness
       // digest ends clean here: surface already-presented rather than a bare
@@ -953,7 +952,8 @@ interface ChangesetCoverage {
 async function computeUncoveredPaths(
   paths: string[],
   cwd: string,
-  executors: AdvisorExecutors
+  executors: AdvisorExecutors,
+  churn?: { git: GitExecutor; range: DiffRange }
 ): Promise<ChangesetCoverage> {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   // `git span list --porcelain <paths...>` matches spans by path but returns
@@ -979,9 +979,31 @@ async function computeUncoveredPaths(
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
-  const uncovered = paths.filter(
+  let uncovered = paths.filter(
     (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
   );
+
+  // Mechanical-churn suppression: filter the already-uncovered set down to the
+  // files whose diff content is genuinely semantic, scoped only to what came
+  // back uncovered so a fully-covered changeset never spawns the diff
+  // subprocess. Absent `churn` skips filtering entirely (today's behavior —
+  // "forgot to wire it" degrades safely rather than to silence). Any failure
+  // here — a throw, an unparseable diff — falls back to the unfiltered
+  // uncovered list: fail toward reporting, never toward suppression.
+  if (churn && uncovered.length > 0) {
+    try {
+      const hunks = await churn.git.changedHunks(uncovered, churn.range, cwd);
+      const byPath = new Map(hunks.map((f) => [f.path, f]));
+      uncovered = uncovered.filter((path) => {
+        const file = byPath.get(path);
+        if (!file) return true;
+        return !classifyMechanical(file).mechanical;
+      });
+    } catch {
+      // fall back to the unfiltered uncovered list computed above
+    }
+  }
+
   return { uncovered, covering };
 }
 
@@ -1485,6 +1507,20 @@ function renderUncoveredReason(
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Run a git command at `cwd`, returning its raw stdout as-is (empty string on any failure). */
+function gitText(args: string[], cwd: string, timeoutMs: number): string {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs
+    });
+  } catch {
+    return '';
+  }
+}
+
 /** Run a git command at `cwd`, returning trimmed non-empty POSIX output lines (empty on any failure). */
 function gitLines(args: string[], cwd: string, timeoutMs: number): string[] {
   try {
@@ -1563,10 +1599,18 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       return gitLines(['-C', repoRoot, 'diff', 'HEAD', '--name-only', '--', ...paths], repoRoot, timeoutMs);
     },
     changedHunks: async (paths, range, cwd) => {
-      void paths;
-      void range;
-      void cwd;
-      throw new Error('Not Implemented');
+      if (range.kind === 'unresolvable' || paths.length === 0) return [];
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      const rangeArgs =
+        range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
+      const text = gitText(['-C', repoRoot, 'diff', '-U0', ...rangeArgs, '--', ...paths], repoRoot, timeoutMs);
+      if (text.trim().length === 0) return [];
+      try {
+        return parseUnifiedDiff(text);
+      } catch {
+        return [];
+      }
     }
   };
 }

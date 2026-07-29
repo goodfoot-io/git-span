@@ -1378,7 +1378,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('evaluateAdvisor — mechanical-churn suppression', () => {
-    it.skip('an all-mechanical uncovered set resolves to allow/silent', async () => {
+    it('an all-mechanical uncovered set resolves to allow/silent', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1410,7 +1410,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
-    it.skip('a mixed set surfaces only the semantic path in uncovered', async () => {
+    it('a mixed set surfaces only the semantic path in uncovered', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1446,7 +1446,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it.skip('an unbalanced hunk (a genuine semantic edit next to version churn) leaves the path flagged', async () => {
+    it('an unbalanced hunk (a genuine semantic edit next to version churn) leaves the path flagged', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1481,7 +1481,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.decision).toBe('allow');
     });
 
-    it.skip('when changedHunks throws, all paths in the uncovered set stay flagged (fail toward reporting)', async () => {
+    it('when changedHunks throws, all paths in the uncovered set stay flagged (fail toward reporting)', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1506,7 +1506,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it.skip("omitting churn entirely leaves all paths flagged — today's behavior, unchanged", async () => {
+    it("omitting churn entirely leaves all paths flagged — today's behavior, unchanged", async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1523,7 +1523,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it.skip(// Digest purity: a suppressed (mechanical) file must not reach
+    it(// Digest purity: a suppressed (mechanical) file must not reach
     // advisorStateDigest, so two changesets differing only in their
     // mechanical files produce the same digest. Asserted through the memo
     // rather than by calling advisorStateDigest directly (it is not

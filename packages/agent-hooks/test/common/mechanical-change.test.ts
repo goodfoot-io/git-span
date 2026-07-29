@@ -41,7 +41,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('parseUnifiedDiff', () => {
-    it.skip('parses a multi-file diff into one FileDiff per file, in order', () => {
+    it('parses a multi-file diff into one FileDiff per file, in order', () => {
       const text = [
         'diff --git a/a.json b/a.json',
         'index 111..222 100644',
@@ -66,7 +66,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[1].path).toBe('b.json');
     });
 
-    it.skip('sets binary: true for a "Binary files ... differ" diff', () => {
+    it('sets binary: true for a "Binary files ... differ" diff', () => {
       const text = [
         'diff --git a/image.png b/image.png',
         'index 111..222 100644',
@@ -80,7 +80,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[0].hunks).toEqual([]);
     });
 
-    it.skip('sets structural: true for a rename', () => {
+    it('sets structural: true for a rename', () => {
       const text = [
         'diff --git a/old-name.ts b/new-name.ts',
         'similarity index 100%',
@@ -94,7 +94,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[0].structural).toBe(true);
     });
 
-    it.skip('sets structural: true for a mode-only change', () => {
+    it('sets structural: true for a mode-only change', () => {
       const text = ['diff --git a/script.sh b/script.sh', 'old mode 100644', 'new mode 100755'].join('\n');
 
       const files = parseUnifiedDiff(text);
@@ -104,7 +104,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[0].hunks).toEqual([]);
     });
 
-    it.skip('sets structural: true for a new file', () => {
+    it('sets structural: true for a new file', () => {
       const text = [
         'diff --git a/new.ts b/new.ts',
         'new file mode 100644',
@@ -121,7 +121,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[0].structural).toBe(true);
     });
 
-    it.skip('sets structural: true for a deleted file', () => {
+    it('sets structural: true for a deleted file', () => {
       const text = [
         'diff --git a/gone.ts b/gone.ts',
         'deleted file mode 100644',
@@ -138,7 +138,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(files[0].structural).toBe(true);
     });
 
-    it.skip('pairs -U0 hunk removed/added arrays correctly, including multiple hunks in one file', () => {
+    it('pairs -U0 hunk removed/added arrays correctly, including multiple hunks in one file', () => {
       const text = [
         'diff --git a/a.json b/a.json',
         'index 111..222 100644',
@@ -164,7 +164,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       });
     });
 
-    it.skip('a file with no hunks (e.g. mode-only) yields an empty hunks array', () => {
+    it('a file with no hunks (e.g. mode-only) yields an empty hunks array', () => {
       const text = ['diff --git a/script.sh b/script.sh', 'old mode 100644', 'new mode 100755'].join('\n');
 
       const files = parseUnifiedDiff(text);
@@ -178,7 +178,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('isMechanicalDiff — semver rewrite', () => {
-    it.skip('a bare semver token rewrite is mechanical', () => {
+    it('a bare semver token rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
       });
@@ -186,7 +186,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip(// Pinned explicitly: the man-page `v1.0.140` form has no word boundary
+    it(// Pinned explicitly: the man-page `v1.0.140` form has no word boundary
     // between `v` and the leading digit, so it fails to match without the
     // optional `v` in the semver regex (`/\bv?\d+\.\d+\.\d+.../`). This is
     // the exact case plans/initial.md's Classification rules section calls
@@ -201,7 +201,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(bareVLine)).toEqual({ mechanical: true });
     });
 
-    it.skip(// The narrow `version:`-field-only variant misses dependency-pin lines
+    it(// The narrow `version:`-field-only variant misses dependency-pin lines
     // like this one (no "version" key at all) — the general token regex is
     // required, not the narrow one, per plans/initial.md's Classification
     // rules section (416 files caught vs. 75).
@@ -218,7 +218,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a semver rewrite with prerelease/build metadata is mechanical', () => {
+    it('a semver rewrite with prerelease/build metadata is mechanical', () => {
       const file = fileDiff({
         hunks: [
           { removed: ['  "version": "1.0.140-beta.1+build.5",'], added: ['  "version": "1.0.141-beta.2+build.6",'] }
@@ -230,7 +230,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isMechanicalDiff — checksum churn', () => {
-    it.skip('a checksum field with a hex payload rewrite is mechanical', () => {
+    it('a checksum field with a hex payload rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -243,7 +243,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('an integrity field with a sha512- payload rewrite is mechanical', () => {
+    it('an integrity field with a sha512- payload rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -256,7 +256,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a resolution field rewrite is mechanical', () => {
+    it('a resolution field rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -269,7 +269,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a hash field with a sha256- payload rewrite is mechanical', () => {
+    it('a hash field with a sha256- payload rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -282,7 +282,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a digest field with a hex payload rewrite is mechanical', () => {
+    it('a digest field with a hex payload rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -297,7 +297,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isMechanicalDiff — timestamp churn', () => {
-    it.skip('an ISO-8601 timestamp rewrite is mechanical', () => {
+    it('an ISO-8601 timestamp rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [
           {
@@ -310,7 +310,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a 10-digit epoch timestamp rewrite is mechanical', () => {
+    it('a 10-digit epoch timestamp rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [{ removed: ['  "builtAt": 1700000000'], added: ['  "builtAt": 1712345678'] }]
       });
@@ -318,7 +318,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(isMechanicalDiff(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a 13-digit epoch (millisecond) timestamp rewrite is mechanical', () => {
+    it('a 13-digit epoch (millisecond) timestamp rewrite is mechanical', () => {
       const file = fileDiff({
         hunks: [{ removed: ['  "builtAtMs": 1700000000000'], added: ['  "builtAtMs": 1712345678901'] }]
       });
@@ -332,7 +332,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('isMechanicalDiff — rejections', () => {
-    it.skip('a pure-insertion hunk (0 removed, N added) is rejected as unbalanced', () => {
+    it('a pure-insertion hunk (0 removed, N added) is rejected as unbalanced', () => {
       const file = fileDiff({ hunks: [{ removed: [], added: ['  "newField": "1.0.141",'] }] });
 
       const verdict = isMechanicalDiff(file);
@@ -340,7 +340,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('a pure-deletion hunk (N removed, 0 added) is rejected as unbalanced', () => {
+    it('a pure-deletion hunk (N removed, 0 added) is rejected as unbalanced', () => {
       const file = fileDiff({ hunks: [{ removed: ['  "oldField": "1.0.140",'], added: [] }] });
 
       const verdict = isMechanicalDiff(file);
@@ -348,7 +348,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('an N→M hunk where N !== M is rejected as unbalanced', () => {
+    it('an N→M hunk where N !== M is rejected as unbalanced', () => {
       // packages/extension/package.json in ad902127: one line reformatted
       // into five — exactly the shape balanced-hunk-count rejects.
       const file = fileDiff({
@@ -365,7 +365,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('a file with zero hunks is rejected', () => {
+    it('a file with zero hunks is rejected', () => {
       const file = fileDiff({ hunks: [] });
 
       const verdict = isMechanicalDiff(file);
@@ -373,7 +373,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('a binary file is rejected', () => {
+    it('a binary file is rejected', () => {
       const file = fileDiff({ binary: true, hunks: [] });
 
       const verdict = isMechanicalDiff(file);
@@ -381,7 +381,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('a structural change (rename/add/delete/mode) is rejected', () => {
+    it('a structural change (rename/add/delete/mode) is rejected', () => {
       const file = fileDiff({ structural: true, hunks: [] });
 
       const verdict = isMechanicalDiff(file);
@@ -389,7 +389,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(verdict.mechanical).toBe(false);
     });
 
-    it.skip('any hunk containing a genuinely semantic line pair rejects the whole file, even alongside mechanical hunks', () => {
+    it('any hunk containing a genuinely semantic line pair rejects the whole file, even alongside mechanical hunks', () => {
       const file = fileDiff({
         hunks: [
           { removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] },
@@ -408,14 +408,14 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('isNeverSpannedPath — noise basenames', () => {
-    it.skip('matches yarn.lock, Cargo.lock, package-lock.json, and .DS_Store at any depth', () => {
+    it('matches yarn.lock, Cargo.lock, package-lock.json, and .DS_Store at any depth', () => {
       expect(isNeverSpannedPath('yarn.lock')).toBe(true);
       expect(isNeverSpannedPath('packages/git-span/Cargo.lock')).toBe(true);
       expect(isNeverSpannedPath('package-lock.json')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/.DS_Store')).toBe(true);
     });
 
-    it.skip('matches the remaining seeded lockfile basenames', () => {
+    it('matches the remaining seeded lockfile basenames', () => {
       expect(isNeverSpannedPath('pnpm-lock.yaml')).toBe(true);
       expect(isNeverSpannedPath('npm-shrinkwrap.json')).toBe(true);
       expect(isNeverSpannedPath('poetry.lock')).toBe(true);
@@ -428,7 +428,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — noise suffixes', () => {
-    it.skip('matches .log, .tsbuildinfo, .min.js, .min.css, and .map', () => {
+    it('matches .log, .tsbuildinfo, .min.js, .min.css, and .map', () => {
       expect(isNeverSpannedPath('packages/foo/debug.log')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/tsconfig.tsbuildinfo')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/dist/bundle.min.js')).toBe(true);
@@ -438,7 +438,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — noise segments', () => {
-    it.skip('matches node_modules, __pycache__, .cache, and __snapshots__ anywhere in the path', () => {
+    it('matches node_modules, __pycache__, .cache, and __snapshots__ anywhere in the path', () => {
       expect(isNeverSpannedPath('node_modules/foo/index.js')).toBe(true);
       expect(isNeverSpannedPath('packages/foo/node_modules/bar/index.js')).toBe(true);
       expect(isNeverSpannedPath('scripts/__pycache__/mod.pyc')).toBe(true);
@@ -448,7 +448,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — generated segments', () => {
-    it.skip('matches dist, build, out, coverage, and .next anywhere in the path', () => {
+    it('matches dist, build, out, coverage, and .next anywhere in the path', () => {
       expect(isNeverSpannedPath('packages/agent-hooks/dist/index.js')).toBe(true);
       expect(isNeverSpannedPath('packages/extension/build/main.js')).toBe(true);
       expect(isNeverSpannedPath('packages/cli/out/bin.js')).toBe(true);
@@ -458,11 +458,11 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   });
 
   describe('isNeverSpannedPath — negative cases', () => {
-    it.skip('an ordinary source file is not never-spanned', () => {
+    it('an ordinary source file is not never-spanned', () => {
       expect(isNeverSpannedPath('packages/foo/src/bar.ts')).toBe(false);
     });
 
-    it.skip('a package.json is not never-spanned (it is not a lockfile)', () => {
+    it('a package.json is not never-spanned (it is not a lockfile)', () => {
       expect(isNeverSpannedPath('packages/foo/package.json')).toBe(false);
     });
   });
@@ -472,7 +472,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('classifyMechanical — composition', () => {
-    it.skip('a path on the category list is mechanical regardless of content, even content the content layer would reject', () => {
+    it('a path on the category list is mechanical regardless of content, even content the content layer would reject', () => {
       // A lockfile carries no implicit dependency worth a span regardless of
       // its contents — a real dependency addition (unbalanced hunk, which
       // isMechanicalDiff alone would reject) is still suppressed by path
@@ -485,7 +485,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
       expect(classifyMechanical(file)).toEqual({ mechanical: true });
     });
 
-    it.skip('a non-category path falls through to the content layer and is judged by its diff', () => {
+    it('a non-category path falls through to the content layer and is judged by its diff', () => {
       const mechanicalFile = fileDiff({
         path: 'packages/foo/package.json',
         hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
@@ -505,7 +505,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('classifyMechanical — accepted decisions', () => {
-    it.skip(// Accepted decision, not a bug (commit e4fb3baf): the single build-config
+    it(// Accepted decision, not a bug (commit e4fb3baf): the single build-config
     // version pin in the entire history is the intended reading of "obvious
     // version bump" per plans/initial.md's Classification rules section.
     ".devcontainer/Dockerfile's ARG SCCACHE_VERSION bump classifies mechanical (per commit e4fb3baf)", () => {
@@ -523,7 +523,7 @@ describe('mechanical-change (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('classifyMechanical — regression fixture from commit 79030d00', () => {
-    it.skip(// Built from `git diff -U0 -M 79030d00^ 79030d00` (checked into
+    it(// Built from `git diff -U0 -M 79030d00^ 79030d00` (checked into
     // fixtures/79030d00.diff verbatim, no line content altered). Of the 20
     // files this release-bump commit touched, 18 are pure semver/version-pin
     // churn; the two genuinely semantic edits — a `-m` flag removed from a
