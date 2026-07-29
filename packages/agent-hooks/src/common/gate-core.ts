@@ -875,8 +875,15 @@ async function computeUncoveredPaths(
   const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
   // Every row dropped above has a path outside `paths`, and `covered` is only
   // ever probed with members of `paths`, so the filter cannot change which
-  // paths are flagged uncovered. It also cannot drop a span name: a span is in
-  // the CLI's output only because one of `paths` matched it.
+  // paths are flagged uncovered. A span usually keeps at least one row, since
+  // it is in the CLI's output only because one of `paths` matched it — but not
+  // always: the resolver tests `loaded_names.contains(arg)` before the path
+  // index (`cli/show.rs`), so a changed file whose path is exactly a span name
+  // matches by *name* and contributes no in-changeset anchor. That span drops
+  // out of the section entirely, which is correct — it covers nothing in this
+  // change — and it cannot leave a bulletless header behind, because
+  // `groupCoveringByName` builds its groups by iterating rows and so never
+  // creates an entry for a span with none.
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const gateIgnoreRules = repoRoot ? loadGateIgnore(repoRoot) : [];
