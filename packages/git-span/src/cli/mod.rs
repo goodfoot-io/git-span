@@ -391,7 +391,15 @@ pub struct HistoryArgs {
     #[arg(long, value_enum, default_value_t = HistoryFormat::Human)]
     pub format: HistoryFormat,
 
-    /// Cap the walk at N commits (newest N are inspected).
+    /// Show only the newest N entries.
+    ///
+    /// N counts *rendered* timeline entries, not walked commits: the walk is
+    /// always complete, so a narrow anchor in a busy file can never fill the
+    /// window with commits that changed nothing. Older entries are dropped,
+    /// a warning goes to stderr, and JSON output carries `scoped: true` —
+    /// such a document is a partial record, so never read it as evidence that
+    /// a span has no history or no drift. `-n 0` yields an empty, scoped
+    /// document.
     #[arg(short = 'n', long)]
     pub limit: Option<usize>,
 }

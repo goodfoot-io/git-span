@@ -1576,11 +1576,10 @@ fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, Stri
 /// block for a `Moved` anchor, whose `current` location carries the new
 /// path/range).
 pub(crate) fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
-    // A location's `blob` may name a *computed* hash rather than a stored
-    // object: the worktree layer hashes live bytes without writing them to the
-    // object database, so `find_object` misses for every worktree-drifted
-    // anchor. Falling back to the working tree (instead of yielding empty
-    // bytes) is what keeps such an anchor from rendering as a total deletion.
+    // A location resolved from the working tree carries `blob: None` (see
+    // `AnchorLocation::blob`) — there is no stored object to read. Falling
+    // back to the file on disk (instead of yielding empty bytes) is what keeps
+    // a worktree-drifted anchor from rendering as a total deletion.
     let bytes = location
         .blob
         .and_then(|blob| read_blob_bytes(repo, blob))

@@ -616,11 +616,26 @@ pub(crate) fn read_blob_bytes(repo: &gix::Repository, blob_oid: &str) -> Result<
     blob_data(repo, blob_oid)
 }
 
+/// Read an object's bytes, requiring it to be a blob.
+///
+/// The type check is not decoration: a caller that resolved a *path* to an OID
+/// (`path_blob_at`) hands over whatever the tree holds there, and a `.span/`
+/// namespace name like `agent-hooks` resolves to a tree. `into_blob()` panics
+/// on a non-blob, so the guard is what turns `git span history <namespace>`
+/// into a curated exit-1 error instead of an exit-101 panic — matching
+/// `blob_oid_at`'s `is_blob_or_symlink()` filter and the behaviour of
+/// `git span show` / `git span tree` on the same input.
 fn blob_data(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
     let oid = parse_oid(blob_oid)?;
     let obj = repo
         .find_object(oid)
         .map_err(|e| Error::Git(format!("find object `{blob_oid}`: {e}")))?;
+    if obj.kind != gix::object::Kind::Blob {
+        return Err(Error::Git(format!(
+            "object `{blob_oid}` is a {}, not a blob",
+            obj.kind
+        )));
+    }
     Ok(obj.into_blob().detach().data)
 }
 

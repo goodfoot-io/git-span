@@ -10,20 +10,28 @@
 //!   between two states (this subsumes the old `why` field: why prose lives in
 //!   the declaration).
 //! * per-anchor diffs — pseudo-diffs between the anchor's *extracted
-//!   snapshots*, with `path#Lstart-Lend` display paths, `index rk64:…` lines,
-//!   and real-file hunk coordinates. Anchors pair across consecutive states by
-//!   exact address first, then by content similarity (git's `-M` shape), so a
-//!   re-anchor renders as a rename rather than remove + add.
+//!   snapshots*, with `path#Lstart-Lend` display paths, `index rk64:…` lines
+//!   hashing the snapshots actually rendered, and real-file hunk coordinates.
+//!   Anchors pair across consecutive states by identical content first, then
+//!   by exact address, then by similarity (git's `-M` shape), so a re-anchor
+//!   renders as a rename rather than remove + add, and two anchors that
+//!   exchange addresses render as two renames rather than two rewrites.
 //!
 //! Declared anchor ranges are taken at face value at every commit — a stale
 //! range extracting "wrong" content *is* the drift being visualized. Anchor
 //! diffs are always computed between extracted snapshots, never by clipping a
 //! file's real commit patch to a line range.
+//!
+//! Content that cannot be extracted is *structural*, never prose: an absent
+//! file or an out-of-range extent renders as a true `/dev/null` side, binary
+//! content as git's `Binary files … differ` line, and JSON marks the reason in
+//! a dedicated `unavailable` field. A placeholder string in a hunk body would
+//! corrupt the hunk arithmetic and paint the placeholder as source.
 
 use crate::cli::format::format_anchor_address;
 use crate::cli::unified_diff::{
-    AnchorDiffKind, DEV_NULL, DiffHeader, DiffSide, NULL_ANCHOR_HASH, render_unified_diff,
-    similarity,
+    AnchorDiffKind, BlobDiffKind, DiffHeader, DiffSide, NULL_ANCHOR_HASH, NULL_BLOB_OID7,
+    render_diff_header, render_unified_diff, render_unified_diff_always, similarity,
 };
 use crate::cli::{CliError, HistoryArgs, HistoryFormat, NextStep};
 use crate::span::read::read_span_at_in;
@@ -47,10 +55,10 @@ pub struct HistoryReport {
     /// `false` indicates a truncated timeline — the command exits non-zero.
     pub walk_complete: bool,
     /// `true` when the rendered timeline is a scoped/partial view of history:
-    /// `--limit` dropped older qualifying commits that exist before the window.
-    /// The first shown commit still diffs against the true prior span state (so
-    /// its diffs stay truthful), but a consumer must not read the window as the
-    /// complete record.
+    /// `--limit` dropped older *rendered entries* that exist before the window.
+    /// The retained entries still diff against the true prior span state (they
+    /// were built from the complete walk), but a consumer must not read the
+    /// window as the complete record.
     pub scoped: bool,
     /// Commit sections, ordered oldest → newest. No-op commits (nothing
     /// observable changed) are already dropped before this point. Both
@@ -67,8 +75,9 @@ pub struct CommitSection {
     pub hash: String,
     /// Author date as a full ISO-8601 timestamp with offset (JSON `date`).
     pub date: String,
-    /// Author date as `YYYY-MM-DD` (the human format's `Date:` line).
-    pub day: String,
+    /// Author date in git's own default rendering
+    /// (`Thu Jul 30 12:04:37 2026 -0400`) — the human format's `Date:` line.
+    pub date_git: String,
     /// First line of the commit message.
     pub summary: String,
     /// Blob diff of the `.span/<name>` declaration between the previous
@@ -80,7 +89,35 @@ pub struct CommitSection {
     pub anchors: Vec<TimelineAnchor>,
 }
 
+/// Why an anchor's content could not be rendered at some point in time.
+///
+/// This is the JSON `unavailable` field's vocabulary, and the *only* place
+/// such a condition is described in words — never in a hunk body or a
+/// `content` value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unavailable {
+    /// The anchored file does not exist at this commit / in the working tree.
+    Absent,
+    /// The file exists but the declared line range starts past its end.
+    RangePastEof,
+    /// The content exists but is not UTF-8 text.
+    Binary,
+}
+
+impl Unavailable {
+    /// The JSON token for this reason.
+    fn as_str(self) -> &'static str {
+        match self {
+            Unavailable::Absent => "absent",
+            Unavailable::RangePastEof => "range-past-eof",
+            Unavailable::Binary => "binary",
+        }
+    }
+}
+
 /// One anchor's change record within a commit section.
+///
+/// `diff` is mandatory, so a timeline anchor always carries a payload.
 pub struct TimelineAnchor {
     /// Combined git-span address (`path#L<start>-L<end>` or a bare path for
     /// whole-file anchors) *after* the change; for a removal, the last address
@@ -90,10 +127,32 @@ pub struct TimelineAnchor {
     /// first-add it is the synthesized `new anchor` addition diff, which the
     /// human format prints and the JSON format replaces with `content`.
     pub diff: String,
-    /// Full snapshot text, present only for a first-add. When present, the
-    /// JSON emitter writes `content` *instead of* `diff`, so every JSON
-    /// timeline anchor carries exactly one of the two keys.
+    /// Full snapshot text, present only for a first-add whose content was
+    /// extractable. When present, the JSON emitter writes `content` *instead
+    /// of* `diff`.
     pub content: Option<String>,
+    /// Set when the anchor's new-side content could not be extracted. JSON
+    /// emits it as `unavailable`; it never becomes body text.
+    pub unavailable: Option<Unavailable>,
+}
+
+impl TimelineAnchor {
+    /// Build a timeline entry. `first_add` carries the new side's body when
+    /// this is the anchor's first appearance (the only case that ships a full
+    /// `content` snapshot); pass `None` otherwise.
+    fn new(path: String, diff: String, new_body: Option<&AnchorBody>, first_add: bool) -> Self {
+        let unavailable = new_body.and_then(AnchorBody::unavailable);
+        let content = match (first_add, new_body) {
+            (true, Some(AnchorBody::Text(t))) => Some(t.clone()),
+            _ => None,
+        };
+        TimelineAnchor {
+            path,
+            diff,
+            content,
+            unavailable,
+        }
+    }
 }
 
 /// The optional current-drift section: how the working tree differs from the
@@ -103,42 +162,106 @@ pub struct CurrentSection {
     /// working tree (covering uncommitted why edits and uncommitted anchor
     /// add/remove alike). Present iff the worktree bytes differ from HEAD.
     pub span_diff: Option<String>,
-    /// Anchors the resolver reports as non-`Fresh`, in resolver order.
+    /// Anchors the resolver reports as non-`Fresh` (plus any anchor whose
+    /// declared address moved in the uncommitted declaration), in resolver
+    /// order.
     pub anchors: Vec<CurrentAnchor>,
 }
 
-/// One anchor's drift record in the current section. Both fields are usually
-/// present: `diff` is absent only when the live content is byte-identical to
-/// the last recorded snapshot at an unchanged address, `content` only when the
-/// anchor no longer resolves to any live location.
+/// One anchor's drift record in the current section.
+///
+/// Both payloads are mandatory by construction: `diff` is always rendered
+/// (header-only when content is byte-identical but the recorded hash is
+/// stale — that mismatch *is* the finding), and exactly one of
+/// `content`/`unavailable` describes the live snapshot. This is what keeps
+/// the human and JSON renderers emitting the same entry set: an anchor that
+/// `git span stale` reports can never silently vanish from the default
+/// output.
 pub struct CurrentAnchor {
-    /// The anchor's live address (the relocated one when the resolver moved
-    /// it), falling back to the declared address when nothing resolves.
+    /// The anchor's **declared** address — the same string `git span stale`
+    /// prints, and the only join key a consumer can match against the `.span`
+    /// file. Never the resolver's proposal.
     pub path: String,
-    /// Diff from the anchor's last recorded timeline snapshot to its live
-    /// content.
-    pub diff: Option<String>,
-    /// Full live content of the anchor.
+    /// Where the resolver believes the anchored content now lives, when that
+    /// differs from `path`. A *proposal* (`git span stale --fix` would write
+    /// it), not an accomplished move — so it never renders as `rename to`.
+    pub proposed: Option<String>,
+    /// Diff from the anchor's last recorded state to its live content.
+    pub diff: String,
+    /// Full live content of the anchor; `None` exactly when `unavailable` is
+    /// set.
     pub content: Option<String>,
+    /// Why the live content could not be extracted; `None` exactly when
+    /// `content` is set.
+    pub unavailable: Option<Unavailable>,
+    /// `true` when the content the declaration *recorded* is not recoverable
+    /// from history — the declaration was never committed carrying this hash,
+    /// so no snapshot anywhere hashes to its token. The diff is then a header
+    /// block alone: there is a real drift to report (the two `index` hashes
+    /// differ) but no honest "before" text to show.
+    pub recorded_unrecoverable: bool,
+}
+
+impl CurrentAnchor {
+    /// Build a current-section entry. `content`/`unavailable` are derived from
+    /// `body`, so exactly one of them is always populated and the "both
+    /// payloads present" contract cannot be violated by a caller.
+    fn new(
+        path: String,
+        proposed: Option<String>,
+        diff: String,
+        body: &AnchorBody,
+        recorded_unrecoverable: bool,
+    ) -> Self {
+        CurrentAnchor {
+            path,
+            proposed,
+            diff,
+            content: match body {
+                AnchorBody::Text(t) => Some(t.clone()),
+                AnchorBody::Unavailable(_) => None,
+            },
+            unavailable: body.unavailable(),
+            recorded_unrecoverable,
+        }
+    }
 }
 
 /// Content of an anchor at a specific point in time.
+///
+/// [`AnchorBody::Unavailable`] is an internal *signal*, not text: it never
+/// reaches a hunk body, a `content` value, or a similarity computation.
 #[derive(Clone, PartialEq, Eq)]
 pub enum AnchorBody {
     /// Normal source text extracted from the blob.
     Text(String),
-    /// Degradation note substituted when the real content is unavailable
-    /// (e.g. `"(file absent at this commit)"`, `"(line range past end of
-    /// file)"`, `"(binary or non-UTF-8 content)"`). A Text→Note transition is
-    /// an ordinary content change and diffs as one.
-    Note(String),
+    /// The content could not be extracted. Renders as a structurally absent
+    /// side (or git's binary line), and surfaces in JSON as `unavailable`.
+    Unavailable(Unavailable),
 }
 
 impl AnchorBody {
+    /// The renderable text — empty for an unavailable body, so a placeholder
+    /// can never be mistaken for source.
     fn text(&self) -> &str {
         match self {
-            AnchorBody::Text(s) | AnchorBody::Note(s) => s,
+            AnchorBody::Text(s) => s,
+            AnchorBody::Unavailable(_) => "",
         }
+    }
+
+    fn unavailable(&self) -> Option<Unavailable> {
+        match self {
+            AnchorBody::Text(_) => None,
+            AnchorBody::Unavailable(u) => Some(*u),
+        }
+    }
+
+    /// True for extractable content. Only such bodies take part in
+    /// content-identity and similarity pairing: an absence is not content, and
+    /// two absences are not the same content.
+    fn is_text(&self) -> bool {
+        matches!(self, AnchorBody::Text(_))
     }
 }
 
@@ -195,12 +318,14 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
         }
     }
 
-    // Pass 2 — walk the union of the declaration and every anchored path. The
-    // user's `--limit` scopes this pass.
-    let limit = args.limit.unwrap_or(usize::MAX);
+    // Pass 2 — walk the union of the declaration and every anchored path,
+    // *unbounded*. `--limit` scopes the rendered entries, not the walk: a
+    // narrow anchor in a busy file yields many qualifying commits that change
+    // nothing observable, and a walk-side cap would fill the window with those
+    // and print nothing at all.
     let (mut commits, walk_complete) = {
         let _perf = crate::perf::span("history.walk");
-        crate::git::git_log_name_only_for_paths(repo, limit, &seed_paths)?
+        crate::git::git_log_name_only_for_paths(repo, usize::MAX, &seed_paths)?
     };
 
     // Fail-closed: a truncated timeline is not a whole one. Emit a warning to
@@ -221,25 +346,14 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     if commits.is_empty() {
         // The span may exist only in the worktree (uncommitted). Probe HEAD /
         // worktree before declaring it missing.
-        let head = read_span_at_in(repo, &args.span, Some("HEAD"), span_root);
-        let work = read_span_at_in(repo, &args.span, None, span_root);
-        if matches!(head, Err(crate::Error::SpanNotFound(_)))
-            && matches!(work, Err(crate::Error::SpanNotFound(_)))
+        if !names_a_span(repo, &args.span, Some("HEAD"), span_root)
+            && !names_a_span(repo, &args.span, None, span_root)
         {
-            return Err(CliError {
-                subcommand: "history",
-                summary: format!("no span named `{}`.", args.span),
-                what_happened: format!(
-                    "No commit in the current history touched `{span_path}`, and the \
-                     span does not exist in the working tree or at HEAD."
-                ),
-                next_steps: vec![NextStep::Bash("git span list".into())],
-            }
-            .into());
+            return Err(not_found_error(repo, &args.span, span_root, &span_path).into());
         }
     }
 
-    let mut report = {
+    let report = {
         let _perf = crate::perf::span("history.build-report");
         build_report(
             repo,
@@ -248,16 +362,9 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
             &span_path,
             walk_complete,
             &commits,
+            args.limit,
         )?
     };
-
-    // `--limit 0` yields an empty window for a span that nonetheless exists
-    // in history — an empty timeline must not read as "this span has no
-    // history". `build_report` cannot see the window was non-empty before
-    // scoping, so flag it here.
-    if commits.is_empty() && args.limit == Some(0) {
-        report.scoped = true;
-    }
 
     // Fail-closed in spirit: a scoped/partial window must never read as the
     // complete record. Unlike the walk-budget truncation (an internal limit,
@@ -284,19 +391,86 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     Ok(0)
 }
 
+/// True when `name` reads as a span at `rev` (or in the working tree when
+/// `rev` is `None`).
+///
+/// Any failure answers "no": a `.span/` *directory* — a namespace like
+/// `agent-hooks` — is a tree, not a span, and so is anything else that will
+/// not parse as one. Both deserve the curated not-found error below rather
+/// than a raw object-store message.
+fn names_a_span(
+    repo: &gix::Repository,
+    name: &str,
+    rev: Option<&str>,
+    span_root: &str,
+) -> bool {
+    read_span_at_in(repo, name, rev, span_root).is_ok()
+}
+
+/// Build the not-found error for a name that names no span.
+///
+/// A very common miss is passing a *namespace* (`git span history agent-hooks`
+/// when the spans are `agent-hooks/…`), so when spans exist under `<name>/` the
+/// error says so and names them instead of sending the user to `git span list`.
+fn not_found_error(
+    repo: &gix::Repository,
+    name: &str,
+    span_root: &str,
+    span_path: &str,
+) -> CliError {
+    let prefix = format!("{}/", name.trim_end_matches('/'));
+    let under_prefix: Vec<String> = crate::span::read::list_span_names_in(repo, span_root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.starts_with(&prefix))
+        .collect();
+
+    if !under_prefix.is_empty() {
+        let shown: Vec<String> = under_prefix.iter().take(5).cloned().collect();
+        return CliError {
+            subcommand: "history",
+            summary: format!("`{name}` is a span namespace, not a span."),
+            what_happened: format!(
+                "No span is named `{name}`, but {} span(s) live under `{prefix}`: {}. \
+                 `git span history` walks one span at a time.",
+                under_prefix.len(),
+                shown.join(", ")
+            ),
+            next_steps: shown
+                .into_iter()
+                .map(|n| NextStep::Bash(format!("git span history {n}")))
+                .collect(),
+        };
+    }
+
+    CliError {
+        subcommand: "history",
+        summary: format!("no span named `{name}`."),
+        what_happened: format!(
+            "No commit in the current history touched `{span_path}`, and the \
+             span does not exist in the working tree or at HEAD."
+        ),
+        next_steps: vec![NextStep::Bash("git span list".into())],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // State materialization
 // ---------------------------------------------------------------------------
 
 /// One anchor's extracted snapshot at a point in history: everything the
 /// unified-diff renderer needs for one side of an anchor pseudo-diff.
+#[derive(Clone)]
 struct Snapshot {
     /// Declared address (`path#Lstart-Lend` or a bare path).
     address: String,
     /// 1-based first line of the snapshot in its real file (`1` for
     /// whole-file anchors), so hunk headers carry real file coordinates.
     first_line: u32,
-    /// Bare `rk64` hex from the declaration, for the `index rk64:…` line.
+    /// Bare `rk64` hex **of the bytes this snapshot renders** — not the
+    /// declaration's recorded token. One hashing convention across the whole
+    /// command means `index X..X` above a non-empty hunk is impossible.
+    /// [`NULL_ANCHOR_HASH`] when the content is unavailable.
     hash: String,
     /// Extracted body at the declared address, taken at face value.
     body: AnchorBody,
@@ -336,49 +510,70 @@ fn bare_hash(stored_hash: &str) -> String {
     }
 }
 
-/// Read an anchor's body from a specific commit's tree, degrading per-anchor
-/// (never aborting the whole report) on missing files, out-of-range line
-/// anchors, or non-UTF-8 content.
-fn read_anchor_at_commit(repo: &gix::Repository, commit_oid: &str, a: &Anchor) -> AnchorBody {
-    let blob_oid = match crate::git::path_blob_at(repo, commit_oid, &a.path) {
-        Ok(oid) => oid,
-        Err(_) => return AnchorBody::Note("(file absent at this commit)".to_string()),
+/// The `rk64` content hash of `bytes` under `extent` — the same
+/// `git_span_core` fingerprint the declaration records and the resolver
+/// compares, so a rendered `index` line is directly comparable with a
+/// declaration token.
+fn extent_hash(bytes: &[u8], extent: &AnchorExtent) -> String {
+    git_span_core::rk64_to_hex(git_span_core::cheap_fingerprint_with_extent(bytes, extent))
+}
+
+/// Read an anchor's body *and* the hash of the bytes it renders from a
+/// specific commit's tree, degrading per-anchor (never aborting the whole
+/// report) on missing files, out-of-range line anchors, or non-UTF-8 content.
+///
+/// An unavailable body carries the null hash: there is nothing to fingerprint.
+fn read_anchor_at_commit(
+    repo: &gix::Repository,
+    commit_oid: &str,
+    a: &Anchor,
+) -> (AnchorBody, String) {
+    fn missing(u: Unavailable) -> (AnchorBody, String) {
+        (AnchorBody::Unavailable(u), NULL_ANCHOR_HASH.to_string())
+    }
+
+    let Ok(blob_oid) = crate::git::path_blob_at(repo, commit_oid, &a.path) else {
+        return missing(Unavailable::Absent);
     };
-    match a.extent {
+    let Ok(file_bytes) = crate::git::read_blob_bytes(repo, &blob_oid) else {
+        return missing(Unavailable::Absent);
+    };
+    let hash = extent_hash(&file_bytes, &a.extent);
+
+    let body = match a.extent {
         AnchorExtent::LineRange { start, end } => {
             match crate::git::extract_blob_lines(repo, &blob_oid, start, end) {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(text) => AnchorBody::Text(text),
-                    Err(_) => AnchorBody::Note("(binary or non-UTF-8 content)".to_string()),
+                    Err(_) => AnchorBody::Unavailable(Unavailable::Binary),
                 },
                 Err(crate::Error::InvalidAnchor { .. }) => {
-                    AnchorBody::Note("(line range past end of file)".to_string())
+                    return missing(Unavailable::RangePastEof);
                 }
-                Err(crate::Error::Parse(_)) => {
-                    AnchorBody::Note("(binary or non-UTF-8 content)".to_string())
-                }
-                Err(_) => AnchorBody::Note("(file absent at this commit)".to_string()),
+                Err(crate::Error::Parse(_)) => AnchorBody::Unavailable(Unavailable::Binary),
+                Err(_) => return missing(Unavailable::Absent),
             }
         }
-        AnchorExtent::WholeFile => match crate::git::read_blob_bytes(repo, &blob_oid) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(text) => AnchorBody::Text(text),
-                Err(_) => AnchorBody::Note("(binary or non-UTF-8 content)".to_string()),
-            },
-            Err(_) => AnchorBody::Note("(binary or non-UTF-8 content)".to_string()),
+        AnchorExtent::WholeFile => match String::from_utf8(file_bytes.clone()) {
+            Ok(text) => AnchorBody::Text(text),
+            Err(_) => AnchorBody::Unavailable(Unavailable::Binary),
         },
-    }
+    };
+    // Binary content still has a real fingerprint — only its *body* is
+    // unrenderable, and the `index` line is then the sole change signal.
+    (body, hash)
 }
 
 /// Build the rendered state for a span at a commit.
 fn rendered_state_at(repo: &gix::Repository, commit_oid: &str, span: &Span) -> RenderedState {
     let mut anchors = Vec::with_capacity(span.anchors.len());
     for (_id, a) in &span.anchors {
+        let (body, hash) = read_anchor_at_commit(repo, commit_oid, a);
         anchors.push(Snapshot {
             address: anchor_address(a),
             first_line: extent_first_line(a.extent),
-            hash: bare_hash(&a.stored_hash),
-            body: read_anchor_at_commit(repo, commit_oid, a),
+            hash,
+            body,
         });
     }
     RenderedState {
@@ -408,38 +603,75 @@ fn blob_at(repo: &gix::Repository, commit_oid: &str, path: &str) -> Option<BlobA
     })
 }
 
-/// Render the declaration's blob diff between two optional sides. An absent
-/// side renders with `/dev/null` conventions and a null abbreviated OID.
+/// Render the declaration's blob diff between two optional sides, in git's own
+/// file dialect: an absent side becomes `new file mode` / `deleted file mode`
+/// with a bare `index` line and the real path on both `diff --git` halves.
 /// Returns `None` when both sides are absent or byte-identical.
 fn blob_diff(path: &str, old: Option<&BlobAt>, new: Option<&BlobAt>) -> Option<String> {
-    if old.is_none() && new.is_none() {
-        return None;
-    }
+    let kind = match (old, new) {
+        (None, None) => return None,
+        (None, Some(_)) => BlobDiffKind::Added,
+        (Some(_), None) => BlobDiffKind::Deleted,
+        (Some(_), Some(_)) => BlobDiffKind::Modified,
+    };
     let abbrev = |b: Option<&BlobAt>| match b {
         Some(b) => b.oid.chars().take(7).collect::<String>(),
-        None => "0000000".to_string(),
+        None => NULL_BLOB_OID7.to_string(),
     };
     let header = DiffHeader::Blob {
         old_oid7: abbrev(old),
         new_oid7: abbrev(new),
+        kind,
     };
     render_unified_diff(&header, blob_side(path, old), blob_side(path, new))
 }
 
-/// One side of a declaration blob diff; an absent blob becomes the `/dev/null`
-/// sentinel side.
+/// One side of a declaration blob diff. Git names the real path on both sides
+/// of a `diff --git` line even for an add or a delete, so an absent blob keeps
+/// the path and is marked absent instead of relabelled `/dev/null`.
 fn blob_side<'a>(path: &str, blob: Option<&'a BlobAt>) -> DiffSide<'a> {
     match blob {
-        Some(b) => DiffSide {
-            label: path.to_string(),
-            text: b.text.as_str(),
-            first_line: 1,
+        Some(b) => DiffSide::present(path, b.text.as_str(), 1),
+        None => DiffSide::absent(path),
+    }
+}
+
+/// One side of an anchor pseudo-diff, with unavailability mapped to the
+/// renderer's structural side states rather than to substituted prose.
+fn snapshot_side(s: &Snapshot) -> DiffSide<'_> {
+    match &s.body {
+        AnchorBody::Text(text) => DiffSide::present(s.address.clone(), text, s.first_line),
+        AnchorBody::Unavailable(Unavailable::Binary) => DiffSide::binary(s.address.clone()),
+        AnchorBody::Unavailable(_) => DiffSide::absent(s.address.clone()),
+    }
+}
+
+/// The anchor diff header for a pair of snapshots.
+fn anchor_header(old: Option<&Snapshot>, new: Option<&Snapshot>) -> DiffHeader {
+    let null = || NULL_ANCHOR_HASH.to_string();
+    match (old, new) {
+        (Some(o), Some(n)) => DiffHeader::Anchor {
+            old_hash: o.hash.clone(),
+            new_hash: n.hash.clone(),
+            kind: if o.address == n.address {
+                AnchorDiffKind::Modify
+            } else {
+                AnchorDiffKind::Rename {
+                    similarity: similarity(o.body.text(), n.body.text()),
+                }
+            },
         },
-        None => DiffSide {
-            label: DEV_NULL.to_string(),
-            text: "",
-            first_line: 1,
+        (None, Some(n)) => DiffHeader::Anchor {
+            old_hash: null(),
+            new_hash: n.hash.clone(),
+            kind: AnchorDiffKind::New,
         },
+        (Some(o), None) => DiffHeader::Anchor {
+            old_hash: o.hash.clone(),
+            new_hash: null(),
+            kind: AnchorDiffKind::Deleted,
+        },
+        (None, None) => unreachable!("a diff needs at least one side"),
     }
 }
 
@@ -448,69 +680,35 @@ fn blob_side<'a>(path: &str, blob: Option<&'a BlobAt>) -> DiffSide<'a> {
 /// address moved (headers always, hunks only when content also changed), and
 /// `New`/`Deleted` for an unpaired side.
 fn snapshot_diff(old: Option<&Snapshot>, new: Option<&Snapshot>) -> Option<String> {
-    fn null_side() -> DiffSide<'static> {
-        DiffSide {
-            label: DEV_NULL.to_string(),
-            text: "",
-            first_line: 1,
-        }
+    if old.is_none() && new.is_none() {
+        return None;
     }
-    fn side(s: &Snapshot) -> DiffSide<'_> {
-        DiffSide {
-            label: s.address.clone(),
-            text: s.body.text(),
-            first_line: s.first_line,
-        }
-    }
-    match (old, new) {
-        (Some(o), Some(n)) => {
-            let kind = if o.address == n.address {
-                AnchorDiffKind::Modify
-            } else {
-                AnchorDiffKind::Rename {
-                    similarity: similarity(o.body.text(), n.body.text()),
-                }
-            };
-            render_unified_diff(
-                &DiffHeader::Anchor {
-                    old_hash: o.hash.clone(),
-                    new_hash: n.hash.clone(),
-                    kind,
-                },
-                side(o),
-                side(n),
-            )
-        }
-        (None, Some(n)) => render_unified_diff(
-            &DiffHeader::Anchor {
-                old_hash: NULL_ANCHOR_HASH.to_string(),
-                new_hash: n.hash.clone(),
-                kind: AnchorDiffKind::New,
-            },
-            null_side(),
-            side(n),
-        ),
-        (Some(o), None) => render_unified_diff(
-            &DiffHeader::Anchor {
-                old_hash: o.hash.clone(),
-                new_hash: NULL_ANCHOR_HASH.to_string(),
-                kind: AnchorDiffKind::Deleted,
-            },
-            side(o),
-            null_side(),
-        ),
-        (None, None) => None,
-    }
+    let header = anchor_header(old, new);
+    render_unified_diff(
+        &header,
+        old.map(snapshot_side).unwrap_or_else(DiffSide::dev_null),
+        new.map(snapshot_side).unwrap_or_else(DiffSide::dev_null),
+    )
 }
 
-/// Pair the old state's anchors with the new state's.
+/// Pair the old state's anchors with the new state's, in git's own resolution
+/// order.
 ///
-/// Exact address matches pair first (an anchor that stayed put). Every
-/// leftover old×new candidate above [`RENAME_SIMILARITY_FLOOR`] is then paired
-/// greedily by highest similarity — ties break by declaration order (lowest old
-/// index, then lowest new index), so a deterministic pairing falls out of a
-/// deterministic declaration. Whatever is still unpaired is a genuine
-/// removal/addition.
+/// 1. **Identical content at the same address** — an anchor that plainly
+///    stayed put.
+/// 2. **Identical content anywhere** — a move. This must precede address
+///    matching: when two anchors *exchange* addresses in one commit, each
+///    would otherwise grab the other's address and both render as total
+///    rewrites instead of two pure moves.
+/// 3. **Exact address** among the leftovers — same address, changed content.
+/// 4. **Similarity** ≥ [`RENAME_SIMILARITY_FLOOR`] among what is still
+///    unpaired, greedily by highest score; ties break by declaration order
+///    (lowest old index, then lowest new index), so a deterministic pairing
+///    falls out of a deterministic declaration.
+///
+/// Unavailable bodies take part in the address passes only: an absence is not
+/// content, and two unrelated anchors that both failed to extract must not
+/// pair as a 100%-similar rename.
 ///
 /// Returns `pairs[new_index] = Some(old_index)` plus the old indices that
 /// stayed unpaired, in declaration order.
@@ -518,25 +716,40 @@ fn pair_anchors(old: &[Snapshot], new: &[Snapshot]) -> (Vec<Option<usize>>, Vec<
     let mut pairs: Vec<Option<usize>> = vec![None; new.len()];
     let mut old_used: Vec<bool> = vec![false; old.len()];
 
-    for (j, n) in new.iter().enumerate() {
-        if let Some(i) = old
-            .iter()
-            .enumerate()
-            .position(|(i, o)| !old_used[i] && o.address == n.address)
-        {
-            old_used[i] = true;
-            pairs[j] = Some(i);
+    let pair_up = |pairs: &mut Vec<Option<usize>>,
+                       old_used: &mut Vec<bool>,
+                       accept: &dyn Fn(&Snapshot, &Snapshot) -> bool| {
+        for (j, n) in new.iter().enumerate() {
+            if pairs[j].is_some() {
+                continue;
+            }
+            if let Some(i) = (0..old.len()).find(|i| !old_used[*i] && accept(&old[*i], n)) {
+                old_used[i] = true;
+                pairs[j] = Some(i);
+            }
         }
-    }
+    };
 
+    // Pass 1 and 2 — content identity, address-preserving first.
+    let same_content = |o: &Snapshot, n: &Snapshot| {
+        o.body.is_text() && n.body.is_text() && !o.body.text().is_empty() && o.body == n.body
+    };
+    pair_up(&mut pairs, &mut old_used, &|o, n| {
+        o.address == n.address && same_content(o, n)
+    });
+    pair_up(&mut pairs, &mut old_used, &same_content);
+    // Pass 3 — exact address.
+    pair_up(&mut pairs, &mut old_used, &|o, n| o.address == n.address);
+
+    // Pass 4 — greedy similarity among the leftovers.
     loop {
         let mut best: Option<(u8, usize, usize)> = None;
         for (i, o) in old.iter().enumerate() {
-            if old_used[i] {
+            if old_used[i] || !o.body.is_text() {
                 continue;
             }
             for (j, n) in new.iter().enumerate() {
-                if pairs[j].is_some() {
+                if pairs[j].is_some() || !n.body.is_text() {
                     continue;
                 }
                 let sim = similarity(o.body.text(), n.body.text());
@@ -590,21 +803,23 @@ fn diff_section(
         let Some(diff) = snapshot_diff(o, Some(n)) else {
             continue;
         };
-        anchors.push(TimelineAnchor {
-            path: n.address.clone(),
+        // A first-add carries the full snapshot so a consumer can render a
+        // preview without reconstructing it from the addition diff.
+        anchors.push(TimelineAnchor::new(
+            n.address.clone(),
             diff,
-            // A first-add carries the full snapshot so a consumer can render a
-            // preview without reconstructing it from the addition diff.
-            content: o.is_none().then(|| n.body.text().to_string()),
-        });
+            Some(&n.body),
+            o.is_none(),
+        ));
     }
     for i in dropped {
         if let Some(diff) = snapshot_diff(Some(&old[i]), None) {
-            anchors.push(TimelineAnchor {
-                path: old[i].address.clone(),
+            anchors.push(TimelineAnchor::new(
+                old[i].address.clone(),
                 diff,
-                content: None,
-            });
+                None,
+                false,
+            ));
         }
     }
 
@@ -615,7 +830,7 @@ fn diff_section(
     Some(CommitSection {
         hash: ident.hash,
         date: ident.date,
-        day: ident.day,
+        date_git: ident.date_git,
         summary: ident.summary,
         span_diff,
         anchors,
@@ -628,11 +843,12 @@ struct CommitIdent {
     hash: String,
     /// Full ISO-8601 timestamp with offset (JSON).
     date: String,
-    /// `YYYY-MM-DD` (human `Date:` line).
-    day: String,
+    /// Git's own default author-date rendering (human `Date:` line).
+    date_git: String,
     summary: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_report(
     repo: &gix::Repository,
     span_name: &str,
@@ -640,18 +856,26 @@ fn build_report(
     span_path: &str,
     walk_complete: bool,
     commits: &[crate::git::CommitChanges],
+    limit: Option<usize>,
 ) -> Result<HistoryReport> {
     let mut sections: Vec<CommitSection> = Vec::new();
 
-    // Seed the diff baseline from the true span state at the commit immediately
-    // before the window. When `--limit` dropped older commits, the oldest shown
-    // commit must diff against real prior state — otherwise every anchor
-    // already present there is mislabeled as newly added. A non-empty seed also
-    // means the window is a strict prefix-truncation of history → `scoped`.
-    let (mut prev, scoped) = match commits.first() {
-        Some(oldest) => seed_prior_state(repo, span_name, span_root, &oldest.hash)?,
-        None => (None, false),
-    };
+    // The declaration's recorded `rk64` tokens, keyed by declared address, read
+    // from the live (working-tree) `.span` file — the same record `git span
+    // stale` compares against.
+    let recorded = recorded_hashes(repo, span_name, span_root);
+    // The rendered snapshot, if any, whose content the declaration's recorded
+    // token actually hashes. Collected across the walk (newest match wins) so
+    // the `current` block can diff live content against *what was recorded*
+    // rather than against whatever text now occupies the recorded line numbers.
+    let mut recorded_snapshots: std::collections::HashMap<String, Snapshot> =
+        std::collections::HashMap::new();
+
+    // The walk is unbounded, so the oldest walked commit is the span's true
+    // first appearance and needs no seeded baseline. (`--limit` trims *rendered
+    // entries* afterwards, and every retained entry was built against real
+    // prior state.)
+    let mut prev: Option<RenderedState> = None;
 
     for cc in commits {
         // Read the span as it existed at this commit. An absent span
@@ -671,12 +895,14 @@ fn build_report(
             },
         };
 
+        capture_recorded_snapshots(&recorded, &mut recorded_snapshots, &cur);
+
         let meta = crate::git::commit_meta(repo, &cc.hash)?;
 
         let ident = CommitIdent {
             hash: cc.hash.clone(),
             date: rfc2822_to_iso8601(&meta.author_date_rfc2822),
-            day: rfc2822_to_ymd(&meta.author_date_rfc2822),
+            date_git: rfc2822_to_git_default(&meta.author_date_rfc2822),
             summary: meta.summary.clone(),
         };
 
@@ -689,9 +915,23 @@ fn build_report(
         prev = Some(cur);
     }
 
+    // `--limit N` is a window over *rendered entries*: keep the newest N and
+    // flag the report scoped when anything older was dropped. `--limit 0` is an
+    // explicitly empty — and therefore explicitly partial — document.
+    let mut scoped = false;
+    if let Some(n) = limit {
+        if sections.len() > n {
+            sections.drain(..sections.len() - n);
+            scoped = true;
+        }
+        if n == 0 {
+            scoped = true;
+        }
+    }
+
     // The current block diffs against the *last recorded timeline state* — the
-    // newest in-window commit's state. With an empty window (`--limit 0`, or a
-    // worktree-only span) fall back to HEAD, the only other recorded state.
+    // newest commit's state. With an empty walk (a worktree-only span) fall
+    // back to HEAD, the only other recorded state.
     let last = match prev {
         Some(state) => Some(state),
         None => match read_span_at_in(repo, span_name, Some("HEAD"), span_root) {
@@ -702,8 +942,19 @@ fn build_report(
             Err(e) => return Err(e.into()),
         },
     };
+    if let Some(state) = last.as_ref() {
+        capture_recorded_snapshots(&recorded, &mut recorded_snapshots, state);
+    }
 
-    let current = build_current(repo, span_name, span_root, span_path, last.as_ref())?;
+    let current = build_current(
+        repo,
+        span_name,
+        span_root,
+        span_path,
+        last.as_ref(),
+        &recorded,
+        &recorded_snapshots,
+    )?;
 
     Ok(HistoryReport {
         span: span_name.to_string(),
@@ -714,47 +965,37 @@ fn build_report(
     })
 }
 
-/// Compute the rendered span state at the commit immediately before the window
-/// (the first parent of `oldest_hash`), to seed the diff baseline truthfully.
-///
-/// Returns `(Some(state), true)` when a span-touching prior state exists — the
-/// window is a strict prefix-truncation of history, so the first shown commit
-/// diffs against real prior state and the report is flagged `scoped`. Returns
-/// `(None, false)` when `oldest_hash` is the true history root for this span
-/// (no parent, or the span did not exist at the parent), i.e. a genuine
-/// first-appearance window that is the complete record from the span's birth.
-fn seed_prior_state(
+/// The declaration's recorded `rk64` tokens, keyed by declared address, read
+/// from the working-tree `.span` file. Empty when the span does not exist
+/// there (a deleted or never-checked-out declaration).
+fn recorded_hashes(
     repo: &gix::Repository,
     span_name: &str,
     span_root: &str,
-    oldest_hash: &str,
-) -> Result<(Option<RenderedState>, bool)> {
-    // Resolve the parent to a bare OID: `read_span_at_in` accepts a revspec,
-    // but the per-anchor body reads (`path_blob_at`) require a 40-hex OID, so a
-    // raw `<hash>~1` would fail blob lookup and degrade every anchor to a note
-    // (spuriously diffing as changed). A root commit has no parent →
-    // `resolve_commit` errors → genuine first appearance.
-    let parent = match crate::git::resolve_commit(repo, &format!("{oldest_hash}~1")) {
-        Ok(oid) => oid,
-        Err(_) => return Ok((None, false)),
-    };
-    match read_span_at_in(repo, span_name, Some(&parent), span_root) {
-        Ok(span) => Ok((Some(rendered_state_at(repo, &parent, &span)), true)),
-        // `SpanNotFound` here covers both "no parent (root commit)" — an
-        // unresolvable `<hash>~1` makes `tree_entry_at` yield `Ok(None)` →
-        // `SpanNotFound` — and "the span file is absent at the parent". Either
-        // way the oldest shown commit is the span's true first appearance.
-        Err(crate::Error::SpanNotFound(_)) => Ok((None, false)),
-        Err(e) => Err(e.into()),
+) -> std::collections::HashMap<String, String> {
+    match read_span_at_in(repo, span_name, None, span_root) {
+        Ok(span) => span
+            .anchors
+            .iter()
+            .map(|(_id, a)| (anchor_address(a), bare_hash(&a.stored_hash)))
+            .collect(),
+        Err(_) => std::collections::HashMap::new(),
     }
 }
 
-/// Convert an RFC2822 date (`Thu, 3 Nov 2025 …`) to `YYYY-MM-DD`.
-fn rfc2822_to_ymd(rfc2822: &str) -> String {
-    use chrono::DateTime;
-    match DateTime::parse_from_rfc2822(rfc2822) {
-        Ok(dt) => dt.format("%Y-%m-%d").to_string(),
-        Err(_) => rfc2822.to_string(),
+/// Remember every snapshot in `state` whose content hash equals the
+/// declaration's recorded token for the same address — that snapshot *is* the
+/// content the declaration describes. Later states overwrite earlier ones, so
+/// the newest matching snapshot wins.
+fn capture_recorded_snapshots(
+    recorded: &std::collections::HashMap<String, String>,
+    into: &mut std::collections::HashMap<String, Snapshot>,
+    state: &RenderedState,
+) {
+    for snap in &state.anchors {
+        if recorded.get(&snap.address) == Some(&snap.hash) {
+            into.insert(snap.address.clone(), snap.clone());
+        }
     }
 }
 
@@ -766,6 +1007,17 @@ fn rfc2822_to_iso8601(rfc2822: &str) -> String {
     use chrono::DateTime;
     match DateTime::parse_from_rfc2822(rfc2822) {
         Ok(dt) => dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+        Err(_) => rfc2822.to_string(),
+    }
+}
+
+/// Convert an RFC2822 date to git's own default `Date:` rendering
+/// (`Thu Jul 30 12:04:37 2026 -0400`, git's `%ad`). A day-only string makes a
+/// run of same-day commits — the normal shape of span history — unskimmable.
+fn rfc2822_to_git_default(rfc2822: &str) -> String {
+    use chrono::DateTime;
+    match DateTime::parse_from_rfc2822(rfc2822) {
+        Ok(dt) => dt.format("%a %b %e %H:%M:%S %Y %z").to_string(),
         Err(_) => rfc2822.to_string(),
     }
 }
@@ -790,10 +1042,10 @@ fn location_address(loc: &AnchorLocation) -> String {
 /// line on the live side of a current diff is the token a re-anchor would
 /// record.
 fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
-    // A resolved location's `blob` may be a *computed* hash the worktree layer
-    // never wrote to the object database, so a lookup miss falls back to the
-    // working tree — the same fallback `read_location_text` makes, keeping the
-    // rendered content and its `index` hash describing the same bytes.
+    // A resolved location read from the working tree carries `blob: None` (see
+    // `AnchorLocation::blob`), so the live bytes have to come from disk. This
+    // is the same fallback `read_location_text` makes, keeping the rendered
+    // content and its `index` hash describing the same bytes.
     let bytes = loc
         .blob
         .and_then(|oid| crate::git::read_blob_bytes(repo, &oid.to_string()).ok())
@@ -804,9 +1056,68 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
                 .or_else(|_| crate::git::read_worktree_bytes(repo, &path))
                 .unwrap_or_default()
         });
-    git_span_core::rk64_to_hex(git_span_core::cheap_fingerprint_with_extent(
-        &bytes, &loc.extent,
-    ))
+    extent_hash(&bytes, &loc.extent)
+}
+
+/// The old side of a current-block diff: the anchor's *recorded* state, as the
+/// declaration describes it.
+///
+/// # The oracle
+///
+/// **Whatever content stands as an old side must hash to the declaration's
+/// recorded `rk64` token.** Nothing else is the recorded content, and every
+/// known way this block has lied came from violating that rule:
+///
+/// * the newest snapshot *at the recorded address* is, for a `Moved` anchor,
+///   a different block of source entirely — diffing against it fabricates a
+///   rewrite for what `git span stale` calls a pure move;
+/// * for an in-place committed edit it is the *drifted* text, so the diff
+///   comes out empty and the drift vanishes from the default output;
+/// * for a never-committed declaration there is no earlier state at all, and
+///   treating the anchor as a creation paints the drifted text as the
+///   declared content while the recorded token two keys away says otherwise.
+///
+/// So the body is taken from the first candidate that hashes to the recorded
+/// token — the snapshot the walk identified as recorded, the live content
+/// (identical bytes by definition when the hashes agree), or the paired
+/// snapshot. When no candidate qualifies the recorded bytes are simply not
+/// recoverable, and the old side is [`Unavailable`]: the caller then renders
+/// the header alone, because hunks need two comparable bodies.
+///
+/// Either way the `index` line carries `rk64:<recorded>..rk64:<live>`, so the
+/// two hashes differ exactly when the anchor is drifted.
+fn current_old_side(
+    paired: Option<&Snapshot>,
+    live: &Snapshot,
+    recorded_hash: Option<&String>,
+    recorded_snapshot: Option<&Snapshot>,
+) -> Option<Snapshot> {
+    let hash = recorded_hash
+        .cloned()
+        .or_else(|| paired.map(|p| p.hash.clone()))?;
+    let source = [recorded_snapshot, Some(live), paired]
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.hash == hash);
+    debug_assert!(
+        source.is_none_or(|s| s.hash == hash),
+        "an old side must hash to the declaration's recorded token"
+    );
+    let address = paired.map_or_else(|| live.address.clone(), |p| p.address.clone());
+    Some(match source {
+        Some(src) => Snapshot {
+            address,
+            first_line: src.first_line,
+            hash,
+            body: src.body.clone(),
+        },
+        None => Snapshot {
+            address,
+            first_line: live.first_line,
+            hash,
+            body: AnchorBody::Unavailable(Unavailable::Absent),
+        },
+    })
 }
 
 /// Build the optional `current` section from two triggers:
@@ -814,20 +1125,35 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 ///   1. the resolver (the same `LayerSet::full()` engine `git span stale` uses)
 ///      reports a non-`Fresh` status for an anchor — committed-but-not-
 ///      re-anchored source drift, a relocated `moved` anchor, an uncommitted
-///      edit, a deletion, …; each such anchor becomes one diff from its last
-///      recorded timeline snapshot to its live content, plus a full snapshot;
+///      edit, a deletion, …;
 ///   2. the worktree declaration differs from HEAD — one `span_diff` covering
-///      uncommitted why edits and uncommitted anchor add/remove alike (a
-///      worktree-added anchor resolves as `Fresh`, so the declaration diff is
-///      its only representation).
+///      uncommitted why edits and uncommitted anchor add/remove alike.
 ///
-/// The section is omitted when neither fires.
+/// Each emitted anchor is keyed by its **declared** address (what `stale`
+/// prints, and the only string a consumer can join against the `.span` file);
+/// a resolver relocation is reported as a `proposed` address, never as a
+/// completed rename. It carries both payloads: the live snapshot, and a diff
+/// from the last recorded state that degrades to a header-only
+/// `index rk64:<recorded>..rk64:<live>` block when the content is unchanged
+/// but the declaration's recorded hash is stale — the mismatch *is* the
+/// finding, and eliding it is what used to hide committed drift from the
+/// default output.
+///
+/// Anchors pair against the last recorded state through the same
+/// [`pair_anchors`] logic the timeline uses, so an *uncommitted* re-anchor
+/// (the user edited the address in the worktree `.span` file) renders as a
+/// rename rather than a `new anchor`.
+///
+/// The section is omitted when neither trigger fires.
+#[allow(clippy::too_many_arguments)]
 fn build_current(
     repo: &gix::Repository,
     span_name: &str,
     span_root: &str,
     span_path: &str,
     last: Option<&RenderedState>,
+    recorded: &std::collections::HashMap<String, String>,
+    recorded_snapshots: &std::collections::HashMap<String, Snapshot>,
 ) -> Result<Option<CurrentSection>> {
     // Trigger 2 — HEAD declaration blob vs. the worktree bytes. The worktree
     // side's `index` hash comes from `hash_blob`, which computes a blob OID
@@ -848,9 +1174,7 @@ fn build_current(
 
     // Trigger 1 — resolve the live span through the same engine `git span
     // stale` uses: worktree-over-index-over-HEAD, with the staged-span layer
-    // included. Each non-Fresh anchor becomes one `CurrentAnchor` whose content
-    // is the engine's resolved live location (the relocated block for a `moved`
-    // anchor), never a slice of the stored line range.
+    // included.
     let options = crate::types::EngineOptions {
         layers: crate::types::LayerSet::full(),
         ignore_unavailable: false,
@@ -870,33 +1194,107 @@ fn build_current(
             Err(crate::Error::SpanNotFound(_)) => continue,
             Err(e) => return Err(e.into()),
         };
+
+        // Materialize *every* anchor (not only the drifted ones) so pairing
+        // against the last recorded state sees the whole picture; only the
+        // interesting ones are emitted below.
+        let mut live: Vec<Snapshot> = Vec::with_capacity(span.anchors.len());
+        let mut fresh: Vec<bool> = Vec::with_capacity(span.anchors.len());
+        let mut proposals: Vec<Option<String>> = Vec::with_capacity(span.anchors.len());
         for r in &span.anchors {
-            if r.status == crate::types::AnchorStatus::Fresh {
+            let declared = location_address(&r.anchored);
+            let (body, hash, first_line, proposed) = match &r.current {
+                Some(loc) => {
+                    let healed = location_address(loc);
+                    (
+                        AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
+                        location_hash(repo, loc),
+                        extent_first_line(loc.extent),
+                        (healed != declared).then_some(healed),
+                    )
+                }
+                // Nothing resolves: the anchored content is gone. A structural
+                // absence, never a prose placeholder.
+                None => (
+                    AnchorBody::Unavailable(Unavailable::Absent),
+                    NULL_ANCHOR_HASH.to_string(),
+                    extent_first_line(r.anchored.extent),
+                    None,
+                ),
+            };
+            live.push(Snapshot {
+                address: declared,
+                first_line,
+                hash,
+                body,
+            });
+            fresh.push(r.status == crate::types::AnchorStatus::Fresh);
+            proposals.push(proposed);
+        }
+
+        let empty: Vec<Snapshot> = Vec::new();
+        let old = last.map(|s| s.anchors.as_slice()).unwrap_or(&empty);
+        let (pairs, _dropped) = pair_anchors(old, &live);
+
+        for (j, n) in live.iter().enumerate() {
+            let paired = pairs[j].map(|i| &old[i]);
+            let reanchored = paired.is_some_and(|o| o.address != n.address);
+            // A `Fresh` anchor whose declared address is unchanged has nothing
+            // to report; a worktree-removed or worktree-added anchor is already
+            // covered by `span_diff`.
+            if fresh[j] && !reanchored {
                 continue;
             }
-            // The old side is the anchor's last recorded timeline snapshot, at
-            // its recorded address — not HEAD generally.
-            let anchored_address = location_address(&r.anchored);
-            let old = last.and_then(|s| s.anchors.iter().find(|a| a.address == anchored_address));
-
-            let new = r.current.as_ref().map(|loc| Snapshot {
-                address: location_address(loc),
-                first_line: extent_first_line(loc.extent),
-                hash: location_hash(repo, loc),
-                body: AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
-            });
-
-            let path = new
+            let old_side = current_old_side(
+                paired,
+                n,
+                recorded.get(&n.address),
+                recorded_snapshots.get(&n.address),
+            );
+            let kind = match (&old_side, &proposals[j]) {
+                // The user re-anchored in the uncommitted declaration: the
+                // address genuinely moved between two recorded states.
+                (Some(o), _) if o.address != n.address => AnchorDiffKind::Rename {
+                    similarity: similarity(o.body.text(), n.body.text()),
+                },
+                (_, Some(address)) => AnchorDiffKind::Proposed {
+                    address: address.clone(),
+                },
+                (Some(_), None) => AnchorDiffKind::Modify,
+                (None, None) => AnchorDiffKind::New,
+            };
+            let header = DiffHeader::Anchor {
+                old_hash: old_side
+                    .as_ref()
+                    .map(|o| o.hash.clone())
+                    .unwrap_or_else(|| NULL_ANCHOR_HASH.to_string()),
+                new_hash: n.hash.clone(),
+                kind,
+            };
+            let old_diff_side = old_side
                 .as_ref()
-                .map(|s| s.address.clone())
-                .unwrap_or_else(|| anchored_address.clone());
-            let content = new.as_ref().map(|s| s.body.text().to_string());
-            let diff = snapshot_diff(old, new.as_ref());
-            anchors.push(CurrentAnchor {
-                path,
+                .map(snapshot_side)
+                .unwrap_or_else(DiffSide::dev_null);
+            // The recorded bytes are unrecoverable (a declaration that was
+            // never committed at its current hash). Hunks would have to invent
+            // one of the two sides, so the header — which still names both
+            // hashes truthfully — is the whole block.
+            let unrecoverable = old_side
+                .as_ref()
+                .is_some_and(|o| matches!(o.body, AnchorBody::Unavailable(_)))
+                && n.body.is_text();
+            let diff = if unrecoverable {
+                render_diff_header(&header, &old_diff_side, &snapshot_side(n))
+            } else {
+                render_unified_diff_always(&header, old_diff_side, snapshot_side(n))
+            };
+            anchors.push(CurrentAnchor::new(
+                n.address.clone(),
+                proposals[j].clone(),
                 diff,
-                content,
-            });
+                &n.body,
+                unrecoverable,
+            ));
         }
     }
 
@@ -914,16 +1312,25 @@ fn build_current(
 ///
 /// Uncommitted drift comes first with no commit header (git's own idiom for
 /// "not yet committed"), then commit entries newest-first: `commit <40-hex>`,
-/// `Date:   YYYY-MM-DD`, a blank line, the four-space-indented summary, then
-/// the declaration diff and each anchor diff. Every block is separated by one
-/// blank line.
+/// `Date:   <git's default author-date rendering>`, a blank line, the
+/// four-space-indented summary, then the declaration diff and each anchor
+/// diff. Every block is separated by one blank line.
+///
+/// Every anchor the JSON format emits is emitted here too: both renderers walk
+/// the same entry lists, and both `TimelineAnchor` and `CurrentAnchor` carry a
+/// mandatory `diff`.
 pub fn render_human(report: &HistoryReport) -> String {
     let mut blocks: Vec<&str> = Vec::new();
     let headers: Vec<String> = report
         .commits
         .iter()
         .rev()
-        .map(|c| format!("commit {}\nDate:   {}\n\n    {}\n", c.hash, c.day, c.summary))
+        .map(|c| {
+            format!(
+                "commit {}\nDate:   {}\n\n    {}\n",
+                c.hash, c.date_git, c.summary
+            )
+        })
         .collect();
 
     if let Some(cur) = &report.current {
@@ -931,9 +1338,7 @@ pub fn render_human(report: &HistoryReport) -> String {
             blocks.push(d);
         }
         for a in &cur.anchors {
-            if let Some(d) = &a.diff {
-                blocks.push(d);
-            }
+            blocks.push(&a.diff);
         }
     }
     for (header, c) in headers.iter().zip(report.commits.iter().rev()) {
@@ -951,9 +1356,38 @@ pub fn render_human(report: &HistoryReport) -> String {
 
 /// Render a `HistoryReport` as a `schema_version: 2` `serde_json::Value`.
 ///
-/// `commits` is newest-first. Each timeline anchor carries `path` plus exactly
-/// one of `diff` or `content` (`content` for a first-add); `current` anchors
-/// carry both. `span_diff`, `current`, and `scoped` are omitted when absent.
+/// Top level: `schema_version`, `span`, `commits` (newest-first), plus
+/// `scoped: true` and `current` when they apply. `scoped` means `--limit`
+/// dropped older entries — such a document is a partial record, and a consumer
+/// must never read it as evidence that a span has no history or no drift.
+///
+/// **Timeline anchors** (`commits[].anchors[]`) carry `path` plus exactly one
+/// of `content` (a first-add's full snapshot) or `diff` (every other change).
+///
+/// **Current anchors** (`current.anchors[]`) carry `path` — always the
+/// *declared* address, the same string `git span stale` prints — plus **both**
+/// payloads: `diff` and `content`. `diff` is always present; when the live
+/// content is byte-identical to the last recorded state but the declaration's
+/// recorded hash is stale, it degrades to a header-only block whose
+/// `index rk64:<recorded>..rk64:<live>` line is itself the finding. The human
+/// renderer emits exactly the same entry set.
+///
+/// **`unavailable`** replaces `content` whenever an anchor's content could not
+/// be extracted: `"absent"` (no such file), `"range-past-eof"` (the declared
+/// range starts past end of file), or `"binary"` (not UTF-8). It is a status to
+/// style, never source to render — no placeholder prose is ever emitted as
+/// content or as diff body text.
+///
+/// **`recorded`** appears as `"unrecoverable"` on a current anchor whose
+/// declared content the declaration records by hash alone — no commit carries
+/// a snapshot matching the recorded token (a `.span` file edited but never
+/// committed, say). The diff is then a header block naming both hashes, with
+/// no hunks: there is a real drift, but no honest "before" text to show, and
+/// the live text is never dressed up as the declared content.
+///
+/// **`proposed`** appears on a current anchor when the resolver believes the
+/// anchored content now lives at a different address. It is a *proposal*
+/// (`git span stale --fix` would write it), not an accomplished move.
 pub fn render_json(report: &HistoryReport) -> Value {
     let commits: Vec<Value> = report
         .commits
@@ -977,6 +1411,9 @@ pub fn render_json(report: &HistoryReport) -> Value {
                         Some(content) => ao.insert("content".into(), json!(content)),
                         None => ao.insert("diff".into(), json!(a.diff)),
                     };
+                    if let Some(u) = a.unavailable {
+                        ao.insert("unavailable".into(), json!(u.as_str()));
+                    }
                     Value::Object(ao)
                 })
                 .collect();
@@ -1002,11 +1439,18 @@ pub fn render_json(report: &HistoryReport) -> Value {
             .map(|a| {
                 let mut ao = serde_json::Map::new();
                 ao.insert("path".into(), json!(a.path));
-                if let Some(diff) = &a.diff {
-                    ao.insert("diff".into(), json!(diff));
+                if let Some(proposed) = &a.proposed {
+                    ao.insert("proposed".into(), json!(proposed));
                 }
+                ao.insert("diff".into(), json!(a.diff));
                 if let Some(content) = &a.content {
                     ao.insert("content".into(), json!(content));
+                }
+                if let Some(u) = a.unavailable {
+                    ao.insert("unavailable".into(), json!(u.as_str()));
+                }
+                if a.recorded_unrecoverable {
+                    ao.insert("recorded".into(), json!("unrecoverable"));
                 }
                 Value::Object(ao)
             })

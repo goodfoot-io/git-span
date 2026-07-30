@@ -1,4 +1,4 @@
-packages/git-span/src/cli/history.rs#L877-L887 rk64:4cb360a429c77e59
-packages/git-span/src/cli/stale_output.rs#L1563-L1597 rk64:d8bc8531414c50f3
+packages/git-span/src/cli/history.rs#L1204-L1233 rk64:041a653ad3908c44
+packages/git-span/src/cli/stale_output.rs#L1563-L1596 rk64:3e49cf03923e050f
 
-Shared drifted-anchor extraction contract in which git span history's current section builds each live snapshot through stale_output's read_location_text so both commands render identical drifted content — including the working-tree fallback for computed blob hashes — for the same anchor.
+Shared drifted-anchor extraction contract in which git span history's current section builds each live snapshot through stale_output's read_location_text so both commands render identical drifted content — including the disk fallback for worktree-resolved locations, which carry no stored blob — for the same anchor.
