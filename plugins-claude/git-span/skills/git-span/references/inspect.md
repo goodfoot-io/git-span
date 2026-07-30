@@ -6,8 +6,8 @@ Match the question to the command, don't reflexively mutate:
   target; `--oneline` for terse `<span-name> <path>#Lx-Ly` rows) or `git span show <name>`
   (== bare `git span <name>`) for one span's full anchors+why+config.
 - Rationale / definition → `git span why <name>` (bare, just prints the why).
-- Timeline / when something changed → `git span history <name>` — XML by default,
-  `--format json` for JSON.
+- Timeline / when something changed → `git span history <name>` — newest-first
+  git-log-style text by default, `--format json` for JSON.
 - Drift check without fixing anything → `git span stale [<name-or-path>]` — read-only
   unless `--fix` is passed; omit `--fix` here.
 

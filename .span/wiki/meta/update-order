@@ -1,5 +1,6 @@
 README.md#L18-L55 rk64:8826a4b6155d78fe
-packages/git-span/src/cli/mod.rs#L40-L190 rk64:438be7ed598de6db
+packages/git-span/src/cli/mod.rs#L40-L193 rk64:c4b14c4ae8d84e80
 packages/git-span/src/main.rs#L49-L113 rk64:c05ed91bbc3814dc
-wiki/meta/git-span-documentation-touchpoints.md#L102-L111 rk64:9c5df91525f6b24d
+wiki/meta/git-span-documentation-touchpoints.md#L102-L111 rk64:9c95fdeba74525b0
 
+The touchpoints page's Update Order section prescribes the walk from the implementation surfaces — the Clap config/Commands enum and main.rs pre-classification — through the README quick reference and on to the secondary docs whenever git-span CLI behavior or documentation changes.

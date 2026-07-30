@@ -109,11 +109,11 @@ Key flags:
 git span history <name>
 ```
 
-Shows a chronological timeline of a span file's git history: each commit where the span changed, oldest to newest, with the content of any anchor that was added, modified, or removed, plus an optional `current` entry describing how the working tree has drifted from `HEAD`.
+Shows a timeline of a span file's git history, newest to oldest, `git log -p` style: each qualifying commit's declaration diff and a unified diff per anchor (rename-aware, so a re-anchor renders as a rename rather than remove+add), plus an optional leading, headerless section for uncommitted drift in the working tree from `HEAD`.
 
 Key flags:
 
-- `--format <xml|json>` — output format. Default `xml`.
+- `--format <human|json>` — output format. Default `human` (git-log-style text). `json` emits `schema_version: 2`, carrying the identical diffs as raw unified-diff patch strings.
 - `-n`, `--limit <N>` — cap the walk at N commits (the newest N are inspected).
 
 ## Audit and automate

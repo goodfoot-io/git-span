@@ -181,12 +181,14 @@ pub enum Commands {
     #[command(name = "merge-driver")]
     MergeDriver(MergeDriverArgs),
 
-    /// Show a chronological timeline of a span file's git history: each commit
-    /// where the span changed, rendered oldest→newest, with the content of any
-    /// anchor that was added, modified, or removed, and an optional `current`
-    /// entry describing how the working tree has drifted from HEAD.
+    /// Show a span's git history as a git-log-style timeline: newest-first
+    /// commit entries whose patches are real unified diffs of the span
+    /// declaration and of each anchor's content at its declared address, with
+    /// uncommitted worktree drift rendered before the first commit as a
+    /// headerless diff.
     ///
-    /// Outputs XML by default; use `--format json` for JSON.
+    /// Outputs human-readable text by default; use `--format json` for
+    /// `schema_version: 2` JSON carrying the same patches as raw text.
     History(HistoryArgs),
 }
 

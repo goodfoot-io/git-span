@@ -1,176 +1,271 @@
-# `git span history` — markdown variant (reference only)
+# `git span history` — v2 output contract
 
-This document is the earlier markdown rendering of `git span history` output, kept for
-reference. It was superseded by the canonical XML format (see
-`history-example-output-xml.md`). The XML format is the authoritative spec.
+This document is the reference specification for `git span history`'s two renderers
+(`render_human` and `render_json` in [history.rs](../src/cli/history.rs)). Every example
+below is genuine output — captured by building the CLI and running
+`git span history agent-hooks/hook-message-copy` against this repository's own git
+history — trimmed for length with `⋮` markers. Those markers are elision added for this
+document only; the real renderers never truncate a diff or drop a commit.
 
-The markdown format is **not produced by any current renderer** — it is preserved here
-to document why XML was chosen and to give the JSON shape a readable home.
+## Output contract
 
-## Why XML won
+Both formats render the same underlying timeline, newest-first:
 
-Markdown fences delimit blocks by backtick length: the fence must be longer than any
-interior backtick run. Anchor content can contain its own backtick sequences (e.g. in
-`.md` files or documentation strings), making dynamic fence sizing fragile. XML CDATA
-eliminates this problem entirely: the only character sequence that terminates a CDATA
-block is `]]>`, which is defensively split in the renderer. XML is also structurally
-self-describing, which makes it more tractable for Claude and other tooling.
+- **`current`** — uncommitted worktree drift from `HEAD`, rendered first (human) or as
+  the `current` object (JSON). Omitted entirely when the worktree declaration matches
+  `HEAD` and no anchor has drifted.
+- **`commits`** — one section per commit that changed the declaration or an anchored
+  file's content within a declared range, newest-first. A qualifying commit that changed
+  nothing observable (e.g. only outside every declared range) produces no section.
 
-## JSON shape (`--format json`)
+Every observable change is expressed exactly once, as a unified diff in git's own
+dialect:
 
-The JSON output is the data-equivalent of the canonical XML. It is built with
-`serde_json::json!` and carries a top-level `schema_version`.
+- **`span_diff`** — the real git blob diff of the `.span/<name>` declaration file between
+  two states. This subsumes the old `why` field: why prose lives in the declaration, so a
+  why edit shows up as an ordinary line in this diff.
+- **per-anchor diffs** — pseudo-diffs between an anchor's *extracted snapshots*, using
+  `path#Lstart-Lend` display paths and `index rk64:…` lines instead of git blob OIDs.
+  Anchors pair across consecutive states by exact address first, then by content
+  similarity (git's `-M` shape) — a re-anchor renders as a `rename from`/`rename to`
+  block, not a delete followed by an add.
+
+Declared anchor ranges are taken at face value at every commit — a stale range
+extracting "wrong" content *is* the drift being visualized, never remapped. Anchor diffs
+are always computed between extracted snapshots, never by clipping a file's real commit
+patch to a line range.
+
+## Human format (default)
+
+`git log -p` style: `commit <40-hex>`, `Date:   YYYY-MM-DD`, a blank line, the
+four-space-indented commit summary, a blank line, then the declaration diff and each
+anchor diff. Uncommitted drift (when present) comes first with no `commit`/`Date`
+header — git's own idiom for "not yet committed."
+
+Real output, three consecutive commits from `agent-hooks/hook-message-copy`'s history —
+a pure re-anchor with content hunks (similarity < 100%, so headers *and* hunks), an
+anchor deletion, and an anchor first-add:
+
+```
+commit e86fe9cc50f359301ca4a61156f4f6bfcba150a8
+Date:   2026-07-29
+
+    Rebuild the gate bundles over both the ranking fix and the bracketed-path fix
+
+diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy
+index 08d060d..b5566ae 100644
+--- a/.span/agent-hooks/hook-message-copy
++++ b/.span/agent-hooks/hook-message-copy
+@@ -1,6 +1,4 @@
+-packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 rk64:0a52ab2b949313f9
+-packages/agent-hooks/src/common/gate-core.ts#L1025-L1132 rk64:0a52ab2b949313f9
+-packages/agent-hooks/src/common/gate-core.ts#L1032-L1139 rk64:0a52ab2b949313f9
++packages/agent-hooks/src/common/gate-core.ts#L1040-L1147 rk64:0a52ab2b949313f9
+ packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
+ packages/website/content/docs/agent-integration.mdx rk64:34c2f95c65143b3d
+ plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:eb3ed563e709d0d3
+
+diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1032-L1139 b/packages/agent-hooks/src/common/gate-core.ts#L1040-L1147
+similarity index 92%
+rename from packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
+rename to packages/agent-hooks/src/common/gate-core.ts#L1040-L1147
+index rk64:0a52ab2b949313f9..rk64:0a52ab2b949313f9
+--- a/packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
++++ b/packages/agent-hooks/src/common/gate-core.ts#L1040-L1147
+@@ -1032,11 +1040,3 @@
+-  }
+-
+-  const out: string[] = [];
+-  let pending: StalePorcelainRow[] = [];
+-  let inBullets = false;
+-  const closeBullets = (): void => {
+-    for (const { addr, statuses } of dedupeByAnchor(pending)) {
+-      out.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+     }
+     pending = [];
+     inBullets = false;
+@@ -1137,3 +1137,11 @@
+   if (text.includes('<git-span>')) return text;
+   return `<git-span>\n${text}\n</git-span>`;
+ }
++
++/**
++ * The advisory surfaced when the changeset's only staleness is environmental —
++ * the gate allows but says why, so the unresolvable condition is not silently
++ * swallowed.
++ */
++function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
++  return [
+
+diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 b/dev/null
+deleted anchor
+index rk64:0a52ab2b949313f9..0000000000000000
+--- a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126
++++ /dev/null
+@@ -1019,108 +0,0 @@
+- * bullet run; spans absent from `blocksText` entirely (or an empty/failed
+- * list read) get a synthesized minimal block — no finding is ever dropped.
+⋮  (108-line deletion body continues, omitted here for length)
+
+commit 2cbb7301d0500638a56c317c742f3fe2b04aab88
+Date:   2026-07-21
+
+    Declare the hook-message-copy span coupling both hooks' rendered wording to its doc mirrors
+
+diff --git a/dev/null b/.span/agent-hooks/hook-message-copy
+index 0000000..5eed1f7 100644
+--- /dev/null
++++ b/.span/agent-hooks/hook-message-copy
+@@ -0,0 +1,7 @@
++packages/agent-hooks/src/common/gate-core.ts#L797-L853 rk64:49728c3dbc47a6ab
++packages/agent-hooks/src/common/touch-core.ts#L233-L249 rk64:ed35ece307b8b9c0
++packages/website/content/docs/agent-integration.mdx rk64:e43151e22478015d
++plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:0825905d01d5858e
++plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:2c720530fdbcf3b6
++
++The hook-facing message copy: the latent-semantic-dependency wording rendered by the touch hook's block and the gate's four reasons, quoted verbatim in both plugin skill references and the website's agent-integration doc — reword one and the others must follow.
+
+diff --git a/dev/null b/packages/agent-hooks/src/common/gate-core.ts#L797-L853
+new anchor
+index 0000000000000000..rk64:49728c3dbc47a6ab
+--- /dev/null
++++ b/packages/agent-hooks/src/common/gate-core.ts#L797-L853
+@@ -0,0 +797,57 @@
++/** The full-span checklist a semantic-staleness deny renders into `reason`. */
++function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {
++  const names = [...new Set(findings.map((row) => row.name))];
+⋮  (addition body continues, omitted here for length)
+```
+
+Conventions demonstrated:
+
+- The `.span/<name>` diff (`span_diff`) uses ordinary git blob headers (`index
+  <old7>..<new7> 100644`, `/dev/null` on creation); anchor pseudo-diffs use `index
+  rk64:<old>..rk64:<new>` carrying the same `rk64:` extent hashes visible in the
+  declaration lines.
+- `rename from`/`rename to`/`similarity index NN%` replace git's normal `copy` machinery
+  when an anchor's address changes and pairs by content similarity (≥ 50%, git's `-M`
+  default) rather than exact address; hunks are included whenever content also changed
+  (as here — 92% similar, not identical).
+- `new anchor` / `deleted anchor` replace git's mode lines (`new file mode`/`deleted file
+  mode`) for anchors with no pairing partner in the adjacent state; the body is a full
+  addition/deletion against `/dev/null`.
+- Hunk headers carry real file coordinates: the old range addresses the old file, the new
+  range the new file, exactly like ordinary `git diff` output.
+- Commits where nothing observable changed (declaration touched but no anchor content or
+  address moved, or vice versa) are omitted from the timeline entirely.
+
+### Uncommitted drift (`current`)
+
+A live edit inside `touch-core.ts#L245-L274`, still uncommitted, renders headerless and
+first, ahead of any commit sections:
+
+```
+diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274
+index rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900
+--- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274
++++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274
+@@ -247,7 +247,7 @@
+ }
+
+ function cleanFooter(fileName: string): string {
+-  return `If you change ${fileName} check the other files to confirm they still work together.`;
++  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;
+ }
+
+ /**
+```
+
+When the worktree declaration bytes also differ from `HEAD` (an uncommitted `why` edit or
+anchor add/remove), a `span_diff` block precedes the anchor diffs, using the same
+`index <old7>..<new7> 100644` dialect — the worktree side's hash comes from a blob-OID
+computation that never writes the object. The whole `current` section is omitted when the
+worktree declaration matches `HEAD` and no anchor resolves as drifted.
+
+## JSON format (`--format json`, `schema_version: 2`)
+
+Same data; `diff`/`span_diff`/`content` are the identical raw strings the human renderer
+prints — not structured hunks. Real output, `git span history agent-hooks/hook-message-copy
+--format json -n 1`, showing the `current` block for the same uncommitted edit above (no
+`span_diff` here — only the anchor drifted, not the declaration):
 
 ```json
 {
-  "schema_version": 1,
-  "span": "billing/checkout-request-flow",
-  "commits": [
-    {
-      "hash": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
-      "date": "2025-11-03",
-      "summary": "Wire checkout to charge API",
-      "why": "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.",
-      "anchors": [
-        {
-          "path": "web/checkout.tsx#L88-L120",
-          "event": "added",
-          "content": "async function submitCheckout(cart: Cart): Promise<CheckoutResult> {\n  const token = await tokenize(cart.payment);\n  return fetch('/api/charge', {\n    method: 'POST',\n    body: JSON.stringify({ token, items: cart.items }),\n  }).then(r => r.json());\n}"
-        },
-        {
-          "path": "api/charge.ts#L30-L76",
-          "event": "added",
-          "content": "export async function handleCharge(req: Request): Promise<Response> {\n  const { token, items } = await req.json();\n  const amount = items.reduce((sum, i) => sum + i.price, 0);\n  const result = await stripe.charges.create({ amount, source: token });\n  return json({ id: result.id, status: result.status });\n}"
-        }
-      ]
-    },
-    {
-      "hash": "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
-      "date": "2025-11-14",
-      "summary": "Add retry wrapper around charge call",
-      "why": "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server, with automatic retry on transient failures.",
-      "anchors": [
-        {
-          "path": "api/charge.ts#L30-L76",
-          "event": "modified",
-          "content": "export async function handleCharge(req: Request): Promise<Response> {\n  const { token, items } = await req.json();\n  const amount = items.reduce((sum, i) => sum + i.price, 0);\n  const result = await withRetry(() => stripe.charges.create({ amount, source: token }));\n  return json({ id: result.id, status: result.status });\n}"
-        }
-      ]
-    },
-    {
-      "hash": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
-      "date": "2025-12-01",
-      "summary": "Extract retry logic to shared module",
-      "anchors": [
-        {
-          "path": "api/charge.ts#L30-L76",
-          "event": "removed"
-        },
-        {
-          "path": "api/retry.ts#L12-L40",
-          "event": "added",
-          "content": "export async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {\n  for (let i = 0; i < attempts; i++) {\n    try { return await fn(); } catch (e) { if (i === attempts - 1) throw e; }\n  }\n  throw new Error('unreachable');\n}"
-        }
-      ]
-    }
-  ],
+  "schema_version": 2,
+  "span": "agent-hooks/hook-message-copy",
   "current": {
     "anchors": [
       {
-        "path": "api/retry.ts#L12-L40",
-        "status": "changed in the working tree",
-        "content": "export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 100): Promise<T> {\n  for (let i = 0; i < attempts; i++) {\n    try { return await fn(); } catch (e) { if (i === attempts - 1) throw e; await sleep(delayMs); }\n  }\n  throw new Error('unreachable');\n}"
+        "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274",
+        "diff": "diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\nindex rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900\n--- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n+++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n@@ -247,7 +247,7 @@\n }\n \n function cleanFooter(fileName: string): string {\n-  return `If you change ${fileName} check the other files to confirm they still work together.`;\n+  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n }\n \n /**\n",
+        "content": "function cleanHeader(fileName: string): string {\n  return `${fileName} has implicit dependencies:`;\n}\n…"
       }
     ]
-  }
+  },
+  "commits": [
+    {
+      "hash": "5c5dcecd53c3f53a3801878f06f4b23636e7b945",
+      "date": "2026-07-30T11:51:18-04:00",
+      "summary": "Re-hash hook-message-copy after footer copy refinement",
+      "span_diff": "diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy\nindex 2b1682a..dcdf615 100644\n…",
+      "anchors": []
+    }
+  ]
 }
 ```
 
-## JSON shape rules (normative)
+A `commit` whose `.span/<name>` change re-hashed every anchor without adding, removing, or
+moving one (as above) still has an `anchors` array — it is simply empty; the `span_diff`
+alone carries the change. First-add anchors — for example the whole-span creation commit
+`2cbb7301`, `packages/agent-hooks/src/common/gate-core.ts#L797-L853` — carry `content`
+instead of `diff`:
 
-- `schema_version`: always `1`.
-- `why` key is omitted from a commit object when the prose did not change at that commit.
-- `current` key is omitted entirely when the working tree matches HEAD.
-- A `removed` anchor has no `content` key (the key is omitted, not set to null).
-- The `path` field for all anchor objects is the combined git-span address string:
-  `path#L<start>-L<end>` for line-range anchors; bare path for whole-file anchors.
-- Degradation notes (file absent, line range past EOF, binary content) appear as the
-  `content` string value verbatim — they are not a structured error object.
-
-## Earlier markdown format (superseded)
-
-The markdown format used `#### \`addr\`` headings and language-tagged fences whose
-fence length was set dynamically to one backtick longer than any interior backtick run.
-This is kept here only to explain the lineage; the XML renderer does not produce it.
-
-### Commit a1b2c3d — 2025-11-03 — Wire checkout to charge API
-
-**why:** Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server.
-
-#### `web/checkout.tsx#L88-L120` added
-
-```tsx
-async function submitCheckout(cart: Cart): Promise<CheckoutResult> {
-  const token = await tokenize(cart.payment);
-  return fetch('/api/charge', {
-    method: 'POST',
-    body: JSON.stringify({ token, items: cart.items }),
-  }).then(r => r.json());
+```json
+{
+  "path": "packages/agent-hooks/src/common/gate-core.ts#L797-L853",
+  "content": "/** The full-span checklist a semantic-staleness deny renders into `reason`. */\nfunction renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {\n…"
 }
 ```
 
-#### `api/charge.ts#L30-L76` added
+## Format rules (normative)
 
-```ts
-export async function handleCharge(req: Request): Promise<Response> {
-  const { token, items } = await req.json();
-  const amount = items.reduce((sum, i) => sum + i.price, 0);
-  const result = await stripe.charges.create({ amount, source: token });
-  return json({ id: result.id, status: result.status });
-}
+- `schema_version`: always `2` (an integer, not a string).
+- `date` on each commit is a full ISO-8601 timestamp with UTC offset — git's `%aI` author
+  date (e.g. `"2026-07-30T11:51:18-04:00"`), not a bare day. The human format's `Date:`
+  line stays `YYYY-MM-DD`.
+- `commits` is newest-first in both formats, matching how a reader scans `git log`.
+- Each timeline anchor object carries `path` (the address *after* the change; for a
+  removal, the last address the anchor held) plus **exactly one** of `diff` or `content`
+  — `content` only for a first-add, `diff` for every other case (modify, rename, delete).
+- Each `current` anchor object carries `path` plus **both** `diff` and `content` when
+  present, so a consumer never has to reconstruct live content from a patch.
+- `span_diff` is present on a commit or on `current` iff the `.span/<name>` declaration
+  blob actually changed between the two states being compared; omitted otherwise (not set
+  to `null`).
+- `current` is omitted entirely from the JSON object (not emitted as `{}` or `null`) when
+  the worktree declaration matches `HEAD` and no anchor is drifted.
+- `scoped: true` is present iff `--limit` dropped older qualifying commits; absent
+  (not `false`) when the timeline is the complete record. The command also prints a
+  warning to stderr in this case, in both formats — see below.
+- No `event`, no per-commit `why`, no XML — schema v2 replaces all three.
+
+## Incomplete-walk and scoped-limit warnings
+
+When the git-log walk hits its time budget (`walk_complete == false`), the command prints
+to stderr and exits non-zero, with **no partial output on stdout**:
+
+```
+error: history walk incomplete — not all commits were inspected (hit time budget)
 ```
 
-### Commit b2c3d4e — 2025-11-14 — Add retry wrapper around charge call
+When `--limit`/`-n` truncates a timeline that has more history behind it, the command
+still prints the requested window to stdout but warns on stderr and sets `scoped` (JSON)
+or leaves the human window as-is (no scoped marker in text — the stderr warning is the
+signal in both formats):
 
-**why:** Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server, with automatic retry on transient failures.
-
-#### `api/charge.ts#L30-L76` modified
-
-```ts
-export async function handleCharge(req: Request): Promise<Response> {
-  const { token, items } = await req.json();
-  const amount = items.reduce((sum, i) => sum + i.price, 0);
-  const result = await withRetry(() => stripe.charges.create({ amount, source: token }));
-  return json({ id: result.id, status: result.status });
-}
+```
+warning: history is scoped — `--limit` dropped older commits; this is a partial timeline, not the complete record
 ```
 
-### Commit c3d4e5f — 2025-12-01 — Extract retry logic to shared module
-
-#### `api/charge.ts#L30-L76` removed
-
-#### `api/retry.ts#L12-L40` added
-
-```ts
-export async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
-  for (let i = 0; i < attempts; i++) {
-    try { return await fn(); } catch (e) { if (i === attempts - 1) throw e; }
-  }
-  throw new Error('unreachable');
-}
-```
-
-### current (working tree)
-
-#### `api/retry.ts#L12-L40` — changed in the working tree
-
-```ts
-export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 100): Promise<T> {
-  for (let i = 0; i < attempts; i++) {
-    try { return await fn(); } catch (e) { if (i === attempts - 1) throw e; await sleep(delayMs); }
-  }
-  throw new Error('unreachable');
-}
-```
+The first commit shown in a scoped window still diffs against the true prior span state,
+so its diffs stay truthful — only the *count* of commits shown is capped.

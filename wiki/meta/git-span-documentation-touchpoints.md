@@ -17,7 +17,7 @@ anchoring both trees.
 
 ## Command Behavior Source Of Truth
 
-The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L40-L185). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-span/src/cli/mod.rs#L419-L487) in the same file routes parsed commands to their handlers.
+The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L40-L193). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-span/src/cli/mod.rs#L425-L489) in the same file routes parsed commands to their handlers.
 
 The pre-classification logic that makes `git span <name>` route to `Commands::Show` rather than failing as an unknown subcommand lives in [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100). That block is what resolves the ambiguity between a span name positional and a subcommand name before Clap parses the arguments. The reserved subcommand set it checks against is defined in [packages/git-span/src/validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 
@@ -102,7 +102,7 @@ whole-file anchor.
 
 When git-span CLI behavior or documentation changes, use this order:
 
-1. Confirm the implementation in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L48-L176) (Clap config and Commands enum) and [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100) (pre-classification and dispatch).
+1. Confirm the implementation in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L40-L193) (Clap config and Commands enum) and [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100) (pre-classification and dispatch).
 2. Update the primary user docs in [README.md](/README.md#L18-L55) and the [website's agent integration doc](/packages/website/content/docs/agent-integration.mdx).
 3. Update the agent workflow contract in the [git-span skill](/plugins-claude/git-span/skills/git-span/SKILL.md).
 4. Update secondary references such as the finding-span-candidates section and the man page.

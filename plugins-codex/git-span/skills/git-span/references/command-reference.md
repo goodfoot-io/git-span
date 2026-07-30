@@ -35,7 +35,7 @@ git span stale [<target>...] [--format human|porcelain|json] [--no-exit-code]
 git span stale [<target>...] [--fix]                 # re-anchor in place; resolve .span/ conflicts; human format only
 git span stale --perf-trace <path>                   # CSV of per-anchor wall-clock traces; full scan only, no positional paths
 git span tree <glob>... [-d|--depth <n>] [--format human|json]
-git span history <name> [--format xml|json] [-n|--limit <count>]
+git span history <name> [--format human|json] [-n|--limit <count>]
 git span doctor
 ```
 
@@ -78,11 +78,13 @@ only). `--format human` (default) prints the nested markdown list; `--format
 json` emits the same structure as nested
 `{ "members": [...], "children": [...] }` nodes.
 
-`git span history <name>` walks the span file's git history oldest→newest:
-each commit that changed it, the anchor content added/modified/removed, and an
-optional trailing `current` entry describing worktree drift from HEAD.
-Defaults to XML; `--format json` for JSON. `-n`/`--limit` caps the walk at the
-newest N commits.
+`git span history <name>` walks the span file's git history and renders it
+newest→oldest, `git log -p` style: each qualifying commit's declaration diff
+and per-anchor unified diffs (rename-aware — a re-anchor renders as a rename,
+not remove+add), plus a leading, headerless section for uncommitted worktree
+drift from HEAD. Defaults to git-log-style text; `--format json` emits
+`schema_version: 2` carrying the identical diffs as raw patch strings.
+`-n`/`--limit` caps the walk at the newest N commits.
 
 ## Editing a span
 

@@ -30,7 +30,7 @@ by cost of error:
    committed drift to the first mutating commit
    ([DriftLocus](../../packages/git-span/src/types.rs#L211-L222)) and
    `git span history <name>` renders the span's commit timeline
-   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L184-L190)). A doc
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L184-L192)). A doc
    drifting behind a deliberate, committed code change means the doc is
    wrong. A code change with no coherent commit story may be a regression —
    the doc may be the truth.

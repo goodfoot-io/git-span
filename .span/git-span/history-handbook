@@ -1,4 +1,5 @@
-packages/git-span/src/cli/history.rs#L1-L8 rk64:84ae47364f11e745
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L85 rk64:10ac26d3f59fe214
+packages/git-span/src/cli/history.rs#L1-L21 rk64:ca922b20110a5cb9
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L87 rk64:3d806f34333f56cb
+plugins-codex/git-span/skills/git-span/references/command-reference.md#L81-L87 rk64:3d806f34333f56cb
 
-The handbook's history section documents the timeline the history command renders — the oldest-to-newest walk of commits that changed the span file, the optional trailing current entry for worktree drift, and the XML-default/JSON output formats.
+The handbook's history section documents the timeline the history command's module header defines — a newest-first git-log-style walk of unified span-declaration and per-anchor diffs, with uncommitted worktree drift leading and human-text-default/schema-v2-JSON output — where the plugins-claude copy is normative and the plugins-codex copy mirrors it.

@@ -72,13 +72,13 @@ enumeration aborts rather than a per-span report continuing past it.
 Prefer the built-in walk over generic git commands:
 
 ```bash
-git span history <name>               # XML by default; --format json for JSON
+git span history <name>               # git-log-style text by default; --format json for JSON
 git span history <name> -n <count>    # cap at the newest N commits
 ```
 
-It renders each commit that changed `.span/<name>` oldest→newest, with the
-anchor content added/modified/removed, plus a trailing `current` entry
-describing worktree drift from HEAD. For cross-span queries plain git still
+It renders newest-first, `git log -p` style: each qualifying commit's
+declaration diff and per-anchor unified diffs, plus a leading, headerless
+section for uncommitted worktree drift from HEAD. For cross-span queries plain git still
 works — spans are ordinary tracked files, so `git log --all` shows them only
 as part of the commits that touched `.span/`, and there are no custom span
 refs to exclude:

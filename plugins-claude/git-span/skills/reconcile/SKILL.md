@@ -207,9 +207,10 @@ prompt only designates which spans — the procedure is shared here.
 For each assigned span:
 
 1. Read the current bytes at each stale anchor location.
-2. Run `git span history <name>`; compare `<current>` against anchored content,
-   and note which commit caused the drift — a deliberate, committed change makes
-   that side authoritative (full policy: `wiki/guides/reconciliation-authority.md`).
+2. Run `git span history <name>`; compare the leading uncommitted-drift diff
+   (`current` in `--format json`) against anchored content, and note which
+   commit caused the drift — a deliberate, committed change makes that side
+   authoritative (full policy: `wiki/guides/reconciliation-authority.md`).
 3. Write a one-sentence confirmation of the relationship. Stop if you cannot.
 4. Classify and execute:
 
