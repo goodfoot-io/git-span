@@ -268,9 +268,9 @@ function driftHeader(driftedCount: number, kind: TouchInput['kind']): string {
 function driftFooter(driftedNames: string[]): string {
   if (driftedNames.length === 1) {
     const name = driftedNames[0];
-    return `Restore agreement across the anchors before committing — docs follow the committed code — then refresh: \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\` — and check the other anchors for knock-on changes. If the fix needs a code change or the coupling no longer holds, tell the user instead.`;
+    return `Restore agreement across the anchors before committing — docs follow deliberately committed code — then refresh: \`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\` — and check the other anchors for knock-on changes. If the fix needs a code change or the coupling no longer holds, tell the user instead.`;
   }
-  return 'For each out-of-date span above: restore agreement across the anchors before committing — docs follow the committed code — then refresh: `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the other anchors for knock-on changes. If a fix needs a code change or a coupling no longer holds, tell the user instead.';
+  return 'For each out-of-date span above: restore agreement across the anchors before committing — docs follow deliberately committed code — then refresh: `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the other anchors for knock-on changes. If a fix needs a code change or a coupling no longer holds, tell the user instead.';
 }
 
 /**

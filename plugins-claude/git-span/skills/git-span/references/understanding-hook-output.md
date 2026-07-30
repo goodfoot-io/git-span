@@ -57,8 +57,8 @@ Stripe-backed server.
 
 ---
 
-Restore agreement across the anchors before committing — docs follow the
-committed code — then refresh: `git span add billing/checkout-request-flow
+Restore agreement across the anchors before committing — docs follow
+deliberately committed code — then refresh: `git span add billing/checkout-request-flow
 <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
 and check the other anchors for knock-on changes. If the fix needs a code
 change or the coupling no longer holds, tell the user instead.
@@ -79,7 +79,8 @@ header names the dependency instead of the touch: `This file has an implicit
 dependency out of date:` (singular) or `This file has implicit dependencies
 out of date:` (plural). With several drifted spans the footer generalizes:
 "For each out-of-date span above: restore agreement across the anchors
-before committing — docs follow the committed code — then refresh: `git span
+before committing — docs follow deliberately committed code — then refresh:
+`git span
 add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the
 other anchors for knock-on changes. If a fix needs a code change or a
 coupling no longer holds, tell the user instead." The block carries
@@ -153,8 +154,8 @@ Stripe-backed server.
 
 ---
 
-Bring the coupled files back into agreement (docs follow the committed
-code), then refresh — `git span add billing/checkout-request-flow
+Bring the coupled files back into agreement (docs follow deliberately
+committed code), then refresh — `git span add billing/checkout-request-flow
 <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
 and retry. If the fix needs a code change or a dependency no longer holds,
 tell the user instead.
