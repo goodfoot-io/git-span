@@ -11,6 +11,10 @@ This page is the maintenance map for future git-span documentation updates. When
 
 For the broader rules governing wiki pages, see [[Wiki Organization]].
 
+`plugins-claude/` is the **normative** plugin tree; `plugins-codex/` mirrors it. Edit the
+Claude side first, then copy across — and name that direction in the `why` of any span
+anchoring both trees.
+
 ## Command Behavior Source Of Truth
 
 The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L39-L184). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-span/src/cli/mod.rs#L416-L484) in the same file routes parsed commands to their handlers.
@@ -44,9 +48,11 @@ If a documentation update changes the recommended operator workflow, all of thes
 ## What A Span Is (Eligibility)
 
 The canonical span definition — "coupled by nothing a schema, type, test, or build/generator
-step enforces" — excludes generated/build output (compiled artifacts, generated images,
-lockfiles, the man page); span their inputs instead. This clause is restated in its own
-register in each surface below and must move as one unit:
+step enforces" — excludes generated/build output; span its inputs instead. Reference
+surfaces state the exclusion as a category list (compiled artifacts, generated images,
+lockfiles, the man page); agent surfaces state it as a test (does a script or generator
+write this path, with nobody hand-editing it?). Both registers are current. The clause must
+move as one unit across:
 
 - [packages/git-span/README.md](/packages/git-span/README.md#L3) opening sentence.
 - [concepts.mdx](/packages/website/content/docs/concepts.mdx) `## Span` section.
@@ -58,6 +64,40 @@ register in each surface below and must move as one unit:
 - `DESCRIPTION_SECTION` in [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs) —
   run `yarn build:man` after, never edit `man/git-span.1` directly.
 
+## What Belongs In One Span
+
+The eligibility clause above governs which anchors are *in scope*. This section governs
+which anchors belong *together*. These rules live only on surfaces that walk someone
+through authoring a span — the agent skills plus the website mining guide. The reference
+surfaces (README, concepts, Clap help, man page) deliberately do not restate them; adding
+them there grows the mirror set for no gain.
+
+- `Core gotchas` in both `SKILL.md` files — the build-output test, the mirror-bundle rule,
+  and the single-file rule — plus the silent-break test opening the `Declare a new
+  coupling` recipe, in **both** plugin trees.
+- The `Merging pairs into one span needs distinct roles` heuristic in
+  [finding-span-candidates.md](/plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md),
+  in both plugin trees.
+- The `Distinct roles across the set` and `Duplicated content needs a named source of
+  truth` bullets in [git-span/agents/expert.md](/plugins-claude/git-span/agents/expert.md),
+  kept byte-identical across both trees.
+- The `generated-output`, `mirror-bundle`, `single-file`, and `open-set registry` triage
+  rows in
+  [why-cleanup-campaign.md](/plugins-claude/git-span/skills/git-span/references/why-cleanup-campaign.md),
+  in both plugin trees.
+- The already-visible filter bullets and the growth question in
+  [mine-span-candidates.mdx](/packages/website/content/docs/guides/mine-span-candidates.mdx).
+- Step 3 of [.claude/rules/wiki.md](/.claude/rules/wiki.md) — consolidate created spans per
+  coupling, never per source file.
+
+Three constraints bind future edits to this set. The `open-set registry` row is
+**advisory** — it flags for human review and must never become an auto-reject. No surface
+may carry an anchor-count threshold: breadth tracks how broad a mechanism is, and
+verified-good spans reach every layer they govern. And no surface may tell an agent to
+anchor a directory — `add` rejects one with `error: Is a directory (os error 21)`. Only
+submodule roots take a bare *directory* path; a bare path on a file is the ordinary
+whole-file anchor.
+
 ## Update Order
 
 When git-span CLI behavior or documentation changes, use this order:
@@ -67,7 +107,8 @@ When git-span CLI behavior or documentation changes, use this order:
 3. Update the agent workflow contract in the [git-span skill](/plugins-claude/git-span/skills/git-span/SKILL.md).
 4. Update secondary references such as the finding-span-candidates section and the man page.
 5. If the change moves what a good `why` is, update [[Writing Span Whys]] first, then walk the "What A Good Why Is" list above.
-6. Run `wiki check` on the touched pages so fragment links validate and the page participates in `wiki stale`.
+6. If the change moves which anchors belong together, walk the "What Belongs In One Span" list above — every entry, both plugin trees.
+7. Run `wiki check` on the touched pages so fragment links validate and the page participates in `wiki stale`.
 
 ## References
 

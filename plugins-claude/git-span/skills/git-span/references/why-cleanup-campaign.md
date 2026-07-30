@@ -29,6 +29,10 @@ Classify each span, skip `clean`:
 | stale-range | anchor content shifted but still the same logical site | `stale --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
 | mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `stale` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `stale` alone | `grep -n <symbol from the why>` in the target file to find the real site, then re-anchor (add new range, remove old) |
 | duplicate/overlap | two spans assert the same coupling | consolidate (Operations table) |
+| generated-output | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
+| mirror-bundle | ≥2 basename pairs of *near-identical copies* across two roots differing by one path segment, no anchored enforcer. Surfaces that restate one rule in their own register are distinct roles, not this class | keep ONE span (`add` rejects directory roots). Parity check exists: anchor the normative side's files plus the check. No check: the span *is* the parity mechanism — keep both sides of each pair, name the normative direction in the why, and recommend building a check; dropping the mirror side removes the only drift detection. Tree too large to enumerate (dozens of pairs): anchor one representative pair and say in the why it stands for the tree. Never split per pair, never delete |
+| single-file | every anchor is a range in one file | add the counterparty the why names; delete only if none exists |
+| open-set registry | one anchor's content is a *list* of the other anchors — tells: "and others", "when ⟨members⟩ are added", "enumerating", "documents each" | **advisory, never auto-reject.** Distinguish a shared obligation ("every X must …" — keep) from a listing obligation ("every X is enumerated here" — narrow to the co-varying core, or hand the list to the tooling that owns it) |
 | bad-name | non-kebab-case or reserved name | `git mv .span/<old> .span/<new>`; grep the repo for the old name first (docs/comments/skills may reference it) |
 
 ## Procedure per batch
@@ -69,8 +73,9 @@ Classify each span, skip `clean`:
 - Re-anchoring a range doesn't imply the why is still accurate — if the
   range change was needed because the code moved or changed, re-check the
   why's factual clauses in the same pass.
-- Repeated anchors across sibling spans documenting one doc/subsystem family
-  are by design, not a duplicate/overlap smell.
+- Repeated anchors across *sibling spans* documenting one doc/subsystem family
+  are by design, not a duplicate/overlap smell. Repeated *instances of one kind
+  inside a single span* are the smell — see the mirror-bundle and single-file rows.
 
 ## Operations
 | Operation | Command |

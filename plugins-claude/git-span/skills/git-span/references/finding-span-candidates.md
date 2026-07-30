@@ -166,6 +166,19 @@ in B is more actionable than the file-level pair, because you know exactly
 where the contract lives. Pull range pairs out of `range_pairs` in the JSON
 when planning a fix.
 
+**Merging pairs into one span needs distinct roles.** The pipeline yields
+pairs; a span is not obliged to be one pair, nor to be all of them. Merge
+several confirmed pairs into one span only when each anchor carries a
+*different* role in the same mechanism — e.g. definer, consumer, gate,
+serializer, fixture, doc. If two anchors get the same role name they are
+instances of a kind, and collecting instances is what produces a span that
+fires on changes carrying no obligation. Pairs that differ only by *which copy
+they are* — the same file mirrored under two platform roots — are the common
+case: keep one span, never one span per pair (`add` rejects directory roots).
+Anchor the normative side's files plus whatever enforces parity — or, when
+nothing else enforces it, both sides of each pair, because then the span is
+the parity mechanism.
+
 ## Additional Resources
 
 - **`../scripts/mine.mjs`** — the 13-technique mining engine. Self-contained;
