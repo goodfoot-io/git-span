@@ -25,8 +25,15 @@ function nodeModulesComments(generated: string): string[] {
   return [...generated.matchAll(/^\/\/ .*node_modules.*$/gm)].map((match) => match[0]);
 }
 
+// Each test runs a real esbuild build through the yarn CLI; under concurrent
+// load (e.g. sibling-worktree cargo builds during a full `yarn validate`) that
+// exceeds vitest's 5s default, so give the builds real headroom.
+const BUILD_TEST_TIMEOUT_MS = 30_000;
+
 describe('generated hook bin portability', () => {
-  it('anchors claude-code-hooks node_modules imports to the short, worktree-independent relative form', () => {
+  it('anchors claude-code-hooks node_modules imports to the short, worktree-independent relative form', {
+    timeout: BUILD_TEST_TIMEOUT_MS
+  }, () => {
     const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-claude-'));
     try {
       execFileSync(
@@ -45,7 +52,9 @@ describe('generated hook bin portability', () => {
     }
   });
 
-  it('anchors codex-hooks node_modules imports to the short, worktree-independent relative form', () => {
+  it('anchors codex-hooks node_modules imports to the short, worktree-independent relative form', {
+    timeout: BUILD_TEST_TIMEOUT_MS
+  }, () => {
     const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-codex-'));
     try {
       execFileSync(
