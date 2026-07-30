@@ -43,6 +43,7 @@ pub mod incremental_differential;
 pub mod list_bracketed_literal_path;
 pub mod list_loads_corpus_once;
 pub mod manpage;
+pub mod span_config_block;
 pub mod span_file_format;
 pub mod span_file_reader;
 pub mod span_name_path_traversal_escape;
