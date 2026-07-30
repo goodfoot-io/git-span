@@ -27,7 +27,7 @@ When coupled artifacts disagree, decide which side is authoritative, then act
 by cost of error:
 
 1. **Locate authority via demonstrated intent.** `git span stale` attributes
-   drift to the first mutating commit
+   committed drift to the first mutating commit
    ([DriftLocus](../../packages/git-span/src/types.rs#L227-L238)) and
    `git span history <name>` renders the span's commit timeline
    ([mod.rs](../../packages/git-span/src/cli/mod.rs#L183-L189)). A doc
