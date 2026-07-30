@@ -43,6 +43,18 @@ pub const NULL_ANCHOR_HASH: &str = "0000000000000000";
 /// `index` line for an added or deleted file.
 pub const NULL_BLOB_OID7: &str = "0000000";
 
+/// Marker line naming the one reason a diff block stops at its header: the
+/// old side's recorded bytes are not recoverable from history, so there is no
+/// honest "before" text to build hunks from.
+///
+/// It lives in the header — beside `proposed anchor <address>` and the rename
+/// lines — rather than being appended by the human renderer, because the JSON
+/// `diff` string and the default output's block are byte-identical by
+/// contract. A marker only one of them carried would break that, and the
+/// state would stay invisible in exactly the surface that needs the
+/// explanation.
+pub const RECORDED_UNRECOVERABLE: &str = "recorded snapshot unrecoverable";
+
 /// Header dialect for one rendered file diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffHeader {
@@ -324,9 +336,23 @@ fn render(
 /// synthesizing one from the side that *is* available would present it as
 /// though it were the other side's content. The `index` line still carries
 /// both hashes, so the block remains a true statement.
-pub fn render_diff_header(header: &DiffHeader, old: &DiffSide<'_>, new: &DiffSide<'_>) -> String {
+///
+/// `recorded_unrecoverable` appends the [`RECORDED_UNRECOVERABLE`] marker
+/// after the `index` line. Without it a reader sees two differing hashes and
+/// an empty body, which is indistinguishable from a renderer that failed to
+/// emit its hunks.
+pub fn render_diff_header(
+    header: &DiffHeader,
+    old: &DiffSide<'_>,
+    new: &DiffSide<'_>,
+    recorded_unrecoverable: bool,
+) -> String {
     let mut out = String::new();
     push_header(&mut out, header, old, new, false);
+    if recorded_unrecoverable {
+        out.push_str(RECORDED_UNRECOVERABLE);
+        out.push('\n');
+    }
     out
 }
 
@@ -996,6 +1022,31 @@ mod tests {
              -one\n\
              -two\n";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn an_unrecoverable_header_block_says_why_it_has_no_hunks() {
+        let header = DiffHeader::Anchor {
+            old_hash: "1f1b7cf059444277".to_string(),
+            new_hash: "fd1a4e7a7c6a7eaf".to_string(),
+            kind: AnchorDiffKind::Modify,
+        };
+        let old = DiffSide::absent("f.txt#L3-L5");
+        let new = side("f.txt#L3-L5", "one\ntwo\nthree\n", 3);
+
+        let expected = "diff --git a/f.txt#L3-L5 b/f.txt#L3-L5\n\
+             index rk64:1f1b7cf059444277..rk64:fd1a4e7a7c6a7eaf\n";
+        assert_eq!(
+            render_diff_header(&header, &old, &new, false),
+            expected,
+            "without the flag the block is two hashes and nothing else"
+        );
+        assert_eq!(
+            render_diff_header(&header, &old, &new, true),
+            format!("{expected}recorded snapshot unrecoverable\n"),
+            "the marker follows the index line, so the reader can tell an \
+             unrecoverable old side from a renderer that lost its hunks"
+        );
     }
 
     #[test]

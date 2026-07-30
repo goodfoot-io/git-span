@@ -1115,9 +1115,18 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 /// `address` is the label the old side must wear, which is the caller's
 /// decision and not this function's: it is the *declared* address in every
 /// case except a genuinely re-anchored declaration, where the old side keeps
-/// the address the declaration used to name. The oracle above is enforced by
-/// construction here (a candidate is only taken when its hash equals the
-/// token) and checked end-to-end by
+/// the address the declaration used to name.
+///
+/// A candidate must therefore match the label as well as the token. The label,
+/// the hunk's old coordinate (taken from the same candidate's `first_line`)
+/// and the body's provenance then all name one address — where before, a
+/// candidate lifted from a *different* address could put a body under a label
+/// that never held it, above a coordinate that contradicted both. When no
+/// candidate satisfies both, the recorded bytes are unrecoverable *at this
+/// address*, which is a true statement and renders as one.
+///
+/// The oracle above is enforced by construction here (a candidate is only
+/// taken when its hash equals the token) and checked end-to-end by
 /// `current_old_sides_carry_the_declarations_recorded_token`, which re-reads
 /// every emitted `index` line against the live `.span` file.
 fn current_old_side(
@@ -1133,7 +1142,7 @@ fn current_old_side(
     let source = [recorded_snapshot, Some(live), paired]
         .into_iter()
         .flatten()
-        .find(|candidate| candidate.hash == hash);
+        .find(|candidate| candidate.hash == hash && candidate.address == address);
     debug_assert!(
         source.is_none_or(|s| {
             !s.body.is_text() || body_fingerprint(&s.address, s.body.text()) == hash
@@ -1239,14 +1248,43 @@ fn build_current(
         let mut proposals: Vec<Option<String>> = Vec::with_capacity(span.anchors.len());
         for r in &span.anchors {
             let declared = location_address(&r.anchored);
-            let (body, hash, first_line, proposed) = match &r.current {
+            // A relocation is a *recommendation*, and the resolver only makes
+            // one for the bytes-equal statuses — the same ones `git span
+            // stale` prints `moved to <address>` for. For a `Changed` anchor
+            // `r.current` is merely where the search landed while establishing
+            // that the content differs; `stale` issues no instruction, so
+            // neither may history. Reading the live side there too is what
+            // produced the compound lie: a phantom `proposed anchor`, a body
+            // sliced from an extent that ran past EOF, and a deletion hunk for
+            // content the declared range still holds — with the actual edit
+            // nowhere in the block.
+            let relocation = matches!(
+                r.status,
+                crate::types::AnchorStatus::Moved
+                    | crate::types::AnchorStatus::ResolvedPendingCommit
+            );
+            let live_loc = r.current.as_ref().map(|loc| {
+                if relocation {
+                    loc.clone()
+                } else {
+                    crate::types::AnchorLocation {
+                        path: r.anchored.path.clone(),
+                        extent: r.anchored.extent,
+                        // The layer that resolved the anchor is still the right
+                        // place to read from; only the extent goes back to what
+                        // the declaration says.
+                        blob: (loc.path == r.anchored.path).then_some(loc.blob).flatten(),
+                    }
+                }
+            });
+            let (body, hash, first_line, proposed) = match &live_loc {
                 Some(loc) => {
                     let healed = location_address(loc);
                     (
                         AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
                         location_hash(repo, loc),
                         extent_first_line(loc.extent),
-                        (healed != declared).then_some(healed),
+                        (relocation && healed != declared).then_some(healed),
                     )
                 }
                 // Nothing resolves: the anchored content is gone. A structural
@@ -1275,16 +1313,18 @@ fn build_current(
         for (j, n) in live.iter().enumerate() {
             let paired = pairs[j].map(|i| &old[i]);
             // A *declaration* re-anchor: the user moved the address in the
-            // `.span` file, so the anchor genuinely holds a different address
-            // than the last recorded state did. A resolver relocation is not
-            // that — the declaration still says exactly what it said — so a
-            // pending proposal disqualifies this reading outright. Content-first
-            // pairing crosses addresses for any relocation, and without this
-            // guard every proposal would be dressed as a completed rename,
-            // in the reverse direction (the pairing runs recorded → live, the
-            // proposal runs declared → healed).
-            let reanchored_declaration =
-                proposals[j].is_none() && paired.is_some_and(|o| o.address != n.address);
+            // `.span` file, so the anchor now names an address the last
+            // recorded state did not have at all. That last clause is what
+            // separates it from a resolver relocation, where the declaration
+            // still says exactly what it said and only the content moved:
+            // content-first pairing crosses addresses in both cases, but only
+            // a re-anchor introduces an address the recorded declaration never
+            // used. Reading a relocation as a re-anchor is how a proposal used
+            // to come out dressed as a completed rename, in the reverse
+            // direction (pairing runs recorded → live, the proposal runs
+            // declared → healed).
+            let reanchored_declaration = paired.is_some_and(|o| o.address != n.address)
+                && !old.iter().any(|o| o.address == n.address);
             // A `Fresh` anchor whose declared address is unchanged has nothing
             // to report; a worktree-removed or worktree-added anchor is already
             // covered by `span_diff`.
@@ -1292,7 +1332,8 @@ fn build_current(
                 continue;
             }
             // Both sides wear the declared address unless the declaration
-            // itself moved — a proposal must never relabel either side.
+            // itself moved, in which case the old side wears the address whose
+            // content it actually is — a proposal never relabels either side.
             let old_address = match (reanchored_declaration, paired) {
                 (true, Some(o)) => o.address.clone(),
                 _ => n.address.clone(),
@@ -1338,7 +1379,7 @@ fn build_current(
                 .is_some_and(|o| matches!(o.body, AnchorBody::Unavailable(_)))
                 && n.body.is_text();
             let diff = if unrecoverable {
-                render_diff_header(&header, &old_diff_side, &snapshot_side(n))
+                render_diff_header(&header, &old_diff_side, &snapshot_side(n), true)
             } else {
                 render_unified_diff_always(&header, old_diff_side, snapshot_side(n))
             };
