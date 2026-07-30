@@ -118,9 +118,19 @@ pub enum AnchorDiffKind {
     /// `rename to` header lines. Hunks are present only when content also
     /// changed — a pure move renders the header block alone.
     Rename {
-        /// Git-shaped similarity percentage between the paired snapshots,
-        /// as computed by [`similarity()`].
-        similarity: u8,
+        /// Git-shaped similarity percentage between the paired snapshots, as
+        /// computed by [`similarity()`] — `None` when the two snapshots cannot
+        /// be compared at all, which is to say when either side's content is
+        /// unrecoverable.
+        ///
+        /// The `similarity index` line is emitted exactly when this is `Some`,
+        /// and its absence is a positive statement: the move is real (a
+        /// re-anchor is asserted by the user's own declaration, not inferred
+        /// from content) and how alike the two blocks are is *unknown*. A
+        /// number here would have to be measured through the empty-string
+        /// fallback for an unreadable body, printing `similarity index 0%`
+        /// immediately above the line saying that body could not be read.
+        similarity: Option<u8>,
     },
     /// Address unchanged, but the resolver believes the anchored content
     /// now lives elsewhere. `proposed anchor <address>` header line —
@@ -138,17 +148,23 @@ pub enum AnchorDiffKind {
     /// The anchor does not exist in the new state. `deleted anchor`
     /// header line; new side renders with `/dev/null` conventions.
     Deleted,
-    /// Address and content are both unchanged, but the declaration now
-    /// records a *different* token for this address — the binding moved
-    /// while the bytes stayed put. `rebound anchor` header line, and an
-    /// `index` line carrying the two **recorded** tokens rather than the
-    /// rendered content's hash: the transition is the whole event, and
-    /// there are no hunks because nothing was edited.
+    /// The declaration now records a *different* token for this address
+    /// than it did in the previous state — the binding moved, whatever
+    /// the bytes did. `rebound anchor` header line, and an `index` line
+    /// carrying the two **recorded** tokens rather than the rendered
+    /// content's hash: the token transition is this block's whole
+    /// content, which is why it never carries hunks.
     ///
+    /// The predicate is per address and says nothing about content.
     /// Content-preserving rebindings (a two-anchor swap, a three-anchor
     /// rotation) change nothing a content diff can see, so without this
     /// form the one commit that broke every affected anchor is the one
-    /// commit with no anchor-level account.
+    /// commit with no anchor-level account. When the content changed too,
+    /// both facts are true at once and this block is emitted *beside* the
+    /// ordinary content block for the same address: the rebinding is the
+    /// event a content hunk cannot express, and a lone content hunk
+    /// invites a re-hash — the repair that would bind the why-prose
+    /// permanently to unrelated content.
     Rebound,
 }
 
@@ -418,7 +434,9 @@ fn push_header(
             match kind {
                 AnchorDiffKind::Modify => {}
                 AnchorDiffKind::Rename { similarity } => {
-                    out.push_str(&format!("similarity index {similarity}%\n"));
+                    if let Some(similarity) = similarity {
+                        out.push_str(&format!("similarity index {similarity}%\n"));
+                    }
                     out.push_str(&format!("rename from {}\n", old.label));
                     out.push_str(&format!("rename to {}\n", new.label));
                     headers_only = unchanged;
@@ -767,7 +785,9 @@ mod tests {
         let header = DiffHeader::Anchor {
             old_hash: "fe4d90f3aa35936c".to_string(),
             new_hash: "fe4d90f3aa35936c".to_string(),
-            kind: AnchorDiffKind::Rename { similarity: 100 },
+            kind: AnchorDiffKind::Rename {
+                similarity: Some(100),
+            },
         };
         let out = render_unified_diff(
             &header,
@@ -792,7 +812,9 @@ mod tests {
         let header = DiffHeader::Anchor {
             old_hash: "fe4d90f3aa35936c".to_string(),
             new_hash: "2c8b1e94d07a3f65".to_string(),
-            kind: AnchorDiffKind::Rename { similarity: sim },
+            kind: AnchorDiffKind::Rename {
+                similarity: Some(sim),
+            },
         };
         let out = render_unified_diff(
             &header,

@@ -5,6 +5,37 @@
 //! observable change is a unified diff in git's dialect — declaration edits as
 //! real blob diffs (`span_diff`), anchor changes as pseudo-diffs between
 //! extracted snapshots.
+//!
+//! # Projection inventory
+//!
+//! An oracle can miss a defect two ways that no state enumeration and no
+//! skip-condition inventory will show. It can be *handed* the right data and
+//! throw the discriminating part away (its **projection**), or it can be
+//! pointed at the wrong data and never receive the case at all (its
+//! **aperture**). Both are recorded here, one line each, with the assertion
+//! that covers what is dropped or a sentence on why dropping it is safe.
+//!
+//! This is not hypothetical. The aperture question — "what was this oracle
+//! never handed?" — was written down during this wave and caught its fourth
+//! instance within the hour, biting a *fix* rather than the implementation:
+//! the key sweep below discards nothing in its return shape, but its aperture
+//! is the `current.anchors[]` heading it parses, so it simply never received a
+//! timeline anchor object, and the first timeline-only keys in the schema's
+//! life were about to land in an emitter with no contract above it and no
+//! sweep below it.
+//!
+//! | Oracle | Projection — what the shape discards | Aperture — what it is never handed |
+//! |---|---|---|
+//! | [`block_form`] | Everything but the form: addresses, hashes, hunk bodies. The sweeps re-read all three off the raw `diff` beside it. Reads only the header region (before `\n--- `), so a hunk body quoting a marker phrase cannot be mistaken for one | One block's patch string; it cannot see sibling blocks or the entry around them |
+//! | [`timeline_form`] | Same, and resolves `Rebound` from the structured `rebound` field rather than the patch text — `rebound anchor` is a phrase this repository's own tracked source contains | One anchor object |
+//! | [`newest_commit_forms`] | `path`. `[Rebound, Modified]` cannot distinguish one address rendering both facts from two addresses rendering one each — use [`newest_commit_blocks`] where that is the point | Only `commits[0]`; older entries and the `current` block are outside it |
+//! | [`newest_commit_blocks`] | Hashes, hunks, `unavailable`, `rebound`'s payload — asserted directly off the JSON in the tests that care | Only `commits[0]` |
+//! | [`declared_pairs`] | The why-prose and every non-`rk64:` line of the declaration | One `.span` file at one rev; it says nothing about content at any address — [`read_address`] is the oracle for that |
+//! | [`current_forms`] | `path` and payloads, exactly as `newest_commit_forms` does | The `current` array only; timeline entries are outside it |
+//! | [`documented_anchor_fields`] | Every word of each field's prose — it compares *names*, not meanings, which is how a worked example contradicting its own rule survived (`no_documented_example_shows_a_rename_below_the_threshold` compares the values) | One heading's bullet list. Two adjacent lists exist and each is parsed alone, deliberately: one list vouching for the other's keys is how a sweep certifies a false document |
+//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions except the pre-existing `unavailable` hatch on the `current` sweep, which must not grow | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]) |
+//! | [`every_current_state`] | — | Current-block states only. `Rebound` is timeline-only and `Proposed` current-block-only, so this set structurally cannot reach every form |
+//! | [`every_timeline_state`] | — | Timeline states only, and only each fixture's *newest* entry is form-checked |
 
 use crate::support;
 
@@ -1332,8 +1363,13 @@ enum BlockForm {
     Deleted,
     /// `new anchor` — the address entered it.
     Created,
-    /// `rename from`/`rename to` with a similarity percentage.
-    Renamed { similarity: u8 },
+    /// `rename from`/`rename to`. `similarity` is `None` when the block
+    /// carries no `similarity index` line — a shape the classifier must be
+    /// able to *represent*, because a classifier that cannot represent the
+    /// absent case cannot test for it, and the alternative (parsing to some
+    /// default) would fabricate inside the oracle the very number the
+    /// renderer was fixed to stop fabricating.
+    Renamed { similarity: Option<u8> },
     /// `proposed anchor <address>` — the resolver's move instruction.
     Proposed,
     /// `rebound anchor` — the address kept its content but changed which
@@ -1352,12 +1388,14 @@ fn block_form(diff: &str) -> BlockForm {
     } else if head.contains("\nnew anchor\n") {
         BlockForm::Created
     } else if head.contains("\nrename from ") {
-        let similarity = head
-            .lines()
-            .find_map(|l| l.strip_prefix("similarity index "))
-            .and_then(|rest| rest.strip_suffix('%'))
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("a rename without a similarity index:\n{diff}"));
+        let similarity = head.lines().find_map(|l| {
+            let value = l.strip_prefix("similarity index ")?.strip_suffix('%');
+            Some(
+                value
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("an unreadable similarity index:\n{diff}")),
+            )
+        });
         BlockForm::Renamed { similarity }
     } else if head.contains("\nproposed anchor ") {
         BlockForm::Proposed
@@ -1382,6 +1420,33 @@ fn declared_pairs(repo: &TestRepo, span: &str, rev: Option<&str>) -> Result<Vec<
         .filter(|(_, token)| token.starts_with("rk64:"))
         .map(|(addr, token)| (addr.to_string(), token.trim().to_string()))
         .collect())
+}
+
+/// Every block rendered for one address. One address carries more than one
+/// block whenever two independent facts are true of it at once — a rebinding
+/// and a content edit in the same commit — which is why this exists beside
+/// [`anchor_at`], whose single-block assertion is the right one everywhere
+/// else.
+fn anchors_at<'a>(anchors: &'a [Value], address: &str) -> Vec<&'a Value> {
+    anchors.iter().filter(|a| a["path"] == address).collect()
+}
+
+/// The new-side `rk64:` token an anchor block's `index` line names.
+fn new_token(diff: &str) -> String {
+    diff.lines()
+        .find_map(|l| l.strip_prefix("index "))
+        .and_then(|rest| rest.split_once(".."))
+        .map(|(_, new)| new.trim().to_string())
+        .unwrap_or_else(|| panic!("no index line in:\n{diff}"))
+}
+
+/// The token `.span/<span>` records for `address` at `rev`.
+fn declared_token(repo: &TestRepo, span: &str, rev: Option<&str>, address: &str) -> Result<String> {
+    Ok(declared_pairs(repo, span, rev)?
+        .into_iter()
+        .find(|(addr, _)| addr == address)
+        .unwrap_or_else(|| panic!("{address} is not declared at {rev:?}"))
+        .1)
 }
 
 /// The old-side `rk64:` token an anchor block's `index` line names.
@@ -1412,8 +1477,15 @@ fn rebinding_repo(span: &str, n: usize) -> Result<TestRepo> {
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "declare"])?;
 
-    // Rotate the address column, leaving the token column alone: every token
-    // now names a block it does not describe.
+    rotate_address_column(&repo, span, n)?;
+    repo.commit_all("rebind every anchor to its neighbour's block")?;
+    Ok(repo)
+}
+
+/// Rotate a declaration's address column, leaving the token column alone:
+/// every token now names a block it does not describe, while every address and
+/// every byte in the repository stays exactly where it was.
+fn rotate_address_column(repo: &TestRepo, span: &str, n: usize) -> Result<()> {
     let decl = repo.path().join(format!(".span/{span}"));
     let text = std::fs::read_to_string(&decl)?;
     let lines: Vec<&str> = text.lines().collect();
@@ -1448,7 +1520,42 @@ fn rebinding_repo(span: &str, n: usize) -> Result<TestRepo> {
         !repo.git_stdout(["status", "--porcelain"])?.is_empty(),
         "the declaration rewrite left the worktree clean"
     );
-    repo.commit_all("rebind every anchor to its neighbour's block")?;
+    Ok(())
+}
+
+/// A rebinding and a content edit landing in the *same* commit at the same
+/// address — the composed state, and the one every other rebinding fixture
+/// misses by pairing its rebinding with untouched content.
+///
+/// `f0.txt`'s block is rewritten in the rotation commit, so that address
+/// carries both facts at once: its declaration now records a token describing
+/// some other file's block, and its own bytes changed. A render that shows
+/// only the content hunk describes an ordinary edit, and the repair an
+/// ordinary edit invites is a re-hash — which here would permanently bind the
+/// why-prose to content it was never written about.
+fn rebound_and_edited_repo(span: &str, n: usize) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    for i in 0..n {
+        let tag = (b'A' + i as u8) as char;
+        repo.write_file(&format!("f{i}.txt"), &format!("{tag}-1\n{tag}-2\n{tag}-3\n"))?;
+    }
+    repo.commit_all("initial")?;
+    for i in 0..n {
+        repo.span_stdout(["add", span, &format!("f{i}.txt#L1-L3")])?;
+    }
+    repo.span_stdout(["why", span, "one block per file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    rotate_address_column(&repo, span, n)?;
+    repo.write_file("f0.txt", "A-1\nA-EDITED\nA-3\n")?;
+    assert!(
+        !repo
+            .git_stdout(["diff", "--name-only", "--", "f0.txt"])?
+            .is_empty(),
+        "the content edit matched nothing, so no address carries both facts"
+    );
+    repo.commit_all("rebind every anchor and edit one of the blocks")?;
     Ok(repo)
 }
 
@@ -1550,6 +1657,158 @@ fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
     Ok(())
 }
 
+/// Whether an address was rebound is a question about the declaration, and it
+/// is answered per address — not per commit, and not only when the content
+/// happens to have stood still.
+///
+/// The check used to be reachable only where a content diff rendered nothing,
+/// so a commit that rebound an address *and* edited it rendered a benign
+/// one-line hunk: the newly recorded token appeared nowhere in the block, and
+/// the repair such a block invites is a re-hash — which would permanently bind
+/// the why-prose to content it was never written about. The truth wants the
+/// rebinding reverted.
+#[test]
+fn a_rebinding_that_also_edits_its_block_states_both_facts() -> Result<()> {
+    let span = "rbe";
+    let edited = "f0.txt#L1-L3";
+    let repo = rebound_and_edited_repo(span, 3)?;
+
+    // ORACLE — git. Exactly one file's bytes moved in the breaking commit, so
+    // exactly one address carries both facts and the rest carry only the
+    // rebinding. A fixture where nothing was edited would prove nothing here.
+    let touched = repo.git_stdout([
+        "diff",
+        "--name-only",
+        "HEAD~1",
+        "HEAD",
+        "--",
+        ".",
+        ":(exclude).span",
+    ])?;
+    assert_eq!(
+        touched.lines().collect::<Vec<_>>(),
+        ["f0.txt"],
+        "fixture assumption — one edited file beside the rebinding; got:\n{touched}"
+    );
+
+    // ORACLE — `stale`. The worktree is exactly the breaking commit.
+    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+    let broken: Vec<String> = stale
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .filter(|l| l.contains(" — changed"))
+        .filter_map(|l| l.split_once(' '))
+        .map(|(addr, _)| addr.to_string())
+        .collect();
+    assert_eq!(
+        broken.len(),
+        3,
+        "fixture assumption — every anchor is broken; got:\n{stale}"
+    );
+
+    let json = history_json(&repo, span)?;
+    // Existence before absence.
+    let newest = &json["commits"][0];
+    assert!(
+        newest["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains("rebind")),
+        "the breaking commit has no timeline entry at all; got: {json:#}"
+    );
+    let anchors = newest["anchors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no anchors array; got: {json:#}"));
+
+    // The criterion is per address: every address whose recorded token changed
+    // carries a rebinding indication, whether or not a content diff renders
+    // for it too. Read `(path, form)` pairs, not a bag of forms — a bag cannot
+    // tell one address rendering both facts from two addresses rendering one
+    // each, which is the entire distinction under test.
+    let blocks = newest_commit_blocks(&repo, span)?;
+    for address in &broken {
+        assert!(
+            blocks
+                .iter()
+                .any(|(p, f)| p == address && *f == BlockForm::Rebound),
+            "{address} was rebound and the commit never says so; got: {blocks:?}"
+        );
+    }
+
+    // Two objects at one address, neither contaminating the other. Block
+    // identity here is `(path, form)`: keying by `path` alone would drop one
+    // of them, and if the content block won, the rebinding would be invisible
+    // to a consumer while both of this command's surfaces stayed correct.
+    let mut at_edited: Vec<BlockForm> = blocks
+        .iter()
+        .filter(|(p, _)| p == edited)
+        .map(|(_, f)| *f)
+        .collect();
+    at_edited.sort();
+    let mut expected = vec![BlockForm::Rebound, BlockForm::Modified];
+    expected.sort();
+    assert_eq!(
+        at_edited, expected,
+        "the edited address states the rebinding and the edit; got: {blocks:?}"
+    );
+    let blocks = anchors_at(anchors, edited);
+
+    // ORACLE — the declaration at the two commits, read from git. The token
+    // the declaration now records must be visible in this address's render: a
+    // block in which it appears nowhere cannot be describing a rebinding.
+    let before = declared_token(&repo, span, Some("HEAD~1"), edited)?;
+    let after = declared_token(&repo, span, Some("HEAD"), edited)?;
+    assert_ne!(
+        before, after,
+        "fixture assumption — the declaration rebound {edited}"
+    );
+    let rebound = blocks
+        .iter()
+        .find(|a| timeline_form(a) == BlockForm::Rebound)
+        .expect("the rebound block asserted above");
+    // Structured fields, not a scan of the patch text: `rebound.from`/`.to`
+    // are the contract a consumer reads, and they are spelled the way the
+    // `.span` file spells them so either side joins against it directly.
+    assert_eq!(
+        rebound["rebound"]["from"], before,
+        "the structured transition names the old binding; got: {rebound:#}"
+    );
+    assert_eq!(
+        rebound["rebound"]["to"], after,
+        "the structured transition names the new binding; got: {rebound:#}"
+    );
+    // Raw-patch parity: the `index` line and the structured fields are two
+    // renderings of one pair of tokens and can never disagree.
+    let diff = rebound["diff"].as_str().expect("diff string");
+    assert_eq!(old_token(diff), before, "the index line names the old binding");
+    assert_eq!(new_token(diff), after, "the index line names the new binding");
+
+    // ORACLE — git's own diff of the edited file. The content block answers
+    // the same question any `Modified` block answers, and the rebound block
+    // beside it must not have absorbed or displaced its hunks.
+    let content = blocks
+        .iter()
+        .find(|a| block_form(a["diff"].as_str().expect("diff string")) == BlockForm::Modified)
+        .expect("the content block asserted above");
+    let content_diff = content["diff"].as_str().expect("diff string");
+    let added: Vec<&str> = content_diff
+        .lines()
+        .skip_while(|l| !l.starts_with("@@ "))
+        .filter_map(|l| l.strip_prefix('+'))
+        .collect();
+    let git_added: Vec<String> = repo
+        .git_stdout(["diff", "HEAD~1", "HEAD", "--", "f0.txt"])?
+        .lines()
+        .skip_while(|l| !l.starts_with("@@ "))
+        .filter_map(|l| l.strip_prefix('+'))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        added, git_added,
+        "the content block must show git's own edit; got:\n{content_diff}"
+    );
+    Ok(())
+}
+
 /// Every anchor block form the `current` section renders, in order.
 fn current_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
     let json = history_json(repo, span)?;
@@ -1561,18 +1820,53 @@ fn current_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
         .collect())
 }
 
-/// Every anchor block form the newest timeline entry renders, in order. A
-/// timeline anchor that carries `content` instead of `diff` is a first-add,
-/// which is the timeline's spelling of `new anchor`.
+/// The block form of one timeline anchor object. An anchor that carries
+/// `content` instead of `diff` is a first-add, which is the timeline's
+/// spelling of `new anchor`.
+fn timeline_form(anchor: &Value) -> BlockForm {
+    // The structured discriminator, not a scan of the patch text. `rebound
+    // anchor` is a phrase that appears in this repository's own tracked
+    // source, so a consumer — or an oracle — that recognises the form by
+    // string-matching the patch body has a live false-positive class.
+    if anchor.get("rebound").is_some() {
+        return BlockForm::Rebound;
+    }
+    match anchor["diff"].as_str() {
+        Some(diff) => block_form(diff),
+        None => BlockForm::Created,
+    }
+}
+
+/// Every anchor block form the newest timeline entry renders, in order.
+///
+/// **Projection:** discards `path`. A `Vec<BlockForm>` cannot tell one address
+/// rendering two facts from two addresses rendering one each — use
+/// [`newest_commit_blocks`] wherever that distinction is the point.
 fn newest_commit_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
+    Ok(newest_commit_blocks(repo, span)?
+        .into_iter()
+        .map(|(_, form)| form)
+        .collect())
+}
+
+/// Every anchor block the newest timeline entry renders, as `(path, form)`.
+///
+/// Block identity in the timeline array is the *pair*, not `path` alone: one
+/// address renders two objects whenever two independent facts are true of it
+/// at once — a rebinding and a content edit in the same commit. A reader that
+/// keeps only the forms can assert that both facts appear somewhere in the
+/// entry; only this one can assert that they appear at the same address.
+fn newest_commit_blocks(repo: &TestRepo, span: &str) -> Result<Vec<(String, BlockForm)>> {
     let json = history_json(repo, span)?;
     Ok(json["commits"][0]["anchors"]
         .as_array()
         .unwrap_or_else(|| panic!("no anchors on the newest commit in {json:#}"))
         .iter()
-        .map(|a| match a["diff"].as_str() {
-            Some(diff) => block_form(diff),
-            None => BlockForm::Created,
+        .map(|a| {
+            (
+                a["path"].as_str().expect("path string").to_string(),
+                timeline_form(a),
+            )
         })
         .collect())
 }
@@ -1615,9 +1909,344 @@ fn the_current_block_and_the_timeline_agree_on_a_reanchors_form() -> Result<()> 
          and all"
     );
     assert!(
-        matches!(before.as_slice(), [BlockForm::Renamed { similarity }] if *similarity >= 50),
+        matches!(
+            before.as_slice(),
+            [BlockForm::Renamed {
+                similarity: Some(similarity)
+            }] if *similarity >= 50
+        ),
         "an edited move stays one anchor; got: {before:?}"
     );
+    Ok(())
+}
+
+/// One repository per shape a *timeline* anchor block can take, with the block
+/// forms its newest commit entry must render.
+///
+/// The two render paths do not share a state space, which is why this exists
+/// beside [`every_current_state`] instead of extending it. `Proposed` is
+/// current-block-only — the resolver's move instruction is about the working
+/// tree, and there is nothing to propose about a commit that already happened.
+/// `Rebound` is timeline-only — a rebinding is a transition between two
+/// committed declaration states. Enumerating one path's states and calling it
+/// the enumeration is exactly how `Rebound` came to be hand-entered into the
+/// oracle map after the fact.
+///
+/// The expected forms are written out per fixture rather than derived, so a
+/// change in what a state renders shows up here as a diff rather than as a
+/// sweep that quietly checks a different thing.
+fn every_timeline_state() -> Result<Vec<(&'static str, TestRepo, &'static str, Vec<BlockForm>)>> {
+    let committed_drift = {
+        let repo = drifted_repo("tdrift")?;
+        repo.commit_all("edit the anchored block")?;
+        repo
+    };
+    let committed_reanchor = {
+        let repo = drifted_repo("tre")?;
+        rewrite_declaration(&repo, "tre", "f.txt#L1-L3", "f.txt#L3-L5")?;
+        repo.commit_all("re-anchor onto the drifted block")?;
+        repo
+    };
+    let first_declaration = {
+        let repo = TestRepo::new()?;
+        repo.write_file("f.txt", "alpha\nbeta\ngamma\n")?;
+        repo.commit_all("initial")?;
+        repo.span_stdout(["add", "tnew", "f.txt#L1-L3"])?;
+        repo.span_stdout(["why", "tnew", "three greek letters"])?;
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "declare"])?;
+        repo
+    };
+    // An anchor abandoned for an unrelated block in another file: nothing
+    // pairs, so the commit renders two independent events rather than one
+    // rename asserting an edit between texts that share nothing.
+    let unrelated_move = {
+        let repo = TestRepo::new()?;
+        repo.write_file("f.txt", "AAA-1\nAAA-2\nAAA-3\n")?;
+        repo.write_file("g.txt", "BBB-1\nBBB-2\nBBB-3\n")?;
+        repo.commit_all("initial")?;
+        repo.span_stdout(["add", "tmv", "f.txt#L1-L3"])?;
+        repo.span_stdout(["why", "tmv", "the first block"])?;
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "declare"])?;
+        rewrite_declaration(&repo, "tmv", "f.txt#L1-L3", "g.txt#L1-L3")?;
+        repo.commit_all("abandon the block for an unrelated one")?;
+        repo
+    };
+    // The anchored file is deleted while the declaration still names it: the
+    // new side has no bytes at all, which is the timeline's only producer of
+    // `unavailable`. Without it that key would need an exemption in the field
+    // sweep's reverse direction, and an exemption is how a key stops being
+    // checked.
+    let vanished_file = {
+        let repo = drifted_repo("tgone")?;
+        std::fs::remove_file(repo.path().join("f.txt"))?;
+        repo.commit_all("delete the anchored file")?;
+        repo
+    };
+    Ok(vec![
+        ("first declaration", first_declaration, "tnew", vec![BlockForm::Created]),
+        (
+            "anchored file deleted",
+            vanished_file,
+            "tgone",
+            vec![BlockForm::Modified],
+        ),
+        ("committed drift", committed_drift, "tdrift", vec![BlockForm::Modified]),
+        (
+            "committed re-anchor at the floor",
+            committed_reanchor,
+            "tre",
+            vec![BlockForm::Renamed { similarity: Some(66) }],
+        ),
+        (
+            "committed abandonment for an unrelated block",
+            unrelated_move,
+            "tmv",
+            vec![BlockForm::Deleted, BlockForm::Created],
+        ),
+        (
+            "committed rebinding",
+            rebinding_repo("tro", 3)?,
+            "tro",
+            vec![BlockForm::Rebound; 3],
+        ),
+        (
+            "committed rebinding with an edit",
+            rebound_and_edited_repo("trbe", 3)?,
+            "trbe",
+            vec![
+                BlockForm::Rebound,
+                BlockForm::Rebound,
+                BlockForm::Rebound,
+                BlockForm::Modified,
+            ],
+        ),
+    ])
+}
+
+/// Every invariant a *timeline* block must satisfy, checked across every shape
+/// the timeline can render, each branch naming the oracle outside `history`'s
+/// renderer that anchors it.
+#[test]
+fn timeline_block_invariants_hold_in_every_state() -> Result<()> {
+    let mut covered: Vec<BlockForm> = Vec::new();
+    for (label, repo, span, expected) in every_timeline_state()? {
+        let json = history_json(&repo, span)?;
+        // Existence before absence: an entry that is not there satisfies every
+        // negative assertion about its contents.
+        let newest = &json["commits"][0];
+        let hash = newest["hash"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{label}: the newest commit has no entry; got: {json:#}"));
+        let anchors = newest["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no anchors array; got: {newest:#}"));
+        let mut forms: Vec<BlockForm> = anchors.iter().map(timeline_form).collect();
+        forms.sort();
+        let mut want = expected.clone();
+        want.sort();
+        assert_eq!(
+            forms, want,
+            "{label}: the enumeration and the render disagree; got: {newest:#}"
+        );
+        covered.extend(forms.iter().copied());
+
+        // ORACLE — the declaration at this commit and its parent, read from
+        // git. Every timeline block is a claim about what changed between two
+        // committed declaration states, so that pair of files answers all of
+        // them without sharing a line with the renderer.
+        let now = declared_pairs(&repo, span, Some(hash))?;
+        let before = declared_pairs(&repo, span, Some(&format!("{hash}~1"))).unwrap_or_default();
+        for anchor in anchors {
+            let path = anchor["path"].as_str().expect("path string");
+            // A first-add carries `content` and no `diff`: there is no old
+            // side to diff against, and the form is a creation by
+            // construction. Its oracle is the declaration pair, same as any
+            // other creation.
+            let Some(diff) = anchor["diff"].as_str() else {
+                assert!(
+                    now.iter().any(|(a, _)| a == path),
+                    "{label}: {path} is not declared at this commit; got: {anchor:#}"
+                );
+                assert!(
+                    !before.iter().any(|(a, _)| a == path),
+                    "{label}: {path} was already declared; got: {anchor:#}"
+                );
+                continue;
+            };
+            let header = diff.lines().next().unwrap_or_default();
+            let (a_side, b_side) = header
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| rest.split_once(" b/"))
+                .unwrap_or_else(|| panic!("{label}: malformed header {header:?}"));
+            let bound = |pairs: &[(String, String)], addr: &str, token: &str| {
+                pairs
+                    .iter()
+                    .any(|(a, t)| a == addr && t == token)
+            };
+            match block_form(diff) {
+                BlockForm::Deleted => {
+                    assert!(
+                        bound(&before, a_side, &old_token(diff)),
+                        "{label}: {a_side} never held this binding before; got:\n{diff}"
+                    );
+                    assert!(
+                        !now.iter().any(|(a, _)| a == a_side),
+                        "{label}: {a_side} is still declared; got:\n{diff}"
+                    );
+                }
+                BlockForm::Created => {
+                    assert!(
+                        now.iter().any(|(a, _)| a == b_side),
+                        "{label}: {b_side} is not declared at this commit; got:\n{diff}"
+                    );
+                    assert!(
+                        !before.iter().any(|(a, _)| a == b_side),
+                        "{label}: {b_side} was already declared; got:\n{diff}"
+                    );
+                }
+                // A rebinding says the address stood still while the token
+                // under it changed — both halves readable straight off the two
+                // declaration files.
+                BlockForm::Rebound => {
+                    assert_eq!(a_side, path, "{label}: a rebinding stands still");
+                    assert_eq!(b_side, path, "{label}: a rebinding stands still");
+                    assert!(
+                        !diff.contains("@@"),
+                        "{label}: the token transition is the whole block; got:\n{diff}"
+                    );
+                    assert!(
+                        bound(&before, path, &old_token(diff))
+                            && bound(&now, path, &new_token(diff)),
+                        "{label}: the index line must name the two recorded \
+                         bindings; got:\n{diff}"
+                    );
+                    assert_ne!(
+                        old_token(diff),
+                        new_token(diff),
+                        "{label}: an unchanged binding is not a rebinding"
+                    );
+                    // Raw-patch parity: the structured fields and the `index`
+                    // line render one pair of tokens two ways.
+                    assert_eq!(
+                        anchor["rebound"]["from"], old_token(diff),
+                        "{label}: structured and patch disagree; got: {anchor:#}"
+                    );
+                    assert_eq!(
+                        anchor["rebound"]["to"], new_token(diff),
+                        "{label}: structured and patch disagree; got: {anchor:#}"
+                    );
+                }
+                // The same token, declared at one address before and another
+                // after: the move is the declaration's own statement.
+                BlockForm::Renamed { similarity } => {
+                    let token = old_token(diff);
+                    assert!(
+                        bound(&before, a_side, &token) && bound(&now, b_side, &token),
+                        "{label}: a rename must carry one binding between two \
+                         addresses; got:\n{diff}"
+                    );
+                    assert!(
+                        similarity.is_some_and(|s| s >= 50),
+                        "{label}: timeline pairing excludes non-text bodies, so \
+                         every rename it renders is measured and at the floor; \
+                         got:\n{diff}"
+                    );
+                }
+                BlockForm::Modified => {
+                    assert_eq!(a_side, path, "{label}: a modification stands still");
+                    assert_eq!(b_side, path, "{label}: a modification stands still");
+                    assert!(
+                        now.iter().any(|(a, _)| a == path),
+                        "{label}: {path} is not declared at this commit; got:\n{diff}"
+                    );
+                }
+                // The resolver's move instruction is about the working tree.
+                // A commit that already happened has nothing to propose.
+                BlockForm::Proposed => panic!("{label}: the timeline never proposes:\n{diff}"),
+            }
+        }
+    }
+    // The enumeration is only worth what it covers. `Proposed` is deliberately
+    // absent — it belongs to the other path — and its absence is asserted
+    // above rather than assumed here.
+    for form in [
+        BlockForm::Deleted,
+        BlockForm::Created,
+        BlockForm::Rebound,
+        BlockForm::Modified,
+    ] {
+        assert!(
+            covered.contains(&form),
+            "no timeline fixture reaches {form:?}; the enumeration is short"
+        );
+    }
+    assert!(
+        covered
+            .iter()
+            .any(|f| matches!(f, BlockForm::Renamed { .. })),
+        "no timeline fixture reaches a rename; the enumeration is short"
+    );
+    Ok(())
+}
+
+/// A re-anchor the renderer cannot measure still states the move — the user's
+/// declaration asserted it — but states nothing about how alike the two blocks
+/// are, because it could not read one of them.
+///
+/// The two verdicts are different and must not be conflated. *Continuity
+/// disproven* (both sides readable, similarity below git's floor) means the
+/// two blocks are unrelated, and the honest render is `deleted anchor` + `new
+/// anchor`. *Continuity unknown* (the recorded side is unrecoverable) means
+/// nothing was disproven; splitting it would fabricate a delete and a create
+/// where the user declared one move, and measuring it through the
+/// empty-string fallback fabricates a number — which is how a confident
+/// `similarity index 0%` came to sit one line above `recorded snapshot
+/// unrecoverable`.
+#[test]
+fn an_unmeasurable_reanchor_states_the_move_and_no_similarity() -> Result<()> {
+    let repo = unrecoverable_reanchor_repo("ur")?;
+    let json = history_json(&repo, "ur")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    // Existence before absence, and the declared move is one event.
+    assert_eq!(anchors.len(), 1, "one declared move; got: {json:#}");
+    let anchor = &anchors[0];
+    assert_eq!(
+        anchor["recorded"], "unrecoverable",
+        "fixture assumption — the recorded side is unreadable; got: {anchor:#}"
+    );
+    let diff = anchor["diff"].as_str().expect("diff string");
+    assert_eq!(
+        block_form(diff),
+        BlockForm::Renamed { similarity: None },
+        "a declared move with nothing to measure; got:\n{diff}"
+    );
+    assert!(
+        diff.contains("rename from f.txt#L1-L3\n") && diff.contains("rename to f.txt#L5-L7\n"),
+        "the declaration asserted the move, so the block states it; got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("similarity index"),
+        "there was nothing to measure; got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("@@"),
+        "hunks would have to invent the side just declared unreadable; got:\n{diff}"
+    );
+    // The marker is unqualified: the search behind it ran across every
+    // snapshot in the render, not merely under this anchor's own address.
+    assert!(
+        diff.contains("\nrecorded snapshot unrecoverable\n"),
+        "an empty body needs its explanation; got:\n{diff}"
+    );
+    // The JSON `diff` string is the same bytes as the default output's block,
+    // so a consumer never needs a caveat saying the number inside it is
+    // meaningless — the number does not exist.
+    let out = history_text(&repo, "ur")?;
+    assert!(out.contains(diff), "both formats carry the same block:\n{out}");
     Ok(())
 }
 
@@ -1643,7 +2272,48 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             rewrite_declaration(&repo, "re", "f.txt#L1-L3", "f.txt#L3-L5")?;
             repo
         }, "re"),
+        (
+            "re-anchor with unrecoverable recorded token",
+            unrecoverable_reanchor_repo("ur")?,
+            "ur",
+        ),
     ])
+}
+
+/// A re-anchor whose recorded bytes cannot be read anywhere — the product of
+/// two states already enumerated above ("never recorded" and "drifted
+/// re-anchor"), and the one where a similarity number has nothing to measure.
+///
+/// The declaration is committed in the same commit that drifts the block it
+/// names, so no state the walk renders ever hashes to the recorded token; then
+/// the worktree moves the declared address, making the current state a
+/// re-anchor. Both sides of the comparison a rename would assert are therefore
+/// unavailable on the recorded side — and `text()` answers `""` for an
+/// unavailable body, which is how a confident `similarity index 0%` came to
+/// sit directly above the line saying the side could not be read.
+fn unrecoverable_reanchor_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file(
+        "f.txt",
+        "AAA-1\nAAA-2\nAAA-3\nmiddle\nCCC-1\nCCC-2\nCCC-3\n",
+    )?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "the first block"])?;
+    // The declaration and the drift land together, so the recorded token names
+    // bytes that no rendered state in this walk ever held.
+    repo.write_file(
+        "f.txt",
+        "ZZZ-1\nZZZ-2\nZZZ-3\nmiddle\nCCC-1\nCCC-2\nCCC-3\n",
+    )?;
+    repo.commit_all("declare and drift in one commit")?;
+
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L5-L7")?;
+    assert!(
+        !repo.git_stdout(["status", "--porcelain"])?.is_empty(),
+        "the declaration rewrite left the worktree clean"
+    );
+    Ok(repo)
 }
 
 /// Every invariant the current block must satisfy no matter which state an
@@ -1658,6 +2328,14 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
     for (label, repo, span) in every_current_state()? {
         let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
         let render = history_text(&repo, span)?;
+        // Nothing in the product produces this line any more, on either render
+        // path: a measurable pair below the floor splits into two blocks, and
+        // an unmeasurable one omits the number instead of inventing it. The
+        // cheapest possible regression check for both, over the whole render.
+        assert!(
+            !render.contains("similarity index 0%"),
+            "{label}: `similarity index 0%` has no producer left; got:\n{render}"
+        );
         // Git omits a hunk side's length when it is 1 (`@@ -2 +4 @@`). The
         // rendered patch is promised to be git's own dialect, and `git apply`
         // reads the short form.
@@ -1717,17 +2395,45 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                         "{label}: {path} is not declared, so nothing arrived"
                     );
                 }
-                // ORACLE — git's own rename behaviour, measured: `git mv` plus
-                // a total replacement renders `new file` + `deleted file` even
-                // at `--find-renames=0%`. Below the threshold git does not
-                // pair, and neither may we — a 0% rename asserts an edit
-                // between two texts that have nothing to do with each other.
+                // ORACLE — the render's own account of what it could read,
+                // produced by a different predicate than the one that decides
+                // the header (the recorded snapshot is looked for by content
+                // hash across the whole render), plus git's measured rename
+                // behaviour: `git mv` with a total replacement renders `new
+                // file` + `deleted file` even at `--find-renames=0%`.
+                //
+                // Two distinct questions, kept apart. *Was there a move?* is
+                // answered by the declaration — a re-anchor is the user moving
+                // a recorded token between addresses — so the rename lines are
+                // never in doubt. *How alike are the two blocks?* is a
+                // measurement, and the `similarity index` line may appear
+                // exactly when there were two texts to measure. Its absence is
+                // therefore a positive claim ("unknown"), which is why this is
+                // a biconditional and not a lower bound: a bound alone passes
+                // vacuously on a block that simply omits the line, and the
+                // defect this replaced was a `similarity index 0%` sitting
+                // directly above `recorded snapshot unrecoverable`.
                 BlockForm::Renamed { similarity } => {
                     assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
-                    assert!(
-                        similarity >= 50,
-                        "{label}: git emits no rename below 50%; got:\n{diff}"
+                    let measurable = anchor.get("recorded")
+                        != Some(&Value::from("unrecoverable"))
+                        && !diff.contains("Binary files ");
+                    assert_eq!(
+                        similarity.is_some(),
+                        measurable,
+                        "{label}: a rename carries a similarity index exactly \
+                         when both sides are text; got:\n{diff}"
                     );
+                    // Continuity disproven (measurable, below the floor) is a
+                    // different verdict from continuity unknown (unmeasurable):
+                    // the first splits into two unrelated blocks, the second
+                    // stays one declaration-asserted move with no number.
+                    if let Some(similarity) = similarity {
+                        assert!(
+                            similarity >= 50,
+                            "{label}: git emits no rename below 50%; got:\n{diff}"
+                        );
+                    }
                     // ORACLE — the worktree. A rename's hunks assert that the
                     // recorded bytes *became* the live ones. If those bytes
                     // are still sitting untouched at the old address, no such
@@ -1851,20 +2557,34 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
 }
 
 /// The keys the normative field list in `docs/history-example-output.md`
-/// declares for a `current` anchor object, read out of the document itself so
-/// the contract cannot be satisfied by a stale copy of it living in a test.
-fn documented_current_anchor_fields() -> Result<Vec<String>> {
+/// declares for one anchor array (`commits[].anchors[]` or
+/// `current.anchors[]`), read out of the document itself so the contract
+/// cannot be satisfied by a stale copy of it living in a test.
+///
+/// The two arrays get separate lists because their emitters have inverted
+/// presence rules — one list covering both would have to be vague enough to be
+/// true of neither, and a sweep against it would certify a false document.
+fn documented_anchor_fields(array: &str) -> Result<Vec<String>> {
     let doc = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("docs")
             .join("history-example-output.md"),
     )?;
-    let heading = "### `current.anchors[]` field list (normative)";
+    let heading = format!("### `{array}` field list (normative)");
+    let heading = heading.as_str();
     let start = doc
         .find(heading)
         .unwrap_or_else(|| panic!("the field list heading {heading:?} is gone from the doc"));
     let section = &doc[start + heading.len()..];
-    let end = section.find("\n## ").unwrap_or(section.len());
+    // Stop at the next heading of any level: the two field lists are adjacent
+    // `###` sections, so ending only at `## ` would silently merge them and
+    // let each list vouch for the other's keys.
+    let end = section
+        .find("\n## ")
+        .into_iter()
+        .chain(section.find("\n### "))
+        .min()
+        .unwrap_or(section.len());
     let fields: Vec<String> = section[..end]
         .lines()
         .filter_map(|line| line.strip_prefix("- `"))
@@ -1911,7 +2631,7 @@ fn no_documented_example_shows_a_rename_below_the_threshold() -> Result<()> {
 /// any markdown a consumer would read.
 #[test]
 fn every_current_anchor_key_appears_in_the_documented_field_list() -> Result<()> {
-    let documented = documented_current_anchor_fields()?;
+    let documented = documented_anchor_fields("current.anchors[]")?;
     let mut seen: Vec<String> = Vec::new();
     for (label, repo, span) in every_current_state()? {
         let json = history_json(&repo, span)?;
@@ -1938,6 +2658,55 @@ fn every_current_anchor_key_appears_in_the_documented_field_list() -> Result<()>
         assert!(
             seen.contains(key) || key == "unavailable",
             "the document promises `{key}`, but no state in the sweep emits it"
+        );
+    }
+    Ok(())
+}
+
+/// The same contract check for the *timeline* array, against its own list.
+///
+/// The two arrays cannot share one sweep, because they cannot share one list:
+/// a timeline object carries `content` xor `diff` and structurally never
+/// carries `proposed` or `recorded`, while a `current` object carries `diff`
+/// unconditionally. Pointing the existing sweep at both arrays would go green
+/// against a document that is false of one of them — and until this existed,
+/// the timeline emitter was the one place in the schema with no contract above
+/// it and no sweep below it, which is where the first timeline-only keys were
+/// about to land.
+#[test]
+fn every_timeline_anchor_key_appears_in_the_documented_field_list() -> Result<()> {
+    let documented = documented_anchor_fields("commits[].anchors[]")?;
+    let mut seen: Vec<String> = Vec::new();
+    for (label, repo, span) in every_timeline_state()?
+        .into_iter()
+        .map(|(label, repo, span, _)| (label, repo, span))
+    {
+        let json = history_json(&repo, span)?;
+        for commit in json["commits"].as_array().expect("commits array") {
+            let anchors = commit["anchors"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{label}: no anchors array in {commit:#}"));
+            for anchor in anchors {
+                for key in anchor.as_object().expect("anchor object").keys() {
+                    assert!(
+                        documented.contains(key),
+                        "{label}: `{key}` is emitted but undocumented; the field \
+                         list names {documented:?}"
+                    );
+                    if !seen.contains(key) {
+                        seen.push(key.clone());
+                    }
+                }
+            }
+        }
+    }
+    // Both directions, no exemptions: a documented key no timeline fixture
+    // produces is dead contract or an unenumerated state.
+    for key in &documented {
+        assert!(
+            seen.contains(key),
+            "the document promises `{key}` on a timeline anchor, but no state \
+             in the sweep emits it; seen: {seen:?}"
         );
     }
     Ok(())
@@ -2983,3 +3752,4 @@ fn a_namespace_name_errors_instead_of_panicking() -> Result<()> {
     );
     Ok(())
 }
+

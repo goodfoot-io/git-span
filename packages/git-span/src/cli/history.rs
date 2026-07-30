@@ -29,8 +29,55 @@
 //!   happens to hold. A declaration that permutes bindings among addresses (a
 //!   swap, a rotation) leaves every address and every byte in place, so no
 //!   content comparison can see it, while breaking every anchor it touches.
-//!   Each affected address renders a `rebound anchor` block: header-only, with
-//!   the two recorded tokens on the `index` line.
+//!   The test is per address and independent of content: an address that
+//!   stood still while the token under it changed renders a `rebound anchor`
+//!   block — header-only, with the two recorded tokens on the `index` line —
+//!   and when that address was also edited, that block sits *beside* the
+//!   ordinary content block, two objects at one address stating two
+//!   independent facts. An anchor that *moved*, carrying its content to a new
+//!   address, is not rebound: the rename block already accounts for it, and a
+//!   rebinding beside it would claim damage the same render disproves.
+//!
+//! Two verdicts about a re-anchor must not be conflated. *Continuity
+//! disproven* — both sides readable, similarity below the floor — means the
+//! blocks are unrelated, and the render splits. *Continuity unknown* — the
+//! recorded side is unrecoverable — disproves nothing: the move is asserted by
+//! the user's own declaration, so the rename lines stay and only the
+//! `similarity index` line is omitted. Splitting that case would fabricate two
+//! events where one was declared; measuring it would fabricate a number.
+//!
+//! # Skip-condition inventory
+//!
+//! Every defect this module has shipped lived in a guard rather than in the
+//! logic the guard admitted — the logic was right wherever it was allowed to
+//! run. A state enumeration structurally cannot see those: an excluded case
+//! never becomes a state. So the conditions under which a render component is
+//! *skipped* are listed here, each with the fixture that exercises the
+//! excluded case or a sentence for why the exclusion is sound. The value is
+//! not proof; it is that the next guard added without either is conspicuous.
+//!
+//! **Timeline path** ([`diff_section`], [`pair_anchors`]):
+//!
+//! | Skipped | Condition | Covered by |
+//! |---|---|---|
+//! | The whole section | Nothing observable changed — no span diff and no anchor blocks | `noop_qualifying_commit_is_dropped` |
+//! | A commit | It touched no anchored file and not the declaration | The walk's qualifying filter; a commit that cannot affect any rendered state has nothing to render |
+//! | The content block | `snapshot_diff` returns `None` (byte-identical sides) | `no_commit_that_breaks_an_anchor_is_anchor_silent` — the rebinding block still renders |
+//! | The rebinding block | `old.recorded == new.recorded`, or there is no old side | An unchanged binding is not a rebinding; a first-add has nothing to have moved from |
+//! | The rebinding block | The pair's two addresses differ | `anchors_that_swap_addresses_render_as_two_renames` — the rename beside it already accounts for the binding's movement |
+//! | Pairing passes 1, 2, 4 | Either body is non-text | Deliberate: identical-content and similarity pairing need two comparable texts, and two anchors that both failed to extract must not pair as a 100% rename. Pass 3 (address) still catches them, so nothing goes unpaired *because* of this |
+//! | The `similarity index` line | Either body is non-text ([`measured_similarity`]) | Unreachable here — see the `Modify`-vs-`Rename` arm in [`anchor_header`]; the option is passed through so a future pairing pass omits the number rather than inventing one |
+//!
+//! **Current-block path** ([`build_current`]):
+//!
+//! | Skipped | Condition | Covered by |
+//! |---|---|---|
+//! | The whole section | Worktree declaration matches `HEAD` and no anchor is drifted | `clean_worktree_has_no_current_section` |
+//! | An anchor | The resolver reports it `Fresh` and its declared address did not move | A fresh anchor at an unmoved address has no drift to report; `git span stale` says the same |
+//! | The rename form | Similarity measured below [`RENAME_SIMILARITY_FLOOR`] | `every_current_state`'s "declaration swap" and "cross-file swap" — splits into `deleted anchor` + `new anchor` |
+//! | The `similarity index` line | The recorded side is unrecoverable, so nothing can be measured | `every_current_state`'s "re-anchor with unrecoverable recorded token", plus `an_unmeasurable_reanchor_states_the_move_and_no_similarity` |
+//! | Hunks | The recorded side is unrecoverable, or a rename/proposal whose content is unchanged | `an_unrecoverable_recorded_snapshot_is_named_in_the_human_block`; hunks need two comparable bodies and synthesizing one presents it as the other's content |
+//! | The rebinding block | Always — this path never renders one | Deliberate: a rebinding is a transition between two *committed* declaration states. The current block already renders a committed rebinding's live drift honestly, one in-place diff per anchor |
 //!
 //! Declared anchor ranges are taken at face value at every commit — a stale
 //! range extracting "wrong" content *is* the drift being visualized. Anchor
@@ -149,6 +196,28 @@ pub struct TimelineAnchor {
     /// Set when the anchor's new-side content could not be extracted. JSON
     /// emits it as `unavailable`; it never becomes body text.
     pub unavailable: Option<Unavailable>,
+    /// Present exactly on a `rebound anchor` block, carrying the recorded-token
+    /// transition as data (JSON `rebound: { from, to }`).
+    ///
+    /// This is the block's structured discriminator. Two objects in one
+    /// entry's `anchors` array can share a `path` — a rebinding and a content
+    /// edit at the same address in the same commit — so block identity is the
+    /// pair `(path, form)`, and without this field "form" would only be
+    /// readable by scanning the `diff` string for a marker line. That scan is
+    /// a live false-positive class: a repository whose own tracked source
+    /// contains the phrase `rebound anchor` would produce it inside ordinary
+    /// hunk bodies.
+    pub rebound: Option<Rebinding>,
+}
+
+/// The recorded-token transition a [`TimelineAnchor::rebound`] block reports,
+/// in the same `rk64:`-prefixed spelling the `.span` declaration uses, so a
+/// consumer can join either side against the declaration file directly.
+pub struct Rebinding {
+    /// The token the previous state's declaration recorded at this address.
+    pub from: String,
+    /// The token this state's declaration records at this address.
+    pub to: String,
 }
 
 impl TimelineAnchor {
@@ -166,6 +235,21 @@ impl TimelineAnchor {
             diff,
             content,
             unavailable,
+            rebound: None,
+        }
+    }
+
+    /// Build the `rebound anchor` entry for one address, carrying the token
+    /// transition both as the patch string's `index` line and as structured
+    /// fields. The two must never disagree — they are rendered from the same
+    /// pair of tokens.
+    fn rebound(path: String, diff: String, from: String, to: String) -> Self {
+        TimelineAnchor {
+            path,
+            diff,
+            content: None,
+            unavailable: None,
+            rebound: Some(Rebinding { from, to }),
         }
     }
 }
@@ -700,6 +784,52 @@ fn snapshot_side(s: &Snapshot) -> DiffSide<'_> {
     }
 }
 
+/// Render a *measurably* unrelated re-anchor as what git renders for the same
+/// event: `deleted anchor` at the old address plus `new anchor` at the new
+/// one, two blocks asserting no edit between them.
+///
+/// Only a pair that was measured and fell below [`RENAME_SIMILARITY_FLOOR`]
+/// reaches here. An *unmeasurable* pair does not: the move is asserted by the
+/// declaration itself, so splitting it would invent a delete and a create
+/// where the user declared one move.
+fn push_reanchor_split(anchors: &mut Vec<CurrentAnchor>, old: &Snapshot, new: &Snapshot) {
+    if let Some(diff) = snapshot_diff(Some(old), None) {
+        anchors.push(CurrentAnchor::new(
+            old.address.clone(),
+            None,
+            diff,
+            &old.body,
+            false,
+        ));
+    }
+    if let Some(diff) = snapshot_diff(None, Some(new)) {
+        anchors.push(CurrentAnchor::new(
+            new.address.clone(),
+            None,
+            diff,
+            &new.body,
+            false,
+        ));
+    }
+}
+
+/// Similarity between two snapshot bodies, or `None` when it cannot honestly
+/// be measured.
+///
+/// [`AnchorBody::text`] answers `""` for an unavailable body, so measuring
+/// through it turns "we could not read the recorded snapshot" into the
+/// confident claim "0% similar" — a fabricated percentage standing in for a
+/// value that is genuinely unknown, and, worse, one below
+/// [`RENAME_SIMILARITY_FLOOR`], which every surface now documents as
+/// impossible for a rename. Unknown is not 0%: callers get `None` and must
+/// choose a form that claims nothing about relatedness.
+fn measured_similarity(old: &AnchorBody, new: &AnchorBody) -> Option<u8> {
+    match (old, new) {
+        (AnchorBody::Text(o), AnchorBody::Text(n)) => Some(similarity(o, n)),
+        _ => None,
+    }
+}
+
 /// The anchor diff header for a pair of snapshots.
 fn anchor_header(old: Option<&Snapshot>, new: Option<&Snapshot>) -> DiffHeader {
     let null = || NULL_ANCHOR_HASH.to_string();
@@ -710,8 +840,15 @@ fn anchor_header(old: Option<&Snapshot>, new: Option<&Snapshot>) -> DiffHeader {
             kind: if o.address == n.address {
                 AnchorDiffKind::Modify
             } else {
+                // `None` is unreachable here: every `pair_anchors` pass that
+                // can pair two *different* addresses (content identity, then
+                // greedy similarity) requires both bodies to be text, and the
+                // one pass that admits a non-text body matches on address,
+                // which lands in the `Modify` arm above. Passing the option
+                // through means that if a future pass breaks that, the header
+                // omits the number rather than inventing one.
                 AnchorDiffKind::Rename {
-                    similarity: similarity(o.body.text(), n.body.text()),
+                    similarity: measured_similarity(&o.body, &n.body),
                 }
             },
         },
@@ -746,16 +883,34 @@ fn snapshot_diff(old: Option<&Snapshot>, new: Option<&Snapshot>) -> Option<Strin
 }
 
 /// The header-only block for an address whose declaration now records a
-/// different token while its address and content are unchanged — the one
-/// anchor-level event no content comparison can produce.
+/// different token than it did in the previous state.
+///
+/// The predicate is exactly that — a change of recorded token at one address —
+/// and nothing about the content enters it. When the content is also unchanged
+/// this is the one anchor-level event no content comparison can produce; when
+/// the content changed too, both facts are true at once and this block is
+/// emitted alongside the ordinary content block for the same address.
 ///
 /// The `index` line carries the two *recorded* tokens, not the rendered
-/// content's hash: the content is the same on both sides, and the transition
-/// between the tokens is the entire finding. `None` when the binding is
-/// unchanged, or when there is no old side to have moved away from.
-fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<String> {
+/// content's hash: the transition between the tokens is the entire finding of
+/// this block, and it is the only place the newly recorded token appears.
+/// `None` when the binding is unchanged, or when there is no old side to have
+/// moved away from.
+fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<TimelineAnchor> {
     let old = old?;
     if old.recorded == new.recorded {
+        return None;
+    }
+    // A pair whose addresses differ is a *move*, and the rename block beside
+    // this one already accounts for the binding: the anchor went to a new
+    // address carrying its content, and nothing broke. Two anchors that
+    // exchange addresses along with their content rebind both addresses by the
+    // letter of the test above while breaking neither — emitting a rebinding
+    // there would claim damage the same render disproves two lines lower,
+    // which is the round-6 silence defect wearing its opposite face. The
+    // rebinding this block reports is the one no move explains: the address
+    // stood still and the token under it changed.
+    if old.address != new.address {
         return None;
     }
     let header = DiffHeader::Anchor {
@@ -763,11 +918,12 @@ fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<String> {
         new_hash: new.recorded.clone(),
         kind: AnchorDiffKind::Rebound,
     };
-    Some(render_diff_header(
-        &header,
-        &snapshot_side(old),
-        &snapshot_side(new),
-        false,
+    let diff = render_diff_header(&header, &snapshot_side(old), &snapshot_side(new), false);
+    Some(TimelineAnchor::rebound(
+        new.address.clone(),
+        diff,
+        format!("rk64:{}", old.recorded),
+        format!("rk64:{}", new.recorded),
     ))
 }
 
@@ -880,14 +1036,21 @@ fn diff_section(
     let mut anchors: Vec<TimelineAnchor> = Vec::new();
     for (j, n) in new.iter().enumerate() {
         let o = pairs[j].map(|i| &old[i]);
+        // Whether this address was rebound is a question about the
+        // declaration, and it is answered per address — independently of
+        // whether the content also changed. Gating it on "no content diff"
+        // would let a commit that rebinds an address *and* edits it render as
+        // ordinary drift, hiding the rebinding behind a benign hunk and
+        // inviting a re-hash: the repair that would permanently bind the why
+        // to unrelated content, when the truth wants the rebinding reverted.
+        // The two facts co-occur, so the render carries both, as adjacent
+        // blocks at one address: the rebound block states the token
+        // transition, the content block states the content transition, and
+        // neither contaminates the other.
+        if let Some(rebound) = rebinding_diff(o, n) {
+            anchors.push(rebound);
+        }
         let Some(diff) = snapshot_diff(o, Some(n)) else {
-            // Nothing a content diff can see — but the declaration may still
-            // have rebound this address to a different token, which is what a
-            // swap or a rotation of declarations *is*. Rendering nothing here
-            // leaves the breaking commit without an anchor-level account.
-            if let Some(diff) = rebinding_diff(o, n) {
-                anchors.push(TimelineAnchor::new(n.address.clone(), diff, None, false));
-            }
             continue;
         };
         // A first-add carries the full snapshot so a consumer can render a
@@ -1557,37 +1720,41 @@ fn build_current(
                 old_first_line,
                 recorded.get(&n.address),
             );
-            // A re-anchor below git's rename threshold is not one anchor
-            // edited but two unrelated blocks: pairing them into a rename
-            // would spell "these lines became those lines" over an edit that
-            // never happened, and git itself refuses the form — `git mv` plus
-            // a total replacement renders `new file` + `deleted file` even at
-            // `--find-renames=0%`. Split it the way git does.
-            let unrelated_blocks = matches!(state, CurrentState::Reanchored { .. })
-                && old_side.as_ref().is_some_and(|o| {
-                    o.body.is_text()
-                        && n.body.is_text()
-                        && similarity(o.body.text(), n.body.text()) < RENAME_SIMILARITY_FLOOR
-                });
-            if unrelated_blocks {
-                let o = old_side
-                    .as_ref()
-                    .expect("a sub-threshold comparison has both sides");
-                if let Some(diff) = snapshot_diff(Some(o), None) {
-                    anchors.push(CurrentAnchor::new(o.address.clone(), None, diff, &o.body, false));
-                }
-                if let Some(diff) = snapshot_diff(None, Some(n)) {
-                    anchors.push(CurrentAnchor::new(n.address.clone(), None, diff, &n.body, false));
-                }
-                continue;
-            }
             let kind = match (state, &old_side) {
                 // No recorded state to diff against at all: the anchor is new
                 // in the worktree declaration.
                 (_, None) => AnchorDiffKind::New,
-                (CurrentState::Reanchored { .. }, Some(o)) => AnchorDiffKind::Rename {
-                    similarity: similarity(o.body.text(), n.body.text()),
-                },
+                // The move itself is never in doubt: `Reanchored` is entered
+                // because the *user's declaration* moved a recorded token
+                // between addresses, so `rename from`/`rename to` state
+                // something the declaration asserts rather than something the
+                // renderer inferred. What varies is whether the two blocks can
+                // be compared.
+                //
+                // Measurable and at or above git's floor: an ordinary rename.
+                // Measurable and below it: not one anchor edited but two
+                // unrelated blocks, and pairing them would spell "these lines
+                // became those lines" over an edit that never happened — git
+                // refuses the same form, rendering `new file` + `deleted file`
+                // for a `git mv` plus a total replacement even at
+                // `--find-renames=0%`. Unmeasurable, because the recorded side
+                // is unrecoverable: still one declared move, so splitting it
+                // would fabricate two events where the user declared one — the
+                // rename lines stay and the `similarity index` line is omitted,
+                // which says "how alike is unknown" instead of measuring
+                // through the empty-string fallback and printing a confident
+                // `similarity index 0%` above the line admitting the side could
+                // not be read.
+                (CurrentState::Reanchored { .. }, Some(o)) => {
+                    let measured = measured_similarity(&o.body, &n.body);
+                    if measured.is_some_and(|s| s < RENAME_SIMILARITY_FLOOR) {
+                        push_reanchor_split(&mut anchors, o, n);
+                        continue;
+                    }
+                    AnchorDiffKind::Rename {
+                        similarity: measured,
+                    }
+                }
                 (CurrentState::Relocated { to }, Some(_)) => AnchorDiffKind::Proposed {
                     address: to.clone(),
                 },
@@ -1748,6 +1915,13 @@ pub fn render_json(report: &HistoryReport) -> Value {
                     };
                     if let Some(u) = a.unavailable {
                         ao.insert("unavailable".into(), json!(u.as_str()));
+                    }
+                    // The structured form discriminator. Its presence *is*
+                    // "this is the rebound block"; a consumer never has to
+                    // parse the patch string to tell the two blocks at one
+                    // address apart.
+                    if let Some(r) = &a.rebound {
+                        ao.insert("rebound".into(), json!({ "from": r.from, "to": r.to }));
                     }
                     Value::Object(ao)
                 })

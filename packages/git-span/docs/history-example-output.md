@@ -30,8 +30,11 @@ dialect:
   address, then by content similarity (git's `-M` shape). Similarity pairing is
   conditional on the floor: at or above 50% a re-anchor renders as one
   `rename from`/`rename to` block; below it the two snapshots are unrelated and render
-  as `deleted anchor` + `new anchor`. A rebinding that permutes bindings among
-  addresses changes no content at all and renders as `rebound anchor`.
+  as `deleted anchor` + `new anchor`; when the recorded side cannot be read at all the
+  rename lines stay and the `similarity index` line is omitted, because nothing could be
+  measured. Separately and independently of content, an address that stood still while
+  the token the declaration records for it changed renders a `rebound anchor` block —
+  beside the content block when the content changed too.
 
 Declared anchor ranges are taken at face value at every commit — a stale range
 extracting "wrong" content *is* the drift being visualized, never remapped. Anchor diffs
@@ -212,10 +215,17 @@ Conventions demonstrated:
   unrelated blocks and never one rename; the body is a full addition/deletion against
   `/dev/null`. Git draws the same line: a `git mv` plus a total replacement renders
   `new file` + `deleted file` even at `--find-renames=0%`.
-- `rebound anchor` marks the one event no content comparison can see: the address and its
-  content are unchanged, but the declaration binds a different recorded token there. The
-  `index` line carries the two recorded tokens (not the rendered content's hash, which is
-  the same on both sides) and the block has no body.
+- `rebound anchor` marks a change of *binding*: an address stood still while the token the
+  declaration records for it changed. The predicate is per address and says nothing about
+  content — the block renders whether or not the content also changed. An anchor that
+  *moved*, carrying its content to a new address, is not rebound: the rename block already
+  accounts for it (two anchors exchanging addresses along with their content break
+  neither). The `index` line carries the two recorded tokens (never the rendered content's
+  hash) and the block has no body, because the token transition is its entire content.
+  When the content changed too, this block is emitted *beside* the ordinary content block
+  for the same address: the rebinding is the event a content hunk cannot express, and a
+  lone content hunk invites a re-hash — the repair that would bind the why-prose
+  permanently to unrelated content, when the truth wants the rebinding reverted.
 - Hunk headers carry real file coordinates: the old range addresses the old file, the new
   range the new file, exactly like ordinary `git diff` output.
 - Commits where nothing observable changed (declaration touched but no anchor content or
@@ -355,6 +365,27 @@ The two paths agree: the `current` block and the timeline entry the same declara
 change produces once committed render the same form for the same event — a rename at or
 above the threshold, a delete plus a create below it.
 
+There is a third case, and it is not a third point on the same scale. The threshold sorts
+re-anchors whose two sides can be *compared*; when the recorded side is unrecoverable
+there is nothing to compare, and the two verdicts must not be conflated. Continuity
+disproven splits into two blocks. Continuity **unknown** disproves nothing: `Reanchored`
+is entered because the user's own declaration moved a recorded token between addresses, so
+the move is asserted rather than inferred, and splitting it would fabricate two events
+where one was declared. The rename lines stay and the `similarity index` line is simply
+absent — its absence is the positive claim "how alike is unknown", which is the honest
+alternative to measuring an unreadable side as `0%`:
+
+```
+diff --git a/f.txt#L1-L3 b/f.txt#L5-L7
+rename from f.txt#L1-L3
+rename to f.txt#L5-L7
+index rk64:1c854b1df1e7cc97..rk64:e892818d24d10605
+recorded snapshot unrecoverable
+```
+
+`similarity index 0%` therefore has no producer anywhere in the command: a measurable pair
+below the floor splits, and an unmeasurable one omits the number.
+
 A re-anchor outranks a relocation: when the declaration has moved an anchor *and* the
 resolver would propose a further move, the declaration's move is what renders. Two
 directions of travel in one header would contradict each other.
@@ -445,15 +476,22 @@ each other.
 
 The `anchors` array above is elided to two of its five entries. A `commit` whose
 `.span/<name>` change re-hashed every anchor without adding, removing, or moving one (as
-`5c5dcecd`) still accounts for each anchor: the address and the content at it are
-unchanged, but the token the declaration binds there is not, so each renders as a
-`rebound anchor` block whose `index` line carries the two **recorded** tokens and whose
-body is empty because nothing was edited. This is the only block form whose `index`
-hashes are recorded tokens rather than rendered content — and it exists because a
-declaration can move bindings without touching a byte of source. A commit that permutes
-bindings among addresses (an anchor swap, a rotation) changes nothing a content
-comparison can see, and without this form it would be the one commit that broke every
-affected anchor and reported nothing.
+`5c5dcecd`) still accounts for each anchor: the token the declaration binds at each
+address changed, so each renders as a `rebound anchor` block whose `index` line carries
+the two **recorded** tokens and whose body is empty because the token transition is the
+whole block. This is the only block form whose `index` hashes are recorded tokens rather
+than rendered content — and it exists because a declaration can move bindings without
+touching a byte of source. A commit that permutes bindings among addresses (an anchor
+swap, a rotation) changes nothing a content comparison can see, and without this form it
+would be the one commit that broke every affected anchor and reported nothing.
+
+Nothing about the content enters that test. A commit that rebinds an address *and* edits
+it emits two objects at that address — the `rebound anchor` block carrying the token
+transition, and an ordinary content block carrying the edit — because both facts are
+true and neither describes the other. Objects in the same entry are therefore identified
+by `(path, block form)`, readable from structured fields alone: the object with a
+`rebound` field is the binding transition, the object without it is the content
+transition.
 
 First-add anchors — for example the whole-span
 creation commit `2cbb7301`, `packages/agent-hooks/src/common/gate-core.ts#L797-L853` —
@@ -475,7 +513,18 @@ carry `content` instead of `diff`:
 - `commits` is newest-first in both formats, matching how a reader scans `git log`.
 - Each timeline anchor object carries `path` (the address *after* the change; for a
   removal, the last address the anchor held) plus **exactly one** of `diff` or `content`
-  — `content` only for a first-add, `diff` for every other case (modify, rename, delete).
+  — `content` only for a first-add, `diff` for every other case (modify, rename, delete,
+  rebind).
+- **Two anchor objects in one entry's `anchors` array may share a `path`.** Block identity
+  is the pair `(path, block form)`, never `path` alone. One address renders two objects
+  whenever two independent facts are true of it in the same commit: a commit that rebinds
+  an address *and* edits its content emits a `rebound anchor` object and a content object,
+  both wearing that address. A consumer keying a map by `path` silently drops one of them.
+  The two carry different facts and are readable apart from structured fields alone — the
+  object with a `rebound` field carries the recorded-token transition (`rebound.from` →
+  `rebound.to`), and the object without it carries the content transition in `diff`. A
+  consumer that renders only one still renders something coherent; a consumer that renders
+  only the content object reports a rebinding-to-unrelated-content as ordinary drift.
 - Each `current` anchor object carries `path` plus **both** `diff` and `content` when
   present, so a consumer never has to reconstruct live content from a patch.
 
@@ -488,6 +537,33 @@ carry `content` instead of `diff`:
   (not `false`) when the timeline is the complete record. The command also prints a
   warning to stderr in this case, in both formats — see below.
 - No `event`, no per-commit `why`, no XML — schema v2 replaces all three.
+
+### `commits[].anchors[]` field list (normative)
+
+This is the complete set of keys a *timeline* anchor object can emit. It is a separate
+list from `current.anchors[]` below because the two emitters have inverted presence
+rules — a timeline object carries `content` **xor** `diff` and structurally cannot carry
+`proposed` or `recorded`, while a `current` object carries `diff` unconditionally. A key
+not on this list is a contract violation, and
+[cli_history.rs](../tests/cases/cli_history.rs) asserts both directions of the agreement
+over a sweep of every timeline state.
+
+- `path` — always present. The anchor's address *after* the change; for a removal, the
+  last address it held. Not unique within an entry — see the multiplicity rule above.
+- `diff` — present exactly when `content` is absent. The same bytes the human block prints
+  for this anchor, header and all.
+- `content` — present exactly on a first-add whose snapshot was extractable, replacing
+  `diff`: there is no old side to diff against, so the full snapshot is the payload.
+- `unavailable` — present when the anchor's *new-side* content could not be extracted:
+  `"absent"` (no such file at this commit), `"range-past-eof"`, or `"binary"`. A status to
+  style, never source to render.
+- `rebound` — present exactly on a `rebound anchor` object, and the structured
+  discriminator that identifies one: an object `{ "from": "rk64:…", "to": "rk64:…" }`
+  naming the token the previous state's declaration recorded at this address and the token
+  this state records. Both are spelled the way the `.span` file spells them, so either
+  side joins directly against the declaration. The same transition appears on the `diff`
+  string's `index` line; the field exists so a consumer never has to parse the patch to
+  find it. Never co-occurs with `content`.
 
 ### `current.anchors[]` field list (normative)
 
