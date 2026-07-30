@@ -14,11 +14,6 @@
 //! tuned for `-U0` stale-matching, this module owns all patch-text
 //! production.
 
-// TODO(Step 2 of the `git span history` v2 plan): this module has no
-// caller yet — `history.rs` starts consuming it in Step 2, at which point
-// this `#[allow(dead_code)]` is removed.
-#![allow(dead_code)]
-
 use gix::diff::blob::sources::byte_lines;
 use gix::diff::blob::unified_diff::{ConsumeHunk, ContextSize, DiffLineKind, HunkHeader};
 use gix::diff::blob::{Algorithm, Diff, InternedInput, UnifiedDiff};
@@ -26,7 +21,12 @@ use gix::diff::blob::{Algorithm, Diff, InternedInput, UnifiedDiff};
 /// Display label used for a `/dev/null` side of a diff (an added or
 /// deleted anchor / blob). [`DiffSide::label`] equal to this sentinel
 /// selects `/dev/null` rendering conventions for that side.
-const DEV_NULL: &str = "dev/null";
+pub const DEV_NULL: &str = "dev/null";
+
+/// The all-zero hash callers pass as [`DiffHeader::Anchor::old_hash`] /
+/// `new_hash` for the `/dev/null` side of an added or deleted anchor. It
+/// renders bare (no `rk64:` prefix), matching git's null-OID convention.
+pub const NULL_ANCHOR_HASH: &str = "0000000000000000";
 
 /// Header dialect for one rendered file diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,7 +178,7 @@ pub fn render_unified_diff(
 /// `"0000000000000000"` renders bare (git's null-OID convention); any
 /// other hash gets the `rk64:` extent-hash prefix.
 fn format_anchor_hash(hash: &str) -> String {
-    if hash == "0000000000000000" {
+    if hash == NULL_ANCHOR_HASH {
         hash.to_string()
     } else {
         format!("rk64:{hash}")

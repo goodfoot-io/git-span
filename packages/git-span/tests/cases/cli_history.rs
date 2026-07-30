@@ -1,13 +1,10 @@
-//! CLI: `git span history <span>` — Phase 2 skipped acceptance checks.
+//! CLI: `git span history <span>` — the v2 output contract.
 //!
-//! Every test in this module is `#[ignore]` — they are pending assertions
-//! against the Phase-1 stubs (which `todo!()`). They must compile and show as
-//! ignored/skipped, not failing.
-//!
-//! The fixture repo scenario mirrors the canonical example in
-//! `docs/history-example-output-xml.md`: a span is created, its why prose is
-//! edited, an anchor is modified, an anchor is removed and a new one added,
-//! and the working tree is left with uncommitted drift.
+//! Two formats: git-log-style text (the default) and `schema_version: 2` JSON
+//! carrying the identical raw patch strings. Both are newest-first, and every
+//! observable change is a unified diff in git's dialect — declaration edits as
+//! real blob diffs (`span_diff`), anchor changes as pseudo-diffs between
+//! extracted snapshots.
 
 use crate::support;
 
@@ -19,38 +16,92 @@ use support::TestRepo;
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-/// Seed a four-commit span scenario:
+/// Run `git span history` and return stdout as text, asserting exit 0.
+fn history_text(repo: &TestRepo, span: &str) -> Result<String> {
+    let out = repo.run_span(["history", span])?;
+    anyhow::ensure!(
+        out.status.success(),
+        "history failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Run `git span history --format=json` and parse stdout.
+fn history_json(repo: &TestRepo, span: &str) -> Result<Value> {
+    let out = repo.run_span(["history", span, "--format=json"])?;
+    anyhow::ensure!(
+        out.status.success(),
+        "history --format=json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// Find the commit object whose `summary` contains `needle`.
+fn commit_with<'a>(json: &'a Value, needle: &str) -> &'a Value {
+    json["commits"]
+        .as_array()
+        .expect("commits must be an array")
+        .iter()
+        .find(|c| c["summary"].as_str().unwrap_or("").contains(needle))
+        .unwrap_or_else(|| panic!("no commit whose summary contains {needle:?} in {json:#}"))
+}
+
+/// Index of the commit whose `summary` contains `needle`.
+fn commit_index(json: &Value, needle: &str) -> usize {
+    json["commits"]
+        .as_array()
+        .expect("commits must be an array")
+        .iter()
+        .position(|c| c["summary"].as_str().unwrap_or("").contains(needle))
+        .unwrap_or_else(|| panic!("no commit whose summary contains {needle:?} in {json:#}"))
+}
+
+/// The text block of `out` that renders the diff whose `diff --git` header
+/// contains `needle`, up to the next blank-line-separated block.
+fn diff_block<'a>(out: &'a str, needle: &str) -> &'a str {
+    let start = out
+        .match_indices("diff --git ")
+        .find(|(i, _)| {
+            let line_end = out[*i..].find('\n').map(|n| i + n).unwrap_or(out.len());
+            out[*i..line_end].contains(needle)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| panic!("no `diff --git` header containing {needle:?} in:\n{out}"));
+    let rest = &out[start..];
+    match rest.find("\n\n") {
+        Some(end) => &rest[..end + 1],
+        None => rest,
+    }
+}
+
+/// Seed the main timeline scenario for span `m`:
 ///
-/// C1: create span `m` with two line-range anchors (file1.txt#L1-L5,
-///     file2.txt#L1-L3) and a why.
-/// C2: edit the why prose AND change the content of file2.txt so that
-///     the anchor body changes → `modified` event.
-/// C3: pure re-hash / byte-identical re-anchor of file1.txt (no-op commit
-///     from the history perspective — must be omitted).
-/// C4: remove the file2.txt anchor and add a whole-file anchor on file3.txt.
+/// * `C0` — three source files.
+/// * `C1` — create the span with `file1.txt#L1-L5` and `file2.txt#L1-L3`.
+/// * `C2` — edit `file2.txt`'s anchored lines **without touching the
+///   declaration** (the walk-expansion case: today's declaration-only walk
+///   would fold this change into the next span commit).
+/// * `C3` — a why-prose edit alone (declaration diff, no anchor change).
+/// * `C4` — edit `file1.txt` *outside* every declared range: the commit
+///   qualifies for the walk but changes nothing observable, so it is dropped.
+/// * `C5` — remove the `file2.txt` anchor and add a whole-file `file3.txt`
+///   anchor.
 ///
-/// After seeding, the working tree is left with file3.txt edited (uncommitted
-/// drift), so the `current` section should appear.
-///
-/// Returns `(repo, span_name)`.
+/// The working tree is left with `file3.txt` edited (uncommitted drift) and a
+/// declaration that matches HEAD.
 fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     let repo = TestRepo::new()?;
     let span = "m";
 
-    // Write initial source files.
     repo.write_file(
         "file1.txt",
         "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    repo.write_file(
-        "file2.txt",
-        "alpha\nbeta\ngamma\ndelta\nepsilon\n",
-    )?;
-    repo.write_file(
-        "file3.txt",
-        "first\nsecond\nthird\nfourth\nfifth\n",
-    )?;
-    repo.commit_all("initial files")?;
+    repo.write_file("file2.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n")?;
+    repo.write_file("file3.txt", "first\nsecond\nthird\nfourth\nfifth\n")?;
+    repo.commit_all("C0: initial files")?;
 
     // C1: create the span.
     repo.span_stdout(["add", span, "file1.txt#L1-L5"])?;
@@ -59,40 +110,33 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C1: create span"])?;
 
-    // C2: edit why prose AND mutate file2.txt so the anchor content changes.
+    // C2: anchored content changes with the declaration untouched.
+    repo.write_file("file2.txt", "ALPHA\nBETA\ngamma\ndelta\nepsilon\n")?;
+    repo.commit_all("C2: edit file2 content only")?;
+
+    // C3: why prose only.
+    repo.span_stdout(["why", span, "Second why: prose alone changed."])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "C3: edit why prose only"])?;
+
+    // C4: an anchored file changes outside every declared range.
     repo.write_file(
-        "file2.txt",
-        "ALPHA\nBETA\nGAMMA\ndelta\nepsilon\n",
+        "file1.txt",
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nLINE9\nline10\n",
     )?;
-    repo.commit_all("C2 source: mutate file2")?;
-    repo.span_stdout(["add", span, "file2.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "Second why: file2 lines updated."])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "C2: update why and re-anchor file2"])?;
+    repo.commit_all("C4: touch file1 outside the anchored range")?;
 
-    // C3: a re-anchor of file1.txt against byte-identical content. Re-running
-    // `git span add` recomputes the same content hash, so the span file's bytes
-    // do not change and there is nothing for git to stage. The commit therefore
-    // does not touch `.span/<span>` at all (`--allow-empty` keeps it in the
-    // history), so the path-scoped history walk omits it entirely — the
-    // "no-op commit must be omitted" invariant.
-    repo.span_stdout(["add", span, "file1.txt#L1-L5"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git([
-        "commit",
-        "--allow-empty",
-        "-m",
-        "C3: no-op re-anchor of file1 (byte-identical)",
-    ])?;
-
-    // C4: remove the file2.txt anchor and add a whole-file anchor on file3.txt.
+    // C5: drop one anchor, add a whole-file anchor.
     repo.span_stdout(["remove", span, "file2.txt#L1-L3"])?;
     repo.span_stdout(["add", span, "file3.txt"])?;
     repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "C4: remove file2 anchor, add file3 whole-file"])?;
+    repo.run_git([
+        "commit",
+        "-m",
+        "C5: remove file2 anchor, add file3 whole-file",
+    ])?;
 
-    // Leave working tree with uncommitted edit to file3.txt so `current`
-    // section appears.
+    // Uncommitted source drift so the `current` section appears.
     repo.write_file(
         "file3.txt",
         "first\nsecond\nthird\nfourth\nfifth\nSIXTH (uncommitted)\n",
@@ -102,580 +146,489 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
 }
 
 // ---------------------------------------------------------------------------
-// Test: oldest→newest commit ordering
+// Format surface
 // ---------------------------------------------------------------------------
 
 #[test]
-fn commits_ordered_oldest_to_newest() -> Result<()> {
+fn xml_format_is_rejected_by_clap() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    let out = repo.run_span(["history", span])?;
-    // Phase 3 will panic here (todo!()); this test is skipped.
-    let xml = String::from_utf8_lossy(&out.stdout);
-
-    // Commits must appear in chronological (oldest→newest) order.
-    // Locate the byte offsets of the commit open-tags and verify ordering.
-    let c1_pos = xml.find("C1: create span").expect("C1 commit summary missing");
-    let c2_pos = xml.find("C2: update why").expect("C2 commit summary missing");
-    let c4_pos = xml.find("C4: remove file2").expect("C4 commit summary missing");
-
-    assert!(c1_pos < c2_pos, "C1 must precede C2 in output");
-    assert!(c2_pos < c4_pos, "C2 must precede C4 in output");
-
+    let out = repo.run_span(["history", span, "--format=xml"])?;
+    assert!(!out.status.success(), "`--format=xml` must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid value 'xml'"),
+        "expected a clap value error naming xml; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("human") && stderr.contains("json"),
+        "expected human/json to be the only accepted values; got:\n{stderr}"
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: skip-unchanged (no-op commit omitted)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn noop_commit_omitted() -> Result<()> {
+fn default_format_is_git_log_style_text() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let out = history_text(&repo, span)?;
 
-    // C3 is a byte-identical re-anchor and must not appear in the output.
     assert!(
-        !xml.contains("C3: no-op"),
-        "no-op commit C3 must be omitted from history output; got:\n{xml}"
+        out.lines()
+            .any(|l| l.starts_with("commit ") && l.len() == "commit ".len() + 40),
+        "expected `commit <40-hex>` entry headers; got:\n{out}"
     );
-
+    assert!(
+        out.contains("\nDate:   "),
+        "expected git's `Date:   ` header line; got:\n{out}"
+    );
+    assert!(
+        out.contains("\n    C5: remove file2 anchor"),
+        "expected four-space-indented commit summaries; got:\n{out}"
+    );
+    // No XML remnants anywhere.
+    assert!(
+        !out.contains("<commit ") && !out.contains("<current>") && !out.contains("event="),
+        "XML dialect must be gone; got:\n{out}"
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: event vocabulary (added / modified / removed)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn event_vocabulary_added_modified_removed() -> Result<()> {
+fn json_is_schema_version_2_without_event_or_why() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let json = history_json(&repo, span)?;
 
-    // C1: both anchors are first appearances → event="added"
+    assert_eq!(json["schema_version"], 2, "schema_version must be 2");
+    assert_eq!(json["span"], span);
+
+    let raw = serde_json::to_string(&json)?;
     assert!(
-        xml.contains("event=\"added\""),
-        "expected event=\"added\" for first-appearance anchors; got:\n{xml}"
+        !raw.contains("\"event\""),
+        "the `event` field must be gone; got: {raw}"
     );
-
-    // C2: file2.txt anchor content changed → event="modified"
     assert!(
-        xml.contains("event=\"modified\""),
-        "expected event=\"modified\" for changed anchor; got:\n{xml}"
+        !raw.contains("\"why\""),
+        "the per-commit `why` field must be gone; got: {raw}"
     );
-
-    // C4: file2.txt anchor removed → event="removed"
     assert!(
-        xml.contains("event=\"removed\""),
-        "expected event=\"removed\" for dropped anchor; got:\n{xml}"
+        !raw.contains("\"status\""),
+        "the current-anchor `status` string must be gone; got: {raw}"
     );
-
     Ok(())
 }
 
 #[test]
-fn first_appearance_is_added_not_modified() -> Result<()> {
+fn both_formats_are_newest_first_and_agree_on_commit_count() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let out = history_text(&repo, span)?;
+    let json = history_json(&repo, span)?;
 
-    // The very first commit section must use event="added" for all anchors,
-    // never event="modified" (there is no previous state to diff against).
-    let c1_section_end = xml
-        .find("C2: update why")
-        .unwrap_or(xml.len());
-    let c1_section = &xml[..c1_section_end];
+    // Text: newest commit's summary appears before the oldest.
+    let c5 = out.find("C5: remove file2").expect("C5 missing from text");
+    let c3 = out.find("C3: edit why prose").expect("C3 missing from text");
+    let c1 = out.find("C1: create span").expect("C1 missing from text");
+    assert!(c5 < c3 && c3 < c1, "text output must be newest-first:\n{out}");
 
+    // JSON: same ordering.
     assert!(
-        !c1_section.contains("event=\"modified\""),
-        "first commit section must not use event=\"modified\"; got:\n{c1_section}"
-    );
-    assert!(
-        c1_section.contains("event=\"added\""),
-        "first commit section must use event=\"added\" for new anchors; got:\n{c1_section}"
+        commit_index(&json, "C5: remove file2") < commit_index(&json, "C3: edit why prose"),
+        "JSON commits must be newest-first: {json:#}"
     );
 
+    let text_commits = out
+        .lines()
+        .filter(|l| l.starts_with("commit ") && l.len() == "commit ".len() + 40)
+        .count();
+    assert_eq!(
+        text_commits,
+        json["commits"].as_array().expect("commits array").len(),
+        "both formats must carry the same commit sections"
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: conditional `current` entry
-// ---------------------------------------------------------------------------
-
 #[test]
-fn current_present_when_worktree_drifts() -> Result<()> {
+fn json_date_is_a_full_iso8601_timestamp() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    // Worktree has uncommitted edit to file3.txt (set up by the fixture).
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let json = history_json(&repo, span)?;
+    let date = commit_with(&json, "C5: remove file2")["date"]
+        .as_str()
+        .expect("date must be a string")
+        .to_string();
 
-    assert!(
-        xml.contains("<current>"),
-        "expected <current> block when worktree drifts; got:\n{xml}"
-    );
-
+    chrono::DateTime::parse_from_rfc3339(&date)
+        .unwrap_or_else(|e| panic!("`date` must be ISO-8601 with offset, got {date:?}: {e}"));
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Timeline: adds, edits, re-anchors, removals
+// ---------------------------------------------------------------------------
+
 #[test]
-fn current_absent_when_worktree_matches_head() -> Result<()> {
+fn first_add_renders_addition_diff_and_json_content() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    // Re-anchor the drifted source so the span's stored fingerprint matches the
-    // live content, then commit. Committing the edit alone is not enough — the
-    // engine flags committed-but-not-re-anchored drift (the false-negative this
-    // command exists to surface), so the span must be re-anchored to be clean.
-    repo.commit_all("commit the source edit")?;
-    // Re-anchor every anchor against the now-committed content so each stored
-    // fingerprint matches the live bytes, then commit the span.
-    repo.span_stdout(["add", span, "file3.txt"])?;
-    repo.run_git(["add", "-A"])?;
-    repo.run_git(["commit", "--allow-empty", "-m", "re-anchor after source edit"])?;
-
-    // Confirm `git span stale` now reports the span clean.
-    let stale = repo.run_span(["stale", span])?;
-    assert!(
-        stale.status.success(),
-        "expected a clean `git span stale` after re-anchor; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
-    );
-
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let out = history_text(&repo, span)?;
+    let block = diff_block(&out, "b/file1.txt#L1-L5");
 
     assert!(
-        !xml.contains("<current>"),
-        "expected no <current> block when worktree matches HEAD; got:\n{xml}"
+        block.contains("new anchor\n"),
+        "a first-add renders git's addition conventions; got:\n{block}"
+    );
+    assert!(
+        block.contains("index 0000000000000000..rk64:"),
+        "a first-add's old side is the null hash; got:\n{block}"
+    );
+    assert!(
+        block.contains("--- /dev/null\n") && block.contains("@@ -0,0 +1,5 @@\n"),
+        "a first-add's hunk header uses real new-file coordinates; got:\n{block}"
+    );
+    assert!(
+        block.contains("+line1\n+line2\n"),
+        "a first-add carries the full addition body; got:\n{block}"
     );
 
+    // JSON carries the snapshot as `content` and no `diff` for a first-add.
+    let json = history_json(&repo, span)?;
+    let c1 = commit_with(&json, "C1: create span");
+    let anchor = c1["anchors"]
+        .as_array()
+        .expect("anchors array")
+        .iter()
+        .find(|a| a["path"] == "file1.txt#L1-L5")
+        .expect("file1 anchor missing from C1");
+    assert_eq!(
+        anchor["content"], "line1\nline2\nline3\nline4\nline5\n",
+        "a first-add carries `content`; got: {anchor}"
+    );
+    assert!(
+        anchor.get("diff").is_none(),
+        "a first-add carries exactly one of diff/content; got: {anchor}"
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: `current` anchor `status` drawn from stale drift phrase set
-// ---------------------------------------------------------------------------
-
 #[test]
-fn current_anchor_status_is_stale_phrase() -> Result<()> {
+fn content_edit_without_declaration_change_is_its_own_entry() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let json = history_json(&repo, span)?;
+    let c2 = commit_with(&json, "C2: edit file2 content only");
 
-    // The drift phrase for a source change is "changed in the working tree"
-    // (verbatim from format_drift_label).
     assert!(
-        xml.contains("status=\"changed in the working tree\""),
-        "expected status=\"changed in the working tree\" in <current> block; got:\n{xml}"
+        c2.get("span_diff").is_none(),
+        "C2 never touched the declaration; got: {c2}"
     );
+    let anchors = c2["anchors"].as_array().expect("anchors array");
+    assert_eq!(anchors.len(), 1, "only file2's anchor changed; got: {c2}");
+    assert_eq!(anchors[0]["path"], "file2.txt#L1-L3");
 
+    let diff = anchors[0]["diff"].as_str().expect("diff string");
+    assert!(
+        diff.contains("-alpha\n-beta\n+ALPHA\n+BETA\n") && diff.contains("@@ -1,3 +1,3 @@\n"),
+        "expected an in-place snapshot diff at real coordinates; got:\n{diff}"
+    );
+    assert!(
+        anchors[0].get("content").is_none(),
+        "only first-adds carry content; got: {}",
+        anchors[0]
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: committed-but-not-re-anchored source drift surfaces in `current` and
-// agrees with `git span stale` (regression for the false-negative where
-// worktree == HEAD hid drift the stored fingerprint still flags).
-// ---------------------------------------------------------------------------
-
 #[test]
-fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
-    let repo = TestRepo::new()?;
-    let span = "c";
+fn why_only_edit_emits_span_diff_without_anchor_entries() -> Result<()> {
+    let (repo, span) = seed_history_scenario()?;
+    let json = history_json(&repo, span)?;
+    let c3 = commit_with(&json, "C3: edit why prose only");
 
-    repo.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;
-    repo.commit_all("initial")?;
-
-    // Anchor lines 1-3 and commit the span.
-    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
-    repo.span_stdout(["why", span, "tracks the head of src.txt"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "create span"])?;
-
-    // Edit the source AND commit it, WITHOUT `stale --fix`. The worktree now
-    // equals HEAD, but the span's stored content fingerprint no longer matches
-    // the live bytes — `git span stale` flags this and so must `history`.
-    repo.write_file("src.txt", "ONE\nTWO\nthree\nfour\nfive\n")?;
-    repo.commit_all("edit source without re-anchoring")?;
-
-    // Sanity: `git span stale` reports the anchor as drifted.
-    let stale = repo.run_span(["stale", span])?;
-    let stale_out = String::from_utf8_lossy(&stale.stdout);
+    let span_diff = c3["span_diff"].as_str().expect("span_diff missing from C3");
     assert!(
-        !stale.status.success(),
-        "expected `git span stale` to exit non-zero on committed drift; got:\n{stale_out}"
+        span_diff.starts_with("diff --git a/.span/m b/.span/m\nindex "),
+        "the declaration diff is a real blob diff; got:\n{span_diff}"
     );
     assert!(
-        stale_out.contains("src.txt"),
-        "expected `git span stale` to mention the drifted anchor; got:\n{stale_out}"
+        span_diff.contains("+Second why: prose alone changed."),
+        "why prose lives in the declaration diff; got:\n{span_diff}"
     );
-
-    // `history` must emit a <current> block for the same anchor even though the
-    // worktree matches HEAD.
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        xml.contains("<current>"),
-        "expected <current> block for committed-but-not-re-anchored drift; got:\n{xml}"
+    assert_eq!(
+        c3["anchors"].as_array().expect("anchors array").len(),
+        0,
+        "a why-only edit changes no anchor content; got: {c3}"
     );
-    assert!(
-        xml.contains("src.txt#L1-L3"),
-        "expected the drifted anchor in <current>; got:\n{xml}"
-    );
-
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: a moved anchor renders the `moved` phrase and the relocated block as
-// content — never a slice of the stale stored line range.
-// ---------------------------------------------------------------------------
+#[test]
+fn noop_qualifying_commit_is_dropped() -> Result<()> {
+    let (repo, span) = seed_history_scenario()?;
+    let out = history_text(&repo, span)?;
+    assert!(
+        !out.contains("C4: touch file1 outside"),
+        "a commit that touched an anchored file outside every declared range \
+         changes nothing observable and must be dropped; got:\n{out}"
+    );
+    Ok(())
+}
 
 #[test]
-fn current_moved_anchor_uses_moved_phrase_and_relocated_block() -> Result<()> {
+fn anchor_removal_renders_dev_null_deletion_body() -> Result<()> {
+    let (repo, span) = seed_history_scenario()?;
+    let out = history_text(&repo, span)?;
+    let block = diff_block(&out, "a/file2.txt#L1-L3 b/dev/null");
+
+    assert!(
+        block.contains("deleted anchor\n"),
+        "expected the `deleted anchor` header; got:\n{block}"
+    );
+    assert!(
+        block.contains("..0000000000000000\n") && block.contains("+++ /dev/null\n"),
+        "a removal's new side is /dev/null; got:\n{block}"
+    );
+    assert!(
+        block.contains("@@ -1,3 +0,0 @@\n") && block.contains("-ALPHA\n"),
+        "a removal carries the full deletion body at real coordinates; got:\n{block}"
+    );
+
+    let json = history_json(&repo, span)?;
+    let c5 = commit_with(&json, "C5: remove file2");
+    let removed = c5["anchors"]
+        .as_array()
+        .expect("anchors array")
+        .iter()
+        .find(|a| a["path"] == "file2.txt#L1-L3")
+        .expect("removed anchor missing from C5");
+    assert!(
+        removed["diff"].as_str().unwrap_or("").contains("deleted anchor"),
+        "a removal is a diff, never content; got: {removed}"
+    );
+    assert!(
+        removed.get("content").is_none(),
+        "a removal has no content key; got: {removed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn pure_reanchor_renders_rename_headers_without_hunks() -> Result<()> {
     let repo = TestRepo::new()?;
     let span = "mv";
 
-    // A distinctive block we can track through a relocation.
-    repo.write_file(
-        "src.txt",
-        "header-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
-    )?;
+    repo.write_file("src.txt", "TARGET-A\nTARGET-B\nTARGET-C\n")?;
     repo.commit_all("initial")?;
-
-    // Anchor the TARGET block (lines 3-5) and commit the span.
-    repo.span_stdout(["add", span, "src.txt#L3-L5"])?;
+    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
     repo.span_stdout(["why", span, "tracks the TARGET block"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span"])?;
 
-    // Relocate the block: prepend lines so the identical TARGET bytes now live
-    // at a different line range. The stored range (3-5) no longer covers them.
+    // Displace the block downward and re-anchor to its new address in the same
+    // commit: the extracted snapshot is byte-identical, only the address moved.
     repo.write_file(
         "src.txt",
-        "new-1\nnew-2\nnew-3\nheader-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
+        "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B\nTARGET-C\n",
     )?;
-    repo.commit_all("relocate the TARGET block downward")?;
+    repo.span_stdout(["remove", span, "src.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "src.txt#L4-L6"])?;
+    repo.commit_all("re-anchor the TARGET block after displacement")?;
 
-    // `git span stale` classifies this as MOVED.
-    let stale = repo.run_span(["stale", span])?;
-    let stale_out = String::from_utf8_lossy(&stale.stdout);
-    assert!(
-        stale_out.to_lowercase().contains("moved"),
-        "expected `git span stale` to classify the anchor as moved; got:\n{stale_out}"
-    );
+    let out = history_text(&repo, span)?;
+    let block = diff_block(&out, "a/src.txt#L1-L3 b/src.txt#L4-L6");
 
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
-
-    // Status is the verbatim `format_drift_label` phrase for Moved.
     assert!(
-        xml.contains("status=\"moved\""),
-        "expected status=\"moved\" sourced from format_drift_label; got:\n{xml}"
-    );
-    // Content is the relocated block (the real TARGET lines), not a slice of the
-    // stale stored range 3-5 (which now covers new-3/header-a/header-b).
-    assert!(
-        xml.contains("TARGET-ONE\nTARGET-TWO\nTARGET-THREE"),
-        "expected the relocated block as <current> content; got:\n{xml}"
+        block.contains("similarity index 100%\n")
+            && block.contains("rename from src.txt#L1-L3\n")
+            && block.contains("rename to src.txt#L4-L6\n"),
+        "a re-anchor pairs with its predecessor as a rename; got:\n{block}"
     );
     assert!(
-        !xml.contains("new-3\nheader-a\nheader-b"),
-        "did not expect a slice of the stale stored line range as content; got:\n{xml}"
+        !block.contains("@@"),
+        "a pure move renders the header block alone, no hunks; got:\n{block}"
     );
-
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: a whole-file anchor with no edit does not emit `current` (the old
-// one-sided normalization could false-positive; the resolver normalizes both
-// sides consistently).
-// ---------------------------------------------------------------------------
-
 #[test]
-fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
+fn reanchor_with_edit_renders_rename_headers_and_hunks() -> Result<()> {
     let repo = TestRepo::new()?;
-    let span = "wf";
+    let span = "mvx";
 
-    repo.write_file("whole.txt", "alpha\nbeta\ngamma\n")?;
+    repo.write_file("src.txt", "TARGET-A\nTARGET-B\nTARGET-C\n")?;
     repo.commit_all("initial")?;
-
-    repo.span_stdout(["add", span, "whole.txt"])?;
-    repo.span_stdout(["why", span, "tracks the whole file"])?;
+    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "tracks the TARGET block"])?;
     repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "create whole-file span"])?;
+    repo.run_git(["commit", "-m", "create span"])?;
 
-    // No edit at all — `current` must be omitted.
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    repo.write_file(
+        "src.txt",
+        "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B-CHANGED\nTARGET-C\n",
+    )?;
+    repo.span_stdout(["remove", span, "src.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "src.txt#L4-L6"])?;
+    repo.commit_all("re-anchor and edit the TARGET block")?;
+
+    let out = history_text(&repo, span)?;
+    let block = diff_block(&out, "a/src.txt#L1-L3 b/src.txt#L4-L6");
+
     assert!(
-        !xml.contains("<current>"),
-        "expected no <current> block for an unedited whole-file anchor; got:\n{xml}"
+        block.contains("rename from src.txt#L1-L3\n") && block.contains("similarity index "),
+        "an edited re-anchor still pairs as a rename; got:\n{block}"
     );
-
+    assert!(
+        !block.contains("similarity index 100%"),
+        "similarity must be genuinely computed, not assumed; got:\n{block}"
+    );
+    assert!(
+        block.contains("-TARGET-B\n") && block.contains("+TARGET-B-CHANGED\n"),
+        "an edited re-anchor renders hunks as well as headers; got:\n{block}"
+    );
+    assert!(
+        block.contains("@@ -1,3 +4,3 @@\n"),
+        "hunk headers use each side's real file coordinates; got:\n{block}"
+    );
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test: per-anchor degradation note (file absent at a commit)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn degradation_note_file_absent_at_commit() -> Result<()> {
-    // Build a scenario where an anchor references a file that does not exist
-    // at an earlier commit in history.
+fn degradation_note_transition_renders_as_a_content_change() -> Result<()> {
     let repo = TestRepo::new()?;
     let span = "degraded";
 
     repo.write_file("src.txt", "line1\nline2\nline3\n")?;
     repo.commit_all("initial")?;
-
-    // C1: anchor src.txt.
     repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
     repo.span_stdout(["why", span, "initial why"])?;
     repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "C1: create span with src.txt"])?;
+    repo.run_git(["commit", "-m", "create span with src.txt"])?;
 
-    // C2: delete src.txt while keeping the span anchor pointing at it.
+    // Delete the source while the declaration keeps pointing at it. The
+    // extraction degrades to a note rather than aborting the report, and the
+    // Text→Note transition is an ordinary content change.
     repo.run_git(["rm", "src.txt"])?;
-    repo.run_git(["commit", "-m", "C2: delete src.txt"])?;
+    repo.run_git(["commit", "-m", "delete src.txt"])?;
 
-    // C3: a span-file commit (why edit) made *after* src.txt is gone. The
-    // history walk reads the anchor's content from this commit's tree, where
-    // src.txt is absent — so the timeline must degrade that anchor to a note
-    // rather than aborting the whole report.
-    repo.span_stdout(["why", span, "why after source deletion"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "C3: edit why after src.txt is gone"])?;
-
-    let out = repo.run_span(["history", span])?;
-    // Command must not abort even though the file is absent at one revision.
-    // The output contains a degradation note, not an error exit.
-    // (exit code check: 0 when walk is complete despite per-anchor degradation)
-    let xml = String::from_utf8_lossy(&out.stdout);
-
-    // Degradation note text verbatim from the plan / canonical doc.
+    let out = history_text(&repo, span)?;
     assert!(
-        xml.contains("(file absent at this commit)"),
-        "expected degradation note '(file absent at this commit)'; got:\n{xml}"
+        out.contains("+(file absent at this commit)"),
+        "a Text→Note transition diffs like any other content change; got:\n{out}"
     );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Test: incomplete-walk fail-closed
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "Phase 3 not yet implemented — todo!() stubs; deterministic walk-budget exhaustion may require harness-level support"]
-fn incomplete_walk_exits_nonzero_with_warning() -> Result<()> {
-    // Forcing walk_complete == false deterministically requires either a very
-    // large repo history or a seam in the walk budget. This test asserts the
-    // *structure* of the contract; a real harness hook would inject
-    // walk_complete=false via a test seam. Until that seam exists this test
-    // remains #[ignore].
-    //
-    // Expected behavior when walk is incomplete:
-    //   - stderr contains: "error: history walk incomplete"
-    //   - exit code is non-zero
-    //   - stdout is empty (no partial output)
-    let repo = TestRepo::new()?;
-    repo.write_file("f.txt", "x\n")?;
-    repo.commit_all("init")?;
-    repo.span_stdout(["add", "m", "f.txt#L1-L1"])?;
-    repo.span_stdout(["why", "m", "why"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "span commit"])?;
-
-    // With the walk budget not exhausted in a tiny repo, this call succeeds.
-    // The assertions below document what MUST hold when walk_complete == false.
-    let out = repo.run_span(["history", "m"])?;
-
-    // --- assertions that apply when walk IS complete (sanity check): ---
     assert!(
-        out.status.success() || !out.status.success(),
-        "placeholder — remove when seam is available"
+        out.contains("-line1\n"),
+        "the prior real content is the old side of that diff; got:\n{out}"
     );
-
-    // --- assertions that MUST hold when walk_complete == false: ---
-    // (documented here for Phase 3 implementation guidance)
-    //
-    // let stderr = String::from_utf8_lossy(&out.stderr);
-    // assert!(!out.status.success(), "incomplete walk must exit non-zero");
-    // assert!(String::from_utf8_lossy(&out.stdout).trim().is_empty(),
-    //         "incomplete walk must produce no partial output");
-    // assert!(stderr.contains("history walk incomplete"),
-    //         "incomplete walk must emit warning to stderr");
-
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Test: XML↔JSON parity
+// `--limit` scoping
 // ---------------------------------------------------------------------------
 
 #[test]
-fn xml_and_json_carry_same_data() -> Result<()> {
+fn limit_scopes_the_window_seeds_the_baseline_and_warns() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
 
-    let xml_out = repo.run_span(["history", span])?;
-    let json_out = repo.run_span(["history", span, "--format=json"])?;
-
-    let xml = String::from_utf8_lossy(&xml_out.stdout);
-    let json: Value = serde_json::from_slice(&json_out.stdout)?;
-
-    // Both formats must agree on top-level span name (JSON envelope).
-    assert_eq!(json["span"], span, "JSON span field mismatch");
-
-    // Both must carry the same number of commit sections.
-    let commit_count_xml = xml.matches("<commit ").count();
-    let commit_count_json = json["commits"]
-        .as_array()
-        .expect("commits must be array")
-        .len();
-    assert_eq!(
-        commit_count_xml, commit_count_json,
-        "XML and JSON must carry the same number of commit sections"
-    );
-
-    // Both must have (or lack) a current section.
-    let xml_has_current = xml.contains("<current>");
-    let json_has_current = json.get("current").is_some();
-    assert_eq!(
-        xml_has_current, json_has_current,
-        "XML and JSON must agree on presence of current section"
-    );
-
-    // JSON schema version must be 1.
-    assert_eq!(json["schema_version"], 1, "JSON schema_version must be 1");
-
-    Ok(())
-}
-
-#[test]
-fn json_removed_anchor_has_no_content_key() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-    let json_out = repo.run_span(["history", span, "--format=json"])?;
-    let json: Value = serde_json::from_slice(&json_out.stdout)?;
-
-    let commits = json["commits"].as_array().expect("commits array");
-    for commit in commits {
-        if let Some(anchors) = commit["anchors"].as_array() {
-            for anchor in anchors {
-                if anchor["event"] == "removed" {
-                    assert!(
-                        anchor.get("content").is_none(),
-                        "removed anchor must not have a content key; got: {anchor}"
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[test]
-fn json_why_omitted_when_unchanged() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-    let json_out = repo.run_span(["history", span, "--format=json"])?;
-    let json: Value = serde_json::from_slice(&json_out.stdout)?;
-
-    // C3 is a no-op and should be omitted entirely.
-    // C4 only changes the anchor set, not the why prose; its commit object
-    // must not carry a "why" key.
-    let commits = json["commits"].as_array().expect("commits array");
-
-    // Find C4 by summary substring.
-    let c4 = commits
-        .iter()
-        .find(|c| {
-            c["summary"]
-                .as_str()
-                .unwrap_or("")
-                .contains("C4: remove file2")
-        });
-
-    if let Some(c4) = c4 {
-        assert!(
-            c4.get("why").is_none(),
-            "C4 did not change why prose — 'why' key must be absent; got: {c4}"
-        );
-    }
-    // If c4 is not found it means the walk is incomplete (Phase 3 todo), which
-    // is fine for an ignored test.
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Test: `--limit N` (N < total) does not fabricate `added`/`why` for the
-// oldest shown commit and warns the window is scoped/partial.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn limit_window_does_not_fabricate_added_and_warns_scoped() -> Result<()> {
-    let (repo, span) = seed_history_scenario()?;
-
-    // `--limit 1` keeps only the newest span-touching commit (C4). C4 adds the
-    // file3 whole-file anchor (genuine `added`) and removes the file2 anchor;
-    // the file1 anchor existed before the window and is UNCHANGED at C4, so it
-    // must not appear at all — and certainly not relabeled `added`.
-    let out = repo.run_span(["history", span, "--limit", "1"])?;
+    let out = repo.run_span(["history", span, "--limit", "1", "--format=json"])?;
     assert!(
         out.status.success(),
         "scoped history is an explicit user request and must exit 0; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let xml = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("scoped") && stderr.contains("partial"),
+        "a scoped window must be signalled on stderr; got:\n{stderr}"
+    );
 
-    // Only one commit section is shown.
-    assert_eq!(
-        xml.matches("<commit ").count(),
-        1,
-        "`--limit 1` must show exactly one commit; got:\n{xml}"
+    let json: Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(json["scoped"], Value::Bool(true), "expected scoped: true");
+    let commits = json["commits"].as_array().expect("commits array");
+    assert_eq!(commits.len(), 1, "`--limit 1` shows one commit: {json:#}");
+    assert!(
+        commits[0]["summary"]
+            .as_str()
+            .unwrap_or("")
+            .contains("C5: remove file2"),
+        "the single shown commit must be the newest; got: {}",
+        commits[0]
+    );
+
+    // The baseline is seeded from real prior state, so file1's unchanged
+    // pre-window anchor is neither re-emitted nor relabelled as a first-add.
+    // (It still appears as a context line inside the declaration's own diff —
+    // that is the declaration's real bytes, not a fabricated anchor entry.)
+    let anchors = commits[0]["anchors"].as_array().expect("anchors array");
+    assert!(
+        anchors.iter().all(|a| a["path"] != "file1.txt#L1-L5"),
+        "a pre-existing unchanged anchor must not resurface in a scoped window; got: {anchors:#?}"
     );
     assert!(
-        xml.contains("C4: remove file2"),
-        "the single shown commit must be the newest (C4); got:\n{xml}"
+        anchors.iter().any(|a| a["path"] == "file3.txt" && a["content"].is_string()),
+        "file3 is genuinely first-added at C5 and keeps its content snapshot; got: {anchors:#?}"
     );
 
-    // file1's anchor existed before the window and did not change at C4 — it
-    // must not be re-emitted, and must never carry event="added".
+    // The unscoped run carries no marker.
+    let full = history_json(&repo, span)?;
     assert!(
-        !xml.contains("file1.txt#L1-L5"),
-        "pre-existing unchanged anchor must not be re-emitted in a scoped window; got:\n{xml}"
+        full.get("scoped").is_none(),
+        "an unscoped run must not carry the flag; got: {full:#}"
     );
-
-    // file3 is genuinely first-introduced at C4 → its `added` is truthful.
-    assert!(
-        xml.contains("path=\"file3.txt\" event=\"added\""),
-        "file3 is genuinely added at C4 and must keep event=\"added\"; got:\n{xml}"
-    );
-
-    // The partial window must not read as the complete record.
-    assert!(
-        stderr.contains("scoped") || stderr.contains("partial"),
-        "a scoped/partial timeline must be signalled; stderr:\n{stderr}"
-    );
-
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Test (trigger 3): worktree anchor-set add/remove surfaces in `current`
+// The `current` (working tree) section
 // ---------------------------------------------------------------------------
 
-/// An uncommitted `git span add` (worktree-only anchor, not yet in HEAD) must
-/// appear in the `current` section, agreeing with `git span stale`.
 #[test]
-fn current_surfaces_worktree_added_anchor() -> Result<()> {
-    let repo = TestRepo::new()?;
-    let span = "t3add";
+fn uncommitted_drift_renders_headerless_before_the_first_commit() -> Result<()> {
+    let (repo, span) = seed_history_scenario()?;
+    let out = history_text(&repo, span)?;
 
-    // Seed: one committed anchor.
+    let first_line = out.lines().next().unwrap_or("");
+    assert!(
+        first_line.starts_with("diff --git a/file3.txt b/file3.txt"),
+        "uncommitted drift renders first, with no commit header; got:\n{out}"
+    );
+    let first_commit = out.find("\ncommit ").expect("no commit entry rendered");
+    assert!(
+        out[..first_commit].contains("+SIXTH (uncommitted)"),
+        "the drift diff must precede every commit entry; got:\n{out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn current_anchor_carries_both_diff_and_content() -> Result<()> {
+    let (repo, span) = seed_history_scenario()?;
+    let json = history_json(&repo, span)?;
+
+    let current = &json["current"];
+    assert!(
+        current.get("span_diff").is_none(),
+        "the worktree declaration matches HEAD here; got: {current}"
+    );
+    let anchors = current["anchors"].as_array().expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one anchor drifts; got: {current}");
+    assert_eq!(anchors[0]["path"], "file3.txt");
+    assert!(
+        anchors[0]["diff"]
+            .as_str()
+            .expect("diff string")
+            .contains("+SIXTH (uncommitted)"),
+        "the current diff runs from the last recorded snapshot to live content; got: {}",
+        anchors[0]
+    );
+    assert_eq!(
+        anchors[0]["content"],
+        "first\nsecond\nthird\nfourth\nfifth\nSIXTH (uncommitted)\n",
+        "a current anchor also carries the full live snapshot"
+    );
+    Ok(())
+}
+
+#[test]
+fn uncommitted_declaration_edit_surfaces_as_current_span_diff() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let span = "w";
+
     repo.write_file("a.txt", "alpha\nbeta\ngamma\n")?;
     repo.write_file("b.txt", "one\ntwo\nthree\n")?;
     repo.commit_all("initial files")?;
@@ -684,118 +637,183 @@ fn current_surfaces_worktree_added_anchor() -> Result<()> {
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "create span"])?;
 
-    // Worktree-only: add b.txt anchor without committing.
+    // Uncommitted why edit plus an uncommitted anchor add: both are
+    // declaration edits, and one worktree `span_diff` covers both.
+    repo.span_stdout(["why", span, "tracks a.txt head and b.txt head"])?;
     repo.span_stdout(["add", span, "b.txt#L1-L2"])?;
-    // Do NOT commit — the span file is dirty in the working tree.
 
-    // `git span history` must emit a <current> block containing the new anchor.
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
+    let json = history_json(&repo, span)?;
+    let span_diff = json["current"]["span_diff"]
+        .as_str()
+        .expect("current.span_diff missing");
     assert!(
-        xml.contains("<current>"),
-        "expected <current> block for worktree-added anchor; got:\n{xml}"
+        span_diff.starts_with("diff --git a/.span/w b/.span/w\nindex "),
+        "the worktree declaration diff is a real blob diff; got:\n{span_diff}"
     );
     assert!(
-        xml.contains("b.txt#L1-L2"),
-        "expected the worktree-added anchor address in <current>; got:\n{xml}"
+        span_diff.contains("+b.txt#L1-L2 rk64:"),
+        "an uncommitted anchor add appears in the declaration diff; got:\n{span_diff}"
     );
     assert!(
-        xml.contains("added in the working tree"),
-        "expected 'added in the working tree' status for the worktree-added anchor; got:\n{xml}"
+        span_diff.contains("+tracks a.txt head and b.txt head"),
+        "an uncommitted why edit appears in the same declaration diff; got:\n{span_diff}"
     );
 
+    let out = history_text(&repo, span)?;
+    assert!(
+        out.starts_with("diff --git a/.span/w b/.span/w\n"),
+        "the worktree declaration diff renders headerless, first; got:\n{out}"
+    );
     Ok(())
 }
 
-/// An uncommitted `git span remove` (anchor removed from span in worktree but
-/// still at HEAD) must appear as a removed anchor in the `current` section.
 #[test]
-fn current_surfaces_worktree_removed_anchor() -> Result<()> {
-    let repo = TestRepo::new()?;
-    let span = "t3rem";
-
-    // Seed: two committed anchors.
-    repo.write_file("a.txt", "alpha\nbeta\ngamma\n")?;
-    repo.write_file("b.txt", "one\ntwo\nthree\n")?;
-    repo.commit_all("initial files")?;
-    repo.span_stdout(["add", span, "a.txt#L1-L2"])?;
-    repo.span_stdout(["add", span, "b.txt#L1-L2"])?;
-    repo.span_stdout(["why", span, "tracks both files"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "create span with two anchors"])?;
-
-    // Worktree-only: remove b.txt anchor without committing.
-    repo.span_stdout(["remove", span, "b.txt#L1-L2"])?;
-    // Do NOT commit.
-
-    // `git span history` must emit a <current> block containing the removed anchor.
-    let out = repo.run_span(["history", span])?;
-    let xml = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        xml.contains("<current>"),
-        "expected <current> block for worktree-removed anchor; got:\n{xml}"
-    );
-    assert!(
-        xml.contains("b.txt#L1-L2"),
-        "expected the worktree-removed anchor address in <current>; got:\n{xml}"
-    );
-    assert!(
-        xml.contains("removed in the working tree"),
-        "expected 'removed in the working tree' status for the worktree-removed anchor; got:\n{xml}"
-    );
-    // The removed anchor in <current> must be self-closing (no body).
-    // Verify by checking the specific self-closing form for b.txt.
-    assert!(
-        xml.contains("path=\"b.txt#L1-L2\" status=\"removed in the working tree\"/>"),
-        "removed anchor in <current> must be self-closing (no body); got:\n{xml}"
-    );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Test: `scoped` marker in JSON and XML payload
-// ---------------------------------------------------------------------------
-
-/// A `--limit`-scoped run must carry `scoped: true` in JSON and `<scoped/>` in
-/// XML; an unscoped run must not carry the marker.
-#[test]
-fn scoped_marker_present_in_limited_run_absent_in_full_run() -> Result<()> {
+fn clean_worktree_has_no_current_section() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
 
-    // Unscoped JSON: no `scoped` key.
-    let full_json_out = repo.run_span(["history", span, "--format=json"])?;
-    let full_json: Value = serde_json::from_slice(&full_json_out.stdout)?;
+    // Commit the drifted source and re-anchor so the stored fingerprint matches
+    // the live bytes — committing alone leaves committed-but-not-re-anchored
+    // drift, the false negative this command exists to surface.
+    repo.commit_all("commit the source edit")?;
+    repo.span_stdout(["add", span, "file3.txt"])?;
+    repo.run_git(["add", "-A"])?;
+    repo.run_git(["commit", "-m", "re-anchor after source edit"])?;
+
+    let stale = repo.run_span(["stale", span])?;
     assert!(
-        full_json.get("scoped").is_none(),
-        "unscoped run must not carry 'scoped' key in JSON; got: {full_json}"
+        stale.status.success(),
+        "expected a clean `git span stale` after re-anchor; got:\n{}",
+        String::from_utf8_lossy(&stale.stdout)
     );
 
-    // Unscoped XML: no <scoped/>.
-    let full_xml_out = repo.run_span(["history", span])?;
-    let full_xml = String::from_utf8_lossy(&full_xml_out.stdout);
+    let json = history_json(&repo, span)?;
     assert!(
-        !full_xml.contains("<scoped"),
-        "unscoped run must not carry <scoped/> in XML; got:\n{full_xml}"
+        json.get("current").is_none(),
+        "no drift and a worktree matching HEAD means no current section; got: {json:#}"
     );
 
-    // Scoped JSON (--limit 1): must carry `"scoped": true`.
-    let scoped_json_out = repo.run_span(["history", span, "--limit", "1", "--format=json"])?;
-    let scoped_json: Value = serde_json::from_slice(&scoped_json_out.stdout)?;
-    assert_eq!(
-        scoped_json["scoped"],
-        Value::Bool(true),
-        "scoped run must carry 'scoped': true in JSON; got: {scoped_json}"
-    );
-
-    // Scoped XML (--limit 1): must carry <scoped/>.
-    let scoped_xml_out = repo.run_span(["history", span, "--limit", "1"])?;
-    let scoped_xml = String::from_utf8_lossy(&scoped_xml_out.stdout);
+    let out = history_text(&repo, span)?;
     assert!(
-        scoped_xml.contains("<scoped/>"),
-        "scoped run must carry <scoped/> in XML; got:\n{scoped_xml}"
+        out.starts_with("commit "),
+        "text output begins at the newest commit when nothing drifts; got:\n{out}"
     );
-
     Ok(())
 }
 
+#[test]
+fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let span = "wf";
+
+    repo.write_file("whole.txt", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "whole.txt"])?;
+    repo.span_stdout(["why", span, "tracks the whole file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "create whole-file span"])?;
+
+    let json = history_json(&repo, span)?;
+    assert!(
+        json.get("current").is_none(),
+        "an unedited whole-file anchor must not fabricate drift; got: {json:#}"
+    );
+    Ok(())
+}
+
+#[test]
+fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let span = "c";
+
+    repo.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "tracks the head of src.txt"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "create span"])?;
+
+    // Edit AND commit the source without re-anchoring: the worktree equals
+    // HEAD, but the stored fingerprint no longer matches the live bytes.
+    repo.write_file("src.txt", "ONE\nTWO\nthree\nfour\nfive\n")?;
+    repo.commit_all("edit source without re-anchoring")?;
+
+    let stale = repo.run_span(["stale", span])?;
+    assert!(
+        !stale.status.success(),
+        "expected `git span stale` to flag committed drift; got:\n{}",
+        String::from_utf8_lossy(&stale.stdout)
+    );
+
+    let json = history_json(&repo, span)?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert!(
+        anchors.iter().any(|a| a["path"] == "src.txt#L1-L3"),
+        "history must agree with stale about which anchor drifts; got: {json:#}"
+    );
+    Ok(())
+}
+
+#[test]
+fn current_moved_anchor_diffs_against_the_relocated_block() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let span = "moved";
+
+    repo.write_file(
+        "src.txt",
+        "header-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
+    )?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "src.txt#L3-L5"])?;
+    repo.span_stdout(["why", span, "tracks the TARGET block"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "create span"])?;
+
+    // Displace the identical block downward without re-anchoring.
+    repo.write_file(
+        "src.txt",
+        "new-1\nnew-2\nnew-3\nheader-a\nheader-b\nTARGET-ONE\nTARGET-TWO\nTARGET-THREE\nfooter\n",
+    )?;
+    repo.commit_all("relocate the TARGET block downward")?;
+
+    let stale = repo.run_span(["stale", span])?;
+    assert!(
+        String::from_utf8_lossy(&stale.stdout)
+            .to_lowercase()
+            .contains("moved"),
+        "expected `git span stale` to classify the anchor as moved"
+    );
+
+    let json = history_json(&repo, span)?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one anchor moved; got: {json:#}");
+    assert_eq!(
+        anchors[0]["path"], "src.txt#L6-L8",
+        "the current path is the relocated address"
+    );
+    assert_eq!(
+        anchors[0]["content"], "TARGET-ONE\nTARGET-TWO\nTARGET-THREE\n",
+        "content is the relocated block, never a slice of the stale stored range"
+    );
+
+    let diff = anchors[0]["diff"].as_str().expect("diff string");
+    assert!(
+        diff.contains("rename from src.txt#L3-L5\n") && diff.contains("rename to src.txt#L6-L8\n"),
+        "a relocation renders rename headers; got:\n{diff}"
+    );
+    // The old side is the *last recorded timeline snapshot at its recorded
+    // address* — which, after the displacing commit, extracts the wrong lines.
+    // That stale extraction is precisely the drift being visualized: taking
+    // declared ranges at face value is what makes the displacement visible.
+    assert!(
+        diff.contains("@@ -3,3 +6,3 @@\n")
+            && diff.contains("-new-3\n")
+            && diff.contains("+TARGET-ONE\n"),
+        "the hunk must show the declared range's stale extraction against the \
+         relocated block; got:\n{diff}"
+    );
+    Ok(())
+}

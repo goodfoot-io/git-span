@@ -373,7 +373,9 @@ pub struct MergeDriverArgs {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum HistoryFormat {
-    Xml,
+    /// Git-log-style text: newest-first commit entries with unified diffs.
+    Human,
+    /// `schema_version: 2` JSON carrying the identical raw patch strings.
     Json,
 }
 
@@ -383,8 +385,8 @@ pub struct HistoryArgs {
     /// Span name whose git history to walk.
     pub span: String,
 
-    /// Output format (xml or json).
-    #[arg(long, value_enum, default_value_t = HistoryFormat::Xml)]
+    /// Output format (human or json).
+    #[arg(long, value_enum, default_value_t = HistoryFormat::Human)]
     pub format: HistoryFormat,
 
     /// Cap the walk at N commits (newest N are inspected).

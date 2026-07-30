@@ -1576,14 +1576,19 @@ fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, Stri
 /// block for a `Moved` anchor, whose `current` location carries the new
 /// path/range).
 pub(crate) fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
-    let bytes = if let Some(blob) = location.blob {
-        read_blob_bytes(repo, blob).unwrap_or_default()
-    } else {
-        let Some(workdir) = repo.workdir() else {
-            return String::new();
-        };
-        std::fs::read(workdir.join(&location.path)).unwrap_or_default()
-    };
+    // A location's `blob` may name a *computed* hash rather than a stored
+    // object: the worktree layer hashes live bytes without writing them to the
+    // object database, so `find_object` misses for every worktree-drifted
+    // anchor. Falling back to the working tree (instead of yielding empty
+    // bytes) is what keeps such an anchor from rendering as a total deletion.
+    let bytes = location
+        .blob
+        .and_then(|blob| read_blob_bytes(repo, blob))
+        .or_else(|| {
+            let workdir = repo.workdir()?;
+            std::fs::read(workdir.join(&location.path)).ok()
+        })
+        .unwrap_or_default();
     let text = String::from_utf8_lossy(&bytes);
     match location.extent {
         AnchorExtent::WholeFile => text.into_owned(),
