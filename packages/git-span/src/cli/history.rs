@@ -194,11 +194,17 @@ pub struct CurrentAnchor {
     /// Why the live content could not be extracted; `None` exactly when
     /// `content` is set.
     pub unavailable: Option<Unavailable>,
-    /// `true` when the content the declaration *recorded* is not recoverable
-    /// from history — the declaration was never committed carrying this hash,
-    /// so no snapshot anywhere hashes to its token. The diff is then a header
-    /// block alone: there is a real drift to report (the two `index` hashes
-    /// differ) but no honest "before" text to show.
+    /// `true` exactly when no snapshot in this render's snapshot set hashes to
+    /// the declaration's recorded token — the bytes it names were never carried
+    /// by any state the report shows. The diff is then a header block alone,
+    /// carrying [`RECORDED_UNRECOVERABLE`]: there is a real drift to report
+    /// (the two `index` hashes differ) but no honest "before" text to show.
+    ///
+    /// The search runs by content hash across every rendered snapshot, so the
+    /// field cannot claim a loss the same output disproves twenty lines lower.
+    /// It never co-occurs with `proposed`: a relocation's live snapshot hashes
+    /// to the recorded token by definition, so that old side is always
+    /// recoverable.
     pub recorded_unrecoverable: bool,
 }
 
@@ -895,6 +901,13 @@ fn build_report(
     // rather than against whatever text now occupies the recorded line numbers.
     let mut recorded_snapshots: std::collections::HashMap<String, Snapshot> =
         std::collections::HashMap::new();
+    // Every snapshot this render has produced, keyed by its content hash — the
+    // set of contents the report itself displays. The `current` block's old
+    // side draws from it, which is what makes "unrecoverable" mean something a
+    // reader can check: if the recorded token is missing here, its bytes are
+    // nowhere in this render either. Newest wins (the walk is newest-first).
+    let mut rendered_by_hash: std::collections::HashMap<String, Snapshot> =
+        std::collections::HashMap::new();
 
     // The walk is unbounded, so the oldest walked commit is the span's true
     // first appearance and needs no seeded baseline. (`--limit` trims *rendered
@@ -921,6 +934,7 @@ fn build_report(
         };
 
         capture_recorded_snapshots(&recorded, &mut recorded_snapshots, &cur);
+        capture_by_hash(&mut rendered_by_hash, &cur);
 
         let meta = crate::git::commit_meta(repo, &cc.hash)?;
 
@@ -969,6 +983,7 @@ fn build_report(
     };
     if let Some(state) = last.as_ref() {
         capture_recorded_snapshots(&recorded, &mut recorded_snapshots, state);
+        capture_by_hash(&mut rendered_by_hash, state);
     }
 
     let current = build_current(
@@ -979,6 +994,7 @@ fn build_report(
         last.as_ref(),
         &recorded,
         &recorded_snapshots,
+        &rendered_by_hash,
     )?;
 
     Ok(HistoryReport {
@@ -1008,6 +1024,93 @@ fn recorded_hashes(
     }
 }
 
+/// Where HEAD's declaration puts each recorded token: `rk64` token →
+/// (declared address, that address's first line).
+///
+/// This is the per-anchor half of what `span_diff` shows as a blob patch. The
+/// patch says *the declaration changed*; this says, for one anchor, *what it
+/// changed about it* — which is the only way to tell a declaration re-anchor
+/// (the token is declared at a different address than HEAD declares it at)
+/// from a resolver relocation (both declarations agree; the bytes moved).
+///
+/// A token declared at two addresses at once is dropped: it names no single
+/// "where HEAD said this was", and guessing would relabel a side on a
+/// coin-flip.
+fn head_token_addresses(
+    repo: &gix::Repository,
+    span_name: &str,
+    span_root: &str,
+) -> std::collections::HashMap<String, (String, u32)> {
+    let Ok(span) = read_span_at_in(repo, span_name, Some("HEAD"), span_root) else {
+        return std::collections::HashMap::new();
+    };
+    let mut seen: std::collections::HashMap<String, Option<(String, u32)>> =
+        std::collections::HashMap::new();
+    for (_id, a) in &span.anchors {
+        let entry = seen.entry(bare_hash(&a.stored_hash)).or_insert_with(|| {
+            Some((anchor_address(a), extent_first_line(a.extent)))
+        });
+        if entry.as_ref().is_some_and(|(addr, _)| *addr != anchor_address(a)) {
+            *entry = None;
+        }
+    }
+    seen.into_iter()
+        .filter_map(|(token, at)| at.map(|at| (token, at)))
+        .collect()
+}
+
+/// Everywhere the `current` block may look for the bytes a declaration
+/// records. The set is deliberately wide: a token's bytes are its identity,
+/// and refusing to look past the anchor's own address reported content the
+/// same render displays twenty lines below as lost.
+struct RecordedSources<'a> {
+    /// Snapshots whose address *and* hash match the live declaration — the
+    /// walk's own answer to "what does this anchor record".
+    at_address: &'a std::collections::HashMap<String, Snapshot>,
+    /// Every snapshot this render produced, keyed by content hash. Membership
+    /// here is exactly the negation of "unrecoverable".
+    by_hash: &'a std::collections::HashMap<String, Snapshot>,
+    /// The last recorded state's anchors, in declaration order.
+    last_state: &'a [Snapshot],
+}
+
+/// Which of three mutually exclusive things happened to one anchor since its
+/// last recorded state. Each owns its labels, its proposal, and where the live
+/// side is read — the distinctions are too close together to ride on a single
+/// boolean, which is how fixing one shape kept reopening another.
+///
+/// A fourth outcome, "the recorded bytes are not recoverable", is not a state
+/// but a result: it is what [`current_old_side`] reports when no candidate
+/// hashes to the declaration's token, and it is the only place the
+/// [`RECORDED_UNRECOVERABLE`] marker appears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CurrentState {
+    /// The declaration itself moved this anchor: its recorded token is
+    /// declared at `from` in HEAD and somewhere else in the worktree. The old
+    /// side wears `from` (where those bytes were declared to be), the new side
+    /// wears the declared address, and no proposal is issued — the user
+    /// already stated where the anchor belongs, and a proposal beside a rename
+    /// would be a second, contradictory instruction.
+    Reanchored {
+        /// HEAD's declared address for this anchor's recorded token.
+        from: String,
+        /// First line of `from`, so the old hunk coordinate matches its label.
+        first_line: u32,
+    },
+    /// Both declarations agree, and the resolver found the recorded bytes at
+    /// another address — exactly what `git span stale` prints `moved to` for.
+    /// Nothing moved in the declaration, so neither side is relabelled; the
+    /// proposal alone names the destination.
+    Relocated {
+        /// The address the resolver proposes.
+        to: String,
+    },
+    /// Both declarations agree and the content at the declared address is what
+    /// changed (or is unreadable). Both sides wear the declared address, and
+    /// the block is an ordinary hunk.
+    Drifted,
+}
+
 /// Remember every snapshot in `state` whose content hash equals the
 /// declaration's recorded token for the same address — that snapshot *is* the
 /// content the declaration describes. Later states overwrite earlier ones, so
@@ -1020,6 +1123,27 @@ fn capture_recorded_snapshots(
     for snap in &state.anchors {
         if recorded.get(&snap.address) == Some(&snap.hash) {
             into.insert(snap.address.clone(), snap.clone());
+        }
+    }
+}
+
+/// Index every snapshot in `state` by its content hash.
+///
+/// Population rule, stated rather than inherited from map internals: states
+/// arrive newest-first, anchors within a state in declaration order, and the
+/// first entry for a hash wins — so the newest state's earliest-declared
+/// anchor is the one kept, deterministically. A collision can only ever be
+/// between byte-identical bodies (equal token means equal content), and the
+/// label a side wears is chosen by [`CurrentState`], never by the candidate,
+/// so the tie-break can change neither the rendered bytes nor the address
+/// above them.
+fn capture_by_hash(
+    into: &mut std::collections::HashMap<String, Snapshot>,
+    state: &RenderedState,
+) {
+    for snap in &state.anchors {
+        if snap.body.is_text() {
+            into.entry(snap.hash.clone()).or_insert_with(|| snap.clone());
         }
     }
 }
@@ -1112,18 +1236,14 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 /// Either way the `index` line carries `rk64:<recorded>..rk64:<live>`, so the
 /// two hashes differ exactly when the anchor is drifted.
 ///
-/// `address` is the label the old side must wear, which is the caller's
-/// decision and not this function's: it is the *declared* address in every
-/// case except a genuinely re-anchored declaration, where the old side keeps
-/// the address the declaration used to name.
-///
-/// A candidate must therefore match the label as well as the token. The label,
-/// the hunk's old coordinate (taken from the same candidate's `first_line`)
-/// and the body's provenance then all name one address — where before, a
-/// candidate lifted from a *different* address could put a body under a label
-/// that never held it, above a coordinate that contradicted both. When no
-/// candidate satisfies both, the recorded bytes are unrecoverable *at this
-/// address*, which is a true statement and renders as one.
+/// `address` and `first_line` are the caller's decision, not this function's:
+/// [`CurrentState`] owns which address a side wears, and the coordinate comes
+/// from that same label so the two can never disagree. The label is a claim
+/// about the *declaration* — "this is what the declaration says lives here" —
+/// while a candidate's own address is only where those bytes were found, which
+/// is why the search deliberately ranges past the label: a declaration swap
+/// leaves each anchor's recorded bytes sitting under the sibling's address,
+/// and refusing to look there reported recoverable content as lost.
 ///
 /// The oracle above is enforced by construction here (a candidate is only
 /// taken when its hash equals the token) and checked end-to-end by
@@ -1132,17 +1252,24 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 fn current_old_side(
     paired: Option<&Snapshot>,
     live: &Snapshot,
+    sources: &RecordedSources<'_>,
     address: String,
+    first_line: u32,
     recorded_hash: Option<&String>,
-    recorded_snapshot: Option<&Snapshot>,
 ) -> Option<Snapshot> {
     let hash = recorded_hash
         .cloned()
         .or_else(|| paired.map(|p| p.hash.clone()))?;
-    let source = [recorded_snapshot, Some(live), paired]
-        .into_iter()
-        .flatten()
-        .find(|candidate| candidate.hash == hash && candidate.address == address);
+    let source = [
+        sources.at_address.get(&address),
+        Some(live),
+        paired,
+        sources.by_hash.get(&hash),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(sources.last_state.iter())
+    .find(|candidate| candidate.hash == hash);
     debug_assert!(
         source.is_none_or(|s| {
             !s.body.is_text() || body_fingerprint(&s.address, s.body.text()) == hash
@@ -1152,13 +1279,13 @@ fn current_old_side(
     Some(match source {
         Some(src) => Snapshot {
             address,
-            first_line: src.first_line,
+            first_line,
             hash,
             body: src.body.clone(),
         },
         None => Snapshot {
             address,
-            first_line: live.first_line,
+            first_line,
             hash,
             body: AnchorBody::Unavailable(Unavailable::Absent),
         },
@@ -1199,6 +1326,7 @@ fn build_current(
     last: Option<&RenderedState>,
     recorded: &std::collections::HashMap<String, String>,
     recorded_snapshots: &std::collections::HashMap<String, Snapshot>,
+    rendered_by_hash: &std::collections::HashMap<String, Snapshot>,
 ) -> Result<Option<CurrentSection>> {
     // Trigger 2 — HEAD declaration blob vs. the worktree bytes. The worktree
     // side's `index` hash comes from `hash_blob`, which computes a blob OID
@@ -1230,6 +1358,10 @@ fn build_current(
     let names = [span_name.to_string()];
     let resolved = crate::resolver::resolve_named_spans(repo, span_root, &names, options)?;
 
+    // Where HEAD's declaration puts each recorded token — the per-anchor half
+    // of the same comparison `span_diff` renders as a blob patch.
+    let head_tokens = head_token_addresses(repo, span_name, span_root);
+
     let mut anchors: Vec<CurrentAnchor> = Vec::new();
     for (_name, result) in resolved {
         let span = match result {
@@ -1245,26 +1377,52 @@ fn build_current(
         // interesting ones are emitted below.
         let mut live: Vec<Snapshot> = Vec::with_capacity(span.anchors.len());
         let mut fresh: Vec<bool> = Vec::with_capacity(span.anchors.len());
-        let mut proposals: Vec<Option<String>> = Vec::with_capacity(span.anchors.len());
+        let mut states: Vec<CurrentState> = Vec::with_capacity(span.anchors.len());
         for r in &span.anchors {
             let declared = location_address(&r.anchored);
-            // A relocation is a *recommendation*, and the resolver only makes
-            // one for the bytes-equal statuses — the same ones `git span
-            // stale` prints `moved to <address>` for. For a `Changed` anchor
-            // `r.current` is merely where the search landed while establishing
-            // that the content differs; `stale` issues no instruction, so
-            // neither may history. Reading the live side there too is what
-            // produced the compound lie: a phantom `proposed anchor`, a body
-            // sliced from an extent that ran past EOF, and a deletion hunk for
-            // content the declared range still holds — with the actual edit
-            // nowhere in the block.
+            // The resolver only *recommends* a relocation for the bytes-equal
+            // statuses — the same ones `git span stale` prints `moved to
+            // <address>` for. For a `Changed` anchor `r.current` is merely
+            // where the search landed while establishing that the content
+            // differs; `stale` issues no instruction, so neither may history.
             let relocation = matches!(
                 r.status,
                 crate::types::AnchorStatus::Moved
                     | crate::types::AnchorStatus::ResolvedPendingCommit
             );
+            let healed = r
+                .current
+                .as_ref()
+                .map(location_address)
+                .filter(|h| *h != declared);
+            // The declaration comparison outranks the resolver's opinion: if
+            // the user moved this token to a new address, that is a statement
+            // of intent, and a `proposed anchor` line beside the rename would
+            // contradict it.
+            let state = match recorded
+                .get(&declared)
+                .and_then(|token| head_tokens.get(token))
+            {
+                Some((from, first_line)) if *from != declared => CurrentState::Reanchored {
+                    from: from.clone(),
+                    first_line: *first_line,
+                },
+                _ => match (relocation, healed) {
+                    (true, Some(to)) => CurrentState::Relocated { to },
+                    _ => CurrentState::Drifted,
+                },
+            };
+            // Where the live side is read. A relocation is the one state whose
+            // live bytes are elsewhere — the declaration still names the
+            // address it always named, and the content demonstrably moved. In
+            // every other state the declared range is read at face value:
+            // reading a `Changed` anchor at the resolver's landing site
+            // produced a body sliced past EOF and a deletion hunk for content
+            // the declared range still held, with the user's actual edit
+            // nowhere in the block.
+            let read_at_target = matches!(state, CurrentState::Relocated { .. });
             let live_loc = r.current.as_ref().map(|loc| {
-                if relocation {
+                if read_at_target {
                     loc.clone()
                 } else {
                     crate::types::AnchorLocation {
@@ -1277,23 +1435,23 @@ fn build_current(
                     }
                 }
             });
-            let (body, hash, first_line, proposed) = match &live_loc {
-                Some(loc) => {
-                    let healed = location_address(loc);
-                    (
-                        AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
-                        location_hash(repo, loc),
-                        extent_first_line(loc.extent),
-                        (relocation && healed != declared).then_some(healed),
-                    )
-                }
+            let (body, hash, first_line) = match &live_loc {
+                Some(loc) => (
+                    AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
+                    location_hash(repo, loc),
+                    // A relocated side is labelled with the declared address
+                    // and carries the declared range's coordinate: its bytes
+                    // are byte-identical to the recorded ones, so the block is
+                    // header-only and the coordinate never surfaces — but if it
+                    // ever did, it would have to agree with the label.
+                    extent_first_line(r.anchored.extent),
+                ),
                 // Nothing resolves: the anchored content is gone. A structural
                 // absence, never a prose placeholder.
                 None => (
                     AnchorBody::Unavailable(Unavailable::Absent),
                     NULL_ANCHOR_HASH.to_string(),
                     extent_first_line(r.anchored.extent),
-                    None,
                 ),
             };
             live.push(Snapshot {
@@ -1303,7 +1461,7 @@ fn build_current(
                 body,
             });
             fresh.push(r.status == crate::types::AnchorStatus::Fresh);
-            proposals.push(proposed);
+            states.push(state);
         }
 
         let empty: Vec<Snapshot> = Vec::new();
@@ -1312,51 +1470,43 @@ fn build_current(
 
         for (j, n) in live.iter().enumerate() {
             let paired = pairs[j].map(|i| &old[i]);
-            // A *declaration* re-anchor: the user moved the address in the
-            // `.span` file, so the anchor now names an address the last
-            // recorded state did not have at all. That last clause is what
-            // separates it from a resolver relocation, where the declaration
-            // still says exactly what it said and only the content moved:
-            // content-first pairing crosses addresses in both cases, but only
-            // a re-anchor introduces an address the recorded declaration never
-            // used. Reading a relocation as a re-anchor is how a proposal used
-            // to come out dressed as a completed rename, in the reverse
-            // direction (pairing runs recorded → live, the proposal runs
-            // declared → healed).
-            let reanchored_declaration = paired.is_some_and(|o| o.address != n.address)
-                && !old.iter().any(|o| o.address == n.address);
-            // A `Fresh` anchor whose declared address is unchanged has nothing
-            // to report; a worktree-removed or worktree-added anchor is already
+            let state = &states[j];
+            // A `Fresh` anchor has nothing to report unless the declaration
+            // moved it; a worktree-removed or worktree-added anchor is already
             // covered by `span_diff`.
-            if fresh[j] && !reanchored_declaration {
+            if fresh[j] && !matches!(state, CurrentState::Reanchored { .. }) {
                 continue;
             }
-            // Both sides wear the declared address unless the declaration
-            // itself moved, in which case the old side wears the address whose
-            // content it actually is — a proposal never relabels either side.
-            let old_address = match (reanchored_declaration, paired) {
-                (true, Some(o)) => o.address.clone(),
-                _ => n.address.clone(),
+            // Only a re-anchor relabels a side, and it labels the old side
+            // with the address HEAD's declaration gave those bytes.
+            let (old_address, old_first_line) = match state {
+                CurrentState::Reanchored { from, first_line } => (from.clone(), *first_line),
+                _ => (n.address.clone(), n.first_line),
+            };
+            let sources = RecordedSources {
+                at_address: recorded_snapshots,
+                by_hash: rendered_by_hash,
+                last_state: old,
             };
             let old_side = current_old_side(
                 paired,
                 n,
+                &sources,
                 old_address,
+                old_first_line,
                 recorded.get(&n.address),
-                recorded_snapshots.get(&n.address),
             );
-            let kind = match (&old_side, &proposals[j]) {
-                // A proposal outranks everything: the resolver believes the
-                // content relocated, and that is a suggestion, never a move
-                // that happened.
-                (_, Some(address)) => AnchorDiffKind::Proposed {
-                    address: address.clone(),
-                },
-                (Some(o), None) if o.address != n.address => AnchorDiffKind::Rename {
+            let kind = match (state, &old_side) {
+                // No recorded state to diff against at all: the anchor is new
+                // in the worktree declaration.
+                (_, None) => AnchorDiffKind::New,
+                (CurrentState::Reanchored { .. }, Some(o)) => AnchorDiffKind::Rename {
                     similarity: similarity(o.body.text(), n.body.text()),
                 },
-                (Some(_), None) => AnchorDiffKind::Modify,
-                (None, None) => AnchorDiffKind::New,
+                (CurrentState::Relocated { to }, Some(_)) => AnchorDiffKind::Proposed {
+                    address: to.clone(),
+                },
+                (CurrentState::Drifted, Some(_)) => AnchorDiffKind::Modify,
             };
             let header = DiffHeader::Anchor {
                 old_hash: old_side
@@ -1383,9 +1533,13 @@ fn build_current(
             } else {
                 render_unified_diff_always(&header, old_diff_side, snapshot_side(n))
             };
+            let proposed = match state {
+                CurrentState::Relocated { to } => Some(to.clone()),
+                _ => None,
+            };
             anchors.push(CurrentAnchor::new(
                 n.address.clone(),
-                proposals[j].clone(),
+                proposed,
                 diff,
                 &n.body,
                 unrecoverable,
@@ -1473,12 +1627,13 @@ pub fn render_human(report: &HistoryReport) -> String {
 /// style, never source to render — no placeholder prose is ever emitted as
 /// content or as diff body text.
 ///
-/// **`recorded`** appears as `"unrecoverable"` on a current anchor whose
-/// declared content the declaration records by hash alone — no commit carries
-/// a snapshot matching the recorded token (a `.span` file edited but never
-/// committed, say). The diff is then a header block naming both hashes, with
-/// no hunks: there is a real drift, but no honest "before" text to show, and
-/// the live text is never dressed up as the declared content.
+/// **`recorded`** appears as `"unrecoverable"` on a current anchor exactly
+/// when no snapshot in this render's snapshot set hashes to the declaration's
+/// recorded token — the predicate is render-scoped, not a claim about the
+/// repository at large (a `.span` file edited but never committed, say). The
+/// diff is then a header block naming both hashes, with no hunks: there is a
+/// real drift, but no honest "before" text to show, and the live text is never
+/// dressed up as the declared content.
 ///
 /// **`proposed`** appears on a current anchor when the resolver believes the
 /// anchored content now lives at a different address. It is a *proposal*

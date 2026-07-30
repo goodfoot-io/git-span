@@ -920,26 +920,25 @@ fn a_drifted_reanchor_labels_the_old_side_with_heads_address() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()> {
+/// A declaration added but never committed, whose anchored lines are then
+/// edited: the recorded token describes bytes that no commit ever carried, so
+/// no snapshot this command can reach hashes to it.
+fn never_recorded_repo(span: &str) -> Result<TestRepo> {
     let repo = TestRepo::new()?;
-    let span = "ff";
     repo.write_file("f.txt", "alpha\nbeta\ngamma\n")?;
     repo.commit_all("initial")?;
     repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
     repo.span_stdout(["why", span, "three greek letters"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "declare"])?;
-    // The documented reconcile loop: displace the block, commit, let `--fix`
-    // rewrite the address in the worktree declaration, then edit inside the
-    // anchor. No commit anywhere carries the declaration at its recorded
-    // token *and* its current address, so the recorded bytes are gone.
-    repo.write_file("f.txt", "h1\nh2\nalpha\nbeta\ngamma\n")?;
-    repo.commit_all("prepend")?;
-    repo.run_span(["stale", "--fix"])?;
-    repo.write_file("f.txt", "h1\nh2\nalpha\nZZZ\nCCC\n")?;
+    // The declaration stays in the worktree, and the anchored content moves on
+    // without it.
+    repo.write_file("f.txt", "alpha\nZZZ\nCCC\n")?;
+    Ok(repo)
+}
 
-    let json = history_json(&repo, span)?;
+#[test]
+fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()> {
+    let repo = never_recorded_repo("ff")?;
+    let json = history_json(&repo, "ff")?;
     let anchor = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array")
@@ -952,19 +951,624 @@ fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()
         "an unrecoverable old side cannot produce hunks; got:\n{diff}"
     );
     // Without the marker the human block is two differing hashes and nothing
-    // else — indistinguishable from a renderer that dropped its hunks.
+    // else — the hidden-drift shape, indistinguishable from a renderer that
+    // dropped its hunks.
     assert!(
         diff.contains("\nrecorded snapshot unrecoverable\n"),
         "the state JSON reports as `recorded: unrecoverable` must be legible \
          in the patch itself; got:\n{diff}"
     );
-    let out = history_text(&repo, span)?;
+    let out = history_text(&repo, "ff")?;
     assert!(
         out.contains("recorded snapshot unrecoverable\n"),
         "the default output is where the explanation is needed; got:\n{out}"
     );
     assert!(out.contains(diff), "both formats carry the same block:\n{out}");
     Ok(())
+}
+
+/// Rewrite the worktree declaration, leaving the recorded tokens alone. This
+/// is how a user (or `git span stale --fix`) re-anchors: the address moves,
+/// the token stays, and HEAD's copy still names the old address.
+fn rewrite_declaration(repo: &TestRepo, span: &str, from: &str, to: &str) -> Result<()> {
+    let decl = repo.path().join(format!(".span/{span}"));
+    let text = std::fs::read_to_string(&decl)?;
+    assert!(text.contains(from), "declaration has no {from}:\n{text}");
+    std::fs::write(&decl, text.replace(from, to))?;
+    Ok(())
+}
+
+/// Two anchors whose *declared addresses* are exchanged in the worktree — each
+/// token is now declared where the other's content lives — with both blocks
+/// also edited, so the resolver can no longer find either recorded block and
+/// the only place those bytes survive is the last recorded state.
+fn declaration_swap_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file(
+        "f.txt",
+        "AAA-1\nAAA-2\nAAA-3\nmiddle\nBBB-1\nBBB-2\nBBB-3\n",
+    )?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "f.txt#L5-L7"])?;
+    repo.span_stdout(["why", span, "tracks both blocks"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L9-L11")?;
+    rewrite_declaration(&repo, span, "f.txt#L5-L7", "f.txt#L1-L3")?;
+    rewrite_declaration(&repo, span, "f.txt#L9-L11", "f.txt#L5-L7")?;
+    repo.write_file(
+        "f.txt",
+        "AAA-1\nAAA-EDITED\nAAA-3\nmiddle\nBBB-1\nBBB-EDITED\nBBB-3\n",
+    )?;
+    Ok(repo)
+}
+
+#[test]
+fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
+    let repo = declaration_swap_repo("dswap")?;
+    let json = history_json(&repo, "dswap")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 2, "both anchors moved; got: {json:#}");
+
+    for anchor in anchors {
+        let path = anchor["path"].as_str().expect("path string");
+        let diff = anchor["diff"].as_str().expect("diff string");
+        // The recorded bytes sit under the *sibling's* address in the last
+        // recorded state. Searching only under this anchor's own label
+        // reported content that is one line away as lost — a data-loss claim
+        // whose documented remedy is destructive.
+        assert!(
+            anchor.get("recorded").is_none(),
+            "the recorded bytes are in the last recorded state; got: {anchor:#}"
+        );
+        assert!(
+            !diff.contains("recorded snapshot unrecoverable"),
+            "no false data-loss claim; got:\n{diff}"
+        );
+        let (recorded_block, source) = if path == "f.txt#L5-L7" {
+            ("-AAA-1\n", "f.txt#L1-L3")
+        } else {
+            ("-BBB-1\n", "f.txt#L5-L7")
+        };
+        assert!(
+            diff.contains(recorded_block),
+            "the old side is the recorded block itself; got:\n{diff}"
+        );
+        assert!(
+            diff.contains(&format!("diff --git a/{source} b/{path}\n"))
+                && diff.contains(&format!("rename from {source}\n"))
+                && diff.contains(&format!("rename to {path}\n")),
+            "the declaration moved this token from {source} to {path}; got:\n{diff}"
+        );
+    }
+    let out = history_text(&repo, "dswap")?;
+    assert!(
+        !out.contains("recorded snapshot unrecoverable"),
+        "nor in the human surface; got:\n{out}"
+    );
+    Ok(())
+}
+
+/// Re-anchor onto an address the declaration never used, then edit inside the
+/// new range while the recorded block sits untouched elsewhere — the one shape
+/// where a declaration re-anchor and a resolver relocation both apply.
+fn reanchor_over_relocation_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\nfour\nfive\nsix\nseven\neight\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "tracks the greek block"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L6-L8")?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\nfour\nfive\nsix\nEDITED\neight\n")?;
+    Ok(repo)
+}
+
+#[test]
+fn a_reanchor_over_a_relocation_never_states_two_directions() -> Result<()> {
+    let repo = reanchor_over_relocation_repo("both")?;
+    let json = history_json(&repo, "both")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
+    let anchor = &anchors[0];
+    assert_eq!(anchor["path"], "f.txt#L6-L8");
+    let diff = anchor["diff"].as_str().expect("diff string");
+
+    // The declaration itself moved this anchor, so the block is a rename and
+    // says nothing about relocation: a `proposed anchor f.txt#L1-L3` beside a
+    // `rename to f.txt#L6-L8` would be two contradictory instructions in five
+    // lines, and only one of them can be acted on.
+    assert!(
+        anchor.get("proposed").is_none() || anchor["proposed"].is_null(),
+        "a re-anchor states the user's intent; got: {anchor:#}"
+    );
+    assert!(
+        diff.contains("diff --git a/f.txt#L1-L3 b/f.txt#L6-L8\n")
+            && diff.contains("rename from f.txt#L1-L3\n")
+            && diff.contains("rename to f.txt#L6-L8\n"),
+        "the header names where the declaration moved the token; got:\n{diff}"
+    );
+    // The b/ side's bytes are read where its label says: the declared range,
+    // including the user's edit. Reading them at the relocation target made
+    // the two hashes equal and the edit vanish entirely.
+    assert_eq!(
+        anchor["content"], "six\nEDITED\neight\n",
+        "the live side is the declared range's content; got: {anchor:#}"
+    );
+    assert!(
+        diff.contains("+EDITED\n"),
+        "the user's edit is the whole point of the block; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// Two anchors in *different files* whose declared addresses are exchanged in
+/// the worktree declaration, content untouched. The resolver cannot follow a
+/// token across files, so both anchors come out `changed` and the recorded
+/// bytes survive only in the snapshots the render itself prints. Reachable
+/// without hand-editing: resolving a `.span` conflict after a merge or rebase
+/// leaves exactly this state.
+fn cross_file_swap_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "AAA-1\nAAA-2\nAAA-3\n")?;
+    repo.write_file("g.txt", "BBB-1\nBBB-2\nBBB-3\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "g.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "tracks both files"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "tmp.txt#L1-L1")?;
+    rewrite_declaration(&repo, span, "g.txt#L1-L3", "f.txt#L1-L3")?;
+    rewrite_declaration(&repo, span, "tmp.txt#L1-L1", "g.txt#L1-L3")?;
+    Ok(repo)
+}
+
+#[test]
+fn a_cross_file_declaration_swap_recovers_both_old_sides() -> Result<()> {
+    let repo = cross_file_swap_repo("xswap")?;
+    let out = history_text(&repo, "xswap")?;
+    // The recorded blocks are printed in full further down this very render.
+    assert!(
+        !out.contains("recorded snapshot unrecoverable"),
+        "a loss the same output disproves twenty lines lower; got:\n{out}"
+    );
+
+    let json = history_json(&repo, "xswap")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 2, "both anchors moved; got: {json:#}");
+    for anchor in anchors {
+        let path = anchor["path"].as_str().expect("path string");
+        let diff = anchor["diff"].as_str().expect("diff string");
+        let (source, recorded_line) = if path == "f.txt#L1-L3" {
+            ("g.txt#L1-L3", "-BBB-1\n")
+        } else {
+            ("f.txt#L1-L3", "-AAA-1\n")
+        };
+        assert!(
+            anchor.get("recorded").is_none(),
+            "the token's bytes are in the render; got: {anchor:#}"
+        );
+        assert!(
+            diff.contains(&format!("rename from {source}\n"))
+                && diff.contains(&format!("rename to {path}\n"))
+                && diff.contains(recorded_line),
+            "the old side is the recorded block, labelled where HEAD declared \
+             it; got:\n{diff}"
+        );
+    }
+    Ok(())
+}
+
+/// The minimal false-unrecoverable reproduction: re-anchor by editing the
+/// declaration, then replace the recorded block's content in the worktree. The
+/// token's bytes are gone from the worktree but still sit in HEAD at an
+/// address this anchor never pairs with.
+fn abandoned_block_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\nmid\nAAA\nBBB\nCCC\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "the block matters"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L5-L7")?;
+    repo.write_file("f.txt", "XXX\nYYY\nZZZ\nmid\nAAA\nBBB\nCCC\n")?;
+    Ok(repo)
+}
+
+#[test]
+fn a_reanchor_that_abandons_its_recorded_block_still_shows_it() -> Result<()> {
+    let repo = abandoned_block_repo("re2")?;
+    let out = history_text(&repo, "re2")?;
+    assert!(
+        !out.contains("recorded snapshot unrecoverable"),
+        "HEAD still carries the recorded block; got:\n{out}"
+    );
+
+    let json = history_json(&repo, "re2")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
+    let anchor = &anchors[0];
+    assert_eq!(anchor["path"], "f.txt#L5-L7");
+    assert!(anchor.get("recorded").is_none(), "got: {anchor:#}");
+    // `path` and `content` must describe the same three lines: a consumer
+    // joining on `path` is misled by bytes that address does not hold.
+    assert_eq!(
+        anchor["content"], "AAA\nBBB\nCCC\n",
+        "content is what the declared address holds; got: {anchor:#}"
+    );
+    let diff = anchor["diff"].as_str().expect("diff string");
+    assert!(
+        diff.contains("diff --git a/f.txt#L1-L3 b/f.txt#L5-L7\n")
+            && diff.contains("-alpha\n")
+            && diff.contains("+AAA\n"),
+        "the old side is the abandoned block under the address HEAD declared \
+         for it; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// Two anchors in different files holding *identical* content, so one `rk64`
+/// token binds both addresses — then drift one of them. `rk64` is a
+/// content-only fingerprint, so a token→snapshot lookup that ignores the
+/// asking anchor's own address can hand back the sibling's snapshot.
+fn twin_token_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("x.txt", "alpha\nbeta\ngamma\n")?;
+    repo.write_file("y.txt", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "x.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "y.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "two copies of one block"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    repo.write_file("x.txt", "alpha\nBETA\ngamma\n")?;
+    Ok(repo)
+}
+
+#[test]
+fn anchors_sharing_a_token_resolve_against_their_own_address() -> Result<()> {
+    let repo = twin_token_repo("twin")?;
+    let json = history_json(&repo, "twin")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "only x.txt drifted; got: {json:#}");
+    let anchor = &anchors[0];
+    assert_eq!(anchor["path"], "x.txt#L1-L3");
+    let diff = anchor["diff"].as_str().expect("diff string");
+    // The sibling's snapshot hashes to the same token. Serving it here would
+    // put a body under a label that never held it and dress a one-line edit as
+    // a cross-file rename.
+    assert!(
+        diff.contains("diff --git a/x.txt#L1-L3 b/x.txt#L1-L3\n"),
+        "both sides wear the declared address; got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("rename from") && !diff.contains("proposed anchor"),
+        "nothing moved and nothing is proposed; got:\n{diff}"
+    );
+    assert!(
+        diff.contains("-beta\n") && diff.contains("+BETA\n"),
+        "the block is the edit the user made; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// One repository per shape a `current` anchor can take, labelled. Every
+/// property asserted over the current block is asserted over this whole set,
+/// so a state that only one fixture reaches cannot drift unobserved.
+fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> {
+    Ok(vec![
+        ("resolver relocation", swap_repo()?, "swap"),
+        ("declaration swap", declaration_swap_repo("dswap")?, "dswap"),
+        (
+            "re-anchor over relocation",
+            reanchor_over_relocation_repo("both")?,
+            "both",
+        ),
+        ("in-place drift", drifted_repo("ch")?, "ch"),
+        ("cross-file swap", cross_file_swap_repo("xswap")?, "xswap"),
+        ("abandoned block", abandoned_block_repo("re2")?, "re2"),
+        ("never recorded", never_recorded_repo("ff")?, "ff"),
+        ("twin tokens", twin_token_repo("twin")?, "twin"),
+        ("drifted re-anchor", {
+            let repo = drifted_repo("re")?;
+            rewrite_declaration(&repo, "re", "f.txt#L1-L3", "f.txt#L3-L5")?;
+            repo
+        }, "re"),
+    ])
+}
+
+/// Every invariant the current block must satisfy no matter which state an
+/// anchor is in, checked across every shape at once.
+///
+/// The predicates these enforce were each, at some point, guaranteed only by
+/// the presence of one line of code — so replacing that line reopened the
+/// defect with the suite still green. Asserting the property instead of the
+/// output string is what makes the next replacement fail loudly.
+#[test]
+fn current_block_invariants_hold_in_every_state() -> Result<()> {
+    for (label, repo, span) in every_current_state()? {
+        let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+        let render = history_text(&repo, span)?;
+        // Git omits a hunk side's length when it is 1 (`@@ -2 +4 @@`). The
+        // rendered patch is promised to be git's own dialect, and `git apply`
+        // reads the short form.
+        for header in render.lines().filter(|l| l.starts_with("@@ ")) {
+            for side in header.trim_start_matches("@@ ").split(' ').take(2) {
+                assert!(
+                    !side.ends_with(",1"),
+                    "{label}: git spells a one-line side without its count; \
+                     got: {header:?}"
+                );
+            }
+        }
+        let json = history_json(&repo, span)?;
+        let anchors = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"));
+        assert!(!anchors.is_empty(), "{label}: nothing to check");
+        for anchor in anchors {
+            let path = anchor["path"].as_str().expect("path string");
+            let diff = anchor["diff"].as_str().expect("diff string");
+            let header = diff.lines().next().unwrap_or_default();
+            let (a_side, b_side) = header
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| rest.split_once(" b/"))
+                .unwrap_or_else(|| panic!("{label}: malformed header {header:?}"));
+
+            // The new side always wears the declared address, and its bytes are
+            // always read there.
+            assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
+
+            match anchor.get("proposed").and_then(Value::as_str) {
+                Some(proposed) => {
+                    // A proposal relabels nothing: it is an instruction to move,
+                    // so a header claiming the move already happened would point
+                    // the opposite way from the instruction beside it.
+                    assert_eq!(
+                        a_side, path,
+                        "{label}: a proposal must not relabel the old side; got:\n{diff}"
+                    );
+                    assert!(
+                        diff.contains(&format!("proposed anchor {proposed}\n")),
+                        "{label}: the marker names the proposal; got:\n{diff}"
+                    );
+                    assert!(
+                        !diff.contains("rename from"),
+                        "{label}: a proposal is never a completed rename; got:\n{diff}"
+                    );
+                    assert!(
+                        stale.contains(&format!("{path} — moved to {proposed}")),
+                        "{label}: the proposal must agree with stale; got:\n{stale}"
+                    );
+                    assert!(
+                        anchor.get("recorded").is_none(),
+                        "{label}: a relocation's old side is always recoverable; \
+                         got: {anchor:#}"
+                    );
+                }
+                None => assert!(
+                    !diff.contains("proposed anchor"),
+                    "{label}: no proposal field, so no proposal line; got:\n{diff}"
+                ),
+            }
+
+            // `path` and `content` must name the same bytes. The one exception
+            // is a relocation, whose whole point is that the recorded bytes are
+            // *not* at the declared address — and which says so in `proposed`.
+            if anchor.get("proposed").is_none() {
+                if let (Some(content), Some(actual)) =
+                    (anchor["content"].as_str(), read_address(&repo, path))
+                {
+                    assert_eq!(
+                        content, actual,
+                        "{label}: `content` must be the bytes at `path`"
+                    );
+                }
+            }
+
+            // The marker appears exactly where the structured field does, and
+            // nowhere else: it is a claim of lost data, and a spurious one
+            // invites a destructive remedy.
+            let claims_loss = diff.contains("recorded snapshot unrecoverable");
+            assert_eq!(
+                claims_loss,
+                anchor.get("recorded") == Some(&Value::from("unrecoverable")),
+                "{label}: the marker and the `recorded` field must agree; \
+                 got: {anchor:#}"
+            );
+            if claims_loss {
+                // The strongest available refutation: if the token's bytes are
+                // rendered as live content anywhere in this same output, the
+                // claim of loss is false, however the predicate is written.
+                let token = diff
+                    .lines()
+                    .find_map(|l| l.strip_prefix("index rk64:"))
+                    .and_then(|rest| rest.split_once(".."))
+                    .map(|(old, _)| old.to_string())
+                    .unwrap_or_else(|| panic!("{label}: no index line in:\n{diff}"));
+                let live_elsewhere = format!("..rk64:{token}");
+                let contradicted = render
+                    .lines()
+                    .filter(|line| line.starts_with("index "))
+                    .filter(|line| !diff.contains(*line))
+                    .any(|line| line.ends_with(&live_elsewhere));
+                assert!(
+                    !contradicted,
+                    "{label}: rk64:{token} is rendered as live content \
+                     elsewhere in this very output, so it is not lost:\n{render}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The keys the normative field list in `docs/history-example-output.md`
+/// declares for a `current` anchor object, read out of the document itself so
+/// the contract cannot be satisfied by a stale copy of it living in a test.
+fn documented_current_anchor_fields() -> Result<Vec<String>> {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("history-example-output.md"),
+    )?;
+    let heading = "### `current.anchors[]` field list (normative)";
+    let start = doc
+        .find(heading)
+        .unwrap_or_else(|| panic!("the field list heading {heading:?} is gone from the doc"));
+    let section = &doc[start + heading.len()..];
+    let end = section.find("\n## ").unwrap_or(section.len());
+    let fields: Vec<String> = section[..end]
+        .lines()
+        .filter_map(|line| line.strip_prefix("- `"))
+        .filter_map(|rest| rest.split_once('`'))
+        .map(|(key, _)| key.to_string())
+        .collect();
+    assert!(!fields.is_empty(), "the field list parsed as empty");
+    Ok(fields)
+}
+
+/// The documented field list is the contract, so a key the renderer can emit
+/// and the document does not name is a silent extension of it — which is how
+/// `proposed`, `recorded`, and `unavailable` all shipped with zero mentions in
+/// any markdown a consumer would read.
+#[test]
+fn every_current_anchor_key_appears_in_the_documented_field_list() -> Result<()> {
+    let documented = documented_current_anchor_fields()?;
+    let mut seen: Vec<String> = Vec::new();
+    for (label, repo, span) in every_current_state()? {
+        let json = history_json(&repo, span)?;
+        let anchors = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"));
+        for anchor in anchors {
+            for key in anchor.as_object().expect("anchor object").keys() {
+                assert!(
+                    documented.contains(key),
+                    "{label}: `{key}` is emitted but undocumented; the field \
+                     list names {documented:?}"
+                );
+                if !seen.contains(key) {
+                    seen.push(key.clone());
+                }
+            }
+        }
+    }
+    // The reverse direction: a documented field no fixture can produce is
+    // either dead contract or an untested state, and both need saying.
+    // `unavailable` is exercised by its own tests, not by this sweep.
+    for key in &documented {
+        assert!(
+            seen.contains(key) || key == "unavailable",
+            "the document promises `{key}`, but no state in the sweep emits it"
+        );
+    }
+    Ok(())
+}
+
+/// The span-diff body of `render` for `.span/<span>`: everything from the
+/// first hunk header to the end of that block, which is the part git itself
+/// can be asked to produce independently.
+fn span_diff_body<'a>(render: &'a str, span: &str) -> &'a str {
+    let block = diff_block(render, &format!("a/.span/{span} "));
+    let at = block
+        .find("@@ ")
+        .unwrap_or_else(|| panic!("no hunk header in:\n{block}"));
+    &block[at..]
+}
+
+/// git's own rendering of the same blob pair, with the header lines dropped.
+fn git_diff_body(repo: &TestRepo, span: &str) -> Result<String> {
+    let out = repo.git_stdout([
+        "-c",
+        "core.pager=cat",
+        "diff",
+        "--no-color",
+        "--unified=3",
+        "HEAD~1",
+        "HEAD",
+        "--",
+        &format!(".span/{span}"),
+    ])?;
+    let at = out
+        .find("@@ ")
+        .unwrap_or_else(|| panic!("no hunk header in git's own diff:\n{out}"));
+    Ok(format!("{}\n", &out[at..]))
+}
+
+/// Item 25's conformance oracle, stated the only way that cannot drift with
+/// the renderer: for a one-line declaration file, the rendered hunk must be
+/// byte-identical to what `git diff` prints for the same two blobs — which
+/// means `@@ -1 +1 @@`, with neither side carrying a `,1` count.
+#[test]
+fn a_one_line_declaration_hunk_matches_gits_own_bytes() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let span = "oneline";
+    repo.commit_file("f.txt", "alpha\nbeta\ngamma\n", "seed")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    let declaration = std::fs::read_to_string(repo.path().join(".span").join(span))?;
+    let token = declaration
+        .split_whitespace()
+        .find(|w| w.starts_with("rk64:"))
+        .expect("declaration must record a token")
+        .to_string();
+    repo.write_file(&format!(".span/{span}"), &format!("f.txt#L1-L3 {token}\n"))?;
+    repo.commit_all("declare")?;
+    repo.write_file(&format!(".span/{span}"), &format!("f.txt#L1-L2 {token}\n"))?;
+    repo.commit_all("edit")?;
+
+    let render = history_text(&repo, span)?;
+    assert_eq!(
+        span_diff_body(&render, span),
+        git_diff_body(&repo, span)?,
+        "the span diff must be git's own bytes:\n{render}"
+    );
+    Ok(())
+}
+
+/// The live bytes at `address` (`path#Lstart-Lend` or a bare path), read from
+/// the worktree — an oracle for `content` that shares no code with the
+/// renderer. `None` when the file or the range is absent.
+fn read_address(repo: &TestRepo, address: &str) -> Option<String> {
+    let (path, range) = match address.split_once("#L") {
+        Some((p, r)) => (p, Some(r)),
+        None => (address, None),
+    };
+    let text = std::fs::read_to_string(repo.path().join(path)).ok()?;
+    let Some(range) = range else {
+        return Some(text);
+    };
+    let (start, end) = range.split_once("-L")?;
+    let (start, end): (usize, usize) = (start.parse().ok()?, end.parse().ok()?);
+    let mut out = text
+        .lines()
+        .skip(start - 1)
+        .take(end + 1 - start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    Some(out)
 }
 
 #[test]

@@ -43,9 +43,15 @@ pub const NULL_ANCHOR_HASH: &str = "0000000000000000";
 /// `index` line for an added or deleted file.
 pub const NULL_BLOB_OID7: &str = "0000000";
 
-/// Marker line naming the one reason a diff block stops at its header: the
-/// old side's recorded bytes are not recoverable from history, so there is no
-/// honest "before" text to build hunks from.
+/// Marker line naming the one reason a diff block stops at its header: no
+/// snapshot anywhere in the render hashes to the declaration's recorded token,
+/// so there is no honest "before" text to build hunks from.
+///
+/// The claim is unqualified because the search behind it is: the old side is
+/// looked for by content hash across every snapshot the report produces, not
+/// merely under the anchor's own address. A narrower search with this same
+/// wording is what turned a recoverable block into a data-loss claim whose
+/// documented remedy is destructive.
 ///
 /// It lives in the header — beside `proposed anchor <address>` and the rename
 /// lines — rather than being appended by the human renderer, because the JSON
@@ -422,6 +428,19 @@ fn push_header(
     headers_only
 }
 
+/// One side of a hunk header. Git omits the length when it is exactly 1
+/// (`@@ -2 +4 @@`, never `@@ -2,1 +4,1 @@`), independently per side; a parser
+/// written against git's output — and `git apply` itself — reads the short
+/// form, so a rendered patch that always spells the count is not the dialect
+/// this command promises.
+fn hunk_side(start: u32, count: u32) -> String {
+    if count == 1 {
+        start.to_string()
+    } else {
+        format!("{start},{count}")
+    }
+}
+
 /// The `---`/`+++` (and `Binary files …`) path for one side: `/dev/null`
 /// for a null side, otherwise the label under its `a/`/`b/` prefix.
 fn side_path(side: &DiffSide<'_>, prefix: &str, is_null: bool) -> String {
@@ -524,7 +543,11 @@ impl ConsumeHunk for HunkRenderer {
             header.after_hunk_start,
             header.after_hunk_len,
         );
-        self.out.push_str(&format!("@@ -{os},{oc} +{ns},{nc} @@\n"));
+        self.out.push_str(&format!(
+            "@@ -{} +{} @@\n",
+            hunk_side(os, oc),
+            hunk_side(ns, nc)
+        ));
         for (kind, content) in lines {
             let prefix = match kind {
                 DiffLineKind::Context => ' ',

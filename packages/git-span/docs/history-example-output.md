@@ -238,6 +238,115 @@ anchor add/remove), a `span_diff` block precedes the anchor diffs, using the sam
 computation that never writes the object. The whole `current` section is omitted when the
 worktree declaration matches `HEAD` and no anchor resolves as drifted.
 
+### The three `current` shapes
+
+Every drifted anchor is classified into exactly one of three states before it is rendered.
+The distinction decides which address each side of the header wears, whether a proposal is
+offered, and where the live bytes are read — so the three shapes are worth reading as a
+set. All captures below are genuine output of the built binary.
+
+**1. In-place drift** — the declaration is unchanged and the resolver found the content
+still at the declared address, edited. Both sides wear the declared address and the hunks
+are the edit:
+
+```
+diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
+index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
+--- a/touch-core.js#L1-L3
++++ b/touch-core.js#L1-L3
+@@ -1,3 +1,3 @@
+ function cleanFooter(name) {
+-  return `check ${name}`;
++  return `check the coupled ${name}`;
+ }
+```
+
+**2. Resolver relocation** — the declaration is unchanged and the recorded content was
+found somewhere else. This renders as a *proposal*: `proposed anchor <address>` in the
+header, and **both** sides keep the declared address, because nothing has moved yet.
+`git span stale` says the same thing (`moved to touch-core.js#L4-L6`), and
+`git span stale --fix` is what would write it. There are no hunks — the content is
+byte-identical, which is why the two `index` hashes agree:
+
+```
+diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
+proposed anchor touch-core.js#L4-L6
+index rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74
+```
+
+```json
+{
+  "content": "function cleanFooter(name) {\n  return `check ${name}`;\n}\n",
+  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\nproposed anchor touch-core.js#L4-L6\nindex rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74\n",
+  "path": "touch-core.js#L1-L3",
+  "proposed": "touch-core.js#L4-L6"
+}
+```
+
+**3. Re-anchor** — the *worktree declaration itself* moved the anchor: the same recorded
+token sits at a different address than it does in `HEAD`'s copy. This is the one shape
+whose two sides wear different addresses, and it renders as a rename, exactly like a
+committed re-anchor. The old side is labelled with `HEAD`'s address and carries the
+recorded bytes; the new side is labelled with the worktree's address and carries the bytes
+live there. No proposal is offered — the move is already written down. Below, `.span/re`
+was re-anchored from `touch-core.js#L1-L3` to `touch-core.js#L5-L7`, where different code
+now lives:
+
+```
+diff --git a/touch-core.js#L1-L3 b/touch-core.js#L5-L7
+similarity index 33%
+rename from touch-core.js#L1-L3
+rename to touch-core.js#L5-L7
+index rk64:6fc01f81b6737e74..rk64:3ce91890e260ec60
+--- a/touch-core.js#L1-L3
++++ b/touch-core.js#L5-L7
+@@ -1,3 +5,3 @@
+-function cleanFooter(name) {
+-  return `check ${name}`;
++function cleanHeader(name) {
++  return `${name} depends on:`;
+ }
+```
+
+A re-anchor outranks a relocation: when the declaration has moved an anchor *and* the
+resolver would propose a further move, the rename is what renders. Two directions of
+travel in one header would contradict each other.
+
+### When the recorded bytes cannot be shown
+
+A diff needs an old side, and the old side is the bytes the declaration records by hash.
+`recorded snapshot unrecoverable` is the marker for the case where those bytes are
+nowhere to be found:
+
+> **the predicate, stated once:** the field fires exactly when *no snapshot in this
+> render's snapshot set hashes to the declaration's recorded token*. It is render-scoped —
+> a claim about what this report can show, never a claim about the repository at large.
+
+The search runs by content hash across every snapshot the report produces, not merely
+under the anchor's own address, so the marker can never claim a loss that the same output
+disproves twenty lines lower. It reaches the reader in the header, beside
+`proposed anchor` and the rename lines, so the human block and the JSON `diff` string stay
+byte-identical. The block then stops there: two differing hashes and no hunks. It never
+co-occurs with `proposed` — a relocation found the recorded bytes by definition.
+
+The ordinary way to reach this state is a declaration that was written but never
+committed, whose content then moved on:
+
+```
+diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
+index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
+recorded snapshot unrecoverable
+```
+
+```json
+{
+  "content": "function cleanFooter(name) {\n  return `check the coupled ${name}`;\n}\n",
+  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\nindex rk64:6fc01f81b6737e74..rk64:0ac1f50418017539\nrecorded snapshot unrecoverable\n",
+  "path": "touch-core.js#L1-L3",
+  "recorded": "unrecoverable"
+}
+```
+
 ## JSON format (`--format json`, `schema_version: 2`)
 
 Same data; `diff`/`span_diff`/`content` are the identical raw strings the human renderer
@@ -303,6 +412,7 @@ carry `content` instead of `diff`:
   — `content` only for a first-add, `diff` for every other case (modify, rename, delete).
 - Each `current` anchor object carries `path` plus **both** `diff` and `content` when
   present, so a consumer never has to reconstruct live content from a patch.
+
 - `span_diff` is present on a commit or on `current` iff the `.span/<name>` declaration
   blob actually changed between the two states being compared; omitted otherwise (not set
   to `null`).
@@ -312,6 +422,40 @@ carry `content` instead of `diff`:
   (not `false`) when the timeline is the complete record. The command also prints a
   warning to stderr in this case, in both formats — see below.
 - No `event`, no per-commit `why`, no XML — schema v2 replaces all three.
+
+### `current.anchors[]` field list (normative)
+
+This is the complete set of keys a `current` anchor object can emit; a key not on this
+list is a contract violation, and [cli_history.rs](../tests/cases/cli_history.rs) asserts
+the two lists agree over a sweep of every state above.
+
+- `path` — always present. The anchor's **declared** address: the string `git span stale`
+  prints and the only join key a consumer can match against the `.span` file. Never the
+  resolver's proposal.
+- `diff` — always present. The same bytes the human block prints for this anchor, header
+  and all. Degrades to a header-only block when there are no honest hunks to show (a
+  relocation, or an unrecoverable recorded snapshot).
+- `content` — the full bytes whose hash the diff's **new** side names, so a consumer never
+  reconstructs live content from a patch. For every shape but a relocation those are the
+  bytes at `path`; for a relocation they are the recorded bytes, which live at `proposed`
+  and not at `path` — that displacement is the finding. Absent exactly when `unavailable`
+  is present.
+- `unavailable` — replaces `content` when the bytes could not be extracted: `"absent"` (no
+  such file), `"range-past-eof"` (the declared range starts past end of file), or
+  `"binary"` (not UTF-8). A status to style, never source to render — no placeholder prose
+  is ever emitted as content or as diff body text.
+- `proposed` — present when the resolver believes the recorded content now lives at a
+  different address. A *proposal* (`git span stale --fix` would write it), not an
+  accomplished move, so it never renders as `rename to` and never relabels either side of
+  the header. Agrees with `git span stale`'s `moved to <address>`.
+- `recorded` — present, with the single value `"unrecoverable"`, exactly when no snapshot
+  in this render's snapshot set hashes to the declaration's recorded token. The `diff` then
+  carries the `recorded snapshot unrecoverable` marker line and no hunks. Cannot co-occur
+  with `proposed`.
+
+Two marker lines belong to the anchor dialect and appear only in `current` blocks:
+`proposed anchor <address>` and `recorded snapshot unrecoverable`. Both live in the header
+rather than being appended by the human renderer, so the JSON `diff` string and the
 
 ## Incomplete-walk and scoped-limit warnings
 
