@@ -20,8 +20,9 @@ After any `add`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
 
 The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
 reconcile commit is needed for it. Semantic drift — content no longer matching what a
-span asserts — needs your action: fold the `.span/` fix into the **same commit** as the
-code change, never a follow-up. Before `git commit`/`git push` a `PreToolUse` advisor
+span asserts — needs your action: conform the lagging artifact (docs follow the
+committed code; code edits need the user's say-so) and fold it, with the `.span/`
+refresh, into the **same commit** as the code change, never a follow-up. Before `git commit`/`git push` a `PreToolUse` advisor
 re-checks the changeset and holds the command once if real span debt remains; see
 `references/understanding-hook-output.md` § "Resolving a held commit".
 
@@ -82,7 +83,8 @@ mirrored by each client library."
 ```
 git span stale <name>                     # see which anchor(s) drifted and how
 # Moved (same content, new path):  git span stale --fix <name>   suffices
-# Changed, coupling still holds:   keep the SAME range unless the file's line count moved
+# Changed, anchors still agree:    keep the SAME range unless the file's line count moved
+# Changed, doc lags committed code: rewrite the doc first; code fixes need the user's say-so
 git span remove <name> <old-anchor>       # only if path or range actually changed
 git span add <name> <new-anchor>          # wc -l <path> first
 git span why <name> "..."              # only if the relationship itself changed

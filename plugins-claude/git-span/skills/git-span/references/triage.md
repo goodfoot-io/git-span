@@ -10,7 +10,8 @@
 | `stale` reports                          | resolution |
 |---|---|
 | Moved                                     | `git span stale --fix <name>` — unconditional for a pure move |
-| Changed, coupling still holds             | `grep -n <symbol>` (the identifier the span's `why` names) in the target file. If the hit falls inside the anchor's existing range, `add` the SAME range (hash refresh only) — do NOT pick a new range because the code now "looks like" it's about something else. Only a symbol that physically moved lines changes the range. |
+| Changed, anchors still agree              | `grep -n <symbol>` (the identifier the span's `why` names) in the target file. If the hit falls inside the anchor's existing range, `add` the SAME range (hash refresh only) — do NOT pick a new range because the code now "looks like" it's about something else. Only a symbol that physically moved lines changes the range. |
+| Changed, doc anchor disagrees with a deliberate committed code change | Rewrite the doc to describe current reality, then `add`. Code-side fix, contract doc, or no intentional commit behind the drift → tell the user (see `wiki/guides/reconciliation-authority.md`) |
 | Changed, but the coupled feature is gone  | `git span delete <name>` — do not re-anchor onto unrelated content left behind at the same lines |
 | Not reported by `stale` at all            | undeclared coupling — declare it (SKILL.md) |
 

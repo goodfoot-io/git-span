@@ -132,7 +132,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(block).not.toContain('api/charge.ts#L30-L76 —');
       expect(block).toContain(WHY);
       expect(block).toContain('\n\n---\n\n');
-      expect(block).toContain('Update the changed anchors or description before committing');
+      expect(block).toContain('Restore agreement across the anchors before committing');
       expect(block).toContain('`git span add billing/checkout-request-flow <path#Lstart-Lend>`');
 
       // Same span, same status, same session (same MemoStore instance) — the

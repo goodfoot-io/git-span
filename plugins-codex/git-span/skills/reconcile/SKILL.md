@@ -207,18 +207,21 @@ prompt only designates which spans — the procedure is shared here.
 For each assigned span:
 
 1. Read the current bytes at each stale anchor location.
-2. Run `git span history <name>`; compare `<current>` against anchored content.
+2. Run `git span history <name>`; compare `<current>` against anchored content,
+   and note which commit caused the drift — a deliberate, committed change makes
+   that side authoritative (full policy: `wiki/guides/reconciliation-authority.md`).
 3. Write a one-sentence confirmation of the relationship. Stop if you cannot.
 4. Classify and execute:
 
 | Category | Action |
 |---|---|
 | Bytes shifted, meaning preserved | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
-| Content updated, same relationship | `git span remove <name> '<path>#L<N>'` then `git span add <name> '<path>#L<N>'` (re-hash) |
+| Anchors still agree; content updated | `git span remove <name> '<path>#L<N>'` then `git span add <name> '<path>#L<N>'` (re-hash) |
+| Doc anchor lags a deliberate committed code change | Rewrite the doc to describe current reality, then re-anchor onto it; include the doc diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
-| One side of the relationship broke | Fix the code first, then re-anchor (both sides in one commit) |
 | Relationship gone entirely | `git span delete <name>` |
 | Span has no why | `git span why <name> "<one present-tense sentence naming what the anchors form together>"` |
+| Fix needs a code edit, the doc may be the intended contract, or the drift has no intentional commit | Stop and report — the user decides |
 
 *(If deletion syntax is unfamiliar, invoke `git-span:git-span` — the
 command-reference section covers `git span delete`. If source code needs
@@ -238,8 +241,12 @@ finding cannot be confirmed. Do not commit.
 ```bash
 git span stale     # must exit 0 with "0 stale"
 git span doctor    # must report "no findings"
+# conformed docs commit before the spans that re-anchor onto them:
+git add <conformed-doc-paths> && git commit -m "Conform docs to committed code"
 git add .span && git commit -m "Reconcile stale spans"
 ```
+Skip the doc commit when no fork conformed a doc. Surface every doc diff in
+the final report.
 
 If any fork reported a failure, or `git span stale` is non-zero, handle the
 failing component inline (its spans are isolated from the successful components
@@ -249,5 +256,5 @@ by definition, so only the failed component needs rework).
 
 ## Git allowlist
 
-When resolving spans in a shared worktree, restrict to: `git span …`, `git add .span[/<name>]`, `git commit -m` (never `-a` or `--amend`), `git checkout <commit-ish> -- .span/<name>`, and read-only `git status`/`git diff`/`git log`/`git show`. Never touch paths outside `.span/` or rewind HEAD.
+When resolving spans in a shared worktree, restrict to: `git span …`, edits to doc files your assigned spans anchor (doc-conform only), `git add .span[/<name>]`, `git add <conformed-doc>`, `git commit -m` (never `-a` or `--amend`), `git checkout <commit-ish> -- .span/<name>`, and read-only `git status`/`git diff`/`git log`/`git show`. Never edit code, never touch paths your spans don't anchor, never rewind HEAD.
 </instructions>

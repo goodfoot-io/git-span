@@ -39,9 +39,10 @@ Stripe-backed server.
 
 ---
 
-Update the drifted locations or the description — `git span add checkout-flow
-<path#Lstart-Lend>` / `git span why checkout-flow "..."` — then retry. If a
-dependency no longer holds, tell the user instead.
+Bring the coupled files back into agreement (docs follow the committed
+code), then refresh — `git span add checkout-flow <path#Lstart-Lend>` /
+`git span why checkout-flow "..."` — and retry. If the fix needs a code
+change or a dependency no longer holds, tell the user instead.
 ```
 
 **Uncovered writes** — a changed file no span anchors at all, held on once per distinct debt state; an unchanged retry passes, and so does a commit/push whose exact debt state a prior `git status` already showed in full. When the rest of the changeset already belongs to spans, a related-spans section follows the checklist — only anchors that are part of *this* changeset, as line ranges wherever possible, ranked so the span covering the most of the changeset leads (ties broken by directory proximity to an uncovered file, then by name), capped at eight spans with any remainder disclosed by count, each group followed by that span's `why` sentence when it has one recorded:
