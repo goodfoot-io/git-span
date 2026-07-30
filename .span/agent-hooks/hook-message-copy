@@ -1,6 +1,7 @@
-packages/agent-hooks/src/common/advisor-core.ts#L1308-L1600 rk64:e0f3bd75ca314e07
-packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
+packages/agent-hooks/src/common/advisor-core.ts#L1308-L1600 rk64:c2562abf5e1ddfde
+packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:4ec29c5402e3f47c
+packages/website/content/docs/agent-integration.mdx rk64:30d845a51b6109e8
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:5849276a85be183e
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:0d41f704b4378200
 
-packages/website/content/docs/agent-integration.mdx rk64:c72d9b4ab1d9225b
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:a25d525fbf0ec47b
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:19fb068718db1f83
+The drifted-span footer copy rendered by the touch hook and the commit advisor is quoted verbatim by the website's agent-integration doc and both plugin trees' understanding-hook-output references.
