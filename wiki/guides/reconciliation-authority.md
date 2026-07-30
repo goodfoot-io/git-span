@@ -1,6 +1,6 @@
 ---
 title: Reconciliation Authority
-summary: How to decide, when a stale span reveals that coupled artifacts disagree, which side is the source of truth and whether to conform the other side automatically or pause for the user. Authority goes to demonstrated intent (git history); docs follow intentional code changes automatically; code edits and contract-doc ambiguity escalate.
+summary: What to do with the stale anchors `git span stale --fix` leaves drifting — decide which coupled artifact is the source of truth via git history, conform docs to intentional code changes automatically, and escalate to the user when the fix requires editing code or authority is ambiguous.
 aliases: [Drift Authority, Docs Follow Source]
 tags: [guide, git-span]
 keywords: [reconcile, stale, drift, authority, source of truth, fail closed, doc rewrite]
@@ -8,56 +8,46 @@ keywords: [reconcile, stale, drift, authority, source of truth, fail closed, doc
 
 # Reconciliation authority
 
-A span is a claim that its anchored artifacts agree. Staleness is the symptom;
-**disagreement between the artifacts is the disease**. Re-anchoring a span onto
-content that contradicts its other anchors certifies a falsehood — genuine
-reconciliation must be allowed to edit the artifacts themselves, not only
-`.span/` metadata. The reconcile skill's classification table already crosses
-this line in one place
-([SKILL.md](../../plugins-claude/git-span/skills/reconcile/SKILL.md#L214-L221)):
-"one side of the relationship broke → fix the code first, then re-anchor."
+`git span stale --fix` auto-resolves `Moved` and whitespace-equivalent
+`Changed` anchors; a `Changed` anchor whose content differs beyond whitespace
+is left drifting so it resurfaces for confirmation
+([mod.rs](../../packages/git-span/src/cli/mod.rs#L69-L76)). This page governs
+that residue — the meaning-altering `Changed` and `Deleted` anchors
+([types.rs](../../packages/git-span/src/types.rs#L149-L160)).
 
-## The decision rule
+Re-anchoring records the current content as the anchored baseline; the tool
+performs no semantic check. So before re-anchoring, confirm the coupled
+artifacts still agree — and when they don't, edit the disagreeing artifact
+first. Reconciliation that only touches span metadata over a live
+disagreement hides the drift signal without resolving it.
 
-When coupled artifacts disagree, exactly one question matters: **which side is
-authoritative?** Answer it with evidence of intent, then act by cost of error:
+## Decision rule
 
-1. **Authority goes to demonstrated intent.** Code changed by a deliberate,
-   committed change is authoritative — it is what runs, and its change was
-   chosen. Check git history before conforming anything: a doc drifting behind
-   an intentional code change means the doc is wrong; a code change with no
-   coherent commit story may be a regression, and the doc may be the truth.
-2. **Docs follow authoritative code automatically.** Conforming a descriptive
-   doc to intentionally changed code is reversible, evidence-preserving, and
-   records a truth already established elsewhere. Do it without asking.
-   Rewrite the doc to describe current reality — no "we used to" framing.
-3. **Escalate when authority is ambiguous or the edit changes behavior.**
-   Pause for the user when: the fix requires editing code; the doc is a
-   contract or spec that may be the intended truth rather than a description;
-   or the drift has no corresponding intentional commit.
+When coupled artifacts disagree, decide which side is authoritative, then act
+by cost of error:
 
-This is fail-closed applied to the right variable: fail closed on **authority
-ambiguity**, not on editing per se. Blanket read-only blocks the safe, common
-case (doc drift) and lets the contradiction persist — itself a failure.
+1. **Locate authority via demonstrated intent.** `git span stale` attributes
+   drift to the first mutating commit
+   ([DriftLocus](../../packages/git-span/src/types.rs#L227-L238)) and
+   `git span history <name>` renders the span's commit timeline
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L183-L189)). A doc
+   drifting behind a deliberate, committed code change means the doc is
+   wrong. A code change with no coherent commit story may be a regression —
+   the doc may be the truth.
+2. **Docs follow authoritative code automatically.** Rewrite the doc to
+   describe current reality — no "we used to" framing — without asking.
+3. **Escalate to the user** when the fix requires editing code, when the doc
+   is a contract or spec that may be the intended truth rather than a
+   description, or when the drift has no intentional commit behind it.
 
-## Autonomy boundary
+Fail closed on authority ambiguity, not on editing per se.
 
-Proceed exactly as far as the evidence decides the question; stop exactly where
-it does not. A doc drift whose code-side change is visible and deliberate in
-history is fully decidable from the repo — resolve it without asking. A drift
-with no intent trail is undecidable from the repo — asking is correct, not a
-failure of nerve.
-
-## Hygiene when conforming a doc
+## When conforming a doc
 
 - Show the doc diff in the final report; the user reviews after, not before.
-- Commit doc rewrites separately from span re-anchors (content files first,
-  then `.span/` — the same ordering as `resolved, pending commit` in
-  [SKILL.md](../../plugins-claude/git-span/skills/reconcile/SKILL.md#L28-L37)).
-- Re-anchor the span onto the rewritten doc and update its why if the coupling
-  itself changed shape.
-
-One sentence: reconciliation is conflict resolution between coupled artifacts;
-authority goes to the side with demonstrated intent; conform the other side
-automatically when history makes authority evident, and escalate when it
-doesn't.
+- Commit content files first, then the re-anchored spans — anchors on
+  uncommitted source sit at `ResolvedPendingCommit` until the source commit
+  lands ([types.rs](../../packages/git-span/src/types.rs#L152-L154)).
+- Keep the span's why across routine re-anchors; write a new one only when
+  the subsystem itself changed
+  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L115-L117)).
