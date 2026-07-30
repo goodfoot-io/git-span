@@ -83,7 +83,10 @@ newest→oldest, `git log -p` style: each qualifying commit's declaration diff
 and per-anchor unified diffs (rename-aware by content similarity: a
 re-anchor whose old and new content pair at ≥ 50% similarity — git's `-M`
 default — renders as a rename; below the floor it renders as a deleted
-anchor plus a new anchor), plus a leading, headerless section for
+anchor plus a new anchor; and when the recorded side cannot be read —
+binary or unrecoverable content — it renders `rename from`/`rename to`
+lines with no similarity claim, the move asserted by the declaration
+itself), plus a leading, headerless section for
 uncommitted worktree
 drift from HEAD. Defaults to git-log-style text; `--format json` emits
 `schema_version: 2` carrying the identical diffs as raw patch strings.

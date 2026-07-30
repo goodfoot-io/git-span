@@ -66,6 +66,17 @@ impl TestRepo {
         Ok(())
     }
 
+    /// Raw-byte variant of [`Self::write_file`], for fixtures whose content is
+    /// deliberately not UTF-8.
+    pub fn write_file_bytes(&self, rel: &str, contents: &[u8]) -> Result<()> {
+        let p = self.dir.path().join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(p, contents)?;
+        Ok(())
+    }
+
     pub fn write_file_lines(&self, rel: &str, n: u32) -> Result<()> {
         let mut buf = String::with_capacity((n as usize) * 8);
         for i in 1..=n {

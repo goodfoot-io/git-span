@@ -109,7 +109,7 @@ Key flags:
 git span history <name>
 ```
 
-Shows a timeline of a span file's git history, newest to oldest, `git log -p` style: each qualifying commit's declaration diff and a unified diff per anchor (rename-aware by content similarity: a re-anchor whose old and new content pair at ≥ 50% similarity — git's `-M` default — renders as a rename, while a sub-threshold re-anchor renders as a deleted anchor plus a new anchor), plus an optional leading, headerless section for uncommitted drift in the working tree from `HEAD`.
+Shows a timeline of a span file's git history, newest to oldest, `git log -p` style: each qualifying commit's declaration diff and a unified diff per anchor (rename-aware by content similarity: a re-anchor whose old and new content pair at ≥ 50% similarity — git's `-M` default — renders as a rename, a sub-threshold re-anchor renders as a deleted anchor plus a new anchor, and a re-anchor whose recorded side cannot be read — binary or unrecoverable content — renders `rename from`/`rename to` lines with no similarity claim, the move asserted by the declaration itself), plus an optional leading, headerless section for uncommitted drift in the working tree from `HEAD`.
 
 Key flags:
 

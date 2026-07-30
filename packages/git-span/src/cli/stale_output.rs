@@ -1576,22 +1576,34 @@ fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, Stri
 /// block for a `Moved` anchor, whose `current` location carries the new
 /// path/range).
 pub(crate) fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
+    let bytes = read_location_bytes(repo, location);
+    slice_location_text(&String::from_utf8_lossy(&bytes), location.extent)
+}
+
+/// The raw bytes behind a resolved anchor location, before any decoding
+/// decision. Shared with `git span history`, whose `current` section applies a
+/// *strict* decode to these bytes (non-UTF-8 is structural unavailability, as
+/// on its commit read path) while `stale`'s renderer decodes them lossily.
+pub(crate) fn read_location_bytes(repo: &gix::Repository, location: &AnchorLocation) -> Vec<u8> {
     // A location resolved from the working tree carries `blob: None` (see
     // `AnchorLocation::blob`) — there is no stored object to read. Falling
     // back to the file on disk (instead of yielding empty bytes) is what keeps
     // a worktree-drifted anchor from rendering as a total deletion.
-    let bytes = location
+    location
         .blob
         .and_then(|blob| read_blob_bytes(repo, blob))
         .or_else(|| {
             let workdir = repo.workdir()?;
             std::fs::read(workdir.join(&location.path)).ok()
         })
-        .unwrap_or_default();
-    let text = String::from_utf8_lossy(&bytes);
-    match location.extent {
-        AnchorExtent::WholeFile => text.into_owned(),
-        AnchorExtent::LineRange { start, end } => slice_lines(&text, start, end),
+        .unwrap_or_default()
+}
+
+/// Slice decoded file text down to a location's extent.
+pub(crate) fn slice_location_text(text: &str, extent: AnchorExtent) -> String {
+    match extent {
+        AnchorExtent::WholeFile => text.to_string(),
+        AnchorExtent::LineRange { start, end } => slice_lines(text, start, end),
     }
 }
 

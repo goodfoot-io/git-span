@@ -33,7 +33,7 @@
 //! | [`declared_pairs`] | The why-prose and every non-`rk64:` line of the declaration | One `.span` file at one rev; it says nothing about content at any address — [`read_address`] is the oracle for that |
 //! | [`current_forms`] | `path` and payloads, exactly as `newest_commit_forms` does | The `current` array only; timeline entries are outside it |
 //! | [`documented_anchor_fields`] | Every word of each field's prose — it compares *names*, not meanings, which is how a worked example contradicting its own rule survived (`no_documented_example_shows_a_rename_below_the_threshold` compares the values) | One heading's bullet list. Two adjacent lists exist and each is parsed alone, deliberately: one list vouching for the other's keys is how a sweep certifies a false document |
-//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions except the pre-existing `unavailable` hatch on the `current` sweep, which must not grow | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]) |
+//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions (the binary re-anchor fixture emits `unavailable`, closing the hatch the `current` sweep used to carry) | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]) |
 //! | [`every_current_state`] | — | Current-block states only. `Rebound` is timeline-only and `Proposed` current-block-only, so this set structurally cannot reach every form |
 //! | [`every_timeline_state`] | — | Timeline states only, and only each fixture's *newest* entry is form-checked |
 
@@ -2277,6 +2277,7 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             unrecoverable_reanchor_repo("ur")?,
             "ur",
         ),
+        ("binary re-anchor", binary_reanchor_repo("bin")?, "bin"),
     ])
 }
 
@@ -2314,6 +2315,95 @@ fn unrecoverable_reanchor_repo(span: &str) -> Result<TestRepo> {
         "the declaration rewrite left the worktree clean"
     );
     Ok(repo)
+}
+
+/// A whole-file pin on a non-UTF-8 file, committed, then re-anchored in the
+/// worktree to a *different* non-UTF-8 file. The recorded token is the binary
+/// fingerprint of `a.bin`, and the same render's declare entry prints that
+/// token as first-add content — so nothing about this state is lost, and no
+/// side of it may be decoded as prose.
+fn binary_reanchor_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file_bytes("a.bin", b"BINA\x00\xff\xfe-one\n")?;
+    repo.write_file_bytes("b.bin", b"BINB\x00\xfe\xff-two\n")?;
+    repo.commit_all("binaries")?;
+    repo.span_stdout(["add", span, "a.bin"])?;
+    repo.span_stdout(["why", span, "the binary block"])?;
+    repo.commit_all("declare the binary pin")?;
+    rewrite_declaration(&repo, span, "a.bin", "b.bin")?;
+    Ok(repo)
+}
+
+/// The worktree read path applies the same decoding policy as the commit read
+/// path: non-UTF-8 content is `unavailable: "binary"` — structural, never a
+/// lossily-decoded `content` string of control bytes and U+FFFD replacement
+/// characters. The module contract says unextractable content is structural,
+/// never prose, and a lossy decode is prose wearing content's key.
+#[test]
+fn a_binary_live_side_is_structural_never_lossy_prose() -> Result<()> {
+    let repo = binary_reanchor_repo("bin")?;
+    let json = history_json(&repo, "bin")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one declared move; got: {json:#}");
+    let anchor = &anchors[0];
+    assert_eq!(
+        anchor["unavailable"], "binary",
+        "the live bytes are not UTF-8, exactly as a commit read would say; \
+         got: {anchor:#}"
+    );
+    assert!(
+        anchor.get("content").is_none(),
+        "no honest text exists for these bytes; got: {anchor:#}"
+    );
+    let raw = serde_json::to_string(&json)?;
+    assert!(
+        !raw.contains('\u{FFFD}'),
+        "a replacement character is a lossy decode leaking through as \
+         content:\n{raw}"
+    );
+    Ok(())
+}
+
+/// A binary recorded side whose token is rendered as first-add content in the
+/// same output is recoverable by that render's own account: the by-hash search
+/// behind `recorded: "unrecoverable"` runs over every snapshot the render
+/// produced, binary ones included. The block states the declared move with
+/// git's binary line and no similarity — nothing can be measured, and nothing
+/// was lost.
+#[test]
+fn a_binary_recorded_side_is_recovered_not_declared_lost() -> Result<()> {
+    let repo = binary_reanchor_repo("bin")?;
+    let json = history_json(&repo, "bin")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one declared move; got: {json:#}");
+    let anchor = &anchors[0];
+    assert!(
+        anchor.get("recorded").is_none(),
+        "the recorded token is rendered as first-add content in this very \
+         output, so it is not lost; got: {anchor:#}"
+    );
+    let diff = anchor["diff"].as_str().expect("diff string");
+    assert!(
+        diff.contains("rename from a.bin\n") && diff.contains("rename to b.bin\n"),
+        "the declaration asserted the move, so the block states it; got:\n{diff}"
+    );
+    assert!(
+        diff.contains("Binary files "),
+        "two binary sides have no hunks — git's own line says so; got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("similarity index"),
+        "binary sides cannot be measured; got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("recorded snapshot unrecoverable"),
+        "a loss claim the same render disproves; got:\n{diff}"
+    );
+    Ok(())
 }
 
 /// Every invariant the current block must satisfy no matter which state an
@@ -2652,11 +2742,12 @@ fn every_current_anchor_key_appears_in_the_documented_field_list() -> Result<()>
         }
     }
     // The reverse direction: a documented field no fixture can produce is
-    // either dead contract or an untested state, and both need saying.
-    // `unavailable` is exercised by its own tests, not by this sweep.
+    // either dead contract or an untested state, and both need saying. No
+    // exemptions — the binary re-anchor fixture emits `unavailable`, closing
+    // the hatch this sweep used to carry for it.
     for key in &documented {
         assert!(
-            seen.contains(key) || key == "unavailable",
+            seen.contains(key),
             "the document promises `{key}`, but no state in the sweep emits it"
         );
     }

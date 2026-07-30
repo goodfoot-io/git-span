@@ -75,8 +75,10 @@
 //! | The whole section | Worktree declaration matches `HEAD` and no anchor is drifted | `clean_worktree_has_no_current_section` |
 //! | An anchor | The resolver reports it `Fresh` and its declared address did not move | A fresh anchor at an unmoved address has no drift to report; `git span stale` says the same |
 //! | The rename form | Similarity measured below [`RENAME_SIMILARITY_FLOOR`] | `every_current_state`'s "declaration swap" and "cross-file swap" — splits into `deleted anchor` + `new anchor` |
-//! | The `similarity index` line | The recorded side is unrecoverable, so nothing can be measured | `every_current_state`'s "re-anchor with unrecoverable recorded token", plus `an_unmeasurable_reanchor_states_the_move_and_no_similarity` |
-//! | Hunks | The recorded side is unrecoverable, or a rename/proposal whose content is unchanged | `an_unrecoverable_recorded_snapshot_is_named_in_the_human_block`; hunks need two comparable bodies and synthesizing one presents it as the other's content |
+//! | The `similarity index` line | Either side cannot be read as text ([`measured_similarity`]) — an unrecoverable recorded side, or a binary snapshot | `an_unmeasurable_reanchor_states_the_move_and_no_similarity`, plus `a_binary_recorded_side_is_recovered_not_declared_lost` |
+//! | Hunks | The recorded side is unrecoverable, either side is binary (the renderer's `Binary files … differ` line), or a rename/proposal whose content is unchanged | `an_unrecoverable_recorded_snapshot_is_named_in_the_human_block`; hunks need two comparable bodies and synthesizing one presents it as the other's content |
+//! | The live `content` payload | The live bytes are not UTF-8 — classified `unavailable: "binary"` by [`read_location_body`], the same policy as [`read_anchor_at_commit`] | `a_binary_live_side_is_structural_never_lossy_prose` — a lossy decode is prose wearing content's key |
+//! | A token-index entry | The snapshot's fingerprint is the null hash — an absent body, nothing to key ([`capture_by_hash`]) | Deliberate: no recorded token is ever the null hash. A *binary* snapshot's real fingerprint stays indexed — `a_binary_recorded_side_is_recovered_not_declared_lost` is the fixture the old text-gate failed |
 //! | The rebinding block | Always — this path never renders one | Deliberate: a rebinding is a transition between two *committed* declaration states. The current block already renders a committed rebinding's live drift honestly, one in-place diff per anchor |
 //!
 //! Declared anchor ranges are taken at face value at every commit — a stale
@@ -1352,16 +1354,23 @@ fn capture_recorded_snapshots(
 /// arrive newest-first, anchors within a state in declaration order, and the
 /// first entry for a hash wins — so the newest state's earliest-declared
 /// anchor is the one kept, deterministically. A collision can only ever be
-/// between byte-identical bodies (equal token means equal content), and the
-/// label a side wears is chosen by [`CurrentState`], never by the candidate,
-/// so the tie-break can change neither the rendered bytes nor the address
-/// above them.
+/// between byte-identical bodies (equal token means equal content — the
+/// fingerprint covers the raw bytes, binary or not), and the label a side
+/// wears is chosen by [`CurrentState`], never by the candidate, so the
+/// tie-break can change neither the rendered bytes nor the address above them.
+///
+/// Membership is decided by the *fingerprint*, not by whether the body decoded
+/// as text: a binary snapshot has a real fingerprint and only an unrenderable
+/// body, and excluding it from this index is exactly what once made
+/// `recorded: "unrecoverable"` fire for a token the same render printed as
+/// first-add content. Only the null fingerprint — an absent body, nothing to
+/// key — is skipped.
 fn capture_by_hash(
     into: &mut std::collections::HashMap<String, Snapshot>,
     state: &RenderedState,
 ) {
     for snap in &state.anchors {
-        if snap.body.is_text() {
+        if snap.hash != NULL_ANCHOR_HASH {
             into.entry(snap.hash.clone()).or_insert_with(|| snap.clone());
         }
     }
@@ -1449,8 +1458,13 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 /// token — the snapshot the walk identified as recorded, the live content
 /// (identical bytes by definition when the hashes agree), or the paired
 /// snapshot. When no candidate qualifies the recorded bytes are simply not
-/// recoverable, and the old side is [`Unavailable`]: the caller then renders
-/// the header alone, because hunks need two comparable bodies.
+/// recoverable — [`OldSide::recovered`] is `false` and the body is
+/// [`Unavailable`]: the caller then renders the header alone, because hunks
+/// need two comparable bodies. `recovered` is the *only* carrier of that
+/// verdict: a recovered candidate can itself wear an [`Unavailable::Binary`]
+/// body (a real fingerprint over unrenderable bytes), and reading
+/// "unrecoverable" off body shape is what once declared such a token lost
+/// while the same render printed it as first-add content.
 ///
 /// Either way the `index` line carries `rk64:<recorded>..rk64:<live>`, so the
 /// two hashes differ exactly when the anchor is drifted.
@@ -1475,7 +1489,7 @@ fn current_old_side(
     address: String,
     first_line: u32,
     recorded_hash: Option<&String>,
-) -> Option<Snapshot> {
+) -> Option<OldSide> {
     let hash = recorded_hash
         .cloned()
         .or_else(|| paired.map(|p| p.hash.clone()))?;
@@ -1496,21 +1510,55 @@ fn current_old_side(
         "an old side must hash to the declaration's recorded token"
     );
     Some(match source {
-        Some(src) => Snapshot {
-            address,
-            first_line,
-            recorded: hash.clone(),
-            hash,
-            body: src.body.clone(),
+        Some(src) => OldSide {
+            snapshot: Snapshot {
+                address,
+                first_line,
+                recorded: hash.clone(),
+                hash,
+                body: src.body.clone(),
+            },
+            recovered: true,
         },
-        None => Snapshot {
-            address,
-            first_line,
-            recorded: hash.clone(),
-            hash,
-            body: AnchorBody::Unavailable(Unavailable::Absent),
+        None => OldSide {
+            snapshot: Snapshot {
+                address,
+                first_line,
+                recorded: hash.clone(),
+                hash,
+                body: AnchorBody::Unavailable(Unavailable::Absent),
+            },
+            recovered: false,
         },
     })
+}
+
+/// [`current_old_side`]'s answer: the snapshot to render as the old side, and
+/// the verdict on whether the render's snapshot set actually carried the
+/// recorded bytes. The two are separate fields because they are separate
+/// facts: a recovered binary snapshot has an [`Unavailable`] *body* but is not
+/// a lost *token*.
+struct OldSide {
+    snapshot: Snapshot,
+    /// `false` exactly when no snapshot in this render hashes to the recorded
+    /// token — the one condition [`RECORDED_UNRECOVERABLE`] reports.
+    recovered: bool,
+}
+
+/// Read an anchor's live body from its resolved location, applying the same
+/// decoding policy as [`read_anchor_at_commit`]: the file's bytes must be
+/// UTF-8 *as a whole* or the body is [`Unavailable::Binary`] — one policy
+/// across both read paths, so the same bytes can never be
+/// `unavailable: "binary"` when read from a commit and a lossily-decoded
+/// `content` string of replacement characters when read from the worktree.
+fn read_location_body(repo: &gix::Repository, loc: &AnchorLocation) -> AnchorBody {
+    let bytes = crate::cli::stale_output::read_location_bytes(repo, loc);
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => AnchorBody::Text(crate::cli::stale_output::slice_location_text(
+            text, loc.extent,
+        )),
+        Err(_) => AnchorBody::Unavailable(Unavailable::Binary),
+    }
 }
 
 /// Build the optional `current` section from two triggers:
@@ -1658,7 +1706,7 @@ fn build_current(
             });
             let (body, hash, first_line) = match &live_loc {
                 Some(loc) => (
-                    AnchorBody::Text(crate::cli::stale_output::read_location_text(repo, loc)),
+                    read_location_body(repo, loc),
                     location_hash(repo, loc),
                     // A relocated side is labelled with the declared address
                     // and carries the declared range's coordinate: its bytes
@@ -1746,9 +1794,9 @@ fn build_current(
                 // `similarity index 0%` above the line admitting the side could
                 // not be read.
                 (CurrentState::Reanchored { .. }, Some(o)) => {
-                    let measured = measured_similarity(&o.body, &n.body);
+                    let measured = measured_similarity(&o.snapshot.body, &n.body);
                     if measured.is_some_and(|s| s < RENAME_SIMILARITY_FLOOR) {
-                        push_reanchor_split(&mut anchors, o, n);
+                        push_reanchor_split(&mut anchors, &o.snapshot, n);
                         continue;
                     }
                     AnchorDiffKind::Rename {
@@ -1763,23 +1811,24 @@ fn build_current(
             let header = DiffHeader::Anchor {
                 old_hash: old_side
                     .as_ref()
-                    .map(|o| o.hash.clone())
+                    .map(|o| o.snapshot.hash.clone())
                     .unwrap_or_else(|| NULL_ANCHOR_HASH.to_string()),
                 new_hash: n.hash.clone(),
                 kind,
             };
             let old_diff_side = old_side
                 .as_ref()
-                .map(snapshot_side)
+                .map(|o| snapshot_side(&o.snapshot))
                 .unwrap_or_else(DiffSide::dev_null);
-            // The recorded bytes are unrecoverable (a declaration that was
-            // never committed at its current hash). Hunks would have to invent
-            // one of the two sides, so the header — which still names both
-            // hashes truthfully — is the whole block.
-            let unrecoverable = old_side
-                .as_ref()
-                .is_some_and(|o| matches!(o.body, AnchorBody::Unavailable(_)))
-                && n.body.is_text();
+            // The recorded bytes are unrecoverable: no snapshot in this render
+            // hashes to the token (a declaration that was never committed at
+            // its current hash). Hunks would have to invent one of the two
+            // sides, so the header — which still names both hashes truthfully
+            // — is the whole block. The verdict is [`OldSide::recovered`] and
+            // nothing else: a recovered side whose body is unrenderable (a
+            // binary snapshot) is not a lost token, and the renderer's
+            // structural side states already handle it.
+            let unrecoverable = old_side.as_ref().is_some_and(|o| !o.recovered);
             let diff = if unrecoverable {
                 render_diff_header(&header, &old_diff_side, &snapshot_side(n), true)
             } else {

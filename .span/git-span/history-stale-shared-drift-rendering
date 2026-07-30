@@ -1,4 +1,4 @@
-packages/git-span/src/cli/history.rs#L1602-L1669 rk64:ee3220385c3d3588
-packages/git-span/src/cli/stale_output.rs#L1563-L1596 rk64:3e49cf03923e050f
+packages/git-span/src/cli/history.rs#L1666-L1733 rk64:fa62dfa04bff1919
+packages/git-span/src/cli/stale_output.rs#L1563-L1608 rk64:542c905244851502
 
-Shared drifted-anchor extraction contract in which git span history's current section builds each live snapshot through stale_output's read_location_text — at the resolver's healed location for the bytes-equal relocation statuses stale prints 'moved to' for, and back at the declared address for every other status — including the disk fallback for worktree-resolved locations, which carry no stored blob.
+Shared drifted-anchor extraction contract in which git span history's current section builds each live snapshot from stale_output's raw location bytes — read at the resolver's healed location for the bytes-equal relocation statuses stale prints 'moved to' for, and back at the declared address for every other status, including the disk fallback for worktree-resolved locations that carry no stored blob — with history strict-decoding those bytes so a non-UTF-8 live side classifies as structurally unavailable exactly like the commit path, never as lossy prose.
