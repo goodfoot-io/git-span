@@ -1584,7 +1584,26 @@ pub(crate) fn read_location_text(repo: &gix::Repository, location: &AnchorLocati
 /// decision. Shared with `git span history`, whose `current` section applies a
 /// *strict* decode to these bytes (non-UTF-8 is structural unavailability, as
 /// on its commit read path) while `stale`'s renderer decodes them lossily.
+///
+/// A location with nothing to read yields empty bytes. Callers that must tell
+/// "no such file" apart from "an empty file" — history's `current` block, whose
+/// `unavailable` vocabulary distinguishes them — use
+/// [`read_location_bytes_present`] instead.
 pub(crate) fn read_location_bytes(repo: &gix::Repository, location: &AnchorLocation) -> Vec<u8> {
+    read_location_bytes_present(repo, location).unwrap_or_default()
+}
+
+/// [`read_location_bytes`] with the absence preserved: `None` means there is no
+/// such file (or blob) at all, as opposed to a file that is there and empty.
+///
+/// The two states render differently — an absent file is `unavailable:
+/// "absent"` while an empty one is honest, extractable, zero-byte content — so
+/// the distinction has to survive the read rather than be inferred from an
+/// empty `Vec` downstream.
+pub(crate) fn read_location_bytes_present(
+    repo: &gix::Repository,
+    location: &AnchorLocation,
+) -> Option<Vec<u8>> {
     // A location resolved from the working tree carries `blob: None` (see
     // `AnchorLocation::blob`) — there is no stored object to read. Falling
     // back to the file on disk (instead of yielding empty bytes) is what keeps
@@ -1596,7 +1615,6 @@ pub(crate) fn read_location_bytes(repo: &gix::Repository, location: &AnchorLocat
             let workdir = repo.workdir()?;
             std::fs::read(workdir.join(&location.path)).ok()
         })
-        .unwrap_or_default()
 }
 
 /// Slice decoded file text down to a location's extent.
@@ -1613,19 +1631,14 @@ fn read_blob_bytes(repo: &gix::Repository, oid: gix::ObjectId) -> Option<Vec<u8>
         .map(|object| object.into_blob().detach().data)
 }
 
+/// `stale`'s view of the shared line-range policy
+/// ([`crate::git::slice_line_range`]): a range with no overlap at all yields
+/// the empty string here rather than an error, because this renderer's job is
+/// to show the user what sits at the declared address and "nothing" is the
+/// right answer for it. `history` reads the same policy and keeps the error,
+/// because its `unavailable` vocabulary has a word for that state.
 fn slice_lines(text: &str, start: u32, end: u32) -> String {
-    let start_idx = start.saturating_sub(1) as usize;
-    let count = end.saturating_sub(start).saturating_add(1) as usize;
-    let mut out = text
-        .lines()
-        .skip(start_idx)
-        .take(count)
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out
+    crate::git::slice_line_range(text, start, end).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

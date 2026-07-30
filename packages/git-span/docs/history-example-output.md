@@ -555,8 +555,10 @@ over a sweep of every timeline state.
 - `content` — present exactly on a first-add whose snapshot was extractable, replacing
   `diff`: there is no old side to diff against, so the full snapshot is the payload.
 - `unavailable` — present when the anchor's *new-side* content could not be extracted:
-  `"absent"` (no such file at this commit), `"range-past-eof"`, or `"binary"`. A status to
-  style, never source to render.
+  `"absent"` (no such file at this commit), `"range-past-eof"` (the file is there and the
+  declared range starts past its end), or `"binary"` (not UTF-8). A status to style, never
+  source to render. Each value has a producing fixture in the sweep — a documented value
+  with no producer is a promise nothing in the product keeps.
 - `rebound` — present exactly on a `rebound anchor` object, and the structured
   discriminator that identifies one: an object `{ "from": "rk64:…", "to": "rk64:…" }`
   naming the token the previous state's declaration recorded at this address and the token
@@ -583,10 +585,26 @@ the two lists agree over a sweep of every state above.
   a relocation those bytes are the ones at `path`; for a relocation they are the recorded
   bytes, which live at `proposed` and not at `path` — that displacement is the finding.
   Absent exactly when `unavailable` is present.
-- `unavailable` — replaces `content` when the bytes could not be extracted: `"absent"` (no
-  such file), `"range-past-eof"` (the declared range starts past end of file), or
-  `"binary"` (not UTF-8). A status to style, never source to render — no placeholder prose
-  is ever emitted as content or as diff body text.
+- `unavailable` — replaces `content` when the bytes could not be extracted: `"absent"` (the
+  anchored content is not there — the file is gone, or the resolver could locate the
+  declared content nowhere), `"range-past-eof"` (the file *is* there and the declared range
+  starts past its end), or `"binary"` (not UTF-8). A status to style, never source to
+  render — no placeholder prose is ever emitted as content or as diff body text.
+
+  All three values are reachable from the `current` block, on the same terms as from a
+  commit: the live read applies the commit read's policy on both axes, encoding and extent,
+  so one file state gets one account whether or not it has been committed. Reading a
+  declared range that runs off the end of its file used to yield an empty string here,
+  which is content — it measured as a similarity, split one declared move into a delete
+  plus a create, and shipped `"content": ""` for an address holding nothing at all.
+
+  The distinction this field carries is load-bearing downstream, because the `index` line's
+  null hash cannot carry it: an absent file, a past-EOF range, the `/dev/null` side of a
+  create or delete, and a *genuinely empty* recorded extent all hash to
+  `0000000000000000`. The last of those is honest — `git span add` on an empty file records
+  exactly that token — and it keeps `content: ""` with no `unavailable`, which is what makes
+  the presence rule above the only reliable way to tell "there are no bytes here" from
+  "there are no bytes, and here is why".
 - `proposed` — present when the resolver believes the recorded content now lives at a
   different address. A *proposal* (`git span stale --fix` would write it), not an
   accomplished move, so it never renders as `rename to` and never relabels either side of
@@ -596,9 +614,20 @@ the two lists agree over a sweep of every state above.
   carries the `recorded snapshot unrecoverable` marker line and no hunks. Cannot co-occur
   with `proposed`.
 
-Two marker lines belong to the anchor dialect and appear only in `current` blocks:
-`proposed anchor <address>` and `recorded snapshot unrecoverable`. Both live in the header
-rather than being appended by the human renderer, so the JSON `diff` string and the
+Three marker lines belong to the anchor dialect. Two of them appear only in `current`
+blocks — `proposed anchor <address>` and `recorded snapshot unrecoverable` — and the third,
+`content unavailable <old>..<new>`, appears wherever a block has no bytes on *either* side
+and the reason for that changed between them (a range that ran past the end of its file,
+and then the file deleted outright). Without it such a commit would render as a header with
+no hunks, indistinguishable from a renderer that lost them — the same gap
+`recorded snapshot unrecoverable` was added to close.
+
+All three live in the header rather than being appended by the human renderer, so the JSON
+`diff` string and the human block are the same bytes. None of them is a contract: a marker
+line is a legend for a person reading the patch, and everything it states is recoverable
+from structured fields — `proposed`, `recorded`, and each entry's own `unavailable`, whose
+value against the previous entry's is the transition the third marker spells out. A consumer
+that parses the patch string to recover block form or state is reading the wrong surface.
 
 ## Incomplete-walk and scoped-limit warnings
 

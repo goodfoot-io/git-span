@@ -33,9 +33,12 @@
 //! | [`declared_pairs`] | The why-prose and every non-`rk64:` line of the declaration | One `.span` file at one rev; it says nothing about content at any address — [`read_address`] is the oracle for that |
 //! | [`current_forms`] | `path` and payloads, exactly as `newest_commit_forms` does | The `current` array only; timeline entries are outside it |
 //! | [`documented_anchor_fields`] | Every word of each field's prose — it compares *names*, not meanings, which is how a worked example contradicting its own rule survived (`no_documented_example_shows_a_rename_below_the_threshold` compares the values) | One heading's bullet list. Two adjacent lists exist and each is parsed alone, deliberately: one list vouching for the other's keys is how a sweep certifies a false document |
-//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions (the binary re-anchor fixture emits `unavailable`, closing the hatch the `current` sweep used to carry) | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]) |
+//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions (the binary re-anchor fixture emits `unavailable`, closing the hatch the `current` sweep used to carry) | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]). The aperture is no longer key names alone: [`documented_field_values`] extends it to the *value* space of `unavailable`, so a documented value with no producing fixture fails the same way a documented key would. A key sweep that never looks inside the values is how `range-past-eof` stayed documented-but-unreachable from `current[]` through eight rounds |
+//! | [`documented_field_values`] | Every word of the prose around the values, and every field but the one named — it reads `` `"…"` `` spans out of one bullet | One field's bullet in one array's list. It requires each documented value to have a producer; it cannot notice a value the product emits and the document never mentions (the key sweeps' other direction covers keys, not values) |
+//! | [`payload_fields`] | `path` and `diff` — deliberately. `path` is the join key every object differs in trivially, so including it would make any two objects "distinct" for free; `diff` is the patch string whose parsing `--format json` exists to spare consumers, and a discriminator recoverable only from a marker line inside it is not a contract | Two keys of one anchor object. It is the *narrowest* view a consumer might take, which is the point: distinguishability that survives this projection survives any wider one |
 //! | [`every_current_state`] | — | Current-block states only. `Rebound` is timeline-only and `Proposed` current-block-only, so this set structurally cannot reach every form |
 //! | [`every_timeline_state`] | — | Timeline states only, and only each fixture's *newest* entry is form-checked |
+//! | The null-hash distinguishability matrix | Everything [`payload_fields`] drops | The three null-hash states reachable in `current[]`, enumerated by **route** (four objects — past-EOF contributes both of its). Enumerating by state was the trap: past-EOF has two routes that used to render differently, so a state-keyed matrix passes on whichever route the implementer fixtured first. The fourth null-hash state, the `/dev/null` side of a genuine create, cannot reach `current[]` at all — an uncommitted addition renders `anchors: []` — so it is outside this aperture and covered by the timeline sweeps |
 
 use crate::support;
 
@@ -1984,12 +1987,63 @@ fn every_timeline_state() -> Result<Vec<(&'static str, TestRepo, &'static str, V
         repo.commit_all("delete the anchored file")?;
         repo
     };
+    // The commit path's own past-EOF verdict, enumerated so the reference
+    // implementation the worktree path was conformed to is itself under the
+    // sweeps rather than being trusted because it was correct once.
+    let truncated = {
+        let repo = truncated_past_eof_repo("ttrunc")?;
+        repo.commit_all("truncate below the declared range")?;
+        repo
+    };
+    // Both states carry the null hash and an empty body, so the commit that
+    // moves between them is invisible to every content comparison there is.
+    let past_eof_then_deleted = {
+        let repo = truncated_past_eof_repo("tboth")?;
+        repo.commit_all("truncate below the declared range")?;
+        repo.run_git(["rm", "f.txt"])?;
+        repo.run_git(["commit", "-m", "delete the file outright"])?;
+        repo
+    };
+    // The timeline's producer of `unavailable: "binary"`. Without it that
+    // *value* has no producer on this array, and the field sweep only compares
+    // key names — which is how a documented value shipped with no producer
+    // anywhere in the tree.
+    let binarized = {
+        let repo = TestRepo::new()?;
+        repo.write_file("f.bin", "alpha\nbeta\ngamma\n")?;
+        repo.commit_all("initial")?;
+        repo.span_stdout(["add", "tbin", "f.bin"])?;
+        repo.span_stdout(["why", "tbin", "the pinned file"])?;
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "declare"])?;
+        repo.write_file_bytes("f.bin", b"BIN\x00\xff\xfe-two\n")?;
+        repo.commit_all("replace the text with bytes")?;
+        repo
+    };
     Ok(vec![
         ("first declaration", first_declaration, "tnew", vec![BlockForm::Created]),
         (
             "anchored file deleted",
             vanished_file,
             "tgone",
+            vec![BlockForm::Modified],
+        ),
+        (
+            "declared range truncated past its end",
+            truncated,
+            "ttrunc",
+            vec![BlockForm::Modified],
+        ),
+        (
+            "past-EOF range then the file deleted",
+            past_eof_then_deleted,
+            "tboth",
+            vec![BlockForm::Modified],
+        ),
+        (
+            "anchored text replaced by bytes",
+            binarized,
+            "tbin",
             vec![BlockForm::Modified],
         ),
         ("committed drift", committed_drift, "tdrift", vec![BlockForm::Modified]),
@@ -2278,6 +2332,30 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             "ur",
         ),
         ("binary re-anchor", binary_reanchor_repo("bin")?, "bin"),
+        // The three states that render with a null hash, one fixture each.
+        // Two of the three used to be indistinguishable from a third state in
+        // every field a consumer can read, which is why they are enumerated
+        // here rather than living only in the test that compares them.
+        (
+            "re-anchor past end of file",
+            reanchored_past_eof_repo("pe2")?,
+            "pe2",
+        ),
+        (
+            "truncated below the declared range",
+            truncated_past_eof_repo("tp2")?,
+            "tp2",
+        ),
+        (
+            "anchored file absent",
+            vanished_worktree_file_repo("na2")?,
+            "na2",
+        ),
+        (
+            "empty recorded extent",
+            empty_extent_reanchor_repo("nz2")?,
+            "nz2",
+        ),
     ])
 }
 
@@ -2505,9 +2583,17 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                 // directly above `recorded snapshot unrecoverable`.
                 BlockForm::Renamed { similarity } => {
                     assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
+                    // Three ways a side can fail to be text: the recorded one
+                    // is unrecoverable, either one is binary, or the live one
+                    // has no bytes at all — a file that is gone, or a declared
+                    // range that starts past its end. The last is why this
+                    // reads `unavailable`: a range the file does not have is
+                    // not an empty string, and measuring against one decided
+                    // the disproven-versus-unknown question by fabrication.
                     let measurable = anchor.get("recorded")
                         != Some(&Value::from("unrecoverable"))
-                        && !diff.contains("Binary files ");
+                        && !diff.contains("Binary files ")
+                        && anchor.get("unavailable").is_none();
                     assert_eq!(
                         similarity.is_some(),
                         measurable,
@@ -2683,6 +2769,148 @@ fn documented_anchor_fields(array: &str) -> Result<Vec<String>> {
         .collect();
     assert!(!fields.is_empty(), "the field list parsed as empty");
     Ok(fields)
+}
+
+/// The values one documented field's bullet enumerates, read out of the same
+/// normative list [`documented_anchor_fields`] reads its keys from.
+///
+/// The key sweeps compare *names*, which is an aperture one level too coarse: a
+/// documented value with no producer anywhere stays green as long as some other
+/// value keeps the key alive. `"range-past-eof"` was named on both normative
+/// lists and had zero occurrences in the entire test tree, because the binary
+/// fixture's `"binary"` was covering the key for it.
+fn documented_field_values(array: &str, field: &str) -> Result<Vec<String>> {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("history-example-output.md"),
+    )?;
+    let heading = format!("### `{array}` field list (normative)");
+    let start = doc
+        .find(heading.as_str())
+        .unwrap_or_else(|| panic!("the field list heading {heading:?} is gone from the doc"));
+    let section = &doc[start + heading.len()..];
+    let end = section
+        .find("\n## ")
+        .into_iter()
+        .chain(section.find("\n### "))
+        .min()
+        .unwrap_or(section.len());
+    // One bullet, from its own `- ` marker to the next one at column zero:
+    // continuation lines are indented, so the bullet keeps its wrapped text and
+    // stops before its sibling's.
+    let bullet_start = format!("- `{field}` — ");
+    let list = &section[..end];
+    let at = list.find(bullet_start.as_str()).unwrap_or_else(|| {
+        panic!("the {array} field list no longer documents `{field}`")
+    });
+    let bullet = &list[at..];
+    let bullet_end = bullet[1..].find("\n- ").map(|i| i + 1).unwrap_or(bullet.len());
+    let bullet = &bullet[..bullet_end];
+
+    // Values are spelled as they appear in JSON, inside backticks: `"absent"`.
+    // The span must be exactly one quoted token — no whitespace, and the
+    // closing quote immediately followed by the closing backtick — so prose
+    // that merely quotes JSON (`"content": ""`) does not read as a value.
+    let mut values: Vec<String> = Vec::new();
+    for piece in bullet.split("`\"").skip(1) {
+        let Some((value, rest)) = piece.split_once('"') else {
+            continue;
+        };
+        if !rest.starts_with('`') || value.is_empty() || value.contains(char::is_whitespace) {
+            continue;
+        }
+        if !values.iter().any(|v| v == value) {
+            values.push(value.to_string());
+        }
+    }
+    assert!(
+        !values.is_empty(),
+        "the `{field}` bullet in the {array} list enumerates no values"
+    );
+    Ok(values)
+}
+
+/// Every `unavailable` value the `current` contract documents is produced by
+/// some state in the enumeration.
+///
+/// The key sweep beside this one asks whether `unavailable` is emitted at all,
+/// and one fixture answers that for every value at once. This asks the question
+/// behind the key: a documented vocabulary word with no producer is a promise to
+/// consumers that nothing in the product keeps, and main-195 would style a state
+/// that never arrives.
+#[test]
+fn every_documented_current_unavailable_value_has_a_producer() -> Result<()> {
+    let documented = documented_field_values("current.anchors[]", "unavailable")?;
+    let mut seen: Vec<String> = Vec::new();
+    for (label, repo, span) in every_current_state()? {
+        let json = history_json(&repo, span)?;
+        for anchor in json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"))
+        {
+            let Some(value) = anchor.get("unavailable") else {
+                continue;
+            };
+            let value = value.as_str().expect("unavailable string").to_string();
+            assert!(
+                documented.contains(&value),
+                "{label}: `unavailable: {value:?}` is emitted but undocumented; \
+                 the list names {documented:?}"
+            );
+            if !seen.contains(&value) {
+                seen.push(value);
+            }
+        }
+    }
+    for value in &documented {
+        assert!(
+            seen.contains(value),
+            "the document promises `unavailable: {value:?}` on a current \
+             anchor, but no state in the sweep produces it; seen: {seen:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The same value-level sweep for the *timeline* array against its own list —
+/// separate for the same reason the key sweeps are separate: the two arrays have
+/// different emitters, and one list vouching for the other's vocabulary is how a
+/// sweep certifies a false document.
+#[test]
+fn every_documented_timeline_unavailable_value_has_a_producer() -> Result<()> {
+    let documented = documented_field_values("commits[].anchors[]", "unavailable")?;
+    let mut seen: Vec<String> = Vec::new();
+    for (label, repo, span, _) in every_timeline_state()? {
+        let json = history_json(&repo, span)?;
+        for commit in json["commits"].as_array().expect("commits array") {
+            for anchor in commit["anchors"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{label}: no anchors array in {commit:#}"))
+            {
+                let Some(value) = anchor.get("unavailable") else {
+                    continue;
+                };
+                let value = value.as_str().expect("unavailable string").to_string();
+                assert!(
+                    documented.contains(&value),
+                    "{label}: `unavailable: {value:?}` is emitted but \
+                     undocumented; the list names {documented:?}"
+                );
+                if !seen.contains(&value) {
+                    seen.push(value);
+                }
+            }
+        }
+    }
+    for value in &documented {
+        assert!(
+            seen.contains(value),
+            "the document promises `unavailable: {value:?}` on a timeline \
+             anchor, but no state in the sweep produces it; seen: {seen:?}"
+        );
+    }
+    Ok(())
 }
 
 /// The document states the threshold as a rule and then shows worked examples
@@ -3844,3 +4072,392 @@ fn a_namespace_name_errors_instead_of_panicking() -> Result<()> {
     Ok(())
 }
 
+
+// ---------------------------------------------------------------------------
+// Past end of file: one policy across both read paths
+// ---------------------------------------------------------------------------
+
+/// An anchored file truncated *below* its declared range, with the file itself
+/// still on disk — the declared L3-L5 now runs off the end of a one-line file.
+///
+/// This is one of the two routes to a past-EOF live read, and the one where the
+/// resolver reports the anchor deleted and binds no live location at all: the
+/// reason has to be recovered from the declared address, because "the resolver
+/// found nothing" and "there is no such file" are different facts and only the
+/// second is `absent`.
+fn truncated_past_eof_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "one\ntwo\nalpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L3-L5"])?;
+    repo.span_stdout(["why", span, "three greek letters"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+    repo.write_file("f.txt", "one\n")?;
+    Ok(repo)
+}
+
+/// The other route: a hand-edited re-anchor onto a range the file does not
+/// have. `git span add` fails closed on such a range; editing `.span` by hand —
+/// the ordinary way a reconcile loop leaves a declaration — does not, and here
+/// the resolver *does* bind a location, so the past-EOF classification has to
+/// happen inside the read rather than around it.
+fn reanchored_past_eof_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "three greek letters"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L8-L10")?;
+    Ok(repo)
+}
+
+/// The anchored file deleted in the working tree, declaration untouched — the
+/// state whose name `absent` actually is.
+fn vanished_worktree_file_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "three greek letters"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+    std::fs::remove_file(repo.path().join("f.txt"))?;
+    Ok(repo)
+}
+
+/// A re-anchor onto a genuinely empty file — the *honest* twin of the past-EOF
+/// render, and the reason the dishonest one was plausible.
+///
+/// `git span add` on an empty file records `rk64:0000000000000000`, so this
+/// anchor's content, its recorded token, and both sides of its `index` line are
+/// all legitimately null. Everything the fabricated past-EOF block used to
+/// print, this block prints truthfully.
+fn empty_extent_reanchor_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "alpha\nbeta\ngamma\n")?;
+    repo.write_file("e.txt", "")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "three greek letters"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+    rewrite_declaration(&repo, span, "f.txt#L1-L3", "e.txt")?;
+    Ok(repo)
+}
+
+/// The declared range's live state, as the two structured fields a consumer
+/// reads: `(content, unavailable)`. `path` and `diff` are deliberately excluded
+/// — `path` is the join key every object differs in trivially, and `diff` is
+/// the patch string whose parsing `--format json` exists to spare consumers.
+fn payload_fields(anchor: &Value) -> (Option<&str>, Option<&str>) {
+    (
+        anchor.get("content").map(|c| c.as_str().expect("content string")),
+        anchor
+            .get("unavailable")
+            .map(|u| u.as_str().expect("unavailable string")),
+    )
+}
+
+/// A live anchor whose declared range starts past end of file is *structurally*
+/// unavailable, exactly as it is when read from a commit.
+///
+/// Before this, the worktree read sliced the range to `""` and called it
+/// content, and one file state got two accounts depending on whether it had
+/// been committed. Four claims came out of the one fabricated side: signed
+/// deletion lines for content `git diff` does not show; `"content": ""`
+/// asserting an empty range where the truth is that the range does not exist; a
+/// `new anchor` block against a declaration whose recorded token the same
+/// output prints; and a `similarity index` measured against the empty string,
+/// which decided the disproven-versus-unknown question wrongly. Continuity here
+/// is *unknown*, so the declaration-asserted rename is the honest block.
+///
+/// ORACLE — `git diff` over the worktree, and the timeline's account of the
+/// same declaration change once committed.
+#[test]
+fn a_reanchor_past_end_of_file_is_unavailable_not_empty_content() -> Result<()> {
+    let repo = reanchored_past_eof_repo("pe")?;
+
+    // The user edited a declaration, not a file: any signed line in this render
+    // is an edit the repository can be asked about and does not have.
+    let worktree_diff = repo.git_stdout(["diff", "--", ".", ":(exclude).span"])?;
+    assert!(
+        worktree_diff.trim().is_empty(),
+        "fixture assumption: no source edit at all; got:\n{worktree_diff}"
+    );
+
+    let json = history_json(&repo, "pe")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(
+        anchors.len(),
+        1,
+        "one declared move, one block; got: {json:#}"
+    );
+    let anchor = &anchors[0];
+    assert_eq!(
+        payload_fields(anchor),
+        (None, Some("range-past-eof")),
+        "the range does not exist, which is not the same as being empty; \
+         got: {anchor:#}"
+    );
+
+    let diff = anchor["diff"].as_str().expect("diff string");
+    assert_eq!(
+        block_form(diff),
+        BlockForm::Renamed { similarity: None },
+        "the declaration asserts the move and nothing can measure it; \
+         got:\n{diff}"
+    );
+    assert!(
+        !diff.lines().any(|l| l.starts_with('-') && !l.starts_with("---")),
+        "no signed line may assert an edit `git diff` does not show; \
+         got:\n{diff}"
+    );
+    assert!(
+        !diff.contains("@@"),
+        "hunks need two comparable bodies; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// Item 52b's route to the same state: the file is still there, so `"absent"` —
+/// glossed "no such file" — was a claim the file system contradicts.
+///
+/// ORACLE — the file system, and `git span stale`, which separates these two
+/// states on the same fixtures.
+#[test]
+fn a_truncated_file_is_past_eof_not_absent() -> Result<()> {
+    let repo = truncated_past_eof_repo("tp")?;
+    assert!(
+        repo.path().join("f.txt").exists(),
+        "fixture assumption: the file is present, only shorter"
+    );
+
+    let json = history_json(&repo, "tp")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 1, "one drifted anchor; got: {json:#}");
+    assert_eq!(
+        payload_fields(&anchors[0]),
+        (None, Some("range-past-eof")),
+        "`absent` means no such file, and the file is on disk; \
+         got: {:#}",
+        anchors[0]
+    );
+    Ok(())
+}
+
+/// The same declaration state, before and after committing it, must not get two
+/// different accounts — the failure shape where a user commits to see whether
+/// an alarming diff resolves and concludes the commit fixed something.
+///
+/// ORACLE — the commit read path, which already renders this state correctly
+/// and is therefore the in-tree reference implementation. This asserts the
+/// worktree path conformed to it *and* that the reference itself did not move.
+#[test]
+fn both_read_paths_give_one_account_of_a_past_eof_range() -> Result<()> {
+    let repo = truncated_past_eof_repo("cp")?;
+    let before = history_json(&repo, "cp")?;
+    let live = &before["current"]["anchors"].as_array().expect("anchors")[0];
+
+    repo.commit_all("truncate the file below the declared range")?;
+    let after = history_json(&repo, "cp")?;
+    let committed = &commit_with(&after, "truncate the file")["anchors"]
+        .as_array()
+        .expect("anchors")[0];
+
+    assert_eq!(
+        payload_fields(live),
+        payload_fields(committed),
+        "one file state, one account; committing must not rewrite the story"
+    );
+    assert_eq!(
+        live["diff"], committed["diff"],
+        "the two paths render the same event byte for byte"
+    );
+    assert_eq!(
+        payload_fields(committed),
+        (None, Some("range-past-eof")),
+        "and the account both paths give is the commit path's original one"
+    );
+
+    // The sharpest form of the same defect: the declaration still names the
+    // pre-truncation content, so one render carries both accounts of one file
+    // at one instant. Before the fix this single document said
+    // `range-past-eof` in `commits[]` and `absent` in `current[]`.
+    let live_now = &after["current"]["anchors"]
+        .as_array()
+        .expect("the recorded token still describes the old content, so the anchor is drifted")[0];
+    assert_eq!(
+        payload_fields(live_now),
+        payload_fields(committed),
+        "one document, one instant, one file — it cannot be two states at once"
+    );
+    Ok(())
+}
+
+/// Every state that renders with a null hash must be tellable apart from every
+/// other one, using only structured fields.
+///
+/// The null hash means four different things — an absent file, a past-EOF
+/// range, the `/dev/null` side of a create or delete, and a genuinely empty
+/// recorded extent — so nothing downstream can recover the state from it. Three
+/// of the four are reachable in the `current` block, and two of those three
+/// pairs used to be indistinguishable in *both* formats: the fabricated
+/// past-EOF block and the honest empty-extent block emitted the same keys with
+/// the same values, and the truncate route emitted `"absent"` for a file that
+/// exists, colliding with a genuine deletion. A consumer had no way to ask why
+/// an extent has no bytes.
+///
+/// The comparison reads `content` and `unavailable` only. `diff` is excluded on
+/// purpose: a discriminator that lives in a marker line inside the patch string
+/// is not a contract, it is parsing — the same rule that gave the rebound block
+/// its structured `rebound` field.
+///
+/// The enumeration is by *route*, not by state: past-EOF is reachable two ways
+/// and the two ways used to render differently from each other (`content: ""`
+/// one way, `"absent"` the other), each colliding with a different other state.
+/// Enumerating states would let a fix for one route pass while the other stayed
+/// wrong, since the surviving route would simply not be looked at.
+#[test]
+fn every_null_hash_state_is_distinguishable_from_structured_fields() -> Result<()> {
+    // (state, route, repo, span, the declared address whose object carries it)
+    let routes: Vec<(&str, &str, TestRepo, &str, &str)> = vec![
+        (
+            "genuinely empty recorded extent",
+            "re-anchored onto an empty file",
+            empty_extent_reanchor_repo("nz")?,
+            "nz",
+            "e.txt",
+        ),
+        (
+            "declared range past end of file",
+            "declaration re-anchored past the end",
+            reanchored_past_eof_repo("np")?,
+            "np",
+            "f.txt#L8-L10",
+        ),
+        (
+            "declared range past end of file",
+            "file truncated below the declared range",
+            truncated_past_eof_repo("nt")?,
+            "nt",
+            "f.txt#L3-L5",
+        ),
+        (
+            "anchored file absent",
+            "file deleted from the working tree",
+            vanished_worktree_file_repo("na")?,
+            "na",
+            "f.txt#L1-L3",
+        ),
+    ];
+
+    let mut payloads: Vec<(&str, &str, (Option<String>, Option<String>))> = Vec::new();
+    for (state, route, repo, span, address) in &routes {
+        let json = history_json(repo, span)?;
+        let anchors = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{route}: no current anchors in {json:#}"));
+        // Fail closed: a selector that matches nothing would make every
+        // remaining pair "distinct" by never being compared. Each route has to
+        // have actually produced its object.
+        let anchor = anchors
+            .iter()
+            .find(|a| a["path"] == Value::from(*address))
+            .unwrap_or_else(|| {
+                panic!("{route}: no object at {address}; the fixture no longer reaches this state:\n{json:#}")
+            });
+        let (content, unavailable) = payload_fields(anchor);
+        payloads.push((
+            state,
+            route,
+            (
+                content.map(str::to_string),
+                unavailable.map(str::to_string),
+            ),
+        ));
+    }
+    assert_eq!(
+        payloads.len(),
+        4,
+        "every enumerated route must have produced its object"
+    );
+
+    for (i, (state_a, route_a, a)) in payloads.iter().enumerate() {
+        for (state_b, route_b, b) in payloads.iter().skip(i + 1) {
+            if state_a == state_b {
+                assert_eq!(
+                    a, b,
+                    "one state reached two ways is still one state, but \
+                     `{route_a}` and `{route_b}` disagree about it — a \
+                     consumer's reading of the value would depend on how the \
+                     user got there"
+                );
+            } else {
+                assert_ne!(
+                    a, b,
+                    "{state_a} ({route_a}) and {state_b} ({route_b}) render \
+                     identically in every structured field a consumer can \
+                     read, so nothing downstream can tell them apart"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A commit that moves an anchor between two unreadable states renders an
+/// entry, even though both states carry the null hash and an empty body.
+///
+/// Truncating a file past its declared range and then deleting the file are two
+/// different things, and the second used to render nothing at all: change
+/// detection compared null to null, saw no difference, and dropped the commit —
+/// an `unavailable` value visibly changing across states with no entry, against
+/// the contract's own "every observable change is expressed once".
+///
+/// ORACLE — `git log`, which has a commit for the deletion, and `git status`,
+/// which agrees the file is gone.
+#[test]
+fn a_change_of_unavailable_reason_renders_an_entry() -> Result<()> {
+    let repo = truncated_past_eof_repo("ur2")?;
+    repo.commit_all("truncate below the declared range")?;
+    repo.run_git(["rm", "f.txt"])?;
+    repo.run_git(["commit", "-m", "delete the file outright"])?;
+
+    let json = history_json(&repo, "ur2")?;
+    let deletion = commit_with(&json, "delete the file outright");
+    let anchors = deletion["anchors"].as_array().expect("anchors array");
+    assert_eq!(
+        anchors.len(),
+        1,
+        "the commit that deleted the file has an anchor-level account; \
+         got: {deletion:#}"
+    );
+    assert_eq!(
+        payload_fields(&anchors[0]),
+        (None, Some("absent")),
+        "and the account is the new reason; got: {:#}",
+        anchors[0]
+    );
+
+    // The block is bodyless — there are no bytes on either side — so without a
+    // marker it would read as a renderer that lost its hunks, which is the gap
+    // the `recorded snapshot unrecoverable` line was added to close.
+    let diff = anchors[0]["diff"].as_str().expect("diff string");
+    assert!(
+        diff.contains("\ncontent unavailable range-past-eof..absent\n"),
+        "a bodyless block states what changed; got:\n{diff}"
+    );
+    let out = history_text(&repo, "ur2")?;
+    assert!(
+        out.contains(diff),
+        "both formats carry the same block:\n{out}"
+    );
+    Ok(())
+}

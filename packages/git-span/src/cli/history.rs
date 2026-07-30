@@ -56,6 +56,15 @@
 //! excluded case or a sentence for why the exclusion is sound. The value is
 //! not proof; it is that the next guard added without either is conspicuous.
 //!
+//! A justification sentence carries one obligation: **if it asserts that a
+//! state cannot arise, it must name what enforces that** — a fail-closed
+//! validation, a type, a construction — or be demoted to a fixture. The rule
+//! comes from a row here that read "no recorded token is ever the null hash",
+//! which was simply false (`git span add` on an empty file records
+//! `rk64:0000000000000000`). Nothing enforced it and nothing had to: the
+//! sentence sounded like a reason, so the guard under it was never looked at
+//! again. An inventory entry that launders a guard is worse than no entry.
+//!
 //! **Timeline path** ([`diff_section`], [`pair_anchors`]):
 //!
 //! | Skipped | Condition | Covered by |
@@ -77,8 +86,12 @@
 //! | The rename form | Similarity measured below [`RENAME_SIMILARITY_FLOOR`] | `every_current_state`'s "declaration swap" and "cross-file swap" — splits into `deleted anchor` + `new anchor` |
 //! | The `similarity index` line | Either side cannot be read as text ([`measured_similarity`]) — an unrecoverable recorded side, or a binary snapshot | `an_unmeasurable_reanchor_states_the_move_and_no_similarity`, plus `a_binary_recorded_side_is_recovered_not_declared_lost` |
 //! | Hunks | The recorded side is unrecoverable, either side is binary (the renderer's `Binary files … differ` line), or a rename/proposal whose content is unchanged | `an_unrecoverable_recorded_snapshot_is_named_in_the_human_block`; hunks need two comparable bodies and synthesizing one presents it as the other's content |
+//! | Hunks, on a rename block | Either side is bodyless — absent, or a declared range past end of file | `a_reanchor_past_end_of_file_is_unavailable_not_empty_content`. Signed lines against a side that has no bytes assert edits `git diff` cannot be asked about; the rename lines still state the move the declaration asserts |
 //! | The live `content` payload | The live bytes are not UTF-8 — classified `unavailable: "binary"` by [`read_location_body`], the same policy as [`read_anchor_at_commit`] | `a_binary_live_side_is_structural_never_lossy_prose` — a lossy decode is prose wearing content's key |
-//! | A token-index entry | The snapshot's fingerprint is the null hash — an absent body, nothing to key ([`capture_by_hash`]) | Deliberate: no recorded token is ever the null hash. A *binary* snapshot's real fingerprint stays indexed — `a_binary_recorded_side_is_recovered_not_declared_lost` is the fixture the old text-gate failed |
+//! | The live `content` payload | The declared range starts past the file's end — classified `unavailable: "range-past-eof"` by [`read_location_body`] via [`crate::git::slice_line_range`], which *is* the commit path's slice | `a_reanchor_past_end_of_file_is_unavailable_not_empty_content`, `a_truncated_file_is_past_eof_not_absent`, `both_read_paths_give_one_account_of_a_past_eof_range`. A range that merely overlaps the end is clipped, not skipped — only a range with no overlap at all has nothing to show |
+//! | Reading the live location at all | The resolver bound no live location ([`build_current`]'s `None` arm) | `a_truncated_file_is_past_eof_not_absent`. The reason is then asked of the *declared* address directly ([`unresolved_reason`]) instead of being assumed: "the resolver found nothing" and "there is no such file" are different facts, and only the second is `absent` |
+//! | A token-index entry | The snapshot has no body — [`Unavailable::Absent`] or [`Unavailable::RangePastEof`] ([`capture_by_hash`]) | Deliberate, and read from the *body*, not from the hash: a recorded token **can** be the null hash (`git span add` on an empty file records `rk64:0000000000000000`), so an empty-extent anchor is now indexed like any other. Measured benign before the change and correct after — positional candidates compare by hash equality, so same-address drift on an empty extent renders an honest hunk either way. A *binary* snapshot's real fingerprint stays indexed — `a_binary_recorded_side_is_recovered_not_declared_lost` is the fixture the old text-gate failed |
+//! | A timeline entry | The two sides have equal bodies **and** the same reason for having none ([`crate::cli::unified_diff::render`]) | `a_change_of_unavailable_reason_renders_an_entry`. Two bodyless sides used to compare equal whatever they were: truncating a file past its declared range and then deleting the file is a change the render dropped entirely. Narrow on purpose — only two *both-bodyless* sides with differing reasons count; nothing else about change detection reads a reason |
 //! | The rebinding block | Always — this path never renders one | Deliberate: a rebinding is a transition between two *committed* declaration states. The current block already renders a committed rebinding's live drift honestly, one in-place diff per anchor |
 //!
 //! Declared anchor ranges are taken at face value at every commit — a stale
@@ -91,10 +104,37 @@
 //! content as git's `Binary files … differ` line, and JSON marks the reason in
 //! a dedicated `unavailable` field. A placeholder string in a hunk body would
 //! corrupt the hunk arithmetic and paint the placeholder as source.
+//!
+//! # The null hash is an ambiguous value
+//!
+//! `NULL_ANCHOR_HASH` means four different things, all of them reachable: an
+//! absent file, a declared range past end of file, the `/dev/null` side of a
+//! genuine create or delete, and a *genuinely empty recorded extent* (`git span
+//! add` on an empty file). None of the four is prevented by anything, and no
+//! justification anywhere may claim otherwise. Three consumers were each caught
+//! reading state back out of it: [`capture_by_hash`] (skipped a real token),
+//! change detection in [`crate::cli::unified_diff::render`] (compared null to
+//! null and dropped a commit), and the `new anchor` header dialect (announced a
+//! creation against a declaration whose recorded token the same output prints).
+//!
+//! So the reason travels *with* the state — [`Unavailable`] into
+//! [`crate::cli::unified_diff::Absence`] — and the hash is written from the
+//! body ([`live_hash`]), never read back to infer one. Any future code that
+//! asks a null hash what happened is asking an ambiguous value.
+//!
+//! That answers the question of whether an empty recorded extent and an
+//! unreadable one need distinguishing in the output: they do, and they are
+//! distinguished structurally rather than by any new field. An empty extent is
+//! honest content and keeps `content: ""` with no `unavailable`; an unreadable
+//! one drops `content` and names its reason. `git span history` is the same
+//! shape it was — the states stopped colliding, not the schema.
+//! `every_null_hash_state_is_distinguishable_from_structured_fields` holds the
+//! line, enumerated by *route* rather than by state so that a fix reaching one
+//! path and not the other cannot pass.
 
 use crate::cli::format::format_anchor_address;
 use crate::cli::unified_diff::{
-    AnchorDiffKind, BlobDiffKind, DiffHeader, DiffSide, NULL_ANCHOR_HASH, NULL_BLOB_OID7,
+    Absence, AnchorDiffKind, BlobDiffKind, DiffHeader, DiffSide, NULL_ANCHOR_HASH, NULL_BLOB_OID7,
     render_diff_header, render_unified_diff, render_unified_diff_always, similarity,
 };
 use crate::cli::{CliError, HistoryArgs, HistoryFormat, NextStep};
@@ -772,17 +812,29 @@ fn blob_diff(path: &str, old: Option<&BlobAt>, new: Option<&BlobAt>) -> Option<S
 fn blob_side<'a>(path: &str, blob: Option<&'a BlobAt>) -> DiffSide<'a> {
     match blob {
         Some(b) => DiffSide::present(path, b.text.as_str(), 1),
-        None => DiffSide::absent(path),
+        // A declaration blob is a whole file: it is there or it is not, and no
+        // line range can overrun it.
+        None => DiffSide::absent(path, Absence::Missing),
     }
 }
 
 /// One side of an anchor pseudo-diff, with unavailability mapped to the
 /// renderer's structural side states rather than to substituted prose.
+///
+/// The [`Unavailable`] reason travels across the boundary as an [`Absence`]
+/// rather than being flattened: both reasons render as a `/dev/null` side, so
+/// dropping the distinction here left the renderer unable to see that anything
+/// had changed when an anchor moved from one to the other.
 fn snapshot_side(s: &Snapshot) -> DiffSide<'_> {
     match &s.body {
         AnchorBody::Text(text) => DiffSide::present(s.address.clone(), text, s.first_line),
         AnchorBody::Unavailable(Unavailable::Binary) => DiffSide::binary(s.address.clone()),
-        AnchorBody::Unavailable(_) => DiffSide::absent(s.address.clone()),
+        AnchorBody::Unavailable(Unavailable::RangePastEof) => {
+            DiffSide::absent(s.address.clone(), Absence::RangePastEof)
+        }
+        AnchorBody::Unavailable(Unavailable::Absent) => {
+            DiffSide::absent(s.address.clone(), Absence::Missing)
+        }
     }
 }
 
@@ -1359,18 +1411,30 @@ fn capture_recorded_snapshots(
 /// wears is chosen by [`CurrentState`], never by the candidate, so the
 /// tie-break can change neither the rendered bytes nor the address above them.
 ///
-/// Membership is decided by the *fingerprint*, not by whether the body decoded
-/// as text: a binary snapshot has a real fingerprint and only an unrenderable
-/// body, and excluding it from this index is exactly what once made
-/// `recorded: "unrecoverable"` fire for a token the same render printed as
-/// first-add content. Only the null fingerprint — an absent body, nothing to
-/// key — is skipped.
+/// Membership is decided by whether the snapshot *has bytes*, not by whether
+/// those bytes decoded as text: a binary snapshot has a real fingerprint and
+/// only an unrenderable body, and excluding it from this index is exactly what
+/// once made `recorded: "unrecoverable"` fire for a token the same render
+/// printed as first-add content. What is skipped is a snapshot with nothing to
+/// key: the two [`Unavailable`] reasons that mean "no bytes at this address".
+///
+/// The test reads the *body*, not the hash, and that is the whole point.
+/// [`NULL_ANCHOR_HASH`] is an ambiguous value — an absent file, a past-EOF
+/// range, a `/dev/null` side, and a genuinely empty recorded extent all wear it
+/// — so `hash != NULL_ANCHOR_HASH` skipped a fourth state it never meant to:
+/// `git span add` on an empty file records `rk64:0000000000000000`, and that
+/// anchor was excluded from cross-address recovery. Reading the body asks the
+/// question the guard was always trying to ask.
 fn capture_by_hash(
     into: &mut std::collections::HashMap<String, Snapshot>,
     state: &RenderedState,
 ) {
     for snap in &state.anchors {
-        if snap.hash != NULL_ANCHOR_HASH {
+        let bodiless = matches!(
+            snap.body.unavailable(),
+            Some(Unavailable::Absent | Unavailable::RangePastEof)
+        );
+        if !bodiless {
             into.entry(snap.hash.clone()).or_insert_with(|| snap.clone());
         }
     }
@@ -1420,9 +1484,17 @@ fn location_address(loc: &AnchorLocation) -> String {
 /// record.
 fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
     // A resolved location read from the working tree carries `blob: None` (see
-    // `AnchorLocation::blob`), so the live bytes have to come from disk. This
-    // is the same fallback `read_location_text` makes, keeping the rendered
-    // content and its `index` hash describing the same bytes.
+    // `AnchorLocation::blob`), so the live bytes have to come from disk. The
+    // body beside this hash comes from `read_location_body`, via
+    // `stale_output::read_location_bytes_present`, and the two fallbacks are
+    // not the same call: that one is a plain `std::fs::read`, this one runs
+    // gix's `convert_to_git` normalization first and only falls back to a raw
+    // read. The asymmetry is deliberate — a hash must be the token a re-anchor
+    // would record, which is computed over normalized bytes, while the body is
+    // what the file literally holds. It is also unobservable: a location the
+    // resolver resolved carries its blob, so the two fallbacks only both fire
+    // for a worktree-only read, where CRLF normalization changes the hash and
+    // not the rendered text.
     let bytes = loc
         .blob
         .and_then(|oid| crate::git::read_blob_bytes(repo, &oid.to_string()).ok())
@@ -1545,20 +1617,86 @@ struct OldSide {
     recovered: bool,
 }
 
-/// Read an anchor's live body from its resolved location, applying the same
-/// decoding policy as [`read_anchor_at_commit`]: the file's bytes must be
-/// UTF-8 *as a whole* or the body is [`Unavailable::Binary`] — one policy
-/// across both read paths, so the same bytes can never be
+/// Read an anchor's live body from a location, applying [`read_anchor_at_commit`]'s
+/// policy on *both* axes — encoding and extent.
+///
+/// **Encoding:** the file's bytes must be UTF-8 as a whole or the body is
+/// [`Unavailable::Binary`], so the same bytes can never be
 /// `unavailable: "binary"` when read from a commit and a lossily-decoded
 /// `content` string of replacement characters when read from the worktree.
+///
+/// **Extent:** the declared range must overlap the file, or the body is
+/// [`Unavailable::RangePastEof`] — the same verdict
+/// [`crate::git::slice_line_range`] hands the commit path, because it *is* the
+/// commit path's function. Without this the live read fabricated `Text("")` for
+/// a range the file does not have, and an empty string is content: it measured
+/// as `similarity 0%`, split a declared re-anchor into a delete plus a create
+/// asserting deletions `git diff` never showed, and shipped `"content": ""` for
+/// an address holding nothing at all. One file state, two accounts, and
+/// committing the declaration rewrote the story.
+///
+/// A missing file is [`Unavailable::Absent`], which is what the doc's own gloss
+/// says the word means. That distinction is why this reads through
+/// [`read_location_bytes_present`]: an empty `Vec` cannot tell "no such file"
+/// from "an empty file", and an empty file's extent is honest, extractable
+/// content.
+///
+/// [`read_location_bytes_present`]: crate::cli::stale_output::read_location_bytes_present
 fn read_location_body(repo: &gix::Repository, loc: &AnchorLocation) -> AnchorBody {
-    let bytes = crate::cli::stale_output::read_location_bytes(repo, loc);
-    match std::str::from_utf8(&bytes) {
-        Ok(text) => AnchorBody::Text(crate::cli::stale_output::slice_location_text(
-            text, loc.extent,
-        )),
-        Err(_) => AnchorBody::Unavailable(Unavailable::Binary),
+    let Some(bytes) = crate::cli::stale_output::read_location_bytes_present(repo, loc) else {
+        return AnchorBody::Unavailable(Unavailable::Absent);
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return AnchorBody::Unavailable(Unavailable::Binary);
+    };
+    match loc.extent {
+        AnchorExtent::WholeFile => AnchorBody::Text(text.to_string()),
+        AnchorExtent::LineRange { start, end } => {
+            match crate::git::slice_line_range(text, start, end) {
+                Ok(sliced) => AnchorBody::Text(sliced),
+                Err(_) => AnchorBody::Unavailable(Unavailable::RangePastEof),
+            }
+        }
     }
+}
+
+/// The hash that travels with a live body, mirroring [`read_anchor_at_commit`]'s
+/// `missing` helper: a body with no bytes at all has nothing to fingerprint and
+/// carries [`NULL_ANCHOR_HASH`], while binary bytes keep their real one (a
+/// binary snapshot has an unrenderable *body*, not an absent *token*).
+///
+/// The null hash is an ambiguous value — four distinct states wear it — so it is
+/// written *from* the body here and never read back to recover the state. Every
+/// consumer that needs the reason takes it from [`AnchorBody::unavailable`].
+fn live_hash(repo: &gix::Repository, loc: &AnchorLocation, body: &AnchorBody) -> String {
+    match body.unavailable() {
+        Some(Unavailable::Absent | Unavailable::RangePastEof) => NULL_ANCHOR_HASH.to_string(),
+        _ => location_hash(repo, loc),
+    }
+}
+
+/// Why an anchor the resolver could not bind has no live body.
+///
+/// The resolver answers "is there content here?", not "why not" — it reports a
+/// deleted anchor and hands back no location, and the emitter used to read that
+/// silence as [`Unavailable::Absent`], printing "no such file" for a file
+/// sitting on disk. The declared address is still a readable question, so it is
+/// asked directly, at the declared path with `blob: None` so the answer comes
+/// from the working tree rather than from whatever object the resolver last
+/// touched.
+///
+/// A readable declared range means the absence is the resolver's verdict rather
+/// than the file system's, and [`Unavailable::Absent`] stands: the anchor's
+/// *content* is gone even though its file is not.
+fn unresolved_reason(repo: &gix::Repository, anchored: &AnchorLocation) -> Unavailable {
+    let declared = AnchorLocation {
+        path: anchored.path.clone(),
+        extent: anchored.extent,
+        blob: None,
+    };
+    read_location_body(repo, &declared)
+        .unavailable()
+        .unwrap_or(Unavailable::Absent)
 }
 
 /// Build the optional `current` section from two triggers:
@@ -1704,21 +1842,34 @@ fn build_current(
                     }
                 }
             });
+            // Both arms classify unavailability at the point the live location
+            // is decided, so the two routes to a past-EOF range — a resolved
+            // location whose declared extent overruns the file, and an anchor
+            // the resolver could not bind at all — land on the same reason.
+            // Classifying in only one of them leaves the other emitting the
+            // contradiction it was fixed for.
             let (body, hash, first_line) = match &live_loc {
-                Some(loc) => (
-                    read_location_body(repo, loc),
-                    location_hash(repo, loc),
-                    // A relocated side is labelled with the declared address
-                    // and carries the declared range's coordinate: its bytes
-                    // are byte-identical to the recorded ones, so the block is
-                    // header-only and the coordinate never surfaces — but if it
-                    // ever did, it would have to agree with the label.
-                    extent_first_line(r.anchored.extent),
-                ),
+                Some(loc) => {
+                    let body = read_location_body(repo, loc);
+                    let hash = live_hash(repo, loc, &body);
+                    (
+                        body,
+                        hash,
+                        // A relocated side is labelled with the declared address
+                        // and carries the declared range's coordinate: its bytes
+                        // are byte-identical to the recorded ones, so the block is
+                        // header-only and the coordinate never surfaces — but if it
+                        // ever did, it would have to agree with the label.
+                        extent_first_line(r.anchored.extent),
+                    )
+                }
                 // Nothing resolves: the anchored content is gone. A structural
-                // absence, never a prose placeholder.
+                // absence, never a prose placeholder — and the reason is read
+                // off the declared address rather than assumed, because "the
+                // resolver bound nothing" and "there is no such file" are
+                // different facts.
                 None => (
-                    AnchorBody::Unavailable(Unavailable::Absent),
+                    AnchorBody::Unavailable(unresolved_reason(repo, &r.anchored)),
                     NULL_ANCHOR_HASH.to_string(),
                     extent_first_line(r.anchored.extent),
                 ),

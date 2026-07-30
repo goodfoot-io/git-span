@@ -741,16 +741,25 @@ pub fn blob_line_count(repo: &gix::Repository, blob_oid: &str) -> Result<u32> {
     Ok(text.lines().count() as u32)
 }
 
-/// Extract lines `[start, end]` (1-based inclusive) from a blob.
-pub fn extract_blob_lines(
-    repo: &gix::Repository,
-    blob_oid: &str,
-    start: u32,
-    end: u32,
-) -> Result<Vec<u8>> {
-    let data = blob_data(repo, blob_oid)?;
-    let text =
-        std::str::from_utf8(&data).map_err(|e| Error::Parse(format!("blob not utf-8: {e}")))?;
+/// Slice decoded file text down to lines `[start, end]` (1-based inclusive),
+/// erroring with [`Error::InvalidAnchor`] when the range starts past the text's
+/// end.
+///
+/// This is the *one* line-range policy in the product, deliberately shared by
+/// every path that turns a file into an anchor's snapshot: the blob read
+/// ([`extract_blob_lines`]), the working-tree read behind `git span history`'s
+/// `current` block, and `git span stale`'s display slicing. Two
+/// implementations is how the same file state came to be a structural
+/// `range-past-eof` when read from a commit and a fabricated empty string when
+/// read from disk — the same class of split as the lossy-versus-strict UTF-8
+/// decode that preceded it.
+///
+/// A range that *overlaps* the end is clipped, not rejected (`L2-L9` over a
+/// three-line file yields two lines): the drift being visualized is precisely
+/// that the file shrank under a stale range, and truncation is the honest
+/// account of it. Only a range with no overlap at all — `lo > hi`, i.e. a start
+/// beyond the last line plus one — has nothing to show.
+pub fn slice_line_range(text: &str, start: u32, end: u32) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
     let lo = start.saturating_sub(1) as usize;
     let hi = (end as usize).min(lines.len());
@@ -762,7 +771,20 @@ pub fn extract_blob_lines(
         out.push_str(line);
         out.push('\n');
     }
-    Ok(out.into_bytes())
+    Ok(out)
+}
+
+/// Extract lines `[start, end]` (1-based inclusive) from a blob.
+pub fn extract_blob_lines(
+    repo: &gix::Repository,
+    blob_oid: &str,
+    start: u32,
+    end: u32,
+) -> Result<Vec<u8>> {
+    let data = blob_data(repo, blob_oid)?;
+    let text =
+        std::str::from_utf8(&data).map_err(|e| Error::Parse(format!("blob not utf-8: {e}")))?;
+    Ok(slice_line_range(text, start, end)?.into_bytes())
 }
 
 /// Placeholder for §5.1 per-commit `log -L` walker. Implemented inside

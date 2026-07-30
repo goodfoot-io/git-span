@@ -1,4 +1,4 @@
-packages/git-span/src/cli/history.rs#L1-L93 rk64:729c9f52cdbd60db
+packages/git-span/src/cli/history.rs#L1-L133 rk64:a34272798d391096
 plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L100 rk64:ee858cc61536e131
 plugins-codex/git-span/skills/git-span/references/command-reference.md#L81-L100 rk64:ee858cc61536e131
 

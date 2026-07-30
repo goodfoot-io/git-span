@@ -61,6 +61,23 @@ pub const NULL_BLOB_OID7: &str = "0000000";
 /// explanation.
 pub const RECORDED_UNRECOVERABLE: &str = "recorded snapshot unrecoverable";
 
+/// Marker line naming a transition between two *reasons* an anchor has no
+/// content — `content unavailable range-past-eof..absent`, in the `index`
+/// line's own `old..new` idiom and using the JSON `unavailable` field's exact
+/// vocabulary.
+///
+/// It appears only where both sides are bodyless for different reasons, which
+/// is the only case where nothing else in the block can say what changed: two
+/// null hashes over two empty bodies. Like [`RECORDED_UNRECOVERABLE`] it lives
+/// in the header rather than being appended by the human renderer, so the JSON
+/// `diff` string and the default output's block stay byte-identical — and like
+/// it, it exists because a bodyless block with no explanation reads as a
+/// renderer that lost its hunks.
+///
+/// It is an explanation, never the discriminator: a consumer reads the reason
+/// from the structured `unavailable` field and never parses this line.
+pub const CONTENT_UNAVAILABLE: &str = "content unavailable";
+
 /// Header dialect for one rendered file diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffHeader {
@@ -178,14 +195,47 @@ pub enum AnchorDiffKind {
 pub enum SideState {
     /// [`DiffSide::text`] is the side's real content.
     Present,
-    /// The side has no content at this point (the file is absent, or the
-    /// declared line range lies past end of file). Renders exactly like a
+    /// The side has no content at this point. Renders exactly like a
     /// `/dev/null` side: zero-length, `-0,0`/`+0,0` coordinates, and a
-    /// `/dev/null` label on the `---`/`+++` line.
-    Absent,
+    /// `/dev/null` label on the `---`/`+++` line. The [`Absence`] says *why*,
+    /// which the rendering deliberately does not.
+    Absent(Absence),
     /// The side's content exists but is not text. Suppresses hunks in
     /// favour of git's `Binary files a/<old> and b/<new> differ` line.
     Binary,
+}
+
+/// Why an [`SideState::Absent`] side has no bytes.
+///
+/// The two variants render identically — both are `/dev/null` sides — so this
+/// exists for exactly one job: to keep them *distinguishable* where it matters.
+/// Both wear [`NULL_ANCHOR_HASH`], so a renderer comparing hashes, or comparing
+/// two empty bodies, sees one state where there are two, and the commit that
+/// carried an anchor from one to the other rendered no entry at all. Change
+/// detection asks this enum instead.
+///
+/// The reason is carried *into* the renderer rather than inferred back out of a
+/// null hash, because the null hash is ambiguous by construction: an absent
+/// file, a past-EOF range, a `/dev/null` side, and a genuinely empty recorded
+/// extent all hash to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Absence {
+    /// There is nothing here at all: the `/dev/null` half of a creation or a
+    /// deletion, or a file that does not exist in this state.
+    Missing,
+    /// The file exists; the declared line range starts past its end.
+    RangePastEof,
+}
+
+impl Absence {
+    /// The word for this absence, spelled exactly as the JSON `unavailable`
+    /// field spells it so the two surfaces never name one state twice.
+    fn label(self) -> &'static str {
+        match self {
+            Absence::Missing => "absent",
+            Absence::RangePastEof => "range-past-eof",
+        }
+    }
 }
 
 /// One side of a diff: display label, text, and the 1-based coordinate of
@@ -221,14 +271,15 @@ impl<'a> DiffSide<'a> {
         }
     }
 
-    /// A side that carries a label but no content — the file is absent, or
-    /// the declared range lies past end of file. Renders as `/dev/null`.
-    pub fn absent(label: impl Into<String>) -> Self {
+    /// A side that carries a label but no content, for the stated reason.
+    /// Renders as `/dev/null` whichever reason it is — the reason is data for
+    /// change detection, not a rendering variant.
+    pub fn absent(label: impl Into<String>, why: Absence) -> Self {
         DiffSide {
             label: label.into(),
             text: "",
             first_line: 1,
-            state: SideState::Absent,
+            state: SideState::Absent(why),
         }
     }
 
@@ -249,14 +300,22 @@ impl<'a> DiffSide<'a> {
             label: DEV_NULL.to_string(),
             text: "",
             first_line: 1,
-            state: SideState::Absent,
+            state: SideState::Absent(Absence::Missing),
         }
     }
 
     /// True when this side renders with `/dev/null` conventions: the
     /// explicit sentinel label, or content that is structurally absent.
     fn is_null(&self) -> bool {
-        self.label == DEV_NULL || matches!(self.state, SideState::Absent)
+        self.label == DEV_NULL || matches!(self.state, SideState::Absent(_))
+    }
+
+    /// Why this side has no bytes, or `None` when it has some.
+    fn absence(&self) -> Option<Absence> {
+        match self.state {
+            SideState::Absent(why) => Some(why),
+            SideState::Present | SideState::Binary => None,
+        }
     }
 
     /// The renderable text — empty for anything but [`SideState::Present`],
@@ -264,7 +323,7 @@ impl<'a> DiffSide<'a> {
     fn body(&self) -> &str {
         match self.state {
             SideState::Present => self.text,
-            SideState::Absent | SideState::Binary => "",
+            SideState::Absent(_) | SideState::Binary => "",
         }
     }
 }
@@ -326,10 +385,23 @@ fn render(
     );
     // Binary sides have no comparable body, so their `index` hashes decide
     // whether anything changed.
+    //
+    // Two bodyless sides compare equal (both empty) and their hashes compare
+    // equal (both null), so a state that went from a past-EOF range to a
+    // deleted file used to satisfy every "unchanged" test there was, and the
+    // commit that did it rendered no entry at all — an `unavailable` value
+    // visibly changing with nothing to see it. The absence *reason* is the only
+    // thing that moved, so it is the thing asked. Deliberately narrow: this is
+    // not general reason-carrying change detection but the one pair of states
+    // that collapse onto the same hash and the same empty body.
+    let absence_changed = matches!(
+        (old.absence(), new.absence()),
+        (Some(a), Some(b)) if a != b
+    );
     let unchanged = if is_binary {
         header_hashes_equal(header)
     } else {
-        old.body() == new.body()
+        old.body() == new.body() && !absence_changed
     };
     if is_modify && unchanged && !force {
         return None;
@@ -432,14 +504,40 @@ fn push_header(
             kind,
         } => {
             match kind {
-                AnchorDiffKind::Modify => {}
+                AnchorDiffKind::Modify => {
+                    // The one anchor-level change no hunk can express: neither
+                    // state has bytes, so there is nothing to put on either
+                    // side of a `-`/`+`, and yet the anchor moved between two
+                    // distinct unreadable states. Without this line the block
+                    // is two identical null hashes over an empty body, which
+                    // is indistinguishable from a renderer that failed —
+                    // the same gap the `recorded snapshot unrecoverable`
+                    // marker was added to close.
+                    if let (Some(a), Some(b)) = (old.absence(), new.absence())
+                        && a != b
+                    {
+                        out.push_str(&format!(
+                            "{CONTENT_UNAVAILABLE} {}..{}\n",
+                            a.label(),
+                            b.label()
+                        ));
+                        headers_only = true;
+                    }
+                }
                 AnchorDiffKind::Rename { similarity } => {
                     if let Some(similarity) = similarity {
                         out.push_str(&format!("similarity index {similarity}%\n"));
                     }
                     out.push_str(&format!("rename from {}\n", old.label));
                     out.push_str(&format!("rename to {}\n", new.label));
-                    headers_only = unchanged;
+                    // Hunks need two comparable bodies. A rename whose old or
+                    // new side has no bytes has one, and diffing against the
+                    // absence spells the missing half out as a full deletion
+                    // (or addition) — signed lines for an edit the user never
+                    // made, when all they did was move a declaration onto an
+                    // address that holds nothing. The declared move is the
+                    // whole finding, so the header is the whole block.
+                    headers_only = unchanged || old.is_null() || new.is_null();
                 }
                 AnchorDiffKind::Proposed { address } => {
                     out.push_str(&format!("proposed anchor {address}\n"));
@@ -984,7 +1082,7 @@ mod tests {
         };
         let out = render_unified_diff(
             &header,
-            DiffSide::absent(".span/x"),
+            DiffSide::absent(".span/x", Absence::Missing),
             side(".span/x", "a\nb\n", 1),
         )
         .expect("an addition always renders");
@@ -1010,7 +1108,7 @@ mod tests {
         let out = render_unified_diff(
             &header,
             side(".span/x", "a\nb\n", 1),
-            DiffSide::absent(".span/x"),
+            DiffSide::absent(".span/x", Absence::Missing),
         )
         .expect("a deletion always renders");
 
@@ -1071,7 +1169,7 @@ mod tests {
         let out = render_unified_diff(
             &header,
             side("src.txt#L1-L2", "one\ntwo\n", 1),
-            DiffSide::absent("src.txt#L1-L2"),
+            DiffSide::absent("src.txt#L1-L2", Absence::Missing),
         )
         .expect("content vanished, must render");
 
@@ -1092,7 +1190,7 @@ mod tests {
             new_hash: "fd1a4e7a7c6a7eaf".to_string(),
             kind: AnchorDiffKind::Modify,
         };
-        let old = DiffSide::absent("f.txt#L3-L5");
+        let old = DiffSide::absent("f.txt#L3-L5", Absence::Missing);
         let new = side("f.txt#L3-L5", "one\ntwo\nthree\n", 3);
 
         let expected = "diff --git a/f.txt#L3-L5 b/f.txt#L3-L5\n\
@@ -1120,11 +1218,39 @@ mod tests {
         assert_eq!(
             render_unified_diff(
                 &header,
-                DiffSide::absent("src.txt#L1-L2"),
-                DiffSide::absent("src.txt#L1-L2"),
+                DiffSide::absent("src.txt#L1-L2", Absence::Missing),
+                DiffSide::absent("src.txt#L1-L2", Absence::Missing),
             ),
             None,
             "an anchor that was unavailable before and after did not change"
+        );
+    }
+
+    /// The same two null hashes and the same two empty bodies as the test
+    /// above, differing only in *why* each side has no content — and that
+    /// difference is the entire event, so eliding the block would drop it from
+    /// the record. The marker carries the transition because nothing else in a
+    /// bodyless block can.
+    #[test]
+    fn two_absent_sides_with_different_reasons_are_a_change() {
+        let header = DiffHeader::Anchor {
+            old_hash: NULL_ANCHOR_HASH.to_string(),
+            new_hash: NULL_ANCHOR_HASH.to_string(),
+            kind: AnchorDiffKind::Modify,
+        };
+        assert_eq!(
+            render_unified_diff(
+                &header,
+                DiffSide::absent("src.txt#L1-L2", Absence::RangePastEof),
+                DiffSide::absent("src.txt#L1-L2", Absence::Missing),
+            ),
+            Some(
+                "diff --git a/src.txt#L1-L2 b/src.txt#L1-L2\n\
+                 content unavailable range-past-eof..absent\n\
+                 index 0000000000000000..0000000000000000\n"
+                    .to_string()
+            ),
+            "the reason moved, and it is the only thing that can have"
         );
     }
 
