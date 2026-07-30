@@ -31,7 +31,7 @@ Key flags:
 
 - `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of `HEAD`.
 
-Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `stale` flagged on a range that didn't move.
+Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `stale` flagged on a range that didn't move — after checking that the span's other anchors still agree with the new content; a coupled doc that now lags is updated first.
 
 Exits 1 on an invalid name or an out-of-range anchor. Does not commit — stage and commit the change yourself with `git add .span && git commit`.
 
@@ -133,7 +133,7 @@ Key flags:
 - `--fix` — re-anchors drift in place. See the callout below for what it actually does. Only supported with `--format human`.
 
 <Callout type="warn">
-`--fix` reliably re-anchors whitespace-equivalent `Changed` anchors (indentation-only edits), tagging them `resolved, pending commit — auto-updated` on the run that fixes them. In observed behavior on this build, `Moved` anchors are reported by `--fix` but **not** re-anchored, despite the help text describing unconditional re-anchoring of Moved drift. Meaning-altering `Changed` drift — content differs beyond whitespace — is always left for you to resolve with `git span add`; re-running `--fix` will not touch it. After `--fix`, re-run `git span stale` and re-anchor anything still drifting yourself. `--fix` never commits; it only rewrites `.span/` worktree files — stage and commit with `git add .span && git commit`.
+`--fix` re-anchors `Moved` anchors unconditionally — pure line shifts and file renames alike — and whitespace-equivalent `Changed` anchors (indentation-only edits), tagging them `resolved, pending commit — auto-updated` on the run that fixes them. Meaning-altering `Changed` drift — content differs beyond whitespace — is always left for you to resolve with `git span add`; re-running `--fix` will not touch it. After `--fix`, re-run `git span stale` and re-anchor anything still drifting yourself. `--fix` never commits; it only rewrites `.span/` worktree files — stage and commit with `git add .span && git commit`.
 </Callout>
 
 Exit codes: 0 (no drift, or `--no-exit-code` with drift present), 1 (drift found, or an interior-anchor integrity violation — the latter is never maskable by `--no-exit-code`).

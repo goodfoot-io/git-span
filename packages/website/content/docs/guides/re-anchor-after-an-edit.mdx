@@ -47,6 +47,8 @@ Added 0 anchors and resolved 1 in place to span `checkout-flow`.
 
 "Added 0 anchors" is not a failure — the in-place resolution is the point. The next `git span stale` run reports the anchor clean. This is also how you confirm an intentional content change that `stale` flagged: re-adding the anchor declares "yes, the new content is what the span should track."
 
+Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. A coupled doc that now lags the change is updated first (docs follow deliberately committed code); if bringing the anchors back into agreement would mean changing code, surface that decision instead of re-anchoring over it.
+
 ## Moved range: add the new anchor, remove the old one
 
 If the code moved to a different range, add the new address and drop the stale one:

@@ -42,7 +42,17 @@ and PR descriptions.
 .B Re\-anchoring on drift.
 When
 .B git span stale
-reports drift, review the change at each anchor.
+reports drift, review the change at each anchor and decide which side of the
+coupling changed deliberately \[em]
+.B git span history
+shows the commit timeline \[em] then bring the other side back into agreement
+before re\-anchoring: a doc anchor that lags a deliberately committed code
+change is updated to match.
+Re\-anchoring records the current content as the anchored baseline with no
+semantic check, so re\-anchoring over a live disagreement conceals it.
+When agreement would require a code change, when the doc may be the intended
+contract rather than a description, or when no deliberate commit explains
+the drift, surface the decision instead of re\-anchoring.
 Because a why only defines, it is inherited across routine re-anchors: if the
 subsystem still holds, re-anchor with
 .B git span add
