@@ -1323,15 +1323,15 @@ function renderStalenessReason(
   const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\``;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
-    const closing = `Already flagged above — update the drifted locations or the description.`;
+    const closing = `Already flagged above — restore agreement at the drifted locations or update the description.`;
     return [`This change still leaves ${subject} out of date:`, ...paths.map((path) => `- ${path}`), '', closing].join(
       '\n'
     );
   }
   const closing =
     mode === 'may-hold'
-      ? `Update the drifted locations or the description — ${action} — then retry. If a dependency no longer holds, tell the user instead.`
-      : `Update the drifted locations or the description — ${action}. If a dependency no longer holds, tell the user instead.`;
+      ? `Bring the coupled files back into agreement (docs follow the committed code), then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+      : `Bring the coupled files back into agreement (docs follow the committed code), then refresh — ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
   return [
     `This change leaves ${subject} out of date:`,
     '',
@@ -1692,7 +1692,11 @@ const GIT_DIFF_SHAPE_OPTS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '
  * this read that only a comment enforces is precisely the thing not to leave
  * standing again.
  */
-export function buildHunkReadArgs(repoRoot: string, range: DiffRange, paths: string[]): string[] {
+export function buildHunkReadArgs(
+  repoRoot: string,
+  range: Exclude<DiffRange, { kind: 'unresolvable' }>,
+  paths: string[]
+): string[] {
   const rangeArgs =
     range.kind === 'staged' ? ['--cached'] : range.kind === 'worktree' ? ['HEAD'] : [`${range.base}..HEAD`];
   return ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '-U0', ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, '--', ...paths];
