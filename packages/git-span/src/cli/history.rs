@@ -518,6 +518,31 @@ fn extent_hash(bytes: &[u8], extent: &AnchorExtent) -> String {
     git_span_core::rk64_to_hex(git_span_core::cheap_fingerprint_with_extent(bytes, extent))
 }
 
+/// Re-derive a snapshot body's fingerprint from the body itself.
+///
+/// The recorded-hash oracle is only worth stating if it can fail, and
+/// comparing stored [`Snapshot::hash`] fields against the recorded token
+/// merely restates the predicate that selected the candidate. Hashing the
+/// *bytes the old side will render* is a different claim: it catches a
+/// snapshot whose body and hash have drifted apart, which is exactly the
+/// failure that would put unvouched-for content on an old side.
+///
+/// Fingerprints canonicalize to `lines[start..=end].join("\n")`, so a body
+/// lifted out of its file hashes identically at line 1 as it did at its real
+/// first line — which is why an anchor's content can be recognized after it
+/// moves. Whole-file anchors hash their raw bytes and are re-derived that way.
+fn body_fingerprint(address: &str, text: &str) -> String {
+    let extent = if address.contains("#L") {
+        AnchorExtent::LineRange {
+            start: 1,
+            end: u32::try_from(text.lines().count()).unwrap_or(u32::MAX),
+        }
+    } else {
+        AnchorExtent::WholeFile
+    };
+    extent_hash(text.as_bytes(), &extent)
+}
+
 /// Read an anchor's body *and* the hash of the bytes it renders from a
 /// specific commit's tree, degrading per-anchor (never aborting the whole
 /// report) on missing files, out-of-range line anchors, or non-UTF-8 content.
@@ -1086,9 +1111,19 @@ fn location_hash(repo: &gix::Repository, loc: &AnchorLocation) -> String {
 ///
 /// Either way the `index` line carries `rk64:<recorded>..rk64:<live>`, so the
 /// two hashes differ exactly when the anchor is drifted.
+///
+/// `address` is the label the old side must wear, which is the caller's
+/// decision and not this function's: it is the *declared* address in every
+/// case except a genuinely re-anchored declaration, where the old side keeps
+/// the address the declaration used to name. The oracle above is enforced by
+/// construction here (a candidate is only taken when its hash equals the
+/// token) and checked end-to-end by
+/// `current_old_sides_carry_the_declarations_recorded_token`, which re-reads
+/// every emitted `index` line against the live `.span` file.
 fn current_old_side(
     paired: Option<&Snapshot>,
     live: &Snapshot,
+    address: String,
     recorded_hash: Option<&String>,
     recorded_snapshot: Option<&Snapshot>,
 ) -> Option<Snapshot> {
@@ -1100,10 +1135,11 @@ fn current_old_side(
         .flatten()
         .find(|candidate| candidate.hash == hash);
     debug_assert!(
-        source.is_none_or(|s| s.hash == hash),
+        source.is_none_or(|s| {
+            !s.body.is_text() || body_fingerprint(&s.address, s.body.text()) == hash
+        }),
         "an old side must hash to the declaration's recorded token"
     );
-    let address = paired.map_or_else(|| live.address.clone(), |p| p.address.clone());
     Some(match source {
         Some(src) => Snapshot {
             address,
@@ -1238,27 +1274,45 @@ fn build_current(
 
         for (j, n) in live.iter().enumerate() {
             let paired = pairs[j].map(|i| &old[i]);
-            let reanchored = paired.is_some_and(|o| o.address != n.address);
+            // A *declaration* re-anchor: the user moved the address in the
+            // `.span` file, so the anchor genuinely holds a different address
+            // than the last recorded state did. A resolver relocation is not
+            // that — the declaration still says exactly what it said — so a
+            // pending proposal disqualifies this reading outright. Content-first
+            // pairing crosses addresses for any relocation, and without this
+            // guard every proposal would be dressed as a completed rename,
+            // in the reverse direction (the pairing runs recorded → live, the
+            // proposal runs declared → healed).
+            let reanchored_declaration =
+                proposals[j].is_none() && paired.is_some_and(|o| o.address != n.address);
             // A `Fresh` anchor whose declared address is unchanged has nothing
             // to report; a worktree-removed or worktree-added anchor is already
             // covered by `span_diff`.
-            if fresh[j] && !reanchored {
+            if fresh[j] && !reanchored_declaration {
                 continue;
             }
+            // Both sides wear the declared address unless the declaration
+            // itself moved — a proposal must never relabel either side.
+            let old_address = match (reanchored_declaration, paired) {
+                (true, Some(o)) => o.address.clone(),
+                _ => n.address.clone(),
+            };
             let old_side = current_old_side(
                 paired,
                 n,
+                old_address,
                 recorded.get(&n.address),
                 recorded_snapshots.get(&n.address),
             );
             let kind = match (&old_side, &proposals[j]) {
-                // The user re-anchored in the uncommitted declaration: the
-                // address genuinely moved between two recorded states.
-                (Some(o), _) if o.address != n.address => AnchorDiffKind::Rename {
-                    similarity: similarity(o.body.text(), n.body.text()),
-                },
+                // A proposal outranks everything: the resolver believes the
+                // content relocated, and that is a suggestion, never a move
+                // that happened.
                 (_, Some(address)) => AnchorDiffKind::Proposed {
                     address: address.clone(),
+                },
+                (Some(o), None) if o.address != n.address => AnchorDiffKind::Rename {
+                    similarity: similarity(o.body.text(), n.body.text()),
                 },
                 (Some(_), None) => AnchorDiffKind::Modify,
                 (None, None) => AnchorDiffKind::New,

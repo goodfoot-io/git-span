@@ -76,6 +76,35 @@ fn diff_block<'a>(out: &'a str, needle: &str) -> &'a str {
     }
 }
 
+/// Seed the swap scenario: two anchors whose contents exchange addresses in
+/// one commit, with the declaration left untouched. Both anchors end up
+/// relocated, each onto the address the other declared.
+fn swap_repo() -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    let span = "swap";
+
+    repo.write_file(
+        "src.txt",
+        "AAA-1\nAAA-2\nAAA-3\nmiddle\nBBB-1\nBBB-2\nBBB-3\n",
+    )?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
+    repo.span_stdout(["add", span, "src.txt#L5-L7"])?;
+    repo.span_stdout(["why", span, "tracks both blocks"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "create span"])?;
+
+    // Exchange the two blocks. Pairing by exact address first would hand each
+    // anchor the wrong partner and fabricate two total rewrites for what are
+    // two pure moves.
+    repo.write_file(
+        "src.txt",
+        "BBB-1\nBBB-2\nBBB-3\nmiddle\nAAA-1\nAAA-2\nAAA-3\n",
+    )?;
+    repo.commit_all("swap the two blocks")?;
+    Ok(repo)
+}
+
 /// Seed the main timeline scenario for span `m`:
 ///
 /// * `C0` — three source files.
@@ -572,40 +601,28 @@ fn unrelated_unavailable_anchors_do_not_pair_as_a_rename() -> Result<()> {
 
 #[test]
 fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
-    let repo = TestRepo::new()?;
-    let span = "swap";
-
-    repo.write_file(
-        "src.txt",
-        "AAA-1\nAAA-2\nAAA-3\nmiddle\nBBB-1\nBBB-2\nBBB-3\n",
-    )?;
-    repo.commit_all("initial")?;
-    repo.span_stdout(["add", span, "src.txt#L1-L3"])?;
-    repo.span_stdout(["add", span, "src.txt#L5-L7"])?;
-    repo.span_stdout(["why", span, "tracks both blocks"])?;
-    repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", "create span"])?;
-
-    // Exchange the two blocks and re-anchor both in one commit: each anchor now
-    // holds the address the other used to hold. Pairing by exact address first
-    // would hand each anchor the wrong partner and fabricate two total
-    // rewrites for what are two pure moves.
-    repo.write_file(
-        "src.txt",
-        "BBB-1\nBBB-2\nBBB-3\nmiddle\nAAA-1\nAAA-2\nAAA-3\n",
-    )?;
-    repo.commit_all("swap the two blocks")?;
-
-    let json = history_json(&repo, span)?;
+    let repo = swap_repo()?;
+    let json = history_json(&repo, "swap")?;
     let swap = commit_with(&json, "swap the two blocks");
     let anchors = swap["anchors"].as_array().expect("anchors array");
     assert_eq!(anchors.len(), 2, "both blocks moved; got: {swap}");
 
-    let diffs: Vec<&str> = anchors
-        .iter()
-        .map(|a| a["diff"].as_str().expect("diff string"))
-        .collect();
-    for diff in &diffs {
+    let out = history_text(&repo, "swap")?;
+    // Per anchor, not across the pair: a joined "both mirror strings appear"
+    // check is symmetric-blind and passes even when the two anchors received
+    // each other's direction.
+    for anchor in anchors {
+        let path = anchor["path"].as_str().expect("path string");
+        let diff = anchor["diff"].as_str().expect("diff string");
+        let source = match path {
+            "src.txt#L1-L3" => "src.txt#L5-L7",
+            "src.txt#L5-L7" => "src.txt#L1-L3",
+            other => panic!("unexpected address {other:?} in: {swap}"),
+        };
+        assert!(
+            diff.contains(&format!("rename from {source}\nrename to {path}\n")),
+            "this anchor's content came from {source}; got:\n{diff}"
+        );
         assert!(
             diff.contains("similarity index 100%\n"),
             "each anchor pairs with its own content, byte for byte; got:\n{diff}"
@@ -614,17 +631,174 @@ fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
             !diff.contains("@@"),
             "a pure move carries no hunks; got:\n{diff}"
         );
+        assert!(out.contains(diff), "the default output carries it too:\n{out}");
     }
-    let joined = diffs.join("\n");
+    Ok(())
+}
+
+#[test]
+fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
+    let repo = swap_repo()?;
+    // `stale` exits non-zero while anchors are stale, so read stdout directly.
+    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+    // `stale` is the authority on where each anchor's content went. The
+    // current block must repeat that instruction, never invert it, and never
+    // dress it up as a move that already happened.
     assert!(
-        joined.contains("rename from src.txt#L1-L3\nrename to src.txt#L5-L7\n")
-            && joined.contains("rename from src.txt#L5-L7\nrename to src.txt#L1-L3\n"),
-        "the two moves are each other's mirror; got:\n{joined}"
+        stale.contains("src.txt#L1-L3 — moved to src.txt#L5-L7")
+            && stale.contains("src.txt#L5-L7 — moved to src.txt#L1-L3"),
+        "fixture assumption: stale proposes the mirrored relocations; got:\n{stale}"
     );
 
-    let out = history_text(&repo, span)?;
-    for diff in &diffs {
+    let json = history_json(&repo, "swap")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors array");
+    assert_eq!(anchors.len(), 2, "both anchors are stale; got: {json:#}");
+
+    let out = history_text(&repo, "swap")?;
+    for anchor in anchors {
+        let path = anchor["path"].as_str().expect("path string");
+        let proposed = anchor["proposed"].as_str().unwrap_or_else(|| {
+            panic!("a relocated anchor carries the resolver's proposal; got: {anchor:#}")
+        });
+        // Direction is per anchor: the declared address is the `from` side of
+        // stale's line, the proposal is its `to` side.
+        assert!(
+            stale.contains(&format!("{path} — moved to {proposed}")),
+            "the proposal must point where stale points; got:\n{stale}"
+        );
+        let diff = anchor["diff"].as_str().expect("diff string");
+        assert!(
+            diff.contains(&format!("proposed anchor {proposed}\n")),
+            "a relocation is a suggestion, not a completed move; got:\n{diff}"
+        );
+        assert!(
+            !diff.contains("rename from") && !diff.contains("rename to"),
+            "nothing was re-anchored: the declaration still says {path}; got:\n{diff}"
+        );
+        assert!(
+            diff.contains(&format!("diff --git a/{path} b/{path}\n")),
+            "both sides wear the declared address; got:\n{diff}"
+        );
+        assert!(
+            !diff.contains("@@"),
+            "the recorded bytes and the proposal's bytes are identical, so the \
+             block is header-only; got:\n{diff}"
+        );
         assert!(out.contains(diff), "the default output carries it too:\n{out}");
+    }
+    Ok(())
+}
+
+/// Every `rk64` token the declaration records, read from the worktree file and
+/// from HEAD's copy of it — an uncommitted re-anchor moves a token from one to
+/// the other, and both states are "recorded" for oracle purposes.
+fn recorded_tokens(repo: &TestRepo, span: &str) -> Result<Vec<String>> {
+    let rel = format!(".span/{span}");
+    let worktree = std::fs::read_to_string(repo.path().join(&rel)).unwrap_or_default();
+    let head = repo
+        .git_stdout(["show", &format!("HEAD:{rel}")])
+        .unwrap_or_default();
+    Ok([worktree, head]
+        .iter()
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|line| line.split_once("rk64:"))
+                .map(|(_, rest)| {
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+/// The old-side hash of every `index rk64:<old>..rk64:<new>` line in `diff`.
+fn old_index_hashes(diff: &str) -> Vec<&str> {
+    diff.lines()
+        .filter_map(|line| line.strip_prefix("index rk64:"))
+        .filter_map(|rest| rest.split_once(".."))
+        .map(|(old, _)| old)
+        .collect()
+}
+
+/// The oracle behind the whole current block: whatever content stands as an
+/// old side must hash to the token the declaration recorded. It is enforced by
+/// construction in `current_old_side`, which can only be checked from outside
+/// — an assertion at the construction site would restate the predicate that
+/// selected the value. So this re-reads the emitted `index` lines against the
+/// declaration itself, across the scenarios that exercise every arm: a
+/// proposal, an in-place edit, an uncommitted re-anchor, and content the
+/// recorded snapshot can no longer supply.
+#[test]
+fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
+    let mut scenarios: Vec<(&str, TestRepo, &str)> = vec![("swap", swap_repo()?, "swap")];
+
+    let drift = TestRepo::new()?;
+    drift.write_file("src.txt", "alpha\nbeta\ngamma\n")?;
+    drift.commit_all("initial")?;
+    drift.span_stdout(["add", "drift", "src.txt#L1-L3"])?;
+    drift.span_stdout(["why", "drift", "tracks the block"])?;
+    drift.run_git(["add", ".span"])?;
+    drift.run_git(["commit", "-m", "create span"])?;
+    drift.write_file("src.txt", "alpha\nBETA-CHANGED\ngamma\n")?;
+    scenarios.push(("in-place drift", drift, "drift"));
+
+    let reanchor = TestRepo::new()?;
+    reanchor.write_file("src.txt", "TARGET-A\nTARGET-B\nTARGET-C\n")?;
+    reanchor.commit_all("initial")?;
+    reanchor.span_stdout(["add", "reanchor", "src.txt#L1-L3"])?;
+    reanchor.span_stdout(["why", "reanchor", "tracks the TARGET block"])?;
+    reanchor.run_git(["add", ".span"])?;
+    reanchor.run_git(["commit", "-m", "create span"])?;
+    reanchor.write_file("src.txt", "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B\nTARGET-C\n")?;
+    reanchor.span_stdout(["remove", "reanchor", "src.txt#L1-L3"])?;
+    reanchor.span_stdout(["add", "reanchor", "src.txt#L4-L6"])?;
+    scenarios.push(("uncommitted re-anchor", reanchor, "reanchor"));
+
+    let truncated = TestRepo::new()?;
+    truncated.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;
+    truncated.commit_all("initial")?;
+    truncated.span_stdout(["add", "gone", "src.txt#L3-L5"])?;
+    truncated.span_stdout(["why", "gone", "tracks the tail"])?;
+    truncated.run_git(["add", ".span"])?;
+    truncated.run_git(["commit", "-m", "create span"])?;
+    truncated.write_file("src.txt", "one\ntwo\n")?;
+    scenarios.push(("truncated away", truncated, "gone"));
+
+    for (label, repo, span) in scenarios {
+        let tokens = recorded_tokens(&repo, span)?;
+        assert!(
+            !tokens.is_empty(),
+            "{label}: the fixture must record at least one token"
+        );
+        let json = history_json(&repo, span)?;
+        let anchors = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"));
+        assert!(
+            !anchors.is_empty(),
+            "{label}: the scenario must produce a current block to check"
+        );
+        for anchor in anchors {
+            let diff = anchor["diff"].as_str().expect("diff string");
+            let hashes = old_index_hashes(diff);
+            assert!(
+                !hashes.is_empty(),
+                "{label}: every anchor diff carries an index line; got:\n{diff}"
+            );
+            for hash in hashes {
+                assert!(
+                    tokens.iter().any(|t| t == hash),
+                    "{label}: old side rk64:{hash} is not a token the declaration \
+                     recorded ({tokens:?}); the old side was fabricated from \
+                     content nothing vouches for:\n{diff}"
+                );
+            }
+        }
     }
     Ok(())
 }
