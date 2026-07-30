@@ -15,8 +15,9 @@ Match the question to the command, don't reflexively mutate:
 "span": "..."}`, `findings` holding every drifting anchor. Parse as one document, not
 line-by-line. Empty when nothing is stale (no bytes at all, not `{}`).
 
-**Selector trap**: `list`/`show`/`why`/`history`/`stale` resolve `<name>`/`<target>` as a
-span name *or* a file path — never assume one. A real, tracked file not anchored by any
+**Selector trap**: `list`/`show`/`why`/`stale` resolve `<name>`/`<target>` as a span name
+*or* a file path — never assume one; `history` is the exception and accepts only a span
+name. A real, tracked file not anchored by any
 span does **not** error: `list` prints "No spans match the filters.", `stale` prints
 "0 stale across 0 spans", both exit 0. Only a path/name that matches nothing at all in the
 repo errors explicitly ("is not tracked" / "did not match any span, file, or path"). Before

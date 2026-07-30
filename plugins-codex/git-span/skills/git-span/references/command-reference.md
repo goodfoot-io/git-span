@@ -84,7 +84,14 @@ and per-anchor unified diffs (rename-aware — a re-anchor renders as a rename,
 not remove+add), plus a leading, headerless section for uncommitted worktree
 drift from HEAD. Defaults to git-log-style text; `--format json` emits
 `schema_version: 2` carrying the identical diffs as raw patch strings.
-`-n`/`--limit` caps the walk at the newest N commits.
+`-n`/`--limit` caps the *rendered* timeline at the newest N entries — the walk
+underneath is always complete, so a narrow anchor in a busy file can never
+have the window filled with commits that changed nothing observable. When
+`--limit` drops older qualifying commits, the command still prints the
+requested window but warns on stderr in both formats, and JSON output sets
+`scoped: true` on the response object (absent, not `false`, when the
+timeline is complete). Treat scoped JSON output as a partial record —
+never read it as evidence that a span has no history or no drift.
 
 ## Editing a span
 

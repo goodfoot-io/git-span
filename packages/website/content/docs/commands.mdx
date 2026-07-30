@@ -114,7 +114,9 @@ Shows a timeline of a span file's git history, newest to oldest, `git log -p` st
 Key flags:
 
 - `--format <human|json>` — output format. Default `human` (git-log-style text). `json` emits `schema_version: 2`, carrying the identical diffs as raw unified-diff patch strings.
-- `-n`, `--limit <N>` — cap the walk at N commits (the newest N are inspected).
+- `-n`, `--limit <N>` — cap the *rendered* timeline at the newest N entries. The walk underneath is always complete, so a narrow anchor in a busy file can never have the window filled with commits that changed nothing observable — only commits that would have rendered a section count against the limit.
+
+When `--limit` drops older qualifying commits, the command still prints the requested window to stdout but warns on stderr in both formats, and JSON output sets `scoped: true` on the response object (omitted, not `false`, when the timeline is the complete record). Treat scoped JSON output as a partial record — never read it as evidence that a span has no history or no drift.
 
 ## Audit and automate
 

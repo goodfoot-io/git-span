@@ -42,9 +42,10 @@ four-space-indented commit summary, a blank line, then the declaration diff and 
 anchor diff. Uncommitted drift (when present) comes first with no `commit`/`Date`
 header — git's own idiom for "not yet committed."
 
-Real output, three consecutive commits from `agent-hooks/hook-message-copy`'s history —
-a pure re-anchor with content hunks (similarity < 100%, so headers *and* hunks), an
-anchor deletion, and an anchor first-add:
+Real output, two consecutive commits from `agent-hooks/hook-message-copy`'s history —
+a pure re-anchor with content hunks (similarity < 100%, so headers *and* hunks), two
+anchor deletions, an ordinary content modification, an anchor first-add, and a pure
+re-anchor with no content change (similarity 100%, header only, no hunks):
 
 ```
 commit e86fe9cc50f359301ca4a61156f4f6bfcba150a8
@@ -69,7 +70,7 @@ diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1032-L1139 b/packages
 similarity index 92%
 rename from packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
 rename to packages/agent-hooks/src/common/gate-core.ts#L1040-L1147
-index rk64:0a52ab2b949313f9..rk64:0a52ab2b949313f9
+index rk64:8a020b17c9efd975..rk64:0a52ab2b949313f9
 --- a/packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
 +++ b/packages/agent-hooks/src/common/gate-core.ts#L1040-L1147
 @@ -1032,11 +1040,3 @@
@@ -99,42 +100,96 @@ index rk64:0a52ab2b949313f9..rk64:0a52ab2b949313f9
 
 diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 b/dev/null
 deleted anchor
-index rk64:0a52ab2b949313f9..0000000000000000
+index rk64:f239cfdd91dbaf6c..0000000000000000
 --- a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126
 +++ /dev/null
 @@ -1019,108 +0,0 @@
 - * bullet run; spans absent from `blocksText` entirely (or an empty/failed
 - * list read) get a synthesized minimal block — no finding is ever dropped.
+- * Every finding matching (or appended for) a given anchor address is
+- * collapsed via {@link dedupeByAnchor} first, so a single anchor never
+- * renders as more than one bullet regardless of how many drifting-layer rows
+- * the CLI emitted for it.
+- */
 ⋮  (108-line deletion body continues, omitted here for length)
 
-commit 2cbb7301d0500638a56c317c742f3fe2b04aab88
-Date:   2026-07-21
+diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132 b/dev/null
+deleted anchor
+index rk64:553a1236747ca251..0000000000000000
+--- a/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132
++++ /dev/null
+@@ -1025,108 +0,0 @@
+- */
+-function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
+-  const remaining = new Map<string, StalePorcelainRow[]>();
+⋮  (108-line deletion body continues, omitted here for length — this commit
+   consolidated two near-duplicate anchor ranges into the single re-anchored
+   range shown above, so both old ranges delete in the same commit)
 
-    Declare the hook-message-copy span coupling both hooks' rendered wording to its doc mirrors
+commit 78da668ffb8928389751cc54266a9bfddeb66bb8
+Date:   2026-07-29
 
-diff --git a/dev/null b/.span/agent-hooks/hook-message-copy
-index 0000000..5eed1f7 100644
---- /dev/null
+    Correct the overstated invariant on the changeset filter
+
+diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy
+index 131dbbc..08d060d 100644
+--- a/.span/agent-hooks/hook-message-copy
 +++ b/.span/agent-hooks/hook-message-copy
-@@ -0,0 +1,7 @@
-+packages/agent-hooks/src/common/gate-core.ts#L797-L853 rk64:49728c3dbc47a6ab
-+packages/agent-hooks/src/common/touch-core.ts#L233-L249 rk64:ed35ece307b8b9c0
-+packages/website/content/docs/agent-integration.mdx rk64:e43151e22478015d
-+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:0825905d01d5858e
-+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:2c720530fdbcf3b6
-+
-+The hook-facing message copy: the latent-semantic-dependency wording rendered by the touch hook's block and the gate's four reasons, quoted verbatim in both plugin skill references and the website's agent-integration doc — reword one and the others must follow.
+@@ -1,5 +1,6 @@
+ packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 rk64:0a52ab2b949313f9
+ packages/agent-hooks/src/common/gate-core.ts#L1025-L1132 rk64:0a52ab2b949313f9
++packages/agent-hooks/src/common/gate-core.ts#L1032-L1139 rk64:0a52ab2b949313f9
+ packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:fe4d90f3aa35936c
+ packages/website/content/docs/agent-integration.mdx rk64:34c2f95c65143b3d
+ plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:eb3ed563e709d0d3
 
-diff --git a/dev/null b/packages/agent-hooks/src/common/gate-core.ts#L797-L853
+diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 b/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126
+index rk64:671b650278f9e4b5..rk64:f239cfdd91dbaf6c
+--- a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126
++++ b/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126
+@@ -1019,3 +1019,10 @@
++ * bullet run; spans absent from `blocksText` entirely (or an empty/failed
++ * list read) get a synthesized minimal block — no finding is ever dropped.
++ * Every finding matching (or appended for) a given anchor address is
++ * collapsed via {@link dedupeByAnchor} first, so a single anchor never
++ * renders as more than one bullet regardless of how many drifting-layer rows
++ * the CLI emitted for it.
++ */
+ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
+   const remaining = new Map<string, StalePorcelainRow[]>();
+   for (const row of rows) {
+@@ -1117,10 +1124,3 @@
+   ].join('\n');
+ }
+ 
+-/**
+- * Wrap `text` for delivery as a harness's `additionalContext`, so every such
+- * payload this gate emits sits inside a `<git-span>...</git-span>` block —
+- * matching the touch hook's block styling — never bare prose. A no-op when
+- * `text` already carries a `<git-span>` tag somewhere (e.g.
+- * {@link renderUncoveredReason}'s output already wraps itself), so a caller
+- * can apply this unconditionally without ever nesting one block inside
+
+diff --git a/dev/null b/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132
 new anchor
-index 0000000000000000..rk64:49728c3dbc47a6ab
+index 0000000000000000..rk64:553a1236747ca251
 --- /dev/null
-+++ b/packages/agent-hooks/src/common/gate-core.ts#L797-L853
-@@ -0,0 +797,57 @@
-+/** The full-span checklist a semantic-staleness deny renders into `reason`. */
-+function renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {
-+  const names = [...new Set(findings.map((row) => row.name))];
-⋮  (addition body continues, omitted here for length)
++++ b/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132
+@@ -0,0 +1025,108 @@
++ */
++function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
++  const remaining = new Map<string, StalePorcelainRow[]>();
++  for (const row of rows) {
++    const group = remaining.get(row.name);
++    if (group) group.push(row);
++    else remaining.set(row.name, [row]);
+⋮  (108-line addition body continues, omitted here for length)
+
+diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132 b/packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
+similarity index 100%
+rename from packages/agent-hooks/src/common/gate-core.ts#L1025-L1132
+rename to packages/agent-hooks/src/common/gate-core.ts#L1032-L1139
+index rk64:8a020b17c9efd975..rk64:8a020b17c9efd975
 ```
 
 Conventions demonstrated:
@@ -146,7 +201,8 @@ Conventions demonstrated:
 - `rename from`/`rename to`/`similarity index NN%` replace git's normal `copy` machinery
   when an anchor's address changes and pairs by content similarity (≥ 50%, git's `-M`
   default) rather than exact address; hunks are included whenever content also changed
-  (as here — 92% similar, not identical).
+  (92% similarity, `e86fe9cc`) and omitted when the paired content is byte-identical
+  (100% similarity, `78da668f` — header only, no hunk).
 - `new anchor` / `deleted anchor` replace git's mode lines (`new file mode`/`deleted file
   mode`) for anchors with no pairing partner in the adjacent state; the body is a full
   addition/deletion against `/dev/null`.
@@ -186,44 +242,52 @@ worktree declaration matches `HEAD` and no anchor resolves as drifted.
 
 Same data; `diff`/`span_diff`/`content` are the identical raw strings the human renderer
 prints — not structured hunks. Real output, `git span history agent-hooks/hook-message-copy
---format json -n 1`, showing the `current` block for the same uncommitted edit above (no
-`span_diff` here — only the anchor drifted, not the declaration):
+--format json -n 1`, for the same uncommitted edit shown above. Object keys render in
+alphabetical order (the emitter's own order, not hand-arranged); long string values below
+are trimmed with `⋮` (never with `…`, and never in a way a reader could mistake for real
+diff/content bytes) for length only:
 
 ```json
 {
-  "schema_version": 2,
-  "span": "agent-hooks/hook-message-copy",
+  "commits": [
+    {
+      "anchors": [],
+      "date": "2026-07-30T11:51:18-04:00",
+      "hash": "5c5dcecd53c3f53a3801878f06f4b23636e7b945",
+      "span_diff": "diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy\nindex 2b1682a..dcdf615 100644\n--- a/.span/agent-hooks/hook-message-copy\n+++ b/.span/agent-hooks/hook-message-copy\n@@ -1,7 +1,7 @@\n⋮ (rest of the declaration diff, elided here for length)\n",
+      "summary": "Re-hash hook-message-copy after footer copy refinement"
+    }
+  ],
   "current": {
     "anchors": [
       {
-        "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274",
+        "content": "function cleanHeader(fileName: string): string {\n  return `${fileName} has implicit dependencies:`;\n}\n\nfunction cleanFooter(fileName: string): string {\n  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n}\n⋮ (rest of the extracted anchor snapshot, elided here for length)\n",
         "diff": "diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\nindex rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900\n--- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n+++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n@@ -247,7 +247,7 @@\n }\n \n function cleanFooter(fileName: string): string {\n-  return `If you change ${fileName} check the other files to confirm they still work together.`;\n+  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n }\n \n /**\n",
-        "content": "function cleanHeader(fileName: string): string {\n  return `${fileName} has implicit dependencies:`;\n}\n…"
+        "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274"
       }
     ]
   },
-  "commits": [
-    {
-      "hash": "5c5dcecd53c3f53a3801878f06f4b23636e7b945",
-      "date": "2026-07-30T11:51:18-04:00",
-      "summary": "Re-hash hook-message-copy after footer copy refinement",
-      "span_diff": "diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy\nindex 2b1682a..dcdf615 100644\n…",
-      "anchors": []
-    }
-  ]
+  "schema_version": 2,
+  "scoped": true,
+  "span": "agent-hooks/hook-message-copy"
 }
 ```
 
+`scoped: true` is present here because `-n 1` dropped older commits — the object above is
+a genuine capture of that scoped case, `commits` and all: `-n 1` still surfaces one commit
+alongside `current`, since `current` and the newest qualifying commit are independent of
+each other.
+
 A `commit` whose `.span/<name>` change re-hashed every anchor without adding, removing, or
-moving one (as above) still has an `anchors` array — it is simply empty; the `span_diff`
-alone carries the change. First-add anchors — for example the whole-span creation commit
-`2cbb7301`, `packages/agent-hooks/src/common/gate-core.ts#L797-L853` — carry `content`
-instead of `diff`:
+moving one (as `5c5dcecd` above) still has an `anchors` array — it is simply empty; the
+`span_diff` alone carries the change. First-add anchors — for example the whole-span
+creation commit `2cbb7301`, `packages/agent-hooks/src/common/gate-core.ts#L797-L853` —
+carry `content` instead of `diff`:
 
 ```json
 {
-  "path": "packages/agent-hooks/src/common/gate-core.ts#L797-L853",
-  "content": "/** The full-span checklist a semantic-staleness deny renders into `reason`. */\nfunction renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {\n…"
+  "content": "/** The full-span checklist a semantic-staleness deny renders into `reason`. */\nfunction renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {\n  const names = [...new Set(findings.map((row) => row.name))];\n⋮ (rest of the extracted anchor snapshot, elided here for length)\n",
+  "path": "packages/agent-hooks/src/common/gate-core.ts#L797-L853"
 }
 ```
 
@@ -258,10 +322,12 @@ to stderr and exits non-zero, with **no partial output on stdout**:
 error: history walk incomplete — not all commits were inspected (hit time budget)
 ```
 
-When `--limit`/`-n` truncates a timeline that has more history behind it, the command
-still prints the requested window to stdout but warns on stderr and sets `scoped` (JSON)
-or leaves the human window as-is (no scoped marker in text — the stderr warning is the
-signal in both formats):
+When `--limit`/`-n` truncates the *rendered* timeline (the underlying walk is always
+complete — a narrow anchor in a busy file can never fill the window with commits that
+changed nothing, since only qualifying commits are counted against the limit), the
+command still prints the requested window to stdout but warns on stderr and sets `scoped`
+(JSON) or leaves the human window as-is (no scoped marker in text — the stderr warning is
+the signal in both formats):
 
 ```
 warning: history is scoped — `--limit` dropped older commits; this is a partial timeline, not the complete record
