@@ -351,6 +351,7 @@ pub fn create_and_commit_span(
     let mf = git_span::span_file::SpanFile {
         anchors: records,
         why: why.to_string(),
+        config: git_span_core::SpanConfig::default(),
     };
     let rel = format!(".span/{name}");
     if let Some(parent) = span_dir.join(name).parent() {

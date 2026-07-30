@@ -677,6 +677,7 @@ mod tests {
         let mf = crate::span_file::SpanFile {
             anchors: Vec::new(),
             why: format!("span {name}"),
+            config: crate::span_file::SpanConfig::default(),
         };
         std::fs::write(&span_path, mf.serialize()).unwrap();
         run_git(&workdir, &["add", "-A"]);

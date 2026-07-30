@@ -46,25 +46,13 @@ pub struct Anchor {
     pub stored_hash: String,
 }
 
-/// `-C` levels for `git log -L` copy detection. Stored in span config,
-/// not in the anchor record. Serialized as the kebab-case variant name:
-/// `off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CopyDetection {
-    Off,
-    SameCommit,
-    AnyFileInCommit,
-    AnyFileInRepo,
-}
-
-/// Resolver options for all anchors in a span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct SpanConfig {
-    pub copy_detection: CopyDetection,
-    pub ignore_whitespace: bool,
-    pub follow_moves: bool,
-}
+// `CopyDetection` and `SpanConfig` live in the gix-free `git-span-core`
+// kernel alongside the span-file format that carries them (the trailing
+// `[config]` block). Re-exported here so every existing
+// `crate::types::CopyDetection` / `crate::types::SpanConfig` path is
+// unchanged. Serialized as kebab-case wire names: `off`, `same-commit`,
+// `any-file-in-commit`, `any-file-in-repo`.
+pub use git_span_core::{CopyDetection, SpanConfig};
 
 pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
 pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
@@ -102,11 +90,7 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
         name: name.to_string(),
         anchors,
         why: file.why.clone(),
-        config: SpanConfig {
-            copy_detection: DEFAULT_COPY_DETECTION,
-            ignore_whitespace: DEFAULT_IGNORE_WHITESPACE,
-            follow_moves: DEFAULT_FOLLOW_MOVES,
-        },
+        config: file.config,
     }
 }
 

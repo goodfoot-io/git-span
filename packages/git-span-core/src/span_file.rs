@@ -8,7 +8,19 @@
 //! <anchor-address> <algorithm>:<content-hash>
 //!
 //! <why>
+//!
+//! [config]
+//! copy_detection = "same-commit"   # off | same-commit | any-file-in-commit | any-file-in-repo
+//! ignore_whitespace = false
+//! follow_moves = false
 //! ```
+//!
+//! The `[config]` block is optional: a line that is exactly `[config]`
+//! within the why section starts it, and everything from that line to the
+//! end of the file belongs to it (the why text excludes the block and any
+//! trailing blank lines before it). Keys default when omitted; unknown
+//! keys, invalid values, or malformed lines are refused (fail closed).
+//! TOML-style `#` comments and blank lines are allowed inside the block.
 //!
 //! This is the on-disk contract `.span`/`.wiki` consumers share: a pure
 //! text↔struct transform with no repository access.
@@ -54,13 +66,77 @@ impl fmt::Display for AnchorRecord {
     }
 }
 
+/// `-C` levels for copy detection. Stored in the span file's `[config]`
+/// block, not in the anchor record. The wire (kebab-case) names are
+/// `off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`.
+///
+/// Declaration order is narrowest → most permissive so `Ord`/`max` picks
+/// the widest setting across spans.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CopyDetection {
+    Off,
+    SameCommit,
+    AnyFileInCommit,
+    AnyFileInRepo,
+}
+
+impl CopyDetection {
+    /// The documented kebab-case wire name used in the `[config]` block.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            CopyDetection::Off => "off",
+            CopyDetection::SameCommit => "same-commit",
+            CopyDetection::AnyFileInCommit => "any-file-in-commit",
+            CopyDetection::AnyFileInRepo => "any-file-in-repo",
+        }
+    }
+
+    /// Parse a kebab-case wire name. `None` for anything undocumented.
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "off" => Some(CopyDetection::Off),
+            "same-commit" => Some(CopyDetection::SameCommit),
+            "any-file-in-commit" => Some(CopyDetection::AnyFileInCommit),
+            "any-file-in-repo" => Some(CopyDetection::AnyFileInRepo),
+            _ => None,
+        }
+    }
+}
+
+/// Resolver options for all anchors in a span, parsed from the optional
+/// trailing `[config]` block. Absent block (or absent keys) ⇒ defaults.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpanConfig {
+    pub copy_detection: CopyDetection,
+    pub ignore_whitespace: bool,
+    pub follow_moves: bool,
+}
+
+impl Default for SpanConfig {
+    /// The documented defaults: `same-commit` / `false` / `false`.
+    fn default() -> Self {
+        SpanConfig {
+            copy_detection: CopyDetection::SameCommit,
+            ignore_whitespace: false,
+            follow_moves: false,
+        }
+    }
+}
+
 /// An in-memory representation of a single span file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpanFile {
     /// Anchor records in file order.
     pub anchors: Vec<AnchorRecord>,
-    /// Why text (everything after the first blank line).
+    /// Why text (everything after the first blank line, excluding the
+    /// optional trailing `[config]` block).
     pub why: String,
+    /// Resolver options from the trailing `[config]` block; defaults when
+    /// the block (or a key) is absent.
+    pub config: SpanConfig,
 }
 
 impl SpanFile {
@@ -99,9 +175,14 @@ impl SpanFile {
                 "span file contains Git conflict markers".to_string(),
             ));
         }
-        // Split on first blank line (double newline).
-        let (anchor_block, why) = match input.split_once("\n\n") {
-            Some((anchors, why)) => (anchors, why.to_string()),
+        // Split on first blank line (double newline). `why_first_line` is
+        // the 1-based line number of the why section's first line in the
+        // (normalized) input, used for `[config]` diagnostics.
+        let (anchor_block, why, why_first_line) = match input.split_once("\n\n") {
+            Some((anchors, why)) => {
+                let first = anchors.matches('\n').count() + 3;
+                (anchors, why.to_string(), first)
+            }
             None => {
                 // No blank-line separator found. Check if the content
                 // starts with a newline — that signals an empty anchor
@@ -112,10 +193,12 @@ impl SpanFile {
                     // why text's own leading indentation survives, matching the
                     // `split_once` sibling path which consumes just the
                     // separator.
-                    ("", input.trim_start_matches('\n').to_string())
+                    let trimmed = input.trim_start_matches('\n');
+                    let stripped = input.len() - trimmed.len();
+                    ("", trimmed.to_string(), stripped + 1)
                 } else {
                     // All text is anchors, why is empty.
-                    (input, String::new())
+                    (input, String::new(), 1)
                 }
             }
         };
@@ -133,10 +216,33 @@ impl SpanFile {
             anchors.push(record);
         }
 
-        // Trim trailing newlines from why.
+        // Extract the optional trailing `[config]` block: the first line
+        // that is exactly `[config]` starts it; everything from that line
+        // on is configuration, not prose.
+        let why_lines: Vec<&str> = why.lines().collect();
+        let config_marker = why_lines.iter().position(|l| l.trim() == "[config]");
+        let (why, config) = match config_marker {
+            Some(idx) => {
+                let prose = why_lines[..idx].join("\n");
+                let block: Vec<(usize, &str)> = why_lines[idx + 1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (why_first_line + idx + 1 + i, *l))
+                    .collect();
+                (prose, parse_config_block(&block)?)
+            }
+            None => (why, SpanConfig::default()),
+        };
+
+        // Trim trailing newlines (and any blank lines that preceded the
+        // `[config]` block) from why.
         let why = why.trim_end().to_string();
 
-        Ok(SpanFile { anchors, why })
+        Ok(SpanFile {
+            anchors,
+            why,
+            config,
+        })
     }
 
     /// Serialize this span file to its text format.
@@ -151,14 +257,21 @@ impl SpanFile {
     ///
     /// When there are no anchors, a leading blank line introduces the why
     /// text so the parser can distinguish an empty anchor block. When
-    /// neither anchors nor why exist, output is empty.
+    /// neither anchors nor why exist (and the config is default), output
+    /// is empty.
+    ///
+    /// A non-default config round-trips as the documented trailing
+    /// `[config]` block (all three keys, explicit). A default config
+    /// serializes nothing — parse treats an absent block as defaults, so
+    /// `parse(serialize(x)) == x` holds either way.
     pub fn serialize(&self) -> String {
+        let has_config = self.config != SpanConfig::default();
         let mut out = String::new();
         for anchor in &self.anchors {
             out.push_str(&anchor.to_string());
             out.push('\n');
         }
-        if !self.anchors.is_empty() || !self.why.is_empty() {
+        if !self.anchors.is_empty() || !self.why.is_empty() || has_config {
             // Blank line separator (or leading blank when no anchors).
             out.push('\n');
         }
@@ -166,8 +279,113 @@ impl SpanFile {
             out.push_str(&self.why);
             out.push('\n');
         }
+        if has_config {
+            if !self.why.is_empty() {
+                // Blank line between the why prose and the config block.
+                out.push('\n');
+            }
+            out.push_str("[config]\n");
+            out.push_str(&format!(
+                "copy_detection = \"{}\"\n",
+                self.config.copy_detection.wire_name()
+            ));
+            out.push_str(&format!(
+                "ignore_whitespace = {}\n",
+                self.config.ignore_whitespace
+            ));
+            out.push_str(&format!("follow_moves = {}\n", self.config.follow_moves));
+        }
         out
     }
+}
+
+/// Parse the lines of a `[config]` block (everything after the `[config]`
+/// marker line). Each entry is `(1-based file line number, raw line)`.
+///
+/// TOML-style `#` comments (outside double quotes) and blank lines are
+/// allowed. Unknown keys, duplicate keys, invalid values, and malformed
+/// lines are refused with an error naming the offense and its line —
+/// fail closed rather than silently accepting an unenforceable setting.
+fn parse_config_block(lines: &[(usize, &str)]) -> Result<SpanConfig> {
+    /// Strip a `#` comment that is not inside a double-quoted string.
+    fn strip_comment(line: &str) -> &str {
+        let mut in_string = false;
+        for (i, c) in line.char_indices() {
+            match c {
+                '"' => in_string = !in_string,
+                '#' if !in_string => return &line[..i],
+                _ => {}
+            }
+        }
+        line
+    }
+
+    fn parse_bool(key: &str, value: &str, lineno: usize) -> Result<bool> {
+        match value {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(Error::InvalidSpanFile(format!(
+                "line {lineno}: invalid {key} value `{other}`: expected true or false"
+            ))),
+        }
+    }
+
+    let mut config = SpanConfig::default();
+    let mut seen: [Option<usize>; 3] = [None; 3];
+    for &(lineno, raw) in lines {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(Error::InvalidSpanFile(format!(
+                "line {lineno}: malformed [config] line `{}`: expected `key = value`",
+                raw.trim()
+            )));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let slot = match key {
+            "copy_detection" => 0,
+            "ignore_whitespace" => 1,
+            "follow_moves" => 2,
+            other => {
+                return Err(Error::InvalidSpanFile(format!(
+                    "line {lineno}: unknown [config] key `{other}`: expected \
+                     copy_detection, ignore_whitespace, or follow_moves"
+                )));
+            }
+        };
+        if let Some(first) = seen[slot] {
+            return Err(Error::InvalidSpanFile(format!(
+                "line {lineno}: duplicate [config] key `{key}` (first set on line {first})"
+            )));
+        }
+        seen[slot] = Some(lineno);
+        match slot {
+            0 => {
+                let Some(unquoted) = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                else {
+                    return Err(Error::InvalidSpanFile(format!(
+                        "line {lineno}: invalid copy_detection value `{value}`: \
+                         expected a quoted string, e.g. copy_detection = \"same-commit\""
+                    )));
+                };
+                config.copy_detection = CopyDetection::from_wire(unquoted).ok_or_else(|| {
+                    Error::InvalidSpanFile(format!(
+                        "line {lineno}: invalid copy_detection value `{unquoted}`: \
+                         expected \"off\", \"same-commit\", \"any-file-in-commit\", \
+                         or \"any-file-in-repo\""
+                    ))
+                })?;
+            }
+            1 => config.ignore_whitespace = parse_bool(key, value, lineno)?,
+            _ => config.follow_moves = parse_bool(key, value, lineno)?,
+        }
+    }
+    Ok(config)
 }
 
 /// Detect Git textual merge-conflict markers. A line is a conflict
@@ -498,9 +716,10 @@ pub fn merge_span_files(
     // so conflict-marker output order is stable across runs.
     unresolved.sort_by_key(|u| (u.path.clone(), u.start_line, u.end_line));
 
-    // Resolve why text.
+    // Resolve why text and config with the same three-way policy.
     let (why_text, why_conflict) = resolve_why_text(base, ours, theirs);
-    if why_conflict {
+    let (config, config_conflict) = resolve_config(base, ours, theirs);
+    if why_conflict || config_conflict {
         // Signal why conflict via a synthetic unresolved entry.
         unresolved.push(UnresolvedAnchor {
             path: String::new(),
@@ -527,8 +746,32 @@ pub fn merge_span_files(
         merged: SpanFile {
             anchors: merged_anchors,
             why: why_text,
+            config,
         },
         unresolved,
+    }
+}
+
+/// Resolve the `[config]` block from three-way merge inputs with the same
+/// policy as [`resolve_why_text`]: an unchanged side yields to the changed
+/// one; divergent changes (or divergence without a base) fail closed.
+fn resolve_config(
+    base: Option<&SpanFile>,
+    ours: &SpanFile,
+    theirs: &SpanFile,
+) -> (SpanConfig, bool) {
+    match base {
+        Some(base) => {
+            let o_changed = ours.config != base.config;
+            let t_changed = theirs.config != base.config;
+            match (o_changed, t_changed) {
+                (false, false) => (base.config, false),
+                (true, false) => (ours.config, false),
+                (false, true) => (theirs.config, false),
+                (true, true) => (ours.config, ours.config != theirs.config),
+            }
+        }
+        None => (ours.config, ours.config != theirs.config),
     }
 }
 
@@ -797,6 +1040,139 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_block_excluded_from_why() {
+        let input = "a.txt sha256:111\n\nGuard the resolver settings.\n\n[config]\ncopy_detection = \"any-file-in-repo\"\nignore_whitespace = true\nfollow_moves = true\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert_eq!(span.why, "Guard the resolver settings.");
+        assert_eq!(
+            span.config,
+            SpanConfig {
+                copy_detection: CopyDetection::AnyFileInRepo,
+                ignore_whitespace: true,
+                follow_moves: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_config_block_allows_comments_and_blank_lines() {
+        let input = "a.txt sha256:111\n\nwhy\n\n[config]\n\ncopy_detection = \"off\"   # off | same-commit | any-file-in-commit | any-file-in-repo\n# a full-line comment\nfollow_moves = true # trailing\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert_eq!(span.why, "why");
+        assert_eq!(span.config.copy_detection, CopyDetection::Off);
+        assert!(!span.config.ignore_whitespace);
+        assert!(span.config.follow_moves);
+    }
+
+    #[test]
+    fn parse_config_block_without_why_prose() {
+        let input = "a.txt sha256:111\n\n[config]\nignore_whitespace = true\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert_eq!(span.why, "");
+        assert!(span.config.ignore_whitespace);
+        assert_eq!(span.config.copy_detection, CopyDetection::SameCommit);
+    }
+
+    #[test]
+    fn parse_missing_config_block_yields_defaults() {
+        let span = SpanFile::parse("a.txt sha256:111\n\njust a why\n").unwrap();
+        assert_eq!(span.config, SpanConfig::default());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_copy_detection_value() {
+        let input = "a.txt sha256:111\n\nwhy\n\n[config]\ncopy_detection = \"totally-bogus-value\"\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("copy_detection"), "err: {err}");
+        assert!(err.contains("totally-bogus-value"), "err: {err}");
+        assert!(err.contains("line 6"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_unknown_config_key() {
+        let input = "a.txt sha256:111\n\nwhy\n\n[config]\nfollow_renames = true\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("follow_renames"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_malformed_config_line() {
+        let input = "a.txt sha256:111\n\nwhy\n\n[config]\nnot a key value pair\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("expected `key = value`"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_config_key() {
+        let input =
+            "a.txt sha256:111\n\nwhy\n\n[config]\nfollow_moves = true\nfollow_moves = false\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("duplicate"), "err: {err}");
+        assert!(err.contains("follow_moves"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_invalid_bool_value() {
+        let input = "a.txt sha256:111\n\nwhy\n\n[config]\nignore_whitespace = yes\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("ignore_whitespace"), "err: {err}");
+        assert!(err.contains("yes"), "err: {err}");
+    }
+
+    #[test]
+    fn serialize_roundtrip_non_default_config() {
+        let span = SpanFile {
+            anchors: vec![AnchorRecord {
+                path: "a.txt".into(),
+                start_line: 1,
+                end_line: 5,
+                algorithm: "rk64".into(),
+                content_hash: "abcd".into(),
+            }],
+            why: "keep these settings.".into(),
+            config: SpanConfig {
+                copy_detection: CopyDetection::AnyFileInCommit,
+                ignore_whitespace: true,
+                follow_moves: false,
+            },
+        };
+        let serialized = span.serialize();
+        assert!(
+            serialized.contains("[config]\ncopy_detection = \"any-file-in-commit\""),
+            "serialized: {serialized}"
+        );
+        let reparsed = SpanFile::parse(&serialized).unwrap();
+        assert_eq!(span, reparsed);
+    }
+
+    #[test]
+    fn serialize_roundtrip_config_without_why() {
+        let span = SpanFile {
+            anchors: vec![AnchorRecord {
+                path: "a.txt".into(),
+                start_line: 0,
+                end_line: 0,
+                algorithm: "rk64".into(),
+                content_hash: "abcd".into(),
+            }],
+            why: String::new(),
+            config: SpanConfig {
+                copy_detection: CopyDetection::Off,
+                ignore_whitespace: false,
+                follow_moves: true,
+            },
+        };
+        let reparsed = SpanFile::parse(&span.serialize()).unwrap();
+        assert_eq!(span, reparsed);
+    }
+
+    #[test]
+    fn serialize_default_config_emits_no_block() {
+        let span = SpanFile::parse("a.txt sha256:111\n\nwhy\n").unwrap();
+        assert!(!span.serialize().contains("[config]"));
+    }
+
+    #[test]
     fn serialize_roundtrip() {
         let input = "a.txt sha256:111\nb.rs#L1-L5 sha256:222\n\nSome why text.\n";
         let span = SpanFile::parse(input).unwrap();
@@ -819,8 +1195,8 @@ mod tests {
             path: "b.rs".into(), start_line: 5, end_line: 10,
             algorithm: "rk64".into(), content_hash: "2222".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: String::new() };
-        let theirs = SpanFile { anchors: vec![b.clone()], why: String::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![b.clone()], why: String::new(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Both unique anchors appear in the merged output.
         assert_eq!(result.merged.anchors.len(), 2);
@@ -835,8 +1211,8 @@ mod tests {
             path: "same.rs".into(), start_line: 1, end_line: 5,
             algorithm: "rk64".into(), content_hash: "deadbeef".into(),
         };
-        let ours = SpanFile { anchors: vec![anchor.clone()], why: String::new() };
-        let theirs = SpanFile { anchors: vec![anchor.clone()], why: String::new() };
+        let ours = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Identical anchor on both sides produces a single copy.
         assert_eq!(result.merged.anchors.len(), 1);
@@ -854,8 +1230,8 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 2,
             algorithm: "rk64".into(), content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor], why: String::new() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor], why: String::new() };
+        let ours = SpanFile { anchors: vec![ours_anchor], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![theirs_anchor], why: String::new(), config: SpanConfig::default() };
         // Source file available for re-hashing — should resolve to one anchor.
         let source = vec![("a.txt".into(), b"hello\nworld\n".to_vec())];
         let result = merge_span_files(None, &ours, &theirs, &source);
@@ -873,8 +1249,8 @@ mod tests {
             path: "x.txt".into(), start_line: 2, end_line: 4,
             algorithm: "rk64".into(), content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor.clone()], why: String::new() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor.clone()], why: String::new() };
+        let ours = SpanFile { anchors: vec![ours_anchor.clone()], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![theirs_anchor.clone()], why: String::new(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No source to re-hash — anchor listed as unresolved.
         assert_eq!(result.unresolved.len(), 1);
@@ -891,9 +1267,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "common why".into() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only ours changed why → take ours.
         assert_eq!(result.merged.why, "ours why");
@@ -906,9 +1282,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "common why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only theirs changed why → take theirs.
         assert_eq!(result.merged.why, "theirs why");
@@ -921,9 +1297,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "original why".into() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "new why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "new why".into() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "original why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both changed why identically → accept the new common why.
         assert_eq!(result.merged.why, "new why");
@@ -936,9 +1312,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "base why".into() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "base why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both sides changed why differently from base — fail closed.
         assert!(result.unresolved.len() > 0);
@@ -950,9 +1326,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "stable why".into() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "stable why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "stable why".into() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // No side changed why → keep the common value.
         assert_eq!(result.merged.why, "stable why");
@@ -965,8 +1341,8 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No base span and divergent why — fail closed.
         assert!(result.unresolved.len() > 0);
@@ -986,8 +1362,8 @@ mod tests {
             path: "a.rs".into(), start_line: 10, end_line: 15,
             algorithm: "rk64".into(), content_hash: "ccc".into(),
         };
-        let ours = SpanFile { anchors: vec![z, a_later], why: String::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: String::new() };
+        let ours = SpanFile { anchors: vec![z, a_later], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         assert_eq!(result.merged.anchors.len(), 3);
         // Canonical: (path, start_line, end_line) ascending.
@@ -1007,8 +1383,8 @@ mod tests {
             path: "f.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "line_hash".into(),
         };
-        let ours = SpanFile { anchors: vec![whole.clone()], why: String::new() };
-        let theirs = SpanFile { anchors: vec![line.clone()], why: String::new() };
+        let ours = SpanFile { anchors: vec![whole.clone()], why: String::new(), config: SpanConfig::default() };
+        let theirs = SpanFile { anchors: vec![line.clone()], why: String::new(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Whole-file and line-range anchors both preserved.
         assert_eq!(result.merged.anchors.len(), 2);

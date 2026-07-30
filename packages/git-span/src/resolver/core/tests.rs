@@ -353,6 +353,7 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
     let mf = crate::span_file::SpanFile {
         anchors: records,
         why: why.to_string(),
+        config: git_span_core::SpanConfig::default(),
     };
     std::fs::write(span_dir.join(name), mf.serialize()).expect("write span file");
     run_git(dir, &["add", &format!(".span/{name}")]);

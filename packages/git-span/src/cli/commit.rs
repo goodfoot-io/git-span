@@ -248,6 +248,7 @@ pub(crate) fn read_worktree_span(repo: &gix::Repository, span_root: &str, name: 
         Ok(SpanFile {
             anchors: Vec::new(),
             why: String::new(),
+            config: crate::span_file::SpanConfig::default(),
         })
     }
 }
@@ -847,6 +848,7 @@ mod tests {
                 content_hash: "aaaa".into(),
             }],
             why: "first write".into(),
+            config: crate::span_file::SpanConfig::default(),
         };
 
         // First write: creates the file.
@@ -866,6 +868,7 @@ mod tests {
                 content_hash: "bbbb".into(),
             }],
             why: "second write".into(),
+            config: crate::span_file::SpanConfig::default(),
         };
         write_worktree_span(&repo, ".span", "test/atomic", &mut span2).unwrap();
 
@@ -903,6 +906,7 @@ mod tests {
                 },
             ],
             why: "atomic write verification".into(),
+            config: crate::span_file::SpanConfig::default(),
         };
 
         write_worktree_span(&repo, ".span", "test/atomic", &mut span).unwrap();
@@ -958,6 +962,7 @@ mod tests {
                 },
             ],
             why: String::new(),
+            config: crate::span_file::SpanConfig::default(),
         };
 
         write_worktree_span(&repo, ".span", "test/sorted", &mut span).unwrap();
@@ -999,6 +1004,7 @@ mod tests {
                 },
             ],
             why: String::new(),
+            config: crate::span_file::SpanConfig::default(),
         };
 
         write_worktree_span(&repo, ".span", "test/sorted", &mut span2).unwrap();

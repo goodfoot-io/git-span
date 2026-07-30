@@ -157,6 +157,7 @@ pub fn generate(
                 content_hash: hash,
             }],
             why: format!("bench span {i}"),
+            config: crate::span_file::SpanConfig::default(),
         };
 
         let span_name = format!("span-{i}");

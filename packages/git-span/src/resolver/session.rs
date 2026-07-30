@@ -171,6 +171,13 @@ pub(crate) struct ReverseWalkOutput {
     /// including commits where the path was renamed (the entries include
     /// the `Renamed` NS variant so downstream consumers can follow the trail).
     pub(crate) per_anchor_deltas: HashMap<(String, String), Vec<Arc<CommitDelta>>>,
+    /// The effective copy-detection breadth of this walk: the most
+    /// permissive `copy_detection` across all spans in the batch, passed
+    /// to every per-commit `name_status`. Consumers keying caches on the
+    /// walk's entry stream (`PathTimelineKey`) must use this value, not a
+    /// constant, so timelines built from walks of different breadth never
+    /// share an entry.
+    pub(crate) max_copy: CopyDetection,
 }
 
 /// Maps path bytes to the indexes of anchors currently tracking that path,
@@ -1553,17 +1560,17 @@ impl ConcurrentSession {
         // Park the Bloom handle for the next walk in this session.
         //
         // Multiple walks per session (one per stolen chunk in the parallel
-        // baseline build) also means `self.timelines` outlives a single walk.
-        // That is sound only while every span shares one `copy_detection`
-        // (`span_from_file` hard-codes the default), because
-        // `PathTimelineKey` does not key on the walk's `max_copy`. If
-        // per-span `copy_detection` ever becomes configurable, clear or
-        // re-key `self.timelines` here.
+        // baseline build) also means the timeline cache outlives a single
+        // walk. That is sound because `PathTimelineKey` keys on the walk's
+        // effective breadth: `max_copy` is carried in `ReverseWalkOutput`
+        // and used by `resolve_at_head_shared`, so timelines built from
+        // walks of different copy-detection breadth never share an entry.
         self.bloom_memo = Some(bloom);
 
         shared.reverse_walk_output = Some(ReverseWalkOutput {
             head_sha,
             per_anchor_deltas,
+            max_copy,
         });
 
         Ok(())
@@ -1614,7 +1621,7 @@ pub(crate) fn resolve_at_head_shared(
     // Clone the walk data so we can release the borrow on
     // `shared.reverse_walk_output` and then freely access
     // `concurrent.blob_oid_memo` during the hunk loop.
-    let (head_sha, deltas) = {
+    let (head_sha, deltas, copy_detection) = {
         let output = shared
             .reverse_walk_output
             .as_ref()
@@ -1625,7 +1632,7 @@ pub(crate) fn resolve_at_head_shared(
             .get(&(span_name.to_string(), anchor_id.to_string()))
             .cloned()
             .unwrap_or_default();
-        (head_sha, deltas)
+        (head_sha, deltas, output.max_copy)
     };
 
     // Phase 1: route projection through a `PathTimeline`. The timeline is
@@ -1633,16 +1640,13 @@ pub(crate) fn resolve_at_head_shared(
     // `anchor_sha`; anchors with the same current path/HEAD blob but different
     // replay windows must not share an entry.
     //
-    // Copy detection is keyed off the anchor's span config when available;
-    // when it isn't threaded through, we fall back to the most permissive
-    // setting used by the reverse-indexed walk. The walk recorded entries
-    // under the most-permissive copy_detection in `build_reverse_walk`, so
-    // using that here is safe.
-    // The reverse-indexed walk recorded entries under the most-permissive
-    // copy_detection across all spans; using SameCommit here is a safe
-    // default for cache identity since the entry stream already reflects
-    // any wider detection the walk performed.
-    let copy_detection = CopyDetection::SameCommit;
+    // Cache identity keys on the walk's *effective* breadth (`max_copy`,
+    // the most permissive per-span `copy_detection` in the batch), because
+    // the walk's entry stream — and therefore the timeline built from it —
+    // reflects that breadth, not any single span's setting. A hard-coded
+    // constant here would let timelines built from walks of different
+    // breadth (e.g. after span configs change between resolves in one
+    // session) collide in the cache.
 
     let head_blob_oid_hex: Option<String> = concurrent.head_blob_oid(repo, &head_sha, &r.path)?;
     let head_blob_oid: Option<gix::ObjectId> = head_blob_oid_hex

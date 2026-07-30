@@ -35,18 +35,17 @@
 //! widen-marked span into the affected set whenever the changed-path set is
 //! non-empty.
 //!
-//! `SameCommit` copy detection (the only copy mode the current file-backed span
-//! model can express — `types::span_from_file` hard-codes
-//! `DEFAULT_COPY_DETECTION = SameCommit`) is deliberately treated as *local*:
-//! its copy search is bounded to the commits along the anchored path's own
-//! history, which descendant-ancestry + path-stability already stabilizes. Only
-//! the genuinely global modes (`AnyFileInCommit` / `AnyFileInRepo`) force a
-//! widen, and that contribution is supplied by the caller via
-//! `global_copy_widen` (derived from the whole-invocation
+//! `Off`/`SameCommit` copy detection (the defaults; per-span overrides come
+//! from the span file's trailing `[config]` block) is deliberately treated as
+//! *local*: its copy search is bounded to the commits along the anchored
+//! path's own history, which descendant-ancestry + path-stability already
+//! stabilizes. Only the genuinely global modes (`AnyFileInCommit` /
+//! `AnyFileInRepo`) force a widen, and that contribution is supplied by the
+//! caller via `global_copy_widen` (derived from the whole-invocation
 //! [`StateToken::copy_detection`](crate::resolver::core::token::StateToken)),
-//! because `SpanCore` does not itself carry the per-span copy mode. If the span
-//! model ever gains a per-span global copy mode, that path already fails closed:
-//! the token's max copy mode widens *all* spans.
+//! because `SpanCore` does not itself carry the per-span copy mode. A span
+//! whose `[config]` selects a global copy mode therefore fails closed: the
+//! token's max copy mode widens *all* spans.
 
 use std::collections::{BTreeSet, HashSet};
 

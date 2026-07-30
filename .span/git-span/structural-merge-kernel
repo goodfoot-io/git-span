@@ -1,7 +1,7 @@
-packages/git-span-core/src/lib.rs#L27-L28 rk64:925472c09f25dcae
-packages/git-span-core/src/span_file.rs#L16-L998 rk64:419311782370bc19
+packages/git-span-core/src/lib.rs#L27-L31 rk64:385082e97c54ebec
+packages/git-span-core/src/span_file.rs#L40-L1386 rk64:43276a8327029ebe
 packages/git-span-core/src/validation.rs#L27-L31 rk64:2796333a43593e93
 packages/git-span/src/cli/merge_driver.rs rk64:624b66599fb2bbe0
-packages/git-span/src/span_file.rs#L10-L10 rk64:e229c465fbde472c
+packages/git-span/src/span_file.rs#L10-L12 rk64:97fa297382cec2a4
 
 Structural merge kernel and the merge-driver CLI that delegates to it, sharing a protocol (no-worktree source resolution, zero/one exit code convention, structural conflict fallthrough) that no type or test enforces across both sides.

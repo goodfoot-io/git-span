@@ -25,7 +25,10 @@ pub mod span_file;
 pub mod validation;
 
 pub use error::{Error, Result};
-pub use span_file::{SpanMergeResult, UnresolvedAnchor, has_conflict_markers, merge_span_files};
+pub use span_file::{
+    CopyDetection, SpanConfig, SpanMergeResult, UnresolvedAnchor, has_conflict_markers,
+    merge_span_files,
+};
 pub use validation::{
     SPAN_NAME_RULE, RESERVED_SPAN_NAMES, validate_anchor_id, validate_span_name,
     validate_span_name_shape, validate_repo_relative_path,

@@ -7,4 +7,6 @@
 //! `SpanFile::parse` returns the kernel's `Result`; call sites lift it into
 //! this crate's `Error` via the `?` operator / `From`.
 
-pub use git_span_core::span_file::{AnchorRecord, SpanFile, has_conflict_markers, parse_address};
+pub use git_span_core::span_file::{
+    AnchorRecord, CopyDetection, SpanConfig, SpanFile, has_conflict_markers, parse_address,
+};
