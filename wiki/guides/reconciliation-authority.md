@@ -11,7 +11,7 @@ keywords: [reconcile, stale, drift, authority, source of truth, fail closed, doc
 `git span stale --fix` auto-resolves `Moved` and whitespace-equivalent
 `Changed` anchors; a `Changed` anchor whose content differs beyond whitespace
 is left drifting so it resurfaces for confirmation
-([mod.rs](../../packages/git-span/src/cli/mod.rs#L69-L76)). This page governs
+([mod.rs](../../packages/git-span/src/cli/mod.rs#L70-L77)). This page governs
 that residue — the meaning-altering `Changed` and `Deleted` anchors
 ([types.rs](../../packages/git-span/src/types.rs#L133-L144)).
 
@@ -30,7 +30,7 @@ by cost of error:
    committed drift to the first mutating commit
    ([DriftLocus](../../packages/git-span/src/types.rs#L211-L222)) and
    `git span history <name>` renders the span's commit timeline
-   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L183-L189)). A doc
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L184-L190)). A doc
    drifting behind a deliberate, committed code change means the doc is
    wrong. A code change with no coherent commit story may be a regression —
    the doc may be the truth.
@@ -50,4 +50,4 @@ Fail closed on authority ambiguity, not on editing per se.
   lands ([types.rs](../../packages/git-span/src/types.rs#L136-L138)).
 - Keep the span's why across routine re-anchors; write a new one only when
   the subsystem itself changed
-  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L115-L117)).
+  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L116-L118)).

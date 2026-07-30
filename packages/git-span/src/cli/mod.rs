@@ -29,6 +29,7 @@ pub mod stale_cluster;
 pub mod stale_fix;
 pub mod stale_output;
 pub mod tree;
+pub mod unified_diff;
 
 pub use drift_label::format_drift_label;
 
