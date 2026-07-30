@@ -1,5 +1,5 @@
-packages/git-span/src/cli/history.rs#L1-L29 rk64:2bee894d93abe678
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L94 rk64:9f11e6ba1dc15793
-plugins-codex/git-span/skills/git-span/references/command-reference.md#L81-L94 rk64:9f11e6ba1dc15793
+packages/git-span/src/cli/history.rs#L1-L44 rk64:882cb60ba9fbfd40
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L81-L97 rk64:f965a19ec412004a
+plugins-codex/git-span/skills/git-span/references/command-reference.md#L81-L97 rk64:f965a19ec412004a
 
-The handbook's history section documents the timeline the history command's module header defines — a newest-first git-log-style walk of span-declaration and per-anchor snapshot diffs that pairs anchors by content, then address, then similarity so re-anchors render as renames, renders unextractable content structurally rather than as prose, and leads with uncommitted worktree drift in human-text-default/schema-v2-JSON output — where the plugins-claude copy is normative and the plugins-codex copy mirrors it.
+The handbook's history section documents the timeline the history command's module header defines — a newest-first git-log-style walk of span-declaration and per-anchor snapshot diffs that pairs anchors by content, then address, then similarity, rendering a re-anchor as a rename only at or above the 50% similarity floor and as a deleted anchor plus a new anchor below it, renders unextractable content structurally rather than as prose, and leads with uncommitted worktree drift in human-text-default/schema-v2-JSON output — where the plugins-claude copy is normative and the plugins-codex copy mirrors it.

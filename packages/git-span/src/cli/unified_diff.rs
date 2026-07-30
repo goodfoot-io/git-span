@@ -138,6 +138,18 @@ pub enum AnchorDiffKind {
     /// The anchor does not exist in the new state. `deleted anchor`
     /// header line; new side renders with `/dev/null` conventions.
     Deleted,
+    /// Address and content are both unchanged, but the declaration now
+    /// records a *different* token for this address — the binding moved
+    /// while the bytes stayed put. `rebound anchor` header line, and an
+    /// `index` line carrying the two **recorded** tokens rather than the
+    /// rendered content's hash: the transition is the whole event, and
+    /// there are no hunks because nothing was edited.
+    ///
+    /// Content-preserving rebindings (a two-anchor swap, a three-anchor
+    /// rotation) change nothing a content diff can see, so without this
+    /// form the one commit that broke every affected anchor is the one
+    /// commit with no anchor-level account.
+    Rebound,
 }
 
 /// Whether a side has renderable content, and if not, why.
@@ -417,6 +429,10 @@ fn push_header(
                 }
                 AnchorDiffKind::New => out.push_str("new anchor\n"),
                 AnchorDiffKind::Deleted => out.push_str("deleted anchor\n"),
+                AnchorDiffKind::Rebound => {
+                    out.push_str("rebound anchor\n");
+                    headers_only = true;
+                }
             }
             out.push_str(&format!(
                 "index {}..{}\n",

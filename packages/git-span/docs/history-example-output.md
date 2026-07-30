@@ -26,9 +26,12 @@ dialect:
   why edit shows up as an ordinary line in this diff.
 - **per-anchor diffs** — pseudo-diffs between an anchor's *extracted snapshots*, using
   `path#Lstart-Lend` display paths and `index rk64:…` lines instead of git blob OIDs.
-  Anchors pair across consecutive states by exact address first, then by content
-  similarity (git's `-M` shape) — a re-anchor renders as a `rename from`/`rename to`
-  block, not a delete followed by an add.
+  Anchors pair across consecutive states by identical content first, then by exact
+  address, then by content similarity (git's `-M` shape). Similarity pairing is
+  conditional on the floor: at or above 50% a re-anchor renders as one
+  `rename from`/`rename to` block; below it the two snapshots are unrelated and render
+  as `deleted anchor` + `new anchor`. A rebinding that permutes bindings among
+  addresses changes no content at all and renders as `rebound anchor`.
 
 Declared anchor ranges are taken at face value at every commit — a stale range
 extracting "wrong" content *is* the drift being visualized, never remapped. Anchor diffs
@@ -204,8 +207,15 @@ Conventions demonstrated:
   (92% similarity, `e86fe9cc`) and omitted when the paired content is byte-identical
   (100% similarity, `78da668f` — header only, no hunk).
 - `new anchor` / `deleted anchor` replace git's mode lines (`new file mode`/`deleted file
-  mode`) for anchors with no pairing partner in the adjacent state; the body is a full
-  addition/deletion against `/dev/null`.
+  mode`) for anchors with no pairing partner in the adjacent state — including a moved
+  anchor whose old and new content fall *below* the similarity threshold, which is two
+  unrelated blocks and never one rename; the body is a full addition/deletion against
+  `/dev/null`. Git draws the same line: a `git mv` plus a total replacement renders
+  `new file` + `deleted file` even at `--find-renames=0%`.
+- `rebound anchor` marks the one event no content comparison can see: the address and its
+  content are unchanged, but the declaration binds a different recorded token there. The
+  `index` line carries the two recorded tokens (not the rendered content's hash, which is
+  the same on both sides) and the block has no body.
 - Hunk headers carry real file coordinates: the old range addresses the old file, the new
   range the new file, exactly like ordinary `git diff` output.
 - Commits where nothing observable changed (declaration touched but no anchor content or
@@ -284,33 +294,70 @@ index rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74
 ```
 
 **3. Re-anchor** — the *worktree declaration itself* moved the anchor: the same recorded
-token sits at a different address than it does in `HEAD`'s copy. This is the one shape
-whose two sides wear different addresses, and it renders as a rename, exactly like a
-committed re-anchor. The old side is labelled with `HEAD`'s address and carries the
-recorded bytes; the new side is labelled with the worktree's address and carries the bytes
-live there. No proposal is offered — the move is already written down. Below, `.span/re`
-was re-anchored from `touch-core.js#L1-L3` to `touch-core.js#L5-L7`, where different code
-now lives:
+token sits at a different address than it does in `HEAD`'s copy. No proposal is offered —
+the move is already written down. Which form the block takes is decided by the same
+similarity threshold that governs every other pairing (≥ 50%, git's `-M` default).
+
+*At or above the threshold*, the two snapshots are one anchor that moved and was edited,
+and the block is a rename: the old side is labelled with `HEAD`'s address and carries the
+recorded bytes, the new side is labelled with the worktree's address and carries the bytes
+live there. In this capture `.span/re` moved from `touch-core.js#L1-L3` to
+`touch-core.js#L3-L5` in the same edit that reworded the helper and pushed it down two
+lines:
 
 ```
-diff --git a/touch-core.js#L1-L3 b/touch-core.js#L5-L7
-similarity index 33%
+diff --git a/touch-core.js#L1-L3 b/touch-core.js#L3-L5
+similarity index 66%
 rename from touch-core.js#L1-L3
-rename to touch-core.js#L5-L7
-index rk64:6fc01f81b6737e74..rk64:3ce91890e260ec60
+rename to touch-core.js#L3-L5
+index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
 --- a/touch-core.js#L1-L3
-+++ b/touch-core.js#L5-L7
-@@ -1,3 +5,3 @@
--function cleanFooter(name) {
++++ b/touch-core.js#L3-L5
+@@ -1,3 +3,3 @@
+ function cleanFooter(name) {
 -  return `check ${name}`;
-+function cleanHeader(name) {
-+  return `${name} depends on:`;
++  return `check the coupled ${name}`;
  }
 ```
 
+*Below the threshold*, the two snapshots have nothing to do with each other — the ordinary
+case being an anchor re-pointed to its new home before the content matches — and a rename
+would spell out an edit that never happened. It renders instead as two blocks asserting no
+edit at all: the recorded block leaves its old address, and the newly covered block
+arrives at the new one. Git behaves the same way; it emits `new file` + `deleted file` for
+a `git mv` plus a total replacement even at `--find-renames=0%`. Here `.span/re` was
+re-anchored from `touch-core.js#L1-L3` to `touch-core.js#L5-L7`, where unrelated code
+lives:
+
+```
+diff --git a/touch-core.js#L1-L3 b/dev/null
+deleted anchor
+index rk64:6fc01f81b6737e74..0000000000000000
+--- a/touch-core.js#L1-L3
++++ /dev/null
+@@ -1,3 +0,0 @@
+-function cleanFooter(name) {
+-  return `check ${name}`;
+-}
+
+diff --git a/dev/null b/touch-core.js#L5-L7
+new anchor
+index 0000000000000000..rk64:3ce91890e260ec60
+--- /dev/null
++++ b/touch-core.js#L5-L7
+@@ -0,0 +5,3 @@
++function cleanHeader(name) {
++  return `${name} depends on:`;
++}
+```
+
+The two paths agree: the `current` block and the timeline entry the same declaration
+change produces once committed render the same form for the same event — a rename at or
+above the threshold, a delete plus a create below it.
+
 A re-anchor outranks a relocation: when the declaration has moved an anchor *and* the
-resolver would propose a further move, the rename is what renders. Two directions of
-travel in one header would contradict each other.
+resolver would propose a further move, the declaration's move is what renders. Two
+directions of travel in one header would contradict each other.
 
 ### When the recorded bytes cannot be shown
 
@@ -360,7 +407,16 @@ diff/content bytes) for length only:
 {
   "commits": [
     {
-      "anchors": [],
+      "anchors": [
+        {
+          "diff": "diff --git a/packages/agent-hooks/src/common/advisor-core.ts#L1308-L1600 b/packages/agent-hooks/src/common/advisor-core.ts#L1308-L1600\nrebound anchor\nindex rk64:c2562abf5e1ddfde..rk64:430eac0d450d07d6\n",
+          "path": "packages/agent-hooks/src/common/advisor-core.ts#L1308-L1600"
+        },
+        {
+          "diff": "diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\nrebound anchor\nindex rk64:4ec29c5402e3f47c..rk64:49bd4bc548ecea54\n",
+          "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274"
+        }
+      ],
       "date": "2026-07-30T11:51:18-04:00",
       "hash": "5c5dcecd53c3f53a3801878f06f4b23636e7b945",
       "span_diff": "diff --git a/.span/agent-hooks/hook-message-copy b/.span/agent-hooks/hook-message-copy\nindex 2b1682a..dcdf615 100644\n--- a/.span/agent-hooks/hook-message-copy\n+++ b/.span/agent-hooks/hook-message-copy\n@@ -1,7 +1,7 @@\n⋮ (rest of the declaration diff, elided here for length)\n",
@@ -387,9 +443,19 @@ a genuine capture of that scoped case, `commits` and all: `-n 1` still surfaces 
 alongside `current`, since `current` and the newest qualifying commit are independent of
 each other.
 
-A `commit` whose `.span/<name>` change re-hashed every anchor without adding, removing, or
-moving one (as `5c5dcecd` above) still has an `anchors` array — it is simply empty; the
-`span_diff` alone carries the change. First-add anchors — for example the whole-span
+The `anchors` array above is elided to two of its five entries. A `commit` whose
+`.span/<name>` change re-hashed every anchor without adding, removing, or moving one (as
+`5c5dcecd`) still accounts for each anchor: the address and the content at it are
+unchanged, but the token the declaration binds there is not, so each renders as a
+`rebound anchor` block whose `index` line carries the two **recorded** tokens and whose
+body is empty because nothing was edited. This is the only block form whose `index`
+hashes are recorded tokens rather than rendered content — and it exists because a
+declaration can move bindings without touching a byte of source. A commit that permutes
+bindings among addresses (an anchor swap, a rotation) changes nothing a content
+comparison can see, and without this form it would be the one commit that broke every
+affected anchor and reported nothing.
+
+First-add anchors — for example the whole-span
 creation commit `2cbb7301`, `packages/agent-hooks/src/common/gate-core.ts#L797-L853` —
 carry `content` instead of `diff`:
 
@@ -435,11 +501,12 @@ the two lists agree over a sweep of every state above.
 - `diff` — always present. The same bytes the human block prints for this anchor, header
   and all. Degrades to a header-only block when there are no honest hunks to show (a
   relocation, or an unrecoverable recorded snapshot).
-- `content` — the full bytes whose hash the diff's **new** side names, so a consumer never
-  reconstructs live content from a patch. For every shape but a relocation those are the
-  bytes at `path`; for a relocation they are the recorded bytes, which live at `proposed`
-  and not at `path` — that displacement is the finding. Absent exactly when `unavailable`
-  is present.
+- `content` — the full bytes whose hash the header names on the side wearing `path`, so a
+  consumer never reconstructs live content from a patch. For a `deleted anchor` that is
+  the recorded block leaving; for everything else it is the new side. For every shape but
+  a relocation those bytes are the ones at `path`; for a relocation they are the recorded
+  bytes, which live at `proposed` and not at `path` — that displacement is the finding.
+  Absent exactly when `unavailable` is present.
 - `unavailable` — replaces `content` when the bytes could not be extracted: `"absent"` (no
   such file), `"range-past-eof"` (the declared range starts past end of file), or
   `"binary"` (not UTF-8). A status to style, never source to render — no placeholder prose

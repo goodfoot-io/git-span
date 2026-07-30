@@ -1012,11 +1012,11 @@ fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 2, "both anchors moved; got: {json:#}");
-
+    // Each anchor's recorded block leaves its old address and each new
+    // address arrives: `AAA-*` and `BBB-EDITED` share nothing, so pairing them
+    // into one rename would spell an edit nobody made.
+    assert_eq!(anchors.len(), 4, "two deletes and two creates; got: {json:#}");
     for anchor in anchors {
-        let path = anchor["path"].as_str().expect("path string");
-        let diff = anchor["diff"].as_str().expect("diff string");
         // The recorded bytes sit under the *sibling's* address in the last
         // recorded state. Searching only under this anchor's own label
         // reported content that is one line away as lost — a data-loss claim
@@ -1026,23 +1026,22 @@ fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
             "the recorded bytes are in the last recorded state; got: {anchor:#}"
         );
         assert!(
-            !diff.contains("recorded snapshot unrecoverable"),
-            "no false data-loss claim; got:\n{diff}"
+            !anchor["diff"]
+                .as_str()
+                .expect("diff string")
+                .contains("recorded snapshot unrecoverable"),
+            "no false data-loss claim; got: {anchor:#}"
         );
-        let (recorded_block, source) = if path == "f.txt#L5-L7" {
-            ("-AAA-1\n", "f.txt#L1-L3")
-        } else {
-            ("-BBB-1\n", "f.txt#L5-L7")
-        };
+    }
+    for (address, recorded_block) in [("f.txt#L1-L3", "-AAA-1\n"), ("f.txt#L5-L7", "-BBB-1\n")] {
+        let diff = anchors
+            .iter()
+            .filter_map(|a| a["diff"].as_str())
+            .find(|d| d.starts_with(&format!("diff --git a/{address} b/dev/null\n")))
+            .unwrap_or_else(|| panic!("{address} never leaves; got: {json:#}"));
         assert!(
-            diff.contains(recorded_block),
-            "the old side is the recorded block itself; got:\n{diff}"
-        );
-        assert!(
-            diff.contains(&format!("diff --git a/{source} b/{path}\n"))
-                && diff.contains(&format!("rename from {source}\n"))
-                && diff.contains(&format!("rename to {path}\n")),
-            "the declaration moved this token from {source} to {path}; got:\n{diff}"
+            diff.contains("deleted anchor\n") && diff.contains(recorded_block),
+            "the recorded block is shown whole where HEAD declared it; got:\n{diff}"
         );
     }
     let out = history_text(&repo, "dswap")?;
@@ -1077,31 +1076,39 @@ fn a_reanchor_over_a_relocation_never_states_two_directions() -> Result<()> {
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
-    let anchor = &anchors[0];
-    assert_eq!(anchor["path"], "f.txt#L6-L8");
-    let diff = anchor["diff"].as_str().expect("diff string");
+    assert_eq!(anchors.len(), 2, "a delete and a create; got: {json:#}");
+    let arrived = anchor_at(anchors, "f.txt#L6-L8");
+    let diff = arrived["diff"].as_str().expect("diff string");
 
-    // The declaration itself moved this anchor, so the block is a rename and
-    // says nothing about relocation: a `proposed anchor f.txt#L1-L3` beside a
-    // `rename to f.txt#L6-L8` would be two contradictory instructions in five
+    // The declaration itself moved this anchor, so the block says nothing
+    // about relocation: a `proposed anchor f.txt#L1-L3` beside a header
+    // naming `f.txt#L6-L8` would be two contradictory instructions in five
     // lines, and only one of them can be acted on.
+    for anchor in anchors {
+        assert!(
+            anchor.get("proposed").is_none() || anchor["proposed"].is_null(),
+            "a re-anchor states the user's intent; got: {anchor:#}"
+        );
+    }
+    // The recorded block and the newly covered block share nothing, so they
+    // are reported as what they are: one anchor left, another arrived.
+    let gone = anchor_at(anchors, "f.txt#L1-L3");
+    let gone_diff = gone["diff"].as_str().expect("diff string");
     assert!(
-        anchor.get("proposed").is_none() || anchor["proposed"].is_null(),
-        "a re-anchor states the user's intent; got: {anchor:#}"
+        gone_diff.contains("diff --git a/f.txt#L1-L3 b/dev/null\n")
+            && gone_diff.contains("deleted anchor\n"),
+        "the recorded block leaves under HEAD's address; got:\n{gone_diff}"
     );
     assert!(
-        diff.contains("diff --git a/f.txt#L1-L3 b/f.txt#L6-L8\n")
-            && diff.contains("rename from f.txt#L1-L3\n")
-            && diff.contains("rename to f.txt#L6-L8\n"),
-        "the header names where the declaration moved the token; got:\n{diff}"
+        diff.contains("diff --git a/dev/null b/f.txt#L6-L8\n") && diff.contains("new anchor\n"),
+        "the declaration's new address arrives on its own; got:\n{diff}"
     );
     // The b/ side's bytes are read where its label says: the declared range,
     // including the user's edit. Reading them at the relocation target made
     // the two hashes equal and the edit vanish entirely.
     assert_eq!(
-        anchor["content"], "six\nEDITED\neight\n",
-        "the live side is the declared range's content; got: {anchor:#}"
+        arrived["content"], "six\nEDITED\neight\n",
+        "the live side is the declared range's content; got: {arrived:#}"
     );
     assert!(
         diff.contains("+EDITED\n"),
@@ -1147,24 +1154,33 @@ fn a_cross_file_declaration_swap_recovers_both_old_sides() -> Result<()> {
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 2, "both anchors moved; got: {json:#}");
+    assert_eq!(anchors.len(), 4, "two deletes and two creates; got: {json:#}");
     for anchor in anchors {
-        let path = anchor["path"].as_str().expect("path string");
-        let diff = anchor["diff"].as_str().expect("diff string");
-        let (source, recorded_line) = if path == "f.txt#L1-L3" {
-            ("g.txt#L1-L3", "-BBB-1\n")
-        } else {
-            ("f.txt#L1-L3", "-AAA-1\n")
-        };
         assert!(
             anchor.get("recorded").is_none(),
             "the token's bytes are in the render; got: {anchor:#}"
         );
+    }
+    // Nothing in either file changed — `git diff` is empty — so no block may
+    // pair the two unrelated tokens into a rename and spell out an edit.
+    assert!(
+        repo.git_stdout(["diff", "--", ".", ":(exclude).span"])?
+            .is_empty(),
+        "fixture assumption: the swap is declaration-only"
+    );
+    assert!(
+        !out.contains("rename "),
+        "a rename here asserts an edit the repository does not show; got:\n{out}"
+    );
+    for (source, recorded_line) in [("f.txt#L1-L3", "-AAA-1\n"), ("g.txt#L1-L3", "-BBB-1\n")] {
+        let diff = anchors
+            .iter()
+            .filter_map(|a| a["diff"].as_str())
+            .find(|d| d.starts_with(&format!("diff --git a/{source} b/dev/null\n")))
+            .unwrap_or_else(|| panic!("{source} never leaves; got: {json:#}"));
         assert!(
-            diff.contains(&format!("rename from {source}\n"))
-                && diff.contains(&format!("rename to {path}\n"))
-                && diff.contains(recorded_line),
-            "the old side is the recorded block, labelled where HEAD declared \
+            diff.contains("deleted anchor\n") && diff.contains(recorded_line),
+            "the recorded block is shown whole, labelled where HEAD declared \
              it; got:\n{diff}"
         );
     }
@@ -1202,25 +1218,61 @@ fn a_reanchor_that_abandons_its_recorded_block_still_shows_it() -> Result<()> {
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
-    let anchor = &anchors[0];
-    assert_eq!(anchor["path"], "f.txt#L5-L7");
-    assert!(anchor.get("recorded").is_none(), "got: {anchor:#}");
+    // `alpha/beta/gamma` and `AAA/BBB/CCC` share nothing, so the two blocks
+    // are two blocks — a rename between them would assert an edit that never
+    // happened, and git refuses the form below its own threshold.
+    assert_eq!(anchors.len(), 2, "a delete and a create; got: {json:#}");
+    let gone = anchor_at(anchors, "f.txt#L1-L3");
+    let arrived = anchor_at(anchors, "f.txt#L5-L7");
+    assert!(gone.get("recorded").is_none(), "got: {gone:#}");
+    assert_eq!(
+        gone["content"], "alpha\nbeta\ngamma\n",
+        "the abandoned block is still shown, whole; got: {gone:#}"
+    );
+    let gone_diff = gone["diff"].as_str().expect("diff string");
+    assert!(
+        gone_diff.contains("diff --git a/f.txt#L1-L3 b/dev/null\n")
+            && gone_diff.contains("deleted anchor\n")
+            && gone_diff.contains("-alpha\n"),
+        "the recorded block leaves under the address HEAD declared for it; \
+         got:\n{gone_diff}"
+    );
     // `path` and `content` must describe the same three lines: a consumer
     // joining on `path` is misled by bytes that address does not hold.
     assert_eq!(
-        anchor["content"], "AAA\nBBB\nCCC\n",
-        "content is what the declared address holds; got: {anchor:#}"
+        arrived["content"], "AAA\nBBB\nCCC\n",
+        "content is what the declared address holds; got: {arrived:#}"
     );
-    let diff = anchor["diff"].as_str().expect("diff string");
+    let arrived_diff = arrived["diff"].as_str().expect("diff string");
     assert!(
-        diff.contains("diff --git a/f.txt#L1-L3 b/f.txt#L5-L7\n")
-            && diff.contains("-alpha\n")
-            && diff.contains("+AAA\n"),
-        "the old side is the abandoned block under the address HEAD declared \
-         for it; got:\n{diff}"
+        arrived_diff.contains("diff --git a/dev/null b/f.txt#L5-L7\n")
+            && arrived_diff.contains("new anchor\n")
+            && arrived_diff.contains("+AAA\n"),
+        "the newly covered block arrives whole; got:\n{arrived_diff}"
+    );
+    assert!(!out.contains("rename "), "nothing was renamed; got:\n{out}");
+    // ORACLE — `stale`, a different command reading the same declaration: it
+    // reports the new address as changed and issues no move, so history must
+    // not pair the two blocks into a move of its own.
+    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+    assert!(
+        stale.contains("f.txt#L5-L7 — changed") && !stale.contains("moved to"),
+        "fixture assumption: a re-anchor onto non-matching content; got:\n{stale}"
     );
     Ok(())
+}
+
+/// The single `current` anchor entry whose `path` is `address`.
+fn anchor_at<'a>(anchors: &'a [Value], address: &str) -> &'a Value {
+    let mut found = anchors.iter().filter(|a| a["path"] == address);
+    let first = found
+        .next()
+        .unwrap_or_else(|| panic!("no current anchor at {address} in {anchors:#?}"));
+    assert!(
+        found.next().is_none(),
+        "more than one current anchor at {address} in {anchors:#?}"
+    );
+    first
 }
 
 /// Two anchors in different files holding *identical* content, so one `rk64`
@@ -1267,6 +1319,304 @@ fn anchors_sharing_a_token_resolve_against_their_own_address() -> Result<()> {
     assert!(
         diff.contains("-beta\n") && diff.contains("+BETA\n"),
         "the block is the edit the user made; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// The five shapes a rendered anchor block can take, as a reader of the patch
+/// would classify it — from the header lines alone, never from the code that
+/// produced them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum BlockForm {
+    /// `deleted anchor` — the address left the declaration.
+    Deleted,
+    /// `new anchor` — the address entered it.
+    Created,
+    /// `rename from`/`rename to` with a similarity percentage.
+    Renamed { similarity: u8 },
+    /// `proposed anchor <address>` — the resolver's move instruction.
+    Proposed,
+    /// `rebound anchor` — the address kept its content but changed which
+    /// recorded token the declaration binds to it.
+    Rebound,
+    /// No status line: same address, changed content.
+    Modified,
+}
+
+fn block_form(diff: &str) -> BlockForm {
+    let head = diff.split("\n--- ").next().unwrap_or(diff);
+    if head.contains("\nrebound anchor\n") {
+        BlockForm::Rebound
+    } else if head.contains("\ndeleted anchor\n") {
+        BlockForm::Deleted
+    } else if head.contains("\nnew anchor\n") {
+        BlockForm::Created
+    } else if head.contains("\nrename from ") {
+        let similarity = head
+            .lines()
+            .find_map(|l| l.strip_prefix("similarity index "))
+            .and_then(|rest| rest.strip_suffix('%'))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("a rename without a similarity index:\n{diff}"));
+        BlockForm::Renamed { similarity }
+    } else if head.contains("\nproposed anchor ") {
+        BlockForm::Proposed
+    } else {
+        BlockForm::Modified
+    }
+}
+
+/// The `(address, token)` pairs `.span/<span>` declares, read from the
+/// worktree file (`rev` = `None`) or from a committed copy — an oracle for
+/// "does this declaration still bind this token here" that shares nothing with
+/// the renderer. The pair, not the address alone: a swap leaves every address
+/// declared while moving every token.
+fn declared_pairs(repo: &TestRepo, span: &str, rev: Option<&str>) -> Result<Vec<(String, String)>> {
+    let text = match rev {
+        Some(rev) => repo.git_stdout(["show", &format!("{rev}:.span/{span}")])?,
+        None => std::fs::read_to_string(repo.path().join(format!(".span/{span}")))?,
+    };
+    Ok(text
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .filter(|(_, token)| token.starts_with("rk64:"))
+        .map(|(addr, token)| (addr.to_string(), token.trim().to_string()))
+        .collect())
+}
+
+/// The old-side `rk64:` token an anchor block's `index` line names.
+fn old_token(diff: &str) -> String {
+    diff.lines()
+        .find_map(|l| l.strip_prefix("index "))
+        .and_then(|rest| rest.split_once(".."))
+        .map(|(old, _)| old.to_string())
+        .unwrap_or_else(|| panic!("no index line in:\n{diff}"))
+}
+
+/// `n` files with distinct three-line blocks, all anchored, then one commit
+/// that rotates the addresses among the recorded tokens. Every anchor is
+/// broken by that commit and not one byte of content changed — the state a
+/// content-keyed pairing cannot see, since a permutation of declarations
+/// preserves both the address set and the content at every address.
+fn rebinding_repo(span: &str, n: usize) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    for i in 0..n {
+        let tag = (b'A' + i as u8) as char;
+        repo.write_file(&format!("f{i}.txt"), &format!("{tag}-1\n{tag}-2\n{tag}-3\n"))?;
+    }
+    repo.commit_all("initial")?;
+    for i in 0..n {
+        repo.span_stdout(["add", span, &format!("f{i}.txt#L1-L3")])?;
+    }
+    repo.span_stdout(["why", span, "one block per file"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    // Rotate the address column, leaving the token column alone: every token
+    // now names a block it does not describe.
+    let decl = repo.path().join(format!(".span/{span}"));
+    let text = std::fs::read_to_string(&decl)?;
+    let lines: Vec<&str> = text.lines().collect();
+    let addresses: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split_once(' '))
+        .filter(|(_, token)| token.starts_with("rk64:"))
+        .map(|(addr, _)| addr)
+        .collect();
+    let mut rotated = String::new();
+    let mut seen = 0;
+    for line in &lines {
+        match line.split_once(' ') {
+            Some((_, token)) if token.starts_with("rk64:") => {
+                rotated.push_str(&format!("{} {token}\n", addresses[(seen + 1) % n]));
+                seen += 1;
+            }
+            _ => {
+                rotated.push_str(line);
+                rotated.push('\n');
+            }
+        }
+    }
+    // A rewrite that matched nothing produces a fixture that proves the
+    // absence of a defect it never created.
+    assert_ne!(
+        rotated, text,
+        "the declaration rewrite matched nothing:\n{text}"
+    );
+    std::fs::write(&decl, rotated)?;
+    assert!(
+        !repo.git_stdout(["status", "--porcelain"])?.is_empty(),
+        "the declaration rewrite left the worktree clean"
+    );
+    repo.commit_all("rebind every anchor to its neighbour's block")?;
+    Ok(repo)
+}
+
+/// A commit that breaks anchors must account for them. The declaration
+/// permutation is invisible to a content comparison — same addresses, same
+/// bytes at every one — so the timeline showed the one commit that broke every
+/// anchor as the one commit with no anchor-level output, while `stale`
+/// reported them all changed.
+#[test]
+fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
+    for (label, n) in [("swap", 2), ("3-cycle rotation", 3)] {
+        let span = "rb";
+        let repo = rebinding_repo(span, n)?;
+        // Nothing in any file changed; only the bindings moved.
+        assert!(
+            repo.git_stdout(["diff", "HEAD~1", "HEAD", "--", ".", ":(exclude).span"])?
+                .is_empty(),
+            "{label}: fixture assumption — the commit is declaration-only"
+        );
+        // ORACLE — `stale`. The worktree is exactly the breaking commit, so
+        // `stale` here is `stale` evaluated at it.
+        let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+        let broken: Vec<String> = stale
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .filter(|l| l.contains(" — changed"))
+            .filter_map(|l| l.split_once(' '))
+            .map(|(addr, _)| addr.to_string())
+            .collect();
+        assert_eq!(
+            broken.len(),
+            n,
+            "{label}: fixture assumption — every anchor is broken; got:\n{stale}"
+        );
+
+        let json = history_json(&repo, span)?;
+        // Existence before absence: an entry that is not there satisfies every
+        // negative assertion about its contents.
+        let newest = &json["commits"][0];
+        assert!(
+            newest["summary"]
+                .as_str()
+                .is_some_and(|s| s.contains("rebind")),
+            "{label}: the breaking commit has no timeline entry at all; got: {json:#}"
+        );
+        let anchors = newest["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no anchors array; got: {json:#}"));
+        assert_eq!(
+            anchors.len(),
+            n,
+            "{label}: the breaking commit must account for every anchor it \
+             broke; got: {newest:#}"
+        );
+        for address in &broken {
+            let anchor = anchor_at(anchors, address);
+            let diff = anchor["diff"].as_str().expect("diff string");
+            assert_eq!(
+                block_form(diff),
+                BlockForm::Rebound,
+                "{label}: content is unchanged, so the block is the binding \
+                 transition itself; got:\n{diff}"
+            );
+            assert!(
+                !diff.contains("@@"),
+                "{label}: nothing was edited, so there are no hunks; got:\n{diff}"
+            );
+        }
+
+        // The current block was already right about a committed rebinding —
+        // one honest in-place diff per broken anchor, recorded against live.
+        // The timeline gains blocks; this loses none.
+        //
+        // This holds because every span resolves at `SameCommit`: the `[config]`
+        // block is never parsed and `SpanConfig` is built from defaults at its
+        // one construction site, so `any-file-in-repo` is unreachable. Under a
+        // cross-file level the resolver could report a rotated anchor `Moved` —
+        // its recorded bytes do sit intact in a sibling file — and the current
+        // block would render `proposed anchor` lines instead of these in-place
+        // diffs. Whoever makes that level reachable inherits this assumption.
+        let current = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current block; got: {json:#}"));
+        assert_eq!(
+            current.len(),
+            n,
+            "{label}: one in-place diff per broken anchor; got: {json:#}"
+        );
+        for address in &broken {
+            let anchor = anchor_at(current, address);
+            assert_eq!(
+                block_form(anchor["diff"].as_str().expect("diff string")),
+                BlockForm::Modified,
+                "{label}: the declared address is where the drift is; \
+                 got: {anchor:#}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Every anchor block form the `current` section renders, in order.
+fn current_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
+    let json = history_json(repo, span)?;
+    Ok(json["current"]["anchors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no current anchors in {json:#}"))
+        .iter()
+        .map(|a| block_form(a["diff"].as_str().expect("diff string")))
+        .collect())
+}
+
+/// Every anchor block form the newest timeline entry renders, in order. A
+/// timeline anchor that carries `content` instead of `diff` is a first-add,
+/// which is the timeline's spelling of `new anchor`.
+fn newest_commit_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
+    let json = history_json(repo, span)?;
+    Ok(json["commits"][0]["anchors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no anchors on the newest commit in {json:#}"))
+        .iter()
+        .map(|a| match a["diff"].as_str() {
+            Some(diff) => block_form(diff),
+            None => BlockForm::Created,
+        })
+        .collect())
+}
+
+/// The same declaration change must describe the same event whether it is
+/// still in the worktree or already committed. The timeline path has enforced
+/// git's rename floor since it was written ([`pair_anchors`]); the current
+/// block bypassed it, so one re-anchor rendered as a 0% rename before the
+/// commit and as `deleted anchor` + `new anchor` after — the same edit
+/// reported two incompatible ways, one of which asserts a rewrite nobody made.
+#[test]
+fn the_current_block_and_the_timeline_agree_on_a_reanchors_form() -> Result<()> {
+    // Below the floor: two unrelated blocks.
+    let repo = abandoned_block_repo("re2")?;
+    let mut before = current_forms(&repo, "re2")?;
+    repo.commit_all("re-anchor onto the other block")?;
+    let mut after = newest_commit_forms(&repo, "re2")?;
+    // The two paths order their blocks differently; the claim is about which
+    // blocks the event produces, not the sequence they print in.
+    before.sort();
+    after.sort();
+    assert_eq!(
+        before, after,
+        "the same re-anchor, committed or not, is the same event"
+    );
+    assert!(
+        before.contains(&BlockForm::Deleted) && before.contains(&BlockForm::Created),
+        "unrelated blocks do not pair; got: {before:?}"
+    );
+
+    // At or above it: one anchor, edited and moved.
+    let repo = drifted_repo("re")?;
+    rewrite_declaration(&repo, "re", "f.txt#L1-L3", "f.txt#L3-L5")?;
+    let before = current_forms(&repo, "re")?;
+    repo.commit_all("re-anchor onto the drifted block")?;
+    let after = newest_commit_forms(&repo, "re")?;
+    assert_eq!(
+        before, after,
+        "a rename before the commit is the same rename after it, similarity \
+         and all"
+    );
+    assert!(
+        matches!(before.as_slice(), [BlockForm::Renamed { similarity }] if *similarity >= 50),
+        "an edited move stays one anchor; got: {before:?}"
     );
     Ok(())
 }
@@ -1334,9 +1684,85 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                 .and_then(|rest| rest.split_once(" b/"))
                 .unwrap_or_else(|| panic!("{label}: malformed header {header:?}"));
 
-            // The new side always wears the declared address, and its bytes are
-            // always read there.
-            assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
+            // Which of the five block forms this is, read off the header
+            // lines. Each form below names the source of truth outside
+            // `history`'s renderer that anchors it — a form added without one
+            // fails here rather than passing on the strength of the code that
+            // produced it.
+            let form = block_form(diff);
+            match form {
+                // ORACLE — the worktree declaration and HEAD's copy of it.
+                // A `deleted anchor` says this address is no longer declared;
+                // a `new anchor` says it now is.
+                BlockForm::Deleted => {
+                    assert_eq!(a_side, path, "{label}: a deletion wears its own address");
+                    assert_eq!(b_side, "dev/null", "{label}: nothing arrives; got:\n{diff}");
+                    let bound = (path.to_string(), old_token(diff));
+                    assert!(
+                        !declared_pairs(&repo, span, None)?.contains(&bound),
+                        "{label}: {bound:?} is still declared, so nothing was dropped"
+                    );
+                    assert!(
+                        declared_pairs(&repo, span, Some("HEAD"))?.contains(&bound),
+                        "{label}: {bound:?} was never declared in HEAD either"
+                    );
+                }
+                BlockForm::Created => {
+                    assert_eq!(a_side, "dev/null", "{label}: nothing left; got:\n{diff}");
+                    assert_eq!(b_side, path, "{label}: a creation wears its own address");
+                    assert!(
+                        declared_pairs(&repo, span, None)?
+                            .iter()
+                            .any(|(addr, _)| addr == path),
+                        "{label}: {path} is not declared, so nothing arrived"
+                    );
+                }
+                // ORACLE — git's own rename behaviour, measured: `git mv` plus
+                // a total replacement renders `new file` + `deleted file` even
+                // at `--find-renames=0%`. Below the threshold git does not
+                // pair, and neither may we — a 0% rename asserts an edit
+                // between two texts that have nothing to do with each other.
+                BlockForm::Renamed { similarity } => {
+                    assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
+                    assert!(
+                        similarity >= 50,
+                        "{label}: git emits no rename below 50%; got:\n{diff}"
+                    );
+                    // ORACLE — the worktree. A rename's hunks assert that the
+                    // recorded bytes *became* the live ones. If those bytes
+                    // are still sitting untouched at the old address, no such
+                    // edit happened and the hunk is fabricated.
+                    let recorded_lines: String = diff
+                        .lines()
+                        .skip_while(|l| !l.starts_with("@@ "))
+                        .filter_map(|l| l.strip_prefix('-'))
+                        .map(|l| format!("{l}\n"))
+                        .collect();
+                    if !recorded_lines.is_empty() {
+                        if let Some(still_there) = read_address(&repo, a_side) {
+                            assert!(
+                                !still_there.contains(&recorded_lines),
+                                "{label}: the block claims these lines were \
+                                 edited away, but {a_side} still holds them:\n{diff}"
+                            );
+                        }
+                    }
+                }
+                // ORACLE — the recorded bindings in the two declaration
+                // states, read from git. A rebinding block claims the address
+                // stood still while its token moved.
+                BlockForm::Rebound => {
+                    assert_eq!(a_side, path, "{label}: a rebinding stands still");
+                    assert_eq!(b_side, path, "{label}: a rebinding stands still");
+                    assert!(
+                        !diff.contains("@@"),
+                        "{label}: a rebinding edits nothing; got:\n{diff}"
+                    );
+                }
+                BlockForm::Proposed | BlockForm::Modified => {
+                    assert_eq!(b_side, path, "{label}: the b/ side is the declared address");
+                }
+            }
 
             match anchor.get("proposed").and_then(Value::as_str) {
                 Some(proposed) => {
@@ -1374,7 +1800,9 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
             // `path` and `content` must name the same bytes. The one exception
             // is a relocation, whose whole point is that the recorded bytes are
             // *not* at the declared address — and which says so in `proposed`.
-            if anchor.get("proposed").is_none() {
+            // A deletion's `content` is the bytes leaving, which the address
+            // they leave need not still hold.
+            if anchor.get("proposed").is_none() && !matches!(form, BlockForm::Deleted) {
                 if let (Some(content), Some(actual)) =
                     (anchor["content"].as_str(), read_address(&repo, path))
                 {
@@ -1445,6 +1873,36 @@ fn documented_current_anchor_fields() -> Result<Vec<String>> {
         .collect();
     assert!(!fields.is_empty(), "the field list parsed as empty");
     Ok(fields)
+}
+
+/// The document states the threshold as a rule and then shows worked examples
+/// of it; the field-list guard compares names, not values, so a captured
+/// example contradicting the rule 95 lines above it went unnoticed. This
+/// compares the values.
+#[test]
+fn no_documented_example_shows_a_rename_below_the_threshold() -> Result<()> {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("history-example-output.md"),
+    )?;
+    let mut seen = 0;
+    for line in doc.lines() {
+        let Some(rest) = line.trim().strip_prefix("similarity index ") else {
+            continue;
+        };
+        let percent: u8 = rest
+            .trim_end_matches('%')
+            .parse()
+            .unwrap_or_else(|_| panic!("unparseable similarity line: {line:?}"));
+        assert!(
+            percent >= 50,
+            "a worked example shows a rename git would never emit: {line:?}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "the rename form is no longer illustrated at all");
+    Ok(())
 }
 
 /// The documented field list is the contract, so a key the renderer can emit

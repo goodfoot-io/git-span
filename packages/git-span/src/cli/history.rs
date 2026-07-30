@@ -13,9 +13,24 @@
 //!   snapshots*, with `path#Lstart-Lend` display paths, `index rk64:…` lines
 //!   hashing the snapshots actually rendered, and real-file hunk coordinates.
 //!   Anchors pair across consecutive states by identical content first, then
-//!   by exact address, then by similarity (git's `-M` shape), so a re-anchor
-//!   renders as a rename rather than remove + add, and two anchors that
-//!   exchange addresses render as two renames rather than two rewrites.
+//!   by exact address, then by similarity (git's `-M` shape). Pairing is
+//!   conditional on that similarity reaching [`RENAME_SIMILARITY_FLOOR`]: at
+//!   or above it a moved anchor renders as one rename rather than remove +
+//!   add, and two anchors that exchange addresses *with their content* render
+//!   as two renames rather than two rewrites; below it the two snapshots are
+//!   unrelated blocks and render as `deleted anchor` + `new anchor`, which
+//!   asserts no edit. Git draws the same line — a `git mv` plus a total
+//!   replacement renders `new file` + `deleted file` even at
+//!   `--find-renames=0%`. The timeline and the `current` block apply the rule
+//!   identically, so one declaration change describes the same event before and
+//!   after it is committed.
+//! * rebindings — an anchor's identity is the token the declaration *records*
+//!   for its address ([`Snapshot::recorded`]), not the content that address
+//!   happens to hold. A declaration that permutes bindings among addresses (a
+//!   swap, a rotation) leaves every address and every byte in place, so no
+//!   content comparison can see it, while breaking every anchor it touches.
+//!   Each affected address renders a `rebound anchor` block: header-only, with
+//!   the two recorded tokens on the `index` line.
 //!
 //! Declared anchor ranges are taken at face value at every commit — a stale
 //! range extracting "wrong" content *is* the drift being visualized. Anchor
@@ -480,6 +495,13 @@ struct Snapshot {
     hash: String,
     /// Extracted body at the declared address, taken at face value.
     body: AnchorBody,
+    /// The bare `rk64` token the declaration *records* for this address at
+    /// this state — the anchor's identity, as opposed to `hash`, which is
+    /// whatever the address happens to hold. Pairing keyed on address and
+    /// content alone cannot see a rebinding: a permutation of declarations
+    /// preserves both, so the commit that broke every affected anchor showed
+    /// no anchor-level change at all.
+    recorded: String,
 }
 
 /// The span's state rendered at a point in history: the commit it was read at
@@ -605,6 +627,7 @@ fn rendered_state_at(repo: &gix::Repository, commit_oid: &str, span: &Span) -> R
             first_line: extent_first_line(a.extent),
             hash,
             body,
+            recorded: bare_hash(&a.stored_hash),
         });
     }
     RenderedState {
@@ -722,6 +745,32 @@ fn snapshot_diff(old: Option<&Snapshot>, new: Option<&Snapshot>) -> Option<Strin
     )
 }
 
+/// The header-only block for an address whose declaration now records a
+/// different token while its address and content are unchanged — the one
+/// anchor-level event no content comparison can produce.
+///
+/// The `index` line carries the two *recorded* tokens, not the rendered
+/// content's hash: the content is the same on both sides, and the transition
+/// between the tokens is the entire finding. `None` when the binding is
+/// unchanged, or when there is no old side to have moved away from.
+fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<String> {
+    let old = old?;
+    if old.recorded == new.recorded {
+        return None;
+    }
+    let header = DiffHeader::Anchor {
+        old_hash: old.recorded.clone(),
+        new_hash: new.recorded.clone(),
+        kind: AnchorDiffKind::Rebound,
+    };
+    Some(render_diff_header(
+        &header,
+        &snapshot_side(old),
+        &snapshot_side(new),
+        false,
+    ))
+}
+
 /// Pair the old state's anchors with the new state's, in git's own resolution
 /// order.
 ///
@@ -832,6 +881,13 @@ fn diff_section(
     for (j, n) in new.iter().enumerate() {
         let o = pairs[j].map(|i| &old[i]);
         let Some(diff) = snapshot_diff(o, Some(n)) else {
+            // Nothing a content diff can see — but the declaration may still
+            // have rebound this address to a different token, which is what a
+            // swap or a rotation of declarations *is*. Rendering nothing here
+            // leaves the breaking commit without an anchor-level account.
+            if let Some(diff) = rebinding_diff(o, n) {
+                anchors.push(TimelineAnchor::new(n.address.clone(), diff, None, false));
+            }
             continue;
         };
         // A first-add carries the full snapshot so a consumer can render a
@@ -1280,12 +1336,14 @@ fn current_old_side(
         Some(src) => Snapshot {
             address,
             first_line,
+            recorded: hash.clone(),
             hash,
             body: src.body.clone(),
         },
         None => Snapshot {
             address,
             first_line,
+            recorded: hash.clone(),
             hash,
             body: AnchorBody::Unavailable(Unavailable::Absent),
         },
@@ -1455,6 +1513,9 @@ fn build_current(
                 ),
             };
             live.push(Snapshot {
+                // The declaration's recorded token for this address, so a live
+                // snapshot carries the same identity a walked one does.
+                recorded: recorded.get(&declared).cloned().unwrap_or_default(),
                 address: declared,
                 first_line,
                 hash,
@@ -1496,6 +1557,30 @@ fn build_current(
                 old_first_line,
                 recorded.get(&n.address),
             );
+            // A re-anchor below git's rename threshold is not one anchor
+            // edited but two unrelated blocks: pairing them into a rename
+            // would spell "these lines became those lines" over an edit that
+            // never happened, and git itself refuses the form — `git mv` plus
+            // a total replacement renders `new file` + `deleted file` even at
+            // `--find-renames=0%`. Split it the way git does.
+            let unrelated_blocks = matches!(state, CurrentState::Reanchored { .. })
+                && old_side.as_ref().is_some_and(|o| {
+                    o.body.is_text()
+                        && n.body.is_text()
+                        && similarity(o.body.text(), n.body.text()) < RENAME_SIMILARITY_FLOOR
+                });
+            if unrelated_blocks {
+                let o = old_side
+                    .as_ref()
+                    .expect("a sub-threshold comparison has both sides");
+                if let Some(diff) = snapshot_diff(Some(o), None) {
+                    anchors.push(CurrentAnchor::new(o.address.clone(), None, diff, &o.body, false));
+                }
+                if let Some(diff) = snapshot_diff(None, Some(n)) {
+                    anchors.push(CurrentAnchor::new(n.address.clone(), None, diff, &n.body, false));
+                }
+                continue;
+            }
             let kind = match (state, &old_side) {
                 // No recorded state to diff against at all: the anchor is new
                 // in the worktree declaration.
