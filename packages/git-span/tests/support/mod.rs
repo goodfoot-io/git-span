@@ -202,9 +202,21 @@ impl TestRepo {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        self.run_span_with_envs(args, &[(key, val)])
+    }
+
+    /// Run the `git-span` binary with several environment variables set.
+    #[allow(dead_code)]
+    pub fn run_span_with_envs<I, S>(&self, args: I, env: &[(&str, &str)]) -> Result<Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-span"));
         cmd.current_dir(self.dir.path());
-        cmd.env(key, val);
+        for (key, val) in env {
+            cmd.env(key, val);
+        }
         for a in args {
             cmd.arg(a.as_ref());
         }

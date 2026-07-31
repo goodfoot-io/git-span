@@ -1435,8 +1435,8 @@ fn build_report(
 
         let ident = CommitIdent {
             hash: cc.hash.clone(),
-            date: rfc2822_to_iso8601(&meta.author_date_rfc2822),
-            date_git: rfc2822_to_git_default(&meta.author_date_rfc2822),
+            date: meta.author_date_iso8601,
+            date_git: meta.author_date_git,
             summary: meta.summary.clone(),
         };
 
@@ -1658,29 +1658,6 @@ fn capture_by_hash(into: &mut std::collections::HashMap<String, Snapshot>, state
             into.entry(snap.hash.clone())
                 .or_insert_with(|| snap.clone());
         }
-    }
-}
-
-/// Convert an RFC2822 date to a full ISO-8601 timestamp with offset
-/// (`2026-07-29T15:12:41-07:00`, git's `%aI`). JSON consumers render both a
-/// relative age and an absolute local time, neither of which a day-only string
-/// can support.
-fn rfc2822_to_iso8601(rfc2822: &str) -> String {
-    use chrono::DateTime;
-    match DateTime::parse_from_rfc2822(rfc2822) {
-        Ok(dt) => dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
-        Err(_) => rfc2822.to_string(),
-    }
-}
-
-/// Convert an RFC2822 date to git's own default `Date:` rendering
-/// (`Thu Jul 30 12:04:37 2026 -0400`, git's `%ad`). A day-only string makes a
-/// run of same-day commits — the normal shape of span history — unskimmable.
-fn rfc2822_to_git_default(rfc2822: &str) -> String {
-    use chrono::DateTime;
-    match DateTime::parse_from_rfc2822(rfc2822) {
-        Ok(dt) => dt.format("%a %b %e %H:%M:%S %Y %z").to_string(),
-        Err(_) => rfc2822.to_string(),
     }
 }
 

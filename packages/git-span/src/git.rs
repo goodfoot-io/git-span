@@ -44,13 +44,13 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
 /// Reject history-sensitive commands when Git's effective commit graph differs
 /// from the object graph exposed by `gix`.
 ///
-/// `refs/replace/*` (including packed refs) and `info/grafts` rewrite parent
-/// links for Git's revision machinery.  The resolver and history renderer both
-/// use `gix` commit parents, which intentionally remain the raw object parents.
-/// Letting either command continue would make one report a topology that Git
-/// itself does not have, and making only history shell out to Git would merely
-/// split the authority.  Until the resolver can consume effective parents,
-/// both surfaces fail before rendering anything.
+/// Active replacement refs and `info/grafts` rewrite parent links for Git's
+/// revision machinery. The resolver and history renderer both use `gix`
+/// commit parents, which intentionally remain the raw object parents. Letting
+/// either command continue would make one report a topology that Git itself
+/// does not have, and making only history shell out to Git would merely split
+/// the authority. Until the resolver can consume effective parents, both
+/// surfaces fail before rendering anything.
 pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> {
     let common = common_dir(repo);
     let grafts = common.join("info/grafts");
@@ -61,25 +61,52 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
         })
         .unwrap_or(false);
 
-    let replace_dir = common.join("refs/replace");
-    let has_loose_replace = replace_dir.is_dir()
-        && std::fs::read_dir(&replace_dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .any(|entry| entry.ok().is_some());
-    let has_packed_replace = std::fs::read_to_string(common.join("packed-refs"))
-        .map(|text| {
-            text.lines()
-                .any(|line| line.ends_with(" refs/replace") || line.contains(" refs/replace/"))
-        })
-        .unwrap_or(false);
-
-    if has_grafts || has_loose_replace || has_packed_replace {
+    if has_grafts {
         return Err(Error::Git(
             "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
                 .into(),
         ));
+    }
+
+    // Let Git resolve its own replacement controls. In particular, neither a
+    // filesystem scan of `refs/replace` nor a gix ref iteration can correctly
+    // implement `GIT_REPLACE_REF_BASE` and `GIT_NO_REPLACE_OBJECTS`. Comparing
+    // the reachable parent graph also means an inactive or dangling
+    // replacement cannot block an otherwise unaffected HEAD.
+    if repo.head_id().is_err() {
+        return Ok(());
+    }
+    let revision_graph = |disable_replacements: bool| -> Result<std::process::Output> {
+        let mut command = std::process::Command::new("git");
+        command
+            .current_dir(work_dir(repo)?)
+            .args(["rev-list", "--parents", "HEAD"]);
+        if disable_replacements {
+            command.env("GIT_NO_REPLACE_OBJECTS", "1");
+        }
+        command
+            .output()
+            .map_err(|e| Error::Git(format!("inspect HEAD replacement topology: {e}")))
+    };
+    let effective = revision_graph(false)?;
+    let raw = revision_graph(true)?;
+    if raw.status.success() && (!effective.status.success() || effective.stdout != raw.stdout) {
+        return Err(Error::Git(
+            "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
+                .into(),
+        ));
+    }
+    if !raw.status.success() {
+        return Err(Error::Git(format!(
+            "inspect raw HEAD topology: {}",
+            String::from_utf8_lossy(&raw.stderr).trim()
+        )));
+    }
+    if !effective.status.success() {
+        return Err(Error::Git(format!(
+            "inspect effective HEAD topology: {}",
+            String::from_utf8_lossy(&effective.stderr).trim()
+        )));
     }
     Ok(())
 }
@@ -588,7 +615,8 @@ fn commit_tree<'repo>(repo: &'repo gix::Repository, commit_oid: &str) -> Result<
 /// Extracted commit metadata.
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {
-    pub author_date_rfc2822: String,
+    pub author_date_iso8601: String,
+    pub author_date_git: String,
     pub summary: String,
 }
 
@@ -603,13 +631,13 @@ pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<Co
     let author_sig = decoded
         .author()
         .map_err(|e| Error::Git(format!("author: {e}")))?;
-    let author_time = author_sig
-        .time()
-        .map_err(|e| Error::Git(format!("author time: {e}")))?;
+    let author_time = parse_git_author_time(author_sig.time)?;
     let message = decoded.message.to_string();
     let summary = message.lines().next().unwrap_or("").to_string();
+    let (author_date_iso8601, author_date_git) = format_git_dates(author_time)?;
     Ok(CommitMeta {
-        author_date_rfc2822: format_rfc2822(author_time),
+        author_date_iso8601,
+        author_date_git,
         summary,
     })
 }
@@ -631,17 +659,70 @@ pub(crate) fn first_parent_of(repo: &gix::Repository, commit_oid: &str) -> Resul
     Ok(commit.parent_ids().next().map(|p| p.detach().to_string()))
 }
 
-fn format_rfc2822(t: gix::date::Time) -> String {
-    // Produce `Thu, 1 Jan 1970 00:00:00 +0000` style matching `git show --format=%aD`.
-    use chrono::{DateTime, FixedOffset};
-    let secs = t.seconds;
-    let offset_secs = t.offset;
-    let fixed =
-        FixedOffset::east_opt(offset_secs).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
-    let dt_utc = DateTime::from_timestamp(secs, 0)
-        .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap());
-    let dt: DateTime<FixedOffset> = dt_utc.with_timezone(&fixed);
-    dt.format("%a, %-d %b %Y %H:%M:%S %z").to_string()
+fn format_git_dates(t: gix::date::Time) -> Result<(String, String)> {
+    // Git records an absolute timestamp plus an offset whose accepted range is
+    // wider than chrono's `FixedOffset` (for example `+9999` normalizes to
+    // +100:39). Shift the calendar instant ourselves and render the recorded
+    // offset separately so no valid Git date is silently rewritten as UTC.
+    let local_seconds = t
+        .seconds
+        .checked_add(i64::from(t.offset))
+        .ok_or_else(|| Error::Git("author date is outside the supported timestamp range".into()))?;
+    let local = chrono::DateTime::from_timestamp(local_seconds, 0)
+        .ok_or_else(|| Error::Git("author date is outside the supported timestamp range".into()))?
+        .naive_utc();
+    let sign = if t.offset < 0 { '-' } else { '+' };
+    let absolute_offset = i64::from(t.offset).abs();
+    let hours = absolute_offset / 3600;
+    let minutes = (absolute_offset % 3600) / 60;
+    let compact_offset = format!("{sign}{hours:02}{minutes:02}");
+    let colon_offset = format!("{sign}{hours:02}:{minutes:02}");
+    Ok((
+        format!("{}{}", local.format("%Y-%m-%dT%H:%M:%S"), colon_offset),
+        format!(
+            "{} {}",
+            local.format("%a %b %-d %H:%M:%S %Y"),
+            compact_offset
+        ),
+    ))
+}
+
+fn parse_git_author_time(raw: &str) -> Result<gix::date::Time> {
+    // gix's strict raw-date parser treats offsets outside the civil-time range
+    // as invalid and defaults their offset to zero. Git itself accepts the
+    // complete HHMM field and may store normalized offsets with more than two
+    // hour digits, so parse that field without narrowing it.
+    let mut fields = raw.split_whitespace();
+    let seconds = fields
+        .next()
+        .ok_or_else(|| Error::Git("author date is missing its timestamp".into()))?
+        .parse::<i64>()
+        .map_err(|e| Error::Git(format!("invalid author timestamp: {e}")))?;
+    let offset = fields
+        .next()
+        .ok_or_else(|| Error::Git("author date is missing its offset".into()))?;
+    if fields.next().is_some() {
+        return Err(Error::Git("author date contains unexpected fields".into()));
+    }
+    let (sign, digits) = match offset.as_bytes().first() {
+        Some(b'+') => (1i32, &offset[1..]),
+        Some(b'-') => (-1i32, &offset[1..]),
+        _ => return Err(Error::Git("author date offset is missing its sign".into())),
+    };
+    if digits.len() < 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::Git(format!("invalid author date offset `{offset}`")));
+    }
+    let minute_start = digits.len() - 2;
+    let hours = digits[..minute_start]
+        .parse::<i32>()
+        .map_err(|e| Error::Git(format!("invalid author date hours: {e}")))?;
+    let minutes = digits[minute_start..]
+        .parse::<i32>()
+        .map_err(|e| Error::Git(format!("invalid author date minutes: {e}")))?;
+    Ok(gix::date::Time::new(
+        seconds,
+        sign * (hours * 3600 + minutes * 60),
+    ))
 }
 
 /// Is `anchor` reachable from `HEAD` only?

@@ -1352,6 +1352,116 @@ fn history_and_stale_reject_git_replacement_topology_before_output() -> Result<(
     Ok(())
 }
 
+#[test]
+fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Result<()> {
+    let repo = committed_drift_repo("replace-controls")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
+    repo.run_git(["replace", &head, &parent])?;
+
+    // Git's own off-switch must disable the boundary as well as replacement
+    // processing. History succeeds, while stale retains its ordinary drift
+    // exit status and emits findings rather than a topology error.
+    let history = repo.run_span_with_env(
+        ["history", "replace-controls", "--format=json"],
+        "GIT_NO_REPLACE_OBJECTS",
+        "1",
+    )?;
+    assert!(
+        history.status.success() && !history.stdout.is_empty(),
+        "disabled replacements must leave history available: stdout={} stderr={}",
+        String::from_utf8_lossy(&history.stdout),
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let stale =
+        repo.run_span_with_env(["stale", "--format=json"], "GIT_NO_REPLACE_OBJECTS", "1")?;
+    assert!(
+        stale.status.code() == Some(1)
+            && !stale.stdout.is_empty()
+            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
+        "disabled replacements must preserve stale's normal finding: stdout={} stderr={}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+
+    repo.run_git(["replace", "-d", &head])?;
+    let dangling =
+        repo.git_stdout(["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "dangling"])?;
+    repo.run_git(["replace", &dangling, &parent])?;
+    let history = repo.run_span(["history", "replace-controls", "--format=json"])?;
+    assert!(
+        history.status.success(),
+        "a replacement outside HEAD ancestry cannot block history: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let stale = repo.run_span(["stale", "--format=json"])?;
+    assert!(
+        stale.status.code() == Some(1)
+            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
+        "a replacement outside HEAD ancestry cannot block stale: stdout={} stderr={}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Result<()> {
+    let repo = committed_drift_repo("custom-replace")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
+    let namespace = "refs/custom-replace/";
+    repo.run_git(["update-ref", &format!("{namespace}{head}"), &parent])?;
+
+    let effective = repo.run_git_with_env(
+        ["rev-list", "--parents", "-n", "1", "HEAD"],
+        &[("GIT_REPLACE_REF_BASE", namespace)],
+    )?;
+    let raw = repo.run_git_with_env(
+        [
+            "--no-replace-objects",
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            "HEAD",
+        ],
+        &[("GIT_REPLACE_REF_BASE", namespace)],
+    )?;
+    assert_ne!(
+        effective.stdout, raw.stdout,
+        "fixture must activate the custom namespace"
+    );
+
+    let declaration = repo.path().join(".span/custom-replace");
+    let before = std::fs::read(&declaration)?;
+    for (name, args) in [
+        (
+            "history",
+            vec!["history", "custom-replace", "--format=json"],
+        ),
+        ("stale", vec!["stale", "--format=json"]),
+        ("stale --fix", vec!["stale", "--fix"]),
+    ] {
+        let out = repo.run_span_with_envs(args, &[("GIT_REPLACE_REF_BASE", namespace)])?;
+        assert!(
+            !out.status.success()
+                && out.stdout.is_empty()
+                && String::from_utf8_lossy(&out.stderr)
+                    .contains("replacement topology is unsupported"),
+            "{name} must reject active custom replacement topology before output: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(
+        std::fs::read(&declaration)?,
+        before,
+        "stale --fix must not mutate declarations after topology rejection"
+    );
+    Ok(())
+}
+
 /// A first-parent timeline does not surface commits that happened only on a
 /// merged side branch; their contribution is represented by the merge itself.
 #[test]
@@ -5213,6 +5323,38 @@ fn human_date_line_carries_gits_full_author_date() -> Result<()> {
             panic!("`Date:` must use git's own default rendering, got {date:?}: {e}")
         });
     }
+    Ok(())
+}
+
+#[test]
+fn git_valid_extended_author_offset_is_preserved_in_both_formats() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", "date", "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", "date", "records Git's extended offset"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git_with_env(
+        ["commit", "-m", "extreme author offset"],
+        &[("GIT_AUTHOR_DATE", "@0 +9999")],
+    )?;
+
+    let expected_human = repo.git_stdout(["show", "-s", "--format=%ad", "HEAD"])?;
+    let expected_json = repo.git_stdout(["show", "-s", "--format=%aI", "HEAD"])?;
+    assert_eq!(expected_human, "Mon Jan 5 04:39:00 1970 +10039");
+    assert_eq!(expected_json, "1970-01-05T04:39:00+100:39");
+
+    let text = history_text(&repo, "date")?;
+    assert!(
+        text.contains(&format!("Date:   {expected_human}")),
+        "human history must preserve Git's extended offset exactly:\n{text}"
+    );
+    let json = history_json(&repo, "date")?;
+    assert_eq!(
+        commit_with(&json, "extreme author offset")["date"],
+        expected_json,
+        "JSON history must match Git's %aI for an extended offset"
+    );
     Ok(())
 }
 
