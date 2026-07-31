@@ -44,69 +44,122 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
 /// Reject history-sensitive commands when Git's effective commit graph differs
 /// from the object graph exposed by `gix`.
 ///
-/// Active replacement refs and `info/grafts` rewrite parent links for Git's
-/// revision machinery. The resolver and history renderer both use `gix`
-/// commit parents, which intentionally remain the raw object parents. Letting
-/// either command continue would make one report a topology that Git itself
-/// does not have, and making only history shell out to Git would merely split
-/// the authority. Until the resolver can consume effective parents, both
-/// surfaces fail before rendering anything.
+/// Active replacement refs can rewrite any part of a commit object, while
+/// `info/grafts` rewrites its parents. The resolver and history renderer both
+/// use raw `gix` objects. Letting either command continue would make them
+/// report trees, metadata, or topology that differ from Git's effective
+/// history, and making only history shell out to Git would merely split the
+/// authority. Until the resolver can consume effective commits, both surfaces
+/// fail before rendering anything.
 pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> {
-    let common = common_dir(repo);
-    let grafts = common.join("info/grafts");
-    let has_grafts = std::fs::read_to_string(&grafts)
-        .map(|text| {
-            text.lines()
-                .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        })
-        .unwrap_or(false);
+    // Git disables replacement refs when the variable merely exists (the
+    // value is immaterial). Honour that before probing the default or a custom
+    // namespace. Grafts are independent of this switch and remain active.
+    let replacements_disabled = std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some();
+    let replacement_base =
+        std::env::var("GIT_REPLACE_REF_BASE").unwrap_or_else(|_| "refs/replace/".into());
 
-    if has_grafts {
-        return Err(Error::Git(
-            "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
-                .into(),
-        ));
+    let mut changed_targets = HashSet::new();
+    if !replacements_disabled {
+        // `for-each-ref` is a bounded metadata lookup, understands packed refs,
+        // and follows Git's selected namespace. Ordinary repositories stop
+        // here without walking a single commit.
+        let refs = std::process::Command::new("git")
+            .current_dir(work_dir(repo)?)
+            .args([
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                &replacement_base,
+            ])
+            .output()
+            .map_err(|e| Error::Git(format!("inspect replacement refs: {e}")))?;
+        if !refs.status.success() {
+            return Err(Error::Git(format!(
+                "inspect replacement refs: {}",
+                String::from_utf8_lossy(&refs.stderr).trim()
+            )));
+        }
+        for line in String::from_utf8_lossy(&refs.stdout).lines() {
+            let (name, replacement) = line.split_once(' ').ok_or_else(|| {
+                Error::Git("inspect replacement refs: malformed for-each-ref output".into())
+            })?;
+            let original = name.strip_prefix(&replacement_base).ok_or_else(|| {
+                Error::Git(format!(
+                    "replacement ref `{name}` is outside its configured namespace"
+                ))
+            })?;
+            let original = parse_oid(original)?;
+            let replacement = parse_oid(replacement)?;
+            // Equal object IDs imply equal object bytes. Any other replacement
+            // changes at least one commit semantic (tree, metadata, or parents),
+            // even when the parent list happens to remain identical.
+            if original != replacement {
+                changed_targets.insert(original);
+            }
+        }
     }
 
-    // Let Git resolve its own replacement controls. In particular, neither a
-    // filesystem scan of `refs/replace` nor a gix ref iteration can correctly
-    // implement `GIT_REPLACE_REF_BASE` and `GIT_NO_REPLACE_OBJECTS`. Comparing
-    // the reachable parent graph also means an inactive or dangling
-    // replacement cannot block an otherwise unaffected HEAD.
-    if repo.head_id().is_err() {
+    let grafts_path = common_dir(repo).join("info/grafts");
+    if let Ok(text) = std::fs::read_to_string(&grafts_path) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let original_text = fields.next().expect("non-empty graft line");
+            let original = parse_oid(original_text).map_err(|_| {
+                Error::Git(format!(
+                    "inspect info/grafts: invalid commit id `{original_text}`"
+                ))
+            })?;
+            let declared_parents = fields.map(parse_oid).collect::<Result<Vec<ObjectId>>>()?;
+            let raw_parents = repo.find_commit(original).ok().map(|commit| {
+                commit
+                    .parent_ids()
+                    .map(|id| id.detach())
+                    .collect::<Vec<_>>()
+            });
+            // A dangling graft cannot affect HEAD. Defer reachability for it,
+            // while malformed/missing objects remain harmless unless reached.
+            if raw_parents.as_ref() != Some(&declared_parents) {
+                changed_targets.insert(original);
+            }
+        }
+    }
+
+    if changed_targets.is_empty() {
         return Ok(());
     }
-    let revision_graph = |disable_replacements: bool| -> Result<std::process::Output> {
-        let mut command = std::process::Command::new("git");
-        command
-            .current_dir(work_dir(repo)?)
-            .args(["rev-list", "--parents", "HEAD"]);
-        if disable_replacements {
-            command.env("GIT_NO_REPLACE_OBJECTS", "1");
-        }
-        command
-            .output()
-            .map_err(|e| Error::Git(format!("inspect HEAD replacement topology: {e}")))
+
+    let Some(head) = repo.head_id().ok().map(|id| id.detach()) else {
+        return Ok(());
     };
-    let effective = revision_graph(false)?;
-    let raw = revision_graph(true)?;
-    if raw.status.success() && (!effective.status.success() || effective.stdout != raw.stdout) {
-        return Err(Error::Git(
-            "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
-                .into(),
-        ));
-    }
-    if !raw.status.success() {
-        return Err(Error::Git(format!(
-            "inspect raw HEAD topology: {}",
-            String::from_utf8_lossy(&raw.stderr).trim()
-        )));
-    }
-    if !effective.status.success() {
-        return Err(Error::Git(format!(
-            "inspect effective HEAD topology: {}",
-            String::from_utf8_lossy(&effective.stderr).trim()
-        )));
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(8);
+    const MAX_COMMITS: usize = 1_000_000;
+    let mut pending = vec![head];
+    let mut seen = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if started.elapsed() > budget || seen.len() >= MAX_COMMITS {
+            return Err(Error::Git(
+                "replacement topology check incomplete: reachable history exceeded its safety bound"
+                    .into(),
+            ));
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        if changed_targets.contains(&id) {
+            return Err(Error::Git(
+                "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
+                    .into(),
+            ));
+        }
+        let commit = repo
+            .find_commit(id)
+            .map_err(|e| Error::Git(format!("inspect raw commit {id}: {e}")))?;
+        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
     }
     Ok(())
 }
@@ -659,35 +712,36 @@ pub(crate) fn first_parent_of(repo: &gix::Repository, commit_oid: &str) -> Resul
     Ok(commit.parent_ids().next().map(|p| p.detach().to_string()))
 }
 
-fn format_git_dates(t: gix::date::Time) -> Result<(String, String)> {
+struct GitAuthorTime {
+    seconds: i64,
+    offset_seconds: i64,
+    compact_offset: String,
+    colon_offset: String,
+}
+
+fn format_git_dates(t: GitAuthorTime) -> Result<(String, String)> {
     // Git records an absolute timestamp plus an offset whose accepted range is
     // wider than chrono's `FixedOffset` (for example `+9999` normalizes to
     // +100:39). Shift the calendar instant ourselves and render the recorded
     // offset separately so no valid Git date is silently rewritten as UTC.
     let local_seconds = t
         .seconds
-        .checked_add(i64::from(t.offset))
+        .checked_add(t.offset_seconds)
         .ok_or_else(|| Error::Git("author date is outside the supported timestamp range".into()))?;
     let local = chrono::DateTime::from_timestamp(local_seconds, 0)
         .ok_or_else(|| Error::Git("author date is outside the supported timestamp range".into()))?
         .naive_utc();
-    let sign = if t.offset < 0 { '-' } else { '+' };
-    let absolute_offset = i64::from(t.offset).abs();
-    let hours = absolute_offset / 3600;
-    let minutes = (absolute_offset % 3600) / 60;
-    let compact_offset = format!("{sign}{hours:02}{minutes:02}");
-    let colon_offset = format!("{sign}{hours:02}:{minutes:02}");
     Ok((
-        format!("{}{}", local.format("%Y-%m-%dT%H:%M:%S"), colon_offset),
+        format!("{}{}", local.format("%Y-%m-%dT%H:%M:%S"), t.colon_offset),
         format!(
             "{} {}",
             local.format("%a %b %-d %H:%M:%S %Y"),
-            compact_offset
+            t.compact_offset
         ),
     ))
 }
 
-fn parse_git_author_time(raw: &str) -> Result<gix::date::Time> {
+fn parse_git_author_time(raw: &str) -> Result<GitAuthorTime> {
     // gix's strict raw-date parser treats offsets outside the civil-time range
     // as invalid and defaults their offset to zero. Git itself accepts the
     // complete HHMM field and may store normalized offsets with more than two
@@ -705,8 +759,8 @@ fn parse_git_author_time(raw: &str) -> Result<gix::date::Time> {
         return Err(Error::Git("author date contains unexpected fields".into()));
     }
     let (sign, digits) = match offset.as_bytes().first() {
-        Some(b'+') => (1i32, &offset[1..]),
-        Some(b'-') => (-1i32, &offset[1..]),
+        Some(b'+') => (1i64, &offset[1..]),
+        Some(b'-') => (-1i64, &offset[1..]),
         _ => return Err(Error::Git("author date offset is missing its sign".into())),
     };
     if digits.len() < 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -714,15 +768,31 @@ fn parse_git_author_time(raw: &str) -> Result<gix::date::Time> {
     }
     let minute_start = digits.len() - 2;
     let hours = digits[..minute_start]
-        .parse::<i32>()
+        .parse::<i64>()
         .map_err(|e| Error::Git(format!("invalid author date hours: {e}")))?;
     let minutes = digits[minute_start..]
-        .parse::<i32>()
+        .parse::<i64>()
         .map_err(|e| Error::Git(format!("invalid author date minutes: {e}")))?;
-    Ok(gix::date::Time::new(
+    let magnitude = hours
+        .checked_mul(3600)
+        .and_then(|value| minutes.checked_mul(60).and_then(|m| value.checked_add(m)))
+        .ok_or_else(|| Error::Git(format!("author date offset `{offset}` is out of range")))?;
+    let offset_seconds = magnitude
+        .checked_mul(sign)
+        .ok_or_else(|| Error::Git(format!("author date offset `{offset}` is out of range")))?;
+    i32::try_from(offset_seconds)
+        .map_err(|_| Error::Git(format!("author date offset `{offset}` is out of range")))?;
+    Ok(GitAuthorTime {
         seconds,
-        sign * (hours * 3600 + minutes * 60),
-    ))
+        offset_seconds,
+        compact_offset: offset.to_string(),
+        colon_offset: format!(
+            "{}{}:{}",
+            &offset[..1],
+            &digits[..minute_start],
+            &digits[minute_start..]
+        ),
+    })
 }
 
 /// Is `anchor` reachable from `HEAD` only?

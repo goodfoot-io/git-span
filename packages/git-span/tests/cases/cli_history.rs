@@ -1462,6 +1462,136 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
     Ok(())
 }
 
+fn assert_topology_rejected_without_effects(
+    repo: &TestRepo,
+    span: &str,
+    env: &[(&str, &str)],
+) -> Result<()> {
+    let declaration = repo.path().join(format!(".span/{span}"));
+    let before = std::fs::read(&declaration)?;
+    for (name, args) in [
+        ("history", vec!["history", span, "--format=json"]),
+        ("stale", vec!["stale", "--format=json"]),
+        ("stale --fix", vec!["stale", "--fix"]),
+    ] {
+        let out = repo.run_span_with_envs(args, env)?;
+        assert!(
+            !out.status.success()
+                && out.stdout.is_empty()
+                && String::from_utf8_lossy(&out.stderr)
+                    .contains("replacement topology is unsupported"),
+            "{name} must reject changed reachable commit semantics before output: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(
+        std::fs::read(&declaration)?,
+        before,
+        "stale --fix must not mutate declarations after topology rejection"
+    );
+    Ok(())
+}
+
+#[test]
+fn same_parent_tree_replacements_are_rejected_in_default_and_custom_namespaces() -> Result<()> {
+    for (label, namespace) in [
+        ("default-same-parent", None),
+        ("custom-same-parent", Some("refs/tree-replacements/")),
+    ] {
+        let repo = committed_drift_repo(label)?;
+        let head = repo.head_sha()?;
+        let parent = repo.git_stdout(["rev-parse", "HEAD^1"])?;
+        let original = std::fs::read_to_string(repo.path().join("f.txt"))?;
+        repo.write_file("f.txt", "replacement tree\nwith different bytes\n")?;
+        repo.run_git(["add", "f.txt"])?;
+        let tree = repo.git_stdout(["write-tree"])?;
+        repo.run_git(["reset", "HEAD", "--", "f.txt"])?;
+        repo.write_file("f.txt", &original)?;
+        let replacement = repo.git_stdout([
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "same-parent replacement",
+        ])?;
+        let refname = format!("{}{head}", namespace.unwrap_or("refs/replace/"));
+        repo.run_git(["update-ref", &refname, &replacement])?;
+        repo.run_git(["pack-refs", "--all", "--prune"])?;
+
+        let env = namespace
+            .map(|base| vec![("GIT_REPLACE_REF_BASE", base)])
+            .unwrap_or_default();
+        let effective_parents =
+            repo.run_git_with_env(["rev-list", "--parents", "-n", "1", "HEAD"], &env)?;
+        let raw_parents = repo.run_git_with_env(
+            [
+                "--no-replace-objects",
+                "rev-list",
+                "--parents",
+                "-n",
+                "1",
+                "HEAD",
+            ],
+            &env,
+        )?;
+        assert_eq!(
+            effective_parents.stdout, raw_parents.stdout,
+            "fixture must preserve the replaced commit's parent IDs"
+        );
+        let effective_tree = repo.run_git_with_env(["show", "-s", "--format=%T", "HEAD"], &env)?;
+        let raw_tree = repo.run_git_with_env(
+            ["--no-replace-objects", "show", "-s", "--format=%T", "HEAD"],
+            &env,
+        )?;
+        assert_ne!(
+            effective_tree.stdout, raw_tree.stdout,
+            "fixture must change the replaced commit's tree"
+        );
+        assert_topology_rejected_without_effects(&repo, label, &env)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
+    let repo = committed_drift_repo("graft-reachability")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD^1"])?;
+    let dangling = repo.git_stdout([
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        "HEAD",
+        "-m",
+        "dangling graft target",
+    ])?;
+    let grafts = repo.path().join(".git/info/grafts");
+    std::fs::write(&grafts, format!("{dangling} {parent}\n"))?;
+
+    let history = repo.run_span(["history", "graft-reachability", "--format=json"])?;
+    assert!(
+        history.status.success() && !history.stdout.is_empty(),
+        "an unreachable graft must not block history: stdout={} stderr={}",
+        String::from_utf8_lossy(&history.stdout),
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let stale = repo.run_span(["stale", "--format=json"])?;
+    assert!(
+        stale.status.code() == Some(1)
+            && !stale.stdout.is_empty()
+            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
+        "an unreachable graft must preserve stale's ordinary result: stdout={} stderr={}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+
+    std::fs::write(&grafts, format!("{head}\n"))?;
+    assert_topology_rejected_without_effects(&repo, "graft-reachability", &[])?;
+    Ok(())
+}
+
 /// A first-parent timeline does not surface commits that happened only on a
 /// merged side branch; their contribution is represented by the merge itself.
 #[test]
@@ -5354,6 +5484,101 @@ fn git_valid_extended_author_offset_is_preserved_in_both_formats() -> Result<()>
         commit_with(&json, "extreme author offset")["date"],
         expected_json,
         "JSON history must match Git's %aI for an extended offset"
+    );
+    Ok(())
+}
+
+fn commit_span_declaration_with_raw_author_offset(
+    repo: &TestRepo,
+    span: &str,
+    offset: &str,
+    summary: &str,
+) -> Result<String> {
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "records the raw author offset"])?;
+    repo.run_git(["add", ".span"])?;
+    let tree = repo.git_stdout(["write-tree"])?;
+    let parent = repo.head_sha()?;
+    let raw = format!(
+        "tree {tree}\nparent {parent}\nauthor Test User <test@example.com> 0 {offset}\ncommitter Test User <test@example.com> 0 +0000\n\n{summary}\n"
+    );
+    repo.write_file("raw-commit", &raw)?;
+    let oid = repo.git_stdout([
+        "hash-object",
+        "--literally",
+        "-t",
+        "commit",
+        "-w",
+        "raw-commit",
+    ])?;
+    repo.run_git(["update-ref", "refs/heads/main", &oid, &parent])?;
+    std::fs::remove_file(repo.path().join("raw-commit"))?;
+    repo.run_git(["reset", "--mixed", "HEAD"])?;
+    Ok(oid)
+}
+
+#[test]
+fn noncanonical_author_minutes_preserve_gits_raw_offset_spelling() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial")?;
+    commit_span_declaration_with_raw_author_offset(
+        &repo,
+        "raw-minute-offset",
+        "+0060",
+        "noncanonical minute offset",
+    )?;
+
+    let expected_human = repo.git_stdout(["show", "-s", "--format=%ad", "HEAD"])?;
+    let expected_json = repo.git_stdout(["show", "-s", "--format=%aI", "HEAD"])?;
+    assert!(
+        expected_human.ends_with("+0060"),
+        "Git must retain the raw offset"
+    );
+    assert!(
+        expected_json.ends_with("+00:60"),
+        "Git must retain the noncanonical minute field"
+    );
+    let text = history_text(&repo, "raw-minute-offset")?;
+    assert!(
+        text.contains(&format!("Date:   {expected_human}")),
+        "human history must match Git exactly:\n{text}"
+    );
+    let json = history_json(&repo, "raw-minute-offset")?;
+    assert_eq!(
+        commit_with(&json, "noncanonical minute offset")["date"],
+        expected_json,
+        "JSON history must not silently canonicalize +0060 to +01:00"
+    );
+    Ok(())
+}
+
+#[test]
+fn overflowing_author_offsets_fail_closed_without_panicking() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial")?;
+    commit_span_declaration_with_raw_author_offset(
+        &repo,
+        "overflow-offset",
+        "+214748364799",
+        "overflowing author offset",
+    )?;
+
+    let out = repo.run_span(["history", "overflow-offset", "--format=json"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && out.stdout.is_empty(),
+        "an unsupported raw offset must fail before output: stdout={} stderr={stderr}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr.contains("author date offset `+214748364799` is out of range"),
+        "the failure must explain the unsupported author date: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("attempt to multiply with overflow"),
+        "malformed commit metadata must never reach a Rust panic: {stderr}"
     );
     Ok(())
 }
