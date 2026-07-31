@@ -992,7 +992,7 @@ async function computeUncoveredPaths(
   // files nowhere near this changeset. Narrow to the intersection here, once,
   // at the single place that has the changeset in hand: everything downstream
   // (the related-spans ranking's co-occurrence key, its proximity tie-break,
-  // and the per-span bullets rendered under a header that promises "other
+  // and the per-span anchor tree rendered under a header that promises "other
   // files in this change") is only meaningful over in-changeset anchors.
   const changeset = new Set(paths);
   const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));

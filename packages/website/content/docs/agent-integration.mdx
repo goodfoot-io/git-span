@@ -31,10 +31,8 @@ Two shapes, both rendered into the held command's `permissionDecisionReason`:
 This change leaves an implicit dependency out of date:
 
 ## checkout-flow
-├─ web/
-│  └─ checkout.tsx #L4-L6 — changed
-└─ api/
-   └─ charge.ts #L30-L76
+├─ web/checkout.tsx #L4-L6 — changed
+└─ api/charge.ts    #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -71,8 +69,7 @@ Other files in this change already belong to spans — an uncovered file above
 might belong with one of these instead of a new one:
 
 ## checkout-flow
-└─ web/
-   └─ checkout.tsx #L4-L6
+└─ web/checkout.tsx #L4-L6
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.

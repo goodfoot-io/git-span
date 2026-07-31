@@ -28,10 +28,8 @@ and a single footer after a final `---`. A healthy span renders as:
 checkout.tsx has implicit dependencies:
 
 ## billing/checkout-request-flow
-├─ web/
-│  └─ checkout.tsx #L88-L120
-└─ api/
-   └─ charge.ts #L30-L76
+├─ web/checkout.tsx #L88-L120
+└─ api/charge.ts    #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -51,10 +49,8 @@ lowercase status suffix and the header and footer switch:
 This edit put an implicit dependency out of date:
 
 ## billing/checkout-request-flow
-├─ web/
-│  └─ checkout.tsx #L88-L120 — changed
-└─ api/
-   └─ charge.ts #L30-L76
+├─ web/checkout.tsx #L88-L120 — changed
+└─ api/charge.ts    #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -72,8 +68,12 @@ change or the coupling no longer holds, tell the user instead.
 Each `## <name>` section renders the span's full declared anchor list —
 including anchors in files other than the touched one — as a box-drawing
 tree grouped by shared path prefix, each leaf's range column showing
-`#Lstart-Lend` (a bare path with no range column for a whole-file anchor),
-followed by the span's why sentence when one is recorded. Only genuine
+`#Lstart-Lend`, followed by the span's why sentence when one is recorded. A
+directory holding a single entry folds onto that entry's line, so a branch
+only ever appears where two or more anchors actually share a prefix. A
+whole-file anchor is a bare path with no range column; where the same file
+also carries line ranges, it takes `(whole file)` in the range column so its
+own drift label can never be read as belonging to a neighbouring range. Only genuine
 (semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
 has implicit dependencies:` (naming the touched file) when nothing did, the
@@ -151,10 +151,8 @@ already been told about:
 This change leaves an implicit dependency out of date:
 
 ## billing/checkout-request-flow
-├─ src/
-│  └─ checkout.tsx #L88-L120 — changed
-└─ api/
-   └─ charge.ts #L30-L76
+├─ src/checkout.tsx #L88-L120 — changed
+└─ api/charge.ts    #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -202,8 +200,7 @@ Other files in this change already belong to spans — an uncovered file above
 might belong with one of these instead of a new one:
 
 ## checkout-flow
-└─ web/
-   └─ checkout.tsx #L4-L6
+└─ web/checkout.tsx #L4-L6
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.

@@ -401,8 +401,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain('This change leaves an implicit dependency out of date:');
         // The bullet run is re-laid-out as a shared-prefix tree; the drifted
         // anchor is labeled and the clean sibling anchor is not.
-        expect(result.reason).toContain(['├─ src/', '│  └─ app.ts #L1-L10 — changed'].join('\n'));
-        expect(result.reason).toContain(['└─ api/', '   └─ charge.ts #L30-L76\n'].join('\n'));
+        expect(result.reason).toContain('├─ src/app.ts    #L1-L10 — changed');
+        expect(result.reason).toContain('└─ api/charge.ts #L30-L76\n');
         expect(result.reason).not.toContain('- src/app.ts#L1-L10');
         expect(result.reason).toContain('Checkout request flow');
         expect(result.reason).toContain('git span add billing/checkout-request-flow');
@@ -427,7 +427,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain('## billing/checkout-request-flow');
         // A synthesized block trees exactly like a parsed one — it must not be
         // the odd one out in a second format inside the same message.
-        expect(result.reason).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
+        expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
       }
     });
 
@@ -450,7 +450,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
       expect(result.reason).toContain(['## empty/span', '*Span has no anchors*', '', 'An empty span'].join('\n'));
-      expect(result.reason).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
+      expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
     });
 
     it('never collects a `why` line that happens to start with `- ` as an anchor', async () => {
@@ -518,7 +518,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
-      expect(result.reason).toContain(['└─ docs/', '   └─ guide.md'].join('\n'));
+      expect(result.reason).toContain('└─ docs/guide.md');
       expect(result.reason).not.toContain('truncated');
       expect(result.reason).not.toContain('guide.md#');
     });
@@ -544,7 +544,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // Bare-path leaves — this deduped retry list never claimed a range, so it
       // must not render one, and it must not diverge in format from the full
       // form it condenses.
-      expect(condensed.reason).toContain(['├─ src/', '│  └─ app.ts', '└─ api/', '   └─ charge.ts'].join('\n'));
+      expect(condensed.reason).toContain(['├─ src/app.ts', '└─ api/charge.ts'].join('\n'));
       expect(condensed.reason).not.toContain('- src/app.ts');
     });
 
@@ -671,7 +671,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('Other files in this change already belong to spans');
       expect(result.reason).toContain('## billing/checkout-request-flow');
-      expect(result.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
+      expect(result.reason).toContain('└─ src/other.ts #L5-L20');
     });
 
     it('renders a bare path for a whole-file anchor in the related-spans section', async () => {
@@ -687,7 +687,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       // Zero marker of any kind — a whole-file anchor is a real, deliberate
       // anchor, never rendered as truncated or otherwise annotated.
-      expect(result.reason).toContain(['└─ src/', '   └─ other.ts'].join('\n'));
+      expect(result.reason).toContain('└─ src/other.ts');
       expect(result.reason).not.toContain('other.ts#L');
       expect(result.reason).not.toContain('truncated');
     });
@@ -769,7 +769,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('## billing/checkout-request-flow');
-      expect(result.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
+      expect(result.reason).toContain('└─ src/other.ts #L5-L20');
     });
 
     it('omits the related-spans section entirely when no other file in the changeset carries any span coverage', async () => {
@@ -838,7 +838,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('elsewhere/');
       // The in-changeset anchor of the big span survives the filter, and
       // filtering does not change which paths are flagged uncovered.
-      expect(result.reason).toContain(['└─ src/', '   └─ b1.ts #L1-L5'].join('\n'));
+      expect(result.reason).toContain('└─ src/b1.ts #L1-L5');
       expect(result.reason).toContain('src/uncovered.ts');
     });
 
@@ -995,7 +995,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       if (info.kind !== 'uncovered-writes-report') throw new Error('unreachable');
-      expect(info.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
+      expect(info.reason).toContain('└─ src/other.ts #L5-L20');
 
       // The advisor is informational, not a hard block — a bare retry already
       // gets past a deny — so once the status preview has shown this exact

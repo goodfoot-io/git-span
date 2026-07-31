@@ -4,7 +4,11 @@
  * construction/rendering rules: directory collapsing, sibling expansion,
  * multi-range stacking and alignment, numeric range sorting, the
  * `range`/`whole-file`/`truncated` `RangeLabel` kinds, degenerate path
- * handling, the padding cap, and code-point-based column math.
+ * handling, the alignment ceiling, and display-column math.
+ *
+ * The height bound over this repository's real span data lives in
+ * `anchor-tree-height.test.ts`, which needs the `git span` CLI and so is
+ * skipped where the unit tests are not.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -46,10 +50,17 @@ describe('renderAnchorTree', () => {
     expect(renderAnchorTree(anchors)).toEqual(['└─ a.ts #L1-L5']);
   });
 
-  it('collapses a single-child directory chain into one combined-name line', () => {
-    const anchors: TreeAnchor[] = [{ path: 'public/claude/runtime/skills/card/SKILL.md', ranges: [range(1, 91)] }];
+  it('collapses a single-child directory chain into one combined-name line, stopping where it branches', () => {
+    const anchors: TreeAnchor[] = [
+      { path: 'public/claude/runtime/skills/card/SKILL.md', ranges: [range(1, 91)] },
+      { path: 'public/claude/runtime/skills/card/references/contest.md', ranges: [range(1, 191)] }
+    ];
 
-    expect(renderAnchorTree(anchors)).toEqual(['└─ public/claude/runtime/skills/card/', '   └─ SKILL.md #L1-L91']);
+    expect(renderAnchorTree(anchors)).toEqual([
+      '└─ public/claude/runtime/skills/card/',
+      '   ├─ SKILL.md              #L1-L91',
+      '   └─ references/contest.md #L1-L191'
+    ]);
   });
 
   it('keeps a directory with 2+ children expanded from that level down', () => {
@@ -142,41 +153,142 @@ describe('renderAnchorTree', () => {
     });
   });
 
-  it('caps padding at 48 columns past the tree prefix for a pathologically long filename', () => {
+  describe('a whole-file anchor stacked behind a range on the same path', () => {
+    it('carries an explicit marker so neither anchor nor its drift suffix is misattributable', () => {
+      // The CLI reports these as two rows (`src/a.ts 0-0`, `src/a.ts 5-9`);
+      // only the whole-file one drifted. Both must be identifiable, and the
+      // ` — changed` must sit on a line that names which anchor drifted.
+      const anchors = collapseByPath([
+        { path: 'src/a.ts', range: { kind: 'whole-file' }, suffix: ' — changed' },
+        { path: 'src/a.ts', range: { kind: 'range', start: 5, end: 9 }, suffix: '' },
+        { path: 'src/b.ts', range: { kind: 'range', start: 1, end: 1 }, suffix: '' }
+      ]);
+
+      expect(renderAnchorTree(anchors)).toEqual([
+        '└─ src/',
+        '   ├─ a.ts (whole file) — changed',
+        '   │       #L5-L9',
+        '   └─ b.ts #L1-L1'
+      ]);
+    });
+
+    it('stays identifiable with no suffix at all, never degenerating to a blank line', () => {
+      const anchors = collapseByPath([
+        { path: 'src/a.ts', range: { kind: 'whole-file' }, suffix: '' },
+        { path: 'src/a.ts', range: { kind: 'range', start: 5, end: 9 }, suffix: '' }
+      ]);
+
+      const lines = renderAnchorTree(anchors);
+      expect(lines).toEqual(['└─ src/a.ts (whole file)', '            #L5-L9']);
+      for (const line of lines) expect(line.trim()).not.toBe('');
+    });
+
+    it('sorts the whole-file entry ahead of every line range on that path', () => {
+      // Arrival order puts the ranges first; the whole-file entry covers the
+      // file, so it leads — the same position the CLI's `0-0` row implies.
+      const anchors = collapseByPath([
+        { path: 'a.ts', range: { kind: 'range', start: 5, end: 9 }, suffix: '' },
+        { path: 'a.ts', range: { kind: 'range', start: 1, end: 2 }, suffix: '' },
+        { path: 'a.ts', range: { kind: 'whole-file' }, suffix: '' }
+      ]);
+
+      const lines = renderAnchorTree(anchors);
+      expect(lines[0]).toContain('(whole file)');
+      expect(lines[1]).toContain('#L1-L2');
+      expect(lines[2]).toContain('#L5-L9');
+    });
+  });
+
+  describe('single-child folding', () => {
+    it('folds a lone leaf onto its directory’s line, so a single anchor is one line at any depth', () => {
+      const anchors: TreeAnchor[] = [{ path: 'public/claude/runtime/skills/card/SKILL.md', ranges: [range(1, 91)] }];
+      expect(renderAnchorTree(anchors)).toEqual(['└─ public/claude/runtime/skills/card/SKILL.md #L1-L91']);
+    });
+
+    it('keeps the discriminating segment on the same line as its range for mod.rs-style layouts', () => {
+      const anchors: TreeAnchor[] = [
+        { path: 'packages/git-span/src/resolver/dirty/mod.rs', ranges: [range(392, 399)] },
+        { path: 'packages/git-span/src/resolver/engine/mod.rs', ranges: [range(702, 730)] },
+        { path: 'packages/git-span/src/resolver/exact/mod.rs', ranges: [range(613, 620)] },
+        { path: 'packages/git-span/src/resolver/incremental/mod.rs', ranges: [range(255, 262)] }
+      ];
+
+      expect(renderAnchorTree(anchors)).toEqual([
+        '└─ packages/git-span/src/resolver/',
+        '   ├─ dirty/mod.rs       #L392-L399',
+        '   ├─ engine/mod.rs      #L702-L730',
+        '   ├─ exact/mod.rs       #L613-L620',
+        '   └─ incremental/mod.rs #L255-L262'
+      ]);
+    });
+
+    it('measures the folded name — not the bare filename — when padding a sibling group', () => {
+      // Both leaves are named `mod.rs`; only the folded names differ in width,
+      // so the range column can only line up if the fold is what gets measured.
+      const anchors: TreeAnchor[] = [
+        { path: 'dir/a/mod.rs', ranges: [range(1, 2)] },
+        { path: 'dir/bbbbb/mod.rs', ranges: [range(3, 4)] }
+      ];
+
+      expect(renderAnchorTree(anchors)).toEqual(['└─ dir/', '   ├─ a/mod.rs     #L1-L2', '   └─ bbbbb/mod.rs #L3-L4']);
+    });
+  });
+
+  it('forgoes alignment entirely in a group whose widest name passes the 48-column ceiling', () => {
+    // Padding short siblings to a 48-column ceiling while the long name sits
+    // at its own natural column aligns nothing while paying most of the
+    // width. The coherent end is: the group either aligns or it does not.
     const longName = `${'x'.repeat(60)}.ts`;
     const anchors: TreeAnchor[] = [
       { path: longName, ranges: [range(1, 2)] },
       { path: 'a.ts', ranges: [range(3, 4)] }
     ];
 
-    const lines = renderAnchorTree(anchors);
-    // The pathologically long name gets a single space before its range —
-    // it is never truncated/elided, and it doesn't grow the pad further.
-    expect(lines[0]).toBe(`├─ ${longName} #L1-L2`);
-    // The short sibling's padding is capped at 48 columns (not the long
-    // name's actual width), so its own name+pad totals 48 + 1 columns.
-    const shortLine = lines[1];
-    const prefixLen = '└─ '.length;
-    const afterPrefix = shortLine.slice(prefixLen);
-    const rangeIdx = afterPrefix.indexOf('#L3-L4');
-    expect(rangeIdx).toBe(49); // 48-column cap + 1 trailing space before the range
+    expect(renderAnchorTree(anchors)).toEqual([`├─ ${longName} #L1-L2`, '└─ a.ts #L3-L4']);
   });
 
-  it('computes alignment over Unicode code points, not UTF-16 length, for a non-BMP character', () => {
-    // '\u{1F600}' (an emoji outside the BMP) is one code point but a UTF-16
-    // surrogate pair (length 2); Array.from(...).length must count it as 1.
-    const emojiName = '\u{1F600}.ts'; // 4 code points: 😀 . t s
+  it('still aligns a group whose widest name sits exactly at the ceiling', () => {
+    const atCeiling = 'y'.repeat(48);
     const anchors: TreeAnchor[] = [
-      { path: emojiName, ranges: [range(1, 2)] },
-      { path: 'abcd.ts', ranges: [range(3, 4)] } // 7 code points, sets groupMax
+      { path: atCeiling, ranges: [range(1, 2)] },
+      { path: 'a.ts', ranges: [range(3, 4)] }
     ];
 
     const lines = renderAnchorTree(anchors);
-    const prefixLen = '├─ '.length;
-    const afterPrefix = lines[0].slice(prefixLen);
-    // groupMax is 7 (code points of 'abcd.ts'); the emoji name is 4 code
-    // points, so padding is 7 - 4 + 1 = 4 spaces — this only comes out right
-    // if code points, not UTF-16 length (5), were used for the emoji name.
-    expect(afterPrefix).toBe(`${emojiName}    #L1-L2`);
+    expect(lines[1]).toBe(`└─ a.ts${' '.repeat(45)}#L3-L4`);
+    expect(lines[0].indexOf('#L1-L2')).toBe(lines[1].indexOf('#L3-L4'));
+  });
+
+  describe('alignment is measured in terminal columns, not code points or UTF-16 units', () => {
+    it('counts an emoji as the two columns it occupies, not the one code point it is', () => {
+      const emojiName = '\u{1F600}.ts'; // 4 code points, 5 display columns
+      const anchors: TreeAnchor[] = [
+        { path: emojiName, ranges: [range(1, 2)] },
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns, sets the group target
+      ];
+
+      const lines = renderAnchorTree(anchors);
+      expect(lines[0]).toBe(`├─ ${emojiName}${' '.repeat(6)}#L1-L2`); // 10 - 5 + 1 spaces
+      expect(lines[1]).toBe('└─ abcdefg.ts #L3-L4');
+    });
+
+    it('counts a CJK ideograph as two columns', () => {
+      const anchors: TreeAnchor[] = [
+        { path: '日本.ts', ranges: [range(1, 2)] }, // 日本.ts — 7 columns
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns
+      ];
+
+      expect(renderAnchorTree(anchors)[0]).toBe(`├─ 日本.ts${' '.repeat(4)}#L1-L2`); // 10 - 7 + 1
+    });
+
+    it('counts a decomposed accent as the one column it renders as, not two code points', () => {
+      const decomposed = 'e\u0301.ts'; // e + combining acute — 5 code points, 4 display columns
+      const anchors: TreeAnchor[] = [
+        { path: decomposed, ranges: [range(1, 2)] },
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns
+      ];
+
+      expect(renderAnchorTree(anchors)[0]).toBe(`├─ ${decomposed}${' '.repeat(7)}#L1-L2`); // 10 - 4 + 1
+    });
   });
 });

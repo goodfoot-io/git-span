@@ -128,8 +128,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // sentence, and the drift footer after a final `---`.
       expect(block).toContain('This edit put an implicit dependency out of date:');
       expect(block).toContain('## billing/checkout-request-flow');
-      expect(block).toContain(['├─ src/', '│  └─ app.ts #L1-L10 — changed'].join('\n'));
-      expect(block).toContain(['└─ api/', '   └─ charge.ts #L30-L76\n'].join('\n'));
+      expect(block).toContain('├─ src/app.ts    #L1-L10 — changed');
+      expect(block).toContain('└─ api/charge.ts #L30-L76\n');
       expect(block).not.toContain('#L30-L76 —');
       // The flat bullet run this section used to render is gone entirely.
       expect(block).not.toContain('- src/app.ts#L1-L10');
@@ -174,7 +174,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const third = await runTouchHook(input, executors, memo);
       const driftBlock = third.additionalContext ?? '';
       expect(driftBlock).toContain('This edit put an implicit dependency out of date:');
-      expect(driftBlock).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
+      expect(driftBlock).toContain('└─ src/app.ts #L1-L10 — changed');
       expect(driftBlock).toContain(WHY);
 
       // Same (span, status) pair again: deduped.

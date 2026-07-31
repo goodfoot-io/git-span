@@ -158,17 +158,33 @@ function buildForest(anchors: TreeAnchor[]): PathTreeNode[] {
   return root.children;
 }
 
+/** A node paired with the (possibly folded) name it displays on its own line. */
+interface DisplayItem {
+  name: string;
+  node: PathTreeNode;
+}
+
 /**
- * Collapse a chain of directories with exactly one child at each level into a
- * single combined name (`public/claude/runtime/skills/card`), matching the
- * card's own example. Stops at the first level that either isn't a lone
- * directory child (2+ children, expand from here) or is a leaf (render the
- * leaf on its own line below the combined directory line).
+ * Fold a chain of single-child nodes into one combined name
+ * (`public/claude/runtime/skills/card`, `dirty/mod.rs`,
+ * `.devcontainer/Dockerfile`). Folding continues while the current node is a
+ * directory with **exactly one child**, regardless of whether that child is a
+ * directory or a leaf: a node with one child conveys no grouping by
+ * definition, so folding it loses no structure while removing a line whose
+ * only content is a connector. Stops at the first directory with 2+ children
+ * (expand from there) or at a leaf (which then renders with the folded name).
+ *
+ * Folding lone *leaves* — not just lone directories — is what keeps the tree
+ * no taller than the flat bullet list it replaces, and what makes a single
+ * anchor render as the one-line tree the plan promises even when its path has
+ * directories in it. It also keeps the discriminating segment on the same
+ * line as its range (`dirty/mod.rs #L392-L399`) for `mod.rs`/`index.ts`
+ * layouts, where the filename alone identifies nothing.
  */
-function collapseChain(node: DirNode): { name: string; node: DirNode } {
+function foldChain(node: PathTreeNode): DisplayItem {
   let name = node.name;
   let cur = node;
-  while (cur.children.length === 1 && cur.children[0].kind === 'dir') {
+  while (cur.kind === 'dir' && cur.children.length === 1) {
     const child = cur.children[0];
     name = `${name}/${child.name}`;
     cur = child;
@@ -181,93 +197,197 @@ function collapseChain(node: DirNode): { name: string; node: DirNode } {
 // ---------------------------------------------------------------------------
 
 /**
- * Stacked-range order is numeric (`start` then `end`), overriding arrival or
- * codepoint order — the only sorting this module does, and scoped strictly to
- * ranges stacked on one path (never to sibling paths or directory order).
- * `truncated` entries carry no numeric position and sort after every numeric
- * `range` entry, keeping their own relative arrival order (a stable sort
- * leaves equal-ranked entries — including any two non-numeric entries — in
- * place).
+ * Rank of a stacked entry's range kind: `whole-file` first, then numeric
+ * `range`s, then `truncated`. A whole-file anchor is the CLI's `0-0` row — it
+ * covers the entire file, so it sorts ahead of every line range on that file
+ * the same way line 0 would. `truncated` carries no position at all and sorts
+ * last.
+ */
+function rangeRank(range: RangeLabel): number {
+  switch (range.kind) {
+    case 'whole-file':
+      return 0;
+    case 'range':
+      return 1;
+    case 'truncated':
+      return 2;
+  }
+}
+
+/**
+ * Stacked-range order is by kind rank then numeric (`start` then `end`),
+ * overriding arrival or codepoint order — the only sorting this module does,
+ * and scoped strictly to ranges stacked on one path (never to sibling paths
+ * or directory order). Equal-ranked entries (two `truncated`s, or two
+ * identical ranges) keep their own relative arrival order, since the sort is
+ * stable.
  */
 function compareRangeEntries(a: RangeEntry, b: RangeEntry): number {
-  const aNumeric = a.range.kind === 'range';
-  const bNumeric = b.range.kind === 'range';
-  if (aNumeric && bNumeric) {
-    const ar = a.range as Extract<RangeLabel, { kind: 'range' }>;
-    const br = b.range as Extract<RangeLabel, { kind: 'range' }>;
-    return ar.start - br.start || ar.end - br.end;
+  const rank = rangeRank(a.range) - rangeRank(b.range);
+  if (rank !== 0) return rank;
+  if (a.range.kind === 'range' && b.range.kind === 'range') {
+    return a.range.start - b.range.start || a.range.end - b.range.end;
   }
-  if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
   return 0;
 }
 
-/** The range column's text, or `null` for `whole-file` (zero marker — bare path). */
-function labelFor(range: RangeLabel): string | null {
+/**
+ * The range column's text, or `null` when the entry prints as a bare path
+ * with no range column at all.
+ *
+ * A `whole-file` entry is the one kind whose rendering depends on context.
+ * Alone on its path it stays a bare path with zero marker — that is what the
+ * CLI's own flat list prints for a whole-file anchor, and adding a marker
+ * there would annotate the overwhelmingly common case for the benefit of the
+ * rare one. *Stacked* behind other ranges on the same path it must carry an
+ * explicit marker: without one it renders as a continuation line holding
+ * nothing but indentation and its drift suffix, which erases the anchor
+ * outright when the suffix is empty and — worse — hangs its ` — changed`
+ * under a neighbouring range, exactly the visual grammar that means "another
+ * range on this same file". The reader would then reconcile the range that
+ * did not drift. Of the three fixes available (print the path on
+ * continuation lines, sort whole-file to position 0, or split it into its own
+ * leaf), an explicit marker is the only one that makes the entry identifiable
+ * in *every* position rather than only in the position the sort happens to
+ * put it in; sorting it first (see {@link rangeRank}) is kept as well because
+ * "whole file, then its ranges in line order" is the order a reader expects,
+ * not because identifiability depends on it.
+ */
+function labelFor(range: RangeLabel, sole: boolean): string | null {
   switch (range.kind) {
     case 'range':
       return `#L${range.start}-L${range.end}`;
     case 'whole-file':
-      return null;
+      return sole ? null : '(whole file)';
     case 'truncated':
       return '(truncated in source — anchor incomplete)';
   }
 }
 
-/**
- * Padding cap: no path is ever truncated or elided, but padding itself stops
- * growing past this many columns past the tree prefix. Beyond the cap a
- * single space precedes the range instead of continued padding, so one
- * pathologically long filename can't blow out an entire group's alignment.
- */
-const MAX_PAD_COLUMN = 48;
+// ---------------------------------------------------------------------------
+// Column math
+// ---------------------------------------------------------------------------
 
-/** Column width to pad `name` (in code points) to, given the sibling group's widest name. */
-function computePad(nameLen: number, groupMax: number): string {
-  const target = Math.min(groupMax, MAX_PAD_COLUMN);
-  if (nameLen >= target) return ' ';
-  return ' '.repeat(target - nameLen + 1);
+const graphemes = new Intl.Segmenter('en', { granularity: 'grapheme' });
+
+/**
+ * Code point ranges rendered two columns wide: the East Asian Wide (W) and
+ * Fullwidth (F) blocks of UAX #11, plus the emoji blocks that terminals and
+ * proportional agent-facing renderers both give double width. Everything else
+ * counts as one column.
+ */
+const WIDE_RANGES: readonly (readonly [number, number])[] = [
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3041, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff],
+  [0xa000, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x17000, 0x18aff],
+  [0x1f300, 0x1f64f],
+  [0x1f680, 0x1f6ff],
+  [0x1f900, 0x1f9ff],
+  [0x20000, 0x2fffd],
+  [0x30000, 0x3fffd]
+];
+
+function isWideCodePoint(cp: number): boolean {
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
 }
 
 /**
- * The widest name (in code points, {@link Array.from} over the string so
- * non-BMP characters count as one unit) among leaf siblings that actually
- * display a range column in this immediate sibling group. Alignment scope is
- * this group's direct children only, never the whole tree.
+ * Display width of a name in terminal columns — the unit the range column is
+ * actually aligned in. Measured over grapheme clusters (so a decomposed `é`
+ * or a combining-mark sequence counts once, not once per code point), with
+ * each cluster contributing two columns when its base code point is East
+ * Asian Wide/Fullwidth or emoji and one otherwise.
+ *
+ * Neither UTF-16 `.length` nor `Array.from(name).length` is this unit: the
+ * first over-counts a surrogate pair, the second under-counts a CJK ideograph
+ * and over-counts a decomposed accent. `Intl.Segmenter` is unconditionally
+ * available on this package's Node 20+ floor, so there is no fallback path.
  */
-function computeGroupMax(nodes: PathTreeNode[]): number {
+function displayWidth(name: string): number {
+  let width = 0;
+  for (const { segment } of graphemes.segment(name)) {
+    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+
+/**
+ * Alignment ceiling. A sibling group whose widest range-bearing name exceeds
+ * this width does not align at all — every name in it takes a single space
+ * before its range. The alternative (pad the short names to the ceiling while
+ * the long one sits at its own natural column) pays most of the width for
+ * alignment that aligns with nothing, which is strictly worse than not
+ * aligning. Names themselves are never truncated or elided at any width.
+ */
+const MAX_ALIGN_COLUMN = 48;
+
+/**
+ * The column every range-bearing name in this sibling group pads to, or `0`
+ * when the group forgoes alignment (no range-bearing names, or a name past
+ * {@link MAX_ALIGN_COLUMN}). Alignment scope is the group's direct children
+ * only, never the whole tree — whole-tree alignment would let one deeply
+ * nested long name pad every unrelated branch.
+ */
+function computeGroupTarget(items: DisplayItem[]): number {
   let max = 0;
-  for (const node of nodes) {
-    if (node.kind === 'leaf' && node.anchor.ranges.length > 0) {
-      max = Math.max(max, Array.from(node.name).length);
+  for (const item of items) {
+    if (item.node.kind === 'leaf' && item.node.anchor.ranges.length > 0) {
+      max = Math.max(max, displayWidth(item.name));
     }
   }
-  return max;
+  return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+
+/** The spacing between a name of `nameWidth` columns and its range column. */
+function computePad(nameWidth: number, target: number): string {
+  if (nameWidth >= target) return ' ';
+  return ' '.repeat(target - nameWidth + 1);
 }
 
 /**
  * Render one leaf's line(s). An empty `ranges` array is a bare-path leaf with
  * no range column at all (distinct from a `whole-file` entry, which is an
- * explicit classification that also prints with zero marker but through the
- * ranges pipeline). Multiple stacked ranges print under a continuation
- * prefix instead of repeating the name; each carries its own suffix
- * independently.
+ * explicit classification that also prints with zero marker when it stands
+ * alone, but through the ranges pipeline). Multiple stacked ranges print
+ * under a continuation prefix instead of repeating the name; each carries its
+ * own suffix independently, and each carries a label identifying which anchor
+ * the suffix belongs to.
  */
-function renderLeafLines(node: LeafNode, ownPrefix: string, childPrefix: string, groupMax: number): string[] {
-  const { name } = node;
-  const { ranges } = node.anchor;
+function renderLeafLines(
+  name: string,
+  anchor: TreeAnchor,
+  ownPrefix: string,
+  childPrefix: string,
+  groupTarget: number
+): string[] {
+  const { ranges } = anchor;
   if (ranges.length === 0) return [`${ownPrefix}${name}`];
 
   const sorted = [...ranges].sort(compareRangeEntries);
-  const nameLen = Array.from(name).length;
-  const pad = computePad(nameLen, groupMax);
-  const blank = ' '.repeat(nameLen + pad.length);
+  const sole = sorted.length === 1;
+  const nameWidth = displayWidth(name);
+  const pad = computePad(nameWidth, groupTarget);
+  const blank = ' '.repeat(nameWidth + pad.length);
 
   return sorted.map((entry, i) => {
-    const label = labelFor(entry.range);
-    if (label === null) {
-      const base = i === 0 ? `${ownPrefix}${name}` : `${childPrefix}${blank}`;
-      return `${base}${entry.suffix}`;
-    }
+    const label = labelFor(entry.range, sole);
+    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
     const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
     return `${base}${label}${entry.suffix}`;
   });
@@ -275,17 +395,17 @@ function renderLeafLines(node: LeafNode, ownPrefix: string, childPrefix: string,
 
 function renderNodes(nodes: PathTreeNode[], prefix: string): string[] {
   const lines: string[] = [];
-  const groupMax = computeGroupMax(nodes);
-  nodes.forEach((node, i) => {
-    const isLast = i === nodes.length - 1;
+  const items = nodes.map(foldChain);
+  const groupTarget = computeGroupTarget(items);
+  items.forEach((item, i) => {
+    const isLast = i === items.length - 1;
     const ownPrefix = `${prefix}${isLast ? '└─ ' : '├─ '}`;
     const childPrefix = `${prefix}${isLast ? '   ' : '│  '}`;
-    if (node.kind === 'leaf') {
-      lines.push(...renderLeafLines(node, ownPrefix, childPrefix, groupMax));
+    if (item.node.kind === 'leaf') {
+      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
     } else {
-      const { name, node: finalDir } = collapseChain(node);
-      lines.push(`${ownPrefix}${name}/`);
-      lines.push(...renderNodes(finalDir.children, childPrefix));
+      lines.push(`${ownPrefix}${item.name}/`);
+      lines.push(...renderNodes(item.node.children, childPrefix));
     }
   });
   return lines;
@@ -294,8 +414,12 @@ function renderNodes(nodes: PathTreeNode[], prefix: string): string[] {
 /**
  * Render a collapsed anchor list as a box-drawing tree, grouped by shared
  * path prefix. Every anchor list renders as a tree unconditionally — a single
- * anchor becomes a one-line tree; there is no flat-bullet path or size floor
- * in this module.
+ * anchor becomes a one-line tree whatever its depth (see {@link foldChain});
+ * there is no flat-bullet path or size floor in this module.
+ *
+ * Height is bounded by {@link foldChain}: a directory line only ever appears
+ * where it genuinely groups two or more siblings, so the tree adds at most
+ * one line per real grouping and never one per path segment.
  *
  * Total for any well-formed `TreeAnchor[]`: degenerate paths (rule enforced
  * in {@link splitSegments}) are normalized to atomic leaves rather than
