@@ -1,11 +1,6 @@
 packages/agent-hooks/src/common/advisor-core.ts#L1354-L1646 rk64:430eac0d450d07d6
-packages/agent-hooks/src/common/advisor-core.ts#L1427-L1719 rk64:bdd9e93da3f879e1
 packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:49bd4bc548ecea54
-packages/agent-hooks/src/common/touch-core.ts#L246-L275 rk64:49bd4bc548ecea54
-packages/website/content/docs/agent-integration.mdx rk64:aeb16afebe3a1014
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:d55f34fb997d46b1
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:82e8a551b7e82e65
 
-packages/website/content/docs/agent-integration.mdx rk64:6a15f6698f30fc8e
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:fae3a7b0b68b6d3a
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:e1c204912ef06fe4
+packages/website/content/docs/agent-integration.mdx rk64:4738c9f1e74d0540
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:4d0829968ea017dd
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:225521aba9a3b3d9

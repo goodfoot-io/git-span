@@ -312,12 +312,22 @@ on its own, and spanning build output contradicts the guidance in `SKILL.md`.
 
 ## Failure behaviour
 
-Both hooks fail open at every layer: a missing `git span` binary, a timeout,
-or a malformed/unexpected CLI result resolves to "allow silently, inject
+Both hooks fail open on everything that decides *whether* there is something
+to say: a missing `git span` binary, a timeout, a failed scan, or a
+malformed/unexpected CLI result resolves to "allow silently, inject
 nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
-said — never an error condition. The one exception is the advisor's own
+said — never an error condition. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
 above): that still fails open, but visibly — a warning names the failure
 instead of staying silent, since an unverified changeset is worth flagging
 even though nothing was held.
+
+Rendering is the deliberate exception, and fails **closed**. If the anchor
+tree can't be drawn, the hook falls back to the flat bullet form and still
+holds the commit — a defect in how a hold is *presented* must cost
+presentation, never the hold itself. That is why those `try`/`catch` blocks
+sit around the render calls rather than deferring to the advisor's outer
+fail-open catch: they exist precisely to keep a formatting error from
+converting a correctly computed hold into a silent allow. Treat them as
+load-bearing, not as fallbacks that escaped the rule above.

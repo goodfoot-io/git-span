@@ -18,14 +18,16 @@ The CLI itself doesn't change: every capability the plugin uses is a plain `git 
 - **Advisor** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span stale --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic staleness, or a changed file no span covers — holds the command with a checklist once per distinct debt state, so the report gets read; an identical retry proceeds. The advisor reports rather than enforces, so a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full also proceeds, without holding on a state the agent has already been shown. `git status` is never held: the same checklist surfaces as advisory context instead, re-reported live on every call since a status preview has no memory of what it already showed. Positional drift never causes a hold; the touch hook already healed it. If the scan itself fails to complete, the advisor holds nothing on that account — it warns that span debt wasn't verified and lets the command proceed.
 
 <Callout type="info">
-Both hooks fail open at every layer: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
+Both hooks fail open on everything that decides *whether* there is something to say: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
+
+Rendering is the deliberate exception, and fails **closed**. If the anchor tree can't be drawn, the hook falls back to the flat bullet form and still holds — a defect in how a hold is presented must cost presentation, never the hold itself. That's why those `try/catch` blocks sit around the render calls rather than deferring to the advisor's outer fail-open catch: they exist precisely to keep a formatting error from converting a correctly computed hold into a silent allow. Treat them as load-bearing, not as fallbacks that escaped the rule above.
 </Callout>
 
 ### What the advisor holds on
 
 Two shapes, both rendered into the held command's `permissionDecisionReason`:
 
-**Semantic staleness** — the full span in the same human format `git span list` prints (all anchors, drifted ones labeled, the description), held on once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh hold:
+**Semantic staleness** — the full span (all anchors, drifted ones labeled, the description), held on once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh hold:
 
 ```
 This change leaves an implicit dependency out of date:
@@ -46,6 +48,8 @@ change or a dependency no longer holds, tell the user instead. You may
 retry this command directly; the hold will not fire again for the same
 debt state.
 ```
+
+The `## <name>` header and the why sentence are the same shape `git span list` prints; the anchor list deliberately is not — where the CLI prints a flat `- path#Lstart-Lend` bullet run, the hook renders the span's full declared anchor list as a box-drawing tree grouped by shared path prefix. A directory holding a single entry folds onto that entry's line, so a branch only ever appears where two or more anchors actually share a prefix. A whole-file anchor is a bare path with no range column; where the same file also carries line ranges, it takes `(whole file)` in the range column so its own drift label can never be read as belonging to a neighbouring range. The CLI's own text format is untouched — only the hook's re-presentation of it groups, so `(whole file)` is a token you will see in a hold and never in `git span list` output.
 
 **Uncovered writes** — a changed file no span anchors at all, held on once per distinct debt state; an unchanged retry passes, and so does a commit/push whose exact debt state a prior `git status` already showed in full. When the rest of the changeset already belongs to spans, a related-spans section follows the checklist — only anchors that are part of *this* changeset, as line ranges wherever possible, ranked so the span covering the most of the changeset leads (ties broken by directory proximity to an uncovered file, then by name), capped at eight spans with any remainder disclosed by count, each group followed by that span's `why` sentence when it has one recorded:
 

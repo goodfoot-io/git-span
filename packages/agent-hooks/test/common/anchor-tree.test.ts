@@ -247,6 +247,33 @@ describe('renderAnchorTree', () => {
     expect(renderAnchorTree(anchors)).toEqual([`├─ ${longName} #L1-L2`, '└─ a.ts #L3-L4']);
   });
 
+  it('ignores names that print no range column when computing the group’s alignment target', () => {
+    // A sole whole-file anchor renders as a bare path with no range column, so
+    // its width must not enter the group max: an over-long one would otherwise
+    // push the group past the ceiling and suppress alignment for the siblings
+    // that do print ranges, aligning nothing in exchange for nothing.
+    const longWholeFile = `${'w'.repeat(60)}.ts`;
+    const anchors: TreeAnchor[] = [
+      { path: longWholeFile, ranges: [{ range: { kind: 'whole-file' }, suffix: '' }] },
+      { path: 'a.ts', ranges: [range(1, 2)] },
+      { path: 'bbbb.ts', ranges: [range(3, 4)] }
+    ];
+
+    expect(renderAnchorTree(anchors)).toEqual([`├─ ${longWholeFile}`, '├─ a.ts    #L1-L2', '└─ bbbb.ts #L3-L4']);
+  });
+
+  it('ignores a bare-path leaf’s width too, since it prints no range column either', () => {
+    const anchors: TreeAnchor[] = [
+      { path: `${'w'.repeat(60)}.ts`, ranges: [] },
+      { path: 'a.ts', ranges: [range(1, 2)] },
+      { path: 'bbbb.ts', ranges: [range(3, 4)] }
+    ];
+
+    const lines = renderAnchorTree(anchors);
+    expect(lines[1]).toBe('├─ a.ts    #L1-L2');
+    expect(lines[2]).toBe('└─ bbbb.ts #L3-L4');
+  });
+
   it('still aligns a group whose widest name sits exactly at the ceiling', () => {
     const atCeiling = 'y'.repeat(48);
     const anchors: TreeAnchor[] = [
@@ -279,6 +306,38 @@ describe('renderAnchorTree', () => {
       ];
 
       expect(renderAnchorTree(anchors)[0]).toBe(`├─ 日本.ts${' '.repeat(4)}#L1-L2`); // 10 - 7 + 1
+    });
+
+    it('counts a supplemental-symbols emoji as two columns', () => {
+      const name = '\u{1FA79}.ts'; // 🩹 — U+1FA70..U+1FAFF, 5 display columns
+      const anchors: TreeAnchor[] = [
+        { path: name, ranges: [range(1, 2)] },
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns
+      ];
+
+      expect(renderAnchorTree(anchors)[0]).toBe(`├─ ${name}${' '.repeat(6)}#L1-L2`); // 10 - 5 + 1
+    });
+
+    it('counts an emoji-presentation dingbat as two columns', () => {
+      const name = '✅.ts'; // ✅ — U+2600..U+27BF, 5 display columns
+      const anchors: TreeAnchor[] = [
+        { path: name, ranges: [range(1, 2)] },
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns
+      ];
+
+      expect(renderAnchorTree(anchors)[0]).toBe(`├─ ${name}${' '.repeat(6)}#L1-L2`); // 10 - 5 + 1
+    });
+
+    it('counts a regional-indicator pair as one two-column flag cluster, not two wide characters', () => {
+      // The pair U+1F1FA U+1F1F8 segments as a single grapheme rendering as one
+      // flag glyph. Counting each indicator separately would score it 4.
+      const name = '\u{1F1FA}\u{1F1F8}.ts'; // 🇺🇸 — 5 display columns
+      const anchors: TreeAnchor[] = [
+        { path: name, ranges: [range(1, 2)] },
+        { path: 'abcdefg.ts', ranges: [range(3, 4)] } // 10 columns
+      ];
+
+      expect(renderAnchorTree(anchors)[0]).toBe(`├─ ${name}${' '.repeat(6)}#L1-L2`); // 10 - 5 + 1
     });
 
     it('counts a decomposed accent as the one column it renders as, not two code points', () => {

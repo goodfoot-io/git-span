@@ -268,17 +268,55 @@ function labelFor(range: RangeLabel, sole: boolean): string | null {
 // Column math
 // ---------------------------------------------------------------------------
 
-const graphemes = new Intl.Segmenter('en', { granularity: 'grapheme' });
+/**
+ * The grapheme segmenter, constructed on first use and then cached — including
+ * a cached `null` when it cannot be constructed at all.
+ *
+ * Lazy on purpose. `Intl` is not part of the JavaScript language core: a Node
+ * built `--with-intl=none` has no `Intl` global whatsoever, and `hooks.json`
+ * invokes a bare `node` off the user's `PATH`, so `engines.node` constrains
+ * nothing here. Constructing this at module scope put a `ReferenceError` in
+ * the bundles' top-level statements, where it throws at *import* — before any
+ * of the fail-closed `try/catch` blocks in `renderAnchorRun`, `renderPathRun`
+ * and `anchorBullets` exist to catch it. The hook process then died with exit
+ * 1, which Claude Code treats as a non-blocking hook error: the commit gate
+ * silently allowed the commit and the drift reminder silently vanished.
+ * Building it inside the render path puts any failure back inside those
+ * catches.
+ *
+ * FAIL-CLOSED, not a `<greenfield>`-forbidden fallback — the same category as
+ * the local `try/catch` blocks at this module's call sites, and load-bearing
+ * for the same reason. Nothing in the column-alignment path may be able to
+ * cost the commit gate or the drift reminder: if display width cannot be
+ * measured, the list still prints and the gate still holds; only alignment is
+ * lost.
+ */
+let cachedSegmenter: { value: Intl.Segmenter | null } | undefined;
+
+function graphemeSegmenter(): Intl.Segmenter | null {
+  if (cachedSegmenter === undefined) {
+    try {
+      cachedSegmenter = { value: new Intl.Segmenter('en', { granularity: 'grapheme' }) };
+    } catch {
+      cachedSegmenter = { value: null };
+    }
+  }
+  return cachedSegmenter.value;
+}
 
 /**
  * Code point ranges rendered two columns wide: the East Asian Wide (W) and
  * Fullwidth (F) blocks of UAX #11, plus the emoji blocks that terminals and
  * proportional agent-facing renderers both give double width. Everything else
  * counts as one column.
+ *
+ * Sorted ascending and non-overlapping — {@link isWideCodePoint} short-circuits
+ * on the first range starting past the code point.
  */
 const WIDE_RANGES: readonly (readonly [number, number])[] = [
   [0x1100, 0x115f],
   [0x2329, 0x232a],
+  [0x2600, 0x27bf],
   [0x2e80, 0x303e],
   [0x3041, 0x33ff],
   [0x3400, 0x4dbf],
@@ -292,9 +330,11 @@ const WIDE_RANGES: readonly (readonly [number, number])[] = [
   [0xff00, 0xff60],
   [0xffe0, 0xffe6],
   [0x17000, 0x18aff],
+  [0x1f1e6, 0x1f1ff],
   [0x1f300, 0x1f64f],
   [0x1f680, 0x1f6ff],
   [0x1f900, 0x1f9ff],
+  [0x1fa70, 0x1faff],
   [0x20000, 0x2fffd],
   [0x30000, 0x3fffd]
 ];
@@ -316,12 +356,25 @@ function isWideCodePoint(cp: number): boolean {
  *
  * Neither UTF-16 `.length` nor `Array.from(name).length` is this unit: the
  * first over-counts a surrogate pair, the second under-counts a CJK ideograph
- * and over-counts a decomposed accent. `Intl.Segmenter` is unconditionally
- * available on this package's Node 20+ floor, so there is no fallback path.
+ * and over-counts a decomposed accent.
+ *
+ * When {@link graphemeSegmenter} is unavailable (a Node built
+ * `--with-intl=none` has no `Intl` global at all), this degrades to the cruder
+ * per-code-point measure rather than throwing. That measure over-counts a
+ * decomposed accent and a regional-indicator flag pair, so alignment can be a
+ * column or two off — which is the entire cost, and is the correct price to
+ * pay: the anchor list still prints and the commit gate still holds.
  */
 function displayWidth(name: string): number {
+  const segmenter = graphemeSegmenter();
   let width = 0;
-  for (const { segment } of graphemes.segment(name)) {
+  if (segmenter === null) {
+    for (const codePoint of name) {
+      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
+    }
+    return width;
+  }
+  for (const { segment } of segmenter.segment(name)) {
     width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
   }
   return width;
@@ -347,11 +400,27 @@ const MAX_ALIGN_COLUMN = 48;
 function computeGroupTarget(items: DisplayItem[]): number {
   let max = 0;
   for (const item of items) {
-    if (item.node.kind === 'leaf' && item.node.anchor.ranges.length > 0) {
+    if (item.node.kind === 'leaf' && printsRangeColumn(item.node.anchor)) {
       max = Math.max(max, displayWidth(item.name));
     }
   }
   return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+
+/**
+ * Whether this anchor prints a range column at all — the exact condition
+ * {@link labelFor} encodes, hoisted so {@link computeGroupTarget} measures the
+ * same set of names it pads. An anchor with no ranges, or a *sole* whole-file
+ * entry (which renders as a bare path with zero marker), contributes no range
+ * column and so must not contribute to the group max either: otherwise a
+ * whole-file anchor on a path past {@link MAX_ALIGN_COLUMN} silently suppresses
+ * alignment for its range-bearing siblings while itself printing nothing to
+ * align.
+ */
+function printsRangeColumn(anchor: TreeAnchor): boolean {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return false;
+  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
 }
 
 /** The spacing between a name of `nameWidth` columns and its range column. */
