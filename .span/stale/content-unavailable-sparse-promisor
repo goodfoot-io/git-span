@@ -4,6 +4,7 @@ packages/git-span/src/git.rs#L916-L928 rk64:5984d188eb367df5
 packages/git-span/src/git.rs#L931-L943 rk64:5984d188eb367df5
 packages/git-span/src/git.rs#L969-L981 rk64:5984d188eb367df5
 packages/git-span/src/git.rs#L1009-L1021 rk64:5984d188eb367df5
+packages/git-span/src/git.rs#L1255-L1267 rk64:5984d188eb367df5
 packages/git-span/src/resolver/engine/anchor.rs#L661-L754 rk64:76fc7f54774b4da5
 packages/git-span/tests/cases/mod.rs#L45-L45 rk64:99b2d70273f3a7cd
 packages/git-span/tests/cases/mod.rs#L52-L52 rk64:99b2d70273f3a7cd
