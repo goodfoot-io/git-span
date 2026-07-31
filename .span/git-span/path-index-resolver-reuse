@@ -1,5 +1,5 @@
-packages/git-span/src/cli/show.rs#L529-L590 rk64:1864e6325beb74a2
-packages/git-span/src/cli/stale_output.rs#L205-L278 rk64:22699b8fe2798e88
-packages/git-span/src/span/read.rs#L333-L400 rk64:406e924d55c42e7b
+packages/git-span/src/cli/show.rs#L525-L586 rk64:1864e6325beb74a2
+packages/git-span/src/cli/stale_output.rs#L205-L278 rk64:c4924a4ad8352894
+packages/git-span/src/span/read.rs#L330-L397 rk64:406e924d55c42e7b
 
 Positional-arg resolution for `stale` and `show`/`list` builds one SpanPathIndex from a single corpus load and resolves every arg through it, so many args against a large span set stay O(args + spans) instead of reloading the corpus per arg.

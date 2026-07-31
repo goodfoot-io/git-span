@@ -1,4 +1,4 @@
-packages/git-span/src/cli/stale_fix.rs#L996-L1256 rk64:b1d4f7535629747f
-packages/git-span/tests/cases/cli_stale_fix.rs#L604-L664 rk64:af39b7bd894f06b5
+packages/git-span/src/cli/stale_fix.rs#L996-L1238 rk64:2853a4268eefec0e
+packages/git-span/tests/cases/cli_stale_fix.rs#L604-L664 rk64:34ea4948fdf3d235
 
 Line-range coalescing in stale --fix that collapses contiguous and overlapping worktree-fresh anchors on one path into a single anchor, gated by the worktree-fresh barrier so only provably-correct unions merge.

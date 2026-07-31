@@ -1,4 +1,4 @@
-packages/git-span/src/cli/history.rs#L1701-L1970 rk64:f7e6d21ff9c5dbf5
+packages/git-span/src/cli/history.rs#L1701-L1970 rk64:8b6b0716b460e11a
 packages/git-span/src/cli/stale_output.rs#L1565-L1628 rk64:106eb8ba8984000d
 packages/git-span/src/git.rs#L826-L868 rk64:7d78a104c2b526b7
 

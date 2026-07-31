@@ -1,7 +1,7 @@
-packages/git-span/docs/history-example-output.md rk64:6d02c827a70c9873
-packages/git-span/src/cli/history.rs rk64:288a31ada51895d6
+packages/git-span/docs/history-example-output.md rk64:8abd1bac9736b636
+packages/git-span/src/cli/history.rs rk64:acdb05515abab904
 packages/git-span/src/cli/mod.rs#L378-L409 rk64:82b005e1a9ce01c1
-packages/git-span/tests/cases/cli_history.rs rk64:b908c07ee4ebe6e9
+packages/git-span/tests/cases/cli_history.rs rk64:a6f8686a3e43a2cc
 packages/git-span/tests/cases/mod.rs#L8-L9 rk64:9a8c9ce10afc19cf
 
 The `git span history` command is HistoryFormat/HistoryArgs and their handler in history.rs rendering the newest-first git-log-style timeline — human text by default, schema-v2 JSON via --format json — that the output-contract doc specifies and that the cli_history integration tests (registered in tests/cases/mod.rs) assert against.
