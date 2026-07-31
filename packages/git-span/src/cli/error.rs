@@ -115,6 +115,39 @@ pub fn from_lib_error(
     }
 }
 
+/// Wrap a resolver failure into the curated shape for `stale`/`history`.
+///
+/// The resolver reads HEAD trees and blobs directly; when one of those reads
+/// fails the repository itself is unreadable (a damaged or incomplete object
+/// store), never a per-anchor condition — per-anchor states all resolve to
+/// classifications, not errors. Both commands fail closed before rendering
+/// anything, so the remediation is repository repair, not span surgery.
+pub fn resolver_read_error(
+    subcommand: &'static str,
+    lib_error: impl std::fmt::Display,
+) -> CliError {
+    from_lib_error(
+        subcommand,
+        "span state could not be resolved.",
+        lib_error,
+        vec![
+            NextStep::Prose(
+                "A repository read failed while resolving anchors, so no drift \
+                 classification can be trusted. This usually means the object \
+                 store is damaged or incomplete. Diagnose it:"
+                    .into(),
+            ),
+            NextStep::Bash("git fsck".into()),
+            NextStep::Prose(
+                "If fsck reports missing or corrupt objects, restore them \
+                 (for example by re-fetching from a remote or restoring from a \
+                 backup), then retry."
+                    .into(),
+            ),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

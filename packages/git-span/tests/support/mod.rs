@@ -345,6 +345,22 @@ pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The signal that terminated `status`, if any. Always `None` on Windows,
+/// where processes are not signal-terminated.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+/// The signal that terminated `status`. Always `None` on Windows.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn terminating_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
 /// The POSIX permission bits (`mode & 0o777`) of `path`, or `None` on
 /// platforms with no POSIX mode (Windows).
 #[allow(dead_code)]

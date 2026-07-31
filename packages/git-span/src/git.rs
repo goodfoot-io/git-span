@@ -76,9 +76,25 @@ fn replacement_namespace_is_empty(repo: &gix::Repository, base: Option<&str>) ->
 /// fail before rendering anything.
 pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> {
     // Git disables replacement refs when the variable merely exists (the
-    // value is immaterial). Honour that before probing the default or a custom
-    // namespace. Grafts are independent of this switch and remain active.
-    let replacements_disabled = std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some();
+    // value is immaterial) or when `core.useReplaceRefs` is `false`; the
+    // variable wins whenever it is set. Honour both before probing the
+    // default or a custom namespace. Grafts are independent of either switch
+    // and remain active.
+    let replacements_disabled = std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some()
+        || match repo.config_snapshot().try_boolean("core.useReplaceRefs") {
+            Some(Ok(enabled)) => !enabled,
+            // A present-but-unparseable value must not be conflated with the
+            // default `true`: Git itself refuses to run on a malformed
+            // boolean here, and guessing either way could silently flip the
+            // boundary. Fail closed, the same posture as the non-Unicode
+            // base below.
+            Some(Err(_)) => {
+                return Err(Error::Git(
+                    "inspect replacement refs: core.useReplaceRefs is set to a value that is not a boolean; fix or unset that setting before running this command".into(),
+                ));
+            }
+            None => false,
+        };
     // A present-but-non-Unicode base must not be conflated with an absent one:
     // silently probing the default namespace would miss replacement refs under
     // the real (non-UTF-8) base — quietly fail-open. Fail closed instead, the
@@ -311,7 +327,7 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
         }
         if let Some(replacement_ref) = replacement_targets.get(&id) {
             return Err(Error::Git(format!(
-                "replacement topology is unsupported: reachable replacement ref `{replacement_ref}` changes Git history; rerun with GIT_NO_REPLACE_OBJECTS=1 to disable replacement processing, or remove that ref before running this command"
+                "replacement topology is unsupported: reachable replacement ref `{replacement_ref}` changes Git history; rerun with GIT_NO_REPLACE_OBJECTS=1 or set core.useReplaceRefs=false to disable replacement processing, or remove that ref before running this command"
             )));
         }
         if graft_targets.contains(&id) {
@@ -599,9 +615,9 @@ pub fn git_log_name_only_for_paths(
     repo: &gix::Repository,
     n: usize,
     seed_paths: &[String],
-) -> Result<(Vec<CommitChanges>, bool)> {
+) -> Result<Vec<CommitChanges>> {
     if n == 0 || seed_paths.is_empty() {
-        return Ok((Vec::new(), true));
+        return Ok(Vec::new());
     }
 
     let seed_paths: Vec<&str> = seed_paths.iter().map(|p| p.as_str()).collect();
@@ -612,17 +628,6 @@ pub fn git_log_name_only_for_paths(
         .detach();
 
     let mut out: Vec<CommitChanges> = Vec::with_capacity(n.min(512));
-    let budget_start = std::time::Instant::now();
-    // Safety valve for pathological histories only. The walk normally
-    // terminates by exhausting the (small) qualifying-commit set or hitting
-    // the `n` cap long before this fires. The budget must stay well clear of
-    // the worst-case cost of a *small* history so a complete walk is never
-    // truncated to `walk_complete = false` merely because the host is busy:
-    // `gix` tree lookups on Windows under parallel test load are ~10-25x slower
-    // than the Linux baseline this was originally tuned against, and a
-    // spuriously incomplete walk silently disables the history cache and
-    // degrades suggestions. 8s still bounds genuinely huge repos.
-    let budget = std::time::Duration::from_secs(8);
 
     /// Look up the blob OID at `path` in `tree`. Returns `None` when the path is
     /// absent or does not resolve to a blob/symlink (a directory at that path is
@@ -639,17 +644,14 @@ pub fn git_log_name_only_for_paths(
     }
 
     // No visited-set is needed: a first-parent chain in a hash-addressed
-    // commit graph cannot revisit a commit short of repository corruption,
-    // and the time budget above bounds the walk regardless. Tracking every
-    // visited id would cost O(history) memory plus a hash insert per commit
-    // on each history invocation purely for that impossible case.
+    // commit graph cannot revisit a commit short of repository corruption.
+    // Tracking every visited id would cost O(history) memory plus a hash
+    // insert per commit on each history invocation purely for that
+    // impossible case.
     let mut next = Some(head_id);
     while let Some(id) = next {
         if out.len() >= n {
             break;
-        }
-        if budget_start.elapsed() > budget {
-            return Ok((out, false));
         }
         let commit = repo
             .find_commit(id)
@@ -699,7 +701,7 @@ pub fn git_log_name_only_for_paths(
         next = parent_ids.first().copied();
     }
 
-    Ok((out, true))
+    Ok(out)
 }
 
 /// Walk `HEAD`'s ancestry (newest-first) and return up to `max` ancestor
@@ -1116,30 +1118,52 @@ pub fn is_ancestor(repo: &gix::Repository, ancestor: &str, descendant: &str) -> 
 }
 
 /// Read the blob OID of `path` at `commit_oid`'s tree.
+///
+/// `PathNotInTree` means exactly that: every tree along the way resolved and
+/// the entry is genuinely absent — including a leading component that is not
+/// a tree at all (a directory demoted to a blob, or promoted to a submodule
+/// gitlink, whose target commit lives in another repository and must never
+/// be dereferenced here). Anything else — an unparsable OID, a missing
+/// commit, or a tree object that cannot be read — propagates as
+/// `Error::Git`, so an unreadable repository is never mistaken for an absent
+/// path. Scan-side callers that deliberately tolerate either outcome
+/// collapse both with `.ok()`. The traversal steps one component at a time
+/// (rather than `peel_to_entry_by_path`) precisely so a non-tree mid-path
+/// entry is answered from the parent tree alone, keeping the two outcomes
+/// distinguishable.
 pub fn path_blob_at(repo: &gix::Repository, commit_oid: &str, path: &str) -> Result<String> {
-    let oid = parse_oid(commit_oid).map_err(|_| Error::PathNotInTree {
+    let oid = parse_oid(commit_oid)?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
+    let mut tree = commit
+        .tree()
+        .map_err(|e| Error::Git(format!("read tree of `{commit_oid}`: {e}")))?;
+    let not_in_tree = || Error::PathNotInTree {
         path: path.to_string(),
         commit: commit_oid.to_string(),
-    })?;
-    let commit = repo.find_commit(oid).map_err(|_| Error::PathNotInTree {
-        path: path.to_string(),
-        commit: commit_oid.to_string(),
-    })?;
-    let mut tree = commit.tree().map_err(|_| Error::PathNotInTree {
-        path: path.to_string(),
-        commit: commit_oid.to_string(),
-    })?;
-    let entry = tree
-        .peel_to_entry_by_path(Path::new(path))
-        .map_err(|_| Error::PathNotInTree {
-            path: path.to_string(),
-            commit: commit_oid.to_string(),
-        })?
-        .ok_or_else(|| Error::PathNotInTree {
-            path: path.to_string(),
-            commit: commit_oid.to_string(),
-        })?;
-    Ok(entry.object_id().to_string())
+    };
+    let mut components = Path::new(path).components().peekable();
+    while let Some(component) = components.next() {
+        // Single-component lookup: answered from the already-loaded tree
+        // bytes, no object-store read, hence infallible beyond "absent".
+        let entry = tree
+            .lookup_entry_by_path(Path::new(component.as_os_str()))
+            .map_err(|e| {
+                Error::Git(format!("traverse tree of `{commit_oid}` to `{path}`: {e}"))
+            })?
+            .ok_or_else(not_in_tree)?;
+        if components.peek().is_none() {
+            return Ok(entry.object_id().to_string());
+        }
+        if !entry.mode().is_tree() {
+            return Err(not_in_tree());
+        }
+        tree = repo
+            .find_tree(entry.object_id())
+            .map_err(|e| Error::Git(format!("read tree `{}` of `{commit_oid}`: {e}", entry.id())))?;
+    }
+    Err(not_in_tree())
 }
 
 /// Read file bytes from the working tree, relative to the repo root.

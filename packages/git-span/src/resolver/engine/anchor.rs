@@ -249,7 +249,10 @@ fn find_relocated_range_in_paths(
             continue;
         }
         // A path absent from HEAD is always a candidate. A HEAD-present
-        // path qualifies only via the committed-rename predicate.
+        // path qualifies only via the committed-rename predicate. The `.ok()`
+        // is deliberate scan-side tolerance — see the shared rationale on the
+        // candidate probe in `find_relocated_whole_file` (`whole_file.rs`):
+        // the primary HEAD read has already failed closed before this scan.
         if concurrent
             .head_blob_at(repo, &shared.head_sha, &en.path)
             .ok()

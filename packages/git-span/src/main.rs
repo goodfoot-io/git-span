@@ -124,6 +124,31 @@ fn discover_repo() -> Result<gix::Repository> {
     // correctly.
     let cwd = std::fs::canonicalize(".").context("canonicalize cwd")?;
     let mut repo = gix::discover(cwd).context("not inside a git repository")?;
+    // `core.useReplaceRefs=false` means Git runs on raw objects, but gix
+    // 0.84 reads that key through an inverted default (`is_disabled =
+    // value.unwrap_or(true)` in `replacement_objects_refs_prefix`): unset
+    // loads no replacements, while an explicit `false` *loads* them —
+    // exactly the raw-vs-effective divergence
+    // `reject_replacement_topology` exists to refuse. Promote a cleanly
+    // parsed `false` to GIT_NO_REPLACE_OBJECTS before re-opening: gix's
+    // env mapping then loads no replacements under any namespace, the
+    // topology gate's env-var clause disables itself for the same reason,
+    // and spawned `git` subprocesses inherit semantics the repository's
+    // config already declares. An unparseable value is left alone so the
+    // gate can fail closed on it.
+    if matches!(
+        repo.config_snapshot().try_boolean("core.useReplaceRefs"),
+        Some(Ok(false))
+    ) {
+        // SAFETY: `discover_repo` runs before dispatch spawns any worker
+        // threads, so mutating the process environment cannot race a
+        // concurrent `getenv`.
+        unsafe {
+            std::env::set_var("GIT_NO_REPLACE_OBJECTS", "1");
+        }
+        repo = gix::open_opts(repo.path(), gix::open::Options::default())
+            .context("reopen repository with replacement objects disabled")?;
+    }
     // Enable gix's object cache so repeated `find_object`/tree-peel calls
     // during the resolver hot path reuse decoded objects. No-op if a cache
     // is already set; pure performance, no behavior change.

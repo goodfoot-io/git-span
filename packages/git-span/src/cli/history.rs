@@ -547,17 +547,11 @@ impl AnchorBody {
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Stderr line for a walk that hit its time budget, shared verbatim by both
-/// walk passes: fail-closed, no partial output, exit non-zero.
-const WALK_INCOMPLETE_MSG: &str =
-    "error: history walk incomplete — not all commits were inspected (hit time budget)";
-
 /// Run `git span history <span>`.
 ///
 /// Builds a [`HistoryReport`] by walking the span's git history in two passes,
 /// then renders it via [`render_human`] or [`render_json`] according to
-/// `args.format`. Returns exit code `0` on success, `1` on an incomplete walk
-/// or hard error.
+/// `args.format`. Returns exit code `0` on success, `1` on a hard error.
 ///
 /// Error/not-found mapping follows the same conventions as `run_show` in
 /// `show.rs`.
@@ -569,14 +563,10 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     // span ever anchored. Without this, a commit that edits an anchored file
     // without touching the declaration is invisible and its content change
     // silently folds into the next declaration-touching commit.
-    let (decl_commits, pass1_complete) = {
+    let decl_commits = {
         let _perf = crate::perf::span("history.walk.declaration");
         crate::git::git_log_name_only_for_paths(repo, usize::MAX, std::slice::from_ref(&span_path))?
     };
-    if !pass1_complete {
-        eprintln!("{WALK_INCOMPLETE_MSG}");
-        return Ok(1);
-    }
 
     // Declarations parsed once per commit, shared between this pass and
     // `build_report`'s state materialization so the same commit's `.span`
@@ -609,17 +599,10 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     // narrow anchor in a busy file yields many qualifying commits that change
     // nothing observable, and a walk-side cap would fill the window with those
     // and print nothing at all.
-    let (mut commits, walk_complete) = {
+    let mut commits = {
         let _perf = crate::perf::span("history.walk");
         crate::git::git_log_name_only_for_paths(repo, usize::MAX, &seed_paths)?
     };
-
-    // Fail-closed: a truncated timeline is not a whole one. Emit a warning to
-    // stderr, no partial output, and exit non-zero.
-    if !walk_complete {
-        eprintln!("{WALK_INCOMPLETE_MSG}");
-        return Ok(1);
-    }
 
     // The walk yields newest-first; the timeline is *built* oldest→newest
     // (baseline seeding requires it) and reversed again at render time.
@@ -651,8 +634,7 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     };
 
     // Fail-closed in spirit: a scoped/partial window must never read as the
-    // complete record. Unlike the walk-budget truncation (an internal limit,
-    // exit non-zero), `--limit` is an explicit user scope, so we still render
+    // complete record. `--limit` is an explicit user scope, so we still render
     // and exit 0 — but warn to stderr that older span history exists before
     // the window.
     if report.scoped {
@@ -1299,23 +1281,26 @@ fn pair_anchors(old: &[Rc<Snapshot>], new: &[Rc<Snapshot>]) -> (Vec<Option<usize
 }
 
 /// Diff a commit's rendered state against **the state materialized at its
-/// first parent** and emit a [`CommitSection`]. Returns `None` when nothing
-/// observable changed — a commit that qualified for the walk (it touched an
-/// anchored file) but left every declared range and the declaration itself
-/// untouched.
+/// first parent** and emit the entry's observable body. Returns `None` when
+/// nothing observable changed — a commit that qualified for the walk (it
+/// touched an anchored file) but left every declared range and the
+/// declaration itself untouched.
 ///
 /// `prev` is parent #1's state and not the previous entry in the walk: those
 /// coincide only on a linear history, and the difference is the whole of the
 /// invariant this function owes — every `-` line it renders exists in
 /// `git show C^:path`, and every `+` line in `git show C:path`.
+///
+/// The emptiness decision is made from rendered state alone — the commit's
+/// identity plays no part in it, which is what lets [`build_report`] defer
+/// the author-metadata parse to commits that actually render.
 fn diff_section(
     repo: &gix::Repository,
     span_path: &str,
-    ident: CommitIdent,
     prev: Option<&RenderedState>,
     cur: &RenderedState,
     decl_blobs: &mut std::collections::HashMap<String, Option<Rc<BlobAt>>>,
-) -> Option<CommitSection> {
+) -> Option<SectionBody> {
     // The declaration blob per commit, memoized across calls: along a linear
     // chain every commit's blob is asked for twice — once as `cur`, once as
     // the next commit's `prev`.
@@ -1378,25 +1363,15 @@ fn diff_section(
         return None;
     }
 
-    Some(CommitSection {
-        hash: ident.hash,
-        date: ident.date,
-        date_git: ident.date_git,
-        summary: ident.summary,
-        span_diff,
-        anchors,
-    })
+    Some(SectionBody { span_diff, anchors })
 }
 
-/// Identity of the commit a section is being built for, in both date shapes
-/// the two renderers need.
-struct CommitIdent {
-    hash: String,
-    /// Full ISO-8601 timestamp with offset (JSON).
-    date: String,
-    /// Git's own default author-date rendering (human `Date:` line).
-    date_git: String,
-    summary: String,
+/// The observable payload of a timeline entry — a [`CommitSection`] minus the
+/// commit's identity, which [`build_report`] attaches only after the body has
+/// proven non-empty.
+struct SectionBody {
+    span_diff: Option<String>,
+    anchors: Vec<TimelineAnchor>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1494,24 +1469,20 @@ fn build_report(
         capture_recorded_snapshots(&recorded, &mut recorded_snapshots, &cur);
         capture_by_hash(&mut rendered_by_hash, &cur);
 
-        let meta = crate::git::commit_meta(repo, &cc.hash)?;
-
-        let ident = CommitIdent {
-            hash: cc.hash.clone(),
-            date: meta.author_date_iso8601,
-            date_git: meta.author_date_git,
-            summary: meta.summary.clone(),
-        };
-
-        if let Some(section) = diff_section(
-            repo,
-            span_path,
-            ident,
-            prev.as_deref(),
-            &cur,
-            &mut decl_blobs,
-        ) {
-            sections.push(section);
+        // Author metadata is parsed only for commits that render an entry.
+        // Metadata validity is a contract for *rendered* commits: a walked
+        // commit that changes nothing observable never has its author line
+        // read, so an unparseable date there cannot fail the command.
+        if let Some(body) = diff_section(repo, span_path, prev.as_deref(), &cur, &mut decl_blobs) {
+            let meta = crate::git::commit_meta(repo, &cc.hash)?;
+            sections.push(CommitSection {
+                hash: cc.hash.clone(),
+                date: meta.author_date_iso8601,
+                date_git: meta.author_date_git,
+                summary: meta.summary,
+                span_diff: body.span_diff,
+                anchors: body.anchors,
+            });
         }
 
         newest = Some(cur);
@@ -2096,7 +2067,17 @@ fn build_current(
         fuzzy_threshold: 0.95,
     };
     let names = [span_name.to_string()];
-    let resolved = crate::resolver::resolve_named_spans(repo, span_root, &names, options)?;
+    // Repository-read failures out of the resolver get the same curated
+    // shape `stale` uses (the two commands share the engine); other library
+    // errors keep their own rendering.
+    let curate = |e: crate::Error| -> anyhow::Error {
+        match e {
+            crate::Error::Git(_) => crate::cli::resolver_read_error("history", e).into(),
+            _ => e.into(),
+        }
+    };
+    let resolved = crate::resolver::resolve_named_spans(repo, span_root, &names, options)
+        .map_err(curate)?;
 
     // Where HEAD's declaration puts each recorded token — the per-anchor half
     // of the same comparison `span_diff` renders as a blob patch.
@@ -2109,7 +2090,7 @@ fn build_current(
             // A worktree-only span (no committed ref) still resolves; a genuine
             // not-found surfaces nothing for this anchor pass.
             Err(crate::Error::SpanNotFound(_)) => continue,
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(curate(e)),
         };
 
         // Materialize *every* anchor (not only the drifted ones) so pairing

@@ -748,14 +748,7 @@ recoverable from structured fields — `proposed`, `recorded`, and each entry's 
 previous entry's is the transition its two-sided form spells out. A consumer that parses the
 patch string to recover block form or state is reading the wrong surface.
 
-## Incomplete-walk and scoped-limit warnings
-
-When the git-log walk hits its time budget (`walk_complete == false`), the command prints
-to stderr and exits non-zero, with **no partial output on stdout**:
-
-```
-error: history walk incomplete — not all commits were inspected (hit time budget)
-```
+## Scoped-limit warning
 
 When `--limit`/`-n` truncates the *rendered* timeline (the underlying walk is always
 complete — a narrow anchor in a busy file can never fill the window with commits that

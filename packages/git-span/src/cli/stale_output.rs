@@ -6,7 +6,7 @@
 //! `AnchorResolved` into the plan's "Key types" shape.
 
 use crate::cli::stale_fix::FixResult;
-use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
+use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat, resolver_read_error};
 use crate::resolver::{
     SourceLayers, WholeResult, anchor_status_is_stale_drift, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
@@ -22,6 +22,17 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+/// Curate repository-read failures out of the resolver into the shared
+/// `resolver_read_error` shape; every other library error keeps its own
+/// rendering (`SpanNotFound` is matched by callers before reaching this, and
+/// parse errors already carry their own curated text).
+fn curate_resolver_failure(e: crate::Error) -> anyhow::Error {
+    match e {
+        crate::Error::Git(_) => resolver_read_error("stale", e).into(),
+        _ => e.into(),
+    }
+}
 
 fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
@@ -183,19 +194,22 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             // Open the file before running the resolver so a bad path fails
             // in milliseconds rather than after a full scan.
             let trace_file = open_perf_trace_file(trace_path)?;
-            let (resolved, trace_rows) = stale_spans_with_trace(repo, span_root, options)?;
+            let (resolved, trace_rows) = stale_spans_with_trace(repo, span_root, options)
+                .map_err(curate_resolver_failure)?;
             write_perf_trace_csv(trace_file, trace_path, &trace_rows)?;
             resolved
         } else if args.fix {
             // Retain source layers for the post-fix re-resolve. `--fix` is
             // incompatible with `--perf-trace` discovery above.
             let (resolved, layers, wr) =
-                stale_spans_retaining_source_layers(repo, span_root, options)?;
+                stale_spans_retaining_source_layers(repo, span_root, options)
+                    .map_err(curate_resolver_failure)?;
             pre_fix_source_layers = layers;
             whole_result = wr;
             resolved
         } else {
-            let (resolved, _, wr) = stale_spans_retaining_source_layers(repo, span_root, options)?;
+            let (resolved, _, wr) = stale_spans_retaining_source_layers(repo, span_root, options)
+                .map_err(curate_resolver_failure)?;
             whole_result = wr;
             resolved
         }
@@ -313,11 +327,13 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                     span_root,
                     &span_names,
                     options,
-                )?;
+                )
+                .map_err(curate_resolver_failure)?;
                 pre_fix_source_layers = Some(layers);
                 resolved
             } else {
-                resolve_named_spans(repo, span_root, &span_names, options)?
+                resolve_named_spans(repo, span_root, &span_names, options)
+                    .map_err(curate_resolver_failure)?
             }
         };
         let mut spans: Vec<SpanResolved> = Vec::with_capacity(resolved.len());
@@ -325,7 +341,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             match result {
                 Ok(span) => spans.push(span),
                 Err(crate::Error::SpanNotFound(_)) => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(curate_resolver_failure(e)),
             }
         }
 

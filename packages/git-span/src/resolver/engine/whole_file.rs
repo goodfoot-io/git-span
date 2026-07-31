@@ -91,6 +91,16 @@ fn find_relocated_whole_file(
         // content match in an unrelated pre-existing file is not a
         // relocation. The before-commit walk and per-candidate probe are
         // session-memoized (see `is_rename_target`'s doc comment).
+        //
+        // Scan probes tolerate read errors by design: this loop only ranks
+        // *candidate* destinations, and a candidate whose HEAD state cannot
+        // be read is merely skipped as a match — the anchor's own primary
+        // HEAD read (the `head_path_absent` computation in
+        // `resolve_whole_file` and its line-range twin in
+        // `resolve_anchor_inner`) has already propagated any repository-level
+        // read failure with `?` before a scan starts. The candidate loop in
+        // `find_relocated_range_in_paths` (`anchor.rs`) shares this
+        // rationale.
         if concurrent
             .head_blob_at(repo, &shared.head_sha, &en.path)
             .ok()
@@ -399,19 +409,15 @@ pub(crate) fn resolve_whole_file(
             //    "deleted in the working tree" / "deleted in the index".
             // In no case is a removal mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty();
-            // Known divergence from the line-range twin (`anchor.rs`, the
-            // `head_path_absent` computation in `resolve_anchor_inner`): that
-            // path propagates a HEAD-read error with `?`, while `.ok()` here
-            // converts it into "absent at HEAD", which then feeds relocation
-            // candidacy — a fail-open lean. Flipping this to `?` changes the
-            // classification outcome on repositories whose HEAD blob cannot
-            // be read, so it is deliberately left as-is in a no-behavior-
-            // change pass; see main-194 review issue R3.
+            // Primary HEAD read: fail closed, matching the line-range twin
+            // (`anchor.rs`, the `head_path_absent` computation in
+            // `resolve_anchor_inner`). A repository whose HEAD cannot be
+            // read must error, never classify as relocated/deleted; only
+            // the candidate-scan probes below tolerate read failures (see
+            // `find_relocated_whole_file`).
             let head_path_absent = file_backed
                 && concurrent
-                    .head_blob_at(repo, &shared.head_sha, &r.path)
-                    .ok()
-                    .flatten()
+                    .head_blob_at(repo, &shared.head_sha, &r.path)?
                     .is_none();
             let relocated = if file_backed {
                 find_relocated_whole_file(

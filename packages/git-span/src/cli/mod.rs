@@ -33,7 +33,7 @@ pub mod unified_diff;
 
 pub use drift_label::format_drift_label;
 
-pub use error::{CliError, NextStep, from_lib_error, render_error};
+pub use error::{CliError, NextStep, from_lib_error, render_error, resolver_read_error};
 
 use clap::{Parser, Subcommand, ValueEnum};
 

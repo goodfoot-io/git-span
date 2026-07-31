@@ -1,7 +1,19 @@
-packages/git-span/docs/history-example-output.md rk64:8abd1bac9736b636
-packages/git-span/src/cli/history.rs rk64:59605ea32326bcb0
+packages/git-span/docs/history-example-output.md rk64:bd1b4aa7799c4efe
+packages/git-span/src/cli/history.rs rk64:8805dbe98572a052
 packages/git-span/src/cli/mod.rs#L378-L409 rk64:82b005e1a9ce01c1
-packages/git-span/tests/cases/cli_history.rs rk64:747da83b01ec6455
+packages/git-span/tests/cases/cli_history/current_block.rs rk64:602a103330b4c709
+packages/git-span/tests/cases/cli_history/dates.rs rk64:d7f85b8dee251d7a
+packages/git-span/tests/cases/cli_history/documented_contract.rs rk64:5e35cf2f57e06744
+packages/git-span/tests/cases/cli_history/filters.rs rk64:f641e739ab40f669
+packages/git-span/tests/cases/cli_history/format_surface.rs rk64:3a09bbd610a5c35b
+packages/git-span/tests/cases/cli_history/invariants.rs rk64:335c9aeb1e88a616
+packages/git-span/tests/cases/cli_history/mod.rs rk64:d4c2d73cb8dd0b3f
+packages/git-span/tests/cases/cli_history/past_eof.rs rk64:1a2693d36aea0edc
+packages/git-span/tests/cases/cli_history/pipe.rs rk64:9f660228c0812532
+packages/git-span/tests/cases/cli_history/reanchors.rs rk64:2fdf2c7eeac7e749
+packages/git-span/tests/cases/cli_history/rendering_diffs.rs rk64:78e0ab95ef810e7b
+packages/git-span/tests/cases/cli_history/timeline.rs rk64:5fa1b01e187573f8
+packages/git-span/tests/cases/cli_history/topology.rs rk64:76bb8b55218a6603
 packages/git-span/tests/cases/mod.rs#L8-L9 rk64:9a8c9ce10afc19cf
 
 The `git span history` command is HistoryFormat/HistoryArgs and their handler in history.rs rendering the newest-first git-log-style timeline — human text by default, schema-v2 JSON via --format json — that the output-contract doc specifies and that the cli_history integration tests (registered in tests/cases/mod.rs) assert against.

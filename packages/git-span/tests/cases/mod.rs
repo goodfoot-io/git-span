@@ -33,6 +33,7 @@ pub mod dirty_store_clean_read_parity;
 pub mod doctor_deletion_tombstone;
 pub mod drift_label;
 pub mod editmsg_orphan_enumerated;
+pub mod head_read_failures;
 pub mod incremental_differential;
 pub mod interior_anchor_parity;
 pub mod lfs_shape_parity;
