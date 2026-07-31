@@ -1,5 +1,5 @@
 packages/git-span/docs/history-example-output.md rk64:8abd1bac9736b636
-packages/git-span/src/cli/history.rs rk64:1045e0f18690092c
+packages/git-span/src/cli/history.rs rk64:59605ea32326bcb0
 packages/git-span/src/cli/mod.rs#L378-L409 rk64:82b005e1a9ce01c1
 packages/git-span/tests/cases/cli_history.rs rk64:747da83b01ec6455
 packages/git-span/tests/cases/mod.rs#L8-L9 rk64:9a8c9ce10afc19cf
