@@ -4973,7 +4973,35 @@ fn filter_attribute_repo(
             &filter_process_command(transform),
         ])?;
     }
+    drop_stat_cache(&repo, "f.txt")?;
     Ok(repo)
+}
+
+/// Discard the index's cached stat for `path` without changing a byte of it,
+/// by replacing the file with a copy of itself. The new inode and ctime cannot
+/// match what the index recorded, so git has to read the file to decide whether
+/// it changed — and reading a file with a `filter` attribute is the only
+/// circumstance under which git consults the driver at all.
+///
+/// Without this the fixtures assert a fact about the clock. Git trusts an index
+/// entry whose cached stat matches the file and whose mtime is older than the
+/// index's own, and on this filesystem that comparison lands on whole seconds:
+/// build the whole fixture inside one tick and every entry is racily clean and
+/// re-read; let the suite's load push construction across a tick boundary and
+/// none of them are, so git answers "clean" from cache having never opened the
+/// file. Both answers are true about git. Only one of them is about the filter.
+///
+/// The content is untouched, so `git show HEAD:f.txt | cmp - f.txt` stays
+/// silent and every claim these fixtures make about the anchored lines being
+/// on disk still holds. git-span is unaffected either way: it filters through
+/// the resolver, which reads the worktree directly and never consults the
+/// index's stat cache.
+fn drop_stat_cache(repo: &TestRepo, path: &str) -> Result<()> {
+    let file = repo.path().join(path);
+    let copy = repo.path().join(format!("{path}.stat-copy"));
+    std::fs::copy(&file, &copy)?;
+    std::fs::rename(&copy, &file)?;
+    Ok(())
 }
 
 /// **State A** — `.gitattributes` names a filter and nothing configures it.
@@ -4992,6 +5020,11 @@ fn unconfigured_filter_repo(span: &str) -> Result<TestRepo> {
 /// with `fatal: the remote end hung up unexpectedly`. That is the comparison
 /// worth keeping — one of the two commands declines to describe the state at
 /// all, and the other used to describe it as a deletion.
+///
+/// Git only refuses when it actually reads the file, which is why
+/// [`filter_attribute_repo`] drops the index's cached stat: with the stat
+/// trusted, git answers "clean" from cache without ever spawning the driver,
+/// and the refusal this fixture exists to demonstrate does not happen.
 fn missing_driver_filter_repo(span: &str) -> Result<TestRepo> {
     let repo = filter_attribute_repo(span, "f.txt#L4-L5", "gitcrypt", None)?;
     repo.run_git([
@@ -5115,9 +5148,21 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
             // The stronger comparison: git *cannot read this state at all* and
             // fails closed. A render that answers where git refuses is
             // answering from something other than the repository.
+            //
+            // Naming the driver in the message is what makes this a fixture
+            // assumption rather than a claim about exit codes: it says git
+            // reached the filter and the filter is what stopped it. An exit
+            // code alone would also be satisfied by a repository that failed
+            // for some unrelated reason.
+            let refusal = String::from_utf8_lossy(&status.stderr);
             assert!(
-                !status.status.success(),
-                "{label}: fixture assumption — git itself refuses this state; \
+                !status.status.success() && refusal.contains("git-crypt-filter"),
+                "{label}: fixture assumption — git itself refuses this state, \
+                 naming the driver it could not run; got {status:?}"
+            );
+            assert!(
+                status.stdout.is_empty(),
+                "{label}: git refused rather than reporting a change; \
                  got {status:?}"
             );
         }
