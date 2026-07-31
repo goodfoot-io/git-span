@@ -61,21 +61,45 @@ pub const NULL_BLOB_OID7: &str = "0000000";
 /// explanation.
 pub const RECORDED_UNRECOVERABLE: &str = "recorded snapshot unrecoverable";
 
-/// Marker line naming a transition between two *reasons* an anchor has no
-/// content — `content unavailable range-past-eof..absent`, in the `index`
-/// line's own `old..new` idiom and using the JSON `unavailable` field's exact
-/// vocabulary.
+/// Marker line naming *why* an anchor has no content, in two forms.
 ///
-/// It appears only where both sides are bodyless for different reasons, which
-/// is the only case where nothing else in the block can say what changed: two
-/// null hashes over two empty bodies. Like [`RECORDED_UNRECOVERABLE`] it lives
-/// in the header rather than being appended by the human renderer, so the JSON
-/// `diff` string and the default output's block stay byte-identical — and like
-/// it, it exists because a bodyless block with no explanation reads as a
-/// renderer that lost its hunks.
+/// `content unavailable range-past-eof..absent` names a **transition** between
+/// two reasons, in the `index` line's own `old..new` idiom. It appears where
+/// both sides are bodyless for different reasons — the only case where nothing
+/// else in the block can say what changed: two null hashes over two empty
+/// bodies.
 ///
-/// It is an explanation, never the discriminator: a consumer reads the reason
-/// from the structured `unavailable` field and never parses this line.
+/// `content unavailable range-past-eof` names a **single side's** reason, and
+/// exists because the `/dev/null` side is not able to. A `/dev/null` side states
+/// that there are no bytes here, which is true of a deleted file and equally
+/// true of a declared range that starts past its file's end — so the two
+/// rendered byte-identically, down to the deletion hunk, and the human format
+/// carried no way to tell them apart. That matters more than a cosmetic
+/// ambiguity: the two states want opposite repairs. A deleted file wants
+/// restoring; a range past the end of a file sitting right there wants
+/// re-anchoring, and `absent`'s gloss points the reader at the wrong one.
+///
+/// Only [`Absence::RangePastEof`] earns the line. [`Absence::Missing`] covers
+/// both "there is no such file" and the `/dev/null` half of an ordinary create
+/// or delete, and a line on the latter would explain a side that needs no
+/// explanation — git has rendered creates and deletes this way forever. The
+/// asymmetry is the point: the marker says the file is *there* and the range is
+/// not, which is exactly the fact the `/dev/null` side misstates.
+///
+/// The precedent is git's own `Binary files … differ`, which is what a dedicated
+/// sentence looks like in this dialect — it encodes nothing in the `---`/`+++`
+/// sides and states the fact outright. What it does *not* do, and neither does
+/// this, is put a placeholder in the body: that would corrupt the hunk
+/// arithmetic and paint the placeholder as source. The hunks here are honest and
+/// stay — `git diff` shows the same lines leaving for the same commit — so this
+/// adds a sentence rather than replacing a body.
+///
+/// Like [`RECORDED_UNRECOVERABLE`] both forms live in the header rather than
+/// being appended by the human renderer, so the JSON `diff` string and the
+/// default output's block stay byte-identical.
+///
+/// Neither form is the discriminator: a consumer reads the reason from the
+/// structured `unavailable` field and never parses this line.
 pub const CONTENT_UNAVAILABLE: &str = "content unavailable";
 
 /// Header dialect for one rendered file diff.
@@ -503,6 +527,9 @@ fn push_header(
             new_hash,
             kind,
         } => {
+            // Set by the transition form below, so the single-side form does not
+            // repeat a reason the transition line already spells out.
+            let mut named_absence = false;
             match kind {
                 AnchorDiffKind::Modify => {
                     // The one anchor-level change no hunk can express: neither
@@ -521,6 +548,7 @@ fn push_header(
                             a.label(),
                             b.label()
                         ));
+                        named_absence = true;
                         headers_only = true;
                     }
                 }
@@ -549,6 +577,19 @@ fn push_header(
                     out.push_str("rebound anchor\n");
                     headers_only = true;
                 }
+            }
+            // A `/dev/null` side can say "no bytes"; it cannot say that the file
+            // is present and the declared *range* is what does not exist. Every
+            // anchor dialect kind can reach that state — a truncation is a
+            // `Modify`, a hand-edited re-anchor past the end is a `Rename` — so
+            // the line is emitted here rather than inside any one arm.
+            if !named_absence
+                && [old.absence(), new.absence()].contains(&Some(Absence::RangePastEof))
+            {
+                out.push_str(&format!(
+                    "{CONTENT_UNAVAILABLE} {}\n",
+                    Absence::RangePastEof.label()
+                ));
             }
             out.push_str(&format!(
                 "index {}..{}\n",

@@ -105,6 +105,17 @@
 //! a dedicated `unavailable` field. A placeholder string in a hunk body would
 //! corrupt the hunk arithmetic and paint the placeholder as source.
 //!
+//! The `/dev/null` side says there are no bytes, and that is *all* it says —
+//! which left the two reasons for having none rendering byte-identically in the
+//! default output, hunk included. `unavailable` remains the contract for why,
+//! but it is a JSON field, and the default output is text; a reader of the
+//! command as most people run it could not tell a deleted file from a range
+//! that starts past the end of a file sitting on disk, and the two want
+//! opposite repairs. So the header carries a non-contractual
+//! `content unavailable range-past-eof` line naming the reason the `/dev/null`
+//! side cannot — git's `Binary files … differ` is the precedent for a dedicated
+//! sentence, and the constraint against prose in the *body* is untouched.
+//!
 //! # The null hash is an ambiguous value
 //!
 //! `NULL_ANCHOR_HASH` means four different things, all of them reachable: an

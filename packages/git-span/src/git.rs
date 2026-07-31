@@ -757,13 +757,28 @@ pub fn blob_line_count(repo: &gix::Repository, blob_oid: &str) -> Result<u32> {
 /// A range that *overlaps* the end is clipped, not rejected (`L2-L9` over a
 /// three-line file yields two lines): the drift being visualized is precisely
 /// that the file shrank under a stale range, and truncation is the honest
-/// account of it. Only a range with no overlap at all — `lo > hi`, i.e. a start
-/// beyond the last line plus one — has nothing to show.
+/// account of it. Only a range with no overlap at all — `lo >= hi`, i.e. a start
+/// past the last line — has nothing to show.
+///
+/// The `>=` is the whole boundary. `lo == hi` is *zero* lines of overlap, which
+/// is the no-overlap case and not an empty-but-valid slice, and a `lo > hi`
+/// guard let it fall through to `Ok("")` and fabricate an empty text side for a
+/// range the file does not have.
+///
+/// `lo == hi` has exactly two algebraic causes — `lines.len() == start - 1` or
+/// `end == start - 1` — and the second cannot reach here: the span-file parser
+/// fails closed on `end < start` (`malformed anchor address …: end line 3 <
+/// start line 5`), so `end >= start` holds before this function is called. The
+/// boundary is therefore precisely "the file has `start - 1` lines", and that is
+/// not an exotic depth. Every anchor declared from
+/// line 1 has `start - 1 == 0`, so it meets this boundary the moment its file is
+/// merely emptied — cleared, regenerated empty, truncated to zero — and the
+/// emptied file reported as having no such content while it sat on disk.
 pub fn slice_line_range(text: &str, start: u32, end: u32) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
     let lo = start.saturating_sub(1) as usize;
     let hi = (end as usize).min(lines.len());
-    if lo > hi {
+    if lo >= hi {
         return Err(Error::InvalidAnchor { start, end });
     }
     let mut out = String::new();
@@ -1150,5 +1165,114 @@ mod gix_helper_tests {
             Some("git-lfs filter-process"),
         );
         assert!(config_string(&repo, "no.such.key").is_none());
+    }
+}
+
+#[cfg(test)]
+mod line_range_policy_tests {
+    use super::*;
+
+    /// [`slice_line_range`]'s documented policy, restated so this test does not
+    /// read the code it is checking: a range has nothing to show exactly when
+    /// it begins after the file's last line (`start > file_lines`), and
+    /// otherwise it is the lines it names, clipped to the end.
+    ///
+    /// Defined only for `start <= end`, which is not a gap: the span-file parser
+    /// rejects `end < start` before any address reaches this function, so an
+    /// inverted range is unreachable here rather than merely unswept.
+    fn documented_policy(text: &str, start: u32, end: u32) -> Option<String> {
+        debug_assert!(start <= end);
+        let lines: Vec<&str> = text.lines().collect();
+        if start as usize > lines.len() {
+            return None;
+        }
+        let lo = start as usize - 1;
+        let hi = (end as usize).min(lines.len());
+        Some(lines[lo..hi].iter().map(|l| format!("{l}\n")).collect())
+    }
+
+    fn file_of(len: usize) -> String {
+        (1..=len).map(|i| format!("line{i}\n")).collect()
+    }
+
+    /// The guard must agree with the documented predicate at *every* depth, not
+    /// at the one depth a fixture happened to pick.
+    ///
+    /// The boundary is `file_lines == start - 1`: zero lines of overlap, which
+    /// is "no overlap at all" and therefore past end of file — but a `lo > hi`
+    /// guard reads `lo == hi` as an empty-but-valid slice and returns `Ok("")`,
+    /// fabricating content for a range the file does not have. This sweep is
+    /// the measurement rather than the argument: exhaustive over file lengths
+    /// `0..=8` and `start <= end` in `1..=8`, it reports every disagreement at
+    /// once instead of stopping at the first.
+    #[test]
+    fn the_line_range_guard_matches_the_documented_predicate_at_every_depth() {
+        let mut disagreements: Vec<String> = Vec::new();
+        for len in 0..=8usize {
+            let text = file_of(len);
+            for start in 1..=8u32 {
+                for end in start..=8u32 {
+                    let got = slice_line_range(&text, start, end).ok();
+                    let want = documented_policy(&text, start, end);
+                    if got != want {
+                        disagreements.push(format!(
+                            "  file_lines={len} L{start}-L{end}: policy says {want:?}, \
+                             slice_line_range says {got:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            disagreements.is_empty(),
+            "{} of the swept ranges disagree with the documented policy:\n{}",
+            disagreements.len(),
+            disagreements.join("\n")
+        );
+    }
+
+    /// The boundary named on its own, in the shape a user meets it: a file
+    /// truncated to exactly `start - 1` lines.
+    #[test]
+    fn a_range_starting_one_line_past_the_last_line_has_nothing_to_show() {
+        for start in 1..=6u32 {
+            let text = file_of(start as usize - 1);
+            let end = start + 2;
+            assert!(
+                slice_line_range(&text, start, end).is_err(),
+                "L{start}-L{end} over a {}-line file overlaps zero lines, so it is \
+                 past end of file, not an empty range",
+                start - 1
+            );
+        }
+    }
+
+    /// The everyday face of the same boundary: every anchor that starts at line
+    /// 1 hits it the moment its file is merely *emptied*, because `start - 1`
+    /// is 0 lines.
+    #[test]
+    fn a_line_one_range_over_an_emptied_file_has_nothing_to_show() {
+        for end in 1..=5u32 {
+            assert!(
+                slice_line_range("", 1, end).is_err(),
+                "L1-L{end} over an emptied file overlaps zero lines"
+            );
+        }
+    }
+
+    /// The other side of the boundary must not move: one line of overlap is
+    /// still a clip, which is the honest account of a file that shrank under a
+    /// stale range.
+    #[test]
+    fn a_range_overlapping_by_one_line_is_still_clipped() {
+        for start in 1..=6u32 {
+            let text = file_of(start as usize);
+            let end = start + 2;
+            assert_eq!(
+                slice_line_range(&text, start, end).ok(),
+                Some(format!("line{start}\n")),
+                "L{start}-L{end} over a {start}-line file overlaps its last line"
+            );
+        }
     }
 }

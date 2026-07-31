@@ -605,6 +605,14 @@ the two lists agree over a sweep of every state above.
   exactly that token — and it keeps `content: ""` with no `unavailable`, which is what makes
   the presence rule above the only reliable way to tell "there are no bytes here" from
   "there are no bytes, and here is why".
+
+  That rule is about *contracts*, and it used to be read as a statement about surfaces too:
+  the reason lived in JSON and nowhere else, so `--format human` — the default, and the
+  format this command exists to produce — could not distinguish an absent file from a
+  past-EOF range at all. Both render `+++ /dev/null` over the same deletion hunk. The reason
+  is now echoed into the header as a `content unavailable <reason>` marker line (below), so
+  the default output can express what the structured field contracts. The marker is an echo,
+  not a second contract: `unavailable` is still the only field a consumer reads.
 - `proposed` — present when the resolver believes the recorded content now lives at a
   different address. A *proposal* (`git span stale --fix` would write it), not an
   accomplished move, so it never renders as `rename to` and never relabels either side of
@@ -616,18 +624,37 @@ the two lists agree over a sweep of every state above.
 
 Three marker lines belong to the anchor dialect. Two of them appear only in `current`
 blocks — `proposed anchor <address>` and `recorded snapshot unrecoverable` — and the third,
-`content unavailable <old>..<new>`, appears wherever a block has no bytes on *either* side
+`content unavailable`, names why a block has no bytes, in two forms.
+
+`content unavailable <old>..<new>` appears wherever a block has no bytes on *either* side
 and the reason for that changed between them (a range that ran past the end of its file,
 and then the file deleted outright). Without it such a commit would render as a header with
 no hunks, indistinguishable from a renderer that lost them — the same gap
 `recorded snapshot unrecoverable` was added to close.
 
-All three live in the header rather than being appended by the human renderer, so the JSON
-`diff` string and the human block are the same bytes. None of them is a contract: a marker
-line is a legend for a person reading the patch, and everything it states is recoverable
-from structured fields — `proposed`, `recorded`, and each entry's own `unavailable`, whose
-value against the previous entry's is the transition the third marker spells out. A consumer
-that parses the patch string to recover block form or state is reading the wrong surface.
+`content unavailable range-past-eof` appears wherever a single side is a declared range
+starting past the end of its file. A `/dev/null` side states that there are no bytes, which
+is equally true of a deleted file, so without this line the two states render byte-identical
+blocks — same `---`/`+++` pair, same deletion hunk — in the format the command produces by
+default. They are not the same state and they do not want the same repair: a deleted file
+wants restoring, while a range past the end of a file that is sitting on disk wants
+re-anchoring. Only `range-past-eof` earns the line; a plain absence does not, because a
+`/dev/null` side is the honest and long-standing rendering of "there is nothing here" and
+naming it would annotate every ordinary create and delete. The asymmetry carries the
+meaning: the line says the *file* is present and the *range* is not.
+
+The precedent is git's own `Binary files … differ` — a dedicated sentence in the header
+stating a fact the `---`/`+++` sides cannot. What that precedent does not do, and neither
+does this, is put explanatory prose in a hunk body; the hunks under a past-EOF block are
+honest (`git diff` shows the same lines leaving in the same commit) and they stay.
+
+Every one of them lives in the header rather than being appended by the human renderer, so
+the JSON `diff` string and the human block are the same bytes. None of them is a contract: a
+marker line is a legend for a person reading the patch, and everything it states is
+recoverable from structured fields — `proposed`, `recorded`, and each entry's own
+`unavailable`, whose value is what the third marker echoes and whose value against the
+previous entry's is the transition its two-sided form spells out. A consumer that parses the
+patch string to recover block form or state is reading the wrong surface.
 
 ## Incomplete-walk and scoped-limit warnings
 
