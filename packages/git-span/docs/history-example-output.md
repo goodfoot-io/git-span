@@ -11,9 +11,15 @@ document only; the real renderers never truncate a diff or drop a commit.
 
 Both formats render the same underlying timeline, newest-first:
 
-- **`current`** — uncommitted worktree drift from `HEAD`, rendered first (human) or as
-  the `current` object (JSON). Omitted entirely when the worktree declaration matches
-  `HEAD` and no anchor has drifted.
+- **`current`** — the span's *live* drift: how the content at each declared address now
+  differs from the state the declaration records, rendered first (human) or as the
+  `current` object (JSON). **Not only working-tree drift.** It covers every layer
+  `git span stale` reports — a committed edit that was never re-anchored, a staged one,
+  and an uncommitted one alike — because the resolver behind it is `stale`'s, run over
+  the same `HEAD`/index/worktree layer set. Which layer or layers a given anchor drifted
+  at is named by the `sources` field and by the `drift source` marker line, so a clean
+  working tree is never described as a working-tree edit. Omitted entirely when the
+  worktree declaration matches `HEAD` and no anchor has drifted.
 - **`commits`** — one section per commit that changed the declaration or an anchored
   file's content within a declared range, newest-first. A qualifying commit that changed
   nothing observable (e.g. only outside every declared range) produces no section.
@@ -45,8 +51,11 @@ patch to a line range.
 
 `git log -p` style: `commit <40-hex>`, `Date:   YYYY-MM-DD`, a blank line, the
 four-space-indented commit summary, a blank line, then the declaration diff and each
-anchor diff. Uncommitted drift (when present) comes first with no `commit`/`Date`
-header — git's own idiom for "not yet committed."
+anchor diff. Live drift (when present) comes first with no `commit`/`Date` header —
+git's own idiom for "outside the timeline", which is what this block is: the drift may
+have been committed, staged, or left in the working tree, and the headerless form says
+only that no single commit entry accounts for it. The `drift source` line inside the
+block says which of the three it was.
 
 Real output, two consecutive commits from `agent-hooks/hook-message-copy`'s history —
 a pure re-anchor with content hunks (similarity < 100%, so headers *and* hunks), two
@@ -231,13 +240,16 @@ Conventions demonstrated:
 - Commits where nothing observable changed (declaration touched but no anchor content or
   address moved, or vice versa) are omitted from the timeline entirely.
 
-### Uncommitted drift (`current`)
+### Live drift (`current`)
 
-A live edit inside `touch-core.ts#L245-L274`, still uncommitted, renders headerless and
-first, ahead of any commit sections:
+A live edit inside `touch-core.ts#L245-L274`, here still in the worktree, renders headerless and
+first, ahead of any commit sections. Its `drift source worktree` line is what says the
+edit is still in the working tree; the same block over a *committed* edit is identical
+but for that line, which reads `drift source head`:
 
 ```
 diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274
+drift source worktree
 index rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900
 --- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274
 +++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274
@@ -252,7 +264,7 @@ index rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900
  /**
 ```
 
-When the worktree declaration bytes also differ from `HEAD` (an uncommitted `why` edit or
+When the worktree declaration bytes also differ from `HEAD` (a `why` edit or
 anchor add/remove), a `span_diff` block precedes the anchor diffs, using the same
 `index <old7>..<new7> 100644` dialect — the worktree side's hash comes from a blob-OID
 computation that never writes the object. The whole `current` section is omitted when the
@@ -271,6 +283,7 @@ are the edit:
 
 ```
 diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
+drift source worktree
 index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
 --- a/touch-core.js#L1-L3
 +++ b/touch-core.js#L1-L3
@@ -291,15 +304,17 @@ byte-identical, which is why the two `index` hashes agree:
 ```
 diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
 proposed anchor touch-core.js#L4-L6
+drift source worktree
 index rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74
 ```
 
 ```json
 {
   "content": "function cleanFooter(name) {\n  return `check ${name}`;\n}\n",
-  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\nproposed anchor touch-core.js#L4-L6\nindex rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74\n",
+  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\nproposed anchor touch-core.js#L4-L6\ndrift source worktree\nindex rk64:6fc01f81b6737e74..rk64:6fc01f81b6737e74\n",
   "path": "touch-core.js#L1-L3",
-  "proposed": "touch-core.js#L4-L6"
+  "proposed": "touch-core.js#L4-L6",
+  "sources": ["WORKTREE"]
 }
 ```
 
@@ -320,6 +335,7 @@ diff --git a/touch-core.js#L1-L3 b/touch-core.js#L3-L5
 similarity index 66%
 rename from touch-core.js#L1-L3
 rename to touch-core.js#L3-L5
+drift source worktree, head
 index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
 --- a/touch-core.js#L1-L3
 +++ b/touch-core.js#L3-L5
@@ -342,6 +358,7 @@ lives:
 ```
 diff --git a/touch-core.js#L1-L3 b/dev/null
 deleted anchor
+drift source head
 index rk64:6fc01f81b6737e74..0000000000000000
 --- a/touch-core.js#L1-L3
 +++ /dev/null
@@ -352,6 +369,7 @@ index rk64:6fc01f81b6737e74..0000000000000000
 
 diff --git a/dev/null b/touch-core.js#L5-L7
 new anchor
+drift source head
 index 0000000000000000..rk64:3ce91890e260ec60
 --- /dev/null
 +++ b/touch-core.js#L5-L7
@@ -379,6 +397,7 @@ alternative to measuring an unreadable side as `0%`:
 diff --git a/f.txt#L1-L3 b/f.txt#L5-L7
 rename from f.txt#L1-L3
 rename to f.txt#L5-L7
+drift source head
 index rk64:1c854b1df1e7cc97..rk64:e892818d24d10605
 recorded snapshot unrecoverable
 ```
@@ -412,6 +431,7 @@ committed, whose content then moved on:
 
 ```
 diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3
+drift source worktree
 index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
 recorded snapshot unrecoverable
 ```
@@ -419,9 +439,10 @@ recorded snapshot unrecoverable
 ```json
 {
   "content": "function cleanFooter(name) {\n  return `check the coupled ${name}`;\n}\n",
-  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\nindex rk64:6fc01f81b6737e74..rk64:0ac1f50418017539\nrecorded snapshot unrecoverable\n",
+  "diff": "diff --git a/touch-core.js#L1-L3 b/touch-core.js#L1-L3\ndrift source worktree\nindex rk64:6fc01f81b6737e74..rk64:0ac1f50418017539\nrecorded snapshot unrecoverable\n",
   "path": "touch-core.js#L1-L3",
-  "recorded": "unrecoverable"
+  "recorded": "unrecoverable",
+  "sources": ["WORKTREE"]
 }
 ```
 
@@ -429,7 +450,7 @@ recorded snapshot unrecoverable
 
 Same data; `diff`/`span_diff`/`content` are the identical raw strings the human renderer
 prints — not structured hunks. Real output, `git span history agent-hooks/hook-message-copy
---format json -n 1`, for the same uncommitted edit shown above. Object keys render in
+--format json -n 1`, for the same working-tree edit shown above. Object keys render in
 alphabetical order (the emitter's own order, not hand-arranged); long string values below
 are trimmed with `⋮` (never with `…`, and never in a way a reader could mistake for real
 diff/content bytes) for length only:
@@ -458,8 +479,9 @@ diff/content bytes) for length only:
     "anchors": [
       {
         "content": "function cleanHeader(fileName: string): string {\n  return `${fileName} has implicit dependencies:`;\n}\n\nfunction cleanFooter(fileName: string): string {\n  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n}\n⋮ (rest of the extracted anchor snapshot, elided here for length)\n",
-        "diff": "diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\nindex rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900\n--- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n+++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n@@ -247,7 +247,7 @@\n }\n \n function cleanFooter(fileName: string): string {\n-  return `If you change ${fileName} check the other files to confirm they still work together.`;\n+  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n }\n \n /**\n",
-        "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274"
+        "diff": "diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\ndrift source worktree\nindex rk64:49bd4bc548ecea54..rk64:4493cd6c8a727900\n--- a/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n+++ b/packages/agent-hooks/src/common/touch-core.ts#L245-L274\n@@ -247,7 +247,7 @@\n }\n \n function cleanFooter(fileName: string): string {\n-  return `If you change ${fileName} check the other files to confirm they still work together.`;\n+  return `If you change ${fileName} check the other coupled files to confirm they still work together.`;\n }\n \n /**\n",
+        "path": "packages/agent-hooks/src/common/touch-core.ts#L245-L274",
+        "sources": ["WORKTREE"]
       }
     ]
   },
@@ -527,6 +549,10 @@ carry `content` instead of `diff`:
   only the content object reports a rebinding-to-unrelated-content as ordinary drift.
 - Each `current` anchor object carries `path` plus **both** `diff` and `content` when
   present, so a consumer never has to reconstruct live content from a patch.
+- `sources` on a `current` anchor is an **array**, and it is omitted rather than emitted as
+  `[]`. It names every layer the drift was observed at, using `git span stale`'s own three
+  strings — one anchor can be drifted at more than one, and a scalar would have to pick a
+  winner and drop the rest.
 
 - `span_diff` is present on a commit or on `current` iff the `.span/<name>` declaration
   blob actually changed between the two states being compared; omitted otherwise (not set
@@ -641,10 +667,39 @@ the two lists agree over a sweep of every state above.
   in this render's snapshot set hashes to the declaration's recorded token. The `diff` then
   carries the `recorded snapshot unrecoverable` marker line and no hunks. Cannot co-occur
   with `proposed`.
+- `sources` — the layers this anchor drifted at, as an array over `git span stale`'s exact
+  strings: `"HEAD"`, `"INDEX"`, `"WORKTREE"`. Shallow-to-deep, the order `stale` publishes.
+  Omitted when the resolver named no layer; **never emitted as `[]`**, so presence alone is
+  the test and a consumer never has to distinguish "no layer" from "empty".
 
-Three marker lines belong to the anchor dialect. Two of them appear only in `current`
-blocks — `proposed anchor <address>` and `recorded snapshot unrecoverable` — and the third,
-`content unavailable`, names why a block has no bytes, in two forms.
+  An array, not a scalar, because one anchor is routinely drifted at more than one layer at
+  once — commit an edit without re-anchoring, then edit the same lines again in the working
+  tree, and `stale` reports `WORKTREE` *and* `HEAD`. A scalar would have to pick the
+  shallowest and silently drop the committed face, which is the face that changes what the
+  reader should do: a working-tree edit wants saving or reverting, a committed one wants
+  re-anchoring, and an anchor in both states wants both.
+
+  Independent of `unavailable`, `proposed`, and `recorded`: it says *where* the drift was
+  seen, never *what* could be read there. It is the structured half of the
+  `drift source <layers>` marker line, and the two are emitted together or not at all,
+  because the marker is built into the header the JSON `diff` string is built from.
+
+Four marker lines belong to the anchor dialect. Three of them appear only in `current`
+blocks — `proposed anchor <address>`, `drift source <layers>`, and
+`recorded snapshot unrecoverable` — and the fourth, `content unavailable`, names why a
+block has no bytes, in two forms.
+
+`drift source <layers>` names the layer or layers the drift was observed at, lower-cased
+from the same three values `sources` carries and joined with `, ` in `stale`'s
+shallow-to-deep order: `drift source worktree`, `drift source head`,
+`drift source worktree, head`. It exists because the `current` block is deliberately
+headerless — git's idiom for "outside the timeline" — and a headerless block cannot say by
+its shape whether the edit is sitting in the working tree, staged, or already committed and
+merely un-re-anchored. Those three want different repairs. The line sits immediately above
+`index`, after `proposed anchor` and the rename lines, and it appears in every `current`
+block that has a layer to name, including both halves of a below-threshold re-anchor split:
+the marker and the `sources` key are emitted from one place, so the default output can never
+be the one surface that cannot say where the drift lives.
 
 `content unavailable <old>..<new>` appears wherever a block has no bytes on *either* side
 and the reason for that changed between them (a range that ran past the end of its file,

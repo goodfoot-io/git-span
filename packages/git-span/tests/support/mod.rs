@@ -121,6 +121,32 @@ impl TestRepo {
         Ok(out)
     }
 
+    /// `run_git` with extra environment. The one thing a git *flag* cannot set
+    /// is the committer date, and the commit-time ordering of the history walk
+    /// is keyed on exactly that — so a fixture that needs the walk to disagree
+    /// with topology has to reach it through the environment.
+    pub fn run_git_with_env<I, S>(&self, args: I, env: &[(&str, &str)]) -> Result<Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(self.dir.path());
+        for a in args {
+            cmd.arg(a.as_ref());
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(out)
+    }
+
     pub fn git_stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,

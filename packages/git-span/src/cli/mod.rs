@@ -184,8 +184,10 @@ pub enum Commands {
     /// Show a span's git history as a git-log-style timeline: newest-first
     /// commit entries whose patches are real unified diffs of the span
     /// declaration and of each anchor's content at its declared address, with
-    /// uncommitted worktree drift rendered before the first commit as a
-    /// headerless diff.
+    /// the span's live drift rendered before the first commit as a headerless
+    /// diff. That drift is not working-tree-only: it covers every layer
+    /// `git span stale` reports — committed, staged, and uncommitted — and each
+    /// block names its layers on a `drift source` line.
     ///
     /// Outputs human-readable text by default; use `--format json` for
     /// `schema_version: 2` JSON carrying the same patches as raw text.

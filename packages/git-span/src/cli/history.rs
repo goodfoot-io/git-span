@@ -46,6 +46,58 @@
 //! `similarity index` line is omitted. Splitting that case would fabricate two
 //! events where one was declared; measuring it would fabricate a number.
 //!
+//! # Which commits are walked, and what each is diffed against
+//!
+//! Every commit that moved a seed path is walked, **merges included**, and each
+//! entry is diffed against the state at its own **first parent** — never
+//! against the entry the walk happened to print above it.
+//!
+//! Both halves are one rule, and each is useless alone. The walk is ordered by
+//! commit *time*, which is not topology: two branch tips print adjacent to each
+//! other with nothing between them, so pairing on the printed predecessor makes
+//! each tip assert that it reverted the other's edit — signed lines for a
+//! change no commit made, over lines `git diff` reports untouched. Skipping
+//! merges hides the same fabrication one commit further along: the first commit
+//! after a merge inherits the whole merged-in side as its own work.
+//!
+//! Merges are not skipped because there is nothing to skip them *for*. The
+//! qualifying test compares each seed path's blob against `parent_ids.first()`
+//! for any parent arity, so a merge qualifies exactly when it moved the
+//! mainline at a seed path, and parent #1 is well defined for an octopus merge
+//! too. The resolver never agreed with the exclusion either: `git span stale`
+//! attributes drift to a merge without hesitation, so a span whose content
+//! arrived through one had a finding pointing at a commit this command refused
+//! to print.
+//!
+//! The correctness claim is stated without reference to the implementation: for
+//! every rendered anchor block, every `-` line exists in the anchored file at
+//! the commit's first parent and every `+` line exists in it at the commit
+//! itself. `assert_no_fabricated_lines` in the integration tests is that
+//! sentence, executable.
+//!
+//! # `current` covers every layer, and says which
+//!
+//! The `current` block is the span's *live* drift against its declaration, and
+//! it is not working-tree-only: it covers every layer `git span stale`
+//! reports — a committed edit that was never re-anchored, a staged one, and an
+//! uncommitted one alike — because the resolver behind it is `stale`'s.
+//!
+//! It renders headerless, which is git's idiom for "outside the timeline" and
+//! the honest claim here, since no single commit entry accounts for it. But a
+//! headerless block cannot say by its *shape* which layer it came from, and the
+//! three want different repairs: a working-tree edit wants saving or reverting,
+//! a committed one wants re-anchoring, and an anchor drifted at both wants both.
+//! So each block names its layers — `sources` in JSON, a `drift source` marker
+//! line in the header — over `stale`'s own three values, as a list rather than a
+//! scalar because one anchor is routinely drifted at more than one at once and a
+//! scalar would have to drop the deeper face.
+//!
+//! The marker goes into the header both formats are built from, never appended
+//! by [`render_human`]: appending it is the one design that breaks the
+//! byte-identity between the human block and the JSON `diff` string, and it is
+//! also how the below-threshold re-anchor split — the one shape built by a
+//! different constructor — came to publish the key with no marker beside it.
+//!
 //! # Skip-condition inventory
 //!
 //! Every defect this module has shipped lived in a guard rather than in the
@@ -344,15 +396,15 @@ impl TimelineAnchor {
     }
 }
 
-/// The optional current-drift section: how the working tree differs from the
-/// last recorded timeline state and from HEAD.
+/// The optional current-drift section: how the live span differs from its last
+/// recorded state, at whichever layer produced the difference.
 pub struct CurrentSection {
     /// Blob diff of the `.span/<name>` declaration between HEAD and the
-    /// working tree (covering uncommitted why edits and uncommitted anchor
-    /// add/remove alike). Present iff the worktree bytes differ from HEAD.
+    /// working tree (covering why edits and anchor add/remove alike). Present
+    /// iff the worktree bytes differ from HEAD.
     pub span_diff: Option<String>,
     /// Anchors the resolver reports as non-`Fresh` (plus any anchor whose
-    /// declared address moved in the uncommitted declaration), in resolver
+    /// declared address moved in the worktree declaration), in resolver
     /// order.
     pub anchors: Vec<CurrentAnchor>,
 }
@@ -395,6 +447,29 @@ pub struct CurrentAnchor {
     /// to the recorded token by definition, so that old side is always
     /// recoverable.
     pub recorded_unrecoverable: bool,
+    /// Every layer that shows drift for this anchor, in shallow-to-deep order,
+    /// taken from the resolver's own `layer_sources` — the same list `git span
+    /// stale` turns into one finding per entry. JSON emits it as `sources` over
+    /// `stale`'s exact strings (`HEAD` / `INDEX` / `WORKTREE`), and the diff
+    /// header carries the lowercase [`DRIFT_SOURCE`] marker built from it, so
+    /// both formats name the same layers.
+    ///
+    /// Empty exactly when the resolver reports no layer, and the key is then
+    /// **omitted** rather than emitted as `[]` or `null` — key presence is how
+    /// `current.anchors[]` spells absence throughout, and this is history's
+    /// spelling of `stale`'s `"source": null`.
+    ///
+    /// A *list* and not a scalar because one anchor can drift at more than one
+    /// layer at once: an edit committed and then further edited in the working
+    /// tree makes `stale` emit two findings for one anchor, and
+    /// `current.anchors[]` carries one object per anchor, so a scalar would
+    /// silently drop the `HEAD` face of every composed drift — the same class
+    /// of loss this field exists to repair, one level down.
+    ///
+    /// Independent of [`CurrentAnchor::unavailable`] in both directions: an
+    /// unreadable anchor still drifts at a layer, and a readable one may not
+    /// drift at any.
+    pub sources: Vec<crate::types::DriftSource>,
 }
 
 impl CurrentAnchor {
@@ -407,6 +482,7 @@ impl CurrentAnchor {
         diff: String,
         body: &AnchorBody,
         recorded_unrecoverable: bool,
+        sources: Vec<crate::types::DriftSource>,
     ) -> Self {
         CurrentAnchor {
             path,
@@ -418,6 +494,7 @@ impl CurrentAnchor {
             },
             unavailable: body.unavailable(),
             recorded_unrecoverable,
+            sources,
         }
     }
 }
@@ -680,6 +757,7 @@ struct Snapshot {
 
 /// The span's state rendered at a point in history: the commit it was read at
 /// plus each anchor's extracted snapshot, in declaration order.
+#[derive(Clone)]
 struct RenderedState {
     commit: String,
     anchors: Vec<Snapshot>,
@@ -791,6 +869,33 @@ fn read_anchor_at_commit(
     (body, hash)
 }
 
+/// The span's rendered state at a commit, reading the declaration as that
+/// commit had it.
+///
+/// A commit that predates the span, or one in a deleted-then-re-added gap, has
+/// no declaration and renders as an empty state — the same reading
+/// [`build_report`] gives a missing span on the walk itself, so a first-add
+/// against a parent that had no `.span` file still renders as a creation.
+fn state_at_commit(
+    repo: &gix::Repository,
+    span_name: &str,
+    span_root: &str,
+    commit_oid: &str,
+) -> Result<RenderedState> {
+    let span = match read_span_at_in(repo, span_name, Some(commit_oid), span_root) {
+        Ok(m) => Some(m),
+        Err(crate::Error::SpanNotFound(_)) => None,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(match span {
+        Some(m) => rendered_state_at(repo, commit_oid, &m),
+        None => RenderedState {
+            commit: commit_oid.to_string(),
+            anchors: Vec::new(),
+        },
+    })
+}
+
 /// Build the rendered state for a span at a commit.
 fn rendered_state_at(repo: &gix::Repository, commit_oid: &str, span: &Span) -> RenderedState {
     let mut anchors = Vec::with_capacity(span.anchors.len());
@@ -897,23 +1002,35 @@ fn snapshot_side(s: &Snapshot) -> DiffSide<'_> {
 /// reaches here. An *unmeasurable* pair does not: the move is asserted by the
 /// declaration itself, so splitting it would invent a delete and a create
 /// where the user declared one move.
-fn push_reanchor_split(anchors: &mut Vec<CurrentAnchor>, old: &Snapshot, new: &Snapshot) {
-    if let Some(diff) = snapshot_diff(Some(old), None) {
+///
+/// `sources` is the resolver's layer list for the *one* anchor being split, so
+/// both halves carry it: the split is a rendering decision about how to show a
+/// single declared re-anchor, not two anchors, and the layer the drift lives at
+/// is the same fact for both blocks.
+fn push_reanchor_split(
+    anchors: &mut Vec<CurrentAnchor>,
+    old: &Snapshot,
+    new: &Snapshot,
+    sources: &[crate::types::DriftSource],
+) {
+    if let Some(diff) = snapshot_diff(Some(old), None, sources) {
         anchors.push(CurrentAnchor::new(
             old.address.clone(),
             None,
             diff,
             &old.body,
             false,
+            sources.to_vec(),
         ));
     }
-    if let Some(diff) = snapshot_diff(None, Some(new)) {
+    if let Some(diff) = snapshot_diff(None, Some(new), sources) {
         anchors.push(CurrentAnchor::new(
             new.address.clone(),
             None,
             diff,
             &new.body,
             false,
+            sources.to_vec(),
         ));
     }
 }
@@ -936,13 +1053,31 @@ fn measured_similarity(old: &AnchorBody, new: &AnchorBody) -> Option<u8> {
 }
 
 /// The anchor diff header for a pair of snapshots.
-fn anchor_header(old: Option<&Snapshot>, new: Option<&Snapshot>) -> DiffHeader {
+fn anchor_header(
+    old: Option<&Snapshot>,
+    new: Option<&Snapshot>,
+    drift_sources: &[crate::types::DriftSource],
+) -> DiffHeader {
     let null = || NULL_ANCHOR_HASH.to_string();
-    match (old, new) {
-        (Some(o), Some(n)) => DiffHeader::Anchor {
-            old_hash: o.hash.clone(),
-            new_hash: n.hash.clone(),
-            kind: if o.address == n.address {
+    let with = |h: DiffHeader| match h {
+        DiffHeader::Anchor {
+            old_hash,
+            new_hash,
+            kind,
+            ..
+        } => DiffHeader::Anchor {
+            old_hash,
+            new_hash,
+            kind,
+            drift_sources: drift_sources.to_vec(),
+        },
+        other => other,
+    };
+    with(match (old, new) {
+        (Some(o), Some(n)) => DiffHeader::anchor(
+            o.hash.clone(),
+            n.hash.clone(),
+            if o.address == n.address {
                 AnchorDiffKind::Modify
             } else {
                 // `None` is unreachable here: every `pair_anchors` pass that
@@ -956,30 +1091,33 @@ fn anchor_header(old: Option<&Snapshot>, new: Option<&Snapshot>) -> DiffHeader {
                     similarity: measured_similarity(&o.body, &n.body),
                 }
             },
-        },
-        (None, Some(n)) => DiffHeader::Anchor {
-            old_hash: null(),
-            new_hash: n.hash.clone(),
-            kind: AnchorDiffKind::New,
-        },
-        (Some(o), None) => DiffHeader::Anchor {
-            old_hash: o.hash.clone(),
-            new_hash: null(),
-            kind: AnchorDiffKind::Deleted,
-        },
+        ),
+        (None, Some(n)) => DiffHeader::anchor(null(), n.hash.clone(), AnchorDiffKind::New),
+        (Some(o), None) => DiffHeader::anchor(o.hash.clone(), null(), AnchorDiffKind::Deleted),
         (None, None) => unreachable!("a diff needs at least one side"),
-    }
+    })
 }
 
 /// Render one anchor pseudo-diff between two optional snapshots. The kind is
 /// derived from the pair: `Modify` at an unchanged address, `Rename` when the
 /// address moved (headers always, hunks only when content also changed), and
 /// `New`/`Deleted` for an unpaired side.
-fn snapshot_diff(old: Option<&Snapshot>, new: Option<&Snapshot>) -> Option<String> {
+///
+/// `drift_sources` is empty for every timeline block — a commit entry describes
+/// a commit, not a drift, and has no layer to name. It is populated only where
+/// the `current` block splits one declared re-anchor into two, so the human
+/// marker and the JSON `sources` key stay in step: the key without the marker
+/// would leave the default output — the format this command exists to produce —
+/// the one surface that cannot say where the drift lives.
+fn snapshot_diff(
+    old: Option<&Snapshot>,
+    new: Option<&Snapshot>,
+    drift_sources: &[crate::types::DriftSource],
+) -> Option<String> {
     if old.is_none() && new.is_none() {
         return None;
     }
-    let header = anchor_header(old, new);
+    let header = anchor_header(old, new, drift_sources);
     render_unified_diff(
         &header,
         old.map(snapshot_side).unwrap_or_else(DiffSide::dev_null),
@@ -1018,11 +1156,11 @@ fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<TimelineAnch
     if old.address != new.address {
         return None;
     }
-    let header = DiffHeader::Anchor {
-        old_hash: old.recorded.clone(),
-        new_hash: new.recorded.clone(),
-        kind: AnchorDiffKind::Rebound,
-    };
+    let header = DiffHeader::anchor(
+        old.recorded.clone(),
+        new.recorded.clone(),
+        AnchorDiffKind::Rebound,
+    );
     let diff = render_diff_header(&header, &snapshot_side(old), &snapshot_side(new), false);
     Some(TimelineAnchor::rebound(
         new.address.clone(),
@@ -1118,10 +1256,16 @@ fn pair_anchors(old: &[Snapshot], new: &[Snapshot]) -> (Vec<Option<usize>>, Vec<
     (pairs, dropped)
 }
 
-/// Diff a commit's rendered state against the previous rendered state and emit
-/// a [`CommitSection`]. Returns `None` when nothing observable changed — a
-/// commit that qualified for the walk (it touched an anchored file) but left
-/// every declared range and the declaration itself untouched.
+/// Diff a commit's rendered state against **the state materialized at its
+/// first parent** and emit a [`CommitSection`]. Returns `None` when nothing
+/// observable changed — a commit that qualified for the walk (it touched an
+/// anchored file) but left every declared range and the declaration itself
+/// untouched.
+///
+/// `prev` is parent #1's state and not the previous entry in the walk: those
+/// coincide only on a linear history, and the difference is the whole of the
+/// invariant this function owes — every `-` line it renders exists in
+/// `git show C^:path`, and every `+` line in `git show C:path`.
 fn diff_section(
     repo: &gix::Repository,
     span_path: &str,
@@ -1155,7 +1299,7 @@ fn diff_section(
         if let Some(rebound) = rebinding_diff(o, n) {
             anchors.push(rebound);
         }
-        let Some(diff) = snapshot_diff(o, Some(n)) else {
+        let Some(diff) = snapshot_diff(o, Some(n), &[]) else {
             continue;
         };
         // A first-add carries the full snapshot so a consumer can render a
@@ -1168,7 +1312,7 @@ fn diff_section(
         ));
     }
     for i in dropped {
-        if let Some(diff) = snapshot_diff(Some(&old[i]), None) {
+        if let Some(diff) = snapshot_diff(Some(&old[i]), None, &[]) {
             anchors.push(TimelineAnchor::new(
                 old[i].address.clone(),
                 diff,
@@ -1233,28 +1377,52 @@ fn build_report(
     let mut rendered_by_hash: std::collections::HashMap<String, Snapshot> =
         std::collections::HashMap::new();
 
-    // The walk is unbounded, so the oldest walked commit is the span's true
-    // first appearance and needs no seeded baseline. (`--limit` trims *rendered
-    // entries* afterwards, and every retained entry was built against real
-    // prior state.)
-    let mut prev: Option<RenderedState> = None;
+    // Every rendered state this pass has materialized, keyed by commit. The
+    // walk is dense in first-parent links — a commit's parent is very often the
+    // previously walked commit — so memoizing keeps a branched history at
+    // roughly one state materialization per entry rather than two.
+    let mut states: std::collections::HashMap<String, RenderedState> =
+        std::collections::HashMap::new();
+    // The newest walked commit's state, which the `current` block diffs
+    // against. Tracked separately from the per-entry baseline: the walk is
+    // oldest->newest, so this is simply the last one materialized.
+    let mut newest: Option<RenderedState> = None;
 
     for cc in commits {
         // Read the span as it existed at this commit. An absent span
         // (deleted-then-re-added gap, or a commit predating the span's
         // creation that touched an anchored file) renders as an empty state.
-        let span = match read_span_at_in(repo, span_name, Some(&cc.hash), span_root) {
-            Ok(m) => Some(m),
-            Err(crate::Error::SpanNotFound(_)) => None,
-            Err(e) => return Err(e.into()),
+        let cur = match states.get(&cc.hash) {
+            Some(s) => s.clone(),
+            None => {
+                let s = state_at_commit(repo, span_name, span_root, &cc.hash)?;
+                states.insert(cc.hash.clone(), s.clone());
+                s
+            }
         };
 
-        let cur = match &span {
-            Some(m) => rendered_state_at(repo, &cc.hash, m),
-            None => RenderedState {
-                commit: cc.hash.clone(),
-                anchors: Vec::new(),
-            },
+        // The baseline is the state materialized at this commit's **first
+        // parent** — never the previous rendered entry. The two coincide only
+        // on linear history; where they diverge, pairing against the list
+        // predecessor makes an entry assert edits its commit did not make (a
+        // sibling branch's line reverted, attributed to a named author). A root
+        // commit has no parent and pairs against nothing, which is what makes
+        // the span's first appearance render as a creation.
+        //
+        // A merge that the walk *did* skip cannot corrupt the commit after it:
+        // skippable means no seed path's blob moved on the mainline, so the
+        // skipped merge's state and its first parent's state are the same
+        // state, and the chain is unbroken either way.
+        let prev = match crate::git::first_parent_of(repo, &cc.hash)? {
+            Some(parent) => Some(match states.get(&parent) {
+                Some(s) => s.clone(),
+                None => {
+                    let s = state_at_commit(repo, span_name, span_root, &parent)?;
+                    states.insert(parent, s.clone());
+                    s
+                }
+            }),
+            None => None,
         };
 
         capture_recorded_snapshots(&recorded, &mut recorded_snapshots, &cur);
@@ -1273,9 +1441,7 @@ fn build_report(
             sections.push(section);
         }
 
-        // Advance the baseline. A no-op commit yields `cur == prev`, so this is
-        // harmless and never resets the diff anchor.
-        prev = Some(cur);
+        newest = Some(cur);
     }
 
     // `--limit N` is a window over *rendered entries*: keep the newest N and
@@ -1295,7 +1461,7 @@ fn build_report(
     // The current block diffs against the *last recorded timeline state* — the
     // newest commit's state. With an empty walk (a worktree-only span) fall
     // back to HEAD, the only other recorded state.
-    let last = match prev {
+    let last = match newest {
         Some(state) => Some(state),
         None => match read_span_at_in(repo, span_name, Some("HEAD"), span_root) {
             Ok(span) => crate::git::resolve_commit(repo, "HEAD")
@@ -1371,10 +1537,13 @@ fn head_token_addresses(
     let mut seen: std::collections::HashMap<String, Option<(String, u32)>> =
         std::collections::HashMap::new();
     for (_id, a) in &span.anchors {
-        let entry = seen.entry(bare_hash(&a.stored_hash)).or_insert_with(|| {
-            Some((anchor_address(a), extent_first_line(a.extent)))
-        });
-        if entry.as_ref().is_some_and(|(addr, _)| *addr != anchor_address(a)) {
+        let entry = seen
+            .entry(bare_hash(&a.stored_hash))
+            .or_insert_with(|| Some((anchor_address(a), extent_first_line(a.extent))));
+        if entry
+            .as_ref()
+            .is_some_and(|(addr, _)| *addr != anchor_address(a))
+        {
             *entry = None;
         }
     }
@@ -1804,10 +1973,10 @@ fn unresolved_reason(repo: &gix::Repository, anchored: &AnchorLocation) -> Unava
 ///
 ///   1. the resolver (the same `LayerSet::full()` engine `git span stale` uses)
 ///      reports a non-`Fresh` status for an anchor — committed-but-not-
-///      re-anchored source drift, a relocated `moved` anchor, an uncommitted
+///      re-anchored source drift, a relocated `moved` anchor, a working-tree
 ///      edit, a deletion, …;
 ///   2. the worktree declaration differs from HEAD — one `span_diff` covering
-///      uncommitted why edits and uncommitted anchor add/remove alike.
+///      why edits and anchor add/remove alike.
 ///
 /// Each emitted anchor is keyed by its **declared** address (what `stale`
 /// prints, and the only string a consumer can join against the `.span` file);
@@ -1886,6 +2055,12 @@ fn build_current(
         let mut live: Vec<Snapshot> = Vec::with_capacity(span.anchors.len());
         let mut fresh: Vec<bool> = Vec::with_capacity(span.anchors.len());
         let mut states: Vec<CurrentState> = Vec::with_capacity(span.anchors.len());
+        // The resolver's own per-anchor layer list, carried across verbatim
+        // rather than recomputed: `stale` emits one finding per entry from this
+        // same vector, so history naming a different set than `stale` for the
+        // same anchor is not expressible.
+        let mut layer_sources: Vec<Vec<crate::types::DriftSource>> =
+            Vec::with_capacity(span.anchors.len());
         for r in &span.anchors {
             let declared = location_address(&r.anchored);
             // The resolver only *recommends* a relocation for the bytes-equal
@@ -1985,6 +2160,7 @@ fn build_current(
             });
             fresh.push(r.status == crate::types::AnchorStatus::Fresh);
             states.push(state);
+            layer_sources.push(r.layer_sources.clone());
         }
 
         let empty: Vec<Snapshot> = Vec::new();
@@ -2000,6 +2176,7 @@ fn build_current(
             if fresh[j] && !matches!(state, CurrentState::Reanchored { .. }) {
                 continue;
             }
+            let drift_sources = &layer_sources[j];
             // Only a re-anchor relabels a side, and it labels the old side
             // with the address HEAD's declaration gave those bytes.
             let (old_address, old_first_line) = match state {
@@ -2047,7 +2224,7 @@ fn build_current(
                 (CurrentState::Reanchored { .. }, Some(o)) => {
                     let measured = measured_similarity(&o.snapshot.body, &n.body);
                     if measured.is_some_and(|s| s < RENAME_SIMILARITY_FLOOR) {
-                        push_reanchor_split(&mut anchors, &o.snapshot, n);
+                        push_reanchor_split(&mut anchors, &o.snapshot, n, drift_sources);
                         continue;
                     }
                     AnchorDiffKind::Rename {
@@ -2059,6 +2236,9 @@ fn build_current(
                 },
                 (CurrentState::Drifted, Some(_)) => AnchorDiffKind::Modify,
             };
+            // The one construction site that names a drift layer: the marker
+            // goes into the header both formats are built from, so the default
+            // output's block and the JSON `diff` string stay the same bytes.
             let header = DiffHeader::Anchor {
                 old_hash: old_side
                     .as_ref()
@@ -2066,6 +2246,7 @@ fn build_current(
                     .unwrap_or_else(|| NULL_ANCHOR_HASH.to_string()),
                 new_hash: n.hash.clone(),
                 kind,
+                drift_sources: drift_sources.clone(),
             };
             let old_diff_side = old_side
                 .as_ref()
@@ -2095,6 +2276,7 @@ fn build_current(
                 diff,
                 &n.body,
                 unrecoverable,
+                drift_sources.clone(),
             ));
         }
     }
@@ -2111,8 +2293,11 @@ fn build_current(
 
 /// Render a `HistoryReport` as git-log-style text.
 ///
-/// Uncommitted drift comes first with no commit header (git's own idiom for
-/// "not yet committed"), then commit entries newest-first: `commit <40-hex>`,
+/// Live drift comes first with no commit header — git's own idiom for "outside
+/// the timeline", which is the honest claim here, because the drift may have
+/// been committed, staged, or left in the working tree and no single commit
+/// entry accounts for it. The `drift source` line inside each block says which.
+/// Then commit entries newest-first: `commit <40-hex>`,
 /// `Date:   <git's default author-date rendering>`, a blank line, the
 /// four-space-indented summary, then the declaration diff and each anchor
 /// diff. Every block is separated by one blank line.
@@ -2260,6 +2445,18 @@ pub fn render_json(report: &HistoryReport) -> Value {
                 }
                 if a.recorded_unrecoverable {
                     ao.insert("recorded".into(), json!("unrecoverable"));
+                }
+                // Omitted, never `[]` and never `null`: `current.anchors[]`
+                // spells absence by key presence throughout, and an empty array
+                // would be a positive claim that the resolver found layers and
+                // they were none.
+                if !a.sources.is_empty() {
+                    let layers: Vec<&str> = a
+                        .sources
+                        .iter()
+                        .map(|s| crate::types::DriftSource::as_json_str(*s))
+                        .collect();
+                    ao.insert("sources".into(), json!(layers));
                 }
                 Value::Object(ao)
             })

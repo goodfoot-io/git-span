@@ -837,6 +837,408 @@ fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
     Ok(())
 }
 
+/// The same drift as [`drifted_repo`], but *committed* and never re-anchored.
+/// `git status` is clean; `git span stale` still reports the anchor, sourced at
+/// `HEAD`. This is the state the `current` block used to describe as an
+/// uncommitted working-tree edit.
+fn committed_drift_repo(span: &str) -> Result<TestRepo> {
+    let repo = drifted_repo(span)?;
+    repo.commit_all("commit the drift without re-anchoring")?;
+    Ok(repo)
+}
+
+/// The drift staged and not committed: the index holds bytes the declaration
+/// does not record, and `HEAD` is clean. The third of `stale`'s three layers,
+/// and the one no `current` fixture reached before.
+fn staged_drift_repo(span: &str) -> Result<TestRepo> {
+    let repo = drifted_repo(span)?;
+    repo.run_git(["add", "f.txt"])?;
+    Ok(repo)
+}
+
+/// Drift at two layers at once: committed without re-anchoring, then edited
+/// again in the working tree. `git span stale` names both, and this is the
+/// fixture that decides `sources` must be a list — a scalar has to pick one of
+/// these two and drop the other.
+fn composed_drift_repo(span: &str) -> Result<TestRepo> {
+    let repo = committed_drift_repo(span)?;
+    // The second edit must land *inside* the declared range: the committed
+    // state already carries `BETA`, so re-editing that line would leave
+    // `f.txt#L1-L3` byte-identical to `HEAD` and the fixture would quietly
+    // reduce to the single-layer case it exists to rule out.
+    repo.write_file("f.txt", "h1\nH2-AGAIN\nalpha\nBETA\ngamma\n")?;
+    Ok(repo)
+}
+
+// ---------------------------------------------------------------------------
+// Topology: which commits are walked, and what each one is diffed against
+// ---------------------------------------------------------------------------
+
+/// A diamond over one anchored range: `side` edits line 2, `main` edits line 5,
+/// and a `--no-ff` merge takes both. The merge's *first* parent is `main`.
+///
+/// The corpus had no merge fixture at all before this one, which is how two
+/// separate defects lived here undisturbed: the walk skipped merges outright,
+/// and every entry was diffed against the previous *rendered* entry rather than
+/// against its own first parent. Neither is visible in a linear history, where
+/// the walk's predecessor and the first parent are the same commit.
+fn merge_diamond_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nl5\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L5"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+    repo.run_git(["checkout", "-b", "side"])?;
+    repo.write_file("f.txt", "l1\nSIDE2\nl3\nl4\nl5\n")?;
+    repo.commit_all("side edits line 2")?;
+    repo.run_git(["checkout", "-"])?;
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nMAIN5\n")?;
+    repo.commit_all("main edits line 5")?;
+    repo.run_git(["merge", "--no-ff", "side", "-m", "merge side"])?;
+    Ok(repo)
+}
+
+/// Every signed line in every rendered anchor block, checked against git.
+///
+/// A `-` line must exist in the anchored file at the commit's **first parent**
+/// and a `+` line must exist in it at the commit itself. This is the whole
+/// correctness claim for the pairing, stated without reference to how the
+/// pairing is implemented, so a renderer that reaches the same output by a
+/// different route still has to answer to git for every line it signs.
+fn assert_no_fabricated_lines(repo: &TestRepo, span: &str) -> Result<()> {
+    let json = history_json(repo, span)?;
+    let mut signed = 0usize;
+    for entry in json["commits"].as_array().expect("commits array") {
+        let hash = entry["hash"].as_str().expect("commit hash");
+        let parents = repo.git_stdout(["rev-list", "--parents", "-n", "1", hash])?;
+        let first_parent = parents.split_whitespace().nth(1).map(str::to_string);
+        for anchor in entry["anchors"].as_array().expect("anchors array") {
+            let Some(diff) = anchor["diff"].as_str() else {
+                continue;
+            };
+            let path = anchor["path"]
+                .as_str()
+                .expect("anchor path")
+                .rsplit_once("#L")
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_else(|| anchor["path"].as_str().expect("anchor path").to_string());
+            let at = |rev: &Option<String>| -> Vec<String> {
+                let Some(rev) = rev else {
+                    return Vec::new();
+                };
+                repo.run_git(["show", &format!("{rev}:{path}")])
+                    .ok()
+                    .filter(|out| out.status.success())
+                    .map(|out| {
+                        String::from_utf8_lossy(&out.stdout)
+                            .lines()
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let old = at(&first_parent);
+            let new = at(&Some(hash.to_string()));
+            for line in diff.lines() {
+                if line.starts_with("---") || line.starts_with("+++") {
+                    continue;
+                }
+                if let Some(body) = line.strip_prefix('-') {
+                    signed += 1;
+                    assert!(
+                        old.iter().any(|l| l == body),
+                        "{span}: {hash} signs `-{body}` at {path}, which is in no \
+                         line of that file at its first parent:\n{diff}"
+                    );
+                } else if let Some(body) = line.strip_prefix('+') {
+                    signed += 1;
+                    assert!(
+                        new.iter().any(|l| l == body),
+                        "{span}: {hash} signs `+{body}` at {path}, which is in no \
+                         line of that file at the commit itself:\n{diff}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        signed > 0,
+        "{span}: nothing was signed, so nothing was checked"
+    );
+    Ok(())
+}
+
+/// A merge that *unions* the declaration: both branches added an anchor, and
+/// the merge keeps both.
+///
+/// The declaration is the one file whose merge result is neither side's, so the
+/// merge entry is where a renderer pairing on the walk's predecessor invents an
+/// anchor deletion — the entry above it saw only one branch's anchors, so the
+/// other branch's look like they left. `git span stale` disagrees on the spot:
+/// it reports the merged declaration clean at HEAD, so the timeline would be
+/// announcing a deletion the resolver can see never happened.
+#[test]
+fn a_merge_that_unions_the_declaration_asserts_no_anchor_deletion() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nl5\nl6\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", "un", "f.txt#L1-L1"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "declare"])?;
+
+    // The declaration is merged by git-span's own driver — the union rule is
+    // the driver's, not git's, and without it this fixture would only prove
+    // that a text merge conflicts.
+    repo.write_file(".gitattributes", ".span/** merge=span\n")?;
+    repo.run_git([
+        "config",
+        "merge.span.name",
+        "git-span structural span merge",
+    ])?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        &format!(
+            "{} merge-driver %O %A %B %L",
+            env!("CARGO_BIN_EXE_git-span")
+        ),
+    ])?;
+    repo.commit_all("register the span merge driver")?;
+
+    repo.run_git(["checkout", "-b", "side"])?;
+    repo.span_stdout(["add", "un", "f.txt#L4-L5"])?;
+    repo.commit_all("side adds an anchor")?;
+    repo.run_git(["checkout", "-"])?;
+    repo.span_stdout(["add", "un", "f.txt#L2-L3"])?;
+    repo.commit_all("main adds an anchor")?;
+
+    // The span merge driver resolves the declaration to the union of both
+    // sides; that union is the fixture's whole point, so it is asserted rather
+    // than assumed.
+    repo.run_git(["merge", "--no-ff", "side", "-m", "merge side"])?;
+    let listed = repo.span_stdout(["list", "un", "--oneline"])?;
+    for addr in ["f.txt#L1-L1", "f.txt#L2-L3", "f.txt#L4-L5"] {
+        assert!(
+            listed.contains(addr),
+            "fixture assumption: the merged declaration keeps {addr}; got:\n{listed}"
+        );
+    }
+    let stale = repo.run_span(["stale"])?;
+    assert!(
+        stale.status.success(),
+        "fixture assumption: the merged declaration is clean at HEAD; got:\n{}",
+        String::from_utf8_lossy(&stale.stdout)
+    );
+
+    let json = history_json(&repo, "un")?;
+    let merge = json["commits"]
+        .as_array()
+        .expect("commits array")
+        .iter()
+        .find(|e| e["summary"] == "merge side")
+        .expect("the merge commit is missing from the timeline");
+    // The anchor the merge genuinely brought onto the mainline is the side
+    // branch's, and it arrives as a first-add — one object, carrying `content`.
+    // The two anchors already on the first parent are untouched by the merge
+    // and so produce nothing, which is the assertion: the entry is exactly as
+    // long as the work the merge did.
+    let anchors = merge["anchors"].as_array().expect("anchors array");
+    assert_eq!(
+        anchors.len(),
+        1,
+        "the merge added one anchor and removed none; got:\n{merge:#}"
+    );
+    assert_eq!(anchors[0]["path"], "f.txt#L4-L5");
+    assert_eq!(anchors[0]["content"], "l4\nl5\n");
+
+    // Nothing anywhere in this history is a deletion — no commit removed an
+    // anchor — so the marker must not appear on either surface.
+    let text = history_text(&repo, "un")?;
+    assert!(
+        !text.contains("deleted anchor"),
+        "no commit in this history removed an anchor; a deletion is invented by \
+         the pairing, and `git span stale` calls the merged declaration clean:\n{text}"
+    );
+    assert!(
+        text.contains("new anchor") && text.contains("f.txt#L4-L5"),
+        "the merge's own contribution still has to be rendered:\n{text}"
+    );
+    Ok(())
+}
+
+/// A merge that moved the mainline at a seed path is a commit like any other,
+/// and the timeline says so.
+///
+/// It used to be skipped by an explicit `--no-merges` clause. The resolver never
+/// agreed: `git span stale` attributes drift to a merge without hesitation, so a
+/// span whose content arrived through one had a `stale` finding pointing at a
+/// commit `history` refused to print. The qualifying test that follows the skip
+/// compares each seed path's blob against `parent_ids.first()`, which is exactly
+/// the mainline question, so removing the clause needed no replacement gate.
+#[test]
+fn a_merge_that_moved_the_mainline_at_a_seed_path_is_rendered() -> Result<()> {
+    let repo = merge_diamond_repo("mg")?;
+    let json = history_json(&repo, "mg")?;
+    let merge = json["commits"]
+        .as_array()
+        .expect("commits array")
+        .iter()
+        .find(|e| e["summary"] == "merge side")
+        .expect("the merge commit is missing from the timeline");
+    // Merged-in content is what the merge contributed over its first parent, so
+    // that is what the entry shows — and nothing else.
+    let diff = merge["anchors"][0]["diff"].as_str().expect("merge diff");
+    assert!(
+        diff.contains("\n-l2\n") && diff.contains("\n+SIDE2\n"),
+        "the merge's first-parent contribution is the side branch's edit:\n{diff}"
+    );
+    assert!(
+        !diff.contains("MAIN5\n") || !diff.contains("\n-MAIN5"),
+        "`MAIN5` came from the first parent and is unchanged by the merge:\n{diff}"
+    );
+    Ok(())
+}
+
+/// The entry for a branch tip diffs against its own parent, not against
+/// whatever the walk printed above it.
+///
+/// In this diamond the two tips are siblings: neither is the other's parent, and
+/// they edit different lines. Pairing on the walk's predecessor made the second
+/// tip assert that it *reverted* the first tip's edit — signed `-` lines for a
+/// change no commit made, over a file `git show` reports as untouched at those
+/// lines. That is the shape this renderer exists to be incapable of.
+#[test]
+fn a_branch_tip_diffs_against_its_own_parent_not_the_walks_predecessor() -> Result<()> {
+    let repo = merge_diamond_repo("mg")?;
+    let json = history_json(&repo, "mg")?;
+    let entry = |summary: &str| -> String {
+        json["commits"]
+            .as_array()
+            .expect("commits array")
+            .iter()
+            .find(|e| e["summary"] == summary)
+            .unwrap_or_else(|| panic!("no entry for {summary:?} in {json:#}"))["anchors"][0]["diff"]
+            .as_str()
+            .expect("diff string")
+            .to_string()
+    };
+    let side = entry("side edits line 2");
+    assert!(
+        side.contains("\n-l2\n") && side.contains("\n+SIDE2\n"),
+        "the side branch's own edit:\n{side}"
+    );
+    assert!(
+        !side.contains("MAIN5"),
+        "`MAIN5` exists only on the sibling branch; the side tip cannot mention \
+         it in either direction:\n{side}"
+    );
+    let main = entry("main edits line 5");
+    assert!(
+        main.contains("\n-l5\n") && main.contains("\n+MAIN5\n"),
+        "the main branch's own edit:\n{main}"
+    );
+    assert!(
+        !main.contains("SIDE2"),
+        "`SIDE2` exists only on the sibling branch; the main tip cannot mention \
+         it in either direction:\n{main}"
+    );
+    assert_no_fabricated_lines(&repo, "mg")
+}
+
+/// The commit *after* a merge is the acceptance case for the two halves
+/// together, and it is the one neither half fixes alone.
+///
+/// Its first parent is the merge. Skip the merge and the entry has no baseline
+/// but the pre-merge tip, so it inherits the whole merged-in side as its own
+/// work; render the merge but keep pairing on the walk's predecessor and the
+/// same fabrication arrives by the other route. Only removing the skip *and*
+/// pairing on the first parent leaves this entry carrying nothing but the one
+/// line it actually changed.
+#[test]
+fn the_first_commit_after_a_merge_carries_only_its_own_edit() -> Result<()> {
+    let repo = merge_diamond_repo("mg")?;
+    repo.write_file("f.txt", "l1\nSIDE2\nl3\nPOST4\nMAIN5\n")?;
+    repo.commit_all("post-merge edit")?;
+
+    let json = history_json(&repo, "mg")?;
+    let post = json["commits"]
+        .as_array()
+        .expect("commits array")
+        .iter()
+        .find(|e| e["summary"] == "post-merge edit")
+        .expect("the post-merge entry is missing")["anchors"][0]["diff"]
+        .as_str()
+        .expect("diff string")
+        .to_string();
+    assert!(
+        post.contains("\n-l4\n") && post.contains("\n+POST4\n"),
+        "the post-merge commit's own edit:\n{post}"
+    );
+    assert!(
+        !post.contains("\n-l2\n") && !post.contains("\n+SIDE2\n"),
+        "`SIDE2` arrived in the merge, one commit earlier; this entry claiming \
+         it is the fabrication the merge skip produced:\n{post}"
+    );
+    assert_no_fabricated_lines(&repo, "mg")
+}
+
+/// The walk is ordered by commit *time*, and commit time is not topology.
+///
+/// Here the older branch tip is the one merged second, so the walk prints the
+/// two siblings adjacent to each other with the commit they both descend from
+/// sorted between them and their shared parent nowhere near either. A pairing
+/// keyed on print order gets the baseline wrong for both. This is the face that
+/// forged dates are needed to reach, and it is why the fix is stated as "the
+/// state at the commit's first parent" rather than "the entry above".
+#[test]
+fn a_tip_older_than_its_sibling_still_pairs_on_topology_not_print_order() -> Result<()> {
+    let repo = TestRepo::new()?;
+    let at = |day: u32| format!("2026-01-{day:02}T12:00:00-05:00");
+    let commit_at = |msg: &str, day: u32| -> Result<()> {
+        repo.run_git(["add", "-A"])?;
+        let out = repo.run_git_with_env(
+            ["commit", "-m", msg],
+            &[
+                ("GIT_AUTHOR_DATE", at(day).as_str()),
+                ("GIT_COMMITTER_DATE", at(day).as_str()),
+            ],
+        )?;
+        assert!(out.status.success(), "commit {msg:?} failed");
+        Ok(())
+    };
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nl5\n")?;
+    commit_at("initial", 1)?;
+    repo.span_stdout(["add", "dm", "f.txt#L1-L5"])?;
+    commit_at("declare", 3)?;
+    repo.run_git(["checkout", "-b", "side"])?;
+    repo.write_file("f.txt", "l1\nSIDE2\nl3\nl4\nl5\n")?;
+    commit_at("side edits line 2", 5)?;
+    repo.run_git(["checkout", "-"])?;
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nMAIN5\n")?;
+    commit_at("main edits line 5", 4)?;
+    let merged = repo.run_git_with_env(
+        ["merge", "--no-ff", "side", "-m", "merge side"],
+        &[
+            ("GIT_AUTHOR_DATE", at(6).as_str()),
+            ("GIT_COMMITTER_DATE", at(6).as_str()),
+        ],
+    )?;
+    assert!(merged.status.success(), "the merge itself must succeed");
+
+    // Fixture assumption, read off git: the walk order really does put the two
+    // siblings next to each other, which is the condition under test.
+    let order = repo.git_stdout(["log", "--all", "--date-order", "--format=%s"])?;
+    let order: Vec<&str> = order.lines().collect();
+    assert_eq!(
+        &order[..3],
+        &["merge side", "side edits line 2", "main edits line 5"],
+        "fixture assumption: the sibling tips sort adjacent, newest sibling first"
+    );
+
+    assert_no_fabricated_lines(&repo, "dm")
+}
+
 /// Commit `alpha/beta/gamma` anchored at `f.txt#L1-L3`, then prepend two
 /// lines in the worktree and edit `beta` — the ordinary drift state, with the
 /// declaration untouched. `stale` calls it "changed in the working tree" and
@@ -2317,6 +2719,13 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             "both",
         ),
         ("in-place drift", drifted_repo("ch")?, "ch"),
+        // The layer axis. `current` covers every layer `stale` reports, so a
+        // set whose every fixture drifts in the working tree certifies the
+        // `sources` vocabulary against one third of it — which is how the
+        // block came to describe a committed edit as an uncommitted one.
+        ("committed drift, never re-anchored", committed_drift_repo("cd")?, "cd"),
+        ("staged drift", staged_drift_repo("sd")?, "sd"),
+        ("drift at two layers at once", composed_drift_repo("cx")?, "cx"),
         ("cross-file swap", cross_file_swap_repo("xswap")?, "xswap"),
         ("abandoned block", abandoned_block_repo("re2")?, "re2"),
         ("never recorded", never_recorded_repo("ff")?, "ff"),
@@ -2984,6 +3393,172 @@ fn no_documented_example_shows_a_rename_below_the_threshold() -> Result<()> {
         seen += 1;
     }
     assert!(seen > 0, "the rename form is no longer illustrated at all");
+    Ok(())
+}
+
+/// Every `sources` value the `current` contract documents is produced by some
+/// state in the enumeration — the same question `unavailable` gets asked, for
+/// the same reason.
+///
+/// It is a sharper question here, because the vocabulary is not this command's
+/// to invent: `sources` republishes `git span stale`'s three layer names, and a
+/// documented layer no fixture reaches means `current` is silent about a state
+/// `stale` reports every day. `INDEX` was exactly that until this sweep forced
+/// a staged fixture into the set.
+#[test]
+fn every_documented_current_sources_value_has_a_producer() -> Result<()> {
+    let documented = documented_field_values("current.anchors[]", "sources")?;
+    let mut seen: Vec<String> = Vec::new();
+    for (label, repo, span) in every_current_state()? {
+        let json = history_json(&repo, span)?;
+        for anchor in json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"))
+        {
+            let Some(value) = anchor.get("sources") else {
+                continue;
+            };
+            let list = value
+                .as_array()
+                .unwrap_or_else(|| panic!("{label}: `sources` must be an array; got {value:#}"));
+            // Never `[]`. Presence is the whole test, so an empty array would
+            // make a consumer distinguish "no layer" from "empty" — two
+            // spellings of one fact, which is how a key stops meaning anything.
+            assert!(
+                !list.is_empty(),
+                "{label}: `sources` is present but empty; the key is omitted \
+                 when there is no layer to name"
+            );
+            for entry in list {
+                let entry = entry.as_str().expect("sources entry string").to_string();
+                assert!(
+                    documented.contains(&entry),
+                    "{label}: `sources` carries {entry:?}, which the field list \
+                     does not name; the list names {documented:?}"
+                );
+                if !seen.contains(&entry) {
+                    seen.push(entry);
+                }
+            }
+        }
+    }
+    for value in &documented {
+        assert!(
+            seen.contains(value),
+            "the document promises `sources` can carry {value:?}, but no state \
+             in the sweep produces it; seen: {seen:?}"
+        );
+    }
+    Ok(())
+}
+
+/// `sources` and the `drift source` marker are one fact with two spellings, and
+/// they are emitted from one place so they cannot disagree. This asserts the
+/// agreement over every state in the enumeration, in both directions: a block
+/// carrying the key carries the marker, and a block carrying neither carries
+/// neither.
+///
+/// The half that mattered is the marker's. The key was added first and the
+/// marker appended in the human renderer, which left the below-threshold
+/// re-anchor split — the one shape whose two blocks are built by a different
+/// constructor — publishing `sources` in JSON and saying nothing at all in the
+/// default output, the format the command exists to produce.
+#[test]
+fn the_drift_source_marker_accompanies_the_sources_key_in_every_current_state() -> Result<()> {
+    for (label, repo, span) in every_current_state()? {
+        let json = history_json(&repo, span)?;
+        let text = history_text(&repo, span)?;
+        for anchor in json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"))
+        {
+            let diff = anchor["diff"].as_str().expect("current diff string");
+            let marker = diff
+                .lines()
+                .find(|line| line.starts_with("drift source "))
+                .map(str::to_string);
+            match anchor.get("sources") {
+                Some(value) => {
+                    let expected: Vec<String> = value
+                        .as_array()
+                        .expect("sources array")
+                        .iter()
+                        .map(|v| v.as_str().expect("sources entry").to_ascii_lowercase())
+                        .collect();
+                    let marker = marker.unwrap_or_else(|| {
+                        panic!(
+                            "{label}: `sources` is emitted with no `drift source` \
+                             line beside it; the default output cannot say where \
+                             the drift lives:\n{diff}"
+                        )
+                    });
+                    assert_eq!(
+                        marker,
+                        format!("drift source {}", expected.join(", ")),
+                        "{label}: the marker and the key must be the same fact, \
+                         in the same order"
+                    );
+                }
+                None => assert!(
+                    marker.is_none(),
+                    "{label}: a `drift source` line with no `sources` key states \
+                     something no consumer can read:\n{diff}"
+                ),
+            }
+            // The marker reaches the reader through the header both formats are
+            // built from, so the human block is these bytes exactly.
+            assert!(
+                text.contains(diff),
+                "{label}: the human block and the JSON `diff` string diverged:\n{text}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One anchor, drifted at two layers at once, read on both surfaces.
+///
+/// This is the case a scalar `source` field cannot express: the edit is
+/// committed *and* the working tree has moved on again, and the two states want
+/// different repairs — the committed face wants re-anchoring, the working-tree
+/// face wants saving or reverting. A scalar has to pick the shallowest and drop
+/// the other, and dropping the committed face is dropping the one that changes
+/// what the reader should do. `git span stale` has always published both; this
+/// asserts `history` publishes the same pair, in the same order.
+#[test]
+fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
+    let repo = composed_drift_repo("cx")?;
+
+    // Fixture assumption, read off `stale` rather than assumed: the anchor is
+    // genuinely drifted at both layers, and this is the order `stale` uses.
+    // `stale` exits 1 on drift, which is the point of the fixture, so its
+    // stdout is read directly rather than through the exit-zero helper.
+    let stale = repo.run_span(["stale", "--format", "json"])?;
+    let stale: serde_json::Value = serde_json::from_slice(&stale.stdout)?;
+    let layers: Vec<&str> = stale["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .filter_map(|f| f["source"].as_str())
+        .collect();
+    assert!(
+        layers.contains(&"WORKTREE") && layers.contains(&"HEAD"),
+        "fixture assumption: stale reports both layers; got {layers:?}"
+    );
+
+    let json = history_json(&repo, "cx")?;
+    let anchor = &json["current"]["anchors"][0];
+    assert_eq!(
+        anchor["sources"],
+        serde_json::json!(["WORKTREE", "HEAD"]),
+        "both layers, shallow-to-deep, in `stale`'s own order: {anchor:#}"
+    );
+
+    let text = history_text(&repo, "cx")?;
+    assert!(
+        text.contains("\ndrift source worktree, head\n"),
+        "the default output names both layers on one line; got:\n{text}"
+    );
     Ok(())
 }
 

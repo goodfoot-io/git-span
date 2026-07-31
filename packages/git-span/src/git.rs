@@ -264,7 +264,27 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
 /// stops as soon as `n` **qualifying** commits have been collected, so the
 /// caller receives at most `n` entries.
 ///
-/// Results are in git-log order (most recent first). Merge commits are excluded.
+/// Results are in git-log order (most recent first).
+///
+/// # Why merges are walked
+///
+/// This walk deliberately does **not** carry `--no-merges`. A merge that
+/// resolves a conflict by hand, or that drops a file, changes the mainline
+/// state at a seed path with no other commit accounting for it: skipping it
+/// made the breaking commit anchor-silent, and where the merge was HEAD the
+/// newest rendered state contradicted both HEAD and `git span stale` — whose
+/// engine ([`crate::resolver::attribution`]) has never skipped merges. The two
+/// commands must walk the same history.
+///
+/// The qualifying test below does the gating on its own: a merge qualifies iff
+/// a seed path's blob differs between its tree and its **first parent's**, so a
+/// merge that merely brings a side change onto the mainline unchanged still
+/// drops out (its first-parent diff is empty on every seed path), and it is
+/// attributed to the side commit that made it, as before. That rule has no
+/// residue: an anchor's rendered content is a pure function of the blob at its
+/// declared path, and the declaration is itself a seed path — so "first-parent
+/// blob identical on every seed path" means nothing observable moved on the
+/// mainline, and skipping is correct there.
 ///
 /// # Why this is path-targeted, not a full tree diff
 ///
@@ -347,11 +367,12 @@ pub fn git_log_name_only_for_paths(
             .find_commit(info.id)
             .map_err(|e| Error::Git(format!("find commit {}: {e}", info.id)))?;
 
-        // Skip merge commits (more than one parent) — matches `--no-merges`.
+        // Merges are *not* skipped: the qualifying test below compares against
+        // `parent_ids.first()` for any arity, so a merge qualifies exactly when
+        // it moved the mainline at a seed path. See the "Why merges are walked"
+        // section above. Parent #1 is well defined for an octopus merge too, so
+        // no arity-specific clause is needed.
         let parent_ids: Vec<_> = commit.parent_ids().map(|p| p.detach()).collect();
-        if parent_ids.len() > 1 {
-            continue;
-        }
 
         let new_tree = commit
             .tree()
@@ -551,6 +572,23 @@ pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<Co
         author_date_rfc2822: format_rfc2822(author_time),
         summary,
     })
+}
+
+/// The commit's **first parent** (parent #1), or `None` for a root commit.
+///
+/// "First parent" is meant in git's own `^1` sense and nothing looser. It is
+/// the only baseline a commit's patch may be stated against: the *previous
+/// entry in a walk* coincides with it on linear history alone, and on a
+/// branched history the two diverge — which is how a rendered entry came to
+/// assert edits (a revert of a sibling branch's line) that its commit never
+/// made. Parent #1 is well defined at any arity, so an octopus merge needs no
+/// special case.
+pub(crate) fn first_parent_of(repo: &gix::Repository, commit_oid: &str) -> Result<Option<String>> {
+    let oid = parse_oid(commit_oid)?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
+    Ok(commit.parent_ids().next().map(|p| p.detach().to_string()))
 }
 
 fn format_rfc2822(t: gix::date::Time) -> String {

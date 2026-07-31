@@ -437,6 +437,34 @@ pub enum DriftSource {
     Worktree,
 }
 
+impl DriftSource {
+    /// The JSON token for this layer.
+    ///
+    /// One function, two commands: `git span stale` publishes it as `source`
+    /// and `git span history` as the per-anchor `sources` array, so the two
+    /// vocabularies agree by construction rather than by two transcriptions
+    /// staying in step. `history` dropping this distinction — while `stale`
+    /// published it on both surfaces — is what made committed drift and a live
+    /// worktree edit indistinguishable in `current`.
+    pub fn as_json_str(self) -> &'static str {
+        match self {
+            DriftSource::Head => "HEAD",
+            DriftSource::Index => "INDEX",
+            DriftSource::Worktree => "WORKTREE",
+        }
+    }
+
+    /// The lowercase token the `drift source` diff-header marker spells, so the
+    /// human block names the same layer its JSON sibling does.
+    pub fn marker_token(self) -> &'static str {
+        match self {
+            DriftSource::Head => "head",
+            DriftSource::Index => "index",
+            DriftSource::Worktree => "worktree",
+        }
+    }
+}
+
 /// Reference to content readable through git's attribute + filter pipeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContentRef {

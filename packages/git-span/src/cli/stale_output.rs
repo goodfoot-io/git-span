@@ -1801,11 +1801,10 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
     json!({
         "span": f.span,
         "status": status_json(&f.status),
-        "source": f.source.map(|s| match s {
-            DriftSource::Head => "HEAD",
-            DriftSource::Index => "INDEX",
-            DriftSource::Worktree => "WORKTREE",
-        }),
+        // The three layer strings live on `DriftSource` itself, so `history`'s
+        // `sources` array republishes this vocabulary by construction rather
+        // than by a second copy of the match that would drift from it.
+        "source": f.source.map(DriftSource::as_json_str),
         "anchored": location_json(&f.anchored),
         "current": f.current.as_ref().map(location_json),
         "moved_to": moved_to,

@@ -1,4 +1,4 @@
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L179-L261 rk64:99fd72a792e606d0
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L180-L262 rk64:99fd72a792e606d0
 plugins-claude/git-span/skills/git-span/references/terminal-statuses.md#L50-L71 rk64:fc06d7d74df5777b
 
 The CONFLICT status's fix steps summarize the merge-conflict-resolution contract the command reference specifies in full — stale --fix as the authoritative finisher, the optional merge-driver accelerator, and their shared fail-closed cases.

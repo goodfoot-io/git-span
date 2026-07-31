@@ -102,6 +102,34 @@ pub const RECORDED_UNRECOVERABLE: &str = "recorded snapshot unrecoverable";
 /// structured `unavailable` field and never parses this line.
 pub const CONTENT_UNAVAILABLE: &str = "content unavailable";
 
+/// Marker line naming **which layer the drift lives at** — `drift source
+/// worktree`, `drift source head`, `drift source worktree, head` — over the
+/// same three layers `git span stale` publishes as `source`, lowercased and
+/// comma-separated in shallow-to-deep order.
+///
+/// It exists because the leading `current` block described *that* an anchor
+/// drifted and never *where*, so a committed edit and a live working-tree edit
+/// rendered byte-identically while `stale` separated them on both of its own
+/// surfaces. A reader with a clean worktree was told they had uncommitted
+/// edits and reached for `git checkout --` or `git stash`, which change
+/// nothing; the repair is a re-anchor. With drift accumulated over two commits
+/// the block describes an edit `git diff`, `git diff HEAD` and every commit
+/// entry in the same output all fail to corroborate.
+///
+/// Emitted only when there is a layer to name — never as an empty list — and
+/// last among the header markers, immediately above `index`, so
+/// `proposed anchor` and [`CONTENT_UNAVAILABLE`] keep the positions the
+/// contract's worked examples show.
+///
+/// Like [`RECORDED_UNRECOVERABLE`] it lives in the header rather than being
+/// appended by the human renderer. The settled invariant is that the default
+/// output's block and the JSON `diff` string are the *same bytes* because the
+/// renderer builds the header once — not that the string is frozen — so
+/// appending here is the one design that would break byte-identity, and it is
+/// rejected on that ground. The line is not the discriminator either: a
+/// consumer reads the layers from the structured `sources` array.
+pub const DRIFT_SOURCE: &str = "drift source";
+
 /// Header dialect for one rendered file diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffHeader {
@@ -132,7 +160,25 @@ pub enum DiffHeader {
         new_hash: String,
         /// Which header lines accompany the `index` line.
         kind: AnchorDiffKind,
+        /// Every layer that shows drift for this anchor, shallow-to-deep,
+        /// spelled as the [`DRIFT_SOURCE`] marker line. Empty on a timeline
+        /// block, which describes a commit rather than a drift and has no
+        /// layer to name.
+        drift_sources: Vec<crate::types::DriftSource>,
     },
+}
+
+impl DiffHeader {
+    /// An anchor header with no drift layer named — every construction outside
+    /// the `current` block, where the question does not arise.
+    pub fn anchor(old_hash: String, new_hash: String, kind: AnchorDiffKind) -> Self {
+        DiffHeader::Anchor {
+            old_hash,
+            new_hash,
+            kind,
+            drift_sources: Vec::new(),
+        }
+    }
 }
 
 /// Which git file-status header lines accompany a [`DiffHeader::Blob`]'s
@@ -564,6 +610,7 @@ fn push_header(
             old_hash,
             new_hash,
             kind,
+            drift_sources,
         } => {
             // Set by the transition form below, so the single-side form does not
             // repeat a reason the transition line already spells out.
@@ -638,6 +685,18 @@ fn push_header(
                 .into_iter()
                 .flatten()
                 .any(Absence::suppresses_hunks);
+            // Last marker before `index`: an anchor can drift at several layers
+            // at once (an edit committed and then further edited in the working
+            // tree), so this is a list and not a single word — naming one layer
+            // would drop the other face of exactly the composed drift the
+            // marker exists to expose.
+            if !drift_sources.is_empty() {
+                let layers: Vec<&str> = drift_sources
+                    .iter()
+                    .map(|s| crate::types::DriftSource::marker_token(*s))
+                    .collect();
+                out.push_str(&format!("{DRIFT_SOURCE} {}\n", layers.join(", ")));
+            }
             out.push_str(&format!(
                 "index {}..{}\n",
                 format_anchor_hash(old_hash),
@@ -888,13 +947,17 @@ mod tests {
         new_lines[9] = "L10-x\n".to_string(); // 0-based index 9 == line 10
         let new: String = new_lines.concat();
 
-        let header = DiffHeader::Anchor {
-            old_hash: "aaaa".to_string(),
-            new_hash: "bbbb".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
-        let out = render_unified_diff(&header, side("f#L1-L20", &old, 1), side("f#L1-L20", &new, 1))
-            .expect("content differs, must render");
+        let header = DiffHeader::anchor(
+            "aaaa".to_string(),
+            "bbbb".to_string(),
+            AnchorDiffKind::Modify,
+        );
+        let out = render_unified_diff(
+            &header,
+            side("f#L1-L20", &old, 1),
+            side("f#L1-L20", &new, 1),
+        )
+        .expect("content differs, must render");
 
         let expected = "diff --git a/f#L1-L20 b/f#L1-L20\n\
              index rk64:aaaa..rk64:bbbb\n\
@@ -930,13 +993,17 @@ mod tests {
         new_lines[17] = "L18-x\n".to_string(); // 0-based index 17 == line 18
         let new: String = new_lines.concat();
 
-        let header = DiffHeader::Anchor {
-            old_hash: "aaaa".to_string(),
-            new_hash: "bbbb".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
-        let out = render_unified_diff(&header, side("f#L1-L20", &old, 1), side("f#L1-L20", &new, 1))
-            .expect("content differs, must render");
+        let header = DiffHeader::anchor(
+            "aaaa".to_string(),
+            "bbbb".to_string(),
+            AnchorDiffKind::Modify,
+        );
+        let out = render_unified_diff(
+            &header,
+            side("f#L1-L20", &old, 1),
+            side("f#L1-L20", &new, 1),
+        )
+        .expect("content differs, must render");
 
         let expected = "diff --git a/f#L1-L20 b/f#L1-L20\n\
              index rk64:aaaa..rk64:bbbb\n\
@@ -968,13 +1035,13 @@ mod tests {
     #[test]
     fn pure_rename_renders_headers_only_no_hunks() {
         let text = "export function f() {\n    return 1;\n}\n";
-        let header = DiffHeader::Anchor {
-            old_hash: "fe4d90f3aa35936c".to_string(),
-            new_hash: "fe4d90f3aa35936c".to_string(),
-            kind: AnchorDiffKind::Rename {
+        let header = DiffHeader::anchor(
+            "fe4d90f3aa35936c".to_string(),
+            "fe4d90f3aa35936c".to_string(),
+            AnchorDiffKind::Rename {
                 similarity: Some(100),
             },
-        };
+        );
         let out = render_unified_diff(
             &header,
             side("src/a.ts#L10-L12", text, 10),
@@ -995,13 +1062,13 @@ mod tests {
         let old = "export function f() {\n    return 1;\n}\n";
         let new = "export function f() {\n    return 2;\n}\n";
         let sim = similarity(old, new);
-        let header = DiffHeader::Anchor {
-            old_hash: "fe4d90f3aa35936c".to_string(),
-            new_hash: "2c8b1e94d07a3f65".to_string(),
-            kind: AnchorDiffKind::Rename {
+        let header = DiffHeader::anchor(
+            "fe4d90f3aa35936c".to_string(),
+            "2c8b1e94d07a3f65".to_string(),
+            AnchorDiffKind::Rename {
                 similarity: Some(sim),
             },
-        };
+        );
         let out = render_unified_diff(
             &header,
             side("src/a.ts#L10-L12", old, 10),
@@ -1029,11 +1096,11 @@ mod tests {
     #[test]
     fn new_anchor_renders_dev_null_old_side() {
         let new = "export function handleDisclosure() {\n    emit();\n}\n";
-        let header = DiffHeader::Anchor {
-            old_hash: "0000000000000000".to_string(),
-            new_hash: "fe4d90f3aa35936c".to_string(),
-            kind: AnchorDiffKind::New,
-        };
+        let header = DiffHeader::anchor(
+            "0000000000000000".to_string(),
+            "fe4d90f3aa35936c".to_string(),
+            AnchorDiffKind::New,
+        );
         let out = render_unified_diff(
             &header,
             DiffSide::dev_null(),
@@ -1056,11 +1123,11 @@ mod tests {
     #[test]
     fn deleted_anchor_renders_dev_null_new_side() {
         let old = "function renderAdvisorHeader() {\n    return spanCount;\n}\n";
-        let header = DiffHeader::Anchor {
-            old_hash: "e0f3bd75ca314e07".to_string(),
-            new_hash: "0000000000000000".to_string(),
-            kind: AnchorDiffKind::Deleted,
-        };
+        let header = DiffHeader::anchor(
+            "e0f3bd75ca314e07".to_string(),
+            "0000000000000000".to_string(),
+            AnchorDiffKind::Deleted,
+        );
         let out = render_unified_diff(
             &header,
             side("packages/a.ts#L1116-L1118", old, 1116),
@@ -1106,17 +1173,21 @@ mod tests {
             new_oid7: "8f3a2c1".to_string(),
             kind: BlobDiffKind::Modified,
         };
-        let out = render_unified_diff(&header, side(".span/x", "same\n", 1), side(".span/x", "same\n", 1));
+        let out = render_unified_diff(
+            &header,
+            side(".span/x", "same\n", 1),
+            side(".span/x", "same\n", 1),
+        );
         assert_eq!(out, None);
     }
 
     #[test]
     fn byte_identical_modify_returns_none_for_anchor() {
-        let header = DiffHeader::Anchor {
-            old_hash: "aaaa".to_string(),
-            new_hash: "aaaa".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "aaaa".to_string(),
+            "aaaa".to_string(),
+            AnchorDiffKind::Modify,
+        );
         let out = render_unified_diff(
             &header,
             side("f#L1-L1", "same\n", 1),
@@ -1249,11 +1320,11 @@ mod tests {
 
     #[test]
     fn absent_side_renders_as_dev_null_never_as_prose() {
-        let header = DiffHeader::Anchor {
-            old_hash: "e0f3bd75ca314e07".to_string(),
-            new_hash: NULL_ANCHOR_HASH.to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "e0f3bd75ca314e07".to_string(),
+            NULL_ANCHOR_HASH.to_string(),
+            AnchorDiffKind::Modify,
+        );
         let out = render_unified_diff(
             &header,
             side("src.txt#L1-L2", "one\ntwo\n", 1),
@@ -1273,11 +1344,11 @@ mod tests {
 
     #[test]
     fn an_unrecoverable_header_block_says_why_it_has_no_hunks() {
-        let header = DiffHeader::Anchor {
-            old_hash: "1f1b7cf059444277".to_string(),
-            new_hash: "fd1a4e7a7c6a7eaf".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "1f1b7cf059444277".to_string(),
+            "fd1a4e7a7c6a7eaf".to_string(),
+            AnchorDiffKind::Modify,
+        );
         let old = DiffSide::absent("f.txt#L3-L5", Absence::Missing);
         let new = side("f.txt#L3-L5", "one\ntwo\nthree\n", 3);
 
@@ -1298,11 +1369,11 @@ mod tests {
 
     #[test]
     fn two_absent_sides_render_nothing() {
-        let header = DiffHeader::Anchor {
-            old_hash: NULL_ANCHOR_HASH.to_string(),
-            new_hash: NULL_ANCHOR_HASH.to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            NULL_ANCHOR_HASH.to_string(),
+            NULL_ANCHOR_HASH.to_string(),
+            AnchorDiffKind::Modify,
+        );
         assert_eq!(
             render_unified_diff(
                 &header,
@@ -1321,11 +1392,11 @@ mod tests {
     /// bodyless block can.
     #[test]
     fn two_absent_sides_with_different_reasons_are_a_change() {
-        let header = DiffHeader::Anchor {
-            old_hash: NULL_ANCHOR_HASH.to_string(),
-            new_hash: NULL_ANCHOR_HASH.to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            NULL_ANCHOR_HASH.to_string(),
+            NULL_ANCHOR_HASH.to_string(),
+            AnchorDiffKind::Modify,
+        );
         assert_eq!(
             render_unified_diff(
                 &header,
@@ -1344,11 +1415,11 @@ mod tests {
 
     #[test]
     fn binary_side_renders_gits_binary_line_instead_of_hunks() {
-        let header = DiffHeader::Anchor {
-            old_hash: "aaaaaaaaaaaaaaaa".to_string(),
-            new_hash: "bbbbbbbbbbbbbbbb".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "aaaaaaaaaaaaaaaa".to_string(),
+            "bbbbbbbbbbbbbbbb".to_string(),
+            AnchorDiffKind::Modify,
+        );
         let out = render_unified_diff(
             &header,
             DiffSide::binary("logo.png"),
@@ -1365,11 +1436,11 @@ mod tests {
 
     #[test]
     fn unchanged_binary_sides_render_nothing() {
-        let header = DiffHeader::Anchor {
-            old_hash: "aaaaaaaaaaaaaaaa".to_string(),
-            new_hash: "aaaaaaaaaaaaaaaa".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "aaaaaaaaaaaaaaaa".to_string(),
+            "aaaaaaaaaaaaaaaa".to_string(),
+            AnchorDiffKind::Modify,
+        );
         assert_eq!(
             render_unified_diff(
                 &header,
@@ -1383,11 +1454,11 @@ mod tests {
     #[test]
     fn forced_render_of_identical_sides_emits_the_header_alone() {
         let text = "one\ntwo\n";
-        let header = DiffHeader::Anchor {
-            old_hash: "1111111111111111".to_string(),
-            new_hash: "2222222222222222".to_string(),
-            kind: AnchorDiffKind::Modify,
-        };
+        let header = DiffHeader::anchor(
+            "1111111111111111".to_string(),
+            "2222222222222222".to_string(),
+            AnchorDiffKind::Modify,
+        );
         let out = render_unified_diff_always(
             &header,
             side("src.txt#L1-L2", text, 1),

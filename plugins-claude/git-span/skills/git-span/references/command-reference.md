@@ -86,9 +86,10 @@ default — renders as a rename; below the floor it renders as a deleted
 anchor plus a new anchor; and when the recorded side cannot be read —
 binary or unrecoverable content — it renders `rename from`/`rename to`
 lines with no similarity claim, the move asserted by the declaration
-itself), plus a leading, headerless section for
-uncommitted worktree
-drift from HEAD. Defaults to git-log-style text; `--format json` emits
+itself), plus a leading, headerless section for the span's *live* drift
+against its declaration — every layer `git span stale` reports, committed as
+well as staged and uncommitted, with the `drift source` line naming which.
+Defaults to git-log-style text; `--format json` emits
 `schema_version: 2` carrying the identical diffs as raw patch strings.
 `-n`/`--limit` caps the *rendered* timeline at the newest N entries — the walk
 underneath is always complete, so a narrow anchor in a busy file can never
