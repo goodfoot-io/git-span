@@ -669,6 +669,18 @@ pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
 }
 
+/// Whether an anchor contributes actionable stale drift.
+///
+/// [`AnchorStatus::ResolvedPendingCommit`] remains an informational state in
+/// stale's human presentation, but like [`AnchorStatus::Fresh`] it does not
+/// drive stale's exit status, clustering, or history's `current` anchors.
+pub(crate) fn anchor_status_is_stale_drift(status: &AnchorStatus) -> bool {
+    !matches!(
+        status,
+        AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit
+    )
+}
+
 /// Resolve a small caller-provided list of span names without scanning all
 /// span files. Reuses one `EngineState` across the candidate set and resolves
 /// each name through its span file. Preserves input order; per-name

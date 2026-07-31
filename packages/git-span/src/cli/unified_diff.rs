@@ -277,7 +277,7 @@ pub enum SideState {
 
 /// Why an [`SideState::Absent`] side has no bytes.
 ///
-/// The two variants render identically — both are `/dev/null` sides — so this
+/// The non-binary variants render identically — all are `/dev/null` sides — so this
 /// exists for exactly one job: to keep them *distinguishable* where it matters.
 /// Both wear [`NULL_ANCHOR_HASH`], so a renderer comparing hashes, or comparing
 /// two empty bodies, sees one state where there are two, and the commit that
@@ -309,6 +309,9 @@ pub enum Absence {
     ///
     /// [`suppresses_hunks`]: Absence::suppresses_hunks
     FilterFailed,
+    /// A parent directory is now a gitlink, so the declared path cannot be
+    /// read from this repository even when a checkout exists beneath it.
+    Submodule,
 }
 
 impl Absence {
@@ -319,6 +322,7 @@ impl Absence {
             Absence::Missing => "absent",
             Absence::RangePastEof => "range-past-eof",
             Absence::FilterFailed => "filter-failed",
+            Absence::Submodule => "submodule",
         }
     }
 
@@ -327,22 +331,24 @@ impl Absence {
     /// [`Absence::Missing`] does not: it covers both "there is no such file"
     /// and the `/dev/null` half of an ordinary create or delete, and a line on
     /// the latter would explain a side git has rendered this way forever. The
-    /// other two do, and for the same reason — each says the file is *there*
+    /// other states do, and for the same reason — each says the path's absence
+    /// has a narrower cause
     /// and something narrower is not, which is the fact a `/dev/null` side
     /// misstates.
     fn is_named(self) -> bool {
         match self {
             Absence::Missing => false,
-            Absence::RangePastEof | Absence::FilterFailed => true,
+            Absence::RangePastEof | Absence::FilterFailed | Absence::Submodule => true,
         }
     }
 
     /// Whether a side in this state makes the block header-only.
     ///
-    /// Hunks need a side whose content was *read*. A filter failure means it
-    /// was not, so the only honest block is the two tokens plus the reason.
+    /// Hunks need a side whose content was *read*. A filter failure or a path
+    /// hidden behind a gitlink means it was not, so the only honest block is
+    /// the two tokens plus the reason.
     fn suppresses_hunks(self) -> bool {
-        matches!(self, Absence::FilterFailed)
+        matches!(self, Absence::FilterFailed | Absence::Submodule)
     }
 }
 

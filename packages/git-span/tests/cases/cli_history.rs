@@ -208,6 +208,68 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     Ok((repo, span))
 }
 
+/// Promote a tracked directory containing a line-range anchor to a submodule.
+/// The submodule may preserve the recorded bytes (the resolver's
+/// `ResolvedPendingCommit` case) or replace them (the terminal `Submodule`
+/// case).
+fn directory_promoted_to_submodule(equal_bytes: bool) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    let recorded = "l1\nl2\nl3\n";
+
+    std::fs::create_dir_all(repo.path().join("lib"))?;
+    repo.write_file("lib/f.txt", recorded)?;
+    repo.commit_all("initial directory")?;
+    repo.span_stdout(["add", "sp", "lib/f.txt#L1-L3"])?;
+    repo.span_stdout(["why", "sp", "tracks the promoted directory"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "add anchor"])?;
+
+    let inner = tempfile::tempdir()?;
+    let inner_path = inner.keep();
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(&inner_path)
+        .output()?;
+    std::fs::write(
+        inner_path.join("f.txt"),
+        if equal_bytes {
+            recorded
+        } else {
+            "FOREIGN1\nFOREIGN2\nFOREIGN3\n"
+        },
+    )?;
+    std::process::Command::new("git")
+        .current_dir(&inner_path)
+        .args(["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"])
+        .output()?;
+    std::process::Command::new("git")
+        .current_dir(&inner_path)
+        .args([
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=T",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "inner",
+        ])
+        .output()?;
+
+    repo.run_git(["rm", "-r", "lib"])?;
+    repo.run_git([
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        &inner_path.to_string_lossy(),
+        "lib",
+    ])?;
+    repo.commit_all("promote directory to submodule")?;
+    Ok(repo)
+}
+
 // ---------------------------------------------------------------------------
 // Format surface
 // ---------------------------------------------------------------------------
@@ -740,8 +802,7 @@ fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
 }
 
 /// Every `rk64` token the declaration records, read from the worktree file and
-/// from HEAD's copy of it — an uncommitted re-anchor moves a token from one to
-/// the other, and both states are "recorded" for oracle purposes.
+/// from HEAD's copy of it.
 fn recorded_tokens(repo: &TestRepo, span: &str) -> Result<Vec<String>> {
     let rel = format!(".span/{span}");
     let worktree = std::fs::read_to_string(repo.path().join(&rel)).unwrap_or_default();
@@ -779,8 +840,9 @@ fn old_index_hashes(diff: &str) -> Vec<&str> {
 /// — an assertion at the construction site would restate the predicate that
 /// selected the value. So this re-reads the emitted `index` lines against the
 /// declaration itself, across the scenarios that exercise every arm: a
-/// proposal, an in-place edit, an uncommitted re-anchor, and content the
-/// recorded snapshot can no longer supply.
+/// proposal, an in-place edit, and content the recorded snapshot can no longer
+/// supply. A resolved-pending-commit declaration edit deliberately has no
+/// current anchor, so it is outside this current-anchor oracle.
 #[test]
 fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
     let mut scenarios: Vec<(&str, TestRepo, &str)> = vec![("swap", swap_repo()?, "swap")];
@@ -794,21 +856,6 @@ fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
     drift.run_git(["commit", "-m", "create span"])?;
     drift.write_file("src.txt", "alpha\nBETA-CHANGED\ngamma\n")?;
     scenarios.push(("in-place drift", drift, "drift"));
-
-    let reanchor = TestRepo::new()?;
-    reanchor.write_file("src.txt", "TARGET-A\nTARGET-B\nTARGET-C\n")?;
-    reanchor.commit_all("initial")?;
-    reanchor.span_stdout(["add", "reanchor", "src.txt#L1-L3"])?;
-    reanchor.span_stdout(["why", "reanchor", "tracks the TARGET block"])?;
-    reanchor.run_git(["add", ".span"])?;
-    reanchor.run_git(["commit", "-m", "create span"])?;
-    reanchor.write_file(
-        "src.txt",
-        "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B\nTARGET-C\n",
-    )?;
-    reanchor.span_stdout(["remove", "reanchor", "src.txt#L1-L3"])?;
-    reanchor.span_stdout(["add", "reanchor", "src.txt#L4-L6"])?;
-    scenarios.push(("uncommitted re-anchor", reanchor, "reanchor"));
 
     let truncated = TestRepo::new()?;
     truncated.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;
@@ -4197,6 +4244,102 @@ fn uncommitted_declaration_edit_surfaces_as_current_span_diff() -> Result<()> {
 }
 
 #[test]
+fn changed_bytes_beneath_a_promoted_submodule_keep_stales_cause_in_both_formats() -> Result<()> {
+    let repo = directory_promoted_to_submodule(false)?;
+
+    let stale_human = repo.run_span(["stale", "sp"])?;
+    assert_eq!(stale_human.status.code(), Some(1));
+    let stale_human = String::from_utf8_lossy(&stale_human.stdout);
+    assert!(
+        stale_human.contains("lib/f.txt#L1-L3 — submodule"),
+        "stale must retain the resolver's terminal cause:\n{stale_human}"
+    );
+
+    let stale_json = repo.run_span(["stale", "sp", "--format=json"])?;
+    assert_eq!(stale_json.status.code(), Some(1));
+    let stale_json: Value = serde_json::from_slice(&stale_json.stdout)?;
+    let findings = stale_json["findings"].as_array().expect("stale findings");
+    assert_eq!(findings.len(), 1, "one promoted anchor: {stale_json:#}");
+    assert_eq!(findings[0]["anchored"]["path"], "lib/f.txt");
+    assert_eq!(
+        findings[0]["anchored"]["extent"],
+        serde_json::json!({ "kind": "lines", "start": 1, "end": 3 })
+    );
+    assert_eq!(findings[0]["status"]["code"], "SUBMODULE");
+
+    let history = history_json(&repo, "sp")?;
+    let anchors = history["current"]["anchors"]
+        .as_array()
+        .expect("history current anchors");
+    assert_eq!(
+        anchors.len(),
+        findings.len(),
+        "history and stale must agree anchor-for-anchor: {history:#}"
+    );
+    assert_eq!(anchors[0]["path"], "lib/f.txt#L1-L3");
+    assert_eq!(anchors[0]["unavailable"], "submodule");
+    let diff = anchors[0]["diff"].as_str().expect("history diff");
+    assert!(
+        diff.contains("content unavailable submodule\n"),
+        "the human cause must be derived from the same unavailable state:\n{diff}"
+    );
+    assert!(
+        !diff.contains("@@ ") && !diff.lines().any(|line| line.starts_with('-')),
+        "unread submodule content must not fabricate a deletion hunk:\n{diff}"
+    );
+    let history_human = history_text(&repo, "sp")?;
+    assert!(
+        history_human.contains(diff),
+        "human and JSON history must carry the identical anchor block:\n{history_human}"
+    );
+    Ok(())
+}
+
+#[test]
+fn equal_bytes_beneath_a_promoted_submodule_remain_informational_only() -> Result<()> {
+    let repo = directory_promoted_to_submodule(true)?;
+
+    let stale = repo.run_span(["stale", "sp"])?;
+    assert_eq!(
+        stale.status.code(),
+        Some(0),
+        "ResolvedPendingCommit does not count as stale"
+    );
+    let stale_human = String::from_utf8_lossy(&stale.stdout);
+    assert!(
+        stale_human.contains("lib/f.txt#L1-L3 — resolved, pending commit"),
+        "stale retains its informational line:\n{stale_human}"
+    );
+
+    let stale_json = repo.run_span(["stale", "sp", "--format=json"])?;
+    assert_eq!(stale_json.status.code(), Some(0));
+    let stale_json: Value = serde_json::from_slice(&stale_json.stdout)?;
+    assert_eq!(
+        stale_json["findings"][0]["status"]["code"],
+        "RESOLVED_PENDING_COMMIT"
+    );
+
+    let history = history_json(&repo, "sp")?;
+    assert!(
+        history.get("current").is_none(),
+        "an informational resolver state must not manufacture current: {history:#}"
+    );
+
+    let declaration = std::fs::read_to_string(repo.path().join(".span/sp"))?;
+    let token = declaration
+        .split_whitespace()
+        .find(|word| word.starts_with("rk64:"))
+        .expect("recorded anchor token");
+    let equal_hash_header = format!("index {token}..{token}");
+    let history_human = history_text(&repo, "sp")?;
+    assert!(
+        !history_human.contains(&equal_hash_header),
+        "history must not render a self-refuting equal-hash current block:\n{history_human}"
+    );
+    Ok(())
+}
+
+#[test]
 fn clean_worktree_has_no_current_section() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
 
@@ -4413,7 +4556,7 @@ fn committed_in_place_drift_is_visible_in_both_formats() -> Result<()> {
 }
 
 #[test]
-fn uncommitted_reanchor_renders_as_a_rename() -> Result<()> {
+fn resolved_pending_reanchor_reports_only_the_declaration_diff() -> Result<()> {
     let repo = TestRepo::new()?;
     let span = "reanchor";
 
@@ -4433,22 +4576,17 @@ fn uncommitted_reanchor_renders_as_a_rename() -> Result<()> {
     repo.span_stdout(["add", span, "src.txt#L4-L6"])?;
 
     let json = history_json(&repo, span)?;
-    let anchors = json["current"]["anchors"]
-        .as_array()
-        .expect("current anchors array");
-    let moved = anchors
-        .iter()
-        .find(|a| a["path"] == "src.txt#L4-L6")
-        .unwrap_or_else(|| panic!("re-anchored address missing from: {json:#}"));
-    let diff = moved["diff"].as_str().expect("diff string");
+    let current = &json["current"];
+    let diff = current["span_diff"]
+        .as_str()
+        .expect("the declaration edit must remain visible");
     assert!(
-        diff.contains("rename from src.txt#L1-L3\n") && diff.contains("rename to src.txt#L4-L6\n"),
-        "an uncommitted declaration edit genuinely moved the address, so it \
-         pairs against the last recorded state as a rename; got:\n{diff}"
+        diff.contains("-src.txt#L1-L3 rk64:") && diff.contains("+src.txt#L4-L6 rk64:"),
+        "the declaration patch carries the re-anchor:\n{diff}"
     );
     assert!(
-        !diff.contains("new anchor"),
-        "a re-anchor is not an addition; got:\n{diff}"
+        current["anchors"].as_array().is_some_and(Vec::is_empty),
+        "ResolvedPendingCommit is informational in stale and must not create a current anchor: {json:#}"
     );
     Ok(())
 }

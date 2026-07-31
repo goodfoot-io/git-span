@@ -305,6 +305,9 @@ pub enum Unavailable {
     /// lines in it — under a deletion hunk for lines `git diff` reported
     /// untouched.
     FilterFailed,
+    /// The declared path is unreachable because it is at or beneath a
+    /// submodule gitlink.
+    Submodule,
 }
 
 impl Unavailable {
@@ -315,6 +318,7 @@ impl Unavailable {
             Unavailable::RangePastEof => "range-past-eof",
             Unavailable::Binary => "binary",
             Unavailable::FilterFailed => "filter-failed",
+            Unavailable::Submodule => "submodule",
         }
     }
 }
@@ -982,6 +986,9 @@ fn snapshot_side(s: &Snapshot) -> DiffSide<'_> {
         }
         AnchorBody::Unavailable(Unavailable::FilterFailed) => {
             DiffSide::absent(s.address.clone(), Absence::FilterFailed)
+        }
+        AnchorBody::Unavailable(Unavailable::Submodule) => {
+            DiffSide::absent(s.address.clone(), Absence::Submodule)
         }
     }
 }
@@ -1937,18 +1944,23 @@ fn live_snapshot(repo: &gix::Repository, loc: &AnchorLocation) -> (AnchorBody, S
 
 /// Why an anchor the resolver could not bind has no live body.
 ///
-/// The resolver answers "is there content here?", not "why not" — it reports a
-/// deleted anchor and hands back no location, and the emitter used to read that
-/// silence as [`Unavailable::Absent`], printing "no such file" for a file
-/// sitting on disk. The declared address is still a readable question, so it is
-/// asked directly, at the declared path with `blob: None` so the answer comes
-/// from the working tree rather than from whatever object the resolver last
-/// touched.
+/// The resolver's terminal status is authoritative when it carries a cause
+/// such as [`crate::types::AnchorStatus::Submodule`]. Otherwise it answers "is
+/// there content here?", not "why not", so the declared address is asked
+/// directly with `blob: None` rather than treating a missing resolved location
+/// as proof the file itself is absent.
 ///
 /// A readable declared range means the absence is the resolver's verdict rather
 /// than the file system's, and [`Unavailable::Absent`] stands: the anchor's
 /// *content* is gone even though its file is not.
-fn unresolved_reason(repo: &gix::Repository, anchored: &AnchorLocation) -> Unavailable {
+fn unresolved_reason(
+    repo: &gix::Repository,
+    anchored: &AnchorLocation,
+    status: &crate::types::AnchorStatus,
+) -> Unavailable {
+    if matches!(status, crate::types::AnchorStatus::Submodule) {
+        return Unavailable::Submodule;
+    }
     let declared = AnchorLocation {
         path: anchored.path.clone(),
         extent: anchored.extent,
@@ -1962,9 +1974,10 @@ fn unresolved_reason(repo: &gix::Repository, anchored: &AnchorLocation) -> Unava
 /// Build the optional `current` section from two triggers:
 ///
 ///   1. the resolver (the same `LayerSet::full()` engine `git span stale` uses)
-///      reports a non-`Fresh` status for an anchor — committed-but-not-
+///      reports actionable stale drift for an anchor — committed-but-not-
 ///      re-anchored source drift, a relocated `moved` anchor, a working-tree
-///      edit, a deletion, …;
+///      edit, a deletion, …; informational `ResolvedPendingCommit` does not
+///      qualify;
 ///   2. the worktree declaration differs from HEAD — one `span_diff` covering
 ///      why edits and anchor add/remove alike.
 ///
@@ -2043,7 +2056,7 @@ fn build_current(
         // against the last recorded state sees the whole picture; only the
         // interesting ones are emitted below.
         let mut live: Vec<Snapshot> = Vec::with_capacity(span.anchors.len());
-        let mut fresh: Vec<bool> = Vec::with_capacity(span.anchors.len());
+        let mut reportable: Vec<bool> = Vec::with_capacity(span.anchors.len());
         let mut states: Vec<CurrentState> = Vec::with_capacity(span.anchors.len());
         // The resolver's own per-anchor layer list, carried across verbatim
         // rather than recomputed: `stale` emits one finding per entry from this
@@ -2134,7 +2147,7 @@ fn build_current(
                 // resolver bound nothing" and "there is no such file" are
                 // different facts.
                 None => (
-                    AnchorBody::Unavailable(unresolved_reason(repo, &r.anchored)),
+                    AnchorBody::Unavailable(unresolved_reason(repo, &r.anchored, &r.status)),
                     NULL_ANCHOR_HASH.to_string(),
                     extent_first_line(r.anchored.extent),
                 ),
@@ -2148,7 +2161,7 @@ fn build_current(
                 hash,
                 body,
             });
-            fresh.push(r.status == crate::types::AnchorStatus::Fresh);
+            reportable.push(crate::resolver::anchor_status_is_stale_drift(&r.status));
             states.push(state);
             layer_sources.push(r.layer_sources.clone());
         }
@@ -2160,10 +2173,10 @@ fn build_current(
         for (j, n) in live.iter().enumerate() {
             let paired = pairs[j].map(|i| &old[i]);
             let state = &states[j];
-            // A `Fresh` anchor has nothing to report unless the declaration
-            // moved it; a worktree-removed or worktree-added anchor is already
-            // covered by `span_diff`.
-            if fresh[j] && !matches!(state, CurrentState::Reanchored { .. }) {
+            // Only actionable stale drift produces a current anchor. Fresh and
+            // resolved-pending-commit anchors may still have declaration edits,
+            // but those are already represented by `span_diff`.
+            if !reportable[j] {
                 continue;
             }
             let drift_sources = &layer_sources[j];

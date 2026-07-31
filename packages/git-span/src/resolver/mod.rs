@@ -30,7 +30,7 @@ pub(crate) mod timeline;
 pub(crate) mod walker;
 
 pub(crate) use engine::{
-    SourceLayers, build_source_layers, resolve_named_spans,
+    SourceLayers, anchor_status_is_stale_drift, build_source_layers, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
     sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
     stale_spans_retaining_source_layers,

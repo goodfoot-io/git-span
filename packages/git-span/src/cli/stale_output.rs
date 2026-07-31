@@ -8,10 +8,10 @@
 use crate::cli::stale_fix::FixResult;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    SourceLayers, WholeResult, resolve_named_spans, resolve_named_spans_retaining_source_layers,
-    resolve_named_spans_with_source_layers, sort_spans_by_anchor_path,
-    span_is_reportable_in_stale_discovery, stale_spans, stale_spans_retaining_source_layers,
-    stale_spans_with_trace,
+    SourceLayers, WholeResult, anchor_status_is_stale_drift, resolve_named_spans,
+    resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
+    sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery, stale_spans,
+    stale_spans_retaining_source_layers, stale_spans_with_trace,
 };
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
@@ -796,7 +796,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     let stale_findings: usize = findings
         .iter()
         .filter(|f| {
-            if matches!(f.status, AnchorStatus::ResolvedPendingCommit) {
+            if !anchor_status_is_stale_drift(&f.status) {
                 return false;
             }
             if followed_ids.contains(&f.anchor_id) {
@@ -869,7 +869,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         let stale_span_names: std::collections::BTreeSet<String> = findings
             .iter()
             .filter(|f| {
-                if matches!(f.status, AnchorStatus::ResolvedPendingCommit) {
+                if !anchor_status_is_stale_drift(&f.status) {
                     return false;
                 }
                 if followed_ids.contains(&f.anchor_id) {
