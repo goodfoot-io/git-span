@@ -1230,10 +1230,67 @@ function dedupeByAnchor(rows: StalePorcelainRow[]): { addr: string; statuses: Po
 }
 
 /**
+ * Attach each finding in `pending` to one bullet of a span's complete bullet
+ * run, and render the run.
+ *
+ * Matching runs in two passes over the *whole* run rather than bullet by
+ * bullet, because a per-bullet decision cannot see the anchors that follow it.
+ * Pass one claims findings whose address matches a bullet exactly. Pass two
+ * applies the path-only fallback — a deliberate accommodation, since an
+ * anchor's range and the range the CLI reports can legitimately disagree after
+ * a heal — but only for a bullet that is the *sole* bullet on its path, where
+ * the path alone identifies the anchor unambiguously. This is the same
+ * `soleOnPath` guard {@link touch-core!anchorBullets} applies, and it is what
+ * makes the two hooks agree: without it, the first bullet for a multi-range
+ * file claims the finding and the range that genuinely drifted renders bare.
+ *
+ * A finding that survives both passes matches no anchor this run can name, so
+ * it is appended as its own bullet — collapsed via {@link dedupeByAnchor}, and
+ * never dropped.
+ */
+function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]): string[] {
+  const addrs = bulletLines.map((line) => line.slice(2));
+  const paths = addrs.map((addr) => addr.split('#')[0]);
+  const claimed: StalePorcelainRow[][] = addrs.map(() => []);
+  const used = new Set<StalePorcelainRow>();
+
+  const claim = (index: number, matches: (row: StalePorcelainRow) => boolean): void => {
+    for (const row of pending) {
+      if (used.has(row) || !matches(row)) continue;
+      claimed[index].push(row);
+      used.add(row);
+    }
+  };
+
+  for (const [i, addr] of addrs.entries()) {
+    claim(i, (row) => anchorText(row) === addr);
+  }
+  for (const [i, addr] of addrs.entries()) {
+    if (paths.filter((path) => path === paths[i]).length !== 1) continue;
+    claim(i, (row) => addr === row.path || addr.startsWith(`${row.path}#`));
+  }
+
+  const lines = bulletLines.map((line, i) => {
+    const rows = claimed[i];
+    if (rows.length === 0) return line;
+    const statuses = [...new Set(rows.map((row) => row.status))].sort();
+    return `${line} — ${statuses.map(humanStatusLabel).join(', ')}`;
+  });
+  for (const { addr, statuses } of dedupeByAnchor(pending.filter((row) => !used.has(row)))) {
+    lines.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+  }
+  return lines;
+}
+
+/**
  * Annotate `git span list` human blocks with per-anchor drift labels: each
- * bullet whose anchor matches a finding gains ` — <label>`. Bullets are only
- * the contiguous `- ` run directly under a `## <name>` header, so a
- * description line that happens to start with `- ` is never annotated.
+ * bullet whose anchor matches a finding gains ` — <label>`, per the matching
+ * rules in {@link annotateBulletRun}. Bullets are only the contiguous `- ` run
+ * directly under a `## <name>` header, so a description line that happens to
+ * start with `- ` is never annotated — and because the run is buffered whole
+ * before it is annotated, a bullet's label accounts for every sibling anchor
+ * in the same span.
+ *
  * Findings whose anchor has no matching bullet are appended to their span's
  * bullet run; spans absent from `blocksText` entirely (or an empty/failed
  * list read) get a synthesized minimal block — no finding is ever dropped.
@@ -1252,11 +1309,11 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
 
   const out: string[] = [];
   let pending: StalePorcelainRow[] = [];
+  let bullets: string[] = [];
   let inBullets = false;
   const closeBullets = (): void => {
-    for (const { addr, statuses } of dedupeByAnchor(pending)) {
-      out.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
-    }
+    out.push(...annotateBulletRun(bullets, pending));
+    bullets = [];
     pending = [];
     inBullets = false;
   };
@@ -1274,18 +1331,7 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
         continue;
       }
       if (inBullets && line.startsWith('- ')) {
-        const addr = line.slice(2);
-        const exact = pending.filter((row) => anchorText(row) === addr);
-        const matched =
-          exact.length > 0 ? exact : pending.filter((row) => addr === row.path || addr.startsWith(`${row.path}#`));
-        if (matched.length > 0) {
-          const matchedSet = new Set(matched);
-          pending = pending.filter((row) => !matchedSet.has(row));
-          const statuses = [...new Set(matched.map((row) => row.status))].sort();
-          out.push(`${line} — ${statuses.map(humanStatusLabel).join(', ')}`);
-        } else {
-          out.push(line);
-        }
+        bullets.push(line);
         continue;
       }
       if (inBullets) closeBullets();
