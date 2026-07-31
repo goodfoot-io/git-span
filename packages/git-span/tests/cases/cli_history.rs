@@ -1660,6 +1660,63 @@ fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn non_utf8_graft_metadata_cannot_hide_valid_entries_or_fail_open() -> Result<()> {
+    let repo = committed_drift_repo("graft-non-utf8")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD^1"])?;
+    let grafts = repo.path().join(".git/info/grafts");
+
+    for malformed_first in [false, true] {
+        let valid_root_graft = format!("{head}\n");
+        let mut contents = Vec::new();
+        if malformed_first {
+            contents.extend_from_slice(&[0xff, b'\n']);
+        }
+        contents.extend_from_slice(valid_root_graft.as_bytes());
+        if !malformed_first {
+            contents.extend_from_slice(&[0xff, b'\n']);
+        }
+        std::fs::write(&grafts, contents)?;
+
+        let effective = repo.run_git_with_env(
+            ["rev-list", "--parents", "-n", "1", "HEAD"],
+            &[("GIT_NO_REPLACE_OBJECTS", "1")],
+        )?;
+        assert!(
+            effective.status.success() && String::from_utf8_lossy(&effective.stdout).trim() == head,
+            "fixture must prove Git applies the valid root graft despite adjacent non-UTF-8 data, and that GIT_NO_REPLACE_OBJECTS does not disable it: stdout={} stderr={}",
+            String::from_utf8_lossy(&effective.stdout),
+            String::from_utf8_lossy(&effective.stderr)
+        );
+        assert_topology_rejected_without_effects(
+            &repo,
+            "graft-non-utf8",
+            &[("GIT_NO_REPLACE_OBJECTS", "1")],
+            &["info/grafts", &head, "remove that entry"],
+        )?;
+    }
+
+    let dangling = repo.git_stdout([
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        "HEAD",
+        "-m",
+        "unreachable graft target",
+    ])?;
+    let mut inconclusive = format!("{dangling} {parent}\n").into_bytes();
+    inconclusive.extend_from_slice(&[0xff, b'\n']);
+    std::fs::write(&grafts, inconclusive)?;
+    assert_topology_rejected_without_effects(
+        &repo,
+        "graft-non-utf8",
+        &[],
+        &["info/grafts", "line 2", "repair or remove"],
+    )?;
+    Ok(())
+}
+
 /// A first-parent timeline does not surface commits that happened only on a
 /// merged side branch; their contribution is represented by the merge itself.
 #[test]

@@ -119,40 +119,106 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
     }
 
     let mut graft_targets = HashSet::new();
+    let mut graft_metadata_problem = None;
     let grafts_path = common_dir(repo).join("info/grafts");
-    if let Ok(text) = std::fs::read_to_string(&grafts_path) {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+    match std::fs::read(&grafts_path) {
+        Ok(contents) => {
+            for (line_index, raw_line) in contents.split(|byte| *byte == b'\n').enumerate() {
+                let first = raw_line.iter().position(|byte| !byte.is_ascii_whitespace());
+                let last = raw_line
+                    .iter()
+                    .rposition(|byte| !byte.is_ascii_whitespace());
+                let Some((first, last)) = first.zip(last) else {
+                    continue;
+                };
+                let line = &raw_line[first..=last];
+                if line.first() == Some(&b'#') {
+                    continue;
+                }
+
+                let mut fields = line
+                    .split(|byte| byte.is_ascii_whitespace())
+                    .filter(|field| !field.is_empty());
+                let original_bytes = fields.next().expect("non-empty graft line");
+                let Ok(original_text) = std::str::from_utf8(original_bytes) else {
+                    graft_metadata_problem.get_or_insert_with(|| {
+                        format!("line {} contains a non-UTF-8 commit id", line_index + 1)
+                    });
+                    continue;
+                };
+                let Ok(original) = ObjectId::from_str(original_text) else {
+                    graft_metadata_problem.get_or_insert_with(|| {
+                        format!(
+                            "line {} contains invalid commit id `{original_text}`",
+                            line_index + 1
+                        )
+                    });
+                    continue;
+                };
+
+                let mut declared_parents = Vec::new();
+                let mut invalid_parent = false;
+                for parent_bytes in fields {
+                    let Ok(parent_text) = std::str::from_utf8(parent_bytes) else {
+                        graft_metadata_problem.get_or_insert_with(|| {
+                            format!(
+                                "line {} contains a non-UTF-8 parent commit id",
+                                line_index + 1
+                            )
+                        });
+                        invalid_parent = true;
+                        break;
+                    };
+                    let Ok(parent) = ObjectId::from_str(parent_text) else {
+                        graft_metadata_problem.get_or_insert_with(|| {
+                            format!(
+                                "line {} contains invalid parent commit id `{parent_text}`",
+                                line_index + 1
+                            )
+                        });
+                        invalid_parent = true;
+                        break;
+                    };
+                    declared_parents.push(parent);
+                }
+                if invalid_parent {
+                    continue;
+                }
+
+                let raw_parents = repo.find_commit(original).ok().map(|commit| {
+                    commit
+                        .parent_ids()
+                        .map(|id| id.detach())
+                        .collect::<Vec<_>>()
+                });
+                // A dangling graft cannot affect HEAD. Defer reachability for it,
+                // while malformed/missing objects remain harmless unless reached.
+                if raw_parents.as_ref() != Some(&declared_parents) {
+                    graft_targets.insert(original);
+                }
             }
-            let mut fields = line.split_whitespace();
-            let original_text = fields.next().expect("non-empty graft line");
-            let original = parse_oid(original_text).map_err(|_| {
-                Error::Git(format!(
-                    "inspect info/grafts: invalid commit id `{original_text}`"
-                ))
-            })?;
-            let declared_parents = fields.map(parse_oid).collect::<Result<Vec<ObjectId>>>()?;
-            let raw_parents = repo.find_commit(original).ok().map(|commit| {
-                commit
-                    .parent_ids()
-                    .map(|id| id.detach())
-                    .collect::<Vec<_>>()
-            });
-            // A dangling graft cannot affect HEAD. Defer reachability for it,
-            // while malformed/missing objects remain harmless unless reached.
-            if raw_parents.as_ref() != Some(&declared_parents) {
-                graft_targets.insert(original);
-            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(Error::Git(format!(
+                "replacement topology is unsupported: cannot inspect info/grafts safely: {error}; restore a readable graft file or remove it before running this command"
+            )));
         }
     }
 
-    if replacement_targets.is_empty() && graft_targets.is_empty() {
+    if replacement_targets.is_empty()
+        && graft_targets.is_empty()
+        && graft_metadata_problem.is_none()
+    {
         return Ok(());
     }
 
     let Some(head) = repo.head_id().ok().map(|id| id.detach()) else {
+        if let Some(problem) = graft_metadata_problem {
+            return Err(Error::Git(format!(
+                "replacement topology is unsupported: cannot interpret info/grafts safely because {problem}; repair or remove that entry before running this command"
+            )));
+        }
         return Ok(());
     };
     let started = std::time::Instant::now();
@@ -184,6 +250,11 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
             .find_commit(id)
             .map_err(|e| Error::Git(format!("inspect raw commit {id}: {e}")))?;
         pending.extend(commit.parent_ids().map(|parent| parent.detach()));
+    }
+    if let Some(problem) = graft_metadata_problem {
+        return Err(Error::Git(format!(
+            "replacement topology is unsupported: cannot interpret info/grafts safely because {problem}; Git may still apply another valid graft entry, so repair or remove the malformed entry before running this command"
+        )));
     }
     Ok(())
 }
