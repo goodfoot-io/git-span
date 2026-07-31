@@ -19,7 +19,7 @@ use crate::span_file_reader::SpanFileReader;
 use crate::types::{AnchorExtent, validate_add_target};
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
-use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
+use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::IsTerminal;
@@ -207,9 +207,10 @@ fn lock_span_file(repo: &gix::Repository, span_root: &str, name: &str) -> Result
             .and_then(|n| n.to_str())
             .unwrap_or("span")
     );
-    let lock_path = span_path.parent().map(|p| p.join(&lock_name)).unwrap_or_else(|| {
-        lock_dir.join(&lock_name)
-    });
+    let lock_path = span_path
+        .parent()
+        .map(|p| p.join(&lock_name))
+        .unwrap_or_else(|| lock_dir.join(&lock_name));
 
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -217,8 +218,12 @@ fn lock_span_file(repo: &gix::Repository, span_root: &str, name: &str) -> Result
 
     let file = File::create(&lock_path)
         .with_context(|| format!("failed to create lock file `{}`", lock_path.display()))?;
-    file.lock_exclusive()
-        .with_context(|| format!("failed to acquire exclusive lock on `{}`", lock_path.display()))?;
+    file.lock_exclusive().with_context(|| {
+        format!(
+            "failed to acquire exclusive lock on `{}`",
+            lock_path.display()
+        )
+    })?;
     Ok(SpanLock {
         _file: file,
         path: lock_path,
@@ -239,7 +244,11 @@ pub(crate) fn span_file_path(
 
 /// Read a span file from the worktree. Returns an empty `SpanFile` when the
 /// file does not exist.
-pub(crate) fn read_worktree_span(repo: &gix::Repository, span_root: &str, name: &str) -> Result<SpanFile> {
+pub(crate) fn read_worktree_span(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+) -> Result<SpanFile> {
     let path = span_file_path(repo, span_root, name)?;
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;
@@ -292,13 +301,12 @@ pub(crate) fn write_worktree_span(
     }
     let tmp_name = format!(
         ".{}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("span")
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("span")
     );
-    let tmp_path = path.parent().map(|p| p.join(&tmp_name)).unwrap_or_else(|| {
-        std::path::PathBuf::from(&tmp_name)
-    });
+    let tmp_path = path
+        .parent()
+        .map(|p| p.join(&tmp_name))
+        .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
     std::fs::write(&tmp_path, span.serialize())?;
     std::fs::rename(&tmp_path, &path)?;
     Ok(())
@@ -391,13 +399,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
     // below (existence probe, validate_add_target, hash_anchor_content)
     // shares this single snapshot instead of re-reading the index per
     // anchor.
-    let index_snapshot = crate::git::index_entries(repo).map_err(|e| {
-        CliError {
-            subcommand: "add",
-            summary: "failed to read the git index.".into(),
-            what_happened: e.to_string(),
-            next_steps: vec![NextStep::Bash("git status".into())],
-        }
+    let index_snapshot = crate::git::index_entries(repo).map_err(|e| CliError {
+        subcommand: "add",
+        summary: "failed to read the git index.".into(),
+        what_happened: e.to_string(),
+        next_steps: vec![NextStep::Bash("git status".into())],
     })?;
 
     // Anchor source-path safety (fail-closed, per `<fail-closed>` and the
@@ -490,28 +496,29 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
     {
         let _perf = crate::perf::span("add.validate-targets");
         for (path, extent) in &parsed {
-            validate_add_target(repo, std::path::Path::new(path), extent, &index_snapshot).map_err(|err| {
-                let next_steps = match &err {
-                    crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
-                        NextStep::Prose(
-                            "git-span tracks content through git and cannot resolve a path \
+            validate_add_target(repo, std::path::Path::new(path), extent, &index_snapshot)
+                .map_err(|err| {
+                    let next_steps = match &err {
+                        crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
+                            NextStep::Prose(
+                                "git-span tracks content through git and cannot resolve a path \
                              git never sees. Un-ignore the path (edit `.gitignore`) or anchor \
                              a committed file instead."
-                                .into(),
-                        ),
-                        NextStep::Bash(format!("git check-ignore -v {path}")),
-                    ],
-                    _ => vec![NextStep::Prose(
-                        "Fix the path or choose a different extent.".into(),
-                    )],
-                };
-                from_lib_error(
-                    "add",
-                    format!("anchor precheck failed for `{path}`."),
-                    err,
-                    next_steps,
-                )
-            })?;
+                                    .into(),
+                            ),
+                            NextStep::Bash(format!("git check-ignore -v {path}")),
+                        ],
+                        _ => vec![NextStep::Prose(
+                            "Fix the path or choose a different extent.".into(),
+                        )],
+                    };
+                    from_lib_error(
+                        "add",
+                        format!("anchor precheck failed for `{path}`."),
+                        err,
+                        next_steps,
+                    )
+                })?;
         }
     }
 
@@ -795,11 +802,7 @@ fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, span_root: &st
     Ok(())
 }
 
-fn run_why_reader(
-    repo: &gix::Repository,
-    name: &str,
-    span_root: &str,
-) -> Result<i32> {
+fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(name)?;
 
     // Current effective view: worktree overlays index overlays HEAD.

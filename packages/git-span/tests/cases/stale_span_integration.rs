@@ -608,20 +608,35 @@ fn line_range_anchor_inside_submodule_promoted_directory_reports_submodule() -> 
     std::process::Command::new("git")
         .current_dir(&inner_path)
         .args([
-            "-c", "user.email=t@e", "-c", "user.name=T",
-            "-c", "commit.gpgsign=false", "commit", "-m", "inner",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=T",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "inner",
         ])
         .output()?;
     repo.run_git(["rm", "-r", "lib"])?;
     repo.run_git([
-        "-c", "protocol.file.allow=always", "submodule", "add",
-        &inner_path.to_string_lossy(), "lib",
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        &inner_path.to_string_lossy(),
+        "lib",
     ])?;
     repo.commit_all("promote lib to submodule")?;
 
     // Stale must report SUBMODULE, not DELETED.
     let out = repo.run_span(["stale", "util/add", "--format=porcelain"])?;
-    assert_eq!(out.status.code(), Some(1), "SUBMODULE is a stale status → exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "SUBMODULE is a stale status → exit 1"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("SUBMODULE"),
@@ -1163,4 +1178,3 @@ fn stale_present_json_emits_envelope() -> Result<()> {
     assert_eq!(out.status.code(), Some(1), "exit 1 when drift present");
     Ok(())
 }
-

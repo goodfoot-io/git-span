@@ -60,10 +60,7 @@ pub fn generate(
     // Helper: run a git command in `dir`, fail on non-zero exit.
     // -----------------------------------------------------------------------
     let git = |args: &[&str]| -> anyhow::Result<()> {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()?;
+        let out = Command::new("git").current_dir(dir).args(args).output()?;
         anyhow::ensure!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -202,8 +199,7 @@ mod tests {
     fn freshly_generated_corpus_resolves_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
         let span_count = 8;
-        generate(dir.path(), 0x1234_5678_9abc_def0, span_count, false)
-            .expect("generate corpus");
+        generate(dir.path(), 0x1234_5678_9abc_def0, span_count, false).expect("generate corpus");
 
         let repo = gix::open(dir.path()).expect("open repo");
 

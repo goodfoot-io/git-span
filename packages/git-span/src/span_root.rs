@@ -194,8 +194,14 @@ mod tests {
         assert!(reject_anchor_inside_span_root(".span", ".span/bar").is_err());
         let err = reject_anchor_inside_span_root(".span", ".span/bar").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains(".span/bar"), "message must name path; got: {msg}");
-        assert!(msg.contains(".span"), "message must name span root; got: {msg}");
+        assert!(
+            msg.contains(".span/bar"),
+            "message must name path; got: {msg}"
+        );
+        assert!(
+            msg.contains(".span"),
+            "message must name span root; got: {msg}"
+        );
     }
 
     #[test]

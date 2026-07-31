@@ -336,4 +336,3 @@ fn malformed_show_surfaces_only_parse_error() -> Result<()> {
     );
     Ok(())
 }
-

@@ -46,10 +46,7 @@ pub type LoadedSpans = (Vec<(String, Span)>, Vec<String>);
 /// state — unmerged index entry or textual conflict markers) are excluded
 /// from the loaded set and returned separately so callers can surface them
 /// without a second corpus scan.
-pub fn load_all_spans_in(
-    repo: &gix::Repository,
-    span_root: &str,
-) -> Result<LoadedSpans> {
+pub fn load_all_spans_in(repo: &gix::Repository, span_root: &str) -> Result<LoadedSpans> {
     let _perf = crate::perf::span("span.load-all-corpus");
     let reader = SpanFileReader::new(repo, span_root.to_string());
     // Phase 1: 3-layer name discovery (worktree walk + HEAD tree + index).
@@ -403,8 +400,7 @@ impl SpanPathIndex {
                 .build()
                 .map_err(|e| Error::Parse(format!("invalid glob `{pattern}`: {e}")))?
                 .compile_matcher();
-            let mut matched: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
+            let mut matched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             for (name, path, extent) in &self.all {
                 if glob.is_match(path) && extent_in_range(*extent, range) {
                     matched.insert(name.clone());
@@ -585,11 +581,7 @@ mod tests {
     ///   "conflicted" → Err(SpanConflict)  (unmerged index entry)
     ///
     /// Returns `(TempDir, gix::Repository, sorted_names)`.
-    fn build_corpus() -> (
-        tempfile::TempDir,
-        gix::Repository,
-        Vec<String>,
-    ) {
+    fn build_corpus() -> (tempfile::TempDir, gix::Repository, Vec<String>) {
         let td = tempfile::tempdir().expect("tempdir");
         let dir = td.path();
 
@@ -715,10 +707,7 @@ mod tests {
             let name = &names[i];
             match (s, p) {
                 (Ok(Some(sm)), Ok(Some(pm))) => {
-                    assert_eq!(
-                        sm.name, pm.name,
-                        "slot {i} ({name}): span name mismatch"
-                    );
+                    assert_eq!(sm.name, pm.name, "slot {i} ({name}): span name mismatch");
                 }
                 (Ok(None), Ok(None)) => {}
                 (Err(Error::SpanConflict(sn)), Err(Error::SpanConflict(pn))) => {

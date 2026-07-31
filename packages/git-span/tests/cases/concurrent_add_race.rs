@@ -31,8 +31,8 @@
 use crate::support;
 
 use anyhow::Result;
-use git_span::cli::commit::run_add;
 use git_span::cli::AddArgs;
+use git_span::cli::commit::run_add;
 use support::TestRepo;
 
 #[test]

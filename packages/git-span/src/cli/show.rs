@@ -323,10 +323,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 CliError {
                     subcommand: "show",
                     summary: format!("{}", e),
-                    what_happened: format!(
-                        "The span file for `{}` could not be read.",
-                        args.name
-                    ),
+                    what_happened: format!("The span file for `{}` could not be read.", args.name),
                     next_steps: vec![NextStep::Bash(format!("git span doctor {}", args.name))],
                 }
             }
@@ -365,8 +362,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
     // — target resolution, conflict detection, listing collection —
     // derives its answer from this single in-memory copy. Discovery and
     // parse phases are timed inside `load_all_spans_in`.
-    let (spans, conflicted) =
-        crate::span::read::load_all_spans_in(repo, span_root)?;
+    let (spans, conflicted) = crate::span::read::load_all_spans_in(repo, span_root)?;
 
     // Build the path index from the already-loaded spans so target
     // resolution doesn't trigger a second corpus parse.
@@ -761,10 +757,7 @@ mod tests {
         // Case 1: path-only line matches any anchor (whole-file or ranged)
         let f = BatchFilter::parse("src/lib.rs").unwrap();
         assert!(f.matches_anchor("src/lib.rs", AnchorExtent::WholeFile));
-        assert!(f.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 5, end: 10 }
-        ));
+        assert!(f.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 5, end: 10 }));
         assert!(!f.matches_anchor("src/main.rs", AnchorExtent::WholeFile));
     }
 
@@ -773,15 +766,9 @@ mod tests {
         // Case 2: ranged line that intersects anchor range
         let f = BatchFilter::parse("src/lib.rs#L5-L15").unwrap();
         // anchor [10, 20] overlaps filter [5, 15]
-        assert!(f.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 10, end: 20 }
-        ));
+        assert!(f.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 10, end: 20 }));
         // anchor [1, 6] overlaps filter [5, 15]
-        assert!(f.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 1, end: 6 }
-        ));
+        assert!(f.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 1, end: 6 }));
     }
 
     #[test]
@@ -789,15 +776,9 @@ mod tests {
         // Case 3: ranged line that does not intersect anchor range
         let f = BatchFilter::parse("src/lib.rs#L5-L10").unwrap();
         // anchor [20, 30] does not overlap filter [5, 10]
-        assert!(!f.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 20, end: 30 }
-        ));
+        assert!(!f.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 20, end: 30 }));
         // anchor [1, 4] does not overlap filter [5, 10]
-        assert!(!f.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 1, end: 4 }
-        ));
+        assert!(!f.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 1, end: 4 }));
     }
 
     #[test]
@@ -823,27 +804,23 @@ mod tests {
 
         // Anchors within individual ranges should match their respective filters.
         let (s1, e1) = ranges.as_ref().unwrap()[0];
-        let f1 = BatchFilter::Ranged { path: path.clone(), start: s1, end: e1 };
-        assert!(f1.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 5, end: 8 }
-        ));
+        let f1 = BatchFilter::Ranged {
+            path: path.clone(),
+            start: s1,
+            end: e1,
+        };
+        assert!(f1.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 5, end: 8 }));
         let (s2, e2) = ranges.as_ref().unwrap()[1];
-        let f2 = BatchFilter::Ranged { path: path.clone(), start: s2, end: e2 };
-        assert!(f2.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 22, end: 25 }
-        ));
+        let f2 = BatchFilter::Ranged {
+            path: path.clone(),
+            start: s2,
+            end: e2,
+        };
+        assert!(f2.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 22, end: 25 }));
 
         // Anchor between the two ranges should not match either.
-        assert!(!f1.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 12, end: 18 }
-        ));
-        assert!(!f2.matches_anchor(
-            "src/lib.rs",
-            AnchorExtent::LineRange { start: 12, end: 18 }
-        ));
+        assert!(!f1.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 12, end: 18 }));
+        assert!(!f2.matches_anchor("src/lib.rs", AnchorExtent::LineRange { start: 12, end: 18 }));
     }
 
     #[test]
@@ -863,10 +840,7 @@ mod tests {
 
         // start > end: parse_range_address rejects it.
         let result = BatchFilter::parse("src/lib.rs#L10-L5");
-        assert!(
-            result.is_err(),
-            "expected error for start > end, got ok"
-        );
+        assert!(result.is_err(), "expected error for start > end, got ok");
     }
 
     // -----------------------------------------------------------------------
@@ -888,7 +862,14 @@ mod tests {
         // which parses → ranged on path `notes/issue#L42.md`.
         let f = BatchFilter::parse("notes/issue#L42.md#L10-L20").unwrap();
         assert_eq!(f.path(), "notes/issue#L42.md");
-        assert!(matches!(f, BatchFilter::Ranged { start: 10, end: 20, .. }));
+        assert!(matches!(
+            f,
+            BatchFilter::Ranged {
+                start: 10,
+                end: 20,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -956,14 +937,15 @@ mod tests {
         let ranges = ranges.unwrap();
         assert_eq!(ranges.len(), 2);
 
-        let anchor = AnchorExtent::LineRange {
-            start: 12,
-            end: 18,
-        };
+        let anchor = AnchorExtent::LineRange { start: 12, end: 18 };
 
         // Check against each individual filter — neither matches.
         let matches_any = ranges.iter().any(|(s, e)| {
-            let f = BatchFilter::Ranged { path: path.clone(), start: *s, end: *e };
+            let f = BatchFilter::Ranged {
+                path: path.clone(),
+                start: *s,
+                end: *e,
+            };
             f.matches_anchor("src/lib.rs", anchor)
         });
         assert!(
@@ -999,10 +981,7 @@ mod tests {
                 },
                 AnchorEntry {
                     path: "c.rs".to_string(),
-                    extent: AnchorExtent::LineRange {
-                        start: 1,
-                        end: 10,
-                    },
+                    extent: AnchorExtent::LineRange { start: 1, end: 10 },
                 },
             ],
         };
@@ -1015,25 +994,32 @@ mod tests {
         });
 
         // WholeFile anchor on a.rs (different path) should be KEPT.
-        let whole_file_on_a = listing.anchors.iter().any(|a| {
-            matches!(a.extent, AnchorExtent::WholeFile) && a.path == "a.rs"
-        });
+        let whole_file_on_a = listing
+            .anchors
+            .iter()
+            .any(|a| matches!(a.extent, AnchorExtent::WholeFile) && a.path == "a.rs");
         assert!(
             whole_file_on_a,
             "WholeFile anchor on a.rs should be kept when filter is on b.rs"
         );
 
         // WholeFile anchor on b.rs (same path as filter) should be SUPPRESSED.
-        let whole_file_on_b = listing.anchors.iter().any(|a| {
-            matches!(a.extent, AnchorExtent::WholeFile) && a.path == filter_path
-        });
+        let whole_file_on_b = listing
+            .anchors
+            .iter()
+            .any(|a| matches!(a.extent, AnchorExtent::WholeFile) && a.path == filter_path);
         assert!(
             !whole_file_on_b,
             "WholeFile anchor on b.rs should be suppressed when filter is on b.rs"
         );
 
         // LineRange anchor on c.rs should be KEPT.
-        assert!(listing.anchors.iter().any(|a| matches!(a.extent, AnchorExtent::LineRange { .. })),
-            "LineRange anchor on c.rs should be kept");
+        assert!(
+            listing
+                .anchors
+                .iter()
+                .any(|a| matches!(a.extent, AnchorExtent::LineRange { .. })),
+            "LineRange anchor on c.rs should be kept"
+        );
     }
 }

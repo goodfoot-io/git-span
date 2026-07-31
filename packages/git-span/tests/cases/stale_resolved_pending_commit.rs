@@ -14,8 +14,8 @@
 use crate::support;
 
 use anyhow::Result;
-use git_span::types::{AnchorStatus, EngineOptions, LayerSet};
 use git_span::resolve_span;
+use git_span::types::{AnchorStatus, EngineOptions, LayerSet};
 use support::TestRepo;
 
 /// Seed a committed span anchoring `file1.txt#L1-L5`, prepend two lines

@@ -96,8 +96,6 @@ fn json_finding_has_status_and_anchored() -> Result<()> {
     Ok(())
 }
 
-
-
 #[test]
 
 fn tool_error_exits_one() -> Result<()> {
@@ -112,4 +110,3 @@ fn tool_error_exits_one() -> Result<()> {
     assert_eq!(out.status.code(), Some(1));
     Ok(())
 }
-

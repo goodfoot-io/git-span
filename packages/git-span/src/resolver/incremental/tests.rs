@@ -277,7 +277,10 @@ fn reconstructed_core_byte_equal_to_full_unrelated() {
     let build = build_incremental_core(&repo, SPAN_ROOT, &token, &mut store)
         .expect("build")
         .expect("some");
-    assert_eq!(build.reused, 2, "both spans reused across an unrelated commit");
+    assert_eq!(
+        build.reused, 2,
+        "both spans reused across an unrelated commit"
+    );
     assert_eq!(build.anchor_resolutions, 0);
 
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");

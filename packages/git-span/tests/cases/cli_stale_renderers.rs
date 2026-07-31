@@ -714,7 +714,10 @@ fn cluster_output_is_identical_on_warm_cache_hit() -> Result<()> {
 /// Fixture for testing comma-escaping in porcelain output: a shared file
 /// path with a comma and two spans that both reference it.
 fn seed_comma_fixture(repo: &TestRepo) -> Result<()> {
-    repo.write_file("file,with,commas.txt", "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n")?;
+    repo.write_file(
+        "file,with,commas.txt",
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
     repo.commit_all("initial commit with comma file")?;
 
     repo.span_stdout(["add", "m", "file,with,commas.txt#L1-L5"])?;
@@ -742,8 +745,8 @@ fn porcelain_cluster_escapes_file_paths_with_commas() -> Result<()> {
     // Verify that the comma-containing file path is escaped (quoted) in the shared: field.
     // Both m and n should be detected as stale and clustered together via their shared file.
     assert!(
-        out.contains("# cluster m,n shared:\"file,with,commas.txt\"") ||
-        out.contains("# cluster n,m shared:\"file,with,commas.txt\""),
+        out.contains("# cluster m,n shared:\"file,with,commas.txt\"")
+            || out.contains("# cluster n,m shared:\"file,with,commas.txt\""),
         "expected escaped file path in cluster line with both spans; stdout={out}"
     );
     Ok(())

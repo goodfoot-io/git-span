@@ -331,8 +331,7 @@ pub struct DeleteArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct DoctorArgs {
-}
+pub struct DoctorArgs {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]

@@ -66,7 +66,8 @@ fn lists_all_anchors_in_mixed_span_in_stored_order() -> Result<()> {
     // Stored order: [file1#L1-L5 (will drift Changed), file2#L1-L5 (fresh),
     // file1#L6-L10 (fresh), file2#L11-L15 (will drift Changed)].
     repo.span_stdout([
-        "add", "m",
+        "add",
+        "m",
         "file1.txt#L1-L5",
         "file2.txt#L1-L5",
         "file1.txt#L6-L10",
@@ -94,7 +95,10 @@ fn lists_all_anchors_in_mixed_span_in_stored_order() -> Result<()> {
     let b = stdout.find("file1.txt#L6-L10").expect("second");
     let c = stdout.find("file2.txt#L1-L5").expect("third");
     let d = stdout.find("file2.txt#L11-L15").expect("fourth");
-    assert!(a < b && b < c && c < d, "canonical order: stdout=\n{stdout}");
+    assert!(
+        a < b && b < c && c < d,
+        "canonical order: stdout=\n{stdout}"
+    );
     // The drifted ones carry status prose.
     assert!(
         stdout.contains("file1.txt#L1-L5 — changed")
@@ -112,8 +116,14 @@ fn no_drift_scan_lists_no_spans() -> Result<()> {
     let out = repo.run_span(["stale"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     // No span has drifted: the scan prints only the summary line.
-    assert!(!stdout.contains("## a"), "span a must not surface; stdout=\n{stdout}");
-    assert!(!stdout.contains("## b"), "span b must not surface; stdout=\n{stdout}");
+    assert!(
+        !stdout.contains("## a"),
+        "span a must not surface; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("## b"),
+        "span b must not surface; stdout=\n{stdout}"
+    );
     assert!(
         stdout.contains("0 stale"),
         "summary line must appear; stdout=\n{stdout}"
@@ -127,8 +137,7 @@ fn no_drift_scan_lists_no_spans() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Original 10-line `file1.txt` content seeded by `TestRepo::seeded`.
-const ORIGINAL: &str =
-    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+const ORIGINAL: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
 
 // Under the content-equivalence gate (card main-90) a *meaning-changing*
 // `Changed` edit must NOT be re-anchored — the broken content would silence
@@ -141,8 +150,7 @@ fn fix_leaves_changed_anchor_at_worktree_layer() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Meaning-changing worktree edit (no commit, no stage).
-    let new_content =
-        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let new_content = "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", new_content)?;
 
     let out = repo.run_span(["stale", "--fix", "--no-exit-code"])?;
@@ -172,8 +180,7 @@ fn fix_leaves_changed_at_index_layer() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Stage a meaning-changing edit; leave worktree matching the index.
-    let staged =
-        "lineSTG\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let staged = "lineSTG\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", staged)?;
     repo.run_git(["add", "file1.txt"])?;
 
@@ -199,8 +206,7 @@ fn fix_leaves_changed_at_head_layer() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Commit a meaning-changing edit to file1.
-    let new_content =
-        "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let new_content = "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", new_content)?;
     repo.run_git(["add", "file1.txt"])?;
     repo.run_git(["commit", "-m", "edit file1"])?;
@@ -230,8 +236,7 @@ fn fix_reanchors_whitespace_only_changed_at_worktree_layer() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Whitespace-only worktree edit: reindent line 1.
-    let reindented =
-        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let reindented = "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
 
     repo.run_span(["stale", "--fix", "--no-exit-code"])?;
@@ -251,8 +256,7 @@ fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Whitespace-only edit, staged; worktree matches the index.
-    let reindented =
-        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let reindented = "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
     repo.run_git(["add", "file1.txt"])?;
 
@@ -278,8 +282,7 @@ fn fix_reanchors_whitespace_only_changed_at_head_layer() -> Result<()> {
     // The genuine original bytes are still recoverable one commit back
     // (HEAD~1), so the resolver can walk back to prove equivalence even
     // though HEAD itself now carries the edited content.
-    let reindented =
-        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let reindented = "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
     repo.run_git(["add", "file1.txt"])?;
     repo.run_git(["commit", "-m", "reindent file1"])?;
@@ -371,8 +374,7 @@ fn fix_leaves_changed_anchor_when_history_walk_is_exhausted() -> Result<()> {
     // commits, far short of `HISTORY_WALK_LIMIT`). The walk must fail
     // closed (leave the anchor `Changed`, keep the original hash) rather
     // than panicking or hanging when the chain runs out of parents.
-    let new_content =
-        "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let new_content = "lineHEAD\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", new_content)?;
     repo.run_git(["add", "file1.txt"])?;
     repo.run_git(["commit", "-m", "meaning-changing edit"])?;
@@ -449,7 +451,11 @@ fn fix_skips_deleted_anchor_and_keeps_in_listing() -> Result<()> {
         stdout.contains("file1.txt#L1-L5"),
         "anchor still listed; stdout=\n{stdout}"
     );
-    assert_ne!(out.status.code(), Some(0), "non-zero exit for remaining drift");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "non-zero exit for remaining drift"
+    );
     Ok(())
 }
 
@@ -521,7 +527,8 @@ fn fix_no_commit_produced() -> Result<()> {
 fn fix_preserves_span_file_anchor_order() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout([
-        "add", "m",
+        "add",
+        "m",
         "file2.txt#L1-L5",
         "file1.txt#L1-L5",
         "file2.txt#L11-L15",
@@ -615,8 +622,7 @@ fn fix_coalesces_contiguous_authored_ranges() -> Result<()> {
     assert_eq!(out.status.code(), Some(0), "no residual drift after merge");
 
     let span = read_span(&repo, "m")?;
-    let file1 =
-        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let file1 = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     let expected = line_slice_hash(file1, 1, 10);
     assert!(
         span.contains(&format!("file1.txt#L1-L10 rk64:{expected}")),
@@ -722,7 +728,8 @@ fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
 fn fix_coalesces_chain_of_three() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout([
-        "add", "m",
+        "add",
+        "m",
         "file2.txt#L1-L5",
         "file2.txt#L6-L10",
         "file2.txt#L11-L15",
@@ -789,8 +796,7 @@ fn fix_does_not_coalesce_non_worktree_layer_ranges() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Original 16-line `file2.txt` content seeded by `TestRepo::seeded`.
-const FILE2: &str =
-    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+const FILE2: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
      line11\nline12\nline13\nline14\nline15\nline16\n";
 
 /// A third file, distinct from the two `TestRepo::seeded` provides, used by
@@ -1142,8 +1148,7 @@ file2.txt#L11-L15 rk64:{h2}
     // not found among readable sources), restoring the substance the old
     // `: No such file or directory` cause conveyed.
     assert!(
-        stderr.contains("no longer exists")
-            && stderr.contains("not found among readable sources"),
+        stderr.contains("no longer exists") && stderr.contains("not found among readable sources"),
         "no-candidate message must state the path is gone; stderr=\n{stderr}"
     );
     assert!(
@@ -1242,9 +1247,7 @@ new.txt rk64:{h}
 
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("<<<<<<<")
-            && span.contains("oldA.txt")
-            && span.contains("oldB.txt"),
+        span.contains("<<<<<<<") && span.contains("oldA.txt") && span.contains("oldB.txt"),
         "span must remain conflicted with both orphans; span:\n{span}"
     );
     Ok(())
@@ -1305,8 +1308,7 @@ new.txt#L1-L5 rk64:{h}
     );
     // The just-resolved survivor must NOT be reported as deleted.
     assert!(
-        !stdout.contains("new.txt#L1-L5 — deleted")
-            && !stdout.contains("new.txt#L1-L5 — Deleted"),
+        !stdout.contains("new.txt#L1-L5 — deleted") && !stdout.contains("new.txt#L1-L5 — Deleted"),
         "survivor must not be mislabeled deleted; stdout=\n{stdout}"
     );
     // It must read as resolved-pending-commit (worktree matches, HEAD lacks
@@ -1575,8 +1577,7 @@ fn fix_moved_with_worktree_shifts_reanchors_against_head() -> Result<()> {
     let stale_after_out = repo.run_span(["stale", "--no-exit-code"])?;
     let stale_after = String::from_utf8_lossy(&stale_after_out.stdout);
     assert!(
-        stale_after.contains("resolved, pending commit")
-            || stale_after.contains("0 stale"),
+        stale_after.contains("resolved, pending commit") || stale_after.contains("0 stale"),
         "span must be clean after fix; got:\n{stale_after}"
     );
     assert_eq!(
@@ -1661,9 +1662,7 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     // Inject an interior anchor whose path is under .span/.
     // Write the span file raw to bypass `git span add` validation.
     let h = line_slice_hash(ORIGINAL, 1, 5);
-    let interior = format!(
-        ".span/m rk64:{h}\nfile1.txt#L1-L5 rk64:{h}\n\ninterior anchor test\n"
-    );
+    let interior = format!(".span/m rk64:{h}\nfile1.txt#L1-L5 rk64:{h}\n\ninterior anchor test\n");
     repo.write_file(".span/m", &interior)?;
     repo.run_git(["add", ".span/m"])?;
     repo.run_git(["commit", "-m", "add interior anchor"])?;
@@ -1679,8 +1678,7 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     // interior-anchor path is unresolvable so the valid anchor may or may
     // not drift — just verify the removed count is non-zero).
     assert!(
-        stdout.contains("(0 updated, 1 removed)")
-            || stdout.contains("(1 updated, 1 removed)"),
+        stdout.contains("(0 updated, 1 removed)") || stdout.contains("(1 updated, 1 removed)"),
         "expected removed count > 0; stdout=\n{stdout}"
     );
     Ok(())

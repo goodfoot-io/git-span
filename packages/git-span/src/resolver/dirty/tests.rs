@@ -129,8 +129,11 @@ fn fresh_three_span_repo(tag: &str) -> (tempfile::TempDir, PathBuf) {
     init_repo(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
     for f in ["a", "b", "c"] {
-        std::fs::write(dir.join(format!("src/{f}.txt")), format!("{tag}-{f}1\n{f}2\n{f}3\n"))
-            .expect("write src");
+        std::fs::write(
+            dir.join(format!("src/{f}.txt")),
+            format!("{tag}-{f}1\n{f}2\n{f}3\n"),
+        )
+        .expect("write src");
     }
     write_span(&dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha");
     write_span(&dir, "beta", &[("src/b.txt", 1, 3)], "why beta");
@@ -287,8 +290,14 @@ fn proportional_one_dirty_of_three() {
         .expect("one dirty of three must reuse two");
     assert!(build.reused > 0, "clean siblings are reused");
     assert_eq!(build.reused, 2, "alpha and gamma reused");
-    assert_eq!(build.resolved, 1, "resolved count equals the dirty-affected count");
-    assert_eq!(build.anchor_resolutions, 1, "only beta's one anchor re-resolved");
+    assert_eq!(
+        build.resolved, 1,
+        "resolved count equals the dirty-affected count"
+    );
+    assert_eq!(
+        build.anchor_resolutions, 1,
+        "only beta's one anchor re-resolved"
+    );
 
     assert_eq!(build.core, full_live_core(&repo));
 }
@@ -312,8 +321,7 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
     std::fs::write(dir.join(".gitignore"), "target/\n*.tmp\n").expect("write .gitignore");
 
     let repo2 = reopen(&dir);
-    let dirty_token =
-        capture_state_token(&repo2, SPAN_ROOT, EngineOptions::full()).expect("token");
+    let dirty_token = capture_state_token(&repo2, SPAN_ROOT, EngineOptions::full()).expect("token");
     // The canonical key is UNCHANGED — `.gitignore` is not a relevant path, so
     // it never enters the token. This is Finding 3's mechanism: the dirty tier
     // is never reached; the exact-hit tier serves the clean summary.
@@ -323,8 +331,7 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
         "an unrelated .gitignore edit must not change the canonical key"
     );
 
-    let dirty_out =
-        stale_spans_new_store(&repo2, SPAN_ROOT, EngineOptions::full()).expect("dirty");
+    let dirty_out = stale_spans_new_store(&repo2, SPAN_ROOT, EngineOptions::full()).expect("dirty");
     let dirty_names = resolved_names(&dirty_out);
     assert_eq!(
         dirty_names, clean_names,
@@ -365,7 +372,10 @@ fn unrelated_tracked_dirt_reuses_all_proportionally() {
         .expect("an unrelated tracked dirty file must engage the proportional dirty path");
     assert_eq!(build.reused, 2, "both spans reused");
     assert_eq!(build.resolved, 0, "no span re-resolved");
-    assert_eq!(build.anchor_resolutions, 0, "zero anchor resolutions — fully proportional");
+    assert_eq!(
+        build.anchor_resolutions, 0,
+        "zero anchor resolutions — fully proportional"
+    );
     assert_eq!(
         build.core,
         full_live_core(&repo),
@@ -408,8 +418,14 @@ fn unreadable_file_degrades_fail_closed() {
         &names,
         crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
     );
-    assert!(dirty_res.is_err(), "dirty tier surfaces the resolver read error");
-    assert!(full_res.is_err(), "the authoritative full resolve errors identically");
+    assert!(
+        dirty_res.is_err(),
+        "dirty tier surfaces the resolver read error"
+    );
+    assert!(
+        full_res.is_err(),
+        "the authoritative full resolve errors identically"
+    );
 }
 
 // ── Merge conflict on an anchored path: affected and re-resolved ─────────────
@@ -451,7 +467,10 @@ fn conflict_affected_and_reresolved() {
         .expect("build")
         .expect("a conflict on an anchored path re-resolves its span, reuses the sibling");
     assert_eq!(build.reused, 1, "beta reused");
-    assert_eq!(build.resolved, 1, "only alpha re-resolved over the conflict");
+    assert_eq!(
+        build.resolved, 1,
+        "only alpha re-resolved over the conflict"
+    );
     assert_eq!(
         build.core,
         full_live_core(&repo),
@@ -473,13 +492,15 @@ fn repeated_identical_dirty_state_becomes_exact_hit() {
     enable_store();
     let repo = reopen(&dir);
     let first = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("first");
-    assert!(matches!(first, ExactAttempt::Resolved { .. }), "dirty tier resolves");
+    assert!(
+        matches!(first, ExactAttempt::Resolved { .. }),
+        "dirty tier resolves"
+    );
 
     // The dirty generation is now cached: a second identical dirty invocation is
     // a plain exact-hit (`persistence_eligible` does not require a clean
     // worktree — a dirty state publishes under its own dirty key).
-    let dirty_token =
-        capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("token");
+    let dirty_token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("token");
     let dirty_key = dirty_token.canonical_key_digest();
     let store = CacheStore::open(&repo).expect("store");
     assert!(
@@ -516,7 +537,10 @@ fn batched_relevant_dirty_paths_matches_per_path_reference() {
         let batched = relevant_dirty_paths(&repo, &token).expect("batched");
         let per_path =
             crate::resolver::incremental::relevant_dirty_paths(&repo, &token).expect("per-path");
-        assert_eq!(batched, per_path, "{note}: batched map must match per-path walk");
+        assert_eq!(
+            batched, per_path,
+            "{note}: batched map must match per-path walk"
+        );
         batched
     };
 

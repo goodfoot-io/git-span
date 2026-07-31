@@ -44,7 +44,8 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
 
     // list must see it (was empty before the fix).
     let list = String::from_utf8(
-        repo.run_span_with_env(["list"], "GIT_SPAN_DIR", "spans")?.stdout,
+        repo.run_span_with_env(["list"], "GIT_SPAN_DIR", "spans")?
+            .stdout,
     )?;
     assert!(
         list.contains("demo/coupling"),
@@ -53,7 +54,8 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
 
     // show must resolve it (was SpanNotFound before the fix).
     let show = String::from_utf8(
-        repo.run_span_with_env(["show", "demo/coupling"], "GIT_SPAN_DIR", "spans")?.stdout,
+        repo.run_span_with_env(["show", "demo/coupling"], "GIT_SPAN_DIR", "spans")?
+            .stdout,
     )?;
     assert!(
         show.contains("demo/coupling"),
@@ -77,11 +79,7 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
     repo.run_git(["add", "-A"])?;
     repo.run_git(["commit", "-m", "track span"])?;
     repo.write_commit_graph()?;
-    let stale = repo.run_span_with_env(
-        ["stale"],
-        "GIT_SPAN_DIR",
-        "spans",
-    )?;
+    let stale = repo.run_span_with_env(["stale"], "GIT_SPAN_DIR", "spans")?;
     assert!(
         stale.status.success(),
         "stale under configured root failed: {}",

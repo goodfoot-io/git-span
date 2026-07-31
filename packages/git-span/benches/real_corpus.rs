@@ -63,9 +63,9 @@ use std::time::{Duration, Instant};
 // and is well within the plan's 900ms cold budget. The stale-warm ceiling is
 // 200ms — NOT 40ms; 40ms is the in-process SLA in stale_warm.rs.
 // ---------------------------------------------------------------------------
-const SLA_LIST_MS: u64 = 250;    // post-F6 ~11–16ms; coarse guard, plan budget 250ms
-const SLA_TREE_MS: u64 = 250;    // post-F6 ~10–16ms; coarse guard, plan budget 250ms
-const SLA_SHOW_MS: u64 = 250;    // post-F6 ~7–10ms; coarse guard, plan budget 250ms
+const SLA_LIST_MS: u64 = 250; // post-F6 ~11–16ms; coarse guard, plan budget 250ms
+const SLA_TREE_MS: u64 = 250; // post-F6 ~10–16ms; coarse guard, plan budget 250ms
+const SLA_SHOW_MS: u64 = 250; // post-F6 ~7–10ms; coarse guard, plan budget 250ms
 const SLA_HISTORY_MS: u64 = 750; // post-F6 ~130–176ms; coarse guard ~4× median
 const SLA_STALE_COLD_MS: u64 = 500; // post-F6 ~150–216ms under load; coarse guard, below plan's 900ms budget
 const SLA_STALE_WARM_MS: u64 = 200; // post-F6 ~21–27ms; coarse guard; NOT the in-process 40ms SLA
@@ -115,7 +115,9 @@ fn setup_bench_repo() -> Option<BenchRepo> {
     let workspace_root = match find_workspace_root() {
         Some(r) => r,
         None => {
-            eprintln!("[real_corpus] SKIP: no .span/ directory found walking up from CARGO_MANIFEST_DIR");
+            eprintln!(
+                "[real_corpus] SKIP: no .span/ directory found walking up from CARGO_MANIFEST_DIR"
+            );
             return None;
         }
     };
@@ -455,7 +457,9 @@ fn run_oracle(repo: &Path, args: &[&str], cache_off: bool) -> OracleOutput {
     if cache_off {
         cmd.env("GIT_SPAN_CACHE", "0");
     }
-    let out = cmd.output().unwrap_or_else(|e| panic!("spawn git-span {args:?}: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("spawn git-span {args:?}: {e}"));
     // Some commands exit non-zero when there is drift; that is fine for the oracle
     // — the exit CODE itself is compared below, just not asserted to be 0.
     OracleOutput {
@@ -758,13 +762,17 @@ struct Baseline {
 /// regression rule but never the ceiling rule.
 fn load_baselines() -> Option<serde_json::Value> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    let baseline_path = Path::new(&manifest).join("benches").join("perf-baseline.json");
+    let baseline_path = Path::new(&manifest)
+        .join("benches")
+        .join("perf-baseline.json");
     if !baseline_path.exists() {
         return None;
     }
     let contents = fs::read_to_string(&baseline_path)
         .unwrap_or_else(|e| panic!("read perf-baseline.json: {e}"));
-    Some(serde_json::from_str(&contents).unwrap_or_else(|e| panic!("parse perf-baseline.json: {e}")))
+    Some(
+        serde_json::from_str(&contents).unwrap_or_else(|e| panic!("parse perf-baseline.json: {e}")),
+    )
 }
 
 fn baseline_for(json: &serde_json::Value, op: &str) -> Option<Baseline> {
@@ -873,7 +881,8 @@ fn capture_list_layer_reads(repo: &Path, glob: Option<&str>) -> (Option<u64>, Op
 
 /// Format an `Option<u64>` count as a decimal or `n/a` for the advisory line.
 fn fmt_count(v: Option<u64>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "n/a".to_string())
+    v.map(|n| n.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
 }
 
 /// Time cold stale invocations (delete cache before each).
@@ -988,7 +997,12 @@ fn assert_oracle_stale_fix_idempotent() {
     run_fix();
 
     let mut diffs: Vec<String> = Vec::new();
-    assert_dirs_byte_identical(&after_first, &repo.path.join(".span"), Path::new(""), &mut diffs);
+    assert_dirs_byte_identical(
+        &after_first,
+        &repo.path.join(".span"),
+        Path::new(""),
+        &mut diffs,
+    );
     if !diffs.is_empty() {
         panic!(
             "[real_corpus] ORACLE FAIL for 'stale-fix' (idempotence): a second --fix changed \
@@ -1414,9 +1428,7 @@ fn bench_report(_c: &mut Criterion) {
 
     let baselines = load_baselines();
 
-    println!(
-        "\n=== real_corpus scoreboard (robust median over all samples, warmup discarded) ==="
-    );
+    println!("\n=== real_corpus scoreboard (robust median over all samples, warmup discarded) ===");
     println!(
         "{:<14} {:>8} {:>12} {:>12} {:>16}",
         "op", "n", "median_ms", "ceiling_ms", "regress_thresh_ms"

@@ -7,20 +7,19 @@ use super::super::core::resolution::{
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::{ConcurrentSession, resolve_at_head_shared};
 use super::super::walker::{Tracked, apply_hunks_to_range};
-use super::{EngineLocal, SharedEngineContext};
 use super::whole_file::resolve_whole_file;
+use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
-    submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
-    DriftLocus, DriftSource, FuzzySuccessor, LayerSet, SpanConfig, SubmoduleKind,
-    UnavailableReason,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource,
+    FuzzySuccessor, LayerSet, SpanConfig, SubmoduleKind, UnavailableReason, submodule_classify,
 };
 use crate::{Error, Result};
-use git_span_core::{
-    cheap_fingerprint_indexed, cheap_fingerprint_with_extent, jaccard_window_scan_interned,
-    rk64_from_hex, rk64_to_hex, RK64_ALGORITHM,
-};
 use git_span_core::{LineIndex, scan_indexed_rk64_one};
+use git_span_core::{
+    RK64_ALGORITHM, cheap_fingerprint_indexed, cheap_fingerprint_with_extent,
+    jaccard_window_scan_interned, rk64_from_hex, rk64_to_hex,
+};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -251,7 +250,12 @@ fn find_relocated_range_in_paths(
         }
         // A path absent from HEAD is always a candidate. A HEAD-present
         // path qualifies only via the committed-rename predicate.
-        if concurrent.head_blob_at(repo, &shared.head_sha,&en.path).ok().flatten().is_some() {
+        if concurrent
+            .head_blob_at(repo, &shared.head_sha, &en.path)
+            .ok()
+            .flatten()
+            .is_some()
+        {
             let is_target =
                 anchored_absent_at_head && concurrent.is_rename_target(repo, exclude, &en.path);
             if !is_target {
@@ -304,8 +308,7 @@ fn find_relocated_range_in_paths(
         // index instead of re-scanning raw bytes — the same amortization
         // `resolve_anchor_inner`'s in-place freshness check already relies
         // on, now shared with the cross-path relocation scan.
-        let cached_idx =
-            concurrent.get_or_build_line_index(text.into_bytes(), &en.path, deepest);
+        let cached_idx = concurrent.get_or_build_line_index(text.into_bytes(), &en.path, deepest);
         let file_idx: &LineIndex = cached_idx.get();
         if let Some((s, e)) = find_relocated_range_indexed(file_idx, extent, stored_hash, 1) {
             return Some((en.path, s, e));
@@ -462,7 +465,9 @@ pub(crate) fn resolve_anchor_inner(
     r: Anchor,
 ) -> Result<AnchorResolved> {
     if matches!(r.extent, AnchorExtent::WholeFile) {
-        return resolve_whole_file(repo, local, shared, concurrent, cfg, span_name, anchor_id, r);
+        return resolve_whole_file(
+            repo, local, shared, concurrent, cfg, span_name, anchor_id, r,
+        );
     }
     let (anchored_start, anchored_end) = match r.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -485,7 +490,9 @@ pub(crate) fn resolve_anchor_inner(
         extent: r.extent,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty() && !concurrent.commit_reachable(repo, &shared.head_sha,&r.anchor_sha)? {
+    if !r.anchor_sha.is_empty()
+        && !concurrent.commit_reachable(repo, &shared.head_sha, &r.anchor_sha)?
+    {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -639,7 +646,7 @@ pub(crate) fn resolve_anchor_inner(
     // Memoized per path on the engine state — an unmemoized check builds a
     // fresh gitattributes stack on every anchor.
     if let Some(t) = tracked
-        && concurrent.is_lfs_path_memo(repo,&t.path)
+        && concurrent.is_lfs_path_memo(repo, &t.path)
     {
         return Ok(resolve_lfs_anchor(
             repo,
@@ -662,9 +669,7 @@ pub(crate) fn resolve_anchor_inner(
                 DriftSource::Worktree => {
                     match read_worktree_normalized(repo, &mut local.custom_filters, &t.path) {
                         Ok(bytes) => {
-                            if bytes.is_empty()
-                                && crate::git::is_skip_worktree(repo, &t.path)?
-                            {
+                            if bytes.is_empty() && crate::git::is_skip_worktree(repo, &t.path)? {
                                 return Ok(unavailable(
                                     anchor_id,
                                     &r,
@@ -686,7 +691,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Index => {
-                    if let Some(filter) = concurrent.filter_short_circuit(repo,&t.path)? {
+                    if let Some(filter) = concurrent.filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -696,7 +701,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                     let oid = match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
                     };
                     match oid {
                         Some(o) => {
@@ -718,7 +723,7 @@ pub(crate) fn resolve_anchor_inner(
                     }
                 }
                 DriftSource::Head => {
-                    if let Some(filter) = concurrent.filter_short_circuit(repo,&t.path)? {
+                    if let Some(filter) = concurrent.filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
                             anchor_id,
                             &r,
@@ -726,7 +731,7 @@ pub(crate) fn resolve_anchor_inner(
                             UnavailableReason::FilterFailed { filter },
                         ));
                     }
-                    let oid = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?;
+                    let oid = concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?;
                     let txt = match &oid {
                         Some(o) => match git::read_git_text(repo, o) {
                             Ok(t) => t,
@@ -790,8 +795,7 @@ pub(crate) fn resolve_anchor_inner(
         // identical to the un-memoized form — only the disk/ODB reads are
         // cached, so the fingerprints below match exactly what a fresh
         // `read_worktree_normalized` / `read_git_text` pair would produce.
-        let wt_bytes =
-            concurrent.worktree_bytes(repo, &mut local.custom_filters, &wt_path)?;
+        let wt_bytes = concurrent.worktree_bytes(repo, &mut local.custom_filters, &wt_path)?;
         let extent = AnchorExtent::LineRange {
             start: anchored_start,
             end: anchored_end,
@@ -802,7 +806,7 @@ pub(crate) fn resolve_anchor_inner(
         );
         let wt_matches = wt_hash == r.stored_hash;
 
-        let head_matches = match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
+        let head_matches = match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
             Some(oid) => {
                 let head_txt = match concurrent.blob_text(repo, &oid) {
                     Ok(t) => t,
@@ -816,7 +820,7 @@ pub(crate) fn resolve_anchor_inner(
                             ));
                         }
                         Arc::from("")
-                    },
+                    }
                     Err(e) => return Err(e),
                 };
                 if head_txt.is_empty() {
@@ -824,10 +828,7 @@ pub(crate) fn resolve_anchor_inner(
                 } else {
                     format!(
                         "{RK64_ALGORITHM}:{}",
-                        rk64_to_hex(cheap_fingerprint_with_extent(
-                            head_txt.as_bytes(),
-                            &extent,
-                        ))
+                        rk64_to_hex(cheap_fingerprint_with_extent(head_txt.as_bytes(), &extent,))
                     ) == r.stored_hash
                 }
             }
@@ -873,7 +874,7 @@ pub(crate) fn resolve_anchor_inner(
                     Err(e) => return Err(e),
                 }
             } else {
-                match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
+                match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
                     Some(oid) => match git::read_git_text(repo, &oid) {
                         Ok(t) => t,
                         Err(_) if crate::git::promisor_active(repo) => {
@@ -920,7 +921,10 @@ pub(crate) fn resolve_anchor_inner(
             //    rendered "deleted in the working tree/index".
             // A removal is never mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
-            let head_path_absent = file_backed && concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
+            let head_path_absent = file_backed
+                && concurrent
+                    .head_blob_at(repo, &shared.head_sha, &r.path)?
+                    .is_none();
             if file_backed {
                 let extent = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
                 let relocated = find_relocated_range_in_paths(
@@ -948,10 +952,7 @@ pub(crate) fn resolve_anchor_inner(
                     let is_submodule = git::index_entries(repo)
                         .ok()
                         .map(|entries| {
-                            !matches!(
-                                submodule_classify(&entries, &r.path),
-                                SubmoduleKind::None,
-                            )
+                            !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
                         })
                         .unwrap_or(false);
                     if is_submodule {
@@ -975,10 +976,8 @@ pub(crate) fn resolve_anchor_inner(
                             extent,
                             &r.path,
                         );
-                        let best_confidence = fuzzy_found
-                            .first()
-                            .map(|b| b.confidence)
-                            .unwrap_or(-1.0);
+                        let best_confidence =
+                            fuzzy_found.first().map(|b| b.confidence).unwrap_or(-1.0);
                         if !fuzzy_found.is_empty() {
                             fuzzy_successors = fuzzy_found;
                         }
@@ -1021,10 +1020,7 @@ pub(crate) fn resolve_anchor_inner(
                         extent,
                         &r.path,
                     );
-                    let best_confidence = fuzzy_found
-                        .first()
-                        .map(|b| b.confidence)
-                        .unwrap_or(-1.0);
+                    let best_confidence = fuzzy_found.first().map(|b| b.confidence).unwrap_or(-1.0);
                     if !fuzzy_found.is_empty() {
                         fuzzy_successors = fuzzy_found;
                     }
@@ -1084,10 +1080,7 @@ pub(crate) fn resolve_anchor_inner(
                 let is_submodule = git::index_entries(repo)
                     .ok()
                     .map(|entries| {
-                        !matches!(
-                            submodule_classify(&entries, &r.path),
-                            SubmoduleKind::None,
-                        )
+                        !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
                     })
                     .unwrap_or(false);
                 if is_submodule {
@@ -1130,7 +1123,7 @@ pub(crate) fn resolve_anchor_inner(
                     Err(e) => return Err(e),
                 }
             } else {
-                match concurrent.head_blob_at(repo, &shared.head_sha,&r.path)? {
+                match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
                     Some(oid) => match git::read_git_text(repo, &oid) {
                         Ok(t) => t,
                         Err(_) if crate::git::promisor_active(repo) => {
@@ -1179,7 +1172,10 @@ pub(crate) fn resolve_anchor_inner(
                         "{RK64_ALGORITHM}:{}",
                         rk64_to_hex(cheap_fingerprint_indexed(
                             file_idx,
-                            &AnchorExtent::LineRange { start: t.start, end: t.end },
+                            &AnchorExtent::LineRange {
+                                start: t.start,
+                                end: t.end
+                            },
                         ))
                     );
                     computed_hash == r.stored_hash
@@ -1207,13 +1203,16 @@ pub(crate) fn resolve_anchor_inner(
                     && r.blob.is_empty()
                     && t.path == r.path
                     && {
-                        format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_indexed(
-                            file_idx,
-                            &AnchorExtent::LineRange {
-                                start: anchored_start,
-                                end: anchored_end,
-                            },
-                        ))) == r.stored_hash
+                        format!(
+                            "{RK64_ALGORITHM}:{}",
+                            rk64_to_hex(cheap_fingerprint_indexed(
+                                file_idx,
+                                &AnchorExtent::LineRange {
+                                    start: anchored_start,
+                                    end: anchored_end,
+                                },
+                            ))
+                        ) == r.stored_hash
                     };
 
                 (equal, worktree_recorded_fresh)
@@ -1258,14 +1257,12 @@ pub(crate) fn resolve_anchor_inner(
                 // Re-acquire the cached line index (built during the
                 // freshness block above — always a hit).
                 match concurrent.get_line_index(&t.path, deepest_layer) {
-                    Some(cached_idx) => {
-                        find_relocated_range_indexed(
-                            cached_idx.get(),
-                            extent,
-                            &r.stored_hash,
-                            anchored_start,
-                        )
-                    }
+                    Some(cached_idx) => find_relocated_range_indexed(
+                        cached_idx.get(),
+                        extent,
+                        &r.stored_hash,
+                        anchored_start,
+                    ),
                     None => {
                         // Defensive: if the cache entry is somehow absent,
                         // fall back to the un-indexed scan.
@@ -1284,7 +1281,9 @@ pub(crate) fn resolve_anchor_inner(
             // classifying `Changed`.
             let relocated_path: Option<(String, u32, u32)> =
                 if !equal && file_backed && relocated.is_none() {
-                    let anchored_absent_at_head = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
+                    let anchored_absent_at_head = concurrent
+                        .head_blob_at(repo, &shared.head_sha, &r.path)?
+                        .is_none();
                     find_relocated_range_in_paths(
                         repo,
                         shared,
@@ -1405,12 +1404,13 @@ pub(crate) fn resolve_anchor_inner(
                 // so it is the original by construction.
                 let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty() {
                     let a_joined = a_slice.join("\n");
-                    format!("{RK64_ALGORITHM}:{}",
+                    format!(
+                        "{RK64_ALGORITHM}:{}",
                         rk64_to_hex(cheap_fingerprint_with_extent(
                             a_joined.as_bytes(),
                             &AnchorExtent::WholeFile,
-                        )))
-                        == r.stored_hash
+                        ))
+                    ) == r.stored_hash
                 } else {
                     !r.blob.is_empty()
                 };
@@ -1584,7 +1584,16 @@ pub(crate) fn resolve_anchor_captured(
     // the ONLY heavy classification we run, since index/worktree read the same
     // bytes and reclassifying them reproduces this result verbatim.
     local.layers = CAPTURE_HEAD_LAYERS;
-    let mut head_run = resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r.clone())?;
+    let mut head_run = resolve_anchor_inner(
+        repo,
+        local,
+        shared,
+        concurrent,
+        cfg,
+        span_name,
+        anchor_id,
+        r.clone(),
+    )?;
     // The resolver leaves `locus` unset; the live path fills it afterwards in
     // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
     // committed projection carries the same locus as a direct committed run.
@@ -1632,15 +1641,25 @@ pub(crate) fn resolve_anchor_captured(
     // two heavy passes, not three; only simultaneous index+worktree drift
     // costs all three.
     local.layers = CAPTURE_FULL_LAYERS;
-    let full_run = resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r.clone())?;
+    let full_run = resolve_anchor_inner(
+        repo,
+        local,
+        shared,
+        concurrent,
+        cfg,
+        span_name,
+        anchor_id,
+        r.clone(),
+    )?;
 
     let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
     let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
 
     let index = if index_drifts {
         local.layers = CAPTURE_INDEX_LAYERS;
-        let index_run =
-            resolve_anchor_inner(repo, local, shared, concurrent, cfg, span_name, anchor_id, r)?;
+        let index_run = resolve_anchor_inner(
+            repo, local, shared, concurrent, cfg, span_name, anchor_id, r,
+        )?;
         observation_from(&index_run)
     } else {
         fresh_observation(&anchored)
@@ -1815,10 +1834,10 @@ fn clean_head_fast_path(
     let Some(t) = head_loc.as_ref() else {
         return Ok(None);
     };
-    if concurrent.filter_short_circuit(repo,&t.path)?.is_some() {
+    if concurrent.filter_short_circuit(repo, &t.path)?.is_some() {
         return Ok(None);
     }
-    let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)? else {
+    let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha, &t.path)? else {
         return Ok(None);
     };
     if head_blob != r.blob {
@@ -1907,12 +1926,12 @@ fn compute_layer_sources(
     let head_text: Option<(String, Tracked)> = match head_tracked.as_ref() {
         None => None,
         Some(t) => {
-            if concurrent.filter_short_circuit(repo,&t.path)?.is_some() {
+            if concurrent.filter_short_circuit(repo, &t.path)?.is_some() {
                 // Fail-closed: can't read — treat as "absent" so adjacent
                 // comparisons surface drift.
                 None
             } else {
-                let oid = concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?;
+                let oid = concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?;
                 let txt = match &oid {
                     Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                     None => String::new(),
@@ -1929,10 +1948,10 @@ fn compute_layer_sources(
                 let oid = if index_hunk_applied {
                     match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
                     }
                 } else {
-                    concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?
+                    concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?
                 };
                 let txt = match &oid {
                     Some(o) => read_blob_text(repo, o),
@@ -1957,7 +1976,7 @@ fn compute_layer_sources(
                 } else {
                     let oid = match index_blob_oid.clone() {
                         Some(o) => Some(o),
-                        None => concurrent.head_blob_at(repo, &shared.head_sha,&t.path)?,
+                        None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
                     };
                     let txt = match &oid {
                         Some(o) => read_blob_text(repo, o),
@@ -2022,10 +2041,13 @@ fn compute_layer_sources(
                 } else {
                     String::new()
                 };
-                let head_hash = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(
-                    head_slice_text.as_bytes(),
-                    &AnchorExtent::WholeFile,
-                )));
+                let head_hash = format!(
+                    "{RK64_ALGORITHM}:{}",
+                    rk64_to_hex(cheap_fingerprint_with_extent(
+                        head_slice_text.as_bytes(),
+                        &AnchorExtent::WholeFile,
+                    ))
+                );
                 head_hash != r.stored_hash
             }
         }

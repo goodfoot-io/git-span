@@ -41,7 +41,10 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
         let extent = if *start == 0 && *end == 0 {
             crate::types::AnchorExtent::WholeFile
         } else {
-            crate::types::AnchorExtent::LineRange { start: *start, end: *end }
+            crate::types::AnchorExtent::LineRange {
+                start: *start,
+                end: *end,
+            }
         };
         let fp = cheap_fingerprint_with_extent(&bytes, &extent);
         records.push(crate::span_file::AnchorRecord {
@@ -771,7 +774,10 @@ fn exe_digest_memo_is_reused_when_stat_is_unchanged() {
         Some(expected_single_command_digest("clean", sentinel)),
         "unchanged stat identity must serve the memoized (sentinel) digest without re-hashing"
     );
-    assert_eq!(memo.lookups, 2, "second capture also looks up the memo once");
+    assert_eq!(
+        memo.lookups, 2,
+        "second capture also looks up the memo once"
+    );
     assert_eq!(
         memo.hits, 1,
         "second capture's lookup must match the unchanged stat"

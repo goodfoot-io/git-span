@@ -73,10 +73,7 @@ fn equivalence_bare_scan_arm() -> Result<()> {
     let repo = TestRepo::seeded()?;
 
     // Span "moved-span": one anchor that will be Moved.
-    repo.write_file(
-        "src.txt",
-        "alpha\nbeta\ngamma\ndelta\nepsilon\n",
-    )?;
+    repo.write_file("src.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n")?;
     repo.run_git(["add", "src.txt"])?;
     repo.run_git(["commit", "-m", "add src.txt"])?;
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
@@ -98,7 +95,12 @@ fn equivalence_bare_scan_arm() -> Result<()> {
     repo.run_git(["commit", "-m", "add deleted-span"])?;
 
     // Span "coalesce-span": two contiguous same-path anchors.
-    repo.span_stdout(["add", "coalesce-span", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    repo.span_stdout([
+        "add",
+        "coalesce-span",
+        "file1.txt#L1-L5",
+        "file1.txt#L6-L10",
+    ])?;
     repo.span_stdout(["why", "coalesce-span", "coalesce anchors"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "add coalesce-span"])?;
@@ -133,9 +135,18 @@ fn equivalence_bare_scan_arm() -> Result<()> {
 
     // Revert span files to their pre-fix state.
     std::fs::write(repo.path().join(".span").join("moved-span"), &snap_moved)?;
-    std::fs::write(repo.path().join(".span").join("changed-span"), &snap_changed)?;
-    std::fs::write(repo.path().join(".span").join("deleted-span"), &snap_deleted)?;
-    std::fs::write(repo.path().join(".span").join("coalesce-span"), &snap_coalesce)?;
+    std::fs::write(
+        repo.path().join(".span").join("changed-span"),
+        &snap_changed,
+    )?;
+    std::fs::write(
+        repo.path().join(".span").join("deleted-span"),
+        &snap_deleted,
+    )?;
+    std::fs::write(
+        repo.path().join(".span").join("coalesce-span"),
+        &snap_coalesce,
+    )?;
 
     // Run 2.
     let (stdout2, stderr2, code2) = run_fix(&repo, ["--no-exit-code"])?;
@@ -290,7 +301,11 @@ fn equivalence_warning_stderr_parity() -> Result<()> {
         cmd.output()?
     };
 
-    assert_eq!(out1.status.code(), out2.status.code(), "exit codes must match");
+    assert_eq!(
+        out1.status.code(),
+        out2.status.code(),
+        "exit codes must match"
+    );
     assert_eq!(
         String::from_utf8_lossy(&out1.stdout),
         String::from_utf8_lossy(&out2.stdout),
@@ -357,7 +372,11 @@ fn golden_cold_path_bare_scan() -> Result<()> {
 
     // After re-anchoring the Moved anchor, the corpus is fully Fresh, so a
     // bare scan (drift report) shows no spans and prints the 0-stale summary.
-    assert_eq!(code, Some(0), "fully-fixed bare scan exits 0; stderr={stderr}");
+    assert_eq!(
+        code,
+        Some(0),
+        "fully-fixed bare scan exits 0; stderr={stderr}"
+    );
     assert_eq!(
         stdout,
         "0 stale across 1 span (1 anchor checked)\n\
@@ -368,7 +387,10 @@ fn golden_cold_path_bare_scan() -> Result<()> {
 
     // The span file was actually re-anchored to dst.txt (the fix happened).
     let span = String::from_utf8(read_span_bytes(&repo, "mover")?)?;
-    assert!(span.contains("dst.txt"), "anchor re-pathed to dst.txt: {span}");
+    assert!(
+        span.contains("dst.txt"),
+        "anchor re-pathed to dst.txt: {span}"
+    );
 
     Ok(())
 }
@@ -439,7 +461,10 @@ fn golden_named_scope_single_warning() -> Result<()> {
     let stderr2 = String::from_utf8_lossy(&stderr2);
 
     assert_eq!(code1, code2, "exit codes must match across runs");
-    assert_eq!(stderr1, stderr2, "named-scope stderr must be byte-identical across runs");
+    assert_eq!(
+        stderr1, stderr2,
+        "named-scope stderr must be byte-identical across runs"
+    );
 
     // Single-emission: no warning line appears more than once.
     let mut seen = std::collections::HashSet::new();

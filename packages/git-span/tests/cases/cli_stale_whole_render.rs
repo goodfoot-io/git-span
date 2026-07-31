@@ -63,7 +63,6 @@ fn whole_pin_human_renders_whole() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn whole_pin_porcelain_uses_whole_marker() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -80,8 +79,6 @@ fn whole_pin_porcelain_uses_whole_marker() -> Result<()> {
     );
     Ok(())
 }
-
-
 
 #[test]
 fn whole_pin_show_renders_whole() -> Result<()> {

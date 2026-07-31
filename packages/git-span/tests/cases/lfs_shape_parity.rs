@@ -29,7 +29,10 @@ fn seed_subdir_lfs_corpus(repo: &TestRepo) -> Result<()> {
     repo.write_file("sub/big.txt", "x1\nx2\nx3\nx4\nx5\n")?;
     // Subdirectory .gitattributes declaring LFS for the anchored file. No root
     // .gitattributes exists, so the old root-only probe would miss this.
-    repo.write_file("sub/.gitattributes", "*.txt filter=lfs diff=lfs merge=lfs -text\n")?;
+    repo.write_file(
+        "sub/.gitattributes",
+        "*.txt filter=lfs diff=lfs merge=lfs -text\n",
+    )?;
     repo.commit_all("seed")?;
 
     repo.run_span(["add", "m", "sub/big.txt#L1-L3"])?;

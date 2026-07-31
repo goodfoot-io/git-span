@@ -16,8 +16,7 @@ use crate::support;
 use anyhow::Result;
 use support::TestRepo;
 
-const POISON_HASH: &str =
-    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const POISON_HASH: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 /// Seed a repo with one CLEAN span and one POISONED span (carrying a
 /// span-root-interior anchor), both committed. Returns the repo.
@@ -193,9 +192,7 @@ fn scoped_stale_by_filepath_surfaces_interior_violation() -> Result<()> {
     let (anchors_section, why_section) = current
         .split_once("\n\n")
         .expect("span file must contain blank-line separator");
-    let poisoned = format!(
-        "{anchors_section}\n.span/my/flow {POISON_HASH}\n\n{why_section}"
-    );
+    let poisoned = format!("{anchors_section}\n.span/my/flow {POISON_HASH}\n\n{why_section}");
     std::fs::write(&span_path, &poisoned)?;
     repo.commit_all("inject interior anchor into my/flow")?;
     repo.write_commit_graph()?;

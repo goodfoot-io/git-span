@@ -114,10 +114,6 @@ fn human_output_has_summary_line() -> Result<()> {
     Ok(())
 }
 
-
-
-
-
 #[test]
 
 fn workspace_scan_without_name() -> Result<()> {

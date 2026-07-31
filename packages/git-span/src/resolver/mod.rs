@@ -29,12 +29,13 @@ pub(crate) mod store;
 pub(crate) mod timeline;
 pub(crate) mod walker;
 
+pub(crate) use engine::{
+    SourceLayers, build_source_layers, resolve_named_spans,
+    resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
+    sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
+    stale_spans_retaining_source_layers,
+};
 pub use engine::{
     resolve_anchor, resolve_span, resolve_span_at, stale_spans, stale_spans_with_trace,
 };
 pub(crate) use store::WholeResult;
-pub(crate) use engine::{
-    SourceLayers, build_source_layers, span_is_reportable_in_stale_discovery, resolve_named_spans,
-    resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
-    sort_spans_by_anchor_path, stale_spans_retaining_source_layers,
-};

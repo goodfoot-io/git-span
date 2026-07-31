@@ -58,8 +58,8 @@
 
 use crate::support;
 use anyhow::Result;
-use git_span::types::{AnchorStatus, EngineOptions, UnavailableReason};
 use git_span::resolve_span;
+use git_span::types::{AnchorStatus, EngineOptions, UnavailableReason};
 use support::TestRepo;
 
 #[test]
@@ -147,12 +147,7 @@ fn promisor_missing_blob_misclassified_as_deleted() -> Result<()> {
     // not from the worktree file on disk (which still exists and would mask
     // the bug).
     let gix = repo.gix_repo()?;
-    let resolved = resolve_span(
-        &gix,
-        ".span",
-        "test-span",
-        EngineOptions::committed_only(),
-    )?;
+    let resolved = resolve_span(&gix, ".span", "test-span", EngineOptions::committed_only())?;
 
     assert!(
         !resolved.anchors.is_empty(),

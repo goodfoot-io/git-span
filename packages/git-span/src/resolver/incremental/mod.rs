@@ -115,7 +115,10 @@ pub(crate) fn attempt(
         build.anchor_resolutions,
     );
     crate::perf::counter("cache-path.incremental-reused-spans", build.reused as u64);
-    crate::perf::counter("cache-path.incremental-resolved-spans", build.resolved as u64);
+    crate::perf::counter(
+        "cache-path.incremental-resolved-spans",
+        build.resolved as u64,
+    );
     crate::perf::note("cache-path.hit-class: incremental");
 
     let attempt = exact::project_revalidate_publish(
@@ -198,8 +201,7 @@ fn build_incremental_core(
     // ── 4. Dirty relevant paths (from the already-captured token) ───────────
     let dirty_relevant = relevant_dirty_paths(repo, token)?;
 
-    let mut affected_paths: HashSet<&str> =
-        changed_committed.iter().map(String::as_str).collect();
+    let mut affected_paths: HashSet<&str> = changed_committed.iter().map(String::as_str).collect();
     affected_paths.extend(dirty_relevant.iter().map(String::as_str));
 
     // ── 5. Current corpus and the affected set ──────────────────────────────
@@ -326,8 +328,7 @@ pub(crate) fn relevant_dirty_paths(
     for path in all {
         let head_oid = head_blob_oid(repo, path)?;
         let staged_clean = staged_clean(staged.get(path).copied(), head_oid.as_deref());
-        let worktree_clean =
-            worktree_clean(repo, worktree.get(path).copied(), head_oid.as_deref());
+        let worktree_clean = worktree_clean(repo, worktree.get(path).copied(), head_oid.as_deref());
         if !(staged_clean && worktree_clean) {
             dirty.insert(path.to_string());
         }

@@ -9,15 +9,14 @@
 //! `notes/current-blob-unreliable-for-fix.md`), so we read content per
 //! surfacing layer rather than via `current.blob`.
 
-use crate::cli::commit::{hash_anchor_content, span_file_path,
-    write_worktree_span};
+use crate::cli::commit::{hash_anchor_content, span_file_path, write_worktree_span};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::{AnchorRecord, SpanFile, has_conflict_markers};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
 use anyhow::Result;
-use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
-use git_span_core::span_file::merge_span_files;
 use git_span_core::UnresolvedAnchor;
+use git_span_core::span_file::merge_span_files;
+use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Carries the result of a single `apply_fix` invocation.
@@ -57,7 +56,11 @@ pub(crate) struct FixResult {
 
 /// Read raw span file content from the worktree, returning `None` when the
 /// file does not exist.
-fn read_raw_span_content(repo: &gix::Repository, span_root: &str, name: &str) -> Result<Option<String>> {
+fn read_raw_span_content(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+) -> Result<Option<String>> {
     let path = span_file_path(repo, span_root, name)?;
     if path.exists() {
         Ok(Some(std::fs::read_to_string(&path)?))
@@ -290,10 +293,20 @@ fn prune_unreadable_renamed_orphans(
         .map(|(i, _)| i)
         .collect();
 
-    let remove_ours =
-        plan_orphan_removals(&ours.anchors, &ours_orphans, &theirs.anchors, &theirs_orphans, &readable)?;
-    let remove_theirs =
-        plan_orphan_removals(&theirs.anchors, &theirs_orphans, &ours.anchors, &ours_orphans, &readable)?;
+    let remove_ours = plan_orphan_removals(
+        &ours.anchors,
+        &ours_orphans,
+        &theirs.anchors,
+        &theirs_orphans,
+        &readable,
+    )?;
+    let remove_theirs = plan_orphan_removals(
+        &theirs.anchors,
+        &theirs_orphans,
+        &ours.anchors,
+        &ours_orphans,
+        &readable,
+    )?;
 
     let mut idx = 0usize;
     ours.anchors.retain(|_| {
@@ -367,8 +380,7 @@ fn plan_orphan_removals(
                 chosen.push((i, (c.path.clone(), c.start_line, c.end_line)));
             }
             _ => {
-                let names: Vec<&str> =
-                    candidates.iter().map(|c| c.path.as_str()).collect();
+                let names: Vec<&str> = candidates.iter().map(|c| c.path.as_str()).collect();
                 anyhow::bail!(
                     "anchor `{}` has multiple possible rename targets ({}); resolve manually",
                     anchor.path,
@@ -519,9 +531,7 @@ fn write_residue_span(
     }
     let tmp_name = format!(
         ".{}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("span")
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("span")
     );
     let tmp_path = path
         .parent()
@@ -538,9 +548,9 @@ fn write_residue_span(
     let has_unmerged = crate::git::index_entries(repo)
         .ok()
         .map(|entries| {
-            entries
-                .iter()
-                .any(|e| e.path == span_rel_path && e.stage != gix::index::entry::Stage::Unconflicted)
+            entries.iter().any(|e| {
+                e.path == span_rel_path && e.stage != gix::index::entry::Stage::Unconflicted
+            })
         })
         .unwrap_or(false);
     if has_unmerged {
@@ -569,9 +579,7 @@ fn resolve_conflicted_span(
 ) -> Result<()> {
     // Step 1: Split markers into ours/theirs text.
     let (ours_text, theirs_text) = split_conflict_markers(raw).ok_or_else(|| {
-        anyhow::anyhow!(
-            "internal error: span `{name}` reported as conflicted but no markers found"
-        )
+        anyhow::anyhow!("internal error: span `{name}` reported as conflicted but no markers found")
     })?;
 
     // Step 2: Parse each side as a clean span file (markers are removed).
@@ -579,14 +587,10 @@ fn resolve_conflicted_span(
     // whose conflict marker splitting produced malformed output (e.g. a
     // `=======` inside why text).
     let mut ours = SpanFile::parse(&ours_text).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to parse conflict-side content for span `{name}`: {e}"
-        )
+        anyhow::anyhow!("failed to parse conflict-side content for span `{name}`: {e}")
     })?;
     let mut theirs = SpanFile::parse(&theirs_text).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to parse conflict-side content for span `{name}`: {e}"
-        )
+        anyhow::anyhow!("failed to parse conflict-side content for span `{name}`: {e}")
     })?;
 
     // Step 3: Enforce clean-source precondition (fail-closed on a source
@@ -605,8 +609,7 @@ fn resolve_conflicted_span(
     // report `0 removed` even though anchors were genuinely dropped.
     let before_prune_count = ours.anchors.len() + theirs.anchors.len();
     prune_unreadable_renamed_orphans(&mut ours, &mut theirs, &source_files)?;
-    let pruned_count =
-        before_prune_count.saturating_sub(ours.anchors.len() + theirs.anchors.len());
+    let pruned_count = before_prune_count.saturating_sub(ours.anchors.len() + theirs.anchors.len());
     fix_result.anchors_removed += pruned_count;
 
     // Step 4: Structural merge.
@@ -614,7 +617,11 @@ fn resolve_conflicted_span(
 
     // Step 5: Determine outcome.
     let why_conflict = result.unresolved.iter().any(|u| u.path.is_empty());
-    let anchor_residue_count = result.unresolved.iter().filter(|u| !u.path.is_empty()).count();
+    let anchor_residue_count = result
+        .unresolved
+        .iter()
+        .filter(|u| !u.path.is_empty())
+        .count();
 
     if result.unresolved.is_empty() {
         // Fully resolved — all anchors merged cleanly, why resolved.
@@ -632,9 +639,7 @@ fn resolve_conflicted_span(
             .current_dir(workdir)
             .status()
             .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to run git add for `{name}` after conflict resolution: {e}"
-                )
+                anyhow::anyhow!("failed to run git add for `{name}` after conflict resolution: {e}")
             })?;
         if !add_status.success() {
             anyhow::bail!("git add failed for `{name}` after conflict resolution");
@@ -724,8 +729,7 @@ pub(crate) fn apply_fix(
 
     // Materialize the index snapshot once — shared by every
     // hash_anchor_content call and the Index-layer hash path below.
-    let index_snapshot: Option<Vec<IndexEntrySnapshot>> =
-        crate::git::index_entries(repo).ok();
+    let index_snapshot: Option<Vec<IndexEntrySnapshot>> = crate::git::index_entries(repo).ok();
 
     for m in spans {
         // --- Conflict detection and resolution ---
@@ -753,10 +757,7 @@ pub(crate) fn apply_fix(
                 Err(e) => {
                     // Resolution failed (e.g. conflicted source file).
                     // Report loudly and leave the span conflicted.
-                    eprintln!(
-                        "warning: cannot resolve conflict in `{}`: {}",
-                        m.name, e
-                    );
+                    eprintln!("warning: cannot resolve conflict in `{}`: {}", m.name, e);
                 }
             }
             // Skip the per-anchor re-anchor loop — the conflict resolution
@@ -805,7 +806,7 @@ pub(crate) fn apply_fix(
                     }
                 }
                 AnchorStatus::Changed => resolved.content_equivalent,
-                AnchorStatus::ResolvedPendingCommit => false,  // already synced with worktree
+                AnchorStatus::ResolvedPendingCommit => false, // already synced with worktree
                 _ => false,
             };
             if !reanchor {
@@ -858,9 +859,7 @@ pub(crate) fn apply_fix(
                     .anchors
                     .iter()
                     .find(|r| {
-                        r.path == anc_path
-                            && r.start_line == anc_start
-                            && r.end_line == anc_end
+                        r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end
                     })
                     .map(|r| r.content_hash.clone())
                 {
@@ -872,9 +871,7 @@ pub(crate) fn apply_fix(
                 match layer {
                     DriftSource::Worktree => {
                         crate::perf::record_fix_hash_call();
-                        match hash_anchor_content(
-                            repo, &cur_path_str, &cur_extent, None, idx,
-                        ) {
+                        match hash_anchor_content(repo, &cur_path_str, &cur_extent, None, idx) {
                             Ok((_alg, h)) => h,
                             Err(_) => continue,
                         }
@@ -885,9 +882,8 @@ pub(crate) fn apply_fix(
                             None => continue,
                         };
                         crate::perf::record_fix_hash_call();
-                        let head_result = hash_anchor_content(
-                            repo, &cur_path_str, &cur_extent, Some(oid), idx,
-                        );
+                        let head_result =
+                            hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx);
                         match head_result {
                             Ok((_alg, h)) => h,
                             Err(_) => {
@@ -897,22 +893,17 @@ pub(crate) fn apply_fix(
                                     .iter()
                                     .find(|en| {
                                         en.path == cur_path_str
-                                            && en.stage
-                                                == gix::index::entry::Stage::Unconflicted
+                                            && en.stage == gix::index::entry::Stage::Unconflicted
                                     }) {
                                     Some(e) => e,
                                     None => continue,
                                 };
                                 let blob_oid_hex = entry.oid.to_string();
-                                let bytes = match crate::git::read_blob_bytes(
-                                    repo, &blob_oid_hex,
-                                ) {
+                                let bytes = match crate::git::read_blob_bytes(repo, &blob_oid_hex) {
                                     Ok(b) => b,
                                     Err(_) => continue,
                                 };
-                                if let AnchorExtent::LineRange { start, end } =
-                                    cur_extent
-                                {
+                                if let AnchorExtent::LineRange { start, end } = cur_extent {
                                     let line_count = std::str::from_utf8(&bytes)
                                         .map(|s| s.lines().count() as u32)
                                         .unwrap_or(0);
@@ -923,29 +914,21 @@ pub(crate) fn apply_fix(
                                         continue;
                                     }
                                 }
-                                rk64_to_hex(cheap_fingerprint_with_extent(
-                                    &bytes, &cur_extent,
-                                ))
+                                rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
                             }
                         }
                     }
                     DriftSource::Index => {
-                        let entry = match index_snapshot
-                            .as_deref()
-                            .unwrap_or(&[])
-                            .iter()
-                            .find(|en| {
+                        let entry =
+                            match index_snapshot.as_deref().unwrap_or(&[]).iter().find(|en| {
                                 en.path == cur_path_str
-                                    && en.stage
-                                        == gix::index::entry::Stage::Unconflicted
+                                    && en.stage == gix::index::entry::Stage::Unconflicted
                             }) {
-                            Some(e) => e,
-                            None => continue,
-                        };
+                                Some(e) => e,
+                                None => continue,
+                            };
                         let blob_oid_hex = entry.oid.to_string();
-                        let bytes = match crate::git::read_blob_bytes(
-                            repo, &blob_oid_hex,
-                        ) {
+                        let bytes = match crate::git::read_blob_bytes(repo, &blob_oid_hex) {
                             Ok(b) => b,
                             Err(_) => continue,
                         };
@@ -972,9 +955,10 @@ pub(crate) fn apply_fix(
             };
             let anc_path = resolved.anchored.path.to_string_lossy().to_string();
 
-            let record = span_file.anchors.iter_mut().find(|r| {
-                r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end
-            });
+            let record = span_file
+                .anchors
+                .iter_mut()
+                .find(|r| r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end);
             let Some(record) = record else { continue };
 
             // Rewrite in place.
@@ -1044,8 +1028,7 @@ pub(crate) fn apply_fix(
                         AnchorExtent::LineRange { start, end } => (start, end),
                         AnchorExtent::WholeFile => (0, 0),
                     };
-                    mergeable_keys
-                        .insert((current.path.to_string_lossy().to_string(), s, e));
+                    mergeable_keys.insert((current.path.to_string_lossy().to_string(), s, e));
                 }
                 // Terminal statuses are never eligible.
                 _ => {}
@@ -1152,9 +1135,9 @@ fn coalesce_line_ranges(
         let mut run: Option<(Vec<usize>, u32, u32, Option<String>)> = None;
 
         let flush = |run: Option<(Vec<usize>, u32, u32, Option<String>)>,
-                         replacement: &mut HashMap<usize, AnchorRecord>,
-                         dropped: &mut HashSet<usize>,
-                         merged_ids: &mut HashSet<String>| {
+                     replacement: &mut HashMap<usize, AnchorRecord>,
+                     dropped: &mut HashSet<usize>,
+                     merged_ids: &mut HashSet<String>| {
             let Some((members, start, end, hash)) = run else {
                 return;
             };
@@ -1183,8 +1166,7 @@ fn coalesce_line_ranges(
 
         for &i in &idxs {
             let r = &span_file.anchors[i];
-            let is_mergeable =
-                mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
+            let is_mergeable = mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
 
             if !is_mergeable {
                 // Barrier: a record that is not worktree-fresh (terminal or

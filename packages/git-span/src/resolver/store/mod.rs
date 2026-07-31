@@ -66,7 +66,9 @@ use lock::{LockGuard, acquire_build_shard, acquire_init_lock, shard_index};
 use payload::{
     DOMAIN_GENERATION, DOMAIN_ROW, EntryKind, IntegrityReason, envelope_digest, verify_envelope,
 };
-use schema::{DB_BASENAME, DEFAULT_BUSY_TIMEOUT_MS, ProbeOutcome, probe_and_init, set_busy_timeout};
+use schema::{
+    DB_BASENAME, DEFAULT_BUSY_TIMEOUT_MS, ProbeOutcome, probe_and_init, set_busy_timeout,
+};
 
 /// Width of an access bucket, in seconds. Warm reads only rewrite
 /// `access_bucket` when the bucket changes, so a hot read does not become a
@@ -343,7 +345,11 @@ impl CacheStore {
         // A summary-only publish declares zero rows so that the generation's
         // cardinality (and integrity envelope) match the rows it physically
         // stores (none).
-        let row_count = if store_rows { input.rows.len() as u64 } else { 0 };
+        let row_count = if store_rows {
+            input.rows.len() as u64
+        } else {
+            0
+        };
         let summary_digest = envelope_digest(
             DOMAIN_GENERATION,
             EntryKind::Generation.as_u32(),
@@ -359,10 +365,16 @@ impl CacheStore {
             .map_err(map_sqlite)?;
 
         // Atomic replace: clear any prior generation for this key first.
-        tx.execute("DELETE FROM generation_row WHERE key_digest = ?1", [&key_hex])
-            .map_err(map_sqlite)?;
-        tx.execute("DELETE FROM span_path_index WHERE key_digest = ?1", [&key_hex])
-            .map_err(map_sqlite)?;
+        tx.execute(
+            "DELETE FROM generation_row WHERE key_digest = ?1",
+            [&key_hex],
+        )
+        .map_err(map_sqlite)?;
+        tx.execute(
+            "DELETE FROM span_path_index WHERE key_digest = ?1",
+            [&key_hex],
+        )
+        .map_err(map_sqlite)?;
         tx.execute("DELETE FROM generation WHERE key_digest = ?1", [&key_hex])
             .map_err(map_sqlite)?;
 
@@ -454,12 +466,12 @@ impl CacheStore {
                 [&key_hex],
                 |r| {
                     Ok((
-                        r.get::<_, i64>(0)?,        // entry_kind
-                        r.get::<_, i64>(1)?,        // payload_version
-                        r.get::<_, String>(2)?,     // head
-                        r.get::<_, i64>(3)?,        // row_count
-                        r.get::<_, Vec<u8>>(4)?,    // summary
-                        r.get::<_, Vec<u8>>(5)?,    // summary_digest
+                        r.get::<_, i64>(0)?,     // entry_kind
+                        r.get::<_, i64>(1)?,     // payload_version
+                        r.get::<_, String>(2)?,  // head
+                        r.get::<_, i64>(3)?,     // row_count
+                        r.get::<_, Vec<u8>>(4)?, // summary
+                        r.get::<_, Vec<u8>>(5)?, // summary_digest
                     ))
                 },
             )
@@ -986,10 +998,16 @@ impl CacheStore {
         // after commit sees Miss rather than a manifest without rows.
         tx.execute("DELETE FROM generation WHERE key_digest = ?1", [key_hex])
             .map_err(map_sqlite)?;
-        tx.execute("DELETE FROM generation_row WHERE key_digest = ?1", [key_hex])
-            .map_err(map_sqlite)?;
-        tx.execute("DELETE FROM span_path_index WHERE key_digest = ?1", [key_hex])
-            .map_err(map_sqlite)?;
+        tx.execute(
+            "DELETE FROM generation_row WHERE key_digest = ?1",
+            [key_hex],
+        )
+        .map_err(map_sqlite)?;
+        tx.execute(
+            "DELETE FROM span_path_index WHERE key_digest = ?1",
+            [key_hex],
+        )
+        .map_err(map_sqlite)?;
         tx.commit().map_err(map_sqlite)?;
         Ok(())
     }
@@ -1170,7 +1188,6 @@ impl CacheStore {
             .map_err(map_sqlite)?;
         Ok(())
     }
-
 }
 
 /// One non-live generation selected for quota eviction.

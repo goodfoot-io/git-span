@@ -113,11 +113,9 @@ fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
 // Row 3: changed in the index
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Row 4: deleted in the index
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Row 5: changed in <sha>
@@ -244,8 +242,6 @@ fn anchored_path_absent_from_head_labels_deleted() -> Result<()> {
 // Precedence: worktree edit wins over index edit wins over HEAD drift
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Cross-surface consistency: stale, stale --patch, and show emit identical labels
 // ---------------------------------------------------------------------------
-

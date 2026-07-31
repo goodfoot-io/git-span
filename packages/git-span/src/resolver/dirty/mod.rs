@@ -128,7 +128,10 @@ pub(crate) fn attempt(
     };
 
     incr_dirty_anchor_resolutions(build.anchor_resolutions);
-    crate::perf::counter("cache-path.dirty-anchor-resolutions", build.anchor_resolutions);
+    crate::perf::counter(
+        "cache-path.dirty-anchor-resolutions",
+        build.anchor_resolutions,
+    );
     crate::perf::counter("cache-path.dirty-reused-spans", build.reused as u64);
     crate::perf::counter("cache-path.dirty-resolved-spans", build.resolved as u64);
     crate::perf::note("cache-path.hit-class: dirty");
@@ -230,9 +233,7 @@ pub(crate) fn relevant_dirty_paths(
 /// Returns an empty map when HEAD (or its tree) cannot be read — the caller then
 /// treats every relevant path as absent at HEAD, which the per-path predicates
 /// classify conservatively (never a stale reuse).
-fn head_blob_path_map(
-    repo: &gix::Repository,
-) -> Result<std::collections::HashMap<String, String>> {
+fn head_blob_path_map(repo: &gix::Repository) -> Result<std::collections::HashMap<String, String>> {
     use crate::Error;
     let Ok(commit) = repo.head_commit() else {
         return Ok(std::collections::HashMap::new());

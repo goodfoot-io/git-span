@@ -16,9 +16,7 @@
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!(
-            "Usage: bench-corpus-gen <output-dir> <seed> <span-count> [--with-commit-graph]"
-        );
+        eprintln!("Usage: bench-corpus-gen <output-dir> <seed> <span-count> [--with-commit-graph]");
         std::process::exit(1);
     }
 

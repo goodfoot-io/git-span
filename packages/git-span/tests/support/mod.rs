@@ -371,7 +371,10 @@ pub fn create_and_commit_span(
         let extent = if *start == 0 && *end == 0 {
             git_span::AnchorExtent::WholeFile
         } else {
-            git_span::AnchorExtent::LineRange { start: *start, end: *end }
+            git_span::AnchorExtent::LineRange {
+                start: *start,
+                end: *end,
+            }
         };
         let fp = git_span_core::cheap_fingerprint_with_extent(&bytes, &extent);
         let hash = git_span_core::rk64_to_hex(fp);

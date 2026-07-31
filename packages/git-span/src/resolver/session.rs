@@ -13,7 +13,9 @@ use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::engine::SharedEngineContext;
-use crate::resolver::layers::{CustomFilters, is_custom_filter_configured, read_worktree_normalized};
+use crate::resolver::layers::{
+    CustomFilters, is_custom_filter_configured, read_worktree_normalized,
+};
 use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
@@ -770,11 +772,7 @@ impl ConcurrentSession {
         )
     }
 
-    fn filter_attribute_value(
-        &self,
-        repo: &gix::Repository,
-        path: &str,
-    ) -> Result<Option<String>> {
+    fn filter_attribute_value(&self, repo: &gix::Repository, path: &str) -> Result<Option<String>> {
         let cached = self.filter_attrs.read().unwrap().get(path).cloned();
         if let Some(cached) = cached {
             self.filter_attr_hits.fetch_add(1, Ordering::Relaxed);
@@ -1066,8 +1064,7 @@ impl ConcurrentSession {
         if let Some(cached) = corpus.candidates.get(&key) {
             return cached.clone();
         }
-        let (ids, raw_empty) =
-            git_span_core::intern_normalized_lines(lines, &mut corpus.interner);
+        let (ids, raw_empty) = git_span_core::intern_normalized_lines(lines, &mut corpus.interner);
         let value: JaccardCandidateIds = (ids.into(), raw_empty.into());
         corpus.candidates.insert(key, value.clone());
         value
@@ -1189,11 +1186,7 @@ impl ConcurrentSession {
     /// outer map lock only long enough to clone (hit) or insert (miss) the
     /// cell — never across the value computation the caller drives via
     /// [`OnceLock::get_or_init`]. Card main-162 staged-rollout step 3.
-    fn single_flight_cell<V>(
-        &self,
-        memo: &SingleFlightMemo<V>,
-        key: &str,
-    ) -> Arc<OnceLock<V>> {
+    fn single_flight_cell<V>(&self, memo: &SingleFlightMemo<V>, key: &str) -> Arc<OnceLock<V>> {
         if let Some(cell) = memo.read().unwrap().get(key).cloned() {
             return cell;
         }
@@ -1684,7 +1677,11 @@ pub(crate) fn resolve_at_head_shared(
             &concurrent.blob_oid_memo,
         )?;
         let arc = Arc::new(tl);
-        concurrent.timelines.write().unwrap().insert(key, Arc::clone(&arc));
+        concurrent
+            .timelines
+            .write()
+            .unwrap()
+            .insert(key, Arc::clone(&arc));
         arc
     };
 

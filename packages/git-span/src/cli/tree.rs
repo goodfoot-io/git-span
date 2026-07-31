@@ -305,13 +305,11 @@ where
                  maximal cliques. The matched corpus is too densely \
                  interconnected to expand without risking a runaway."
             ),
-            next_steps: vec![
-                NextStep::Prose(
-                    "Narrow the path/glob arguments to a smaller root set, or \
+            next_steps: vec![NextStep::Prose(
+                "Narrow the path/glob arguments to a smaller root set, or \
                      lower `-d`/`--depth`, then retry."
-                        .into(),
-                ),
-            ],
+                    .into(),
+            )],
         }
         .into());
     }
@@ -349,10 +347,16 @@ where
         let adjacency = neighbors_in_scope(&vertex);
         let mut next_included = included.clone();
         next_included.insert(vertex.clone());
-        let next_remaining: BTreeSet<String> =
-            remaining.iter().filter(|n| adjacency.contains(*n)).cloned().collect();
-        let next_excluded: BTreeSet<String> =
-            excluded.iter().filter(|n| adjacency.contains(*n)).cloned().collect();
+        let next_remaining: BTreeSet<String> = remaining
+            .iter()
+            .filter(|n| adjacency.contains(*n))
+            .cloned()
+            .collect();
+        let next_excluded: BTreeSet<String> = excluded
+            .iter()
+            .filter(|n| adjacency.contains(*n))
+            .cloned()
+            .collect();
         search(
             neighbors_in_scope,
             next_included,

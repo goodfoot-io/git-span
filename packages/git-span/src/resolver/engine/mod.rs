@@ -122,7 +122,11 @@ pub(crate) struct SourceLayers {
 }
 
 impl EngineState {
-    pub(crate) fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
+    pub(crate) fn new(
+        repo: &gix::Repository,
+        layers: LayerSet,
+        needs_all_layers: bool,
+    ) -> Result<Self> {
         Self::new_with_fuzzy_threshold(repo, layers, needs_all_layers, 0.95)
     }
 
@@ -762,8 +766,7 @@ pub(crate) fn capture_resolution_core(
     use rayon::prelude::*;
 
     let _perf = crate::perf::span("resolver.capture-resolution-core");
-    let mut state =
-        EngineState::new_with_fuzzy_threshold(repo, LayerSet::full(), true, 0.95)?;
+    let mut state = EngineState::new_with_fuzzy_threshold(repo, LayerSet::full(), true, 0.95)?;
 
     let span_pairs: Vec<(String, Span)> =
         crate::span::read::read_effective_each_parallel(repo, span_root, names)
@@ -868,7 +871,12 @@ pub(crate) fn capture_resolution_core(
         .into_par_iter()
         .with_min_len(min_anchors_per_task)
         .map_init(
-            || (EngineLocal::new(LayerSet::full(), true), repo_sync.to_thread_local()),
+            || {
+                (
+                    EngineLocal::new(LayerSet::full(), true),
+                    repo_sync.to_thread_local(),
+                )
+            },
             |(local, repo_local), item| {
                 let meta = &span_metas_ref[item.span_index];
                 let core = anchor::resolve_anchor_captured(
@@ -969,7 +977,10 @@ pub(crate) fn resolve_named_spans_retaining_source_layers(
     )?;
     let (out, layers) =
         resolve_named_spans_with_state(repo, span_root, names, options, state, true)?;
-    Ok((out, layers.expect("retain_layers=true yields Some(SourceLayers)")))
+    Ok((
+        out,
+        layers.expect("retain_layers=true yields Some(SourceLayers)"),
+    ))
 }
 
 pub(crate) fn resolve_named_spans_with_state(
@@ -996,8 +1007,8 @@ pub(crate) fn resolve_named_spans_with_state(
                 .collect();
         if !span_pairs.is_empty() {
             state
-            .concurrent
-            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
+                .concurrent
+                .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
         }
     }
 
@@ -1121,19 +1132,15 @@ pub(crate) fn resolve_named_spans_parallel(
             let fatal = &fatal;
             s.spawn(move || {
                 let _perf = crate::perf::span("resolver.resolve-named-spans");
-                let mut state = match EngineState::new(
-                    &repo,
-                    options.layers,
-                    options.needs_all_layers,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        fatal.lock().unwrap().get_or_insert(e);
-                        return;
-                    }
-                };
-                let mut out: Vec<(usize, std::result::Result<SpanResolved, Error>)> =
-                    Vec::new();
+                let mut state =
+                    match EngineState::new(&repo, options.layers, options.needs_all_layers) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            fatal.lock().unwrap().get_or_insert(e);
+                            return;
+                        }
+                    };
+                let mut out: Vec<(usize, std::result::Result<SpanResolved, Error>)> = Vec::new();
                 loop {
                     if fatal.lock().unwrap().is_some() {
                         break;
@@ -1198,9 +1205,9 @@ pub(crate) fn resolve_named_spans_parallel(
         match slot {
             ParallelSlot::Done(r) => out.push((name, r)),
             ParallelSlot::Resolve(_) => {
-                let r = by_index.remove(&i).expect(
-                    "every Resolve slot is processed when no fatal error is recorded",
-                );
+                let r = by_index
+                    .remove(&i)
+                    .expect("every Resolve slot is processed when no fatal error is recorded");
                 out.push((name, r));
             }
         }
@@ -1214,7 +1221,11 @@ fn stale_spans_inner(
     options: EngineOptions,
     enable_trace: bool,
     retain_layers: bool,
-) -> Result<(Vec<SpanResolved>, Vec<crate::perf::TraceRow>, Option<SourceLayers>)> {
+) -> Result<(
+    Vec<SpanResolved>,
+    Vec<crate::perf::TraceRow>,
+    Option<SourceLayers>,
+)> {
     crate::perf::reset_subroutine_counters();
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
@@ -1267,7 +1278,10 @@ fn stale_spans_inner(
         "resolver.can-skip-clean-head-us",
         (can_skip_clean_head_ns / 1_000) as u64,
     );
-    crate::perf::counter("session.walk-bloom-skips", state.concurrent.walk_bloom_skips);
+    crate::perf::counter(
+        "session.walk-bloom-skips",
+        state.concurrent.walk_bloom_skips,
+    );
     crate::perf::counter(
         "session.walk-bloom-false-positives",
         state.concurrent.walk_bloom_false_positives,
@@ -1339,7 +1353,10 @@ fn stale_spans_inner(
     crate::perf::counter("session.anchors-fresh", state.concurrent.anchors_fresh);
     crate::perf::counter("session.anchors-moved", state.concurrent.anchors_moved);
     crate::perf::counter("session.anchors-changed", state.concurrent.anchors_changed);
-    crate::perf::counter("session.anchors-orphaned", state.concurrent.anchors_orphaned);
+    crate::perf::counter(
+        "session.anchors-orphaned",
+        state.concurrent.anchors_orphaned,
+    );
     crate::perf::counter(
         "session.anchors-merge-conflict",
         state.concurrent.anchors_merge_conflict,
@@ -1431,7 +1448,11 @@ pub(crate) fn stale_spans_retaining_source_layers(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
-) -> Result<(Vec<SpanResolved>, Option<SourceLayers>, Option<crate::resolver::WholeResult>)> {
+) -> Result<(
+    Vec<SpanResolved>,
+    Option<SourceLayers>,
+    Option<crate::resolver::WholeResult>,
+)> {
     // The SQLite store is the only cache path. On a `Resolved` outcome the store
     // rendered the reportable set and hands back the render-ready whole-result
     // so `run_stale` skips its per-invocation corpus reload (count-totals /
@@ -1827,20 +1848,44 @@ mod tests {
         .unwrap();
 
         // First lookup for `a.txt` → miss.
-        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 1);
+        let _ = state
+            .concurrent
+            .filter_short_circuit(&repo, "a.txt")
+            .unwrap();
+        assert_eq!(
+            state.concurrent.filter_attr_misses.load(Ordering::Relaxed),
+            1
+        );
         assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 0);
 
         // Repeated lookup for the same path → hit, no new miss.
-        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
-        let _ = state.concurrent.filter_short_circuit(&repo, "a.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 1);
+        let _ = state
+            .concurrent
+            .filter_short_circuit(&repo, "a.txt")
+            .unwrap();
+        let _ = state
+            .concurrent
+            .filter_short_circuit(&repo, "a.txt")
+            .unwrap();
+        assert_eq!(
+            state.concurrent.filter_attr_misses.load(Ordering::Relaxed),
+            1
+        );
         assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 2);
 
         // Distinct path → one additional miss.
-        let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
-        let _ = state.concurrent.filter_short_circuit(&repo, "b.txt").unwrap();
-        assert_eq!(state.concurrent.filter_attr_misses.load(Ordering::Relaxed), 2);
+        let _ = state
+            .concurrent
+            .filter_short_circuit(&repo, "b.txt")
+            .unwrap();
+        let _ = state
+            .concurrent
+            .filter_short_circuit(&repo, "b.txt")
+            .unwrap();
+        assert_eq!(
+            state.concurrent.filter_attr_misses.load(Ordering::Relaxed),
+            2
+        );
         assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 3);
     }
 
@@ -1926,7 +1971,11 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &["other.rs"], &["wiki/x.md"], &[]);
-        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1937,7 +1986,11 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
-        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1948,7 +2001,11 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &[], &["packages/anchor.rs"], &[]);
-        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1959,7 +2016,11 @@ mod tests {
             staged_span: false,
         };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
-        assert!(!anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(!anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1971,7 +2032,11 @@ mod tests {
         };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
         // With no content layers enabled, every path is trivially clean.
-        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1983,7 +2048,11 @@ mod tests {
         };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
         // Index layer disabled → index diffs don't disqualify.
-        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"packages/anchor.rs"));
+        assert!(anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "packages/anchor.rs"
+        ));
     }
 
     #[test]
@@ -1998,7 +2067,11 @@ mod tests {
         // clean_layers=true; the shortcut is what makes the genuinely
         // clean workspace skip the HashMap probes).
         let state = state_for_predicate(layers, true, &[], &[], &[]);
-        assert!(anchor_path_is_layer_clean(&state.local, &state.shared,"anything.rs"));
+        assert!(anchor_path_is_layer_clean(
+            &state.local,
+            &state.shared,
+            "anything.rs"
+        ));
     }
 
     #[test]
@@ -2012,5 +2085,4 @@ mod tests {
         sort_spans_by_anchor_path(&mut spans_b);
         assert_eq!(spans_a, spans_b);
     }
-
 }

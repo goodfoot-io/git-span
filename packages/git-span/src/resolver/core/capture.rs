@@ -91,8 +91,8 @@ use super::exe_digest::{ExeDigestMemo, ExeStatIdentity};
 use super::token::{
     AvailabilityProof, FilterDependency, PathState, PathStateEntry, SpanBlobIdentity, StateToken,
 };
-use crate::span_file_reader::SpanFileReader;
 use crate::Result;
+use crate::span_file_reader::SpanFileReader;
 use crate::types::{CopyDetection, EngineOptions, Span};
 use blake3::Hasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -440,8 +440,7 @@ fn load_uncommitted(
     committed: &CommittedSpans,
 ) -> Result<UncommittedSpans> {
     let reader = SpanFileReader::new(repo, span_root.to_string());
-    let committed_names: BTreeSet<&str> =
-        committed.spans.iter().map(|s| s.name.as_str()).collect();
+    let committed_names: BTreeSet<&str> = committed.spans.iter().map(|s| s.name.as_str()).collect();
     let mut file_paths = Vec::new();
     let mut anchored: BTreeSet<String> = BTreeSet::new();
     let mut copy_detection = CopyDetection::Off;
@@ -564,7 +563,10 @@ fn reborrow_memo<'a, 'm: 'a>(
 /// proven executable and environment identity when resolvable (see module docs).
 /// Mirrors the config inputs of `cache_v2::schema::filter_config_hash`, promoted
 /// to structured entries whose persistence eligibility is gated on proof.
-fn filters(repo: &gix::Repository, mut memo: Option<&mut dyn ExeDigestMemo>) -> Vec<FilterDependency> {
+fn filters(
+    repo: &gix::Repository,
+    mut memo: Option<&mut dyn ExeDigestMemo>,
+) -> Vec<FilterDependency> {
     let snap = repo.config_snapshot();
     let file = snap.plumbing();
     // driver -> (value-name -> value)
@@ -616,7 +618,9 @@ fn filters(repo: &gix::Repository, mut memo: Option<&mut dyn ExeDigestMemo>) -> 
             .collect::<Vec<_>>()
             .join("\n");
         let executable_digest = match workdir.as_deref() {
-            Some(wd) => filter_executable_digest(&kv, wd, &mut content_cache, reborrow_memo(&mut memo)),
+            Some(wd) => {
+                filter_executable_digest(&kv, wd, &mut content_cache, reborrow_memo(&mut memo))
+            }
             None => None,
         };
         let env_digest = Some(filter_env_digest(&driver, &kv));
@@ -656,7 +660,8 @@ fn filter_executable_digest(
         // failure here fails the whole dependency closed.
         let program = first_program(cmdline)?;
         let resolved = resolve_executable(&program, workdir)?;
-        let content = executable_content_digest(&resolved, content_cache, reborrow_memo(&mut memo))?;
+        let content =
+            executable_content_digest(&resolved, content_cache, reborrow_memo(&mut memo))?;
         write_prefixed(&mut h, cmd_key.as_bytes());
         h.update(&content);
     }
@@ -860,8 +865,7 @@ fn declared_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
 /// key. The cost (no reuse across ambient env changes for custom-filter repos) is
 /// the correct trade for a dependency that cannot be statically proven complete.
 fn whole_env_digest() -> [u8; 32] {
-    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> =
-        std::env::vars_os().collect();
+    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
     vars.sort();
     let mut h = Hasher::new();
     h.update(b"gm.core.filter-env-full\0");
@@ -1125,7 +1129,10 @@ fn staged_states(
         .iter()
         .map(|p| PathStateEntry {
             path: p.clone(),
-            state: by_path.get(p.as_str()).cloned().unwrap_or(PathState::Absent),
+            state: by_path
+                .get(p.as_str())
+                .cloned()
+                .unwrap_or(PathState::Absent),
         })
         .collect()
 }

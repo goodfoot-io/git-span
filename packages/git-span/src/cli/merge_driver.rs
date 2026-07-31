@@ -21,8 +21,8 @@
 //!     driver = git span merge-driver %O %A %B %L
 //! ```
 
-use crate::cli::stale_fix::format_residue_markers;
 use crate::cli::MergeDriverArgs;
+use crate::cli::stale_fix::format_residue_markers;
 use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
 use git_span_core::merge_span_files;
@@ -125,9 +125,7 @@ fn write_file(path: &str, content: &str) -> Result<()> {
     }
     let tmp_name = format!(
         ".{}.tmp",
-        p.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("merge")
+        p.file_name().and_then(|n| n.to_str()).unwrap_or("merge")
     );
     let tmp_path = p
         .parent()

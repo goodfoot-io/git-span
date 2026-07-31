@@ -190,4 +190,3 @@ fn merge_conflicted_span_file_is_conflict_and_fails_closed() -> Result<()> {
     );
     Ok(())
 }
-

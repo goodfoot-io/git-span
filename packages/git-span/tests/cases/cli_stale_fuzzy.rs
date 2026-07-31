@@ -25,7 +25,9 @@ use support::TestRepo;
 fn generate_unique_lines(count: usize) -> Vec<String> {
     let mut lines = Vec::with_capacity(count);
     for i in 1..=count {
-        lines.push(format!("fn worker_{i:02}(param: u32) -> u32 {{ param * {i} }}"));
+        lines.push(format!(
+            "fn worker_{i:02}(param: u32) -> u32 {{ param * {i} }}"
+        ));
     }
     lines
 }
@@ -236,10 +238,7 @@ fn fuzzy_no_candidates_deleted() -> Result<()> {
             succ.is_empty(),
             "Deleted anchor with no candidates must have empty fuzzy_successors"
         );
-        assert_eq!(
-            f["status"]["code"], "DELETED",
-            "expected DELETED status"
-        );
+        assert_eq!(f["status"]["code"], "DELETED", "expected DELETED status");
     }
 
     Ok(())
@@ -344,7 +343,6 @@ fn fix_respects_default_fuzzy_threshold() -> Result<()> {
 // Test 5b: --fix with lowered fuzzy threshold -> re-anchors
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Test 6: JSON output includes confidence/fuzzy_successors
 // ---------------------------------------------------------------------------
@@ -385,12 +383,21 @@ fn fuzzy_json_output() -> Result<()> {
         assert!(!succ.is_empty(), "fuzzy MOVED must have fuzzy_successors");
         // Each successor has path, extent, confidence.
         assert!(succ[0]["path"].is_string(), "successor must have path");
-        assert!(succ[0]["confidence"].is_f64(), "successor must have confidence");
-        assert!(succ[0]["confidence"].as_f64().unwrap() > 0.50, "confidence above noise floor");
+        assert!(
+            succ[0]["confidence"].is_f64(),
+            "successor must have confidence"
+        );
+        assert!(
+            succ[0]["confidence"].as_f64().unwrap() > 0.50,
+            "confidence above noise floor"
+        );
 
         // moved_to should have the confidence field.
         let moved_to = f["moved_to"].as_object().unwrap();
-        assert!(moved_to.contains_key("confidence"), "moved_to must have confidence for fuzzy match");
+        assert!(
+            moved_to.contains_key("confidence"),
+            "moved_to must have confidence for fuzzy match"
+        );
         assert!(
             moved_to["confidence"].as_f64().unwrap() >= 0.95,
             "moved_to confidence must be >= threshold"
@@ -528,9 +535,19 @@ fn fuzzy_shared_candidate_corpus_resolves_each_anchor_independently() -> Result<
     repo.commit_all("seed shared candidate corpus")?;
     repo.write_commit_graph()?;
 
-    seed_span(&repo, "ma", "sourceA.txt#L1-L50", "anchor A over shared corpus")?;
+    seed_span(
+        &repo,
+        "ma",
+        "sourceA.txt#L1-L50",
+        "anchor A over shared corpus",
+    )?;
     repo.write_commit_graph()?;
-    seed_span(&repo, "mb", "sourceB.txt#L1-L50", "anchor B over shared corpus")?;
+    seed_span(
+        &repo,
+        "mb",
+        "sourceB.txt#L1-L50",
+        "anchor B over shared corpus",
+    )?;
     repo.write_commit_graph()?;
 
     // Staged deletion of both anchored sources — HEAD blobs stay alive for
@@ -581,8 +598,14 @@ fn fuzzy_shared_candidate_corpus_resolves_each_anchor_independently() -> Result<
             "anchor B must not cross-match candidate A; finding={f}"
         );
     }
-    assert!(found_a_to_a, "expected ma -> candidateA.txt in JSON findings: {findings:?}");
-    assert!(found_b_to_b, "expected mb -> candidateB.txt in JSON findings: {findings:?}");
+    assert!(
+        found_a_to_a,
+        "expected ma -> candidateA.txt in JSON findings: {findings:?}"
+    );
+    assert!(
+        found_b_to_b,
+        "expected mb -> candidateB.txt in JSON findings: {findings:?}"
+    );
 
     Ok(())
 }

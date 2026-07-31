@@ -551,6 +551,7 @@ impl AnchorBody {
 /// Error/not-found mapping follows the same conventions as `run_show` in
 /// `show.rs`.
 pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -> Result<i32> {
+    crate::git::reject_replacement_topology(repo)?;
     let span_path = format!("{span_root}/{}", args.span);
 
     // Pass 1 — walk the declaration alone, unlimited, to learn every path the
@@ -559,11 +560,7 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     // silently folds into the next declaration-touching commit.
     let (decl_commits, pass1_complete) = {
         let _perf = crate::perf::span("history.walk.declaration");
-        crate::git::git_log_name_only_for_paths(
-            repo,
-            usize::MAX,
-            std::slice::from_ref(&span_path),
-        )?
+        crate::git::git_log_name_only_for_paths(repo, usize::MAX, std::slice::from_ref(&span_path))?
     };
     if !pass1_complete {
         eprintln!(
@@ -670,12 +667,7 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
 /// `agent-hooks` — is a tree, not a span, and so is anything else that will
 /// not parse as one. Both deserve the curated not-found error below rather
 /// than a raw object-store message.
-fn names_a_span(
-    repo: &gix::Repository,
-    name: &str,
-    rev: Option<&str>,
-    span_root: &str,
-) -> bool {
+fn names_a_span(repo: &gix::Repository, name: &str, rev: Option<&str>, span_root: &str) -> bool {
     read_span_at_in(repo, name, rev, span_root).is_ok()
 }
 
@@ -1196,8 +1188,8 @@ fn pair_anchors(old: &[Snapshot], new: &[Snapshot]) -> (Vec<Option<usize>>, Vec<
     let mut old_used: Vec<bool> = vec![false; old.len()];
 
     let pair_up = |pairs: &mut Vec<Option<usize>>,
-                       old_used: &mut Vec<bool>,
-                       accept: &dyn Fn(&Snapshot, &Snapshot) -> bool| {
+                   old_used: &mut Vec<bool>,
+                   accept: &dyn Fn(&Snapshot, &Snapshot) -> bool| {
         for (j, n) in new.iter().enumerate() {
             if pairs[j].is_some() {
                 continue;
@@ -1645,17 +1637,15 @@ fn capture_recorded_snapshots(
 /// `git span add` on an empty file records `rk64:0000000000000000`, and that
 /// anchor was excluded from cross-address recovery. Reading the body asks the
 /// question the guard was always trying to ask.
-fn capture_by_hash(
-    into: &mut std::collections::HashMap<String, Snapshot>,
-    state: &RenderedState,
-) {
+fn capture_by_hash(into: &mut std::collections::HashMap<String, Snapshot>, state: &RenderedState) {
     for snap in &state.anchors {
         let bodiless = matches!(
             snap.body.unavailable(),
             Some(Unavailable::Absent | Unavailable::RangePastEof | Unavailable::FilterFailed)
         );
         if !bodiless {
-            into.entry(snap.hash.clone()).or_insert_with(|| snap.clone());
+            into.entry(snap.hash.clone())
+                .or_insert_with(|| snap.clone());
         }
     }
 }

@@ -19,9 +19,7 @@ use super::token::{
 };
 use crate::cli::drift_label::format_drift_label;
 use crate::resolver::engine::{capture_resolution_core, resolve_named_spans};
-use crate::types::{
-    AnchorStatus, CopyDetection, DriftSource, EngineOptions, LayerSet,
-};
+use crate::types::{AnchorStatus, CopyDetection, DriftSource, EngineOptions, LayerSet};
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
 
@@ -136,13 +134,28 @@ fn config_fingerprint_keys_resolution_config_only() {
     sensitive(&|t| t.replace_refs.push("x:y".to_string()), "replace_refs");
     sensitive(&|t| t.filters.push(sample_filter()), "filters");
     sensitive(&|t| t.attributes_digest[0] ^= 0xFF, "attributes_digest");
-    sensitive(&|t| t.normalization_digest[0] ^= 0xFF, "normalization_digest");
-    sensitive(&|t| t.availability.sparse_active = true, "availability.sparse");
+    sensitive(
+        &|t| t.normalization_digest[0] ^= 0xFF,
+        "normalization_digest",
+    );
+    sensitive(
+        &|t| t.availability.sparse_active = true,
+        "availability.sparse",
+    );
 
     // Output/projection options → stable (cores are layer/format-neutral).
-    stable(&|t| t.needs_all_layers = !t.needs_all_layers, "needs_all_layers");
-    stable(&|t| t.layers.worktree = !t.layers.worktree, "layers.worktree");
-    stable(&|t| t.ignore_unavailable = !t.ignore_unavailable, "ignore_unavailable");
+    stable(
+        &|t| t.needs_all_layers = !t.needs_all_layers,
+        "needs_all_layers",
+    );
+    stable(
+        &|t| t.layers.worktree = !t.layers.worktree,
+        "layers.worktree",
+    );
+    stable(
+        &|t| t.ignore_unavailable = !t.ignore_unavailable,
+        "ignore_unavailable",
+    );
     stable(&|t| t.fuzzy_threshold_bps += 1, "fuzzy_threshold_bps");
     stable(&|t| t.since = Some("f".repeat(40)), "since");
 
@@ -152,7 +165,11 @@ fn config_fingerprint_keys_resolution_config_only() {
     stable(&|t| t.span_subtree = "d".repeat(40), "span_subtree");
     stable(&|t| t.span_blobs.clear(), "span_blobs");
     stable(
-        &|t| t.index_identity = PathState::Tracked { blob: "9".repeat(40) },
+        &|t| {
+            t.index_identity = PathState::Tracked {
+                blob: "9".repeat(40),
+            }
+        },
         "index_identity",
     );
     stable(&|t| t.staged_state.clear(), "staged_state");
@@ -187,11 +204,7 @@ fn canonical_key_digest_sensitive_to_every_semantic_field() {
         |t| t.needs_all_layers = !t.needs_all_layers,
         "needs_all_layers",
     );
-    assert_field_changes_digest(
-        &base,
-        |t| t.fuzzy_threshold_bps += 1,
-        "fuzzy_threshold_bps",
-    );
+    assert_field_changes_digest(&base, |t| t.fuzzy_threshold_bps += 1, "fuzzy_threshold_bps");
     assert_field_changes_digest(&base, |t| t.since = Some("f".repeat(40)), "since");
     assert_field_changes_digest(&base, |t| t.source_tree = "c".repeat(40), "source_tree");
     assert_field_changes_digest(&base, |t| t.span_root = "spans".to_string(), "span_root");
@@ -371,8 +384,7 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
 /// `bench-corpus` feature) — this exercises the same mechanism at unit scale,
 /// which is what a `src/`-level unit test can reach.
 #[test]
-fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() -> crate::Result<()>
-{
+fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() -> crate::Result<()> {
     let td = init_repo();
     let dir = td.path();
     commit_file(dir, "src/a.rs", "one\ntwo\nthree\n", "init a");
@@ -386,12 +398,12 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
     let names = vec!["demo".to_string()];
 
     // Ground truth: two direct resolutions of the SAME on-disk state.
-    let committed_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?
-        [0]
-    .1
-    .as_ref()
-    .expect("committed resolution succeeds")
-    .clone();
+    let committed_span =
+        resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?[0]
+            .1
+            .as_ref()
+            .expect("committed resolution succeeds")
+            .clone();
     let effective_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::full())?[0]
         .1
         .as_ref()
@@ -428,8 +440,8 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
 /// `layer_sources` whose order (`Worktree`, then `Index`) only manifests when
 /// both layers drift at once.
 #[test]
-fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktree_drift(
-) -> crate::Result<()> {
+fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktree_drift()
+-> crate::Result<()> {
     let td = init_repo();
     let dir = td.path();
     commit_file(dir, "src/a.rs", "l1\nl2\nl3\nl4\nl5\n", "init a");
@@ -445,12 +457,12 @@ fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktr
     let repo = gix::open(dir).expect("gix open");
     let names = vec!["demo".to_string()];
 
-    let committed_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?
-        [0]
-    .1
-    .as_ref()
-    .expect("committed resolution succeeds")
-    .clone();
+    let committed_span =
+        resolve_named_spans(&repo, ".span", &names, EngineOptions::committed_only())?[0]
+            .1
+            .as_ref()
+            .expect("committed resolution succeeds")
+            .clone();
     let effective_span = resolve_named_spans(&repo, ".span", &names, EngineOptions::full())?[0]
         .1
         .as_ref()
@@ -515,8 +527,7 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
 /// `DefinitionOrdinal.source_ordinal` (paired with the distinguishing
 /// `definition_digest`) tells them apart.
 #[test]
-fn duplicate_definition_ordinal_identity_preserved_through_construction_serialization_and_merge()
-{
+fn duplicate_definition_ordinal_identity_preserved_through_construction_serialization_and_merge() {
     let anchored = LocationCore {
         path: "src/a.rs".to_string(),
         extent: ExtentCore::WholeFile,
@@ -568,7 +579,10 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
             name: "demo".to_string(),
             why: "why".to_string(),
             follow_moves: false,
-            anchors: vec![(ord_a.clone(), anchor_a.clone()), (ord_b.clone(), anchor_b.clone())],
+            anchors: vec![
+                (ord_a.clone(), anchor_a.clone()),
+                (ord_b.clone(), anchor_b.clone()),
+            ],
         }],
     };
     assert_eq!(

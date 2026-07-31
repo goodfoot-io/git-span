@@ -456,7 +456,13 @@ fn rename_with_further_worktree_move_collapses_to_worktree_finding() -> Result<(
     repo.write_file("src/a_renamed.txt", "pre1\npre2\na1\na2\na3\n")?;
 
     restore_store(repo.path(), &snap);
-    let disabled = run(repo.path(), &["stale", "--format", "json"], Mode::Disabled, false).0;
+    let disabled = run(
+        repo.path(),
+        &["stale", "--format", "json"],
+        Mode::Disabled,
+        false,
+    )
+    .0;
 
     // Non-vacuous premise: the oracle reports exactly one relocation for alpha
     // (a duplicate, uncollapsed projection would emit a second MOVED sourced

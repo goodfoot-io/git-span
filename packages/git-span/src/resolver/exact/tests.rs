@@ -44,7 +44,10 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
         let extent = if *start == 0 && *end == 0 {
             crate::types::AnchorExtent::WholeFile
         } else {
-            crate::types::AnchorExtent::LineRange { start: *start, end: *end }
+            crate::types::AnchorExtent::LineRange {
+                start: *start,
+                end: *end,
+            }
         };
         let fp = cheap_fingerprint_with_extent(&bytes, &extent) ^ 1;
         records.push(crate::span_file::AnchorRecord {
@@ -101,7 +104,10 @@ fn drifted_repo(tag: &str) -> (tempfile::TempDir, gix::Repository) {
     .expect("drift src");
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-m", "drift"]);
-    git(dir, &["commit-graph", "write", "--reachable", "--changed-paths"]);
+    git(
+        dir,
+        &["commit-graph", "write", "--reachable", "--changed-paths"],
+    );
     let repo = gix::open(dir).expect("gix open");
     (td, repo)
 }
@@ -117,7 +123,10 @@ fn enable_store() {
 
 fn resolved(attempt: ExactAttempt) -> Vec<SpanResolved> {
     match attempt {
-        ExactAttempt::Resolved { spans, whole_result } => {
+        ExactAttempt::Resolved {
+            spans,
+            whole_result,
+        } => {
             // Every `Resolved` outcome (cold miss, memo hit, store hit)
             // carries the render-ready whole-result so the CLI skips its
             // corpus reload. Its `spans` (full effective set) must always
@@ -172,7 +181,11 @@ fn cache_disabled_bypasses_store() {
         matches!(out, ExactAttempt::Bypass),
         "GIT_SPAN_CACHE=0 must bypass the store"
     );
-    assert_eq!(test_cold_miss_builds(), 0, "a disabled cache must do no build");
+    assert_eq!(
+        test_cold_miss_builds(),
+        0,
+        "a disabled cache must do no build"
+    );
 }
 
 #[test]
@@ -200,7 +213,11 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
 
     // Cold miss: exactly one resolver build, no exact hit, and a finding.
     let cold = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
-    assert_eq!(test_cold_miss_builds(), 1, "cold miss must build exactly once");
+    assert_eq!(
+        test_cold_miss_builds(),
+        1,
+        "cold miss must build exactly once"
+    );
     assert_eq!(test_exact_hits(), 0);
     assert_eq!(cold.len(), 1, "the drifted span is reportable");
     assert_eq!(cold[0].name, "alpha");
@@ -277,7 +294,10 @@ fn concurrent_cold_callers_build_exactly_once() {
     // Every caller renders an identical reportable set: the winner built it, the
     // losers read the winner's published generation.
     for out in &outputs {
-        assert_eq!(out, &outputs[0], "all concurrent callers must agree byte-for-byte");
+        assert_eq!(
+            out, &outputs[0],
+            "all concurrent callers must agree byte-for-byte"
+        );
         assert_eq!(out.len(), 1, "the drifted span is reportable");
         assert_eq!(out[0].name, "alpha");
     }
@@ -317,7 +337,10 @@ fn memo_is_bounded() {
     memo.put(k(1), Arc::clone(&rr));
     memo.put(k(2), Arc::clone(&rr));
     memo.put(k(3), Arc::clone(&rr)); // evicts k(1)
-    assert!(memo.get(&k(1)).is_none(), "oldest entry evicted at capacity");
+    assert!(
+        memo.get(&k(1)).is_none(),
+        "oldest entry evicted at capacity"
+    );
     assert!(memo.get(&k(2)).is_some());
     assert!(memo.get(&k(3)).is_some());
     assert_eq!(memo.map.len(), 2, "never exceeds the bound");
@@ -394,7 +417,10 @@ fn flat_repo(tag: &str, n: usize) -> (tempfile::TempDir, gix::Repository) {
     }
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-m", "init"]);
-    git(dir, &["commit-graph", "write", "--reachable", "--changed-paths"]);
+    git(
+        dir,
+        &["commit-graph", "write", "--reachable", "--changed-paths"],
+    );
     let repo = gix::open(dir).expect("gix open");
     (td, repo)
 }
@@ -474,8 +500,7 @@ fn reuse_rows_round_trip_core_through_store() {
     .expect("core");
     let widen = reuse::compute_widen(&core, false);
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
-    let (rows, path_index) =
-        reuse::core_to_reuse_rows(&core, &widen, &token.config_fingerprint());
+    let (rows, path_index) = reuse::core_to_reuse_rows(&core, &widen, &token.config_fingerprint());
     assert!(!rows.is_empty(), "a non-empty corpus yields reuse rows");
 
     let key = token.canonical_key_digest();
@@ -515,7 +540,10 @@ fn clean_run_publishes_and_is_eligible() {
 
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
     let key = token.canonical_key_digest();
-    assert!(token.persistence_eligible(), "clean no-filter repo is eligible");
+    assert!(
+        token.persistence_eligible(),
+        "clean no-filter repo is eligible"
+    );
 
     let _ = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
     assert_eq!(test_revalidate_discards(), 0, "clean run must not discard");
@@ -605,7 +633,12 @@ fn maybe_maintain_evicts_non_live_over_cap() {
     unsafe {
         std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
     }
-    maybe_maintain(&repo, &mut store, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key);
+    maybe_maintain(
+        &repo,
+        &mut store,
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        &key,
+    );
 
     assert!(
         matches!(
@@ -629,7 +662,12 @@ fn maybe_maintain_keeps_generation_under_cap() {
         // Default 256 MiB — far above a tiny fresh store.
         std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
     }
-    maybe_maintain(&repo, &mut store, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key);
+    maybe_maintain(
+        &repo,
+        &mut store,
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        &key,
+    );
 
     assert!(
         matches!(
@@ -788,7 +826,10 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+    String::from_utf8(out.stdout)
+        .expect("utf8")
+        .trim()
+        .to_string()
 }
 
 /// Publish a `live` generation at an arbitrary head hint (empty rows, so
@@ -845,19 +886,34 @@ fn broken_worktree_does_not_disable_reconciliation() {
     // so its HEAD differs from main's — proving it is actually resolved (not
     // merely equal to main by coincidence).
     let healthy = td.path().join("healthy-wt");
-    git(dir, &["worktree", "add", "-b", "healthy", healthy.to_str().unwrap()]);
+    git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "healthy",
+            healthy.to_str().unwrap(),
+        ],
+    );
     std::fs::write(healthy.join("a.txt"), "healthy-change\n").expect("healthy write");
     git(&healthy, &["add", "-A"]);
     git(&healthy, &["commit", "-m", "healthy commit"]);
     let h_healthy = git_out(&healthy, &["rev-parse", "HEAD"]);
-    assert_ne!(h_main, h_healthy, "healthy worktree must be at a distinct commit");
+    assert_ne!(
+        h_main, h_healthy,
+        "healthy worktree must be at a distinct commit"
+    );
 
     // A broken/prunable linked worktree: created, then its working directory
     // deleted without `git worktree prune`. Its admin dir (and `gitdir` file)
     // remain, so `worktrees()` still enumerates it, but `into_repo()` fails on
     // the missing checkout — the persistent state F3 is about.
     let broken = td.path().join("broken-wt");
-    git(dir, &["worktree", "add", "-b", "broken", broken.to_str().unwrap()]);
+    git(
+        dir,
+        &["worktree", "add", "-b", "broken", broken.to_str().unwrap()],
+    );
     std::fs::remove_dir_all(&broken).expect("delete broken worktree checkout");
 
     let repo = gix::open(dir).expect("gix open");
@@ -866,7 +922,10 @@ fn broken_worktree_does_not_disable_reconciliation() {
     // skipped — and it did NOT error despite the broken worktree.
     let live = crate::git::live_worktree_heads(&repo).expect("partial live set, not an error");
     assert!(live.contains(&h_main), "main worktree HEAD present");
-    assert!(live.contains(&h_healthy), "healthy linked worktree HEAD present");
+    assert!(
+        live.contains(&h_healthy),
+        "healthy linked worktree HEAD present"
+    );
 
     // Half 2: reconciliation demotes a stale head no resolvable worktree sits
     // on, while both live worktrees' generations survive. A 1-byte cap makes the
@@ -889,7 +948,9 @@ fn broken_worktree_does_not_disable_reconciliation() {
 
     assert!(
         matches!(
-            store.get_generation(&k_stale, SUMMARY_VERSION).expect("get"),
+            store
+                .get_generation(&k_stale, SUMMARY_VERSION)
+                .expect("get"),
             GetOutcome::Miss
         ),
         "a generation at a stale head (no resolvable worktree) must be demoted and evicted",
@@ -903,7 +964,9 @@ fn broken_worktree_does_not_disable_reconciliation() {
     );
     assert!(
         matches!(
-            store.get_generation(&k_healthy, SUMMARY_VERSION).expect("get"),
+            store
+                .get_generation(&k_healthy, SUMMARY_VERSION)
+                .expect("get"),
             GetOutcome::Hit(_)
         ),
         "the healthy linked worktree's live generation must survive",

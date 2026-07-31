@@ -392,7 +392,12 @@ fn same_size_same_mtime_edit_parity() -> Result<()> {
 
     // Non-vacuous premise: the content genuinely changed, so the oracle must
     // report alpha as drifted — otherwise this proves nothing.
-    let (oracle, _, _) = run(repo.path(), &["stale", "--format", "porcelain"], Mode::Disabled, false);
+    let (oracle, _, _) = run(
+        repo.path(),
+        &["stale", "--format", "porcelain"],
+        Mode::Disabled,
+        false,
+    );
     assert!(
         oracle.contains("src/a.txt"),
         "same-size edit must drift alpha under the oracle (else the test is vacuous):\n{oracle}"

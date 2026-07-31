@@ -43,7 +43,12 @@ pub(crate) fn drift_locus(
     // `plans/bounded-rename-chain.md`).
     if resolved.status == crate::types::AnchorStatus::Deleted {
         let path = resolved.anchored.path.to_string_lossy().into_owned();
-        let cached = session.deleted_locus_memo.read().unwrap().get(&path).cloned();
+        let cached = session
+            .deleted_locus_memo
+            .read()
+            .unwrap()
+            .get(&path)
+            .cloned();
         if let Some(cached) = cached {
             return Ok(cached);
         }
@@ -330,14 +335,14 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
             match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS, commit_id)? {
                 Some(terminal) => Ok(Some(DriftLocus::RenamedAt(commit_id, terminal))),
                 None => Ok(Some(DriftLocus::OrphanedAt(commit_id))), // chain ends in a
-                    // delete, an unclassifiable change, or exceeds the hop bound —
-                    // report the anchor's own orphaning commit as a plain deletion
-                    // rather than a rename to a path that turned out not to resolve.
+                                                                     // delete, an unclassifiable change, or exceeds the hop bound —
+                                                                     // report the anchor's own orphaning commit as a plain deletion
+                                                                     // rather than a rename to a path that turned out not to resolve.
             }
         }
         None => Ok(None), // e.g. a mode change (blob -> submodule gitlink):
-                           // neither a plain deletion nor a content rewrite —
-                           // fail-closed rather than guessing.
+                          // neither a plain deletion nor a content rewrite —
+                          // fail-closed rather than guessing.
     }
 }
 
@@ -392,7 +397,7 @@ fn resolve_terminal_path(
     for commit_id in commits {
         match classify_touching_commit(repo, commit_id, path)? {
             Some(TouchKind::Deletion) => return Ok(None), // chain ends in a
-                // delete between created_at and HEAD: fail-closed, never guess
+            // delete between created_at and HEAD: fail-closed, never guess
             Some(TouchKind::Rewrite(next)) => {
                 if hops_left == 0 {
                     return Ok(None); // fail-closed: chain too deep to trust
@@ -400,9 +405,9 @@ fn resolve_terminal_path(
                 return resolve_terminal_path(repo, &next, hops_left - 1, commit_id);
             }
             None => continue, // content-only modification, an unrelated
-                               // resurrection of this same path, or another
-                               // unclassifiable change — none of these move
-                               // the lineage, keep scanning forward
+                              // resurrection of this same path, or another
+                              // unclassifiable change — none of these move
+                              // the lineage, keep scanning forward
         }
     }
 
@@ -794,8 +799,9 @@ mod deleted_locus_walk_tests {
 
         // The chain-follower itself must fail closed once hops are exhausted,
         // not loop forever and not guess a distant terminal path.
-        let terminal = resolve_terminal_path(&repo, "p1.rs", MAX_RENAME_HOPS, x1.expect("x1 captured"))
-            .expect("resolve");
+        let terminal =
+            resolve_terminal_path(&repo, "p1.rs", MAX_RENAME_HOPS, x1.expect("x1 captured"))
+                .expect("resolve");
         assert_eq!(
             terminal, None,
             "a chain deeper than MAX_RENAME_HOPS must fail closed to None"
@@ -878,7 +884,10 @@ mod deleted_locus_walk_tests {
         // hop.
         write_file(dir, "b.rs", "totally unrelated content\n");
         git(dir, &["add", "-A"]);
-        git(dir, &["commit", "-m", "resurrect b.rs as an unrelated file"]);
+        git(
+            dir,
+            &["commit", "-m", "resurrect b.rs as an unrelated file"],
+        );
 
         // c.rs — the true terminal — is edited further, simulating content
         // drift heavy enough to defeat any fuzzy content-based relocation

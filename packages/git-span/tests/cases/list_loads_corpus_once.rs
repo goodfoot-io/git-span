@@ -68,15 +68,11 @@ fn list_loads_corpus_once_with_targets() -> Result<()> {
         .output()?;
 
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(
-        output.status.success(),
-        "git span list failed: {stderr}"
-    );
+    assert!(output.status.success(), "git span list failed: {stderr}");
 
     let load_extents = count_lines_containing(&stderr, "span.load-all-corpus");
     assert_eq!(
-        load_extents,
-        1,
+        load_extents, 1,
         "corpus must be loaded exactly once per invocation: expected \
          one `span.load-all-corpus` span, got {load_extents}.\n\
          --- perf stderr ---\n\

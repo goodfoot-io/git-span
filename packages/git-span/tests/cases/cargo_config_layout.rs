@@ -54,7 +54,13 @@ fn devcontainer_has_no_rustc_wrapper() {
     // `serde_json`, which only accepts strict JSON.
     let stripped: String = body
         .lines()
-        .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
+        .map(|l| {
+            if l.trim_start().starts_with("//") {
+                ""
+            } else {
+                l
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let json: serde_json::Value =

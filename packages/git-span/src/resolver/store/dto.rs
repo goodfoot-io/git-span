@@ -74,12 +74,13 @@ impl From<&AnchorLocation> for AnchorLocationDto {
 impl TryFrom<AnchorLocationDto> for AnchorLocation {
     type Error = crate::Error;
     fn try_from(dto: AnchorLocationDto) -> Result<Self, Self::Error> {
-        let blob = match dto.blob {
-            Some(s) => Some(gix::ObjectId::from_str(&s).map_err(|e| {
-                crate::Error::Git(format!("store dto: parse blob oid `{s}`: {e}"))
-            })?),
-            None => None,
-        };
+        let blob =
+            match dto.blob {
+                Some(s) => Some(gix::ObjectId::from_str(&s).map_err(|e| {
+                    crate::Error::Git(format!("store dto: parse blob oid `{s}`: {e}"))
+                })?),
+                None => None,
+            };
         Ok(AnchorLocation {
             path: PathBuf::from(dto.path),
             extent: dto.extent.into_extent(),
@@ -226,20 +227,17 @@ impl TryFrom<DriftLocusDto> for DriftLocus {
     type Error = crate::Error;
     fn try_from(dto: DriftLocusDto) -> Result<Self, Self::Error> {
         Ok(match dto {
-            DriftLocusDto::ChangedAt(s) => {
-                DriftLocus::ChangedAt(gix::ObjectId::from_str(&s).map_err(|e| {
-                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
-                })?)
-            }
-            DriftLocusDto::OrphanedAt(s) => {
-                DriftLocus::OrphanedAt(gix::ObjectId::from_str(&s).map_err(|e| {
-                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
-                })?)
-            }
+            DriftLocusDto::ChangedAt(s) => DriftLocus::ChangedAt(
+                gix::ObjectId::from_str(&s)
+                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
+            ),
+            DriftLocusDto::OrphanedAt(s) => DriftLocus::OrphanedAt(
+                gix::ObjectId::from_str(&s)
+                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
+            ),
             DriftLocusDto::RenamedAt(s, new_path) => DriftLocus::RenamedAt(
-                gix::ObjectId::from_str(&s).map_err(|e| {
-                    crate::Error::Git(format!("store dto: parse locus oid: {e}"))
-                })?,
+                gix::ObjectId::from_str(&s)
+                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
                 new_path,
             ),
         })

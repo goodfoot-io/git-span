@@ -87,7 +87,10 @@ pub fn cluster_stale_spans(
                 .filter(|&(_, count)| count >= 2)
                 .map(|(p, _)| p.to_string())
                 .collect();
-            StaleCluster { spans, shared_files }
+            StaleCluster {
+                spans,
+                shared_files,
+            }
         })
         .collect();
 
@@ -111,7 +114,11 @@ mod tests {
         full.insert("alpha".to_string(), set(&["a.rs"]));
 
         let clusters = cluster_stale_spans(&stale, &full);
-        assert_eq!(clusters.len(), 1, "a singleton must still be reported, not omitted");
+        assert_eq!(
+            clusters.len(),
+            1,
+            "a singleton must still be reported, not omitted"
+        );
         assert_eq!(clusters[0].spans, vec!["alpha".to_string()]);
         assert!(
             clusters[0].shared_files.is_empty(),
@@ -128,7 +135,10 @@ mod tests {
 
         let clusters = cluster_stale_spans(&stale, &full);
         assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].spans, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            clusters[0].spans,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
         assert_eq!(clusters[0].shared_files, vec!["shared.rs".to_string()]);
     }
 
@@ -147,7 +157,11 @@ mod tests {
         full.insert("c".to_string(), set(&["y.rs"]));
 
         let clusters = cluster_stale_spans(&stale, &full);
-        assert_eq!(clusters.len(), 1, "a transitive chain must merge into one cluster");
+        assert_eq!(
+            clusters.len(),
+            1,
+            "a transitive chain must merge into one cluster"
+        );
         assert_eq!(
             clusters[0].spans,
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
@@ -174,7 +188,10 @@ mod tests {
 
         let clusters = cluster_stale_spans(&stale, &full);
         assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].spans, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            clusters[0].spans,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
         assert_eq!(clusters[0].shared_files, vec!["shared.rs".to_string()]);
     }
 

@@ -156,7 +156,10 @@ mod tests {
     fn report_block_names_file_anchor_root_and_working_fix() {
         let v = violation();
         let block = v.report_block(".span");
-        assert!(block.contains(".span/billing/flow"), "names span file: {block}");
+        assert!(
+            block.contains(".span/billing/flow"),
+            "names span file: {block}"
+        );
         assert!(block.contains(".span/other"), "names anchor: {block}");
         assert!(block.contains("span root:    .span"), "names root: {block}");
         assert!(

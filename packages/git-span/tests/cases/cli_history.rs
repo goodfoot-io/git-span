@@ -287,9 +287,14 @@ fn both_formats_are_newest_first_and_agree_on_commit_count() -> Result<()> {
 
     // Text: newest commit's summary appears before the oldest.
     let c5 = out.find("C5: remove file2").expect("C5 missing from text");
-    let c3 = out.find("C3: edit why prose").expect("C3 missing from text");
+    let c3 = out
+        .find("C3: edit why prose")
+        .expect("C3 missing from text");
     let c1 = out.find("C1: create span").expect("C1 missing from text");
-    assert!(c5 < c3 && c3 < c1, "text output must be newest-first:\n{out}");
+    assert!(
+        c5 < c3 && c3 < c1,
+        "text output must be newest-first:\n{out}"
+    );
 
     // JSON: same ordering.
     assert!(
@@ -460,7 +465,10 @@ fn anchor_removal_renders_dev_null_deletion_body() -> Result<()> {
         .find(|a| a["path"] == "file2.txt#L1-L3")
         .expect("removed anchor missing from C5");
     assert!(
-        removed["diff"].as_str().unwrap_or("").contains("deleted anchor"),
+        removed["diff"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deleted anchor"),
         "a removal is a diff, never content; got: {removed}"
     );
     assert!(
@@ -665,7 +673,10 @@ fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
             !diff.contains("@@"),
             "a pure move carries no hunks; got:\n{diff}"
         );
-        assert!(out.contains(diff), "the default output carries it too:\n{out}");
+        assert!(
+            out.contains(diff),
+            "the default output carries it too:\n{out}"
+        );
     }
     Ok(())
 }
@@ -720,7 +731,10 @@ fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
             "the recorded bytes and the proposal's bytes are identical, so the \
              block is header-only; got:\n{diff}"
         );
-        assert!(out.contains(diff), "the default output carries it too:\n{out}");
+        assert!(
+            out.contains(diff),
+            "the default output carries it too:\n{out}"
+        );
     }
     Ok(())
 }
@@ -788,7 +802,10 @@ fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
     reanchor.span_stdout(["why", "reanchor", "tracks the TARGET block"])?;
     reanchor.run_git(["add", ".span"])?;
     reanchor.run_git(["commit", "-m", "create span"])?;
-    reanchor.write_file("src.txt", "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B\nTARGET-C\n")?;
+    reanchor.write_file(
+        "src.txt",
+        "head-1\nhead-2\nhead-3\nTARGET-A\nTARGET-B\nTARGET-C\n",
+    )?;
     reanchor.span_stdout(["remove", "reanchor", "src.txt#L1-L3"])?;
     reanchor.span_stdout(["add", "reanchor", "src.txt#L4-L6"])?;
     scenarios.push(("uncommitted re-anchor", reanchor, "reanchor"));
@@ -896,6 +913,49 @@ fn merge_diamond_repo(span: &str) -> Result<TestRepo> {
     repo.write_file("f.txt", "l1\nl2\nl3\nl4\nMAIN5\n")?;
     repo.commit_all("main edits line 5")?;
     repo.run_git(["merge", "--no-ff", "side", "-m", "merge side"])?;
+    Ok(repo)
+}
+
+/// A side branch whose newer timestamp must not let it leak into the timeline:
+/// an `-s ours` merge discards its file edit, leaving HEAD on the mainline's
+/// bytes.  This is deliberately dated so the former time-ordered DAG walk
+/// chose the side commit before the mainline commit.
+fn ours_merge_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "one\ntwo\nthree\n")?;
+    repo.commit_all("initial")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.commit_all("declare")?;
+    repo.run_git(["checkout", "-b", "discarded-side"])?;
+    repo.write_file("f.txt", "one\nSIDE\nthree\n")?;
+    repo.run_git(["add", "f.txt"])?;
+    repo.run_git_with_env(
+        ["commit", "-m", "discarded side edit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2026-06-30T12:00:00+00:00"),
+            ("GIT_COMMITTER_DATE", "2026-06-30T12:00:00+00:00"),
+        ],
+    )?;
+    repo.run_git(["checkout", "main"])?;
+    repo.write_file("f.txt", "one\nMAIN\nthree\n")?;
+    repo.run_git(["add", "f.txt"])?;
+    repo.run_git_with_env(
+        ["commit", "-m", "mainline edit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2026-01-02T12:00:00+00:00"),
+            ("GIT_COMMITTER_DATE", "2026-01-02T12:00:00+00:00"),
+        ],
+    )?;
+    repo.run_git([
+        "merge",
+        "-s",
+        "ours",
+        "--no-ff",
+        "discarded-side",
+        "-m",
+        "ours merge",
+    ])?;
+    repo.write_commit_graph()?;
     Ok(repo)
 }
 
@@ -1100,48 +1160,121 @@ fn a_merge_that_moved_the_mainline_at_a_seed_path_is_rendered() -> Result<()> {
     Ok(())
 }
 
-/// The entry for a branch tip diffs against its own parent, not against
-/// whatever the walk printed above it.
-///
-/// In this diamond the two tips are siblings: neither is the other's parent, and
-/// they edit different lines. Pairing on the walk's predecessor made the second
-/// tip assert that it *reverted* the first tip's edit — signed `-` lines for a
-/// change no commit made, over a file `git show` reports as untouched at those
-/// lines. That is the shape this renderer exists to be incapable of.
 #[test]
-fn a_branch_tip_diffs_against_its_own_parent_not_the_walks_predecessor() -> Result<()> {
+fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -> Result<()> {
+    let repo = ours_merge_repo("ours")?;
+    let json = history_json(&repo, "ours")?;
+    let summaries: Vec<_> = json["commits"]
+        .as_array()
+        .expect("commits array")
+        .iter()
+        .map(|entry| entry["summary"].as_str().expect("summary"))
+        .collect();
+    assert!(
+        summaries.contains(&"mainline edit"),
+        "the first-parent edit that supplies HEAD must be present: {json:#}"
+    );
+    assert!(
+        !summaries.contains(&"discarded side edit") && !summaries.contains(&"ours merge"),
+        "a side-only commit and an -s ours merge with no first-parent change must not render: {json:#}"
+    );
+    let main = commit_with(&json, "mainline edit");
+    assert!(
+        main["anchors"][0]["diff"]
+            .as_str()
+            .expect("mainline diff")
+            .contains("+MAIN"),
+        "the visible entry must describe the bytes at HEAD: {main:#}"
+    );
+    // `stale`'s human renderer deliberately describes the classification and
+    // address, not the anchored bytes. Prove the bytes from Git, then use the
+    // machine contract to prove stale attributed that exact committed layer.
+    // This makes the fixture reject both ways the discarded side can leak:
+    // choosing `SIDE` for HEAD, or reporting the right status for the wrong
+    // layer.
+    assert_eq!(
+        repo.git_stdout(["show", "HEAD:f.txt"])?,
+        "one\nMAIN\nthree",
+        "the ours merge must preserve the first-parent/mainline blob at HEAD"
+    );
+    let stale = repo.run_span(["stale", "ours", "--format=json"])?;
+    assert!(
+        stale.status.code() == Some(1),
+        "the declaration predates the mainline edit, so stale must report that HEAD drift: stdout={} stderr={}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    let stale_json: Value = serde_json::from_slice(&stale.stdout)?;
+    assert!(
+        stale_json["findings"]
+            .as_array()
+            .is_some_and(|findings| findings.len() == 1)
+            && stale_json["findings"][0]["status"]["code"] == "CHANGED"
+            && stale_json["findings"][0]["source"] == "HEAD",
+        "stale must resolve the mainline blob as committed HEAD drift, never the discarded side: {stale_json:#}"
+    );
+    assert_no_fabricated_lines(&repo, "ours")
+}
+
+#[test]
+fn history_and_stale_reject_git_replacement_topology_before_output() -> Result<()> {
+    let repo = committed_drift_repo("replace")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
+    repo.run_git(["replace", &head, &parent])?;
+
+    let effective = repo.git_stdout(["rev-list", "--parents", "-n", "1", "HEAD"])?;
+    let raw = repo.git_stdout([
+        "--no-replace-objects",
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        "HEAD",
+    ])?;
+    assert_ne!(
+        effective, raw,
+        "fixture precondition: Git replacement refs must change the effective parent graph"
+    );
+
+    let history = repo.run_span(["history", "replace", "--format=json"])?;
+    let stale = repo.run_span(["stale", "--format=json"])?;
+    for (name, out) in [("history", history), ("stale", stale)] {
+        assert!(
+            !out.status.success() && out.stdout.is_empty(),
+            "{name} must fail closed without rendering raw-topology output; stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("replacement topology is unsupported"),
+            "{name} must explain the shared topology boundary: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A first-parent timeline does not surface commits that happened only on a
+/// merged side branch; their contribution is represented by the merge itself.
+#[test]
+fn a_side_branch_tip_is_not_a_timeline_entry() -> Result<()> {
     let repo = merge_diamond_repo("mg")?;
     let json = history_json(&repo, "mg")?;
-    let entry = |summary: &str| -> String {
+    assert!(
         json["commits"]
             .as_array()
             .expect("commits array")
             .iter()
-            .find(|e| e["summary"] == summary)
-            .unwrap_or_else(|| panic!("no entry for {summary:?} in {json:#}"))["anchors"][0]["diff"]
-            .as_str()
-            .expect("diff string")
-            .to_string()
-    };
-    let side = entry("side edits line 2");
-    assert!(
-        side.contains("\n-l2\n") && side.contains("\n+SIDE2\n"),
-        "the side branch's own edit:\n{side}"
+            .all(|entry| entry["summary"] != "side edits line 2"),
+        "history follows HEAD's first-parent chain, so it cannot render a side-only commit: {json:#}"
     );
-    assert!(
-        !side.contains("MAIN5"),
-        "`MAIN5` exists only on the sibling branch; the side tip cannot mention \
-         it in either direction:\n{side}"
-    );
-    let main = entry("main edits line 5");
+    let main = commit_with(&json, "main edits line 5")["anchors"][0]["diff"]
+        .as_str()
+        .expect("mainline diff");
     assert!(
         main.contains("\n-l5\n") && main.contains("\n+MAIN5\n"),
         "the main branch's own edit:\n{main}"
-    );
-    assert!(
-        !main.contains("SIDE2"),
-        "`SIDE2` exists only on the sibling branch; the main tip cannot mention \
-         it in either direction:\n{main}"
     );
     assert_no_fabricated_lines(&repo, "mg")
 }
@@ -1302,7 +1435,10 @@ fn a_changed_anchor_is_read_at_its_declared_address_and_proposes_nothing() -> Re
          live bytes — the displacement is the drift; got:\n{diff}"
     );
     let out = history_text(&repo, "ch")?;
-    assert!(out.contains(diff), "the default output carries it too:\n{out}");
+    assert!(
+        out.contains(diff),
+        "the default output carries it too:\n{out}"
+    );
     Ok(())
 }
 
@@ -1352,7 +1488,10 @@ fn a_drifted_reanchor_labels_the_old_side_with_heads_address() -> Result<()> {
         "exactly the in-place edit, with no fabricated deletions; got:\n{diff}"
     );
     let out = history_text(&repo, "re")?;
-    assert!(out.contains(diff), "the default output carries it too:\n{out}");
+    assert!(
+        out.contains(diff),
+        "the default output carries it too:\n{out}"
+    );
     Ok(())
 }
 
@@ -1399,7 +1538,10 @@ fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()
         out.contains("recorded snapshot unrecoverable\n"),
         "the default output is where the explanation is needed; got:\n{out}"
     );
-    assert!(out.contains(diff), "both formats carry the same block:\n{out}");
+    assert!(
+        out.contains(diff),
+        "both formats carry the same block:\n{out}"
+    );
     Ok(())
 }
 
@@ -1451,7 +1593,11 @@ fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
     // Each anchor's recorded block leaves its old address and each new
     // address arrives: `AAA-*` and `BBB-EDITED` share nothing, so pairing them
     // into one rename would spell an edit nobody made.
-    assert_eq!(anchors.len(), 4, "two deletes and two creates; got: {json:#}");
+    assert_eq!(
+        anchors.len(),
+        4,
+        "two deletes and two creates; got: {json:#}"
+    );
     for anchor in anchors {
         // The recorded bytes sit under the *sibling's* address in the last
         // recorded state. Searching only under this anchor's own label
@@ -1493,7 +1639,10 @@ fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
 /// where a declaration re-anchor and a resolver relocation both apply.
 fn reanchor_over_relocation_repo(span: &str) -> Result<TestRepo> {
     let repo = TestRepo::new()?;
-    repo.write_file("f.txt", "alpha\nbeta\ngamma\nfour\nfive\nsix\nseven\neight\n")?;
+    repo.write_file(
+        "f.txt",
+        "alpha\nbeta\ngamma\nfour\nfive\nsix\nseven\neight\n",
+    )?;
     repo.commit_all("initial")?;
     repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
     repo.span_stdout(["why", span, "tracks the greek block"])?;
@@ -1501,7 +1650,10 @@ fn reanchor_over_relocation_repo(span: &str) -> Result<TestRepo> {
     repo.run_git(["commit", "-m", "declare"])?;
 
     rewrite_declaration(&repo, span, "f.txt#L1-L3", "f.txt#L6-L8")?;
-    repo.write_file("f.txt", "alpha\nbeta\ngamma\nfour\nfive\nsix\nEDITED\neight\n")?;
+    repo.write_file(
+        "f.txt",
+        "alpha\nbeta\ngamma\nfour\nfive\nsix\nEDITED\neight\n",
+    )?;
     Ok(repo)
 }
 
@@ -1590,7 +1742,11 @@ fn a_cross_file_declaration_swap_recovers_both_old_sides() -> Result<()> {
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 4, "two deletes and two creates; got: {json:#}");
+    assert_eq!(
+        anchors.len(),
+        4,
+        "two deletes and two creates; got: {json:#}"
+    );
     for anchor in anchors {
         assert!(
             anchor.get("recorded").is_none(),
@@ -1872,7 +2028,10 @@ fn rebinding_repo(span: &str, n: usize) -> Result<TestRepo> {
     let repo = TestRepo::new()?;
     for i in 0..n {
         let tag = (b'A' + i as u8) as char;
-        repo.write_file(&format!("f{i}.txt"), &format!("{tag}-1\n{tag}-2\n{tag}-3\n"))?;
+        repo.write_file(
+            &format!("f{i}.txt"),
+            &format!("{tag}-1\n{tag}-2\n{tag}-3\n"),
+        )?;
     }
     repo.commit_all("initial")?;
     for i in 0..n {
@@ -1942,7 +2101,10 @@ fn rebound_and_edited_repo(span: &str, n: usize) -> Result<TestRepo> {
     let repo = TestRepo::new()?;
     for i in 0..n {
         let tag = (b'A' + i as u8) as char;
-        repo.write_file(&format!("f{i}.txt"), &format!("{tag}-1\n{tag}-2\n{tag}-3\n"))?;
+        repo.write_file(
+            &format!("f{i}.txt"),
+            &format!("{tag}-1\n{tag}-2\n{tag}-3\n"),
+        )?;
     }
     repo.commit_all("initial")?;
     for i in 0..n {
@@ -2184,8 +2346,16 @@ fn a_rebinding_that_also_edits_its_block_states_both_facts() -> Result<()> {
     // Raw-patch parity: the `index` line and the structured fields are two
     // renderings of one pair of tokens and can never disagree.
     let diff = rebound["diff"].as_str().expect("diff string");
-    assert_eq!(old_token(diff), before, "the index line names the old binding");
-    assert_eq!(new_token(diff), after, "the index line names the new binding");
+    assert_eq!(
+        old_token(diff),
+        before,
+        "the index line names the old binding"
+    );
+    assert_eq!(
+        new_token(diff),
+        after,
+        "the index line names the new binding"
+    );
 
     // ORACLE — git's own diff of the edited file. The content block answers
     // the same question any `Modified` block answers, and the rebound block
@@ -2423,7 +2593,12 @@ fn every_timeline_state() -> Result<Vec<(&'static str, TestRepo, &'static str, V
         repo
     };
     Ok(vec![
-        ("first declaration", first_declaration, "tnew", vec![BlockForm::Created]),
+        (
+            "first declaration",
+            first_declaration,
+            "tnew",
+            vec![BlockForm::Created],
+        ),
         (
             "anchored file deleted",
             vanished_file,
@@ -2448,12 +2623,19 @@ fn every_timeline_state() -> Result<Vec<(&'static str, TestRepo, &'static str, V
             "tbin",
             vec![BlockForm::Modified],
         ),
-        ("committed drift", committed_drift, "tdrift", vec![BlockForm::Modified]),
+        (
+            "committed drift",
+            committed_drift,
+            "tdrift",
+            vec![BlockForm::Modified],
+        ),
         (
             "committed re-anchor at the floor",
             committed_reanchor,
             "tre",
-            vec![BlockForm::Renamed { similarity: Some(66) }],
+            vec![BlockForm::Renamed {
+                similarity: Some(66),
+            }],
         ),
         (
             "committed abandonment for an unrelated block",
@@ -2537,9 +2719,7 @@ fn timeline_block_invariants_hold_in_every_state() -> Result<()> {
                 .and_then(|rest| rest.split_once(" b/"))
                 .unwrap_or_else(|| panic!("{label}: malformed header {header:?}"));
             let bound = |pairs: &[(String, String)], addr: &str, token: &str| {
-                pairs
-                    .iter()
-                    .any(|(a, t)| a == addr && t == token)
+                pairs.iter().any(|(a, t)| a == addr && t == token)
             };
             match block_form(diff) {
                 BlockForm::Deleted => {
@@ -2586,11 +2766,13 @@ fn timeline_block_invariants_hold_in_every_state() -> Result<()> {
                     // Raw-patch parity: the structured fields and the `index`
                     // line render one pair of tokens two ways.
                     assert_eq!(
-                        anchor["rebound"]["from"], old_token(diff),
+                        anchor["rebound"]["from"],
+                        old_token(diff),
                         "{label}: structured and patch disagree; got: {anchor:#}"
                     );
                     assert_eq!(
-                        anchor["rebound"]["to"], new_token(diff),
+                        anchor["rebound"]["to"],
+                        new_token(diff),
                         "{label}: structured and patch disagree; got: {anchor:#}"
                     );
                 }
@@ -2702,7 +2884,10 @@ fn an_unmeasurable_reanchor_states_the_move_and_no_similarity() -> Result<()> {
     // so a consumer never needs a caveat saying the number inside it is
     // meaningless — the number does not exist.
     let out = history_text(&repo, "ur")?;
-    assert!(out.contains(diff), "both formats carry the same block:\n{out}");
+    assert!(
+        out.contains(diff),
+        "both formats carry the same block:\n{out}"
+    );
     Ok(())
 }
 
@@ -2723,18 +2908,30 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
         // set whose every fixture drifts in the working tree certifies the
         // `sources` vocabulary against one third of it — which is how the
         // block came to describe a committed edit as an uncommitted one.
-        ("committed drift, never re-anchored", committed_drift_repo("cd")?, "cd"),
+        (
+            "committed drift, never re-anchored",
+            committed_drift_repo("cd")?,
+            "cd",
+        ),
         ("staged drift", staged_drift_repo("sd")?, "sd"),
-        ("drift at two layers at once", composed_drift_repo("cx")?, "cx"),
+        (
+            "drift at two layers at once",
+            composed_drift_repo("cx")?,
+            "cx",
+        ),
         ("cross-file swap", cross_file_swap_repo("xswap")?, "xswap"),
         ("abandoned block", abandoned_block_repo("re2")?, "re2"),
         ("never recorded", never_recorded_repo("ff")?, "ff"),
         ("twin tokens", twin_token_repo("twin")?, "twin"),
-        ("drifted re-anchor", {
-            let repo = drifted_repo("re")?;
-            rewrite_declaration(&repo, "re", "f.txt#L1-L3", "f.txt#L3-L5")?;
-            repo
-        }, "re"),
+        (
+            "drifted re-anchor",
+            {
+                let repo = drifted_repo("re")?;
+                rewrite_declaration(&repo, "re", "f.txt#L1-L3", "f.txt#L3-L5")?;
+                repo
+            },
+            "re",
+        ),
         (
             "re-anchor with unrecoverable recorded token",
             unrecoverable_reanchor_repo("ur")?,
@@ -3030,8 +3227,7 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                     // reads `unavailable`: a range the file does not have is
                     // not an empty string, and measuring against one decided
                     // the disproven-versus-unknown question by fabrication.
-                    let measurable = anchor.get("recorded")
-                        != Some(&Value::from("unrecoverable"))
+                    let measurable = anchor.get("recorded") != Some(&Value::from("unrecoverable"))
                         && !diff.contains("Binary files ")
                         && anchor.get("unavailable").is_none();
                     assert_eq!(
@@ -3254,11 +3450,14 @@ fn documented_field_values(array: &str, field: &str) -> Result<Vec<String>> {
     // stops before its sibling's.
     let bullet_start = format!("- `{field}` — ");
     let list = &section[..end];
-    let at = list.find(bullet_start.as_str()).unwrap_or_else(|| {
-        panic!("the {array} field list no longer documents `{field}`")
-    });
+    let at = list
+        .find(bullet_start.as_str())
+        .unwrap_or_else(|| panic!("the {array} field list no longer documents `{field}`"));
     let bullet = &list[at..];
-    let bullet_end = bullet[1..].find("\n- ").map(|i| i + 1).unwrap_or(bullet.len());
+    let bullet_end = bullet[1..]
+        .find("\n- ")
+        .map(|i| i + 1)
+        .unwrap_or(bullet.len());
     let bullet = &bullet[..bullet_end];
 
     // Values are spelled as they appear in JSON, inside backticks: `"absent"`.
@@ -3762,7 +3961,11 @@ fn ordinary_pairing_is_unaffected_by_the_content_identity_pass() -> Result<()> {
     let json = history_json(&repo, span)?;
     let edit = commit_with(&json, "edit the second block");
     let anchors = edit["anchors"].as_array().expect("anchors array");
-    assert_eq!(anchors.len(), 1, "only the edited block changed; got: {edit}");
+    assert_eq!(
+        anchors.len(),
+        1,
+        "only the edited block changed; got: {edit}"
+    );
     assert_eq!(anchors[0]["path"], "src.txt#L5-L7");
     Ok(())
 }
@@ -3810,7 +4013,9 @@ fn limit_scopes_the_window_seeds_the_baseline_and_warns() -> Result<()> {
         "a pre-existing unchanged anchor must not resurface in a scoped window; got: {anchors:#?}"
     );
     assert!(
-        anchors.iter().any(|a| a["path"] == "file3.txt" && a["content"].is_string()),
+        anchors
+            .iter()
+            .any(|a| a["path"] == "file3.txt" && a["content"].is_string()),
         "file3 is genuinely first-added at C5 and keeps its content snapshot; got: {anchors:#?}"
     );
 
@@ -3850,7 +4055,10 @@ fn limit_counts_rendered_entries_not_walked_commits() -> Result<()> {
 
     let unlimited = history_json(&repo, span)?;
     assert_eq!(
-        unlimited["commits"].as_array().expect("commits array").len(),
+        unlimited["commits"]
+            .as_array()
+            .expect("commits array")
+            .len(),
         1,
         "only the declaring commit changed anything observable; got: {unlimited:#}"
     );
@@ -3867,12 +4075,12 @@ fn limit_counts_rendered_entries_not_walked_commits() -> Result<()> {
     }
 
     // Nothing was dropped, so nothing is scoped.
-    assert!(
-        unlimited.get("scoped").is_none(),
-        "got: {unlimited:#}"
-    );
-    let limited: Value =
-        serde_json::from_slice(&repo.run_span(["history", span, "--limit", "1", "--format=json"])?.stdout)?;
+    assert!(unlimited.get("scoped").is_none(), "got: {unlimited:#}");
+    let limited: Value = serde_json::from_slice(
+        &repo
+            .run_span(["history", span, "--limit", "1", "--format=json"])?
+            .stdout,
+    )?;
     assert!(
         limited.get("scoped").is_none(),
         "a window that drops nothing is not scoped; got: {limited:#}"
@@ -3884,7 +4092,10 @@ fn limit_counts_rendered_entries_not_walked_commits() -> Result<()> {
     let zero_json: Value = serde_json::from_slice(&zero.stdout)?;
     assert_eq!(zero_json["scoped"], Value::Bool(true));
     assert_eq!(
-        zero_json["commits"].as_array().expect("commits array").len(),
+        zero_json["commits"]
+            .as_array()
+            .expect("commits array")
+            .len(),
         0
     );
     Ok(())
@@ -3922,7 +4133,9 @@ fn current_anchor_carries_both_diff_and_content() -> Result<()> {
         current.get("span_diff").is_none(),
         "the worktree declaration matches HEAD here; got: {current}"
     );
-    let anchors = current["anchors"].as_array().expect("current anchors array");
+    let anchors = current["anchors"]
+        .as_array()
+        .expect("current anchors array");
     assert_eq!(anchors.len(), 1, "one anchor drifts; got: {current}");
     assert_eq!(anchors[0]["path"], "file3.txt");
     assert!(
@@ -3934,8 +4147,7 @@ fn current_anchor_carries_both_diff_and_content() -> Result<()> {
         anchors[0]
     );
     assert_eq!(
-        anchors[0]["content"],
-        "first\nsecond\nthird\nfourth\nfifth\nSIXTH (uncommitted)\n",
+        anchors[0]["content"], "first\nsecond\nthird\nfourth\nfifth\nSIXTH (uncommitted)\n",
         "a current anchor also carries the full live snapshot"
     );
     Ok(())
@@ -4230,8 +4442,7 @@ fn uncommitted_reanchor_renders_as_a_rename() -> Result<()> {
         .unwrap_or_else(|| panic!("re-anchored address missing from: {json:#}"));
     let diff = moved["diff"].as_str().expect("diff string");
     assert!(
-        diff.contains("rename from src.txt#L1-L3\n")
-            && diff.contains("rename to src.txt#L4-L6\n"),
+        diff.contains("rename from src.txt#L1-L3\n") && diff.contains("rename to src.txt#L4-L6\n"),
         "an uncommitted declaration edit genuinely moved the address, so it \
          pairs against the last recorded state as a rename; got:\n{diff}"
     );
@@ -4244,23 +4455,20 @@ fn uncommitted_reanchor_renders_as_a_rename() -> Result<()> {
 
 #[test]
 fn every_current_anchor_carries_both_payloads_in_both_formats() -> Result<()> {
-    for (repo, span) in [
-        seed_history_scenario()?,
-        {
-            // Committed, unreconciled, clean worktree — the shape that used to
-            // vanish from the default output entirely.
-            let repo = TestRepo::new()?;
-            repo.write_file("src.txt", "one\ntwo\nthree\nfour\n")?;
-            repo.commit_all("initial")?;
-            repo.span_stdout(["add", "cd", "src.txt#L1-L3"])?;
-            repo.span_stdout(["why", "cd", "tracks the head"])?;
-            repo.run_git(["add", ".span"])?;
-            repo.run_git(["commit", "-m", "create span"])?;
-            repo.write_file("src.txt", "ONE\ntwo\nthree\nfour\n")?;
-            repo.commit_all("drift without re-anchoring")?;
-            (repo, "cd")
-        },
-    ] {
+    for (repo, span) in [seed_history_scenario()?, {
+        // Committed, unreconciled, clean worktree — the shape that used to
+        // vanish from the default output entirely.
+        let repo = TestRepo::new()?;
+        repo.write_file("src.txt", "one\ntwo\nthree\nfour\n")?;
+        repo.commit_all("initial")?;
+        repo.span_stdout(["add", "cd", "src.txt#L1-L3"])?;
+        repo.span_stdout(["why", "cd", "tracks the head"])?;
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "create span"])?;
+        repo.write_file("src.txt", "ONE\ntwo\nthree\nfour\n")?;
+        repo.commit_all("drift without re-anchoring")?;
+        (repo, "cd")
+    }] {
         let json = history_json(&repo, span)?;
         let anchors = json["current"]["anchors"]
             .as_array()
@@ -4407,7 +4615,10 @@ fn uncommitted_declaration_with_drifted_anchor_is_a_header_only_drift() -> Resul
     assert_eq!(anchor["content"], "alpha\nBETA-DRIFTED\ngamma\n");
 
     let out = history_text(&repo, span)?;
-    assert!(out.contains(diff), "the default output carries it too:\n{out}");
+    assert!(
+        out.contains(diff),
+        "the default output carries it too:\n{out}"
+    );
     Ok(())
 }
 
@@ -4527,7 +4738,8 @@ fn declaration_diffs_match_real_git_for_add_modify_and_delete() -> Result<()> {
         .as_str()
         .expect("span_diff");
     assert!(
-        created.starts_with("diff --git a/.span/d b/.span/d\nnew file mode 100644\nindex 0000000.."),
+        created
+            .starts_with("diff --git a/.span/d b/.span/d\nnew file mode 100644\nindex 0000000.."),
         "a creation is an add, with the real path on both sides; got:\n{created}"
     );
     assert!(
@@ -4691,7 +4903,6 @@ fn a_namespace_name_errors_instead_of_panicking() -> Result<()> {
     Ok(())
 }
 
-
 // ---------------------------------------------------------------------------
 // Past end of file: one policy across both read paths
 // ---------------------------------------------------------------------------
@@ -4841,7 +5052,9 @@ fn empty_extent_reanchor_repo(span: &str) -> Result<TestRepo> {
 /// the patch string whose parsing `--format json` exists to spare consumers.
 fn payload_fields(anchor: &Value) -> (Option<&str>, Option<&str>) {
     (
-        anchor.get("content").map(|c| c.as_str().expect("content string")),
+        anchor
+            .get("content")
+            .map(|c| c.as_str().expect("content string")),
         anchor
             .get("unavailable")
             .map(|u| u.as_str().expect("unavailable string")),
@@ -4900,7 +5113,9 @@ fn a_reanchor_past_end_of_file_is_unavailable_not_empty_content() -> Result<()> 
          got:\n{diff}"
     );
     assert!(
-        !diff.lines().any(|l| l.starts_with('-') && !l.starts_with("---")),
+        !diff
+            .lines()
+            .any(|l| l.starts_with('-') && !l.starts_with("---")),
         "no signed line may assert an edit `git diff` does not show; \
          got:\n{diff}"
     );
@@ -5070,7 +5285,8 @@ fn the_past_eof_boundary_holds_at_every_depth_below_the_declared_start() -> Resu
 
             // Aperture 1: the working-tree read.
             let live = history_json(&repo, &span)?;
-            let live_anchor = sole_anchor_in(&live["current"], &address, &format!("current[], {where_}"));
+            let live_anchor =
+                sole_anchor_in(&live["current"], &address, &format!("current[], {where_}"));
             if past_eof {
                 if payload_fields(live_anchor) != (None, Some("range-past-eof")) {
                     problems.push(format!(
@@ -5394,10 +5610,7 @@ fn every_null_hash_state_is_distinguishable_from_structured_fields() -> Result<(
         payloads.push((
             state,
             route,
-            (
-                content.map(str::to_string),
-                unavailable.map(str::to_string),
-            ),
+            (content.map(str::to_string), unavailable.map(str::to_string)),
         ));
     }
     assert_eq!(
@@ -5623,7 +5836,11 @@ fn missing_driver_filter_repo(span: &str) -> Result<TestRepo> {
 /// is not the discriminator.
 fn missing_clean_driver_filter_repo(span: &str) -> Result<TestRepo> {
     let repo = filter_attribute_repo(span, "f.txt#L4-L5", "gitcrypt", None)?;
-    repo.run_git(["config", "filter.gitcrypt.clean", "/nonexistent/git-crypt clean"])?;
+    repo.run_git([
+        "config",
+        "filter.gitcrypt.clean",
+        "/nonexistent/git-crypt clean",
+    ])?;
     repo.run_git([
         "config",
         "filter.gitcrypt.smudge",
@@ -5769,7 +5986,9 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
             "{label}: the file is present; got:\n{diff}"
         );
         assert!(
-            !diff.lines().any(|l| l.starts_with('-') && !l.starts_with("---")),
+            !diff
+                .lines()
+                .any(|l| l.starts_with('-') && !l.starts_with("---")),
             "{label}: no line left this file; got:\n{diff}"
         );
         assert!(
@@ -5783,7 +6002,10 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
             "{label}: an empty body needs its explanation; got:\n{diff}"
         );
         let out = history_text(&repo, span)?;
-        assert!(out.contains(diff), "{label}: both formats carry the same block:\n{out}");
+        assert!(
+            out.contains(diff),
+            "{label}: both formats carry the same block:\n{out}"
+        );
 
         // The other surface over the same resolver has always been right about
         // this state; the two must not describe one repository two ways.
@@ -5826,7 +6048,9 @@ fn content_and_the_headers_new_side_name_the_same_bytes() -> Result<()> {
     );
 
     let json = history_json(&repo, "wf")?;
-    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors");
     assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
     let anchor = &anchors[0];
     let diff = anchor["diff"].as_str().expect("diff string");
@@ -5884,7 +6108,9 @@ fn new_side_body(diff: &str) -> String {
 fn a_range_past_the_filtered_end_reaches_a_structured_field() -> Result<()> {
     let repo = working_filter_past_eof_repo("wp")?;
     let json = history_json(&repo, "wp")?;
-    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors");
     assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
     let anchor = &anchors[0];
     let diff = anchor["diff"].as_str().expect("diff string");
@@ -5926,7 +6152,9 @@ fn an_unfiltered_worktree_edit_still_renders_its_whole_hunk() -> Result<()> {
         "fixture assumption — the control carries no filter"
     );
     let json = history_json(&repo, "nc")?;
-    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("current anchors");
     assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
     let anchor = &anchors[0];
     let diff = anchor["diff"].as_str().expect("diff string");
@@ -5944,7 +6172,8 @@ fn an_unfiltered_worktree_edit_still_renders_its_whole_hunk() -> Result<()> {
         "the new side names the bytes the user can see; got:\n{diff}"
     );
     assert!(
-        diff.lines().any(|l| l.starts_with('+') && !l.starts_with("+++")),
+        diff.lines()
+            .any(|l| l.starts_with('+') && !l.starts_with("+++")),
         "the new bytes are in the body; got:\n{diff}"
     );
     Ok(())

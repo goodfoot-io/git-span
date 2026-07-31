@@ -88,7 +88,10 @@ fn autocrlf_change_between_publish_and_same_head_reuse_falls_through_to_cold() {
     run_git(p, &["add", ".span"]);
     run_git(p, &["commit", "-m", "span"]);
     // Resolver entry points require a commit-graph with changed-path filters.
-    run_git(p, &["commit-graph", "write", "--reachable", "--changed-paths"]);
+    run_git(
+        p,
+        &["commit-graph", "write", "--reachable", "--changed-paths"],
+    );
 
     // ── Publish a baseline generation at HEAD (autocrlf=false). ──────────────
     let (_out, _err) = run_span(p, &["stale", "--no-exit-code"], true, true);

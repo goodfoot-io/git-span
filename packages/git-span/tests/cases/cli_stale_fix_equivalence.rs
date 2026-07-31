@@ -36,8 +36,7 @@ fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()>
     Ok(())
 }
 
-const ORIGINAL: &str =
-    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+const ORIGINAL: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
 
 /// Reproduction (must FAIL before the fix): a meaning-changing worktree edit
 /// to one anchored line must leave the anchor drifting after `--fix`. Today
@@ -51,8 +50,7 @@ fn fix_leaves_meaning_changed_worktree_anchor_drifting() -> Result<()> {
     let original_hash = line_slice_hash(ORIGINAL, 1, 5);
 
     // Meaning-changing edit (non-whitespace): rename a token in line 1.
-    let changed =
-        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let changed = "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", changed)?;
 
     repo.run_span(["stale", "--fix", "--no-exit-code"])?;
@@ -88,8 +86,7 @@ fn fix_reanchors_whitespace_only_worktree_change() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // Whitespace-only edit: reindent line 1. Equivalent under normalization.
-    let reindented =
-        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let reindented = "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
 
     repo.run_span(["stale", "--fix", "--no-exit-code"])?;

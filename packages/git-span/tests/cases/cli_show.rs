@@ -52,8 +52,6 @@ fn show_by_name_has_required_lines() -> Result<()> {
     Ok(())
 }
 
-
-
 #[test]
 fn show_missing_span_errors() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -61,7 +59,6 @@ fn show_missing_span_errors() -> Result<()> {
     assert!(!out.status.success());
     Ok(())
 }
-
 
 #[test]
 fn ls_all_lists_every_file_with_ranges() -> Result<()> {

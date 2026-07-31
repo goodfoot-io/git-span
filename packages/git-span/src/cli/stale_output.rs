@@ -8,12 +8,11 @@
 use crate::cli::stale_fix::FixResult;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::resolver::{
-    SourceLayers, WholeResult, span_is_reportable_in_stale_discovery,
-    resolve_named_spans, resolve_named_spans_retaining_source_layers,
-    resolve_named_spans_with_source_layers, sort_spans_by_anchor_path, stale_spans,
-    stale_spans_retaining_source_layers, stale_spans_with_trace,
+    SourceLayers, WholeResult, resolve_named_spans, resolve_named_spans_retaining_source_layers,
+    resolve_named_spans_with_source_layers, sort_spans_by_anchor_path,
+    span_is_reportable_in_stale_discovery, stale_spans, stale_spans_retaining_source_layers,
+    stale_spans_with_trace,
 };
-use std::collections::HashMap;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
     LayerSet, SpanResolved, UnavailableReason,
@@ -21,6 +20,7 @@ use crate::types::{
 use crate::validation::validate_span_name_shape;
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 fn csv_escape(s: &str) -> String {
@@ -83,6 +83,7 @@ fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
 }
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Result<i32> {
+    crate::git::reject_replacement_topology(repo)?;
     // Reset the `--fix` phase counters once per invocation. The pre- and
     // post-fix resolve passes both feed these process-global counters, so they
     // are reset here (not inside the resolver, which resets per resolve session)
@@ -172,8 +173,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     // PRE-fix resolve timer: only the `--fix` path attributes this pass, so the
     // start instant is taken (under perf) only when `args.fix`. The elapsed is
     // recorded into `fix.pre-resolve-us` just after the resolve block.
-    let pre_resolve_start =
-        (args.fix && crate::perf::enabled()).then(std::time::Instant::now);
+    let pre_resolve_start = (args.fix && crate::perf::enabled()).then(std::time::Instant::now);
 
     let mut spans = if args.paths.is_empty() {
         // No positional args: scan every span. Pending-only spans are NOT
@@ -195,8 +195,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             whole_result = wr;
             resolved
         } else {
-            let (resolved, _, wr) =
-                stale_spans_retaining_source_layers(repo, span_root, options)?;
+            let (resolved, _, wr) = stale_spans_retaining_source_layers(repo, span_root, options)?;
             whole_result = wr;
             resolved
         }
@@ -219,8 +218,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // count-totals, conflict-detection, and `--fix` interior/fix_input
         // sites below all reuse it instead of reloading.
         let corpus = crate::span::read::load_all_spans_in(repo, span_root)?;
-        let path_index =
-            crate::span::read::SpanPathIndex::from_loaded_spans(&corpus.0)?;
+        let path_index = crate::span::read::SpanPathIndex::from_loaded_spans(&corpus.0)?;
         pre_fix_corpus = Some(corpus);
 
         for arg in &args.paths {
@@ -246,7 +244,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             // instead of reloading the corpus per arg.
             if !found {
                 let names = if crate::span::read::is_glob_pattern(arg) {
-                    path_index.matching_names_glob(arg, None).unwrap_or_default()
+                    path_index
+                        .matching_names_glob(arg, None)
+                        .unwrap_or_default()
                 } else {
                     path_index.matching_names(arg, None)
                 };
@@ -309,7 +309,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
                 // named-scope pre-fix pass always builds an `EngineState`
                 // (no cache_v2), so it always yields `SourceLayers`.
                 let (resolved, layers) = resolve_named_spans_retaining_source_layers(
-                    repo, span_root, &span_names, options,
+                    repo,
+                    span_root,
+                    &span_names,
+                    options,
                 )?;
                 pre_fix_source_layers = Some(layers);
                 resolved
@@ -342,19 +345,23 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // `pre_fix_corpus` was loaded above (at the path-index build site) and
         // is still live here; reuse it rather than reloading the corpus a
         // second time for this scoped query.
-        let scoped_anchor_totals: std::collections::HashMap<String, usize> =
-            pre_fix_corpus
-                .as_ref()
-                .expect("pre_fix_corpus must be set before scoped_anchor_totals")
-                .0
-                .iter()
-                .map(|(n, m)| (n.clone(), m.anchors.len()))
-                .collect();
+        let scoped_anchor_totals: std::collections::HashMap<String, usize> = pre_fix_corpus
+            .as_ref()
+            .expect("pre_fix_corpus must be set before scoped_anchor_totals")
+            .0
+            .iter()
+            .map(|(n, m)| (n.clone(), m.anchors.len()))
+            .collect();
         scoped_totals = Some((
             spans.len(),
             spans
                 .iter()
-                .map(|m| scoped_anchor_totals.get(&m.name).copied().unwrap_or(m.anchors.len()))
+                .map(|m| {
+                    scoped_anchor_totals
+                        .get(&m.name)
+                        .copied()
+                        .unwrap_or(m.anchors.len())
+                })
                 .sum(),
         ));
         // Capture the resolved span-name set for downstream scoping (conflict
@@ -362,9 +369,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // already contains the result of path→span resolution, so a path-form
         // arg like `src/lib.rs` contributes the span(es) that anchor it.
         scoped_span_names = Some(span_names.iter().cloned().collect());
-        spans.retain(|m| {
-            m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
-        });
+        spans.retain(|m| m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh));
 
         spans
     };
@@ -388,11 +393,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         usize,
         std::collections::HashMap<String, usize>,
     ) = if let Some(ref wr) = whole_result {
-        let totals: std::collections::HashMap<String, usize> = wr
-            .span_anchor_totals
-            .iter()
-            .cloned()
-            .collect();
+        let totals: std::collections::HashMap<String, usize> =
+            wr.span_anchor_totals.iter().cloned().collect();
         let span_count = totals.len();
         let anchor_count: usize = totals.values().sum();
         crate::perf::counter("cache-path.whole-result-hit", 1);
@@ -647,7 +649,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     } else {
         None
     };
-    let followed_ids: HashSet<String> = fix_result.as_ref().map_or(HashSet::new(), |fr| fr.rewritten_anchor_ids.clone());
+    let followed_ids: HashSet<String> = fix_result
+        .as_ref()
+        .map_or(HashSet::new(), |fr| fr.rewritten_anchor_ids.clone());
 
     // POST-region corpus: the corpus state observed by the backfill and the
     // interior-anchor scan below. On the plain (non-`--fix`) path no mutation
@@ -681,10 +685,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     // findings.
     // Skipped on whole-result hit — the cached spans already include all
     // anchors (Fresh + non-Fresh) backfilled in stored order.
-    if matches!(args.format, StaleFormat::Human)
-        && args.paths.is_empty()
-        && !use_whole_result
-    {
+    if matches!(args.format, StaleFormat::Human) && args.paths.is_empty() && !use_whole_result {
         let _perf = crate::perf::span("stale.backfill-fresh-anchors");
         // Drift-report contract: a scan shows a span iff it has a non-Fresh
         // anchor. The all-layers discovery path (`needs_all_layers`,
@@ -692,23 +693,18 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // machine renderers never show them because they
         // emit drift findings only. Enforce the same predicate here so a
         // backfilled fresh span cannot leak into the human scan.
-        spans.retain(|m| {
-            m.anchors
-                .iter()
-                .any(|a| a.status != AnchorStatus::Fresh)
-        });
+        spans.retain(|m| m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh));
         // Reuse the shared post-region corpus (fresh post-`apply_fix` on the
         // `--fix` path; the unchanged pre-fix corpus on the plain path) instead
         // of a dedicated reload. Borrow it so the interior scan below can reuse
         // the same load.
-        let file_records: std::collections::HashMap<&str, &crate::types::Span> =
-            post_region_corpus
-                .as_ref()
-                .expect("post_region_corpus set before backfill when !use_whole_result")
-                .0
-                .iter()
-                .map(|(n, m)| (n.as_str(), m))
-                .collect();
+        let file_records: std::collections::HashMap<&str, &crate::types::Span> = post_region_corpus
+            .as_ref()
+            .expect("post_region_corpus set before backfill when !use_whole_result")
+            .0
+            .iter()
+            .map(|(n, m)| (n.as_str(), m))
+            .collect();
         for m in spans.iter_mut() {
             let Some(record) = file_records.get(m.name.as_str()) else {
                 continue;
@@ -869,8 +865,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     let clusters: Vec<crate::cli::stale_cluster::StaleCluster> = if args.cluster && stale_count > 0
     {
         let _perf = crate::perf::span("stale.cluster-corpus-load");
-        let (cluster_corpus, _conflicted) =
-            crate::span::read::load_all_spans_in(repo, span_root)?;
+        let (cluster_corpus, _conflicted) = crate::span::read::load_all_spans_in(repo, span_root)?;
         let stale_span_names: std::collections::BTreeSet<String> = findings
             .iter()
             .filter(|f| {
@@ -884,15 +879,14 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             })
             .map(|f| f.span.clone())
             .collect();
-        let full_anchor_paths: HashMap<String, std::collections::BTreeSet<String>> =
-            cluster_corpus
-                .into_iter()
-                .map(|(name, span)| {
-                    let paths: std::collections::BTreeSet<String> =
-                        span.anchors.into_iter().map(|(_, a)| a.path).collect();
-                    (name, paths)
-                })
-                .collect();
+        let full_anchor_paths: HashMap<String, std::collections::BTreeSet<String>> = cluster_corpus
+            .into_iter()
+            .map(|(name, span)| {
+                let paths: std::collections::BTreeSet<String> =
+                    span.anchors.into_iter().map(|(_, a)| a.path).collect();
+                (name, paths)
+            })
+            .collect();
         crate::cli::stale_cluster::cluster_stale_spans(&stale_span_names, &full_anchor_paths)
     } else {
         Vec::new()
@@ -944,7 +938,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
 
             // Reconciled summary line: always printed after --fix, regardless
             // of whether drift remains or all counts are zero.
-            if args.fix && let Some(ref fr) = fix_result {
+            if args.fix
+                && let Some(ref fr) = fix_result
+            {
                 let updated = fr.anchors_updated;
                 let removed = fr.anchors_removed;
                 let total = updated + removed;
@@ -994,7 +990,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         crate::perf::counter("fix.pre-resolve-us", crate::perf::fix_pre_resolve_us());
         crate::perf::counter("fix.apply-us", crate::perf::fix_apply_us());
         crate::perf::counter("fix.post-resolve-us", crate::perf::fix_post_resolve_us());
-        crate::perf::counter("fix.rewritable-anchors", crate::perf::fix_rewritable_anchors());
+        crate::perf::counter(
+            "fix.rewritable-anchors",
+            crate::perf::fix_rewritable_anchors(),
+        );
         crate::perf::counter("fix.hash-calls", crate::perf::fix_hash_calls());
         crate::perf::counter("fix.spans-rewritten", crate::perf::fix_spans_rewritten());
     }
@@ -1325,7 +1324,10 @@ struct HumanRenderOptions {
 /// record. Used to reconstruct anchors the resolver omitted: fully-Fresh
 /// spans fed to `apply_fix`, and fresh sibling anchors of a stale span on
 /// the cache_v2 warm path (which persists only the non-Fresh subset).
-fn fresh_anchor_resolved(anchor_id: &str, a: &crate::types::Anchor) -> crate::types::AnchorResolved {
+fn fresh_anchor_resolved(
+    anchor_id: &str,
+    a: &crate::types::Anchor,
+) -> crate::types::AnchorResolved {
     crate::types::AnchorResolved {
         anchor_id: anchor_id.to_string(),
         anchor_sha: a.anchor_sha.clone(),
@@ -1499,7 +1501,6 @@ fn render_human(
                     }
                 }
             }
-
         }
 
         // Why text: print verbatim after a blank line if non-empty.
@@ -1699,8 +1700,16 @@ fn render_porcelain(
     for c in clusters {
         println!(
             "# cluster {} shared:{}",
-            c.spans.iter().map(|s| csv_escape(s)).collect::<Vec<_>>().join(","),
-            c.shared_files.iter().map(|f| csv_escape(f)).collect::<Vec<_>>().join(","),
+            c.spans
+                .iter()
+                .map(|s| csv_escape(s))
+                .collect::<Vec<_>>()
+                .join(","),
+            c.shared_files
+                .iter()
+                .map(|f| csv_escape(f))
+                .collect::<Vec<_>>()
+                .join(","),
         );
     }
 }

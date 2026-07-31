@@ -69,7 +69,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::resolver::WholeResult;
-use crate::resolver::core::capture::{Revalidation, capture_state_token_with_memo, revalidate_with_memo};
+use crate::resolver::core::capture::{
+    Revalidation, capture_state_token_with_memo, revalidate_with_memo,
+};
 use crate::resolver::core::project::project_effective;
 use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
@@ -366,7 +368,10 @@ pub(crate) fn stale_spans_new_store(
         }
     };
     if let Some(t) = t_observe {
-        crate::perf::counter("cache-path.state-observe-us", t.elapsed().as_micros() as u64);
+        crate::perf::counter(
+            "cache-path.state-observe-us",
+            t.elapsed().as_micros() as u64,
+        );
     }
 
     let attempt = stale_spans_new_store_inner(repo, span_root, options, &token, &mut store)?;

@@ -165,14 +165,11 @@ pub(crate) fn probe_and_init(conn: &Connection) -> Result<ProbeOutcome, StoreErr
     // Cheap read-only corruption/not-a-database probe FIRST: a garbage file
     // fails here with SQLITE_NOTADB/SQLITE_CORRUPT before any write pragma
     // (setting WAL on a corrupt file would otherwise mask this as a hard error).
-    let table_count: i64 = match conn.query_row(
-        "SELECT count(*) FROM sqlite_master",
-        [],
-        |r| r.get(0),
-    ) {
-        Ok(n) => n,
-        Err(e) => return quarantine_or_err(e),
-    };
+    let table_count: i64 =
+        match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)) {
+            Ok(n) => n,
+            Err(e) => return quarantine_or_err(e),
+        };
 
     // Only now — after the file is proven to be a database — set the write
     // pragmas. On a fresh database, `auto_vacuum` must be set *before* WAL:
@@ -207,7 +204,12 @@ pub(crate) fn probe_and_init(conn: &Connection) -> Result<ProbeOutcome, StoreErr
             "INSERT OR REPLACE INTO meta \
              (id, application_id, schema_version, semantic_epoch, created_at) \
              VALUES (1, ?1, ?2, ?3, ?4)",
-            rusqlite::params![APPLICATION_ID, SCHEMA_VERSION, SEMANTIC_EPOCH, super::now_secs()],
+            rusqlite::params![
+                APPLICATION_ID,
+                SCHEMA_VERSION,
+                SEMANTIC_EPOCH,
+                super::now_secs()
+            ],
         )
         .map_err(map_sqlite)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -220,11 +222,10 @@ pub(crate) fn probe_and_init(conn: &Connection) -> Result<ProbeOutcome, StoreErr
     }
 
     // Schema version matches; verify the semantic epoch and app id in `meta`.
-    let epoch: Result<i64, _> = conn.query_row(
-        "SELECT semantic_epoch FROM meta WHERE id = 1",
-        [],
-        |r| r.get(0),
-    );
+    let epoch: Result<i64, _> =
+        conn.query_row("SELECT semantic_epoch FROM meta WHERE id = 1", [], |r| {
+            r.get(0)
+        });
     match epoch {
         Ok(e) if e == SEMANTIC_EPOCH => Ok(ProbeOutcome::Ready),
         Ok(_) => Ok(ProbeOutcome::Quarantine(BypassReason::SchemaMismatch)),

@@ -15,8 +15,8 @@
 use crate::support;
 
 use anyhow::Result;
-use git_span::cli::commit::run_add;
 use git_span::cli::AddArgs;
+use git_span::cli::commit::run_add;
 use git_span::{index_entries_call_count, reset_index_entries_call_count};
 use support::TestRepo;
 

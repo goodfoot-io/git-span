@@ -496,7 +496,9 @@ mod tests {
     #[test]
     fn rejects_dispatcher_generated_artifacts() {
         assert!(!is_span_name_segment("dispatcher.log"));
-        assert!(!is_span_name_segment("agent-daf06226-85d1-471c-b59c-43733590a3f0.log"));
+        assert!(!is_span_name_segment(
+            "agent-daf06226-85d1-471c-b59c-43733590a3f0.log"
+        ));
     }
 
     #[test]

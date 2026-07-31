@@ -84,7 +84,10 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     std::fs::write(main.join("src.txt"), "s1CHANGED\ns2\ns3\ns4\n").expect("write drift");
     run_git(&main, &["add", "-A"]);
     run_git(&main, &["commit", "-m", "drift"]);
-    run_git(&main, &["commit-graph", "write", "--reachable", "--changed-paths"]);
+    run_git(
+        &main,
+        &["commit-graph", "write", "--reachable", "--changed-paths"],
+    );
 
     // ── Prime a warm generation in the primary worktree. ─────────────────────
     let (_out, prime_perf) = run_span(&main, &["stale", "--no-exit-code"], true, true);
@@ -94,7 +97,16 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     );
 
     // ── A sibling linked worktree at the IDENTICAL HEAD (detached), clean. ───
-    run_git(&main, &["worktree", "add", "--detach", linked.to_str().unwrap(), "HEAD"]);
+    run_git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
     assert_eq!(
         std::fs::read_to_string(main.join("src.txt")).unwrap(),
         std::fs::read_to_string(linked.join("src.txt")).unwrap(),

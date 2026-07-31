@@ -116,7 +116,10 @@ fn round_trip_empty_partial_full_and_large() {
     assert_eq!(got.summary, big);
 
     // Absent key is a plain Miss.
-    assert_eq!(store.get_generation(&key(99), V1).unwrap(), GetOutcome::Miss);
+    assert_eq!(
+        store.get_generation(&key(99), V1).unwrap(),
+        GetOutcome::Miss
+    );
 }
 
 #[test]
@@ -490,7 +493,8 @@ fn read_only_directory_fails_closed() {
 fn busy_timeout_fails_closed_without_writing() {
     let dir = tmp();
     // Store with a short busy timeout so the test is fast.
-    let mut store = CacheStore::open_with(dir.path(), 50, super::lock::build_shard_count()).unwrap();
+    let mut store =
+        CacheStore::open_with(dir.path(), 50, super::lock::build_shard_count()).unwrap();
 
     // A second raw connection grabs and holds the write lock.
     let blocker = Connection::open(dir.path().join(super::schema::DB_BASENAME)).unwrap();
@@ -531,10 +535,7 @@ fn disk_full_fails_closed_and_rolls_back() {
     assert_eq!(err.reason(), BypassReason::DiskFull);
 
     // Lift the cap; the failed publish left nothing behind (rolled back).
-    store
-        .conn
-        .pragma_update(None, "max_page_count", 0)
-        .unwrap();
+    store.conn.pragma_update(None, "max_page_count", 0).unwrap();
     assert_eq!(store.get_generation(&key(1), V1).unwrap(), GetOutcome::Miss);
     assert!(!store.is_in_write_txn());
 }
@@ -1038,7 +1039,12 @@ fn maintain_reports_corruption_recovery_event() {
     let clean_dir = tmp();
     let mut clean = open(clean_dir.path());
     assert_eq!(clean.recovered_on_open(), None);
-    assert!(!clean.maintain(512 * 1024 * 1024).unwrap().corruption_recovered);
+    assert!(
+        !clean
+            .maintain(512 * 1024 * 1024)
+            .unwrap()
+            .corruption_recovered
+    );
 }
 
 #[test]
@@ -1544,7 +1550,9 @@ struct Kind {
 
 /// Deterministic LCG so the replay trace is identical across policies.
 fn lcg_next(state: &mut u64) -> u64 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     *state >> 33
 }
 
@@ -1575,8 +1583,7 @@ fn evict_under_cap_with_order(store: &mut CacheStore, cap: u64, order_by: &str) 
         return 0;
     }
     let victims: Vec<String> = {
-        let sql =
-            format!("SELECT key_digest FROM generation WHERE live = 0 ORDER BY {order_by}");
+        let sql = format!("SELECT key_digest FROM generation WHERE live = 0 ORDER BY {order_by}");
         let mut stmt = store.conn.prepare(&sql).unwrap();
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.map(|r| r.unwrap()).collect()
@@ -1704,9 +1711,15 @@ fn retention_policy_replay_spike() {
     };
 
     let policies: [(&'static str, &'static str); 3] = [
-        ("A: 6A summary-first,oldest", "(row_count > 0) ASC, access_bucket ASC, created_at ASC"),
+        (
+            "A: 6A summary-first,oldest",
+            "(row_count > 0) ASC, access_bucket ASC, created_at ASC",
+        ),
         ("B: pure recency", "access_bucket ASC, created_at ASC"),
-        ("C: cost/byte", "(row_count > 0) ASC, length(summary) DESC, access_bucket ASC"),
+        (
+            "C: cost/byte",
+            "(row_count > 0) ASC, length(summary) DESC, access_bucket ASC",
+        ),
     ];
 
     let mut results: Vec<PolicyResult> = Vec::new();
@@ -1723,7 +1736,13 @@ fn retention_policy_replay_spike() {
         );
         let (latency, hits, misses) = replay_trace(&mut store, &trace, &kinds);
         assert_eq!(hits + misses, TRACE_LEN as u64);
-        results.push(PolicyResult { name, evicted, hits, misses, latency });
+        results.push(PolicyResult {
+            name,
+            evicted,
+            hits,
+            misses,
+            latency,
+        });
     }
 
     // Deterministic structural assertion: pure recency (B) evicts the
@@ -1927,7 +1946,10 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
         });
 
         let status = child.wait().expect("wait conc kill child");
-        assert!(!status.success(), "child (delay={delay_us}us) was expected to abort");
+        assert!(
+            !status.success(),
+            "child (delay={delay_us}us) was expected to abort"
+        );
         reader.join().unwrap();
 
         // After the injected termination the store must open (cleanly or via
@@ -1942,7 +1964,9 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
             // baseline absent; that is a clean, usable store, not corruption.
             GetOutcome::Miss => {}
             GetOutcome::Rejected(r) => {
-                panic!("store served a partial/corrupt generation after kill (delay={delay_us}us): {r:?}");
+                panic!(
+                    "store served a partial/corrupt generation after kill (delay={delay_us}us): {r:?}"
+                );
             }
         }
         // Writable: a fresh publish + read-back round-trips.
@@ -1978,7 +2002,11 @@ fn get_generation_summary_matches_get_generation_header_and_summary() {
         store
             .publish_generation(&make_input(k, V1, b"summary-bytes", rows))
             .unwrap();
-        let full = store.get_generation(&k, V1).unwrap().hit().expect("full hit");
+        let full = store
+            .get_generation(&k, V1)
+            .unwrap()
+            .hit()
+            .expect("full hit");
         let summary_only = store
             .get_generation_summary(&k, V1)
             .unwrap()
@@ -1997,7 +2025,10 @@ fn get_generation_summary_matches_get_generation_header_and_summary() {
     }
 
     // Absent key: both a plain Miss.
-    assert_eq!(store.get_generation(&key(99), V1).unwrap(), GetOutcome::Miss);
+    assert_eq!(
+        store.get_generation(&key(99), V1).unwrap(),
+        GetOutcome::Miss
+    );
     assert_eq!(
         store.get_generation_summary(&key(99), V1).unwrap(),
         GetOutcome::Miss
@@ -2057,4 +2088,3 @@ fn get_generation_summary_still_rejects_tampered_row_count_via_envelope_digest()
          cardinality still fails envelope-digest verification"
     );
 }
-

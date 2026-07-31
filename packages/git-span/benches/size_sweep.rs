@@ -256,7 +256,9 @@ fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
         let bench_id = format!("{span_count}_spans");
         group.bench_function(&bench_id, |b| {
             b.iter_custom(|iters| {
-                (0..iters).map(|_| time_cold_stale(&fixture.repo_path)).sum()
+                (0..iters)
+                    .map(|_| time_cold_stale(&fixture.repo_path))
+                    .sum()
             });
         });
     }

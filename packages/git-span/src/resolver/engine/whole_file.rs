@@ -6,11 +6,11 @@ use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
 use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
-    submodule_classify, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
-    DriftSource, SpanConfig, SubmoduleKind,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, SpanConfig,
+    SubmoduleKind, submodule_classify,
 };
 use crate::{Error, Result};
-use git_span_core::{cheap_fingerprint_with_extent, rk64_to_hex, RK64_ALGORITHM};
+use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -91,7 +91,12 @@ fn find_relocated_whole_file(
         // content match in an unrelated pre-existing file is not a
         // relocation. The before-commit walk and per-candidate probe are
         // session-memoized (see `is_rename_target`'s doc comment).
-        if concurrent.head_blob_at(repo, &shared.head_sha,&en.path).ok().flatten().is_some() {
+        if concurrent
+            .head_blob_at(repo, &shared.head_sha, &en.path)
+            .ok()
+            .flatten()
+            .is_some()
+        {
             let is_target =
                 anchored_absent_at_head && concurrent.is_rename_target(repo, exclude, &en.path);
             if !is_target {
@@ -111,7 +116,13 @@ fn find_relocated_whole_file(
                 canonical_layer_bytes(repo, &en.oid.to_string(), gitlink)
             }
         };
-        let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
+        let computed = format!(
+            "{RK64_ALGORITHM}:{}",
+            rk64_to_hex(cheap_fingerprint_with_extent(
+                &bytes,
+                &AnchorExtent::WholeFile
+            ))
+        );
         if computed == stored_hash {
             return Some(en.path);
         }
@@ -145,7 +156,9 @@ pub(crate) fn resolve_whole_file(
         extent: AnchorExtent::WholeFile,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty() && !concurrent.commit_reachable(repo, &shared.head_sha,&r.anchor_sha)? {
+    if !r.anchor_sha.is_empty()
+        && !concurrent.commit_reachable(repo, &shared.head_sha, &r.anchor_sha)?
+    {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -161,8 +174,8 @@ pub(crate) fn resolve_whole_file(
     }
 
     if r.anchor_sha == shared.head_sha
-        && super::anchor_path_is_layer_clean(local, shared,&r.path)
-        && let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?
+        && super::anchor_path_is_layer_clean(local, shared, &r.path)
+        && let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
         && head_blob == r.blob
     {
         return Ok(AnchorResolved {
@@ -192,7 +205,8 @@ pub(crate) fn resolve_whole_file(
     let moved = current_path != r.path;
 
     // Per-layer blob OIDs for whole-file comparison.
-    let head_blob: Option<String> = concurrent.head_blob_at(repo, &shared.head_sha,&current_path)?;
+    let head_blob: Option<String> =
+        concurrent.head_blob_at(repo, &shared.head_sha, &current_path)?;
     let deepest = if local.layers.worktree {
         DriftSource::Worktree
     } else if local.layers.index {
@@ -201,7 +215,7 @@ pub(crate) fn resolve_whole_file(
         DriftSource::Head
     };
 
-    if super::anchor_path_is_layer_clean(local, shared,&current_path)
+    if super::anchor_path_is_layer_clean(local, shared, &current_path)
         && let Some(head_blob) = head_blob.as_ref()
         && head_blob == &r.blob
     {
@@ -285,7 +299,13 @@ pub(crate) fn resolve_whole_file(
         match &head_blob {
             Some(oid) => {
                 let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
-                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
+                let computed = format!(
+                    "{RK64_ALGORITHM}:{}",
+                    rk64_to_hex(cheap_fingerprint_with_extent(
+                        &bytes,
+                        &AnchorExtent::WholeFile
+                    ))
+                );
                 computed != r.stored_hash
             }
             None => true,
@@ -298,7 +318,13 @@ pub(crate) fn resolve_whole_file(
             && match &index_blob {
                 Some(oid) => {
                     let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
-                    let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
+                    let computed = format!(
+                        "{RK64_ALGORITHM}:{}",
+                        rk64_to_hex(cheap_fingerprint_with_extent(
+                            &bytes,
+                            &AnchorExtent::WholeFile
+                        ))
+                    );
                     computed != r.stored_hash
                 }
                 None => true,
@@ -312,7 +338,13 @@ pub(crate) fn resolve_whole_file(
                 Some(Some(oid)) => {
                     if is_gitlink {
                         // Gitlink: identity is the recorded commit OID hex.
-                        let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(oid.as_bytes(), &AnchorExtent::WholeFile)));
+                        let computed = format!(
+                            "{RK64_ALGORITHM}:{}",
+                            rk64_to_hex(cheap_fingerprint_with_extent(
+                                oid.as_bytes(),
+                                &AnchorExtent::WholeFile
+                            ))
+                        );
                         computed != r.stored_hash
                     } else {
                         // Worktree blob OID may not exist in repo (computed
@@ -320,7 +352,13 @@ pub(crate) fn resolve_whole_file(
                         let abs = workdir.join(&current_path);
                         match std::fs::read(&abs) {
                             Ok(bytes) => {
-                                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &AnchorExtent::WholeFile)));
+                                let computed = format!(
+                                    "{RK64_ALGORITHM}:{}",
+                                    rk64_to_hex(cheap_fingerprint_with_extent(
+                                        &bytes,
+                                        &AnchorExtent::WholeFile
+                                    ))
+                                );
                                 computed != r.stored_hash
                             }
                             Err(_) => true,
@@ -361,8 +399,12 @@ pub(crate) fn resolve_whole_file(
             //    "deleted in the working tree" / "deleted in the index".
             // In no case is a removal mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty();
-            let head_path_absent =
-                file_backed && concurrent.head_blob_at(repo, &shared.head_sha,&r.path).ok().flatten().is_none();
+            let head_path_absent = file_backed
+                && concurrent
+                    .head_blob_at(repo, &shared.head_sha, &r.path)
+                    .ok()
+                    .flatten()
+                    .is_none();
             let relocated = if file_backed {
                 find_relocated_whole_file(
                     repo,
@@ -405,10 +447,7 @@ pub(crate) fn resolve_whole_file(
                     let is_submodule = git::index_entries(repo)
                         .ok()
                         .map(|entries| {
-                            !matches!(
-                                submodule_classify(&entries, &r.path),
-                                SubmoduleKind::None,
-                            )
+                            !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
                         })
                         .unwrap_or(false);
                     let status = if is_submodule {
@@ -493,7 +532,13 @@ pub(crate) fn resolve_whole_file(
                         }
                     }
                 };
-                let computed = format!("{RK64_ALGORITHM}:{}", rk64_to_hex(cheap_fingerprint_with_extent(&text, &AnchorExtent::WholeFile)));
+                let computed = format!(
+                    "{RK64_ALGORITHM}:{}",
+                    rk64_to_hex(cheap_fingerprint_with_extent(
+                        &text,
+                        &AnchorExtent::WholeFile
+                    ))
+                );
                 computed == r.stored_hash
             } else {
                 cur == r.blob
@@ -514,7 +559,9 @@ pub(crate) fn resolve_whole_file(
                 // follow-walk did not pick up). Scan before `Changed`.
                 let file_backed = !r.stored_hash.is_empty();
                 if file_backed {
-                    let anchored_absent_at_head = concurrent.head_blob_at(repo, &shared.head_sha,&r.path)?.is_none();
+                    let anchored_absent_at_head = concurrent
+                        .head_blob_at(repo, &shared.head_sha, &r.path)?
+                        .is_none();
                     find_relocated_whole_file(
                         repo,
                         shared,

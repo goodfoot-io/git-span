@@ -91,14 +91,12 @@ fn sparse_checkout_excluded_reports_content_unavailable() -> Result<()> {
     // sparse-excluded file, and the empty-content check at line 883
     // classifies it as DELETED instead of CONTENT_UNAVAILABLE.
     assert_eq!(
-        f["status"]["code"],
-        "CONTENT_UNAVAILABLE",
+        f["status"]["code"], "CONTENT_UNAVAILABLE",
         "sparse-excluded anchor should be CONTENT_UNAVAILABLE, got status.code={}",
         f["status"]["code"]
     );
     assert_eq!(
-        f["status"]["reason"],
-        "SPARSE_EXCLUDED",
+        f["status"]["reason"], "SPARSE_EXCLUDED",
         "reason should be SPARSE_EXCLUDED, got: {}",
         f["status"]["reason"]
     );

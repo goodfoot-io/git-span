@@ -113,7 +113,11 @@ fn chain_topology_yields_two_overlapping_cliques() -> Result<()> {
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
 
     // Root is x.rs alone.
-    assert_eq!(lines[0], "- x.rs", "root must be x.rs alone: {:?}", lines[0]);
+    assert_eq!(
+        lines[0], "- x.rs",
+        "root must be x.rs alone: {:?}",
+        lines[0]
+    );
 
     // Among the depth-1 children there must be both a {a,b} clique line and a
     // {b,c} clique line (the two overlapping maximal cliques of the neighbors).
@@ -185,7 +189,11 @@ fn clique_as_unit_expansion_no_mutual_relisting() -> Result<()> {
         3,
         "expected root + collapsed {{b,c,d}} clique + singleton {{e}}:\n{out}"
     );
-    assert_eq!(lines[0], "- a.rs", "root must be a.rs alone: {:?}", lines[0]);
+    assert_eq!(
+        lines[0], "- a.rs",
+        "root must be a.rs alone: {:?}",
+        lines[0]
+    );
 
     // The interconnected {b,c,d} collapse onto a single child line.
     let bcd = lines
@@ -523,7 +531,10 @@ fn json_format_children_nest_recursively() -> Result<()> {
     let arr = v.as_array().expect("top-level array");
     let root = &arr[0];
     let children = root["children"].as_array().expect("children array");
-    assert!(!children.is_empty(), "root must have children for chain topology");
+    assert!(
+        !children.is_empty(),
+        "root must have children for chain topology"
+    );
     let child = &children[0];
     assert!(
         child["members"].is_array(),
@@ -574,10 +585,7 @@ fn deterministic_ordering_for_multiple_roots() -> Result<()> {
     let out2 = repo.span_stdout(["tree", "a.rs", "c.rs"])?;
     assert_eq!(out1, out2, "forest ordering must be stable across runs");
 
-    let roots: Vec<&str> = out1
-        .lines()
-        .filter(|l| l.starts_with("- "))
-        .collect();
+    let roots: Vec<&str> = out1.lines().filter(|l| l.starts_with("- ")).collect();
     assert_eq!(
         roots,
         vec!["- a.rs", "- c.rs"],

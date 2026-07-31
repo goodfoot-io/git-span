@@ -207,7 +207,7 @@ pub fn rename_span_in(repo: &gix::Repository, old: &str, new: &str, span_root: &
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_span_dir, GITATTRIBUTES_CONTENTS, HOOKIGNORE_CONTENTS, SPAN_GITIGNORE_CONTENTS,
+        GITATTRIBUTES_CONTENTS, HOOKIGNORE_CONTENTS, SPAN_GITIGNORE_CONTENTS, ensure_span_dir,
     };
 
     /// `ensure_span_dir` must create `.span/.gitattributes` with exact
@@ -222,7 +222,10 @@ mod tests {
         ensure_span_dir(workdir, span_root).expect("first call");
 
         let ga_path = workdir.join(span_root).join(".gitattributes");
-        assert!(ga_path.exists(), ".span/.gitattributes must exist after first call");
+        assert!(
+            ga_path.exists(),
+            ".span/.gitattributes must exist after first call"
+        );
 
         let content = std::fs::read_to_string(&ga_path).expect("read .gitattributes");
         assert_eq!(
@@ -251,7 +254,10 @@ mod tests {
         ensure_span_dir(workdir, span_root).expect("first call");
 
         let gi_path = workdir.join(span_root).join(".gitignore");
-        assert!(gi_path.exists(), ".span/.gitignore must exist after first call");
+        assert!(
+            gi_path.exists(),
+            ".span/.gitignore must exist after first call"
+        );
 
         let content = std::fs::read_to_string(&gi_path).expect("read .gitignore");
         assert_eq!(
@@ -280,7 +286,10 @@ mod tests {
         ensure_span_dir(workdir, span_root).expect("first call");
 
         let hi_path = workdir.join(span_root).join(".hookignore");
-        assert!(hi_path.exists(), ".span/.hookignore must exist after first call");
+        assert!(
+            hi_path.exists(),
+            ".span/.hookignore must exist after first call"
+        );
 
         let content = std::fs::read_to_string(&hi_path).expect("read .hookignore");
         assert_eq!(
@@ -362,7 +371,8 @@ mod tests {
         let span_dir = workdir.join(span_root);
         std::fs::create_dir_all(&span_dir).expect("create .span");
         let ga_path = span_dir.join(".gitattributes");
-        std::fs::write(&ga_path, "* text eol=lf\n*.bin binary\n").expect("write user .gitattributes");
+        std::fs::write(&ga_path, "* text eol=lf\n*.bin binary\n")
+            .expect("write user .gitattributes");
 
         ensure_span_dir(workdir, span_root).expect("call after user content");
 
@@ -390,8 +400,7 @@ mod tests {
         let span_dir = workdir.join(span_root);
         std::fs::create_dir_all(&span_dir).expect("create .span");
         let user_content = "# my custom rule\npath/to/foo  my-prefix\n";
-        std::fs::write(span_dir.join(".hookignore"), user_content)
-            .expect("write user .hookignore");
+        std::fs::write(span_dir.join(".hookignore"), user_content).expect("write user .hookignore");
 
         ensure_span_dir(workdir, span_root).expect("call after user content");
 

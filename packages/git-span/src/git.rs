@@ -41,6 +41,49 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
     repo.common_dir()
 }
 
+/// Reject history-sensitive commands when Git's effective commit graph differs
+/// from the object graph exposed by `gix`.
+///
+/// `refs/replace/*` (including packed refs) and `info/grafts` rewrite parent
+/// links for Git's revision machinery.  The resolver and history renderer both
+/// use `gix` commit parents, which intentionally remain the raw object parents.
+/// Letting either command continue would make one report a topology that Git
+/// itself does not have, and making only history shell out to Git would merely
+/// split the authority.  Until the resolver can consume effective parents,
+/// both surfaces fail before rendering anything.
+pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> {
+    let common = common_dir(repo);
+    let grafts = common.join("info/grafts");
+    let has_grafts = std::fs::read_to_string(&grafts)
+        .map(|text| {
+            text.lines()
+                .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        })
+        .unwrap_or(false);
+
+    let replace_dir = common.join("refs/replace");
+    let has_loose_replace = replace_dir.is_dir()
+        && std::fs::read_dir(&replace_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .any(|entry| entry.ok().is_some());
+    let has_packed_replace = std::fs::read_to_string(common.join("packed-refs"))
+        .map(|text| {
+            text.lines()
+                .any(|line| line.ends_with(" refs/replace") || line.contains(" refs/replace/"))
+        })
+        .unwrap_or(false);
+
+    if has_grafts || has_loose_replace || has_packed_replace {
+        return Err(Error::Git(
+            "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve `HEAD` to a commit OID.
 pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
     let id = repo
@@ -320,14 +363,6 @@ pub fn git_log_name_only_for_paths(
         .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?
         .detach();
 
-    let walk = repo
-        .rev_walk([head_id])
-        .sorting(gix::revision::walk::Sorting::ByCommitTime(
-            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-        ))
-        .all()
-        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
-
     let mut out: Vec<CommitChanges> = Vec::with_capacity(n.min(512));
     let budget_start = std::time::Instant::now();
     // Safety valve for pathological histories only. The walk normally
@@ -355,17 +390,23 @@ pub fn git_log_name_only_for_paths(
         }
     }
 
-    for info in walk {
+    let mut next = Some(head_id);
+    let mut seen = HashSet::new();
+    while let Some(id) = next {
         if out.len() >= n {
             break;
         }
         if budget_start.elapsed() > budget {
             return Ok((out, false));
         }
-        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        if !seen.insert(id) {
+            return Err(Error::Git(
+                "first-parent walk encountered a commit cycle".into(),
+            ));
+        }
         let commit = repo
-            .find_commit(info.id)
-            .map_err(|e| Error::Git(format!("find commit {}: {e}", info.id)))?;
+            .find_commit(id)
+            .map_err(|e| Error::Git(format!("find commit {id}: {e}")))?;
 
         // Merges are *not* skipped: the qualifying test below compares against
         // `parent_ids.first()` for any arity, so a merge qualifies exactly when
@@ -376,7 +417,7 @@ pub fn git_log_name_only_for_paths(
 
         let new_tree = commit
             .tree()
-            .map_err(|e| Error::Git(format!("commit tree {}: {e}", info.id)))?;
+            .map_err(|e| Error::Git(format!("commit tree {id}: {e}")))?;
 
         let old_tree = match parent_ids.first() {
             Some(pid) => match repo.find_commit(*pid) {
@@ -400,13 +441,15 @@ pub fn git_log_name_only_for_paths(
         }
 
         if changed.is_empty() {
+            next = parent_ids.first().copied();
             continue;
         }
 
         out.push(CommitChanges {
-            hash: info.id.to_string(),
+            hash: id.to_string(),
             changed_paths: changed.into_iter().collect(),
         });
+        next = parent_ids.first().copied();
     }
 
     Ok((out, true))
@@ -532,10 +575,7 @@ pub fn changed_paths_between(
 }
 
 /// Peel a commit hash to its tree object.
-fn commit_tree<'repo>(
-    repo: &'repo gix::Repository,
-    commit_oid: &str,
-) -> Result<gix::Tree<'repo>> {
+fn commit_tree<'repo>(repo: &'repo gix::Repository, commit_oid: &str) -> Result<gix::Tree<'repo>> {
     let oid = parse_oid(commit_oid)?;
     let commit = repo
         .find_commit(oid)
@@ -979,7 +1019,9 @@ pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<boo
     let file = &*idx;
     for entry in file.entries() {
         if entry.path(file) == path {
-            return Ok(entry.flags.contains(gix::index::entry::Flags::SKIP_WORKTREE));
+            return Ok(entry
+                .flags
+                .contains(gix::index::entry::Flags::SKIP_WORKTREE));
         }
     }
     Ok(false)
@@ -991,7 +1033,10 @@ pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<boo
 pub(crate) fn promisor_active(repo: &gix::Repository) -> bool {
     let od = common_dir(repo).join("objects");
     std::fs::read_dir(od.join("info"))
-        .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("promisor")))
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("promisor"))
+        })
         .unwrap_or(false)
 }
 
