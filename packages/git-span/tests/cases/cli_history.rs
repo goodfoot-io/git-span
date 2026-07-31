@@ -934,6 +934,56 @@ fn composed_drift_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
+/// One line-range and one whole-file anchor, with independent edits at all
+/// three resolver layers. The sequence deliberately reaches HEAD first, then
+/// stages a second edit, then leaves a third in the worktree so the fixture can
+/// expose ordering instead of merely proving that each source is present.
+fn extent_dependent_source_order_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("range.txt", "one\ntwo\nthree\n")?;
+    repo.write_file("whole.txt", "alpha\nbeta\n")?;
+    repo.commit_all("initial content")?;
+    repo.span_stdout(["add", span, "range.txt#L1-L3", "whole.txt"])?;
+    repo.span_stdout(["why", span, "exposes resolver layer ordering"])?;
+    repo.commit_all("declare both extents")?;
+
+    repo.write_file("range.txt", "one\nHEAD-RANGE\nthree\n")?;
+    repo.write_file("whole.txt", "alpha\nHEAD-WHOLE\n")?;
+    repo.commit_all("commit source drift without re-anchoring")?;
+
+    repo.write_file("range.txt", "one\nINDEX-RANGE\nthree\n")?;
+    repo.write_file("whole.txt", "alpha\nINDEX-WHOLE\n")?;
+    repo.run_git(["add", "range.txt", "whole.txt"])?;
+
+    repo.write_file("range.txt", "one\nWORKTREE-RANGE\nthree\n")?;
+    repo.write_file("whole.txt", "alpha\nWORKTREE-WHOLE\n")?;
+    Ok(repo)
+}
+
+/// Move a declaration to different, already-committed content without
+/// committing source content or the declaration edit. The resulting HEAD
+/// observation is therefore proof of a comparison against HEAD, not proof of
+/// a new content commit.
+fn worktree_only_reanchor_repo(span: &str) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file(
+        "f.txt",
+        "old one\nold two\nold three\nseparator\nnew one\nnew two\nnew three\n",
+    )?;
+    repo.commit_all("initial content")?;
+    repo.span_stdout(["add", span, "f.txt#L1-L3"])?;
+    repo.span_stdout(["why", span, "tracks one duplicated block"])?;
+    repo.commit_all("declare the first block")?;
+
+    let declaration_path = repo.path().join(".span").join(span);
+    let declaration = std::fs::read_to_string(&declaration_path)?;
+    std::fs::write(
+        declaration_path,
+        declaration.replace("f.txt#L1-L3", "f.txt#L5-L7"),
+    )?;
+    Ok(repo)
+}
+
 // ---------------------------------------------------------------------------
 // Topology: which commits are walked, and what each one is diffed against
 // ---------------------------------------------------------------------------
@@ -3804,6 +3854,173 @@ fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
     assert!(
         text.contains("\ndrift source worktree, head\n"),
         "the default output names both layers on one line; got:\n{text}"
+    );
+    Ok(())
+}
+
+/// The resolver sequence is extent-dependent, not a globally sortable layer
+/// priority. Both history formats must preserve the exact sequence `stale`
+/// publishes for each anchor.
+#[test]
+fn staged_and_worktree_sources_preserve_stales_extent_dependent_order() -> Result<()> {
+    let repo = extent_dependent_source_order_repo("orders")?;
+    let stale_out = repo.run_span(["stale", "orders", "--format=json"])?;
+    let stale: Value = serde_json::from_slice(&stale_out.stdout)?;
+
+    let stale_sources = |path: &str| -> Vec<&str> {
+        stale["findings"]
+            .as_array()
+            .expect("stale findings")
+            .iter()
+            .filter(|finding| finding["anchored"]["path"] == path)
+            .map(|finding| finding["source"].as_str().expect("source string"))
+            .collect()
+    };
+    assert_eq!(
+        stale_sources("range.txt"),
+        vec!["WORKTREE", "INDEX", "HEAD"],
+        "line ranges retain the resolver's relative-layer sequence: {stale:#}"
+    );
+    assert_eq!(
+        stale_sources("whole.txt"),
+        vec!["INDEX", "WORKTREE", "HEAD"],
+        "whole-file anchors retain the resolver's absolute-layer sequence: {stale:#}"
+    );
+
+    let json = history_json(&repo, "orders")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("history current anchors");
+    let history_sources = |path: &str| -> Vec<&str> {
+        anchors
+            .iter()
+            .find(|anchor| anchor["path"] == path)
+            .unwrap_or_else(|| panic!("no current anchor for {path:?}: {json:#}"))["sources"]
+            .as_array()
+            .expect("sources array")
+            .iter()
+            .map(|source| source.as_str().expect("source string"))
+            .collect()
+    };
+    assert_eq!(
+        history_sources("range.txt#L1-L3"),
+        stale_sources("range.txt")
+    );
+    assert_eq!(history_sources("whole.txt"), stale_sources("whole.txt"));
+
+    let text = history_text(&repo, "orders")?;
+    assert!(
+        diff_block(&text, "range.txt#L1-L3").contains("\ndrift source worktree, index, head\n"),
+        "human range marker must preserve stale's order:\n{text}"
+    );
+    assert!(
+        diff_block(&text, "whole.txt").contains("\ndrift source index, worktree, head\n"),
+        "human whole-file marker must preserve stale's order:\n{text}"
+    );
+    Ok(())
+}
+
+/// HEAD is the resolver's observation layer. A declaration moved only in the
+/// worktree can compare against HEAD's declaration and produce HEAD even when
+/// the anchored source has no uncommitted or newly committed content change.
+#[test]
+fn head_source_does_not_claim_a_worktree_only_reanchor_was_committed() -> Result<()> {
+    let repo = worktree_only_reanchor_repo("observed")?;
+    repo.run_git(["diff", "--quiet", "HEAD", "--", "f.txt"])?;
+    assert!(
+        !repo
+            .git_stdout(["status", "--short", "--", ".span/observed"])?
+            .is_empty(),
+        "fixture assumption: only the declaration is edited in the worktree"
+    );
+
+    let json = history_json(&repo, "observed")?;
+    let anchors = json["current"]["anchors"]
+        .as_array()
+        .expect("worktree declaration re-anchor must produce current anchors");
+    assert_eq!(
+        anchors.len(),
+        2,
+        "a below-threshold declaration move splits into delete plus create: {json:#}"
+    );
+    for anchor in anchors {
+        assert_eq!(
+            anchor["sources"],
+            serde_json::json!(["HEAD"]),
+            "HEAD describes the comparison against the committed declaration: {json:#}"
+        );
+    }
+    assert_eq!(
+        json["commits"].as_array().expect("commits").len(),
+        1,
+        "the only timeline entry is declaration creation; the worktree move has no commit"
+    );
+
+    let text = history_text(&repo, "observed")?;
+    assert!(
+        text.contains("\ndrift source head\n"),
+        "human output must publish the same observation:\n{text}"
+    );
+
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let guidance = std::fs::read_to_string(
+        workspace.join("plugins-claude/git-span/skills/reconcile/SKILL.md"),
+    )?;
+    let guidance = guidance.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        guidance.contains(
+            "If only the declaration changed, inspect it and either commit or revert it rather than searching timeline entries"
+        ),
+        "reconciliation guidance must direct a worktree-only declaration edit toward inspect/commit/revert"
+    );
+    Ok(())
+}
+
+/// The normative prose and its worked fence both spell the same full author
+/// date that the renderer emits. JSON deliberately keeps its ISO-8601 form.
+#[test]
+fn documented_human_and_json_dates_match_the_renderer_contracts() -> Result<()> {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("history-example-output.md"),
+    )?;
+    assert!(
+        doc.contains("`Date:   <weekday> <month> <day> HH:MM:SS YYYY <±HHMM>`"),
+        "the normative human rule must state Git's full default author date"
+    );
+    assert!(
+        doc.contains("Date:   Wed Jul 29 14:53:08 2026 -0400"),
+        "the normative worked fence must demonstrate the full human date"
+    );
+    assert!(
+        doc.contains("full ISO-8601 timestamp with UTC offset"),
+        "the JSON date contract must remain ISO-8601"
+    );
+    assert!(
+        !doc.lines().any(|line| {
+            line.strip_prefix("Date:   ")
+                .is_some_and(|date| date.len() == "YYYY-MM-DD".len())
+        }),
+        "no human output fence may retain a date-only example"
+    );
+
+    let (repo, span) = seed_history_scenario()?;
+    let text = history_text(&repo, span)?;
+    let json = history_json(&repo, span)?;
+    let human_date = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Date:   "))
+        .expect("human Date line");
+    assert_eq!(
+        human_date.split_whitespace().count(),
+        6,
+        "Git's default author date has weekday, month, day, time, year, and offset"
+    );
+    let iso = json["commits"][0]["date"].as_str().expect("JSON date");
+    assert!(
+        iso.contains('T') && iso.rfind(['+', '-']).is_some_and(|at| at > 9),
+        "JSON date remains an ISO-8601 timestamp with offset: {iso:?}"
     );
     Ok(())
 }

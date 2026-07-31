@@ -187,9 +187,11 @@ pub struct AnchorResolved {
     pub content_equivalent: bool,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
     pub source: Option<DriftSource>,
-    /// All layers that show drift for this anchor, in shallow-to-deep order
-    /// (Index → Worktree → Head). Empty for `Fresh` and terminal statuses.
-    /// When non-empty, one `Finding` is emitted per entry at render time.
+    /// All layers that show drift for this anchor, in the resolver's emitted
+    /// order: line ranges use Worktree → Index → Head, while whole-file
+    /// anchors use Index → Worktree → Head. Empty for `Fresh` and
+    /// terminal statuses. When non-empty, one `Finding` is emitted per entry
+    /// at render time.
     pub layer_sources: Vec<DriftSource>,
     /// HEAD-history drift locus, populated only when
     /// `source == Some(Head)`. Carries the first commit on the path since

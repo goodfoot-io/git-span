@@ -105,14 +105,14 @@ pub const CONTENT_UNAVAILABLE: &str = "content unavailable";
 /// Marker line naming **which layer the drift lives at** — `drift source
 /// worktree`, `drift source head`, `drift source worktree, head` — over the
 /// same three layers `git span stale` publishes as `source`, lowercased and
-/// comma-separated in shallow-to-deep order.
+/// comma-separated in the resolver's extent-dependent order.
 ///
 /// It exists because the leading `current` block described *that* an anchor
-/// drifted and never *where*, so a committed edit and a live working-tree edit
-/// rendered byte-identically while `stale` separated them on both of its own
-/// surfaces. A reader with a clean worktree was told they had uncommitted
-/// edits and reached for `git checkout --` or `git stash`, which change
-/// nothing; the repair is a re-anchor. With drift accumulated over two commits
+/// drifted and never *where*, so different layer observations rendered
+/// byte-identically while `stale` separated them on both of its own surfaces.
+/// The marker is observational: `head` may describe committed content drift or
+/// a worktree-only declaration compared with HEAD, so the declaration diff and
+/// timeline decide the repair. With drift accumulated over two commits
 /// the block describes an edit `git diff`, `git diff HEAD` and every commit
 /// entry in the same output all fail to corroborate.
 ///

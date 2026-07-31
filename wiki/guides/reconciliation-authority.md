@@ -26,11 +26,14 @@ disagreement hides the drift signal without resolving it.
 When coupled artifacts disagree, decide which side is authoritative, then act
 by cost of error:
 
-1. **Locate authority via demonstrated intent.** `git span stale` attributes
-   committed drift to the first mutating commit
-   ([DriftLocus](../../packages/git-span/src/types.rs#L211-L222)) and
-   `git span history <name>` renders the span's commit timeline
-   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L184-L192)). A doc
+1. **Locate authority via demonstrated intent.** `git span stale` reports the
+   resolver layers that observed drift, but `HEAD` alone does not prove the
+   declaration or content change was committed: a worktree-only declaration
+   re-anchor can compare against `HEAD` and produce that source too. Inspect the
+   declaration diff and `git span history <name>` timeline
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L184-L194)); commit or revert
+   an uncommitted declaration edit rather than searching for a source commit
+   that does not exist. A doc
    drifting behind a deliberate, committed code change means the doc is
    wrong. A code change with no coherent commit story may be a regression —
    the doc may be the truth.

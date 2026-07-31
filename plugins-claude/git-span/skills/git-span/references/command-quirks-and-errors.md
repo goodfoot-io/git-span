@@ -78,8 +78,13 @@ git span history <name> -n <count>    # cap at the newest N commits
 
 It renders newest-first, `git log -p` style: each qualifying commit's
 declaration diff and per-anchor unified diffs, plus a leading, headerless
-section for the span's live drift against its declaration — committed, staged,
-and uncommitted alike, each block naming its layer on a `drift source` line.
+section for the span's live drift against its declaration across every resolver
+layer, each block naming its observations on a `drift source` line. `HEAD` does
+not prove a change was committed; a worktree-only declaration re-anchor can
+produce it too. Inspect the declaration diff and timeline, then commit or revert
+the declaration edit rather than searching for a content commit that may not exist.
+Marker order is the resolver's: ranges use `worktree, index, head`; whole files
+use `index, worktree, head`.
 For cross-span queries plain git still
 works — spans are ordinary tracked files, so `git log --all` shows them only
 as part of the commits that touched `.span/`, and there are no custom span

@@ -87,8 +87,13 @@ anchor plus a new anchor; and when the recorded side cannot be read —
 binary or unrecoverable content — it renders `rename from`/`rename to`
 lines with no similarity claim, the move asserted by the declaration
 itself), plus a leading, headerless section for the span's *live* drift
-against its declaration — every layer `git span stale` reports, committed as
-well as staged and uncommitted, with the `drift source` line naming which.
+against its declaration — every resolver layer `git span stale` reports, with
+the `drift source` line naming the observing layers. `HEAD` is an observational
+layer, not proof the declaration or content change was committed: inspect the
+declaration diff and timeline, then commit or revert a worktree-only declaration
+edit as appropriate. The resolver sequence is preserved: line ranges use
+`WORKTREE` → `INDEX` → `HEAD`; whole-file anchors use `INDEX` →
+`WORKTREE` → `HEAD`.
 Defaults to git-log-style text; `--format json` emits
 `schema_version: 2` carrying the identical diffs as raw patch strings.
 `-n`/`--limit` caps the *rendered* timeline at the newest N entries — the walk

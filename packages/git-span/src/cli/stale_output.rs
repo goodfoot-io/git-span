@@ -738,7 +738,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
     // live in the engine.
     //
     // Per-layer expansion: each non-Fresh anchor emits one `Finding` per
-    // drifting layer in `layer_sources` (shallow-to-deep: I → W → H).
+    // drifting layer in `layer_sources` (the resolver's extent-dependent
+    // sequence: W → I → H for ranges, I → W → H for whole files).
     // Terminal statuses (Deleted, Conflict, Submodule,
     // ContentUnavailable) have an empty `layer_sources` and emit exactly
     // one row with `source=None`. MOVED also emits one row.

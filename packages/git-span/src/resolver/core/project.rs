@@ -98,12 +98,11 @@ pub(crate) fn project_committed(core: &super::resolution::ResolutionCore) -> Vec
 /// (Worktree, then Index, then Head — matching the current resolver's
 /// `deepest_layer` precedence in `resolver/engine/anchor.rs`), and lists
 /// every enabled drifting layer in `layer_sources` in the SAME order the
-/// live resolver's [`compute_layer_sources`] emits — Worktree, then Index,
-/// then Head. (The `AnchorResolved::layer_sources` doc's "Index → Worktree
-/// → Head" wording contradicts that function's actual runtime output; the
-/// runtime order is authoritative, since `stale_output` renders one
-/// `Finding` per entry in list order and single-pass capture must be
-/// byte-identical to direct resolution when both Index and Worktree drift.)
+/// live resolver's [`compute_layer_sources`] emits. The order depends on the
+/// extent: Worktree → Index → Head for line ranges, Index → Worktree → Head for
+/// whole files. `stale_output` renders one `Finding` per entry in list order,
+/// so single-pass capture must remain byte-identical to direct resolution when
+/// both Index and Worktree drift.
 ///
 /// [`compute_layer_sources`]: crate::resolver::engine::anchor
 pub(crate) fn project_effective(

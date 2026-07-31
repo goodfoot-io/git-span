@@ -79,14 +79,17 @@
 //!
 //! The `current` block is the span's *live* drift against its declaration, and
 //! it is not working-tree-only: it covers every layer `git span stale`
-//! reports — a committed edit that was never re-anchored, a staged one, and an
-//! uncommitted one alike — because the resolver behind it is `stale`'s.
+//! reports because the resolver behind it is `stale`'s. Those layer names are
+//! observations, not commit-status claims: `HEAD` can arise from content in
+//! HEAD or from a worktree-only declaration re-anchor compared with HEAD's
+//! declaration.
 //!
 //! It renders headerless, which is git's idiom for "outside the timeline" and
 //! the honest claim here, since no single commit entry accounts for it. But a
 //! headerless block cannot say by its *shape* which layer it came from, and the
-//! three want different repairs: a working-tree edit wants saving or reverting,
-//! a committed one wants re-anchoring, and an anchor drifted at both wants both.
+//! the observations need different investigation before repair. In particular,
+//! `HEAD` tells the reader to inspect the declaration and timeline; it does not
+//! prove which side was committed.
 //! So each block names its layers — `sources` in JSON, a `drift source` marker
 //! line in the header — over `stale`'s own three values, as a list rather than a
 //! scalar because one anchor is routinely drifted at more than one at once and a
@@ -451,12 +454,13 @@ pub struct CurrentAnchor {
     /// to the recorded token by definition, so that old side is always
     /// recoverable.
     pub recorded_unrecoverable: bool,
-    /// Every layer that shows drift for this anchor, in shallow-to-deep order,
-    /// taken from the resolver's own `layer_sources` — the same list `git span
-    /// stale` turns into one finding per entry. JSON emits it as `sources` over
-    /// `stale`'s exact strings (`HEAD` / `INDEX` / `WORKTREE`), and the diff
-    /// header carries the lowercase [`DRIFT_SOURCE`] marker built from it, so
-    /// both formats name the same layers.
+    /// Every layer that shows drift for this anchor, taken from the resolver's
+    /// own extent-dependent `layer_sources` sequence — the same list `git span
+    /// stale` turns into one finding per entry. Line ranges use Worktree → Index
+    /// → Head; whole files use Index → Worktree → Head. JSON emits it as
+    /// `sources` over `stale`'s exact strings (`HEAD` / `INDEX` / `WORKTREE`),
+    /// and the diff header carries the lowercase [`DRIFT_SOURCE`] marker built
+    /// from it, so both formats name the same layers in the same order.
     ///
     /// Empty exactly when the resolver reports no layer, and the key is then
     /// **omitted** rather than emitted as `[]` or `null` — key presence is how
@@ -464,8 +468,8 @@ pub struct CurrentAnchor {
     /// spelling of `stale`'s `"source": null`.
     ///
     /// A *list* and not a scalar because one anchor can drift at more than one
-    /// layer at once: an edit committed and then further edited in the working
-    /// tree makes `stale` emit two findings for one anchor, and
+    /// layer at once: distinct observations at HEAD and in the working tree
+    /// make `stale` emit two findings for one anchor, and
     /// `current.anchors[]` carries one object per anchor, so a scalar would
     /// silently drop the `HEAD` face of every composed drift — the same class
     /// of loss this field exists to repair, one level down.
@@ -2297,9 +2301,9 @@ fn build_current(
 /// Render a `HistoryReport` as git-log-style text.
 ///
 /// Live drift comes first with no commit header — git's own idiom for "outside
-/// the timeline", which is the honest claim here, because the drift may have
-/// been committed, staged, or left in the working tree and no single commit
-/// entry accounts for it. The `drift source` line inside each block says which.
+/// the timeline", which is the honest claim here, because no single commit
+/// entry accounts for the live comparison. The `drift source` line inside each
+/// block names the resolver layers that observed drift, not commit status.
 /// Then commit entries newest-first: `commit <40-hex>`,
 /// `Date:   <git's default author-date rendering>`, a blank line, the
 /// four-space-indented summary, then the declaration diff and each anchor

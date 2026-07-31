@@ -209,9 +209,13 @@ For each assigned span:
 1. Read the current bytes at each stale anchor location.
 2. Run `git span history <name>`; compare the leading live-drift diff
    (`current` in `--format json`) against anchored content. Its `drift source`
-   line (JSON `sources`) says which layers the drift sits at — `head` means the
-   change is already committed — but it does not name the commit. Read the
-   timeline entries below it for that; a deliberate, committed change makes
+   line (JSON `sources`) says which resolver layers observed drift. `head` does
+   **not** prove the change is committed: a worktree-only declaration re-anchor
+   can produce it too. Inspect the declaration diff and timeline. If only the
+   declaration changed, inspect it and either commit or revert it rather than
+   searching timeline entries for a content commit that does not exist. A
+   line range lists sources as worktree → index → head; a whole-file anchor
+   lists index → worktree → head. A deliberate, committed change makes
    that side authoritative (full policy:
    `wiki/guides/reconciliation-authority.md`).
 3. Write a one-sentence confirmation of the relationship. Stop if you cannot.

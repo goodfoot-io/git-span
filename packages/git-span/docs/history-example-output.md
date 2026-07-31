@@ -14,9 +14,10 @@ Both formats render the same underlying timeline, newest-first:
 - **`current`** — the span's *live* drift: how the content at each declared address now
   differs from the state the declaration records, rendered first (human) or as the
   `current` object (JSON). **Not only working-tree drift.** It covers every layer
-  `git span stale` reports — a committed edit that was never re-anchored, a staged one,
-  and an uncommitted one alike — because the resolver behind it is `stale`'s, run over
-  the same `HEAD`/index/worktree layer set. Which layer or layers a given anchor drifted
+  `git span stale` reports because the resolver behind it is `stale`'s, run over
+  the same `HEAD`/index/worktree layer set. These are observational layers, not commit
+  statuses: `HEAD` can describe committed content drift or a worktree-only declaration
+  re-anchor compared with the declaration in `HEAD`. Which layers a given anchor drifted
   at is named by the `sources` field and by the `drift source` marker line, so a clean
   working tree is never described as a working-tree edit. Omitted entirely when the
   worktree declaration matches `HEAD` and no anchor has drifted.
@@ -49,13 +50,14 @@ patch to a line range.
 
 ## Human format (default)
 
-`git log -p` style: `commit <40-hex>`, `Date:   YYYY-MM-DD`, a blank line, the
+`git log -p` style: `commit <40-hex>`,
+`Date:   <weekday> <month> <day> HH:MM:SS YYYY <±HHMM>`, a blank line, the
 four-space-indented commit summary, a blank line, then the declaration diff and each
 anchor diff. Live drift (when present) comes first with no `commit`/`Date` header —
 git's own idiom for "outside the timeline", which is what this block is: the drift may
-have been committed, staged, or left in the working tree, and the headerless form says
-only that no single commit entry accounts for it. The `drift source` line inside the
-block says which of the three it was.
+can involve any resolver layer, and the headerless form says only that no single commit
+entry accounts for it. The `drift source` line names the observing layers; it does not
+prove whether the declaration or content change was committed.
 
 Real output, two consecutive commits from `agent-hooks/hook-message-copy`'s history —
 a pure re-anchor with content hunks (similarity < 100%, so headers *and* hunks), two
@@ -64,7 +66,7 @@ re-anchor with no content change (similarity 100%, header only, no hunks):
 
 ```
 commit e86fe9cc50f359301ca4a61156f4f6bfcba150a8
-Date:   2026-07-29
+Date:   Wed Jul 29 14:53:08 2026 -0400
 
     Rebuild the gate bundles over both the ranking fix and the bracketed-path fix
 
@@ -142,7 +144,7 @@ index rk64:553a1236747ca251..0000000000000000
    range shown above, so both old ranges delete in the same commit)
 
 commit 78da668ffb8928389751cc54266a9bfddeb66bb8
-Date:   2026-07-29
+Date:   Wed Jul 29 14:48:30 2026 -0400
 
     Correct the overstated invariant on the changeset filter
 
@@ -244,8 +246,11 @@ Conventions demonstrated:
 
 A live edit inside `touch-core.ts#L245-L274`, here still in the worktree, renders headerless and
 first, ahead of any commit sections. Its `drift source worktree` line is what says the
-edit is still in the working tree; the same block over a *committed* edit is identical
-but for that line, which reads `drift source head`:
+worktree comparison observed the edit. A committed content edit can instead produce
+`drift source head`, but that marker alone does not establish commit status: a declaration
+re-anchored only in the worktree can also compare its new address with `HEAD`'s declaration
+and produce `head`. Inspect `span_diff` and the timeline; if only the declaration changed,
+commit or revert that declaration edit rather than searching for a content commit.
 
 ```
 diff --git a/packages/agent-hooks/src/common/touch-core.ts#L245-L274 b/packages/agent-hooks/src/common/touch-core.ts#L245-L274
@@ -529,9 +534,10 @@ carry `content` instead of `diff`:
 ## Format rules (normative)
 
 - `schema_version`: always `2` (an integer, not a string).
-- `date` on each commit is a full ISO-8601 timestamp with UTC offset — git's `%aI` author
-  date (e.g. `"2026-07-30T11:51:18-04:00"`), not a bare day. The human format's `Date:`
-  line stays `YYYY-MM-DD`.
+- `date` on each JSON commit is a full ISO-8601 timestamp with UTC offset — git's `%aI`
+  author date (e.g. `"2026-07-30T11:51:18-04:00"`), not a bare day. The human format
+  uses Git's full default author-date rendering:
+  `Date:   <weekday> <month> <day> HH:MM:SS YYYY <±HHMM>`.
 - `commits` is newest-first in both formats, matching how a reader scans `git log`.
 - Each timeline anchor object carries `path` (the address *after* the change; for a
   removal, the last address the anchor held) plus **exactly one** of `diff` or `content`
@@ -552,7 +558,8 @@ carry `content` instead of `diff`:
 - `sources` on a `current` anchor is an **array**, and it is omitted rather than emitted as
   `[]`. It names every layer the drift was observed at, using `git span stale`'s own three
   strings — one anchor can be drifted at more than one, and a scalar would have to pick a
-  winner and drop the rest.
+  winner and drop the rest. Order is the resolver's, not sorted: line ranges use
+  `WORKTREE` → `INDEX` → `HEAD`; whole files use `INDEX` → `WORKTREE` → `HEAD`.
 
 - `span_diff` is present on a commit or on `current` iff the `.span/<name>` declaration
   blob actually changed between the two states being compared; omitted otherwise (not set
@@ -668,16 +675,19 @@ the two lists agree over a sweep of every state above.
   carries the `recorded snapshot unrecoverable` marker line and no hunks. Cannot co-occur
   with `proposed`.
 - `sources` — the layers this anchor drifted at, as an array over `git span stale`'s exact
-  strings: `"HEAD"`, `"INDEX"`, `"WORKTREE"`. Shallow-to-deep, the order `stale` publishes.
+  strings: `"HEAD"`, `"INDEX"`, `"WORKTREE"`. The resolver sequence is preserved exactly,
+  not sorted: line-range anchors use `WORKTREE` → `INDEX` → `HEAD`, while whole-file
+  anchors use `INDEX` → `WORKTREE` → `HEAD`.
   Omitted when the resolver named no layer; **never emitted as `[]`**, so presence alone is
   the test and a consumer never has to distinguish "no layer" from "empty".
 
   An array, not a scalar, because one anchor is routinely drifted at more than one layer at
   once — commit an edit without re-anchoring, then edit the same lines again in the working
   tree, and `stale` reports `WORKTREE` *and* `HEAD`. A scalar would have to pick the
-  shallowest and silently drop the committed face, which is the face that changes what the
-  reader should do: a working-tree edit wants saving or reverting, a committed one wants
-  re-anchoring, and an anchor in both states wants both.
+  first and silently drop another observation. No individual value proves commit status:
+  in particular, `HEAD` can come from a worktree-only declaration re-anchor. Inspect the
+  declaration diff and commit timeline before deciding whether to commit, revert, or
+  re-anchor.
 
   Independent of `unavailable`, `proposed`, and `recorded`: it says *where* the drift was
   seen, never *what* could be read there. It is the structured half of the
@@ -690,12 +700,12 @@ blocks — `proposed anchor <address>`, `drift source <layers>`, and
 block has no bytes, in two forms.
 
 `drift source <layers>` names the layer or layers the drift was observed at, lower-cased
-from the same three values `sources` carries and joined with `, ` in `stale`'s
-shallow-to-deep order: `drift source worktree`, `drift source head`,
-`drift source worktree, head`. It exists because the `current` block is deliberately
+from the same three values `sources` carries and joined with `, ` in the resolver's
+extent-dependent order: line ranges use worktree → index → head and whole files use
+index → worktree → head. It exists because the `current` block is deliberately
 headerless — git's idiom for "outside the timeline" — and a headerless block cannot say by
-its shape whether the edit is sitting in the working tree, staged, or already committed and
-merely un-re-anchored. Those three want different repairs. The line sits immediately above
+its shape which comparison observed drift. `HEAD` is not proof of a committed change: a
+worktree-only declaration re-anchor can also produce it. The line sits immediately above
 `index`, after `proposed anchor` and the rename lines, and it appears in every `current`
 block that has a layer to name, including both halves of a below-threshold re-anchor split:
 the marker and the `sources` key are emitted from one place, so the default output can never

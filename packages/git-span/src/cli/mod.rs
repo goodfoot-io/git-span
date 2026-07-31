@@ -185,9 +185,12 @@ pub enum Commands {
     /// commit entries whose patches are real unified diffs of the span
     /// declaration and of each anchor's content at its declared address, with
     /// the span's live drift rendered before the first commit as a headerless
-    /// diff. That drift is not working-tree-only: it covers every layer
-    /// `git span stale` reports — committed, staged, and uncommitted — and each
-    /// block names its layers on a `drift source` line.
+    /// diff. That drift is not working-tree-only: it covers every resolver
+    /// layer `git span stale` reports, and each block names its observational
+    /// layers on a `drift source` line. `HEAD` identifies the comparison layer;
+    /// it does not by itself prove that the declaration or content change was
+    /// committed. Source order is the resolver's: line ranges use Worktree →
+    /// Index → Head, while whole-file anchors use Index → Worktree → Head.
     ///
     /// Outputs human-readable text by default; use `--format json` for
     /// `schema_version: 2` JSON carrying the same patches as raw text.
