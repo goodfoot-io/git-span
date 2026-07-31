@@ -1,8 +1,8 @@
 packages/agent-hooks/README.md#L5-L8 rk64:fa6c4c47dc831231
-packages/agent-hooks/src/common/advisor-core.ts#L1354-L1646 rk64:430eac0d450d07d6
-packages/agent-hooks/src/common/touch-core.ts#L245-L274 rk64:49bd4bc548ecea54
-packages/website/content/docs/agent-integration.mdx rk64:4738c9f1e74d0540
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:4d0829968ea017dd
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:225521aba9a3b3d9
+packages/agent-hooks/src/common/advisor-core.ts#L1480-L1772 rk64:f061f7f0b8ca992d
+packages/agent-hooks/src/common/touch-core.ts#L246-L275 rk64:49bd4bc548ecea54
+packages/website/content/docs/agent-integration.mdx rk64:c4f410d89848b514
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:b0b507b3a67fa8c5
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:c6221ad7f72f7c95
 
 The drifted-span footer copy rendered by the touch hook and the commit advisor is described by the package README's behaviour prose and quoted verbatim by the website's agent-integration doc and both plugin trees' understanding-hook-output references.
