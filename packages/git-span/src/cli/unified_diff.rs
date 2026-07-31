@@ -249,6 +249,20 @@ pub enum Absence {
     Missing,
     /// The file exists; the declared line range starts past its end.
     RangePastEof,
+    /// The file exists and its content could not be produced: a
+    /// `.gitattributes` line names a filter whose driver is missing,
+    /// unconfigured, or unable to run.
+    ///
+    /// This is the one absence that says nothing about the *file* — the bytes
+    /// are on disk and readable; what failed is the conversion git would apply
+    /// to them. It therefore takes [`suppresses_hunks`] where the other two do
+    /// not: a past-EOF range genuinely has no bytes and `git diff` shows the
+    /// same lines leaving, but a filter failure means the content was never
+    /// measured, and a hunk against an unmeasured side asserts an edit nobody
+    /// observed.
+    ///
+    /// [`suppresses_hunks`]: Absence::suppresses_hunks
+    FilterFailed,
 }
 
 impl Absence {
@@ -258,7 +272,31 @@ impl Absence {
         match self {
             Absence::Missing => "absent",
             Absence::RangePastEof => "range-past-eof",
+            Absence::FilterFailed => "filter-failed",
         }
+    }
+
+    /// Whether this absence earns a [`CONTENT_UNAVAILABLE`] line naming it.
+    ///
+    /// [`Absence::Missing`] does not: it covers both "there is no such file"
+    /// and the `/dev/null` half of an ordinary create or delete, and a line on
+    /// the latter would explain a side git has rendered this way forever. The
+    /// other two do, and for the same reason — each says the file is *there*
+    /// and something narrower is not, which is the fact a `/dev/null` side
+    /// misstates.
+    fn is_named(self) -> bool {
+        match self {
+            Absence::Missing => false,
+            Absence::RangePastEof | Absence::FilterFailed => true,
+        }
+    }
+
+    /// Whether a side in this state makes the block header-only.
+    ///
+    /// Hunks need a side whose content was *read*. A filter failure means it
+    /// was not, so the only honest block is the two tokens plus the reason.
+    fn suppresses_hunks(self) -> bool {
+        matches!(self, Absence::FilterFailed)
     }
 }
 
@@ -583,14 +621,23 @@ fn push_header(
             // anchor dialect kind can reach that state — a truncation is a
             // `Modify`, a hand-edited re-anchor past the end is a `Rename` — so
             // the line is emitted here rather than inside any one arm.
-            if !named_absence
-                && [old.absence(), new.absence()].contains(&Some(Absence::RangePastEof))
+            let named = [old.absence(), new.absence()]
+                .into_iter()
+                .flatten()
+                .find(|why| why.is_named());
+            if let Some(why) = named
+                && !named_absence
             {
-                out.push_str(&format!(
-                    "{CONTENT_UNAVAILABLE} {}\n",
-                    Absence::RangePastEof.label()
-                ));
+                out.push_str(&format!("{CONTENT_UNAVAILABLE} {}\n", why.label()));
             }
+            // A side whose content was never read cannot stand opposite one
+            // that was: the hunk would spell the unread half out as a full
+            // deletion (or addition) — signed lines for an edit nobody
+            // measured, over a file `git status` calls clean.
+            headers_only |= [old.absence(), new.absence()]
+                .into_iter()
+                .flatten()
+                .any(Absence::suppresses_hunks);
             out.push_str(&format!(
                 "index {}..{}\n",
                 format_anchor_hash(old_hash),

@@ -577,10 +577,19 @@ the two lists agree over a sweep of every state above.
   prints and the only join key a consumer can match against the `.span` file. Never the
   resolver's proposal.
 - `diff` — always present. The same bytes the human block prints for this anchor, header
-  and all. Degrades to a header-only block when there are no honest hunks to show (a
-  relocation, or an unrecoverable recorded snapshot).
+  and all. Degrades to a header-only block when there are no honest hunks to show: a
+  relocation, an unrecoverable recorded snapshot, or a side whose content a filter could
+  not produce (`unavailable: "filter-failed"`). Hunks need a side that was *read*; the
+  third case is the one where it was not, so the block states the two tokens and the
+  reason and stops.
 - `content` — the full bytes whose hash the header names on the side wearing `path`, so a
-  consumer never reconstructs live content from a patch. For a `deleted anchor` that is
+  consumer never reconstructs live content from a patch. The join is guaranteed by
+  construction rather than by convention: the body and the token beside it come from a
+  single read, and where git converts a file on its way into the repository — a
+  `.gitattributes` `filter` line — both are the *converted* bytes, because the token the
+  header names is the token a re-anchor would record and `git span add` records what git
+  stores. Two reads is how this field once printed a user's own lines beside the
+  fingerprint of an LFS pointer. For a `deleted anchor` that is
   the recorded block leaving; for everything else it is the new side. For every shape but
   a relocation those bytes are the ones at `path`; for a relocation they are the recorded
   bytes, which live at `proposed` and not at `path` — that displacement is the finding.
@@ -588,10 +597,21 @@ the two lists agree over a sweep of every state above.
 - `unavailable` — replaces `content` when the bytes could not be extracted: `"absent"` (the
   anchored content is not there — the file is gone, or the resolver could locate the
   declared content nowhere), `"range-past-eof"` (the file *is* there and the declared range
-  starts past its end), or `"binary"` (not UTF-8). A status to style, never source to
+  starts past its end), `"binary"` (not UTF-8), or `"filter-failed"` (the file is there and
+  readable, and the filter `.gitattributes` names for it could not produce content — the
+  driver is missing, unconfigured, or unable to run). A status to style, never source to
   render — no placeholder prose is ever emitted as content or as diff body text.
 
-  All three values are reachable from the `current` block, on the same terms as from a
+  `"filter-failed"` is the value that must not collapse into `"absent"`, and did. The
+  resolver has always computed it — `git span stale` prints `content unavailable (filter
+  failed)` for the same repository — but this enum could not carry it, so the reason was
+  projected away and the fallback said "no such file at this commit" about a file with
+  five readable lines, under a deletion hunk for lines `git diff` reported untouched. The
+  discriminator between this state and a working filter is **not** whether a filter is
+  configured; it is whether the driver produces content. A filter that runs and transforms
+  the content has failed at nothing and emits no `unavailable` at all.
+
+  All four values are reachable from the `current` block, on the same terms as from a
   commit: the live read applies the commit read's policy on both axes, encoding and extent,
   so one file state gets one account whether or not it has been committed. Reading a
   declared range that runs off the end of its file used to yield an empty string here,
@@ -599,9 +619,9 @@ the two lists agree over a sweep of every state above.
   plus a create, and shipped `"content": ""` for an address holding nothing at all.
 
   The distinction this field carries is load-bearing downstream, because the `index` line's
-  null hash cannot carry it: an absent file, a past-EOF range, the `/dev/null` side of a
-  create or delete, and a *genuinely empty* recorded extent all hash to
-  `0000000000000000`. The last of those is honest — `git span add` on an empty file records
+  null hash cannot carry it: an absent file, a past-EOF range, a filter that produced no
+  content, the `/dev/null` side of a create or delete, and a *genuinely empty* recorded
+  extent all hash to `0000000000000000`. The empty extent is honest — `git span add` on an empty file records
   exactly that token — and it keeps `content: ""` with no `unavailable`, which is what makes
   the presence rule above the only reliable way to tell "there are no bytes here" from
   "there are no bytes, and here is why".
@@ -632,21 +652,28 @@ and then the file deleted outright). Without it such a commit would render as a 
 no hunks, indistinguishable from a renderer that lost them — the same gap
 `recorded snapshot unrecoverable` was added to close.
 
-`content unavailable range-past-eof` appears wherever a single side is a declared range
-starting past the end of its file. A `/dev/null` side states that there are no bytes, which
-is equally true of a deleted file, so without this line the two states render byte-identical
-blocks — same `---`/`+++` pair, same deletion hunk — in the format the command produces by
-default. They are not the same state and they do not want the same repair: a deleted file
-wants restoring, while a range past the end of a file that is sitting on disk wants
-re-anchoring. Only `range-past-eof` earns the line; a plain absence does not, because a
-`/dev/null` side is the honest and long-standing rendering of "there is nothing here" and
-naming it would annotate every ordinary create and delete. The asymmetry carries the
-meaning: the line says the *file* is present and the *range* is not.
+`content unavailable <reason>` appears wherever a single side has no bytes for a reason a
+`/dev/null` side cannot state — `range-past-eof` or `filter-failed`. A `/dev/null` side
+states that there are no bytes, which is equally true of a deleted file, so without this
+line those states render byte-identical blocks — same `---`/`+++` pair, same deletion hunk
+— in the format the command produces by default. They are not the same state and they do
+not want the same repair: a deleted file wants restoring, a range past the end of a file
+sitting on disk wants re-anchoring, and a failed filter wants the driver installed and no
+source change at all. Only those two reasons earn the line; a plain absence does not,
+because a `/dev/null` side is the honest and long-standing rendering of "there is nothing
+here" and naming it would annotate every ordinary create and delete. The asymmetry carries
+the meaning: the line says the *file* is present and something narrower is not.
 
 The precedent is git's own `Binary files … differ` — a dedicated sentence in the header
 stating a fact the `---`/`+++` sides cannot. What that precedent does not do, and neither
-does this, is put explanatory prose in a hunk body; the hunks under a past-EOF block are
-honest (`git diff` shows the same lines leaving in the same commit) and they stay.
+does this, is put explanatory prose in a hunk body.
+
+The two reasons part company on the hunks below the line. A past-EOF block keeps them: the
+range genuinely has no bytes and `git diff` shows the same lines leaving in the same
+commit, so the hunk is honest and stays. A `filter-failed` block has none: the content was
+never *measured*, so a hunk would spell the unread side out as a full deletion — signed
+lines for an edit nobody observed, over a file `git status` calls clean, which is the shape
+this renderer is forbidden to produce. That block is its header alone.
 
 Every one of them lives in the header rather than being appended by the human renderer, so
 the JSON `diff` string and the human block are the same bytes. None of them is a contract: a

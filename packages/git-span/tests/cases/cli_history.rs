@@ -2356,6 +2356,37 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             empty_extent_reanchor_repo("nz2")?,
             "nz2",
         ),
+        // The `.gitattributes` axis. Not one fixture but four: the states a
+        // filter puts an anchor into are keyed on whether the driver produces
+        // content, not on whether one is configured, so a set with a single
+        // filter fixture certifies whichever state its author happened to
+        // build. All three filter states appear, and the working driver
+        // appears twice — in range and past the end of what it produces.
+        (
+            "filter named but never configured",
+            unconfigured_filter_repo("uf2")?,
+            "uf2",
+        ),
+        (
+            "filter configured with a missing process driver",
+            missing_driver_filter_repo("md2")?,
+            "md2",
+        ),
+        (
+            "filter configured with a missing clean driver",
+            missing_clean_driver_filter_repo("mc2")?,
+            "mc2",
+        ),
+        (
+            "working filter transforms the content",
+            working_filter_repo("wf2")?,
+            "wf2",
+        ),
+        (
+            "working filter shortens past the declared range",
+            working_filter_past_eof_repo("wp2")?,
+            "wp2",
+        ),
     ])
 }
 
@@ -2684,7 +2715,20 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
             // *not* at the declared address — and which says so in `proposed`.
             // A deletion's `content` is the bytes leaving, which the address
             // they leave need not still hold.
-            if anchor.get("proposed").is_none() && !matches!(form, BlockForm::Deleted) {
+            //
+            // A path under a content filter is outside this oracle, not exempt
+            // from one. [`read_address`] is a plain `std::fs::read_to_string`,
+            // and reading the raw file is exactly the axis the filtered states
+            // were rendering their *bodies* from while hashing the converted
+            // ones — so asserting against it here would pin the defect rather
+            // than the contract. The stronger oracle applies there instead:
+            // `content_and_the_headers_new_side_name_the_same_bytes` joins the
+            // printed bytes against the token `git span add` records for them,
+            // which is what the `index` line claims to name.
+            if anchor.get("proposed").is_none()
+                && !matches!(form, BlockForm::Deleted)
+                && !path_is_filtered(&repo, path)?
+            {
                 if let (Some(content), Some(actual)) =
                     (anchor["content"].as_str(), read_address(&repo, path))
                 {
@@ -4856,6 +4900,432 @@ fn a_change_of_unavailable_reason_renders_an_entry() -> Result<()> {
     assert!(
         out.contains(diff),
         "both formats carry the same block:\n{out}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The `.gitattributes` axis.
+//
+// Until this section existed no fixture in the suite carried a
+// `.gitattributes` file at all, so every state a filter puts an anchor into
+// was outside every oracle's aperture. Two distinct defects lived there,
+// sharing only the trigger surface:
+//
+//   * a filter that produces **no** content made the live read fail, and the
+//     failure was reported as `absent` — "no such file at this commit" about a
+//     file with five readable lines — under a full deletion hunk for lines
+//     `git diff` said were untouched;
+//   * a filter that **succeeds** made the live read split in two: the header's
+//     hash came from the filtered bytes and `content` from the raw ones, so
+//     the two halves of one object described different files.
+//
+// The discriminator between them is *not* whether a filter is configured. It
+// is whether the driver produces content. States A and B below produce none
+// and are one fact; state C produces different content and is the other.
+// ---------------------------------------------------------------------------
+
+/// Whether `.gitattributes` assigns a content filter to an anchor address's
+/// path, asked of git rather than inferred from the file — `git check-attr`
+/// reads attributes only and never spawns the driver, so it answers even in
+/// the fixtures where every other git command fails.
+fn path_is_filtered(repo: &TestRepo, address: &str) -> Result<bool> {
+    let path = address.split_once("#L").map_or(address, |(p, _)| p);
+    let out = repo.git_stdout(["check-attr", "filter", "--", path])?;
+    Ok(!out.ends_with("unspecified"))
+}
+
+/// A `filter.<name>.process` command line for the test-helper driver, quoted
+/// for the `sh -c` the resolver spawns it through.
+fn filter_process_command(transform: &str) -> String {
+    format!(
+        "'{}' filter-process {transform}",
+        env!("CARGO_BIN_EXE_git-span-test-helper")
+    )
+}
+
+/// A five-line file, an anchor declared and committed over it, and *then* a
+/// `.gitattributes` naming a filter for it. The order is the point: the anchor
+/// is recorded against the real bytes, and the file is never touched again, so
+/// `git show HEAD~1:f.txt | cmp - f.txt` is silent and any deletion the render
+/// asserts is the render's own invention.
+///
+/// `process` configures `filter.<name>.process` *after* the commit, so git
+/// itself never ran the driver over the blob it recorded — the committed
+/// content is the user's five lines whatever the driver would say.
+fn filter_attribute_repo(
+    span: &str,
+    address: &str,
+    filter: &str,
+    process: Option<&str>,
+) -> Result<TestRepo> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "l1\nl2\nl3\nl4\nl5\n")?;
+    repo.commit_all("the file, unfiltered")?;
+    repo.span_stdout(["add", span, address])?;
+    repo.span_stdout(["why", span, "anchored before any filter existed"])?;
+    repo.write_file(".gitattributes", &format!("*.txt filter={filter}\n"))?;
+    repo.commit_all("name a filter for the file")?;
+    if let Some(transform) = process {
+        repo.run_git([
+            "config",
+            &format!("filter.{filter}.process"),
+            &filter_process_command(transform),
+        ])?;
+    }
+    Ok(repo)
+}
+
+/// **State A** — `.gitattributes` names a filter and nothing configures it.
+/// The state of any clone whose filter the user has not installed.
+fn unconfigured_filter_repo(span: &str) -> Result<TestRepo> {
+    filter_attribute_repo(span, "f.txt#L4-L5", "missingtool", None)
+}
+
+/// **State B** — the filter *is* configured and its driver cannot run: the
+/// shape of a tool that was installed when the config was written and is not
+/// installed now. Configured-versus-unconfigured is therefore not a safe
+/// discriminator, and a fix keyed on it would pass this one.
+///
+/// `filter.<name>.process` is the key the resolver reads, and pointing it at a
+/// missing binary is a state **git itself refuses**: `git status` exits 128
+/// with `fatal: the remote end hung up unexpectedly`. That is the comparison
+/// worth keeping — one of the two commands declines to describe the state at
+/// all, and the other used to describe it as a deletion.
+fn missing_driver_filter_repo(span: &str) -> Result<TestRepo> {
+    let repo = filter_attribute_repo(span, "f.txt#L4-L5", "gitcrypt", None)?;
+    repo.run_git([
+        "config",
+        "filter.gitcrypt.process",
+        "/nonexistent/git-crypt-filter --process",
+    ])?;
+    Ok(repo)
+}
+
+/// **State B as the tools in the wild actually spell it** — git-crypt and
+/// nbstripout configure `filter.<name>.clean` and `.smudge`, not `.process`.
+/// The resolver reads only `.process`, so a clone missing one of *those*
+/// drivers reaches the same read failure state A does while leaving `git
+/// status` clean and exiting 0.
+///
+/// It is enumerated separately from state A because the two are different
+/// repository configurations that a fix could plausibly treat differently, and
+/// because the evaluation that filed this defect built its "configured" variant
+/// this way — so this fixture is the one that pins the claim that configuration
+/// is not the discriminator.
+fn missing_clean_driver_filter_repo(span: &str) -> Result<TestRepo> {
+    let repo = filter_attribute_repo(span, "f.txt#L4-L5", "gitcrypt", None)?;
+    repo.run_git(["config", "filter.gitcrypt.clean", "/nonexistent/git-crypt clean"])?;
+    repo.run_git([
+        "config",
+        "filter.gitcrypt.smudge",
+        "/nonexistent/git-crypt smudge",
+    ])?;
+    Ok(repo)
+}
+
+/// **State C, in range** — the driver runs, exits 0, and returns a three-line
+/// pointer instead of the file. Content is available; it is simply not the
+/// content on disk. Nothing failed, so no `unavailable` reason has a producer
+/// here — which is exactly why a fourth `unavailable` value cannot repair this
+/// state.
+fn working_filter_repo(span: &str) -> Result<TestRepo> {
+    filter_attribute_repo(span, "f.txt#L1-L2", "ptr", Some("pointer"))
+}
+
+/// **State C, past the end** — the same working driver, with the anchor
+/// declared over lines the *filtered* content does not reach. `git span add`
+/// refuses this state on the declaration side (`end=5 exceeds file line count
+/// (3)`); the render path must not be more permissive than the path that
+/// declares it.
+fn working_filter_past_eof_repo(span: &str) -> Result<TestRepo> {
+    filter_attribute_repo(span, "f.txt#L4-L5", "ptr", Some("pointer"))
+}
+
+/// The `rk64:` token `git span add` records for `text`, obtained by declaring
+/// it in a throwaway repository.
+///
+/// This is the only hash oracle outside `history`'s own hashing code, and it
+/// is the one that matters: it answers "what token would a re-anchor write
+/// here", which is precisely what the `index` line claims to name. Fingerprints
+/// canonicalize to `lines[start..=end].join("\n")`, so a body lifted out of its
+/// file hashes at line 1 exactly as it did at its real first line.
+fn token_recorded_for(text: &str) -> Result<String> {
+    let repo = TestRepo::new()?;
+    repo.write_file("probe.txt", text)?;
+    repo.commit_all("probe")?;
+    let address = format!("probe.txt#L1-L{}", text.lines().count());
+    repo.span_stdout(["add", "probe", &address])?;
+    declared_token(&repo, "probe", None, &address)
+}
+
+/// A filter that produces no content must never assert a deletion, and must
+/// never call the file absent.
+///
+/// Both states here leave `git status --porcelain` empty and the worktree file
+/// byte-identical to the blob HEAD records. The render nevertheless claimed
+/// two lines had been deleted — a hunk contradicting `git diff`, which is one
+/// of the two hard constraints this command is held to — and glossed a file
+/// with five readable lines as "no such file at this commit".
+///
+/// ORACLE — `git status` and `cmp` against `HEAD:f.txt`, asserted per fixture
+/// below, plus `git span stale`, which reads the same repository through the
+/// same resolver and has always named this state correctly.
+#[test]
+fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
+    for (label, repo, span, git_can_answer) in [
+        (
+            "filter named, never configured",
+            unconfigured_filter_repo("uf")?,
+            "uf",
+            true,
+        ),
+        (
+            "clean/smudge driver missing",
+            missing_clean_driver_filter_repo("mc")?,
+            "mc",
+            true,
+        ),
+        (
+            "process driver missing",
+            missing_driver_filter_repo("md")?,
+            "md",
+            false,
+        ),
+    ] {
+        // Fixture assumptions, measured rather than asserted in prose: the
+        // anchored lines are on disk, and git either agrees nothing changed or
+        // declines to answer — never "these lines are gone".
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("f.txt"))?,
+            "l1\nl2\nl3\nl4\nl5\n",
+            "{label}: the fixture is supposed to leave f.txt untouched"
+        );
+        let status = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["status", "--porcelain"])
+            .output()?;
+        if git_can_answer {
+            assert!(
+                status.status.success() && status.stdout.is_empty(),
+                "{label}: the fixture is supposed to leave the worktree clean; \
+                 got {status:?}"
+            );
+        } else {
+            // The stronger comparison: git *cannot read this state at all* and
+            // fails closed. A render that answers where git refuses is
+            // answering from something other than the repository.
+            assert!(
+                !status.status.success(),
+                "{label}: fixture assumption — git itself refuses this state; \
+                 got {status:?}"
+            );
+        }
+
+        let json = history_json(&repo, span)?;
+        let anchors = json["current"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no current anchors in {json:#}"));
+        assert_eq!(anchors.len(), 1, "{label}: one anchor; got: {json:#}");
+        let anchor = &anchors[0];
+        let diff = anchor["diff"].as_str().expect("diff string");
+
+        // The structured field is the contract, and `absent` is affirmatively
+        // false here — the reason the resolver computed has to survive the
+        // trip rather than collapsing into the nearest available word.
+        assert_eq!(
+            anchor["unavailable"], "filter-failed",
+            "{label}: the resolver's reason must reach the field; got: {anchor:#}"
+        );
+        // Nothing was deleted. Not a hunk, not a `/dev/null` side, not a
+        // signed line — the block states the two tokens and why there are no
+        // bytes, and stops.
+        assert!(
+            !diff.contains("@@"),
+            "{label}: a hunk here asserts an edit git denies; got:\n{diff}"
+        );
+        assert!(
+            !diff.contains("/dev/null"),
+            "{label}: the file is present; got:\n{diff}"
+        );
+        assert!(
+            !diff.lines().any(|l| l.starts_with('-') && !l.starts_with("---")),
+            "{label}: no line left this file; got:\n{diff}"
+        );
+        assert!(
+            anchor.get("content").is_none(),
+            "{label}: there are no bytes to publish; got: {anchor:#}"
+        );
+        // A bodyless block with nothing explaining the emptiness is the shape
+        // the marker lines exist to prevent.
+        assert!(
+            diff.contains("\ncontent unavailable filter-failed\n"),
+            "{label}: an empty body needs its explanation; got:\n{diff}"
+        );
+        let out = history_text(&repo, span)?;
+        assert!(out.contains(diff), "{label}: both formats carry the same block:\n{out}");
+
+        // The other surface over the same resolver has always been right about
+        // this state; the two must not describe one repository two ways.
+        // `stale` reports it as `content unavailable (filter failed)` where it
+        // can resolve at all and errors out where it cannot — either way it
+        // attributes the state to the filter, and never to a missing file.
+        let out = repo.run_span(["stale"])?;
+        let stale = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stale.contains("filter"),
+            "{label}: fixture assumption — `stale` names the filter; got:\n{stale}"
+        );
+        assert!(
+            !stale.contains("deleted") && !stale.contains("no such file"),
+            "{label}: the other surface never called this a deletion; got:\n{stale}"
+        );
+    }
+    Ok(())
+}
+
+/// A working filter is not a failed one, and no `unavailable` value describes
+/// it. What it breaks is the join between `content` and the header: the hash
+/// was computed over the filtered bytes and the body read from the raw ones,
+/// so a consumer joining the two got a mismatch by construction.
+///
+/// ORACLE — [`token_recorded_for`], which declares the printed bytes in a
+/// throwaway repository and reads back the token `git span add` writes for
+/// them. That is the same reconstruction that proved the mechanism.
+#[test]
+fn content_and_the_headers_new_side_name_the_same_bytes() -> Result<()> {
+    let repo = working_filter_repo("wf")?;
+    assert_eq!(
+        repo.git_stdout(["show", "HEAD:f.txt"])?.trim_end(),
+        std::fs::read_to_string(repo.path().join("f.txt"))?.trim_end(),
+        "fixture assumption — f.txt itself is never touched"
+    );
+
+    let json = history_json(&repo, "wf")?;
+    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
+    let anchor = &anchors[0];
+    let diff = anchor["diff"].as_str().expect("diff string");
+
+    // Nothing failed, so nothing may claim it did.
+    assert!(
+        anchor.get("unavailable").is_none(),
+        "the filter produced content; got: {anchor:#}"
+    );
+    let content = match anchor["content"].as_str() {
+        Some(text) => text.to_string(),
+        None => new_side_body(diff),
+    };
+    assert!(
+        !content.is_empty(),
+        "the new side has bytes somewhere; got: {anchor:#}"
+    );
+    assert_eq!(
+        token_recorded_for(&content)?,
+        new_token(diff),
+        "the header names the hash of the bytes on the side wearing `path`; \
+         got content {content:?} against:\n{diff}"
+    );
+    Ok(())
+}
+
+/// Reconstruct a block's new side from its hunks — context and added lines, in
+/// order. The `content` field carries the same bytes for the block forms that
+/// have one; this covers the forms that put them in a body instead.
+fn new_side_body(diff: &str) -> String {
+    let mut out = String::new();
+    for line in diff.lines().skip_while(|l| !l.starts_with("@@ ")) {
+        let kept = match line.chars().next() {
+            Some(' ') | Some('+') if !line.starts_with("+++") => &line[1..],
+            _ => continue,
+        };
+        out.push_str(kept);
+        out.push('\n');
+    }
+    out
+}
+
+/// `git span add` refuses to declare a range that runs past its file; the
+/// render path must reach the same verdict about the same condition rather
+/// than supplying the missing lines from a second read.
+///
+/// The filtered content is three lines, so `#L4-L5` has no bytes on the axis
+/// the hash is computed over. That was detected — it is what produced the null
+/// token — and then dropped: `unavailable` was absent and `content` came back
+/// `"l4\nl5\n"` from the other read. One object, two files.
+///
+/// ORACLE — `git span add` on the same three-line content, which is the
+/// project's own statement of what this condition means.
+#[test]
+fn a_range_past_the_filtered_end_reaches_a_structured_field() -> Result<()> {
+    let repo = working_filter_past_eof_repo("wp")?;
+    let json = history_json(&repo, "wp")?;
+    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
+    let anchor = &anchors[0];
+    let diff = anchor["diff"].as_str().expect("diff string");
+
+    assert_eq!(
+        anchor["unavailable"], "range-past-eof",
+        "the declared range runs past the content git records; got: {anchor:#}"
+    );
+    // The null token is the *ambiguous* half of this state; `content` beside it
+    // was the fabrication, supplying bytes for an extent that has none.
+    assert_eq!(
+        new_token(diff),
+        "0000000000000000",
+        "no bytes, no fingerprint; got:\n{diff}"
+    );
+    assert!(
+        anchor.get("content").is_none(),
+        "an extent with no bytes has no content to print; got: {anchor:#}"
+    );
+    assert!(
+        diff.contains("\ncontent unavailable range-past-eof\n"),
+        "the `/dev/null` convention cannot say the file is present and the \
+         range is not; got:\n{diff}"
+    );
+    Ok(())
+}
+
+/// The negative control the two defects above are measured against: an
+/// ordinary uncommitted edit, no `.gitattributes` anywhere. It must still
+/// render a full hunk, a real new-side token, and `content` — the fixes are
+/// not allowed to buy honesty by rendering less everywhere.
+///
+/// ORACLE — [`token_recorded_for`] again, over the bytes actually on disk.
+#[test]
+fn an_unfiltered_worktree_edit_still_renders_its_whole_hunk() -> Result<()> {
+    let repo = drifted_repo("nc")?;
+    assert!(
+        !repo.path().join(".gitattributes").exists(),
+        "fixture assumption — the control carries no filter"
+    );
+    let json = history_json(&repo, "nc")?;
+    let anchors = json["current"]["anchors"].as_array().expect("current anchors");
+    assert_eq!(anchors.len(), 1, "one anchor; got: {json:#}");
+    let anchor = &anchors[0];
+    let diff = anchor["diff"].as_str().expect("diff string");
+    let path = anchor["path"].as_str().expect("path string");
+
+    assert!(
+        anchor.get("unavailable").is_none(),
+        "nothing is unavailable in the control; got: {anchor:#}"
+    );
+    assert!(diff.contains("@@"), "the edit is a real hunk; got:\n{diff}");
+    let on_disk = read_address(&repo, path).expect("the anchored lines are on disk");
+    assert_eq!(
+        new_token(diff),
+        token_recorded_for(&on_disk)?,
+        "the new side names the bytes the user can see; got:\n{diff}"
+    );
+    assert!(
+        diff.lines().any(|l| l.starts_with('+') && !l.starts_with("+++")),
+        "the new bytes are in the body; got:\n{diff}"
     );
     Ok(())
 }
