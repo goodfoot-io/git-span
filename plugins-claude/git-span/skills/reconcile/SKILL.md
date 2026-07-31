@@ -7,7 +7,7 @@ description: Reconcile stale git spans surfaced by `git span stale`. Use when as
 
 Reconcile every stale span reported by `git span stale`. The workflow has two phases: **research** (read-only — identify what drifted and why) then **execution** (mutate `.span/` files to re-anchor, re-hash, or delete). The research phase is done inline by the main agent; the execution phase is handed to forked subagents.
 
-Work is partitioned by **file-connected components** — clusters of stale spans that share at least one anchored file. Within a component, spans must be reconciled together because they share context about what the correct line ranges are for the files they all anchor. Across components, spans are fully independent. Each component goes to one fork; all forks run in parallel. A span that shares no files with any other stale span is a component of size one — still a valid fork unit.
+Work is partitioned by **file-connected components** — clusters of stale spans that share at least one anchored file. Within a component, only spans with overlapping ranges on the same file must be reconciled together; the rest of the component is independent. Across components, spans are fully independent. Each component maps to one or more forks, all running in parallel: an oversized component (too many spans for one fork) splits into cohesive sub-batches by topic/subsystem, as long as no split separates spans with overlapping ranges on a shared file. A span that shares no files with any other stale span is a component of size one — still a valid fork unit.
 
 Some steps reference sections of the `git-span:git-span` skill (e.g. "the command-reference section"). These are conditional — invoke `git-span:git-span` only when the topic exceeds what is explained here. The skill's sections are loaded together when the skill is invoked; navigate to the named section within it.
 
@@ -139,11 +139,13 @@ investigate a deleted file — the main agent must handle this case inline:
 *(If deletion syntax is unfamiliar, invoke `git-span:git-span` — the
 command-reference section covers `git span delete`.)*
 
-### 6. Assemble the work plan — one per component
+### 6. Assemble the work plan — one per fork unit
 
-For each component, produce:
+For each component, produce a fork unit; split an oversized component into
+several cohesive sub-batches (by topic/subsystem) if needed, never separating
+spans flagged with a range overlap. For each fork unit, produce:
 
-- Component label (shared-file name, or "isolated")
+- Label (shared-file name, sub-batch topic, or "isolated")
 - Span names
 - Stale anchor paths with CHANGED/DELETED status
 - Why (from stale output)
@@ -164,17 +166,17 @@ Otherwise, hand each component to a fork in Phase 2.
 
 ---
 
-## Phase 2 — Execution (one fork per component, all forks in parallel)
+## Phase 2 — Execution (one fork per fork unit, all forks in parallel)
 
-Fork one subagent per component. If there is 1 component, you get 1 fork. If there
-are N components, N forks run in parallel.
+Fork one subagent per fork unit from step 6 (a component, or a sub-batch of an
+oversized component). If there are N fork units, N forks run in parallel.
 
-**No worktree isolation** — components are disjoint by construction (if two spans
-shared a file, they'd be in the same component), so forks touch disjoint `.span/`
-files. They share the main worktree without conflict. Only the main agent commits
-at the end.
+**No worktree isolation** — fork units are disjoint by construction (spans with
+overlapping ranges on a shared file are never split across units), so forks
+touch disjoint `.span/` files. They share the main worktree without conflict.
+Only the main agent commits at the end.
 
-Dispatch each component with a fork. Forks inherit the full conversation context
+Dispatch each fork unit with a fork. Forks inherit the full conversation context
 (including this skill's instructions), so the prompt only needs to identify which
 spans the fork owns and the structural context the main agent gathered in Phase 1:
 
@@ -257,8 +259,8 @@ Skip the doc commit when no fork conformed a doc. Surface every doc diff in
 the final report.
 
 If any fork reported a failure, or `git span stale` is non-zero, handle the
-failing component inline (its spans are isolated from the successful components
-by definition, so only the failed component needs rework).
+failing fork unit inline (its spans are isolated from the successful units by
+definition, so only the failed unit needs rework).
 
 ---
 
