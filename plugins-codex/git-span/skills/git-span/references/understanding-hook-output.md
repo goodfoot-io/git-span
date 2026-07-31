@@ -36,8 +36,10 @@ and a single footer after a final `---`. A healthy span renders as:
 checkout.tsx has implicit dependencies:
 
 ## billing/checkout-request-flow
-- web/checkout.tsx#L88-L120
-- api/charge.ts#L30-L76
+├─ web/
+│  └─ checkout.tsx #L88-L120
+└─ api/
+   └─ charge.ts #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -57,8 +59,10 @@ lowercase status suffix and the header and footer switch:
 This edit put an implicit dependency out of date:
 
 ## billing/checkout-request-flow
-- web/checkout.tsx#L88-L120 — changed
-- api/charge.ts#L30-L76
+├─ web/
+│  └─ checkout.tsx #L88-L120 — changed
+└─ api/
+   └─ charge.ts #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -74,10 +78,11 @@ change or the coupling no longer holds, tell the user instead.
 ```
 
 Each `## <name>` section renders the span's full declared anchor list —
-including anchors in files other than the touched one — as
-`- path#Lstart-Lend` bullets (a bare path for a whole-file anchor), followed
-by the span's why sentence when one is recorded. Only genuine (semantic or
-terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
+including anchors in files other than the touched one — as a box-drawing
+tree grouped by shared path prefix, each leaf's range column showing
+`#Lstart-Lend` (a bare path with no range column for a whole-file anchor),
+followed by the span's why sentence when one is recorded. Only genuine
+(semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
 has implicit dependencies:` (naming the touched file) when nothing did, the
 singular form above for one drifted span on a write, and `This edit put
@@ -154,8 +159,10 @@ already been told about:
 This change leaves an implicit dependency out of date:
 
 ## billing/checkout-request-flow
-- src/checkout.tsx#L88-L120 — changed
-- api/charge.ts#L30-L76
+├─ src/
+│  └─ checkout.tsx #L88-L120 — changed
+└─ api/
+   └─ charge.ts #L30-L76
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
@@ -203,7 +210,8 @@ Other files in this change already belong to spans — an uncovered file above
 might belong with one of these instead of a new one:
 
 ## checkout-flow
-- web/checkout.tsx#L4-L6
+└─ web/
+   └─ checkout.tsx #L4-L6
 
 Checkout request flow that carries a charge attempt from the browser to the
 Stripe-backed server.
