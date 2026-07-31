@@ -111,12 +111,37 @@ async function touchBlock(anchors: PorcelainRow[], drift: StalePorcelainRow[]): 
   return output.additionalContext ?? '';
 }
 
-/** Every anchor address carrying a ` — <label>` suffix in a rendered block. */
+/**
+ * Every anchor address carrying a ` — <label>` suffix in a rendered block.
+ *
+ * Both hooks render anchors as a tree, so an address is spread across the
+ * directory lines above it and, for a stacked range, sits on a continuation
+ * line carrying no filename at all. Reassembling it is what makes this file
+ * assert attribution rather than absence: a parser that only recognized the
+ * flat `- path#range — label` bullet would return `[]` for every tree, and
+ * `[]` compares equal to `[]` in the cross-hook check below.
+ */
 function markedAnchors(rendered: string): string[] {
   const marked: string[] = [];
+  const dirs: { indent: number; name: string }[] = [];
+  let file: string | null = null;
   for (const line of rendered.split('\n')) {
-    const match = /^- (\S+) — /.exec(line);
-    if (match) marked.push(match[1]);
+    const branch = /^([ │]*)(?:├─|└─) (.*)$/.exec(line);
+    if (branch) {
+      const [, pad, rest] = branch;
+      while (dirs.length > 0 && dirs[dirs.length - 1].indent >= pad.length) dirs.pop();
+      if (rest.endsWith('/')) {
+        dirs.push({ indent: pad.length, name: rest });
+        file = null;
+        continue;
+      }
+      const anchor = /^(\S+)\s+(#L\d+-L\d+)( — .+)?$/.exec(rest);
+      file = anchor ? `${dirs.map((dir) => dir.name).join('')}${anchor[1]}` : null;
+      if (anchor?.[3]) marked.push(`${file}${anchor[2]}`);
+      continue;
+    }
+    const stacked = /^[ │]*(#L\d+-L\d+)( — .+)?$/.exec(line);
+    if (stacked?.[2] && file !== null) marked.push(`${file}${stacked[1]}`);
   }
   return marked;
 }

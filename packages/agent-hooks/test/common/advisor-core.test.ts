@@ -18,7 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type AdvisorExecutors,
   type AdvisorMemoState,
@@ -399,9 +399,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
         expect(result.reason).toContain('This change leaves an implicit dependency out of date:');
-        // The drifted anchor is labeled; the clean sibling anchor is not.
-        expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
-        expect(result.reason).toContain('- api/charge.ts#L30-L76\n');
+        // The bullet run is re-laid-out as a shared-prefix tree; the drifted
+        // anchor is labeled and the clean sibling anchor is not.
+        expect(result.reason).toContain(['├─ src/', '│  └─ app.ts #L1-L10 — changed'].join('\n'));
+        expect(result.reason).toContain(['└─ api/', '   └─ charge.ts #L30-L76\n'].join('\n'));
+        expect(result.reason).not.toContain('- src/app.ts#L1-L10');
         expect(result.reason).toContain('Checkout request flow');
         expect(result.reason).toContain('git span add billing/checkout-request-flow');
       }
@@ -423,8 +425,127 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('semantic-staleness');
       if (result.kind === 'semantic-staleness') {
         expect(result.reason).toContain('## billing/checkout-request-flow');
-        expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
+        // A synthesized block trees exactly like a parsed one — it must not be
+        // the odd one out in a second format inside the same message.
+        expect(result.reason).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
       }
+    });
+
+    it('passes `*Span has no anchors*` through verbatim beside a span whose bullets do tree', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      // The CLI's `render_list_block` prints this literal for a span with zero
+      // anchors. It is not a bullet, so the walk must hand it straight through
+      // rather than feeding it to the tree builder.
+      const blocks = [
+        ['## empty/span', '*Span has no anchors*', '', 'An empty span still carries its why sentence.'].join('\n'),
+        ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '', 'Checkout request flow.'].join('\n')
+      ].join('\n\n---\n\n');
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => blocks
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(result.reason).toContain(['## empty/span', '*Span has no anchors*', '', 'An empty span'].join('\n'));
+      expect(result.reason).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
+    });
+
+    it('never collects a `why` line that happens to start with `- ` as an anchor', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      // Bullets are only the *contiguous* `- ` run under the header; the blank
+      // line closes it, so this description line is passed through as prose and
+      // must never surface as a fabricated whole-file anchor in the tree.
+      const why = '- Dashed why lines are prose, not anchors.';
+      const blocks = ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '', why].join('\n');
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => blocks
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(result.reason).toContain(`\n${why}`);
+      expect(result.reason).not.toContain('─ Dashed why lines');
+    });
+
+    it('marks a bullet whose `#L` fragment does not parse as truncated, never guessing at a range', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      // Nothing in this repository produces these shapes today (the CLI always
+      // writes a complete range), so the coverage is deliberately synthetic —
+      // the marker exists so a future producer of malformed text is reported,
+      // not silently reinterpreted.
+      const blocks = [
+        '## billing/checkout-request-flow',
+        '- src/app.ts#L1-L10',
+        '- src/cut.ts#L12-',
+        '- src/lone.ts#L'
+      ].join('\n');
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => blocks
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        [
+          '   ├─ app.ts  #L1-L10 — changed',
+          '   ├─ cut.ts  (truncated in source — anchor incomplete)',
+          '   └─ lone.ts (truncated in source — anchor incomplete)'
+        ].join('\n')
+      );
+    });
+
+    it('renders a bare-path bullet as a whole-file anchor with zero marker, never as truncated', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      // The negative of the case above, and the regression that matters most:
+      // a bare path carries no `#L` at all because it is a *deliberate*
+      // whole-file anchor, not because anything was cut off.
+      const blocks = ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '- docs/guide.md'].join('\n');
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> => blocks
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(result.reason).toContain(['└─ docs/', '   └─ guide.md'].join('\n'));
+      expect(result.reason).not.toContain('truncated');
+      expect(result.reason).not.toContain('guide.md#');
+    });
+
+    it('renders the condensed `alreadySeen` staleness retry as a tree of bare paths', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        stale: async (): Promise<StalePorcelainRow[]> => [
+          staleRow({ status: 'CHANGED' }),
+          staleRow({ status: 'CHANGED', path: 'api/charge.ts', start: 30, end: 76 })
+        ]
+      });
+      const paths = ['src/app.ts', 'api/charge.ts'];
+
+      // The first `report-only` marks the debt state seen; the second renders
+      // the condensed form.
+      await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+      const condensed = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+
+      if (condensed.kind !== 'semantic-staleness-report') throw new Error('unreachable');
+      expect(condensed.reason).toContain('This change still leaves an implicit dependency out of date:');
+      // Bare-path leaves — this deduped retry list never claimed a range, so it
+      // must not render one, and it must not diverge in format from the full
+      // form it condenses.
+      expect(condensed.reason).toContain(['├─ src/', '│  └─ app.ts', '└─ api/', '   └─ charge.ts'].join('\n'));
+      expect(condensed.reason).not.toContain('- src/app.ts');
     });
 
     it('a changed findings set produces a fresh semantic-staleness deny (new digest) even after the prior digest was memoized', async () => {
@@ -550,7 +671,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('Other files in this change already belong to spans');
       expect(result.reason).toContain('## billing/checkout-request-flow');
-      expect(result.reason).toContain('- src/other.ts#L5-L20');
+      expect(result.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
     });
 
     it('renders a bare path for a whole-file anchor in the related-spans section', async () => {
@@ -564,8 +685,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
-      expect(result.reason).toContain('- src/other.ts');
-      expect(result.reason).not.toContain('src/other.ts#L');
+      // Zero marker of any kind — a whole-file anchor is a real, deliberate
+      // anchor, never rendered as truncated or otherwise annotated.
+      expect(result.reason).toContain(['└─ src/', '   └─ other.ts'].join('\n'));
+      expect(result.reason).not.toContain('other.ts#L');
+      expect(result.reason).not.toContain('truncated');
     });
 
     it('groups multiple covered files under one shared span name, and ranks the span covering more of the changeset first even though its name sorts last', async () => {
@@ -589,8 +713,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // `zeta/pair` covers two of the changed files to `alpha/solo`'s one, so
       // it leads despite sorting last alphabetically.
       expect(alphaIndex).toBeGreaterThan(zetaIndex);
-      expect(result.reason).toContain('- src/z1.ts#L1-L5');
-      expect(result.reason).toContain('- src/z2.ts#L1-L5');
+      // Both of `zeta/pair`'s anchors share `src/`, so they group under one branch.
+      expect(result.reason).toContain(['└─ src/', '   ├─ z1.ts #L1-L5', '   └─ z2.ts #L1-L5'].join('\n'));
     });
 
     it("includes each related span's `why` sentence, fetched via `listBlocks`, under its anchor group", async () => {
@@ -645,7 +769,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain('## billing/checkout-request-flow');
-      expect(result.reason).toContain('- src/other.ts#L5-L20');
+      expect(result.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
     });
 
     it('omits the related-spans section entirely when no other file in the changeset carries any span coverage', async () => {
@@ -714,7 +838,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('elsewhere/');
       // The in-changeset anchor of the big span survives the filter, and
       // filtering does not change which paths are flagged uncovered.
-      expect(result.reason).toContain('- src/b1.ts#L1-L5');
+      expect(result.reason).toContain(['└─ src/', '   └─ b1.ts #L1-L5'].join('\n'));
       expect(result.reason).toContain('src/uncovered.ts');
     });
 
@@ -871,7 +995,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       if (info.kind !== 'uncovered-writes-report') throw new Error('unreachable');
-      expect(info.reason).toContain('- src/other.ts#L5-L20');
+      expect(info.reason).toContain(['└─ src/', '   └─ other.ts #L5-L20'].join('\n'));
 
       // The advisor is informational, not a hard block — a bare retry already
       // gets past a deny — so once the status preview has shown this exact
@@ -1812,5 +1936,98 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const args = buildHunkReadArgs('/repo', { kind: 'staged' }, ['app/[slug]/page.tsx', 'HEAD']);
       expect(args.slice(args.indexOf('--') + 1)).toEqual(['app/[slug]/page.tsx', 'HEAD']);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fail-closed anchor rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * `evaluateAdvisor` builds `reason: renderStalenessReason(...)` *inline* inside
+ * its own `try`, and its outer catch resolves any uncaught error to
+ * `{ decision: 'allow', kind: 'silent' }`. So an exception escaping the tree
+ * renderer would not degrade to a flat list — it would bypass the
+ * `decision: 'hold'` construction entirely and silently allow a commit that
+ * should have been held. These checks pin the catch that forecloses that, by
+ * replacing the shared renderer with one that always throws.
+ *
+ * The module is stubbed rather than fed malformed input on purpose:
+ * `renderAnchorTree` is documented as total for any well-formed `TreeAnchor[]`
+ * and the call sites can only build well-formed ones, so a *future* defect in
+ * the renderer is the failure being guarded against, and injecting one at the
+ * module seam is the only honest way to reach it.
+ */
+describe('fail-closed anchor rendering', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/common/anchor-tree.js');
+    vi.resetModules();
+  });
+
+  /** Reload advisor-core against a `renderAnchorTree` that always throws. */
+  async function withThrowingRenderer(): Promise<typeof import('../../src/common/advisor-core.js')> {
+    vi.resetModules();
+    vi.doMock('../../src/common/anchor-tree.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../src/common/anchor-tree.js')>()),
+      renderAnchorTree: (): string[] => {
+        throw new Error('injected tree-renderer defect');
+      }
+    }));
+    return import('../../src/common/advisor-core.js');
+  }
+
+  it('still holds — with a flat-bullet reason — when the tree renderer throws', async () => {
+    const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
+    const executors = createFakeAdvisorExecutors({
+      list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+      stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+      listBlocks: async (): Promise<string> => ['## billing/checkout-request-flow', '- src/app.ts#L1-L10'].join('\n')
+    });
+
+    const result = await evaluate(['src/app.ts'], REPO_ROOT, executors, createMemoryAdvisorMemoState());
+
+    // The gate is unaffected: a rendering defect costs an uglier message, never
+    // a missed hold.
+    expect(result.decision).toBe('hold');
+    expect(result.kind).toBe('semantic-staleness');
+    if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+    expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
+    expect(result.reason).not.toContain('└─');
+  });
+
+  it('degrades the related-spans section to flat bullets rather than losing the uncovered-writes hold', async () => {
+    const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
+    const executors = createFakeAdvisorExecutors({
+      list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
+      stale: async (): Promise<StalePorcelainRow[]> => []
+    });
+
+    const result = await evaluate(
+      ['src/uncovered.ts', 'src/other.ts'],
+      REPO_ROOT,
+      executors,
+      createMemoryAdvisorMemoState()
+    );
+
+    expect(result.decision).toBe('hold');
+    if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+    expect(result.reason).toContain('- src/other.ts#L5-L20');
+    expect(result.reason).not.toContain('└─');
+  });
+
+  it('degrades the condensed `alreadySeen` retry to a flat path list rather than throwing', async () => {
+    const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
+    const memo = createMemoryAdvisorMemoState();
+    const executors = createFakeAdvisorExecutors({
+      list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+      stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+    });
+
+    await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
+    const condensed = await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
+
+    if (condensed.kind !== 'semantic-staleness-report') throw new Error('unreachable');
+    expect(condensed.reason).toContain('- src/app.ts');
+    expect(condensed.reason).not.toContain('└─');
   });
 });

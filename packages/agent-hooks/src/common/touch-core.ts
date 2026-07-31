@@ -32,6 +32,7 @@ import {
   resolveSpanRoot,
   type StalePorcelainRow
 } from './agent-hooks-common.js';
+import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import type { MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -273,14 +274,25 @@ function driftFooter(driftedNames: string[]): string {
   return 'For each out-of-date span above: restore agreement across the anchors before committing — docs follow deliberately committed code — then refresh: `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the other anchors for knock-on changes. If a fix needs a code change or a coupling no longer holds, tell the user instead.';
 }
 
+/** The {@link RangeLabel} for a porcelain row — `0-0` is the whole-file anchor. */
+function rangeLabel(row: PorcelainRow): RangeLabel {
+  if (row.start === 0 && row.end === 0) return { kind: 'whole-file' };
+  return { kind: 'range', start: row.start, end: row.end };
+}
+
 /**
- * Bullet lines for a span's full anchor list, suffixing each anchor that
- * carries genuine drift with its lowercase status token(s) (` — changed`).
+ * A span's full anchor list, rendered as a shared-prefix tree by
+ * {@link renderAnchorTree}, with each anchor that carries genuine drift
+ * suffixed by its lowercase status token(s) (` — changed`).
+ *
  * A drift row matches an anchor by exact path+range, or by path alone when the
  * span has a single anchor on that path (ranges can disagree after a heal).
+ * `soleOnPath` is deliberately computed over the **full flat anchor list**,
+ * before any grouping — the tree layout must never be able to change *which*
+ * anchors get labeled, only where they sit on the page.
  */
 function anchorBullets(anchors: PorcelainRow[], debtRows: StalePorcelainRow[]): string[] {
-  return anchors.map((anchor) => {
+  const rows = anchors.map((anchor) => {
     const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
     const statuses = new Set<PorcelainStatus>();
     for (const row of debtRows) {
@@ -291,14 +303,35 @@ function anchorBullets(anchors: PorcelainRow[], debtRows: StalePorcelainRow[]): 
     }
     const sorted = [...statuses].sort();
     const suffix = sorted.length > 0 ? ` — ${sorted.map(humanStatusLabel).join(', ')}` : '';
-    return `- ${anchorText(anchor)}${suffix}`;
+    return { path: anchor.path, range: rangeLabel(anchor), suffix };
   });
+  try {
+    return renderAnchorTree(collapseByPath(rows));
+  } catch {
+    // FAIL-CLOSED, not a `<greenfield>`-forbidden fallback — do not remove it
+    // on the theory that a degraded fallback is itself forbidden. An uncaught
+    // throw here does not degrade to a flat list: it escapes to
+    // `runTouchHook`'s catch, which resolves the whole hook to
+    // `additionalContext: null`, so the agent is never told about the drift at
+    // all. Catching locally narrows what a rendering defect can cost from "the
+    // reminder disappears" to "the reminder looks like it did before the tree".
+    // Whether to surface and what shape to surface in are different things, and
+    // this catch only ever touches the latter.
+    // `rows` is index-aligned with `anchors`, so this reproduces today's flat
+    // bullet run byte for byte, suffixes included.
+    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
+  }
 }
 
 /**
  * One human-format span section: `## <name>`, the full anchor list (drifted
- * anchors status-suffixed), and the why sentence when one is recorded — the
- * same shape `git span list` renders.
+ * anchors status-suffixed), and the why sentence when one is recorded.
+ *
+ * The name header and the why sentence are the same shape `git span list`
+ * renders; the anchor list deliberately is not — it renders as a shared-prefix
+ * tree ({@link anchorBullets}) where the CLI prints a flat `- path#Lrange`
+ * bullet run. The CLI's own text format is untouched; only this hook's
+ * re-presentation of it groups.
  */
 function renderSpanSection(
   name: string,

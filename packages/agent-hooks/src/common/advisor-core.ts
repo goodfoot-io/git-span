@@ -46,6 +46,7 @@ import {
   type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
+import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import {
   classifyMechanical,
   type FileDiff,
@@ -1229,6 +1230,95 @@ function dedupeByAnchor(rows: StalePorcelainRow[]): { addr: string; statuses: Po
   return order.map((addr) => ({ addr, statuses: [...(byAddr.get(addr) ?? [])].sort() }));
 }
 
+/** One anchor on its way to {@link renderAnchorTree}, with its drift suffix precomputed. */
+type AnchorRow = { path: string; range: RangeLabel; suffix: string };
+
+/** The {@link RangeLabel} for a porcelain row — `0-0` is the whole-file anchor. */
+function rangeLabel(row: { start: number; end: number }): RangeLabel {
+  if (row.start === 0 && row.end === 0) return { kind: 'whole-file' };
+  return { kind: 'range', start: row.start, end: row.end };
+}
+
+const BULLET_RANGE = /^(.+)#L(\d+)-L(\d+)$/;
+
+/**
+ * Classify one bullet's anchor text out of the CLI's flat human format. Three
+ * shapes, and the distinction between the last two is load-bearing:
+ *
+ * - `path#Lstart-Lend` → a line range.
+ * - a bare path with **no `#L` at all** → a deliberate whole-file anchor.
+ *   `render_list_block` (`cli/show.rs`) prints it exactly that way, so this
+ *   renders as a plain path with zero marker, as it does today.
+ * - a `#L` fragment that does *not* cleanly match `#Lstart-Lend` — cut off
+ *   mid-number, non-numeric, a lone `#L` → `truncated`: source we cannot
+ *   trust and will not guess at.
+ *
+ * `truncated` is only ever reached when a `#L` is present and unparseable.
+ * Conflating it with the bare-path case would mark every legitimate
+ * whole-file anchor as broken, which is the specific regression this split
+ * exists to prevent. This is also the *only* place `truncated` becomes
+ * reachable at all — the structured-data call sites can never produce one
+ * (see the invariant recorded at {@link RangeLabel}).
+ */
+function parseAnchorAddr(addr: string, suffix: string): AnchorRow {
+  const matched = BULLET_RANGE.exec(addr);
+  if (matched) {
+    return { path: matched[1], range: { kind: 'range', start: Number(matched[2]), end: Number(matched[3]) }, suffix };
+  }
+  const fragment = addr.indexOf('#L');
+  if (fragment === -1) return { path: addr, range: { kind: 'whole-file' }, suffix };
+  return { path: addr.slice(0, fragment), range: { kind: 'truncated' }, suffix };
+}
+
+/**
+ * Lay one span's anchor run out as a shared-prefix tree, degrading to the
+ * caller's own `flat` bullet lines if the renderer throws.
+ *
+ * **The catch below is the FAIL-CLOSED choice, not a `<greenfield>`-forbidden
+ * fallback. Do not remove it.** {@link evaluateAdvisor} builds
+ * `reason: renderStalenessReason(...)` *inline* inside its own `try`, and its
+ * outer catch resolves any uncaught error to `{ decision: 'allow', kind:
+ * 'silent' }` so the advisor can never brick a commit on its own failure. So
+ * an exception escaping a tree render here would not degrade to a flat list —
+ * it would bypass the `decision: 'hold'` construction entirely and silently
+ * allow a commit that should have been held. Catching locally keeps the hold
+ * firing and the reason rendering, just flat: it narrows what a rendering
+ * defect can cost from "a missed commit gate" to "an uglier message", and
+ * never widens it. The gating decision and the presentation of that decision
+ * are different things, and this catch only ever touches the latter.
+ *
+ * Callers each pass their own `flat` fallback rather than sharing one
+ * reconstruction, so a degraded run prints exactly what that call site printed
+ * before the tree — including, for {@link annotateBlocks}, the verbatim source
+ * text of a bullet this module could not classify.
+ */
+function renderAnchorRun(rows: AnchorRow[], flat: string[]): string[] {
+  try {
+    return renderAnchorTree(collapseByPath(rows));
+  } catch {
+    return flat;
+  }
+}
+
+/**
+ * Lay a bare path list (no ranges at all) out as a tree — the `alreadySeen`
+ * condensed retry's shape. Each path becomes a `TreeAnchor` with an **empty**
+ * `ranges` array: a bare-path leaf, deliberately distinct from a `whole-file`
+ * range, which would assert an anchor semantic this deduped retry list never
+ * claimed.
+ *
+ * The catch is fail-closed for the same reason as {@link renderAnchorRun}'s —
+ * see that comment; this list is rendered from inside the same `evaluateAdvisor`
+ * `try` whose outer catch would otherwise turn a hold into an allow.
+ */
+function renderPathRun(paths: string[]): string[] {
+  try {
+    return renderAnchorTree(paths.map((path) => ({ path, ranges: [] })));
+  } catch {
+    return paths.map((path) => `- ${path}`);
+  }
+}
+
 /**
  * Attach each finding in `pending` to one bullet of a span's complete bullet
  * run, and render the run.
@@ -1245,10 +1335,15 @@ function dedupeByAnchor(rows: StalePorcelainRow[]): { addr: string; statuses: Po
  * file claims the finding and the range that genuinely drifted renders bare.
  *
  * A finding that survives both passes matches no anchor this run can name, so
- * it is appended as its own bullet — collapsed via {@link dedupeByAnchor}, and
+ * it is appended as its own entry — collapsed via {@link dedupeByAnchor}, and
  * never dropped.
+ *
+ * The result is structured rather than pre-rendered so the caller can build the
+ * tree and the flat fallback from one source. Recovering an address from a
+ * formatted bullet would mean splitting on ` — `, which a path is free to
+ * contain.
  */
-function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]): string[] {
+function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]): { addr: string; suffix: string }[] {
   const addrs = bulletLines.map((line) => line.slice(2));
   const paths = addrs.map((addr) => addr.split('#')[0]);
   const claimed: StalePorcelainRow[][] = addrs.map(() => []);
@@ -1270,16 +1365,16 @@ function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]):
     claim(i, (row) => addr === row.path || addr.startsWith(`${row.path}#`));
   }
 
-  const lines = bulletLines.map((line, i) => {
+  const entries = addrs.map((addr, i) => {
     const rows = claimed[i];
-    if (rows.length === 0) return line;
+    if (rows.length === 0) return { addr, suffix: '' };
     const statuses = [...new Set(rows.map((row) => row.status))].sort();
-    return `${line} — ${statuses.map(humanStatusLabel).join(', ')}`;
+    return { addr, suffix: ` — ${statuses.map(humanStatusLabel).join(', ')}` };
   });
   for (const { addr, statuses } of dedupeByAnchor(pending.filter((row) => !used.has(row)))) {
-    lines.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+    entries.push({ addr, suffix: ` — ${statuses.map(humanStatusLabel).join(', ')}` });
   }
-  return lines;
+  return entries;
 }
 
 /**
@@ -1298,6 +1393,16 @@ function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]):
  * collapsed via {@link dedupeByAnchor} first, so a single anchor never
  * renders as more than one bullet regardless of how many drifting-layer rows
  * the CLI emitted for it.
+ *
+ * The collected bullet run is re-emitted as a shared-prefix tree (via
+ * {@link renderAnchorRun}) instead of the flat bullets it was parsed from —
+ * that is the *only* thing about this walk that changed. Its control structure
+ * is deliberately intact, because both guarantees above depend on it: the
+ * `if (inBullets) closeBullets()` below is what structurally confines bullets
+ * to the contiguous run under a header, and every non-bullet line
+ * (`*Span has no anchors*`, blank separators, `---` delimiters, the `why`
+ * paragraph) still falls through to the unconditional passthrough at the end
+ * of the loop.
  */
 function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   const remaining = new Map<string, StalePorcelainRow[]>();
@@ -1311,10 +1416,23 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   let pending: StalePorcelainRow[] = [];
   let bullets: string[] = [];
   let inBullets = false;
+  // The bullet run collected under the current header, in both forms: `runRows`
+  // feeds the tree, `runFlat` is the flat rendering it degrades to.
+  let runRows: AnchorRow[] = [];
+  let runFlat: string[] = [];
+  const collect = (addr: string, suffix: string): void => {
+    runFlat.push(`- ${addr}${suffix}`);
+    runRows.push(parseAnchorAddr(addr, suffix));
+  };
   const closeBullets = (): void => {
-    out.push(...annotateBulletRun(bullets, pending));
+    for (const { addr, suffix } of annotateBulletRun(bullets, pending)) {
+      collect(addr, suffix);
+    }
+    if (runRows.length > 0) out.push(...renderAnchorRun(runRows, runFlat));
     bullets = [];
     pending = [];
+    runRows = [];
+    runFlat = [];
     inBullets = false;
   };
 
@@ -1340,12 +1458,20 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
     closeBullets();
   }
 
+  // Synthesized blocks for spans `blocksText` never mentioned. They tree too:
+  // a synthesized block sitting beside a parsed one in the same message must
+  // not be the odd one out in a second format.
   for (const [name, group] of remaining) {
     if (out.length > 0) out.push('', '---', '');
     out.push(`## ${name}`);
+    const rows: AnchorRow[] = [];
+    const flat: string[] = [];
     for (const { addr, statuses } of dedupeByAnchor(group)) {
-      out.push(`- ${addr} — ${statuses.map(humanStatusLabel).join(', ')}`);
+      const suffix = ` — ${statuses.map(humanStatusLabel).join(', ')}`;
+      flat.push(`- ${addr}${suffix}`);
+      rows.push(parseAnchorAddr(addr, suffix));
     }
+    out.push(...renderAnchorRun(rows, flat));
   }
 
   return out.join('\n');
@@ -1370,9 +1496,7 @@ function renderStalenessReason(
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
     const closing = `Already flagged above — restore agreement at the drifted locations or update the description.`;
-    return [`This change still leaves ${subject} out of date:`, ...paths.map((path) => `- ${path}`), '', closing].join(
-      '\n'
-    );
+    return [`This change still leaves ${subject} out of date:`, ...renderPathRun(paths), '', closing].join('\n');
   }
   const closing =
     mode === 'may-hold'
@@ -1483,8 +1607,9 @@ function pathProximity(a: string, b: string): number {
 
 /**
  * Group `covering` — the rows {@link computeUncoveredPaths} already resolved
- * for the rest of the changeset — by span name, each anchor rendered via
- * {@link anchorText}. Only anchors whose `path` is one of the paths
+ * for the rest of the changeset — by span name, returning the rows themselves
+ * so the caller can hand `path`/range structure to the tree renderer rather
+ * than a pre-formatted string. Only anchors whose `path` is one of the paths
  * `executors.list` was scoped to appear here; a span's *other* anchors (in
  * files outside this changeset) never do, because {@link
  * computeUncoveredPaths} filtered them out — the CLI returns matching spans
@@ -1512,11 +1637,18 @@ function pathProximity(a: string, b: string): number {
  * were prototyped and rejected: both measurably degraded ranking, which is
  * why this needs no parse of `coveringBlocksText` and no extra subprocess.
  */
-function groupCoveringByName(covering: PorcelainRow[], uncovered: string[]): { name: string; anchors: string[] }[] {
-  const byName = new Map<string, { anchors: Set<string>; paths: Set<string> }>();
+function groupCoveringByName(
+  covering: PorcelainRow[],
+  uncovered: string[]
+): { name: string; anchors: PorcelainRow[] }[] {
+  const byName = new Map<string, { anchors: Map<string, PorcelainRow>; paths: Set<string> }>();
   for (const row of covering) {
-    const group = byName.get(row.name) ?? { anchors: new Set<string>(), paths: new Set<string>() };
-    group.anchors.add(anchorText(row));
+    const group = byName.get(row.name) ?? { anchors: new Map<string, PorcelainRow>(), paths: new Set<string>() };
+    const addr = anchorText(row);
+    // Keyed by address rather than held as a Set of formatted strings: the
+    // tree renderer needs `path`/range structure, so the row travels with its
+    // address instead of being flattened here. Dedupe semantics are identical.
+    if (!group.anchors.has(addr)) group.anchors.set(addr, row);
     group.paths.add(row.path);
     byName.set(row.name, group);
   }
@@ -1526,7 +1658,17 @@ function groupCoveringByName(covering: PorcelainRow[], uncovered: string[]): { n
       for (const path of group.paths) {
         for (const target of uncovered) proximity = Math.max(proximity, pathProximity(path, target));
       }
-      return { name, anchors: [...group.anchors].sort(), coOccurrence: group.paths.size, proximity };
+      return {
+        name,
+        // The determinism tie-break this section has always had, preserved
+        // exactly: codepoint order over the anchor's `path#Lstart-Lend`
+        // address, matching the plain `[...set].sort()` this replaced. The
+        // tree renderer never re-sorts sibling paths, so it lays out whatever
+        // order arrives here — which is why this sort must stay.
+        anchors: [...group.anchors.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, row]) => row),
+        coOccurrence: group.paths.size,
+        proximity
+      };
     })
     .sort(
       (a, b) =>
@@ -1575,7 +1717,17 @@ function renderRelatedSpansSection(
   ];
   const groups = groupCoveringByName(covering, uncovered);
   for (const { name, anchors } of groups.slice(0, RELATED_SPANS_CAP)) {
-    lines.push('', `## ${name}`, ...anchors.map((anchor) => `- ${anchor}`));
+    // Related-spans anchors never carry drift status — this section lists span
+    // *coverage*, not debt — so every suffix here is `''`, and stays that way.
+    const rows = anchors.map((anchor) => ({ path: anchor.path, range: rangeLabel(anchor), suffix: '' }));
+    lines.push(
+      '',
+      `## ${name}`,
+      ...renderAnchorRun(
+        rows,
+        anchors.map((anchor) => `- ${anchorText(anchor)}`)
+      )
+    );
     const why = extractWhy(coveringBlocksText, name);
     if (why.length > 0) lines.push('', why);
   }

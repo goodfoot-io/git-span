@@ -16,7 +16,7 @@
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
@@ -123,13 +123,16 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(first.additionalContext).not.toBeNull();
       const block = first.additionalContext ?? '';
       // Drift header + full span section: name heading, every declared anchor
-      // (the drifted one lowercase-status-suffixed, the clean cross-file one
-      // bare), the why sentence, and the drift footer after a final `---`.
+      // grouped under its directory branch (the drifted one
+      // lowercase-status-suffixed, the clean cross-file one bare), the why
+      // sentence, and the drift footer after a final `---`.
       expect(block).toContain('This edit put an implicit dependency out of date:');
       expect(block).toContain('## billing/checkout-request-flow');
-      expect(block).toContain('- src/app.ts#L1-L10 — changed');
-      expect(block).toContain('- api/charge.ts#L30-L76\n');
-      expect(block).not.toContain('api/charge.ts#L30-L76 —');
+      expect(block).toContain(['├─ src/', '│  └─ app.ts #L1-L10 — changed'].join('\n'));
+      expect(block).toContain(['└─ api/', '   └─ charge.ts #L30-L76\n'].join('\n'));
+      expect(block).not.toContain('#L30-L76 —');
+      // The flat bullet run this section used to render is gone entirely.
+      expect(block).not.toContain('- src/app.ts#L1-L10');
       expect(block).toContain(WHY);
       expect(block).toContain('\n\n---\n\n');
       expect(block).toContain('Restore agreement across the anchors before committing');
@@ -171,7 +174,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const third = await runTouchHook(input, executors, memo);
       const driftBlock = third.additionalContext ?? '';
       expect(driftBlock).toContain('This edit put an implicit dependency out of date:');
-      expect(driftBlock).toContain('- src/app.ts#L1-L10 — changed');
+      expect(driftBlock).toContain(['└─ src/', '   └─ app.ts #L1-L10 — changed'].join('\n'));
       expect(driftBlock).toContain(WHY);
 
       // Same (span, status) pair again: deduped.
@@ -348,6 +351,42 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
       expect(output.additionalContext).toBeNull();
       expect(output.treeModified).toBe(false);
+    });
+
+    /**
+     * The touch hook's mirror of the advisor's fail-closed case. An uncaught
+     * throw from the tree renderer would escape to `runTouchHook`'s catch,
+     * which resolves the whole hook to `additionalContext: null` — the agent
+     * would never hear about the drift at all. The local catch keeps the
+     * reminder, just flat.
+     */
+    it('still returns a flat-bullet reminder, not null, when the tree renderer throws', async () => {
+      vi.resetModules();
+      vi.doMock('../../src/common/anchor-tree.js', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../../src/common/anchor-tree.js')>()),
+        renderAnchorTree: (): string[] => {
+          throw new Error('injected tree-renderer defect');
+        }
+      }));
+      try {
+        const { runTouchHook: run } = await import('../../src/common/touch-core.js');
+        const memo = createMemoryMemoStore();
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+          stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+          why: async (): Promise<string | null> => WHY
+        };
+
+        const output = await run(writeInput(), executors, memo);
+
+        expect(output.additionalContext).not.toBeNull();
+        expect(output.additionalContext).toContain('- src/app.ts#L1-L10 — changed');
+        expect(output.additionalContext).not.toContain('└─');
+      } finally {
+        vi.doUnmock('../../src/common/anchor-tree.js');
+        vi.resetModules();
+      }
     });
   });
 
