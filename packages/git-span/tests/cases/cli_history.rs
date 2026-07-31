@@ -1348,6 +1348,12 @@ fn history_and_stale_reject_git_replacement_topology_before_output() -> Result<(
             "{name} must explain the shared topology boundary: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("refs/replace/")
+                && String::from_utf8_lossy(&out.stderr).contains("GIT_NO_REPLACE_OBJECTS=1"),
+            "{name} must identify the default ref and both valid recovery routes: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(())
 }
@@ -1410,12 +1416,14 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
     let repo = committed_drift_repo("custom-replace")?;
     let head = repo.head_sha()?;
     let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
-    let namespace = "refs/custom-replace/";
-    repo.run_git(["update-ref", &format!("{namespace}{head}"), &parent])?;
+    let configured_namespace = "refs/custom-replace";
+    let normalized_namespace = "refs/custom-replace/";
+    let replacement_ref = format!("{normalized_namespace}{head}");
+    repo.run_git(["update-ref", &replacement_ref, &parent])?;
 
     let effective = repo.run_git_with_env(
         ["rev-list", "--parents", "-n", "1", "HEAD"],
-        &[("GIT_REPLACE_REF_BASE", namespace)],
+        &[("GIT_REPLACE_REF_BASE", configured_namespace)],
     )?;
     let raw = repo.run_git_with_env(
         [
@@ -1426,7 +1434,7 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
             "1",
             "HEAD",
         ],
-        &[("GIT_REPLACE_REF_BASE", namespace)],
+        &[("GIT_REPLACE_REF_BASE", configured_namespace)],
     )?;
     assert_ne!(
         effective.stdout, raw.stdout,
@@ -1443,15 +1451,19 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
         ("stale", vec!["stale", "--format=json"]),
         ("stale --fix", vec!["stale", "--fix"]),
     ] {
-        let out = repo.run_span_with_envs(args, &[("GIT_REPLACE_REF_BASE", namespace)])?;
+        let out =
+            repo.run_span_with_envs(args, &[("GIT_REPLACE_REF_BASE", configured_namespace)])?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !out.status.success()
                 && out.stdout.is_empty()
-                && String::from_utf8_lossy(&out.stderr)
-                    .contains("replacement topology is unsupported"),
+                && stderr.contains("replacement topology is unsupported")
+                && stderr.contains(&replacement_ref)
+                && stderr.contains("GIT_NO_REPLACE_OBJECTS=1")
+                && stderr.contains("remove that ref"),
             "{name} must reject active custom replacement topology before output: stdout={} stderr={}",
             String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+            stderr
         );
     }
     assert_eq!(
@@ -1462,10 +1474,50 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
     Ok(())
 }
 
+#[test]
+fn empty_replacement_base_cannot_bypass_the_shared_boundary() -> Result<()> {
+    let repo = committed_drift_repo("empty-replace-base")?;
+    let head = repo.head_sha()?;
+    let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
+    let replacement_ref = format!("refs/empty-base-replacements/{head}");
+    repo.run_git(["update-ref", &replacement_ref, &parent])?;
+
+    let env = [("GIT_REPLACE_REF_BASE", "")];
+    let effective = repo.run_git_with_env(["rev-list", "--parents", "-n", "1", "HEAD"], &env)?;
+    let raw = repo.run_git_with_env(
+        [
+            "--no-replace-objects",
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            "HEAD",
+        ],
+        &env,
+    )?;
+    assert_ne!(
+        effective.stdout, raw.stdout,
+        "fixture must prove Git activates an object-id ref under an empty replacement base"
+    );
+
+    assert_topology_rejected_without_effects(
+        &repo,
+        "empty-replace-base",
+        &env,
+        &[
+            &replacement_ref,
+            "GIT_NO_REPLACE_OBJECTS=1",
+            "remove that ref",
+        ],
+    )?;
+    Ok(())
+}
+
 fn assert_topology_rejected_without_effects(
     repo: &TestRepo,
     span: &str,
     env: &[(&str, &str)],
+    expected_guidance: &[&str],
 ) -> Result<()> {
     let declaration = repo.path().join(format!(".span/{span}"));
     let before = std::fs::read(&declaration)?;
@@ -1475,14 +1527,15 @@ fn assert_topology_rejected_without_effects(
         ("stale --fix", vec!["stale", "--fix"]),
     ] {
         let out = repo.run_span_with_envs(args, env)?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !out.status.success()
                 && out.stdout.is_empty()
-                && String::from_utf8_lossy(&out.stderr)
-                    .contains("replacement topology is unsupported"),
+                && stderr.contains("replacement topology is unsupported")
+                && expected_guidance.iter().all(|text| stderr.contains(text)),
             "{name} must reject changed reachable commit semantics before output: stdout={} stderr={}",
             String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+            stderr
         );
     }
     assert_eq!(
@@ -1549,7 +1602,17 @@ fn same_parent_tree_replacements_are_rejected_in_default_and_custom_namespaces()
             effective_tree.stdout, raw_tree.stdout,
             "fixture must change the replaced commit's tree"
         );
-        assert_topology_rejected_without_effects(&repo, label, &env)?;
+        let replacement_ref = format!("{}{head}", namespace.unwrap_or("refs/replace/"));
+        assert_topology_rejected_without_effects(
+            &repo,
+            label,
+            &env,
+            &[
+                &replacement_ref,
+                "GIT_NO_REPLACE_OBJECTS=1",
+                "remove that ref",
+            ],
+        )?;
     }
     Ok(())
 }
@@ -1588,7 +1651,12 @@ fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
     );
 
     std::fs::write(&grafts, format!("{head}\n"))?;
-    assert_topology_rejected_without_effects(&repo, "graft-reachability", &[])?;
+    assert_topology_rejected_without_effects(
+        &repo,
+        "graft-reachability",
+        &[],
+        &["info/grafts", &head, "remove that entry"],
+    )?;
     Ok(())
 }
 

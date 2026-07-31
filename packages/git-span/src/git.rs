@@ -6,7 +6,7 @@
 
 use crate::{Error, Result};
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -56,21 +56,32 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
     // value is immaterial). Honour that before probing the default or a custom
     // namespace. Grafts are independent of this switch and remain active.
     let replacements_disabled = std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some();
-    let replacement_base =
+    let configured_replacement_base =
         std::env::var("GIT_REPLACE_REF_BASE").unwrap_or_else(|_| "refs/replace/".into());
+    // Git inserts the separator for a non-empty custom base. An explicitly
+    // empty base is different: it considers every ref and interprets a
+    // terminal object-id component as a replacement candidate.
+    let replacement_base = if configured_replacement_base.is_empty() {
+        None
+    } else if configured_replacement_base.ends_with('/') {
+        Some(configured_replacement_base)
+    } else {
+        Some(format!("{configured_replacement_base}/"))
+    };
 
-    let mut changed_targets = HashSet::new();
+    let mut replacement_targets = HashMap::new();
     if !replacements_disabled {
         // `for-each-ref` is a bounded metadata lookup, understands packed refs,
         // and follows Git's selected namespace. Ordinary repositories stop
         // here without walking a single commit.
-        let refs = std::process::Command::new("git")
+        let mut command = std::process::Command::new("git");
+        command
             .current_dir(work_dir(repo)?)
-            .args([
-                "for-each-ref",
-                "--format=%(refname) %(objectname)",
-                &replacement_base,
-            ])
+            .args(["for-each-ref", "--format=%(refname) %(objectname)"]);
+        if let Some(base) = &replacement_base {
+            command.arg(base);
+        }
+        let refs = command
             .output()
             .map_err(|e| Error::Git(format!("inspect replacement refs: {e}")))?;
         if !refs.status.success() {
@@ -83,22 +94,31 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
             let (name, replacement) = line.split_once(' ').ok_or_else(|| {
                 Error::Git("inspect replacement refs: malformed for-each-ref output".into())
             })?;
-            let original = name.strip_prefix(&replacement_base).ok_or_else(|| {
-                Error::Git(format!(
-                    "replacement ref `{name}` is outside its configured namespace"
-                ))
-            })?;
-            let original = parse_oid(original)?;
+            let original = match &replacement_base {
+                Some(base) => name.strip_prefix(base).ok_or_else(|| {
+                    Error::Git(format!(
+                        "replacement ref `{name}` is outside its configured namespace `{base}`"
+                    ))
+                })?,
+                None => name.rsplit_once('/').map_or(name, |(_, leaf)| leaf),
+            };
+            // Git ignores refs whose final namespace component is not a full
+            // object ID. This matters for the empty base, which visits normal
+            // branch and tag refs alongside actual replacement candidates.
+            let Ok(original) = ObjectId::from_str(original) else {
+                continue;
+            };
             let replacement = parse_oid(replacement)?;
             // Equal object IDs imply equal object bytes. Any other replacement
             // changes at least one commit semantic (tree, metadata, or parents),
             // even when the parent list happens to remain identical.
             if original != replacement {
-                changed_targets.insert(original);
+                replacement_targets.insert(original, name.to_string());
             }
         }
     }
 
+    let mut graft_targets = HashSet::new();
     let grafts_path = common_dir(repo).join("info/grafts");
     if let Ok(text) = std::fs::read_to_string(&grafts_path) {
         for line in text.lines() {
@@ -123,12 +143,12 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
             // A dangling graft cannot affect HEAD. Defer reachability for it,
             // while malformed/missing objects remain harmless unless reached.
             if raw_parents.as_ref() != Some(&declared_parents) {
-                changed_targets.insert(original);
+                graft_targets.insert(original);
             }
         }
     }
 
-    if changed_targets.is_empty() {
+    if replacement_targets.is_empty() && graft_targets.is_empty() {
         return Ok(());
     }
 
@@ -150,11 +170,15 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
         if !seen.insert(id) {
             continue;
         }
-        if changed_targets.contains(&id) {
-            return Err(Error::Git(
-                "replacement topology is unsupported: remove refs/replace or info/grafts before running this command"
-                    .into(),
-            ));
+        if let Some(replacement_ref) = replacement_targets.get(&id) {
+            return Err(Error::Git(format!(
+                "replacement topology is unsupported: reachable replacement ref `{replacement_ref}` changes Git history; rerun with GIT_NO_REPLACE_OBJECTS=1 to disable replacement processing, or remove that ref before running this command"
+            )));
+        }
+        if graft_targets.contains(&id) {
+            return Err(Error::Git(format!(
+                "replacement topology is unsupported: reachable info/grafts entry for commit `{id}` changes Git history; remove that entry from info/grafts before running this command"
+            )));
         }
         let commit = repo
             .find_commit(id)
