@@ -158,7 +158,8 @@ Bring the coupled files back into agreement (docs follow deliberately
 committed code), then refresh — `git span add billing/checkout-request-flow
 <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
 and retry. If the fix needs a code change or a dependency no longer holds,
-tell the user instead.
+tell the user instead. You may retry this command directly; the hold will
+not fire again for the same debt state.
 ```
 
 With several drifted spans the sections stack, separated by `---`, the header

@@ -1376,7 +1376,7 @@ function renderStalenessReason(
   }
   const closing =
     mode === 'may-hold'
-      ? `Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+      ? `Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
       : `Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
   return [
     `This change leaves ${subject} out of date:`,
