@@ -1,5 +1,5 @@
 README.md#L18-L55 rk64:8826a4b6155d78fe
-packages/git-span/src/cli/mod.rs#L40-L195 rk64:2342bf5c26eee65d
+packages/git-span/src/cli/mod.rs#L40-L195 rk64:493799ca78667307
 packages/git-span/src/cli/mod.rs#L47-L175 rk64:c81886333495e33d
 packages/git-span/src/cli/mod.rs#L48-L176 rk64:5ae5f3a3822ceefc
 packages/git-span/src/main.rs#L49-L100 rk64:9bb62b4928980a81
