@@ -369,6 +369,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // already contains the result of path→span resolution, so a path-form
         // arg like `src/lib.rs` contributes the span(es) that anchor it.
         scoped_span_names = Some(span_names.iter().cloned().collect());
+        // Two staleness predicates coexist in this file, deliberately.
+        // *Display* keeps every non-Fresh anchor (`status != Fresh`), so
+        // informational states — `ResolvedPendingCommit`, an anchor whose
+        // drift is already fixed in the worktree and only awaits a commit —
+        // stay visible to the reader. *Actionability* (the exit code, the
+        // stale-findings count, cluster membership) uses the narrower
+        // [`anchor_status_is_stale_drift`], the same boundary `git span
+        // history`'s `current` block consumes. A span whose only non-Fresh
+        // anchor is informational is therefore shown while counting zero
+        // stale findings — shown-but-clean is the intended reading, not a
+        // desynchronized predicate.
         spans.retain(|m| m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh));
 
         spans
@@ -692,7 +703,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         // Human-only) can return spans that re-resolve fully Fresh — the
         // machine renderers never show them because they
         // emit drift findings only. Enforce the same predicate here so a
-        // backfilled fresh span cannot leak into the human scan.
+        // backfilled fresh span cannot leak into the human scan. This is the
+        // *display* predicate (any non-Fresh anchor), deliberately wider than
+        // the actionable [`anchor_status_is_stale_drift`] boundary the exit
+        // code uses — see the scoped-retention comment above.
         spans.retain(|m| m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh));
         // Reuse the shared post-region corpus (fresh post-`apply_fix` on the
         // `--fix` path; the unchanged pre-fix corpus on the plain path) instead
@@ -750,6 +764,10 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
             .flat_map(|m| {
                 m.anchors
                     .iter()
+                    // Display predicate: informational rows (e.g.
+                    // `ResolvedPendingCommit`) become findings too; the exit
+                    // code filters them later via
+                    // [`anchor_status_is_stale_drift`].
                     .filter(|r| r.status != AnchorStatus::Fresh)
                     .flat_map(|r| {
                         if r.layer_sources.is_empty() {
@@ -1399,6 +1417,8 @@ fn render_human(
             .collect();
         let span_findings: Vec<&Finding> = span_findings_owned.iter().collect();
 
+        // Display predicate (non-Fresh): counts informational rows too, to
+        // stay in step with the bullets and `--stat` rows rendered below.
         let span_stale = span_findings
             .iter()
             .filter(|f| f.status != AnchorStatus::Fresh)
@@ -1407,7 +1427,6 @@ fn render_human(
         // All spans are printed regardless of drift state — Fresh anchors
         // render as bare bullets so a scan with no drift still shows what
         // is tracked. Named-lookup behavior is unchanged.
-        let _ = span_stale;
 
         if printed_any_span {
             println!();
@@ -1430,7 +1449,9 @@ fn render_human(
         if options.stat {
             // Only anchors that are actually stale belong in `--stat`
             // output. Listing fresh `+0 -0` rows (or saying "All anchors
-            // … are stale" when only some are) misleads triage.
+            // … are stale" when only some are) misleads triage. Display
+            // predicate again (non-Fresh, informational rows included), to
+            // match the bullets `--stat` annotates.
             let stale_findings: Vec<&Finding> = span_findings
                 .iter()
                 .copied()

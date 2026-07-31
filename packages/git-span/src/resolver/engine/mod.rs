@@ -662,11 +662,48 @@ fn emit_timeline_cache_counters(session: &ConcurrentSession) {
     );
 }
 
+/// Where one [`AnchorStatus`] sits relative to stale's two reporting
+/// boundaries. Both predicates below are projections of this single
+/// exhaustive classification, so a new `AnchorStatus` variant cannot land on
+/// one side of one boundary without the author deciding both here.
+enum StaleReportingClass {
+    /// Current bytes equal anchored bytes; nothing to report anywhere.
+    Fresh,
+    /// Shown in stale's human presentation, but does not drive stale's exit
+    /// status, clustering, or history's `current` anchors.
+    Informational,
+    /// Actionable drift on every surface.
+    ActionableDrift,
+}
+
+fn stale_reporting_class(status: &AnchorStatus) -> StaleReportingClass {
+    match status {
+        AnchorStatus::Fresh => StaleReportingClass::Fresh,
+        AnchorStatus::ResolvedPendingCommit => StaleReportingClass::Informational,
+        AnchorStatus::Moved
+        | AnchorStatus::Changed
+        | AnchorStatus::Deleted
+        | AnchorStatus::MergeConflict
+        | AnchorStatus::Submodule
+        | AnchorStatus::ContentUnavailable(_) => StaleReportingClass::ActionableDrift,
+    }
+}
+
 /// A fully-freshened span (every anchor `Fresh`) is omitted from stale
 /// rendering. The `stale --fix` output-equivalence tests assert this holds
 /// identically on both the read-only and `--fix` passes.
+///
+/// Informational anchors keep a span reportable here — a span whose only
+/// non-`Fresh` anchor is `ResolvedPendingCommit` is still shown — while
+/// [`anchor_status_is_stale_drift`] excludes them; both boundaries are
+/// spelled over [`stale_reporting_class`].
 pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
-    m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh)
+    m.anchors.iter().any(|a| {
+        !matches!(
+            stale_reporting_class(&a.status),
+            StaleReportingClass::Fresh
+        )
+    })
 }
 
 /// Whether an anchor contributes actionable stale drift.
@@ -675,9 +712,9 @@ pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
 /// stale's human presentation, but like [`AnchorStatus::Fresh`] it does not
 /// drive stale's exit status, clustering, or history's `current` anchors.
 pub(crate) fn anchor_status_is_stale_drift(status: &AnchorStatus) -> bool {
-    !matches!(
-        status,
-        AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit
+    matches!(
+        stale_reporting_class(status),
+        StaleReportingClass::ActionableDrift
     )
 }
 
@@ -703,7 +740,8 @@ pub(crate) fn resolve_named_spans(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let (out, _) = resolve_named_spans_with_state(repo, span_root, names, options, state, false)?;
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    state.finish(repo);
     Ok(out)
 }
 
@@ -968,7 +1006,8 @@ pub(crate) fn resolve_named_spans_with_source_layers(
         options.needs_all_layers,
         options.fuzzy_threshold,
     );
-    let (out, _) = resolve_named_spans_with_state(repo, span_root, names, options, state, false)?;
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    state.finish(repo);
     Ok(out)
 }
 
@@ -987,12 +1026,8 @@ pub(crate) fn resolve_named_spans_retaining_source_layers(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let (out, layers) =
-        resolve_named_spans_with_state(repo, span_root, names, options, state, true)?;
-    Ok((
-        out,
-        layers.expect("retain_layers=true yields Some(SourceLayers)"),
-    ))
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    Ok((out, state.finish_retaining_layers(repo)))
 }
 
 pub(crate) fn resolve_named_spans_with_state(
@@ -1001,8 +1036,7 @@ pub(crate) fn resolve_named_spans_with_state(
     names: &[String],
     options: EngineOptions,
     mut state: EngineState,
-    retain_layers: bool,
-) -> Result<(NamedSpanResults, Option<SourceLayers>)> {
+) -> Result<(NamedSpanResults, EngineState)> {
     let _perf = crate::perf::span("resolver.resolve-named-spans");
 
     // Build the reverse-indexed walk once across all named spans so that
@@ -1032,13 +1066,12 @@ pub(crate) fn resolve_named_spans_with_state(
     // Emit walk perf counters matching stale_spans_inner so named-span
     // resolution is observable through the same perf counter interface.
     emit_session_walk_counters(&state.concurrent);
-    let source_layers = if retain_layers {
-        Some(state.finish_retaining_layers(repo))
-    } else {
-        state.finish(repo);
-        None
-    };
-    Ok((out, source_layers))
+    // Finishing is the caller's decision: each wrapper either drops the
+    // session state (`finish`) or keeps the source layers
+    // (`finish_retaining_layers`). Returning the state instead of an
+    // `Option<SourceLayers>` makes "retaining callers get layers" a
+    // compile-time property rather than a cross-function convention.
+    Ok((out, state))
 }
 
 /// Emit the per-session walk/cache perf counters shared by every batch
@@ -1718,6 +1751,67 @@ mod tests {
                 })
                 .collect(),
             follow_moves: false,
+        }
+    }
+
+    /// Every `AnchorStatus` variant, so the boundary tests below are
+    /// exhaustive by construction: a new variant that is not added here
+    /// leaves the compile-time `match` in `stale_reporting_class` red first,
+    /// and this list second.
+    fn every_anchor_status() -> Vec<AnchorStatus> {
+        vec![
+            AnchorStatus::Fresh,
+            AnchorStatus::ResolvedPendingCommit,
+            AnchorStatus::Moved,
+            AnchorStatus::Changed,
+            AnchorStatus::Deleted,
+            AnchorStatus::MergeConflict,
+            AnchorStatus::Submodule,
+            AnchorStatus::ContentUnavailable(UnavailableReason::PromisorMissing),
+        ]
+    }
+
+    /// The actionable-drift boundary `git span stale`'s exit status and
+    /// `git span history`'s `current` block share: exactly `Fresh` and
+    /// `ResolvedPendingCommit` are excluded, everything else is drift.
+    #[test]
+    fn stale_drift_boundary_excludes_exactly_fresh_and_pending_commit() {
+        for status in every_anchor_status() {
+            let expected = !matches!(
+                status,
+                AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit
+            );
+            assert_eq!(
+                anchor_status_is_stale_drift(&status),
+                expected,
+                "actionable-drift boundary moved for {status:?}"
+            );
+        }
+    }
+
+    /// Discovery keeps every non-`Fresh` span visible — including one whose
+    /// only non-`Fresh` anchor is informational `ResolvedPendingCommit` —
+    /// while the actionable boundary excludes it. The two predicates must
+    /// disagree on exactly the informational states and nowhere else.
+    #[test]
+    fn discovery_and_drift_boundaries_disagree_only_on_informational_states() {
+        for status in every_anchor_status() {
+            let mut span = make_span("m", &[("a.ts", AnchorExtent::WholeFile)]);
+            span.anchors[0].status = status.clone();
+
+            let reportable = span_is_reportable_in_stale_discovery(&span);
+            assert_eq!(
+                reportable,
+                status != AnchorStatus::Fresh,
+                "discovery boundary moved for {status:?}"
+            );
+
+            let informational = matches!(status, AnchorStatus::ResolvedPendingCommit);
+            assert_eq!(
+                reportable && !anchor_status_is_stale_drift(&status),
+                informational,
+                "informational gap between the two boundaries moved for {status:?}"
+            );
         }
     }
 

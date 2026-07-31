@@ -399,6 +399,14 @@ pub(crate) fn resolve_whole_file(
             //    "deleted in the working tree" / "deleted in the index".
             // In no case is a removal mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty();
+            // Known divergence from the line-range twin (`anchor.rs`, the
+            // `head_path_absent` computation in `resolve_anchor_inner`): that
+            // path propagates a HEAD-read error with `?`, while `.ok()` here
+            // converts it into "absent at HEAD", which then feeds relocation
+            // candidacy — a fail-open lean. Flipping this to `?` changes the
+            // classification outcome on repositories whose HEAD blob cannot
+            // be read, so it is deliberately left as-is in a no-behavior-
+            // change pass; see main-194 review issue R3.
             let head_path_absent = file_backed
                 && concurrent
                     .head_blob_at(repo, &shared.head_sha, &r.path)

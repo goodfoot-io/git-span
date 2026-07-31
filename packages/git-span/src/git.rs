@@ -41,6 +41,29 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
     repo.common_dir()
 }
 
+/// Cheap in-process probe: is the replacement namespace (`base`, or every
+/// ref for the empty-base override) free of refs?
+///
+/// Ordinary repositories carry no replacement refs, so
+/// [`reject_replacement_topology`] uses this to skip its `for-each-ref`
+/// subprocess on the hot path of `history` and `stale`. The probe reads the
+/// same loose+packed ref store `for-each-ref` consults. It may only ever
+/// suppress work, never change classification: any failure to open or
+/// iterate the store — including a broken ref surfacing as an `Err` item —
+/// reports "not empty" so the caller falls through to the subprocess.
+fn replacement_namespace_is_empty(repo: &gix::Repository, base: Option<&str>) -> bool {
+    // `for-each-ref` with no pattern enumerates the `refs/` hierarchy, so the
+    // empty-base override probes the same set.
+    let prefix = base.unwrap_or("refs/");
+    let Ok(platform) = repo.references() else {
+        return false;
+    };
+    let Ok(mut iter) = platform.prefixed(prefix.as_bytes()) else {
+        return false;
+    };
+    iter.next().is_none()
+}
+
 /// Reject history-sensitive commands when Git's effective commit graph differs
 /// from the object graph exposed by `gix`.
 ///
@@ -56,8 +79,19 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
     // value is immaterial). Honour that before probing the default or a custom
     // namespace. Grafts are independent of this switch and remain active.
     let replacements_disabled = std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some();
-    let configured_replacement_base =
-        std::env::var("GIT_REPLACE_REF_BASE").unwrap_or_else(|_| "refs/replace/".into());
+    // A present-but-non-Unicode base must not be conflated with an absent one:
+    // silently probing the default namespace would miss replacement refs under
+    // the real (non-UTF-8) base — quietly fail-open. Fail closed instead, the
+    // same posture the graft parser takes toward non-UTF-8 metadata.
+    let configured_replacement_base = match std::env::var("GIT_REPLACE_REF_BASE") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "refs/replace/".into(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(Error::Git(
+                "inspect replacement refs: GIT_REPLACE_REF_BASE is set to a non-Unicode value; unset it or set a UTF-8 namespace before running this command".into(),
+            ));
+        }
+    };
     // Git inserts the separator for a non-empty custom base. An explicitly
     // empty base is different: it considers every ref and interprets a
     // terminal object-id component as a replacement candidate.
@@ -70,10 +104,12 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
     };
 
     let mut replacement_targets = HashMap::new();
-    if !replacements_disabled {
+    if !replacements_disabled && !replacement_namespace_is_empty(repo, replacement_base.as_deref())
+    {
         // `for-each-ref` is a bounded metadata lookup, understands packed refs,
-        // and follows Git's selected namespace. Ordinary repositories stop
-        // here without walking a single commit.
+        // and follows Git's selected namespace. Ordinary repositories never
+        // reach it: the in-process probe above already proved the namespace
+        // empty, so no subprocess is spawned and no commit is walked.
         let mut command = std::process::Command::new("git");
         command
             .current_dir(work_dir(repo)?)
@@ -119,6 +155,7 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
     }
 
     let mut graft_targets = HashSet::new();
+    let mut graft_originals = HashSet::new();
     let mut graft_metadata_problem = None;
     let grafts_path = common_dir(repo).join("info/grafts");
     match std::fs::read(&grafts_path) {
@@ -136,10 +173,18 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
                     continue;
                 }
 
-                let mut fields = line
-                    .split(|byte| byte.is_ascii_whitespace())
-                    .filter(|field| !field.is_empty());
-                let original_bytes = fields.next().expect("non-empty graft line");
+                // Git's graft parser accepts only single-space separators.
+                // Mirror it bytewise so a file Git itself rejects (tab- or
+                // CR-separated, doubled spaces) is never classified as
+                // well-formed — the malformed field simply fails object-id
+                // parsing below and lands in the fail-closed branch.
+                let mut fields = line.split(|byte| *byte == b' ');
+                let Some(original_bytes) = fields.next() else {
+                    // `split` yields at least one field for any input and the
+                    // trimmed line is non-empty, so this arm is unreachable —
+                    // but skipping beats aborting if the trimming changes.
+                    continue;
+                };
                 let Ok(original_text) = std::str::from_utf8(original_bytes) else {
                     graft_metadata_problem.get_or_insert_with(|| {
                         format!("line {} contains a non-UTF-8 commit id", line_index + 1)
@@ -155,6 +200,18 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
                     });
                     continue;
                 };
+                // Git rejects duplicate graft data outright; two entries for
+                // one commit leave the effective parent list ambiguous, so
+                // fail closed rather than evaluating them independently.
+                if !graft_originals.insert(original) {
+                    graft_metadata_problem.get_or_insert_with(|| {
+                        format!(
+                            "line {} repeats graft commit id `{original}`, which Git rejects as duplicate graft data",
+                            line_index + 1
+                        )
+                    });
+                    continue;
+                }
 
                 let mut declared_parents = Vec::new();
                 let mut invalid_parent = false;
@@ -213,7 +270,23 @@ pub(crate) fn reject_replacement_topology(repo: &gix::Repository) -> Result<()> 
         return Ok(());
     }
 
-    let Some(head) = repo.head_id().ok().map(|id| id.detach()) else {
+    // Distinguish an *unborn* HEAD (no commits exist, so no replacement or
+    // graft target can be reachable — the active metadata is inert) from an
+    // *unreadable* one. With replacement targets present, an unreadable HEAD
+    // leaves reachability unprovable; fail closed rather than letting the
+    // command proceed on a graph we cannot inspect.
+    let head = match repo.head() {
+        Ok(head) if head.is_unborn() => None,
+        _ => match repo.head_id() {
+            Ok(id) => Some(id.detach()),
+            Err(e) => {
+                return Err(Error::Git(format!(
+                    "replacement topology is unsupported: cannot resolve HEAD while replacement refs or grafts are active: {e}"
+                )));
+            }
+        },
+    };
+    let Some(head) = head else {
         if let Some(problem) = graft_metadata_problem {
             return Err(Error::Git(format!(
                 "replacement topology is unsupported: cannot interpret info/grafts safely because {problem}; repair or remove that entry before running this command"
@@ -565,19 +638,18 @@ pub fn git_log_name_only_for_paths(
         }
     }
 
+    // No visited-set is needed: a first-parent chain in a hash-addressed
+    // commit graph cannot revisit a commit short of repository corruption,
+    // and the time budget above bounds the walk regardless. Tracking every
+    // visited id would cost O(history) memory plus a hash insert per commit
+    // on each history invocation purely for that impossible case.
     let mut next = Some(head_id);
-    let mut seen = HashSet::new();
     while let Some(id) = next {
         if out.len() >= n {
             break;
         }
         if budget_start.elapsed() > budget {
             return Ok((out, false));
-        }
-        if !seen.insert(id) {
-            return Err(Error::Git(
-                "first-parent walk encountered a commit cycle".into(),
-            ));
         }
         let commit = repo
             .find_commit(id)
@@ -779,15 +851,34 @@ pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<Co
     let author_sig = decoded
         .author()
         .map_err(|e| Error::Git(format!("author: {e}")))?;
-    let author_time = parse_git_author_time(author_sig.time)?;
-    let message = decoded.message.to_string();
-    let summary = message.lines().next().unwrap_or("").to_string();
-    let (author_date_iso8601, author_date_git) = format_git_dates(author_time)?;
+    let author_time =
+        parse_git_author_time(author_sig.time).map_err(|e| with_commit_context(commit_oid, e))?;
+    // Only the first line is kept; slice it out of the decoded message
+    // instead of copying the whole body into an owned `String` first.
+    use gix::bstr::ByteSlice as _;
+    let summary = decoded
+        .message
+        .lines()
+        .next()
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .unwrap_or_default();
+    let (author_date_iso8601, author_date_git) =
+        format_git_dates(author_time).map_err(|e| with_commit_context(commit_oid, e))?;
     Ok(CommitMeta {
         author_date_iso8601,
         author_date_git,
         summary,
     })
+}
+
+/// Prefix a curated error with the commit it concerns, so a malformed author
+/// header names the responsible commit instead of failing anonymously
+/// mid-history.
+fn with_commit_context(commit_oid: &str, e: Error) -> Error {
+    match e {
+        Error::Git(msg) => Error::Git(format!("commit `{commit_oid}`: {msg}")),
+        other => other,
+    }
 }
 
 /// The commit's **first parent** (parent #1), or `None` for a root commit.

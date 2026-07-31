@@ -277,11 +277,11 @@ pub enum SideState {
 
 /// Why an [`SideState::Absent`] side has no bytes.
 ///
-/// The non-binary variants render identically — all are `/dev/null` sides — so this
+/// The variants render identically — all are `/dev/null` sides — so this
 /// exists for exactly one job: to keep them *distinguishable* where it matters.
-/// Both wear [`NULL_ANCHOR_HASH`], so a renderer comparing hashes, or comparing
-/// two empty bodies, sees one state where there are two, and the commit that
-/// carried an anchor from one to the other rendered no entry at all. Change
+/// All wear [`NULL_ANCHOR_HASH`], so a renderer comparing hashes, or comparing
+/// two empty bodies, sees one state where there are several, and the commit
+/// that carried an anchor from one to another rendered no entry at all. Change
 /// detection asks this enum instead.
 ///
 /// The reason is carried *into* the renderer rather than inferred back out of a
@@ -332,9 +332,8 @@ impl Absence {
     /// and the `/dev/null` half of an ordinary create or delete, and a line on
     /// the latter would explain a side git has rendered this way forever. The
     /// other states do, and for the same reason — each says the path's absence
-    /// has a narrower cause
-    /// and something narrower is not, which is the fact a `/dev/null` side
-    /// misstates.
+    /// has a narrower cause than "no such file", a fact a bare `/dev/null`
+    /// side would misstate.
     fn is_named(self) -> bool {
         match self {
             Absence::Missing => false,
@@ -887,15 +886,15 @@ fn side_coords(is_null: bool, first_line: u32, start_1based: u32, len: u32) -> (
 /// scores 100 — pairing them would fabricate a rename between unrelated
 /// anchors.
 pub fn similarity(old: &str, new: &str) -> u8 {
-    let old_lines: Vec<_> = byte_lines(old.as_bytes()).collect();
-    let new_lines: Vec<_> = byte_lines(new.as_bytes()).collect();
-    let old_len = old_lines.len() as u64;
-    let new_len = new_lines.len() as u64;
+    // The interned input already knows each side's line count; collecting the
+    // lines into vectors first would only re-derive the same two numbers.
+    let input = InternedInput::new(byte_lines(old.as_bytes()), byte_lines(new.as_bytes()));
+    let old_len = input.before.len() as u64;
+    let new_len = input.after.len() as u64;
     if old_len == 0 && new_len == 0 {
         return 100;
     }
 
-    let input = InternedInput::new(byte_lines(old.as_bytes()), byte_lines(new.as_bytes()));
     let diff = Diff::compute(Algorithm::Histogram, &input);
     let removed: u64 = diff
         .hunks()

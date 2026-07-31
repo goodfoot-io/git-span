@@ -232,6 +232,7 @@ use crate::span::read::read_span_at_in;
 use crate::types::{Anchor, AnchorExtent, AnchorLocation, Span};
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::rc::Rc;
 
 /// Similarity floor for pairing a dropped anchor with an added one as a
 /// rename. Git's own `-M` default.
@@ -245,9 +246,6 @@ const RENAME_SIMILARITY_FLOOR: u8 = 50;
 pub struct HistoryReport {
     /// Span name as passed to the command.
     pub span: String,
-    /// `true` when the git-log walk completed without hitting the time budget.
-    /// `false` indicates a truncated timeline — the command exits non-zero.
-    pub walk_complete: bool,
     /// `true` when the rendered timeline is a scoped/partial view of history:
     /// `--limit` dropped older *rendered entries* that exist before the window.
     /// The retained entries still diff against the true prior span state (they
@@ -549,6 +547,11 @@ impl AnchorBody {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Stderr line for a walk that hit its time budget, shared verbatim by both
+/// walk passes: fail-closed, no partial output, exit non-zero.
+const WALK_INCOMPLETE_MSG: &str =
+    "error: history walk incomplete — not all commits were inspected (hit time budget)";
+
 /// Run `git span history <span>`.
 ///
 /// Builds a [`HistoryReport`] by walking the span's git history in two passes,
@@ -571,22 +574,28 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
         crate::git::git_log_name_only_for_paths(repo, usize::MAX, std::slice::from_ref(&span_path))?
     };
     if !pass1_complete {
-        eprintln!(
-            "error: history walk incomplete — not all commits were inspected (hit time budget)"
-        );
+        eprintln!("{WALK_INCOMPLETE_MSG}");
         return Ok(1);
     }
+
+    // Declarations parsed once per commit, shared between this pass and
+    // `build_report`'s state materialization so the same commit's `.span`
+    // blob is never parsed twice.
+    let mut spans_at: std::collections::HashMap<String, Option<Rc<Span>>> =
+        std::collections::HashMap::new();
 
     let mut seed_paths: Vec<String> = vec![span_path.clone()];
     {
         let _perf = crate::perf::span("history.walk.anchored-paths");
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cc in &decl_commits {
-            let span = match read_span_at_in(repo, &args.span, Some(&cc.hash), span_root) {
-                Ok(m) => m,
-                Err(crate::Error::SpanNotFound(_)) => continue,
+            let parsed = match read_span_at_in(repo, &args.span, Some(&cc.hash), span_root) {
+                Ok(m) => Some(Rc::new(m)),
+                Err(crate::Error::SpanNotFound(_)) => None,
                 Err(e) => return Err(e.into()),
             };
+            let parsed = spans_at.entry(cc.hash.clone()).or_insert(parsed);
+            let Some(span) = parsed else { continue };
             for (_id, a) in &span.anchors {
                 if seen.insert(a.path.clone()) {
                     seed_paths.push(a.path.clone());
@@ -608,9 +617,7 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     // Fail-closed: a truncated timeline is not a whole one. Emit a warning to
     // stderr, no partial output, and exit non-zero.
     if !walk_complete {
-        eprintln!(
-            "error: history walk incomplete — not all commits were inspected (hit time budget)"
-        );
+        eprintln!("{WALK_INCOMPLETE_MSG}");
         return Ok(1);
     }
 
@@ -637,9 +644,9 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
             &args.span,
             span_root,
             &span_path,
-            walk_complete,
             &commits,
             args.limit,
+            &mut spans_at,
         )?
     };
 
@@ -656,15 +663,21 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     }
 
     let _perf = crate::perf::span("history.render");
+    // Write through one buffered, locked handle: routing a multi-megabyte
+    // document through `print!`'s line-buffered stdout flushes per newline.
+    // The bytes emitted are identical to the previous `print!`/`println!`.
+    use std::io::Write as _;
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     match args.format {
         HistoryFormat::Human => {
-            print!("{}", render_human(&report));
+            out.write_all(render_human(&report).as_bytes())?;
         }
         HistoryFormat::Json => {
-            let value = render_json(&report);
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            serde_json::to_writer_pretty(&mut out, &render_json(&report))?;
+            out.write_all(b"\n")?;
         }
     }
+    out.flush()?;
     Ok(0)
 }
 
@@ -757,10 +770,16 @@ struct Snapshot {
 
 /// The span's state rendered at a point in history: the commit it was read at
 /// plus each anchor's extracted snapshot, in declaration order.
+///
+/// Snapshots are behind [`Rc`] because one state's anchors are shared into
+/// the capture maps ([`capture_recorded_snapshots`], [`capture_by_hash`])
+/// while the state itself keeps flowing through pairing and diffing — a
+/// share, not a copy: anchor bodies carry full content strings, and cloning
+/// them per walked commit was the dominant allocation of `build-report`.
 #[derive(Clone)]
 struct RenderedState {
     commit: String,
-    anchors: Vec<Snapshot>,
+    anchors: Vec<Rc<Snapshot>>,
 }
 
 /// Render the address for an anchor's extent.
@@ -881,11 +900,22 @@ fn state_at_commit(
     span_name: &str,
     span_root: &str,
     commit_oid: &str,
+    spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
 ) -> Result<RenderedState> {
-    let span = match read_span_at_in(repo, span_name, Some(commit_oid), span_root) {
-        Ok(m) => Some(m),
-        Err(crate::Error::SpanNotFound(_)) => None,
-        Err(e) => return Err(e.into()),
+    // `spans_at` memoizes the declaration parse per commit; the discovery
+    // pass in `run_history` seeds it, so a declaration-touching commit is
+    // parsed exactly once across both passes.
+    let span = match spans_at.get(commit_oid) {
+        Some(cached) => cached.clone(),
+        None => {
+            let parsed = match read_span_at_in(repo, span_name, Some(commit_oid), span_root) {
+                Ok(m) => Some(Rc::new(m)),
+                Err(crate::Error::SpanNotFound(_)) => None,
+                Err(e) => return Err(e.into()),
+            };
+            spans_at.insert(commit_oid.to_string(), parsed.clone());
+            parsed
+        }
     };
     Ok(match span {
         Some(m) => rendered_state_at(repo, commit_oid, &m),
@@ -901,13 +931,13 @@ fn rendered_state_at(repo: &gix::Repository, commit_oid: &str, span: &Span) -> R
     let mut anchors = Vec::with_capacity(span.anchors.len());
     for (_id, a) in &span.anchors {
         let (body, hash) = read_anchor_at_commit(repo, commit_oid, a);
-        anchors.push(Snapshot {
+        anchors.push(Rc::new(Snapshot {
             address: anchor_address(a),
             first_line: extent_first_line(a.extent),
             hash,
             body,
             recorded: bare_hash(&a.stored_hash),
-        });
+        }));
     }
     RenderedState {
         commit: commit_oid.to_string(),
@@ -1194,7 +1224,7 @@ fn rebinding_diff(old: Option<&Snapshot>, new: &Snapshot) -> Option<TimelineAnch
 ///
 /// Returns `pairs[new_index] = Some(old_index)` plus the old indices that
 /// stayed unpaired, in declaration order.
-fn pair_anchors(old: &[Snapshot], new: &[Snapshot]) -> (Vec<Option<usize>>, Vec<usize>) {
+fn pair_anchors(old: &[Rc<Snapshot>], new: &[Rc<Snapshot>]) -> (Vec<Option<usize>>, Vec<usize>) {
     let mut pairs: Vec<Option<usize>> = vec![None; new.len()];
     let mut old_used: Vec<bool> = vec![false; old.len()];
 
@@ -1223,27 +1253,36 @@ fn pair_anchors(old: &[Snapshot], new: &[Snapshot]) -> (Vec<Option<usize>>, Vec<
     // Pass 3 — exact address.
     pair_up(&mut pairs, &mut old_used, &|o, n| o.address == n.address);
 
-    // Pass 4 — greedy similarity among the leftovers.
-    loop {
-        let mut best: Option<(u8, usize, usize)> = None;
-        for (i, o) in old.iter().enumerate() {
-            if old_used[i] || !o.body.is_text() {
+    // Pass 4 — greedy similarity among the leftovers. Scores are a pure
+    // function of the two bodies, so they are computed once per candidate
+    // pair; each greedy round then re-scans the memoized list instead of
+    // re-running a full Histogram diff per surviving pair.
+    let mut candidates: Vec<(u8, usize, usize)> = Vec::new();
+    for (i, o) in old.iter().enumerate() {
+        if old_used[i] || !o.body.is_text() {
+            continue;
+        }
+        for (j, n) in new.iter().enumerate() {
+            if pairs[j].is_some() || !n.body.is_text() {
                 continue;
             }
-            for (j, n) in new.iter().enumerate() {
-                if pairs[j].is_some() || !n.body.is_text() {
-                    continue;
-                }
-                let sim = similarity(o.body.text(), n.body.text());
-                if sim < RENAME_SIMILARITY_FLOOR {
-                    continue;
-                }
-                // Ties break by declaration order: the iteration order is
-                // (old asc, new asc), so a strict `>` keeps the first-seen
-                // candidate.
-                if best.is_none_or(|(bs, _, _)| sim > bs) {
-                    best = Some((sim, i, j));
-                }
+            let sim = similarity(o.body.text(), n.body.text());
+            if sim >= RENAME_SIMILARITY_FLOOR {
+                candidates.push((sim, i, j));
+            }
+        }
+    }
+    loop {
+        let mut best: Option<(u8, usize, usize)> = None;
+        for &(sim, i, j) in &candidates {
+            if old_used[i] || pairs[j].is_some() {
+                continue;
+            }
+            // Ties break by declaration order: the candidate list is built
+            // in (old asc, new asc) order, so a strict `>` keeps the
+            // first-seen candidate.
+            if best.is_none_or(|(bs, _, _)| sim > bs) {
+                best = Some((sim, i, j));
             }
         }
         match best {
@@ -1275,19 +1314,29 @@ fn diff_section(
     ident: CommitIdent,
     prev: Option<&RenderedState>,
     cur: &RenderedState,
+    decl_blobs: &mut std::collections::HashMap<String, Option<Rc<BlobAt>>>,
 ) -> Option<CommitSection> {
-    let old_blob = prev.and_then(|p| blob_at(repo, &p.commit, span_path));
-    let new_blob = blob_at(repo, &cur.commit, span_path);
-    let span_diff = blob_diff(span_path, old_blob.as_ref(), new_blob.as_ref());
+    // The declaration blob per commit, memoized across calls: along a linear
+    // chain every commit's blob is asked for twice — once as `cur`, once as
+    // the next commit's `prev`.
+    let mut decl_blob = |commit: &str| -> Option<Rc<BlobAt>> {
+        decl_blobs
+            .entry(commit.to_string())
+            .or_insert_with(|| blob_at(repo, commit, span_path).map(Rc::new))
+            .clone()
+    };
+    let old_blob = prev.and_then(|p| decl_blob(&p.commit));
+    let new_blob = decl_blob(&cur.commit);
+    let span_diff = blob_diff(span_path, old_blob.as_deref(), new_blob.as_deref());
 
-    let empty: Vec<Snapshot> = Vec::new();
+    let empty: Vec<Rc<Snapshot>> = Vec::new();
     let old = prev.map(|p| p.anchors.as_slice()).unwrap_or(&empty);
     let new = cur.anchors.as_slice();
     let (pairs, dropped) = pair_anchors(old, new);
 
     let mut anchors: Vec<TimelineAnchor> = Vec::new();
     for (j, n) in new.iter().enumerate() {
-        let o = pairs[j].map(|i| &old[i]);
+        let o = pairs[j].map(|i| old[i].as_ref());
         // Whether this address was rebound is a question about the
         // declaration, and it is answered per address — independently of
         // whether the content also changed. Gating it on "no content diff"
@@ -1302,7 +1351,7 @@ fn diff_section(
         if let Some(rebound) = rebinding_diff(o, n) {
             anchors.push(rebound);
         }
-        let Some(diff) = snapshot_diff(o, Some(n), &[]) else {
+        let Some(diff) = snapshot_diff(o, Some(n.as_ref()), &[]) else {
             continue;
         };
         // A first-add carries the full snapshot so a consumer can render a
@@ -1315,7 +1364,7 @@ fn diff_section(
         ));
     }
     for i in dropped {
-        if let Some(diff) = snapshot_diff(Some(&old[i]), None, &[]) {
+        if let Some(diff) = snapshot_diff(Some(old[i].as_ref()), None, &[]) {
             anchors.push(TimelineAnchor::new(
                 old[i].address.clone(),
                 diff,
@@ -1356,9 +1405,9 @@ fn build_report(
     span_name: &str,
     span_root: &str,
     span_path: &str,
-    walk_complete: bool,
     commits: &[crate::git::CommitChanges],
     limit: Option<usize>,
+    spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
 ) -> Result<HistoryReport> {
     let mut sections: Vec<CommitSection> = Vec::new();
 
@@ -1370,36 +1419,48 @@ fn build_report(
     // token actually hashes. Collected across the walk (newest match wins) so
     // the `current` block can diff live content against *what was recorded*
     // rather than against whatever text now occupies the recorded line numbers.
-    let mut recorded_snapshots: std::collections::HashMap<String, Snapshot> =
+    let mut recorded_snapshots: std::collections::HashMap<String, Rc<Snapshot>> =
         std::collections::HashMap::new();
     // Every snapshot this render has produced, keyed by its content hash — the
     // set of contents the report itself displays. The `current` block's old
     // side draws from it, which is what makes "unrecoverable" mean something a
     // reader can check: if the recorded token is missing here, its bytes are
-    // nowhere in this render either. Newest wins (the walk is newest-first).
-    let mut rendered_by_hash: std::collections::HashMap<String, Snapshot> =
+    // nowhere in this render either. Oldest wins: this loop runs oldest→newest
+    // and the first entry for a hash is kept, and a collision can only be
+    // between byte-identical bodies, so the choice cannot change rendered
+    // bytes (see [`capture_by_hash`]).
+    let mut rendered_by_hash: std::collections::HashMap<String, Rc<Snapshot>> =
         std::collections::HashMap::new();
 
     // Every rendered state this pass has materialized, keyed by commit. The
     // walk is dense in first-parent links — a commit's parent is very often the
     // previously walked commit — so memoizing keeps a branched history at
-    // roughly one state materialization per entry rather than two.
-    let mut states: std::collections::HashMap<String, RenderedState> =
+    // roughly one state materialization per entry rather than two. States are
+    // shared out of the memo, never copied: a state owns every anchor body it
+    // extracted, and cloning it per lookup was two full-content copies per
+    // walked commit.
+    let mut states: std::collections::HashMap<String, Rc<RenderedState>> =
+        std::collections::HashMap::new();
+    // The declaration blob at each commit, memoized for `diff_section` (see
+    // its `decl_blob` helper for why).
+    let mut decl_blobs: std::collections::HashMap<String, Option<Rc<BlobAt>>> =
         std::collections::HashMap::new();
     // The newest walked commit's state, which the `current` block diffs
     // against. Tracked separately from the per-entry baseline: the walk is
     // oldest->newest, so this is simply the last one materialized.
-    let mut newest: Option<RenderedState> = None;
+    let mut newest: Option<Rc<RenderedState>> = None;
 
     for cc in commits {
         // Read the span as it existed at this commit. An absent span
         // (deleted-then-re-added gap, or a commit predating the span's
         // creation that touched an anchored file) renders as an empty state.
         let cur = match states.get(&cc.hash) {
-            Some(s) => s.clone(),
+            Some(s) => Rc::clone(s),
             None => {
-                let s = state_at_commit(repo, span_name, span_root, &cc.hash)?;
-                states.insert(cc.hash.clone(), s.clone());
+                let s = Rc::new(state_at_commit(
+                    repo, span_name, span_root, &cc.hash, spans_at,
+                )?);
+                states.insert(cc.hash.clone(), Rc::clone(&s));
                 s
             }
         };
@@ -1418,10 +1479,12 @@ fn build_report(
         // state, and the chain is unbroken either way.
         let prev = match crate::git::first_parent_of(repo, &cc.hash)? {
             Some(parent) => Some(match states.get(&parent) {
-                Some(s) => s.clone(),
+                Some(s) => Rc::clone(s),
                 None => {
-                    let s = state_at_commit(repo, span_name, span_root, &parent)?;
-                    states.insert(parent, s.clone());
+                    let s = Rc::new(state_at_commit(
+                        repo, span_name, span_root, &parent, spans_at,
+                    )?);
+                    states.insert(parent, Rc::clone(&s));
                     s
                 }
             }),
@@ -1440,7 +1503,14 @@ fn build_report(
             summary: meta.summary.clone(),
         };
 
-        if let Some(section) = diff_section(repo, span_path, ident, prev.as_ref(), &cur) {
+        if let Some(section) = diff_section(
+            repo,
+            span_path,
+            ident,
+            prev.as_deref(),
+            &cur,
+            &mut decl_blobs,
+        ) {
             sections.push(section);
         }
 
@@ -1469,12 +1539,12 @@ fn build_report(
         None => match read_span_at_in(repo, span_name, Some("HEAD"), span_root) {
             Ok(span) => crate::git::resolve_commit(repo, "HEAD")
                 .ok()
-                .map(|head| rendered_state_at(repo, &head, &span)),
+                .map(|head| Rc::new(rendered_state_at(repo, &head, &span))),
             Err(crate::Error::SpanNotFound(_)) => None,
             Err(e) => return Err(e.into()),
         },
     };
-    if let Some(state) = last.as_ref() {
+    if let Some(state) = last.as_deref() {
         capture_recorded_snapshots(&recorded, &mut recorded_snapshots, state);
         capture_by_hash(&mut rendered_by_hash, state);
     }
@@ -1484,7 +1554,7 @@ fn build_report(
         span_name,
         span_root,
         span_path,
-        last.as_ref(),
+        last.as_deref(),
         &recorded,
         &recorded_snapshots,
         &rendered_by_hash,
@@ -1492,7 +1562,6 @@ fn build_report(
 
     Ok(HistoryReport {
         span: span_name.to_string(),
-        walk_complete,
         scoped,
         commits: sections,
         current,
@@ -1562,12 +1631,12 @@ fn head_token_addresses(
 struct RecordedSources<'a> {
     /// Snapshots whose address *and* hash match the live declaration — the
     /// walk's own answer to "what does this anchor record".
-    at_address: &'a std::collections::HashMap<String, Snapshot>,
+    at_address: &'a std::collections::HashMap<String, Rc<Snapshot>>,
     /// Every snapshot this render produced, keyed by content hash. Membership
     /// here is exactly the negation of "unrecoverable".
-    by_hash: &'a std::collections::HashMap<String, Snapshot>,
+    by_hash: &'a std::collections::HashMap<String, Rc<Snapshot>>,
     /// The last recorded state's anchors, in declaration order.
-    last_state: &'a [Snapshot],
+    last_state: &'a [Rc<Snapshot>],
 }
 
 /// Which of three mutually exclusive things happened to one anchor since its
@@ -1613,12 +1682,12 @@ enum CurrentState {
 /// the newest matching snapshot wins.
 fn capture_recorded_snapshots(
     recorded: &std::collections::HashMap<String, String>,
-    into: &mut std::collections::HashMap<String, Snapshot>,
+    into: &mut std::collections::HashMap<String, Rc<Snapshot>>,
     state: &RenderedState,
 ) {
     for snap in &state.anchors {
         if recorded.get(&snap.address) == Some(&snap.hash) {
-            into.insert(snap.address.clone(), snap.clone());
+            into.insert(snap.address.clone(), Rc::clone(snap));
         }
     }
 }
@@ -1626,20 +1695,25 @@ fn capture_recorded_snapshots(
 /// Index every snapshot in `state` by its content hash.
 ///
 /// Population rule, stated rather than inherited from map internals: states
-/// arrive newest-first, anchors within a state in declaration order, and the
-/// first entry for a hash wins — so the newest state's earliest-declared
-/// anchor is the one kept, deterministically. A collision can only ever be
-/// between byte-identical bodies (equal token means equal content — the
-/// fingerprint covers the raw bytes, binary or not), and the label a side
-/// wears is chosen by [`CurrentState`], never by the candidate, so the
-/// tie-break can change neither the rendered bytes nor the address above them.
+/// arrive oldest-first ([`build_report`] walks the reversed log), anchors
+/// within a state in declaration order, and the first entry for a hash wins —
+/// so the oldest state's earliest-declared anchor is the one kept,
+/// deterministically. A collision can only ever be between byte-identical
+/// bodies (equal token means equal content — the fingerprint covers the raw
+/// bytes, binary or not), and the label a side wears is chosen by
+/// [`CurrentState`], never by the candidate, so the tie-break can change
+/// neither the rendered bytes nor the address above them.
 ///
 /// Membership is decided by whether the snapshot *has bytes*, not by whether
 /// those bytes decoded as text: a binary snapshot has a real fingerprint and
 /// only an unrenderable body, and excluding it from this index is exactly what
 /// once made `recorded: "unrecoverable"` fire for a token the same render
 /// printed as first-add content. What is skipped is a snapshot with nothing to
-/// key: the two [`Unavailable`] reasons that mean "no bytes at this address".
+/// key: the [`Unavailable`] reasons that mean "no bytes at this address".
+/// [`Unavailable::Submodule`] is in the list for completeness — walked states
+/// come from [`read_anchor_at_commit`], which never produces it (only the
+/// `current` block's resolver path does) — so that the guard stays correct if
+/// a future state source can.
 ///
 /// The test reads the *body*, not the hash, and that is the whole point.
 /// [`NULL_ANCHOR_HASH`] is an ambiguous value — an absent file, a past-EOF
@@ -1648,15 +1722,23 @@ fn capture_recorded_snapshots(
 /// `git span add` on an empty file records `rk64:0000000000000000`, and that
 /// anchor was excluded from cross-address recovery. Reading the body asks the
 /// question the guard was always trying to ask.
-fn capture_by_hash(into: &mut std::collections::HashMap<String, Snapshot>, state: &RenderedState) {
+fn capture_by_hash(
+    into: &mut std::collections::HashMap<String, Rc<Snapshot>>,
+    state: &RenderedState,
+) {
     for snap in &state.anchors {
         let bodiless = matches!(
             snap.body.unavailable(),
-            Some(Unavailable::Absent | Unavailable::RangePastEof | Unavailable::FilterFailed)
+            Some(
+                Unavailable::Absent
+                    | Unavailable::RangePastEof
+                    | Unavailable::FilterFailed
+                    | Unavailable::Submodule
+            )
         );
         if !bodiless {
             into.entry(snap.hash.clone())
-                .or_insert_with(|| snap.clone());
+                .or_insert_with(|| Rc::clone(snap));
         }
     }
 }
@@ -1805,16 +1887,13 @@ fn current_old_side(
     let hash = recorded_hash
         .cloned()
         .or_else(|| paired.map(|p| p.hash.clone()))?;
-    let source = [
-        sources.at_address.get(&address),
-        Some(live),
-        paired,
-        sources.by_hash.get(&hash),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(sources.last_state.iter())
-    .find(|candidate| candidate.hash == hash);
+    let at_address = sources.at_address.get(&address).map(Rc::as_ref);
+    let by_hash = sources.by_hash.get(&hash).map(Rc::as_ref);
+    let source = [at_address, Some(live), paired, by_hash]
+        .into_iter()
+        .flatten()
+        .chain(sources.last_state.iter().map(Rc::as_ref))
+        .find(|candidate| candidate.hash == hash);
     debug_assert!(
         source.is_none_or(|s| {
             !s.body.is_text() || body_fingerprint(&s.address, s.body.text()) == hash
@@ -1986,8 +2065,8 @@ fn build_current(
     span_path: &str,
     last: Option<&RenderedState>,
     recorded: &std::collections::HashMap<String, String>,
-    recorded_snapshots: &std::collections::HashMap<String, Snapshot>,
-    rendered_by_hash: &std::collections::HashMap<String, Snapshot>,
+    recorded_snapshots: &std::collections::HashMap<String, Rc<Snapshot>>,
+    rendered_by_hash: &std::collections::HashMap<String, Rc<Snapshot>>,
 ) -> Result<Option<CurrentSection>> {
     // Trigger 2 — HEAD declaration blob vs. the worktree bytes. The worktree
     // side's `index` hash comes from `hash_blob`, which computes a blob OID
@@ -2036,7 +2115,7 @@ fn build_current(
         // Materialize *every* anchor (not only the drifted ones) so pairing
         // against the last recorded state sees the whole picture; only the
         // interesting ones are emitted below.
-        let mut live: Vec<Snapshot> = Vec::with_capacity(span.anchors.len());
+        let mut live: Vec<Rc<Snapshot>> = Vec::with_capacity(span.anchors.len());
         let mut reportable: Vec<bool> = Vec::with_capacity(span.anchors.len());
         let mut states: Vec<CurrentState> = Vec::with_capacity(span.anchors.len());
         // The resolver's own per-anchor layer list, carried across verbatim
@@ -2133,7 +2212,7 @@ fn build_current(
                     extent_first_line(r.anchored.extent),
                 ),
             };
-            live.push(Snapshot {
+            live.push(Rc::new(Snapshot {
                 // The declaration's recorded token for this address, so a live
                 // snapshot carries the same identity a walked one does.
                 recorded: recorded.get(&declared).cloned().unwrap_or_default(),
@@ -2141,18 +2220,18 @@ fn build_current(
                 first_line,
                 hash,
                 body,
-            });
+            }));
             reportable.push(crate::resolver::anchor_status_is_stale_drift(&r.status));
             states.push(state);
             layer_sources.push(r.layer_sources.clone());
         }
 
-        let empty: Vec<Snapshot> = Vec::new();
+        let empty: Vec<Rc<Snapshot>> = Vec::new();
         let old = last.map(|s| s.anchors.as_slice()).unwrap_or(&empty);
         let (pairs, _dropped) = pair_anchors(old, &live);
 
         for (j, n) in live.iter().enumerate() {
-            let paired = pairs[j].map(|i| &old[i]);
+            let paired = pairs[j].map(|i| old[i].as_ref());
             let state = &states[j];
             // Only actionable stale drift produces a current anchor. Fresh and
             // resolved-pending-commit anchors may still have declaration edits,

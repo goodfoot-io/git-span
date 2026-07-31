@@ -334,15 +334,16 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
             // commit_id is pinned here — only the path is threaded forward.
             match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS, commit_id)? {
                 Some(terminal) => Ok(Some(DriftLocus::RenamedAt(commit_id, terminal))),
-                None => Ok(Some(DriftLocus::OrphanedAt(commit_id))), // chain ends in a
-                                                                     // delete, an unclassifiable change, or exceeds the hop bound —
-                                                                     // report the anchor's own orphaning commit as a plain deletion
-                                                                     // rather than a rename to a path that turned out not to resolve.
+                // The chain ends in a delete, an unclassifiable change, or
+                // exceeds the hop bound — report the anchor's own orphaning
+                // commit as a plain deletion rather than a rename to a path
+                // that turned out not to resolve.
+                None => Ok(Some(DriftLocus::OrphanedAt(commit_id))),
             }
         }
-        None => Ok(None), // e.g. a mode change (blob -> submodule gitlink):
-                          // neither a plain deletion nor a content rewrite —
-                          // fail-closed rather than guessing.
+        // E.g. a mode change (blob -> submodule gitlink): neither a plain
+        // deletion nor a content rewrite — fail-closed rather than guessing.
+        None => Ok(None),
     }
 }
 
@@ -396,18 +397,19 @@ fn resolve_terminal_path(
 
     for commit_id in commits {
         match classify_touching_commit(repo, commit_id, path)? {
-            Some(TouchKind::Deletion) => return Ok(None), // chain ends in a
-            // delete between created_at and HEAD: fail-closed, never guess
+            // The chain ends in a delete between created_at and HEAD:
+            // fail-closed, never guess.
+            Some(TouchKind::Deletion) => return Ok(None),
             Some(TouchKind::Rewrite(next)) => {
                 if hops_left == 0 {
                     return Ok(None); // fail-closed: chain too deep to trust
                 }
                 return resolve_terminal_path(repo, &next, hops_left - 1, commit_id);
             }
-            None => continue, // content-only modification, an unrelated
-                              // resurrection of this same path, or another
-                              // unclassifiable change — none of these move
-                              // the lineage, keep scanning forward
+            // A content-only modification, an unrelated resurrection of this
+            // same path, or another unclassifiable change — none of these
+            // move the lineage, keep scanning forward.
+            None => continue,
         }
     }
 
