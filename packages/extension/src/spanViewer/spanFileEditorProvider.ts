@@ -34,7 +34,7 @@ import { getRepositoryForUri } from './gitRepository.js';
 import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
 import { buildHistorySnapshotLadder, type LadderRung } from './historySnapshotLadder.js';
 import { reconstructOriginal } from './patchReconstruction.js';
-import { formatAnchorAddress, parseSpanFile } from './spanFileGrammar.js';
+import { formatAnchorAddress, type ParsedSpanFile, parseSpanFile } from './spanFileGrammar.js';
 import type {
   AnchorPlan,
   HistoryDocument,
@@ -401,6 +401,33 @@ async function findRepoRootUpward(startDir: string): Promise<string | null> {
 }
 
 /**
+ * Read and parse a `.span` file's current on-disk text.
+ *
+ * Every `render()` pass -- the initial open and each watcher-triggered
+ * re-render -- re-reads the span file through this, so anchors are matched
+ * and `span_diff`s reconstructed against the current text, never an
+ * open-time snapshot. The viewer is read-only, so the user's stale-fix
+ * workflow is "Reopen as Text" -- a separate tab for the same file -- and a
+ * save while the viewer is open is common; the watcher on the span file
+ * itself fires after each save, and the re-render must parse the saved
+ * text, not the open-time one.
+ *
+ * @param uri - The span document's URI.
+ * @returns The raw text and parsed file, or `null` when the text does not
+ *   parse as a span file.
+ * @throws When the file cannot be read (e.g. it was deleted while open).
+ */
+async function readSpanFile(uri: vscode.Uri): Promise<{ text: string; parsed: ParsedSpanFile } | null> {
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  const text = new TextDecoder('utf-8').decode(bytes);
+  const parsed = parseSpanFile(text);
+  if (parsed === null) {
+    return null;
+  }
+  return { text, parsed };
+}
+
+/**
  * A file's stat at the CLI-spawn instant: either its `(mtimeMs, size)` pair,
  * or the **absent-at-snapshot** sentinel recorded when the pre-spawn stat
  * rejected (most often ENOENT on a dangling anchor's file). The sentinel
@@ -517,7 +544,8 @@ async function readCleanContent(
  * can be confirmed (fail-closed, never a fabricated pair).
  *
  * @param history - The parsed history document.
- * @param worktreeSpanText - The `.span` file's disk text at open time.
+ * @param worktreeSpanText - The `.span` file's current disk text, re-read on
+ *   every render pass.
  * @returns Per-commit-hash resolved pairs, or `'unavailable'`.
  * @throws Never.
  */
@@ -721,7 +749,11 @@ function countLabel(count: number, noun: string): string {
  * On open, parses the document as a span file, runs `git span history
  * --format json` for it, matches every anchor's live address against that
  * history, reads clean-anchor content from disk, and posts the fully-resolved
- * `PostedDocument` to the Monaco webview. Dangling anchors render as
+ * `PostedDocument` to the Monaco webview. Every render pass -- the initial
+ * open and each watcher-triggered re-render -- re-reads and re-parses the
+ * span file from disk first, so a save in a "Reopen as Text" tab never
+ * leaves the viewer matching anchors or reconstructing diffs against the
+ * open-time snapshot. Dangling anchors render as
  * header-only cards in the posted document; when every anchor is dangling,
  * the posted document renders all-dangling status cards in the webview's own
  * DOM, keeping its 'document' listener alive for watcher-triggered
@@ -792,17 +824,18 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       })
     );
 
-    const bytes = await vscode.workspace.fs.readFile(document.uri);
+    const opened = await readSpanFile(document.uri);
     if (disposed) {
       return;
     }
-    const text = new TextDecoder('utf-8').decode(bytes);
-
-    const parsed = parseSpanFile(text);
-    if (parsed === null) {
+    if (opened === null) {
       renderPanel(webviewPanel.webview, 'This file is not a recognized .span anchor file.', []);
       return;
     }
+    // Only the anchor list for the initial watcher registration is taken from
+    // this open-time parse; every render pass re-reads and re-parses the file
+    // through `readSpanFile` itself.
+    const parsed = opened.parsed;
 
     const spanName = resolveSpanName(document.uri.fsPath);
     if (spanName === null) {
@@ -846,8 +879,6 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       renderPanel(webviewPanel.webview, 'git-span is not on PATH; cannot load this span’s history.', []);
       return;
     }
-
-    const liveAnchors: LiveAnchor[] = parsed.anchors.map((anchor) => ({ path: anchor.path, range: anchor.range }));
 
     /** Filesystem paths already watched, so re-renders only add watchers for newly-seen paths. */
     const watchers = new Map<string, vscode.Disposable>();
@@ -914,6 +945,12 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
      * resulting `PostedDocument` (or render an explanatory fallback).
      * Re-invoked by file watchers on subsequent changes.
      *
+     * Every invocation first re-reads and re-parses the span file from disk,
+     * so a watcher-triggered re-render (e.g. the user saved an edit in a
+     * "Reopen as Text" tab) matches anchors and reconstructs `span_diff`s
+     * against the current text -- never the open-time snapshot, which would
+     * post stale addresses and degrade every diff card to 'unavailable'.
+     *
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every anchor's real file, dangling or not), or `null` when
      *   history could not be loaded, the tab was disposed, or a newer render
@@ -926,11 +963,41 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       inFlightController = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
 
+      // Re-read the span file before anything else -- the CLI spawn included
+      // -- so the fresh parse feeds the pre-spawn stat map, the anchor
+      // matching, and the diff reconstruction.
+      let fresh: { text: string; parsed: ParsedSpanFile } | null;
+      try {
+        fresh = await readSpanFile(document.uri);
+      } catch (error) {
+        if (disposed || generation !== renderGeneration) {
+          return null;
+        }
+        const message = `Failed to re-read the span file: ${error instanceof Error ? error.message : String(error)}`;
+        renderPanel(webviewPanel.webview, message, []);
+        testOnlyRenderOutcomes.set(document.uri.toString(), { ok: false, danglingCount: 0, message });
+        return null;
+      }
+      if (disposed || generation !== renderGeneration) {
+        return null;
+      }
+      if (fresh === null) {
+        const message = 'This file is not a recognized .span anchor file.';
+        renderPanel(webviewPanel.webview, message, []);
+        testOnlyRenderOutcomes.set(document.uri.toString(), { ok: false, danglingCount: 0, message });
+        return null;
+      }
+      const { text: currentText, parsed: currentParsed } = fresh;
+      const liveAnchors: LiveAnchor[] = currentParsed.anchors.map((anchor) => ({
+        path: anchor.path,
+        range: anchor.range
+      }));
+
       // Stat every distinct anchor path at the CLI-spawn instant, via
       // Promise.allSettled so one ENOENT (a dangling anchor's missing file)
       // never throws upstream of `git span history` being consulted -- a
       // rejection is recorded as the absent-at-snapshot sentinel instead.
-      const statPaths = [...new Set(parsed.anchors.map((anchor) => path.join(repoRoot, anchor.path)))];
+      const statPaths = [...new Set(currentParsed.anchors.map((anchor) => path.join(repoRoot, anchor.path)))];
       const statResults = await Promise.allSettled(statPaths.map((statPath) => fs.stat(statPath)));
       const preSpawnStats = new Map<string, PreSpawnStat>();
       statPaths.forEach((statPath, index) => {
@@ -995,7 +1062,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       // document, so watching a path that never materializes is harmless.
       const watchedPaths = new Set<string>([document.uri.fsPath]);
       plans.forEach((_plan, index) => {
-        const anchor = parsed.anchors[index];
+        const anchor = currentParsed.anchors[index];
         if (anchor === undefined) {
           return;
         }
@@ -1004,7 +1071,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
 
       const danglingCount = plans.filter((plan) => plan.kind === 'dangling').length;
 
-      if (danglingCount === parsed.anchors.length) {
+      if (danglingCount === currentParsed.anchors.length) {
         // Every anchor is dangling: post an all-dangling document so the
         // Monaco webview renders the fallback state in its own DOM. Never
         // replace the webview HTML here -- the webview's 'document' listener
@@ -1016,7 +1083,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         }
         const danglingAnchors: PostedAnchor[] = [];
         plans.forEach((plan, index) => {
-          const anchor = parsed.anchors[index];
+          const anchor = currentParsed.anchors[index];
           if (anchor === undefined || plan.kind !== 'dangling') {
             return;
           }
@@ -1030,7 +1097,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         const message = `No anchors in span "${spanName}" could be matched against its history.`;
         const documentToPost: PostedDocument = {
           spanName,
-          why: parsed.why,
+          why: currentParsed.why,
           stale: true,
           staleReasons: [`${countLabel(danglingCount, 'anchor')} without history`],
           anchors: danglingAnchors,
@@ -1053,8 +1120,8 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           plans,
           history,
           spanName,
-          text,
-          why: parsed.why,
+          text: currentText,
+          why: currentParsed.why,
           preSpawnStats,
           repoRoot
         });
@@ -1148,7 +1215,8 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
    * @param options.plans - One plan per live anchor.
    * @param options.history - The parsed history document.
    * @param options.spanName - The span's name (the `.span` file's basename).
-   * @param options.text - The `.span` file's raw disk text.
+   * @param options.text - The `.span` file's current disk text, re-read on
+   *   every render pass.
    * @param options.why - The span's why prose, as parsed from the file.
    * @param options.preSpawnStats - The pre-spawn stat map, keyed by path.
    * @param options.repoRoot - The repository root anchor paths resolve against.

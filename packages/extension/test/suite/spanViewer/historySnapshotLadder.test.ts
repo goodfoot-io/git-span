@@ -134,11 +134,13 @@ describe('historySnapshotLadder', () => {
       });
     });
 
-    it('resolves a full addition from the diff new side and terminates', () => {
+    it('resolves a full addition from the diff new side and continues the walk past it', () => {
       // C1 introduces the anchor with content t0; C2 edits it to t2. The walk
-      // renders C2 by reverse-apply, then must terminate at C1's full
-      // addition -- whose new side is t0, the pre-C2 state, without ever
-      // touching the deliberately unreadable C0 diff below it.
+      // renders C2 by reverse-apply, then resolves C1's full addition from its
+      // own new side (t0, the pre-C2 state) -- and because a full addition is
+      // only the lineage origin when nothing older matched, the walk continues
+      // into C0's deliberately unreadable diff below and fails closed there
+      // instead of terminating at the addition.
       const t0 = 'a\nb\nc\n';
       const t2 = 'a\nb EDITED\nc\n';
       const commits: HistoryCommit[] = [
@@ -154,15 +156,15 @@ describe('historySnapshotLadder', () => {
             diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\nnew anchor\nindex rk64:aaaa..rk64:bbbb\n--- /dev/null\n+++ b/f.txt#L1-L3\n@@ -0,0 +1,3 @@\n+a\n+b\n+c\n'
           }
         ]),
-        commit('c0', 'must not be reached', [
+        commit('c0', 'unreadable older edit', [
           { path: ADDRESS, diff: 'diff --git a/f.txt b/f.txt\n@@ -99,1 +99,2 @@\n a\n+b\n' }
         ])
       ];
 
       const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, seedContent: t2 });
 
-      assert.strictEqual(result.truncated, false);
-      assert.strictEqual(result.rungs.length, 2, 'the walk terminates at the full addition');
+      assert.strictEqual(result.truncated, true);
+      assert.strictEqual(result.rungs.length, 3, 'the walk continues past the full addition into the older lineage');
       assert.deepStrictEqual(result.rungs[0], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
@@ -177,6 +179,10 @@ describe('historySnapshotLadder', () => {
         original: '',
         modified: t0
       });
+      assert.strictEqual(result.rungs[2]?.hash, 'c0');
+      assert.strictEqual(result.rungs[2]?.truncatedAt, true);
+      assert.strictEqual(result.rungs[2]?.original, '');
+      assert.strictEqual(result.rungs[2]?.modified, '');
     });
 
     it('resolves a full deletion from the diff old side and terminates', () => {
@@ -689,8 +695,9 @@ describe('historySnapshotLadder', () => {
     it('walks the timeline when the current anchor is a full deletion with no readable content', () => {
       // The anchor's live bytes are gone (worktree deletion), so there is no
       // post-image to seed from -- but the timeline's deletion commit
-      // resolves its old side directly from its own diff, producing the
-      // rung without a seed.
+      // resolves its old side directly from its own diff, and the walk
+      // continues through it to the record rung below instead of silently
+      // dropping it.
       const t0 = 'line one\nline two\nline three\n';
       const commits: HistoryCommit[] = [
         commit('c2', 'delete anchor', [
@@ -717,8 +724,180 @@ describe('historySnapshotLadder', () => {
           summary: 'delete anchor',
           original: t0,
           modified: ''
+        },
+        {
+          hash: 'c1',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'add anchor',
+          original: '',
+          modified: t0
         }
       ]);
+    });
+
+    it('threads a stale deleted-anchor seed forward: records once, edits at c2 and c3, then the worktree deletes the file, and still renders every rung', () => {
+      // Recorded at c1 (the recorded token hashes t0); c2 edits line two and
+      // c3 edits line seven WITHOUT re-anchoring; then the anchored file is
+      // deleted from the worktree, so the current block carries no readable
+      // content and its full-deletion diff's old side is the c1-era recorded
+      // bytes (t0), not the post-newest-commit state. Seeding straight from
+      // those bytes makes c3's reverse-apply fail its post-image match and
+      // truncate; the ladder must thread the recorded bytes forward through
+      // c2's and c3's diffs to recover t2, then walk back through all three
+      // rungs.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t2 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit line seven', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -6,3 +6,3 @@\n line six\n-line seven\n+line seven EDITED\n line eight\n'
+          }
+        ]),
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        // The old side is the RECORDED snapshot (t0, from c1), not the
+        // post-newest-commit state -- the stale-declaration-then-worktree-
+        // deletion shape: the recorded token still hashes t0 while the
+        // timeline moved on to t2.
+        diff: [
+          'diff --git a/f.txt#L1-L10 b/f.txt#L1-L10',
+          'deleted anchor',
+          'index rk64:aaaa..rk64:bbbb',
+          '--- a/f.txt#L1-L10',
+          '+++ /dev/null',
+          '@@ -1,10 +0,0 @@',
+          '-line one',
+          '-line two',
+          '-line three',
+          '-line four',
+          '-line five',
+          '-line six',
+          '-line seven',
+          '-line eight',
+          '-line nine',
+          '-line ten'
+        ].join('\n'),
+        unavailable: 'absent'
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'all three rungs render despite the stale deleted-anchor declaration');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line seven',
+        original: t1,
+        modified: t2
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('renders every rung across a committed delete-then-re-add at the same address', () => {
+      // A full addition is only the lineage origin when nothing older
+      // matched; a committed delete (c2) then re-add (c3) at the same address
+      // produces a mid-lineage addition, and the deletion rung below resolves
+      // from its own diff's old side and the record rung from its content --
+      // so the walk must continue through the addition and deletion instead
+      // of terminating and silently dropping the older commits.
+      const t0 = 'line one\nline two\nline three\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 're-add anchor', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\nnew anchor\nindex rk64:bbbb..rk64:cccc\n--- /dev/null\n+++ b/f.txt#L1-L3\n@@ -0,0 +1,3 @@\n+line one\n+line two\n+line three\n'
+          }
+        ]),
+        commit('c2', 'delete anchor', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\ndeleted anchor\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt#L1-L3\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-line one\n-line two\n-line three\n'
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, seedContent: t0 });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'the deletion and record commits are not silently dropped');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 're-add anchor',
+        original: '',
+        modified: t0
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'delete anchor',
+        original: t0,
+        modified: ''
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('fails the pure-rename rung closed when the raced-clean seed is empty', () => {
+      // A clean anchor whose disk read raced the CLI passes an empty ladder
+      // seed. The edit rungs of that shape already fail closed with a
+      // truncatedAt marker; the pure-rename rung must do the same instead of
+      // rendering a silent empty pair.
+      const commits: HistoryCommit[] = [
+        commit('c2', 'rename', [
+          {
+            path: 'g.txt#L1-L3',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L1-L3\nrename to g.txt#L1-L3\nindex rk64:aaaa..rk64:bbbb\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: 'f.txt#L1-L3', content: 'a\nb\nc\n' }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'g.txt#L1-L3', commits, seedContent: '' });
+
+      assert.strictEqual(result.truncated, true);
+      assert.strictEqual(result.rungs.length, 1, 'the rename rung fails closed instead of rendering an empty pair');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'rename',
+        original: '',
+        modified: '',
+        truncatedAt: true
+      });
     });
 
     it('renders a pure rename rung with unchanged content and continues the walk past it', () => {

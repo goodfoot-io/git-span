@@ -305,13 +305,17 @@ describe('anchorMatcher', () => {
     });
 
     it('throws ReconstructionError when drift is asserted but the diff cannot be reverse-applied', () => {
+      // A hunk-bearing diff whose post-region contradicts the content -- the
+      // pair the CLI certified disagrees, so the reconstruction must fail
+      // closed. (A header-only diff is the no-change shape and routes to a
+      // drifted plan instead; see the header-only test below.)
       const history = historyFixture({
         commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
         current: {
           anchors: [
             {
               path: FIRST_ADD,
-              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\ncontent unavailable binary\n',
+              diff: 'diff --git a/web/checkout.tsx b/web/checkout.tsx\n@@ -1,2 +1,2 @@\n hello\n-hi\n+hey\n',
               content: 'hello\nhi\n',
               sources: ['WORKTREE']
             }
@@ -319,6 +323,31 @@ describe('anchorMatcher', () => {
         }
       });
       assert.throws(() => matchAnchor(FIRST_ADD, history), ReconstructionError);
+    });
+
+    it('routes a header-only drifted diff to historical = content instead of throwing', () => {
+      // A committed-but-unreconciled anchor: the recorded hash is stale while
+      // the bytes are byte-identical, so the current diff carries no hunks yet
+      // the drift sources are non-empty -- the anchor IS drifted, and with no
+      // content change the historical side is the content itself.
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nrecorded anchor\nindex rk64:bbbb..rk64:bbbb\n',
+              content: 'hello\nhi\n',
+              sources: ['WORKTREE']
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'drifted',
+        historical: 'hello\nhi\n',
+        current: 'hello\nhi\n'
+      });
     });
   });
 

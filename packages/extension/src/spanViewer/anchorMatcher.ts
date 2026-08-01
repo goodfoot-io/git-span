@@ -21,7 +21,7 @@
  * @module spanViewer/anchorMatcher
  */
 
-import { isFullAddition, isFullDeletion, reconstructOriginal } from './patchReconstruction.js';
+import { hasHunks, isFullAddition, isFullDeletion, reconstructOriginal } from './patchReconstruction.js';
 import { formatAnchorAddress } from './spanFileGrammar.js';
 import type { AnchorPlan, CurrentAnchor, HistoryCommit, HistoryDocument, LiveAnchor, TimelineAnchor } from './types.js';
 
@@ -162,6 +162,14 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
   }
   if (!hasLineage) {
     return { kind: 'reconciled', historical: null, current: currentEntry.content };
+  }
+  if (!hasHunks(currentEntry.diff)) {
+    // Header-only diff with content: a committed-but-unreconciled anchor whose
+    // recorded hash is stale while the bytes are byte-identical -- the drift
+    // sources are non-empty so the anchor IS drifted, but the diff has no
+    // hunks because the content never changed, so the historical side is the
+    // content itself. Reconstructing would throw on the empty hunk list.
+    return { kind: 'drifted', historical: currentEntry.content, current: currentEntry.content };
   }
   return {
     kind: 'drifted',

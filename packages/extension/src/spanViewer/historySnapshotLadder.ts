@@ -28,17 +28,24 @@
  * inside that commit's own hunks. Two shapes short-circuit the recovery: a
  * full-deletion diff carries the recorded bytes as its own old side
  * (`current.content`, or the diff's `-` lines when the live side is
- * unreadable), and a header-only diff (a relocation, or a rename whose
- * content is unchanged) proves the bytes did not change, so `current.content`
- * is the seed. On the not-drifted branch the caller's disk-read clean content
- * already is that state and seeds directly.
+ * unreadable -- threaded forward through the lineage like the reconstruction
+ * recovery, so a stale declaration whose file was deleted from the worktree
+ * still reaches the post-newest-commit state), and a header-only diff (a
+ * relocation, or a rename whose content is unchanged) proves the bytes did
+ * not change, so `current.content` is the seed. On the not-drifted branch the
+ * caller's disk-read clean content already is that state and seeds directly.
  *
  * **Rungs**: a first-add supplies `content` directly and terminates (the
  * origin needs no reconstruction); a full addition/deletion (a `/dev/null`
- * side) is resolved directly from the diff's own real side and terminates;
- * a pure rename (rename headers, no hunks) changes no bytes and renders
- * `original = modified = running` while the walk crosses the address
- * boundary; an ordinary in-place edit reverse-applies that commit's own
+ * side) is resolved directly from the diff's own real side -- the walk
+ * terminates there only when the rung is the lineage origin, and otherwise
+ * continues through it (a committed delete-then-re-add at the same address
+ * renders the deletion and record rungs below instead of dropping them
+ * silently); a pure rename (rename headers, no hunks) changes no bytes and
+ * renders `original = modified = running` while the walk crosses the address
+ * boundary (an empty `running` -- the raced-clean fallback's empty seed --
+ * fails that rung closed with a `truncatedAt` marker rather than a silent
+ * empty pair); an ordinary in-place edit reverse-applies that commit's own
  * `diff` onto the running snapshot -- the result is both that commit's
  * rendered original side and the new running snapshot. A rename-and-edit
  * block rebases each hunk side against its own address's extent start. A
@@ -198,8 +205,13 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
       // seed from -- but the diff's own old side carries the recorded bytes
       // (the walk's full-deletion rung resolves directly from its own diff,
       // and an older edit rung reverse-applies onto the recovered bytes).
+      // Thread the recorded bytes forward through the lineage exactly like the
+      // reconstruction recovery above: on a stale declaration (recorded before
+      // newer committed edits) that recovers the post-newest-commit state the
+      // backward walk must seed from, instead of failing the newest rung's
+      // post-image match against the c1-era recorded bytes.
       try {
-        running = extractHunkSide(current.diff, 'old');
+        running = threadForward(extractHunkSide(current.diff, 'old'), lineage);
       } catch {
         return { rungs: [], truncated: true };
       }
@@ -285,7 +297,12 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         return { rungs, truncated: true };
       }
       rungs.push({ hash: commit.hash, date: commit.date, summary: commit.summary, original, modified: '' });
-      return { rungs, truncated };
+      // The deleted bytes are the state the older walk continues from. The
+      // rung is the lineage origin only when nothing older matched; a
+      // committed delete-then-re-add at the same address renders the record
+      // rung below instead of dropping it silently.
+      running = original;
+      continue;
     }
     if (isFullAddition(diff)) {
       let modified: string;
@@ -303,13 +320,35 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         return { rungs, truncated: true };
       }
       rungs.push({ hash: commit.hash, date: commit.date, summary: commit.summary, original: '', modified });
-      return { rungs, truncated };
+      // A full addition is the anchor's origin only when it is the oldest
+      // lineage match; a committed delete-then-re-add at the same address
+      // produces a mid-lineage addition, and the deletion and record rungs
+      // below resolve from their own diff side and content -- so the walk
+      // continues instead of silently dropping them.
+      running = modified;
+      continue;
     }
     const renameFrom = extractRenameFrom(diff);
     if (renameFrom !== undefined && !hasHunks(diff)) {
       // Pure rename: the move changes no bytes, so the running snapshot is
       // both the original and the modified side; the walk continues across
-      // the address boundary on the old address.
+      // the address boundary on the old address. An empty running snapshot
+      // (the raced-clean fallback's empty seed) cannot back a rename rung's
+      // content -- it would silently render an empty pair -- so the rung
+      // fails closed with a marker, like the edit rungs' reconstruction
+      // failures.
+      if (running === '') {
+        rungs.push({
+          hash: commit.hash,
+          date: commit.date,
+          summary: commit.summary,
+          original: '',
+          modified: '',
+          truncatedAt: true
+        });
+        truncated = true;
+        break;
+      }
       rungs.push({
         hash: commit.hash,
         date: commit.date,
