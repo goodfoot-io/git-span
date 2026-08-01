@@ -189,6 +189,37 @@ function makeNonce(): string {
 }
 
 /**
+ * The Monaco built-in base themes the theme bridge can target, matched by the
+ * webview `<body>`'s `data-vscode-theme` attribute and the `themeChanged`
+ * postMessage's `kind`. The bridge covers editor chrome from the injected
+ * `--vscode-*` variables, but `base` still decides the token palette Monaco
+ * falls back to for syntax colors (never bridged -- the plan's accepted
+ * tradeoff), so a light/high-contrast-light workbench theme must not resolve
+ * to a dark base.
+ */
+type MonacoThemeKind = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
+
+/**
+ * Map a VS Code theme kind to the closest Monaco built-in base theme.
+ *
+ * @param kind - The active `vscode.ColorThemeKind`.
+ * @returns The Monaco base theme name.
+ * @throws Never.
+ */
+function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoThemeKind {
+  switch (kind) {
+    case vscode.ColorThemeKind.Dark:
+      return 'vs-dark';
+    case vscode.ColorThemeKind.HighContrast:
+      return 'hc-black';
+    case vscode.ColorThemeKind.HighContrastLight:
+      return 'hc-light';
+    default:
+      return 'vs';
+  }
+}
+
+/**
  * Render the info/fallback/error pane shown in this custom editor's own
  * webview panel -- the tab for the `.span/*` file itself. This is the only
  * fallback surface: the loaded document renders through the Monaco webview
@@ -242,28 +273,33 @@ const WEBVIEW_DIR = path.join(__dirname, 'webview');
 
 /**
  * Build the Monaco webview template: CSP covering the bundle's nonce-scoped
- * script, Monaco's injected inline styles, the codicon font, the worker
- * scripts' fetch (`connect-src`) and the Blob-wrapped worker construction
- * (`worker-src blob:`).
+ * script, Monaco's injected inline styles, the codicon fonts (served both
+ * from the webview-resource origin and from `'self'`, since esbuild's
+ * file-loader emits Monaco's font alongside the bundle), the worker scripts'
+ * fetch (`connect-src`) and the Blob-wrapped worker construction
+ * (`worker-src blob:`), and `img-src` for webview-referenced assets.
  *
  * The webview's content arrives exclusively via `postMessage` -- the template
- * itself only loads this bundle and its CSS.
+ * itself only loads this bundle and its CSS. The `<body>` carries the active
+ * theme's Monaco base on `data-vscode-theme` so the webview can bridge its
+ * theme at load; later changes arrive as `themeChanged` messages.
  *
  * @param webview - The webview to build the template for.
+ * @param themeKind - The active workbench theme's Monaco base theme.
  * @returns The HTML document string.
  * @throws Never.
  */
-function renderWebviewHtml(webview: vscode.Webview): string {
+function renderWebviewHtml(webview: vscode.Webview, themeKind: MonacoThemeKind): string {
   const nonce = makeNonce();
   const mainJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.js')));
   const mainCssUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.css')));
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; worker-src blob:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src 'self' ${webview.cspSource}; worker-src blob:; connect-src ${webview.cspSource}; img-src ${webview.cspSource};">
 <link rel="stylesheet" href="${mainCssUri}">
 </head>
-<body>
+<body data-vscode-theme="${themeKind}">
   <div id="app"><div class="loading">Loading span history…</div></div>
   <script nonce="${nonce}" type="module" src="${mainJsUri}"></script>
 </body>
@@ -657,7 +693,18 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         vscode.Uri.file(path.join(path.dirname(path.dirname(WEBVIEW_DIR)), 'node_modules'))
       ]
     };
-    webviewPanel.webview.html = renderWebviewHtml(webviewPanel.webview);
+    webviewPanel.webview.html = renderWebviewHtml(
+      webviewPanel.webview,
+      monacoThemeKind(vscode.window.activeColorTheme.kind)
+    );
+    // The webview cannot observe workbench theme changes itself -- VS Code
+    // only re-injects the `--vscode-*` variables -- so every change is relayed
+    // and the webview re-bridges its Monaco theme. Disposed with the document.
+    document.addDisposable(
+      vscode.window.onDidChangeActiveColorTheme((theme) => {
+        webviewPanel.webview.postMessage({ type: 'themeChanged', kind: monacoThemeKind(theme.kind) });
+      })
+    );
 
     let disposed = false;
     let inFlightController: AbortController | null = null;

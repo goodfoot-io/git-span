@@ -18,6 +18,14 @@
  * `self.MonacoEnvironment.getWorker` (Phase C) is preserved unchanged: the
  * fetch-and-Blob-wrap pattern the webview's distinct origin requires.
  *
+ * The theme bridge (Phase E) defines a `'git-span'` Monaco theme from the
+ * injected `--vscode-*` variables on load and re-defines it whenever the
+ * provider relays a workbench theme change. It covers editor chrome only --
+ * `rules` stays empty, so syntax colors render from Monaco's bundled base
+ * palettes (the plan's accepted tradeoff). Monaco itself loads with this
+ * bundle, i.e. on first panel open; no editor is created until the first
+ * `document` postMessage arrives.
+ *
  * @summary Webview bundle: renders the posted span document with Monaco.
  */
 
@@ -95,6 +103,93 @@ self.MonacoEnvironment = {
     return getWorkerBlobUrl(scriptName).then((blobUrl) => new Worker(blobUrl));
   }
 };
+
+/**
+ * The Monaco built-in base themes the bridge can target, matched by the
+ * provider's `data-vscode-theme` attribute and `themeChanged` message kind.
+ * `base` decides the token palette Monaco falls back to for syntax colors;
+ * chrome colors come from the bridged `--vscode-*` variables (the accepted
+ * tradeoff -- TextMate token colors are never bridged).
+ */
+type ThemeKind = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
+
+/**
+ * Detect the active Monaco base theme: the provider's `data-vscode-theme`
+ * attribute first (authoritative -- it mirrors `activeColorTheme.kind` at
+ * open time), then VS Code's own injected `vscode-*` body classes.
+ *
+ * @returns The detected base theme.
+ * @throws Never.
+ */
+function detectThemeKind(): ThemeKind {
+  const data = document.body.dataset['vscodeTheme'];
+  if (data === 'vs-dark' || data === 'hc-black' || data === 'hc-light') {
+    return data;
+  }
+  const classes = document.body.classList;
+  if (classes.contains('vscode-high-contrast')) {
+    return 'hc-black';
+  }
+  if (classes.contains('vscode-dark')) {
+    return 'vs-dark';
+  }
+  return 'vs';
+}
+
+/**
+ * (Re-)define the `'git-span'` Monaco theme from the webview's injected
+ * `--vscode-*` variables and make it active. VS Code re-injects those
+ * variables on every workbench theme change, so re-running this with the new
+ * `base` picks up both the new chrome colors and the new token palette, and
+ * existing editor instances follow via `monaco.editor.setTheme`.
+ *
+ * Editor chrome only -- `rules` stays empty: the webview's variables cover
+ * the workbench color registry but never include TextMate `tokenColors`, so
+ * syntax highlighting renders from Monaco's bundled base palettes (the
+ * plan's accepted tradeoff). Empty variables (e.g. `contrastBorder` outside
+ * high-contrast themes) are skipped -- Monaco parses every color it is
+ * given, and `''` is not a color.
+ *
+ * @param kind - The Monaco base theme to bridge from.
+ * @throws Never.
+ */
+function defineGitSpanTheme(kind: ThemeKind): void {
+  const style = getComputedStyle(document.body);
+  const read = (name: string): string => style.getPropertyValue(`--vscode-${name}`).trim();
+  const colors: Record<string, string> = {};
+  const pairs: ReadonlyArray<readonly [string, string]> = [
+    ['editor.background', 'editor-background'],
+    ['editor.foreground', 'editor-foreground'],
+    ['editor.lineHighlightBackground', 'editor-lineHighlightBackground'],
+    ['editor.selectionBackground', 'editor-selectionBackground'],
+    ['editor.inactiveSelectionBackground', 'editor-inactiveSelectionBackground'],
+    ['editorLineNumber.foreground', 'editorLineNumber-foreground'],
+    ['editorWidget.background', 'editorWidget-background'],
+    ['editorWidget.border', 'widget-border'],
+    ['diffEditor.insertedLineBackground', 'diffEditor-insertedLineBackground'],
+    ['diffEditor.removedLineBackground', 'diffEditor-removedLineBackground'],
+    ['diffEditor.insertedTextBackground', 'diffEditor-insertedTextBackground'],
+    ['diffEditor.removedTextBackground', 'diffEditor-removedTextBackground'],
+    ['contrastBorder', 'contrastBorder']
+  ];
+  for (const [monacoId, vscodeVariable] of pairs) {
+    const value = read(vscodeVariable);
+    if (value !== '') {
+      colors[monacoId] = value;
+    }
+  }
+  monaco.editor.defineTheme('git-span', {
+    base: kind,
+    inherit: true,
+    colors,
+    rules: []
+  });
+  monaco.editor.setTheme('git-span');
+}
+
+// Bridge the theme before any document arrives: the first `postMessage` is
+// `ready`, and editors must be themed from the moment they are created.
+defineGitSpanTheme(detectThemeKind());
 
 /**
  * Post a message back to the extension host.
@@ -716,6 +811,16 @@ function renderDocument(posted: PostedDocument): void {
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   const message = event.data as { type?: unknown };
+  if (message?.type === 'themeChanged') {
+    const kind = (message as { kind?: unknown }).kind;
+    if (kind === 'vs' || kind === 'vs-dark' || kind === 'hc-black' || kind === 'hc-light') {
+      // Keep the attribute in step with the active theme so detection stays
+      // consistent with the provider's view.
+      document.body.dataset['vscodeTheme'] = kind;
+      defineGitSpanTheme(kind);
+    }
+    return;
+  }
   if (message?.type === 'document') {
     renderDocument((message as { document: PostedDocument }).document);
   }
