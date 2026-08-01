@@ -15,13 +15,22 @@
  * entries under `path === liveAddress` (timeline `path` is the address *after*
  * that commit's change), so the shared `walkAddressLineage` helper follows
  * `rename from <old>` headers to trace the address back across rename
- * boundaries.
+ * boundaries. The walk starts at the live address unless the `current` entry
+ * for it is itself a rename (an uncommitted in-place re-anchor -- the CLI's
+ * `rename from`/`rename to` form), in which case the committed history lives
+ * under the old address and the walk starts there.
  *
  * @summary Matches live anchor addresses against `git span history` output.
  * @module spanViewer/anchorMatcher
  */
 
-import { hasHunks, isFullAddition, isFullDeletion, reconstructOriginal } from './patchReconstruction.js';
+import {
+  extractRenameFrom,
+  hasHunks,
+  isFullAddition,
+  isFullDeletion,
+  reconstructOriginal
+} from './patchReconstruction.js';
 import { formatAnchorAddress } from './spanFileGrammar.js';
 import type { AnchorPlan, CurrentAnchor, HistoryCommit, HistoryDocument, LiveAnchor, TimelineAnchor } from './types.js';
 
@@ -50,14 +59,27 @@ export interface LineageMatch {
  * Walk an anchor address's timeline newest-to-oldest, following `rename from
  * <old>` headers to trace the address across rename boundaries.
  *
+ * The walk starts at `liveAddress` unless the anchor's `current` entry is
+ * itself a rename: a re-anchor edits the worktree declaration's address
+ * without committing, so no timeline entry ever wears the declared address --
+ * the committed history lives under the `rename from` address and the walk
+ * must start there or the anchor's entire lineage is invisible.
+ *
  * @param commits - The history document's commits, newest-first.
  * @param liveAddress - The anchor's current declared address.
+ * @param currentEntry - The `current.anchors[]` entry for `liveAddress`, when
+ *   one exists; its rename header, if any, names the address the committed
+ *   history lives under.
  * @returns One match per commit that touches the tracked lineage, newest
  *   first; `address` is the tracked address at that commit.
  */
-export function walkAddressLineage(commits: HistoryCommit[], liveAddress: string): LineageMatch[] {
+export function walkAddressLineage(
+  commits: HistoryCommit[],
+  liveAddress: string,
+  currentEntry?: CurrentAnchor
+): LineageMatch[] {
   const matches: LineageMatch[] = [];
-  let tracked = liveAddress;
+  let tracked = extractRenameFrom(currentEntry?.diff ?? '') ?? liveAddress;
   commits.forEach((commit, commitIndex) => {
     const contentEntry = commit.anchors.find((anchor) => anchor.path === tracked && anchor.rebound === undefined);
     const entry = contentEntry ?? commit.anchors.find((anchor) => anchor.path === tracked);
@@ -126,7 +148,7 @@ export function signalsDrift(entry: CurrentAnchor): boolean {
  */
 export function matchAnchor(liveAddress: string, history: HistoryDocument): AnchorPlan {
   const currentEntry = history.current?.anchors.find((anchor) => anchor.path === liveAddress);
-  const hasLineage = walkAddressLineage(history.commits, liveAddress).length > 0;
+  const hasLineage = walkAddressLineage(history.commits, liveAddress, currentEntry).length > 0;
 
   if (currentEntry === undefined || !signalsDrift(currentEntry)) {
     return hasLineage ? { kind: 'clean' } : { kind: 'dangling' };
@@ -171,9 +193,18 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
     // content itself. Reconstructing would throw on the empty hunk list.
     return { kind: 'drifted', historical: currentEntry.content, current: currentEntry.content };
   }
+  // A rename block's old side lives in the old address's line space and its
+  // new side in the declared address's, so each side rebases against its own
+  // extent start -- exactly like the ladder's rename rung does.
+  const renameFrom = extractRenameFrom(currentEntry.diff);
   return {
     kind: 'drifted',
-    historical: reconstructOriginal(currentEntry.diff, currentEntry.content, extentStartLineOf(liveAddress)),
+    historical: reconstructOriginal(
+      currentEntry.diff,
+      currentEntry.content,
+      extentStartLineOf(liveAddress),
+      renameFrom === undefined ? extentStartLineOf(liveAddress) : extentStartLineOf(renameFrom)
+    ),
     current: currentEntry.content
   };
 }

@@ -632,8 +632,12 @@ function resolveLadders(
       return;
     }
     const address = formatAnchorAddress(anchor.path, anchor.range);
-    const matches = walkAddressLineage(history.commits, address);
     const current = history.current?.anchors.find((entry) => entry.path === address);
+    // An uncommitted re-anchor makes `current` itself a rename; the committed
+    // history lives under its `rename from` address, so the walk must start
+    // there or the accordion blocks and the ladder rungs would diverge (see
+    // `walkAddressLineage`).
+    const matches = walkAddressLineage(history.commits, address, current);
     let seedContent: string;
     if (plan.kind === 'clean') {
       // A clean anchor whose disk read raced the CLI has no `cleanContents`

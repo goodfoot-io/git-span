@@ -18,7 +18,7 @@ import {
   walkAddressLineage
 } from '../../../src/spanViewer/anchorMatcher.js';
 import { ReconstructionError } from '../../../src/spanViewer/patchReconstruction.js';
-import type { HistoryCommit, HistoryDocument, LiveAnchor } from '../../../src/spanViewer/types.js';
+import type { CurrentAnchor, HistoryCommit, HistoryDocument, LiveAnchor } from '../../../src/spanViewer/types.js';
 
 const FIRST_ADD = 'web/checkout.tsx#L1-L5';
 
@@ -325,6 +325,106 @@ describe('anchorMatcher', () => {
       assert.throws(() => matchAnchor(FIRST_ADD, history), ReconstructionError);
     });
 
+    it('classifies an uncommitted in-place re-anchor as drifted, recovering the recorded bytes across the rename', () => {
+      // The real `git span history` shape for a re-anchored declaration (the
+      // address rewritten in the worktree .span file, the recorded token
+      // kept): the current entry at the declared address carries `rename
+      // from`/`rename to` headers, the old side's hunk coordinate lives in the
+      // FROM address's line space (1) and the new side's in the declared
+      // address's (3), and the committed history lives under the FROM address.
+      // The lineage must start at `rename from f.txt#L1-L3` or the anchor is
+      // misclassified as reconciled with empty history, and the old side must
+      // rebase against the from address's extent start or the recovery throws
+      // on the negative rebase.
+      const currentEntry: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'similarity index 66%',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'drift source worktree, head',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671',
+          '--- a/f.txt#L1-L3',
+          '+++ b/f.txt#L3-L5',
+          '@@ -1,3 +3,3 @@',
+          ' alpha',
+          '-beta',
+          '+BETA',
+          ' gamma'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])],
+        current: { anchors: [currentEntry] }
+      });
+
+      assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
+        kind: 'drifted',
+        historical: 'alpha\nbeta\ngamma\n',
+        current: 'alpha\nBETA\ngamma\n'
+      });
+    });
+
+    it('classifies a re-anchor back to an address with its own committed history as drifted, not throwing', () => {
+      // The evaluator-confirmed Arm A shape: the anchor has committed history
+      // at its declared address (c1 records at f.txt#L3-L5), a committed
+      // re-anchor moves it away (c2, a rename entry at f.txt#L1-L3), and an
+      // UNCOMMITTED re-anchor back to f.txt#L3-L5 with content drift produces
+      // the current entry: rename headers + hunks + sources, its old side in
+      // the FROM address's line space. The lineage must connect through the
+      // current entry's `rename from` to the committed chain and back to the
+      // declared address's own history, and the old side must rebase against
+      // the from address's extent start -- before both fixes this shape threw
+      // ReconstructionError on the negative rebase and blanked the whole
+      // viewer.
+      const currentEntry: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'similarity index 66%',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'drift source worktree, head',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671',
+          '--- a/f.txt#L1-L3',
+          '+++ b/f.txt#L3-L5',
+          '@@ -1,3 +3,3 @@',
+          ' alpha',
+          '-beta',
+          '+BETA',
+          ' gamma'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+      const history = historyFixture({
+        commits: [
+          commit('c2', 'Re-anchor', [
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L3-L5 b/f.txt#L1-L3',
+                'rename from f.txt#L3-L5',
+                'rename to f.txt#L1-L3',
+                'index rk64:aaaa..rk64:aaaa'
+              ].join('\n')
+            }
+          ]),
+          commit('c1', 'Add', [{ path: 'f.txt#L3-L5', content: 'alpha\nbeta\ngamma\n' }])
+        ],
+        current: { anchors: [currentEntry] }
+      });
+
+      assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
+        kind: 'drifted',
+        historical: 'alpha\nbeta\ngamma\n',
+        current: 'alpha\nBETA\ngamma\n'
+      });
+    });
+
     it('routes a header-only drifted diff to historical = content instead of throwing', () => {
       // A committed-but-unreconciled anchor: the recorded hash is stale while
       // the bytes are byte-identical, so the current diff carries no hunks yet
@@ -413,6 +513,37 @@ describe('anchorMatcher', () => {
       assert.strictEqual(matches.length, 2);
       assert.strictEqual(matches[0]?.anchor.rebound, undefined, 'the content block wins');
       assert.ok(matches[0]?.anchor.diff?.includes('-hi\n+hey'));
+    });
+
+    it('starts at the current entry rename-from address when the declared address itself has no timeline', () => {
+      // An uncommitted in-place re-anchor: the worktree declaration moved the
+      // anchor to f.txt#L3-L5, so no timeline entry wears that address -- the
+      // committed history lives under the `rename from` address and the walk
+      // must start there.
+      const commits: HistoryCommit[] = [
+        commit('c1', 'Add', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])
+      ];
+      const currentEntry: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+
+      const matches = walkAddressLineage(commits, 'f.txt#L3-L5', currentEntry);
+      assert.strictEqual(matches.length, 1, 'the from address connects to the committed history');
+      assert.strictEqual(matches[0]?.commitIndex, 0);
+      assert.strictEqual(matches[0]?.address, 'f.txt#L1-L3');
+      assert.deepStrictEqual(
+        walkAddressLineage(commits, 'f.txt#L3-L5'),
+        [],
+        'without the current entry the declared address is genuinely dangling'
+      );
     });
 
     it('returns no matches for a genuinely dangling address', () => {

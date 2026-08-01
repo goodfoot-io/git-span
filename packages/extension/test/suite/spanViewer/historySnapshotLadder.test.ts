@@ -820,6 +820,353 @@ describe('historySnapshotLadder', () => {
       });
     });
 
+    it('threads a stale declaration forward through a committed delete-then-re-add: every rung renders', () => {
+      // Recorded at c1 (the recorded token hashes t0); the anchored file is
+      // committed-deleted at c2 and re-created at c3, then edited at c4
+      // WITHOUT re-anchoring, and the worktree drifts on top. The recorded
+      // bytes are the c1-era t0, and the newest edit rung's post-image is the
+      // re-created content -- so the forward threading must advance THROUGH
+      // the `/dev/null`-sided rungs (the deletion empties the running state,
+      // the re-add fills it with the diff's own new side) or the c4 rung's
+      // post-image match fails against the c1-era bytes and everything
+      // truncates at rung zero.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine\nline ten\n';
+      const worktree =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine WORKTREE\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c4', 'edit line seven', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:cccc..rk64:dddd\n--- a/f.txt\n+++ b/f.txt\n@@ -6,3 +6,3 @@\n line six\n-line seven\n+line seven EDITED\n line eight\n'
+          }
+        ]),
+        commit('c3', 're-add anchor', [
+          {
+            path: ADDRESS,
+            diff: [
+              'diff --git a/f.txt#L1-L10 b/f.txt#L1-L10',
+              'new anchor',
+              'index rk64:bbbb..rk64:cccc',
+              '--- /dev/null',
+              '+++ b/f.txt#L1-L10',
+              '@@ -0,0 +1,10 @@',
+              '+line one',
+              '+line two',
+              '+line three',
+              '+line four',
+              '+line five',
+              '+line six',
+              '+line seven',
+              '+line eight',
+              '+line nine',
+              '+line ten'
+            ].join('\n')
+          }
+        ]),
+        commit('c2', 'delete anchor', [
+          {
+            path: ADDRESS,
+            diff: [
+              'diff --git a/f.txt#L1-L10 b/f.txt#L1-L10',
+              'deleted anchor',
+              'index rk64:aaaa..rk64:bbbb',
+              '--- a/f.txt#L1-L10',
+              '+++ /dev/null',
+              '@@ -1,10 +0,0 @@',
+              '-line one',
+              '-line two',
+              '-line three',
+              '-line four',
+              '-line five',
+              '-line six',
+              '-line seven',
+              '-line eight',
+              '-line nine',
+              '-line ten'
+            ].join('\n')
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        // The old side is the RECORDED snapshot (t0, from c1) -- the stale-
+        // declaration shape: the recorded token still hashes t0 while the
+        // timeline moved through delete, re-add, and edit to t1.
+        diff: [
+          'diff --git a/f.txt b/f.txt',
+          'index rk64:aaaa..rk64:dddd',
+          '--- a/f.txt',
+          '+++ b/f.txt',
+          '@@ -6,5 +6,5 @@',
+          ' line six',
+          '-line seven',
+          '+line seven EDITED',
+          ' line eight',
+          '-line nine',
+          '+line nine WORKTREE',
+          ' line ten'
+        ].join('\n'),
+        content: worktree,
+        sources: ['WORKTREE']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: worktree });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 4, 'the delete and re-add rungs render, nothing truncates');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c4',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line seven',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 're-add anchor',
+        original: '',
+        modified: t0
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'delete anchor',
+        original: t0,
+        modified: ''
+      });
+      assert.deepStrictEqual(result.rungs[3], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('threads the clean seed forward when the worktree reverted to the recorded bytes, older than the newest commit', () => {
+      // Committed-but-unreconciled: recorded at c1, edited and committed at c2
+      // without re-anchoring, worktree reverted to the recorded bytes -- the
+      // CLI's `resolved, pending commit` classification, so `current` is
+      // absent and the disk-read clean content equals the recorded token,
+      // OLDER than the newest commit. Seeding straight from those bytes makes
+      // c2's reverse-apply fail its post-image match and truncate at rung
+      // zero; the ladder must thread the seed forward through c2's diff to
+      // recover t1, then walk back through both rungs.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, seedContent: t0 });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 2, 'the c2 edit and c1 record rungs both render');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('threads a stale header-only seed forward: recorded once, edited at c2, then re-anchored to identical bytes', () => {
+      // A header-only current diff (here a pure rename: identical bytes at a
+      // new address) proves the worktree bytes equal the recorded bytes -- but
+      // those are the c1-era bytes, OLDER than the c2 edit, when the
+      // declaration is stale. The header-only branch must thread the recorded
+      // bytes forward through c2's diff just like the drifted branch, or the
+      // c2 rung's post-image match fails and the ladder truncates at rung
+      // zero.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: 'f.txt#L30-L39',
+        // The re-anchored address wears the c1-era recorded bytes; the diff
+        // carries the rename headers and no hunks because the content never
+        // changed -- the committed-but-unreconciled shape whose worktree bytes
+        // are the recorded token.
+        diff: [
+          'diff --git a/f.txt#L1-L5 b/f.txt#L30-L39',
+          'rename from f.txt#L1-L5',
+          'rename to f.txt#L30-L39',
+          'index rk64:aaaa..rk64:aaaa'
+        ].join('\n'),
+        content: t0,
+        sources: ['HEAD']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'f.txt#L30-L39', commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 2, 'both rungs render despite the stale header-only seed');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('seeds a re-anchored drifted anchor from the recorded bytes and walks its rename-from lineage', () => {
+      // The real `git span history` shape for an uncommitted in-place re-anchor
+      // (address rewritten in the .span file, recorded token kept): the
+      // current entry at the declared address carries `rename from/to`
+      // headers, the old side's hunk coordinate in the FROM address's line
+      // space (1) and the new side's in the declared address's (3), and the
+      // committed history lives under the FROM address. The lineage must start
+      // at `rename from f.txt#L1-L3` or it is invisible, and the seed recovery
+      // must rebase the old side against the from address's extent start or it
+      // throws on the negative rebase.
+      const commits: HistoryCommit[] = [
+        commit('c1', 'record anchor', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])
+      ];
+      const current: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'similarity index 66%',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'drift source worktree, head',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671',
+          '--- a/f.txt#L1-L3',
+          '+++ b/f.txt#L3-L5',
+          '@@ -1,3 +3,3 @@',
+          ' alpha',
+          '-beta',
+          '+BETA',
+          ' gamma'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'f.txt#L3-L5', commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.deepStrictEqual(result.rungs, [
+        {
+          hash: 'c1',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'record anchor',
+          original: '',
+          modified: 'alpha\nbeta\ngamma\n'
+        }
+      ]);
+    });
+
+    it('walks a re-anchor back to an address with its own committed history, seeding from the recorded bytes', () => {
+      // The evaluator-confirmed Arm A shape: committed history at the declared
+      // address (c1 records at f.txt#L3-L5), a committed re-anchor moves the
+      // anchor away (c2, a header-only rename entry at f.txt#L1-L3), and an
+      // UNCOMMITTED re-anchor back to f.txt#L3-L5 with content drift makes the
+      // current entry a rename with hunks. The lineage must start at the
+      // current entry's `rename from` address, follow the committed chain back
+      // across the c2 rename boundary to the declared address's own record
+      // rung, and the seed recovery must rebase each hunk side against its own
+      // address's extent start.
+      const current: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'similarity index 66%',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'drift source worktree, head',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671',
+          '--- a/f.txt#L1-L3',
+          '+++ b/f.txt#L3-L5',
+          '@@ -1,3 +3,3 @@',
+          ' alpha',
+          '-beta',
+          '+BETA',
+          ' gamma'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+      const commits: HistoryCommit[] = [
+        commit('c2', 're-anchor', [
+          {
+            path: 'f.txt#L1-L3',
+            diff: [
+              'diff --git a/f.txt#L3-L5 b/f.txt#L1-L3',
+              'rename from f.txt#L3-L5',
+              'rename to f.txt#L1-L3',
+              'index rk64:aaaa..rk64:aaaa'
+            ].join('\n')
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: 'f.txt#L3-L5', content: 'alpha\nbeta\ngamma\n' }])
+      ];
+
+      const result = buildHistorySnapshotLadder({
+        liveAddress: 'f.txt#L3-L5',
+        commits,
+        current,
+        seedContent: ''
+      });
+
+      assert.strictEqual(result.truncated, false);
+      assert.deepStrictEqual(result.rungs, [
+        {
+          hash: 'c2',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 're-anchor',
+          original: 'alpha\nbeta\ngamma\n',
+          modified: 'alpha\nbeta\ngamma\n'
+        },
+        {
+          hash: 'c1',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'record anchor',
+          original: '',
+          modified: 'alpha\nbeta\ngamma\n'
+        }
+      ]);
+    });
+
     it('renders every rung across a committed delete-then-re-add at the same address', () => {
       // A full addition is only the lineage origin when nothing older
       // matched; a committed delete (c2) then re-add (c3) at the same address

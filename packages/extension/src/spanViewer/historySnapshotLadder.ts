@@ -20,20 +20,33 @@
  * so the walk's first reverse-apply would fail its post-image match against
  * it and truncate at rung zero. The fix threads the recorded state FORWARD
  * through the lineage first: each diff whose pre-region matches the running
- * text chains forward onto it, and one whose pre-region does not was
- * committed at-or-before the recording (the running text is already that
- * commit's post-state) and is skipped. The threaded result is the true
- * post-newest-commit state -- it agrees with the recording state everywhere
- * no later commit changed anything, and with each later commit's post-state
- * inside that commit's own hunks. Two shapes short-circuit the recovery: a
- * full-deletion diff carries the recorded bytes as its own old side
- * (`current.content`, or the diff's `-` lines when the live side is
+ * text chains forward onto it, one whose pre-region does not was committed
+ * at-or-before the recording (the running text is already that commit's
+ * post-state) and is skipped, and a committed full re-add fills the running
+ * text with the diff's own new side -- the delete-then-re-add cycle advances
+ * the recorded state to the re-created bytes. A committed full deletion is
+ * skipped instead: it never contributes to the threaded value, because a
+ * re-add newer than it fills the running text from its own side regardless
+ * and a deletion-newest rung resolves its own old side in the walk without
+ * the seed -- and advancing through it would clobber a fresh seed that
+ * already postdates the deletion. The threaded result is the true
+ * post-newest-commit state -- it agrees with the recording
+ * state everywhere no later commit changed anything, and with each later
+ * commit's post-state inside that commit's own hunks. Two shapes short-circuit
+ * the recovery: a full-deletion diff carries the recorded bytes as its own
+ * old side (`current.content`, or the diff's `-` lines when the live side is
  * unreadable -- threaded forward through the lineage like the reconstruction
  * recovery, so a stale declaration whose file was deleted from the worktree
  * still reaches the post-newest-commit state), and a header-only diff (a
  * relocation, or a rename whose content is unchanged) proves the bytes did
- * not change, so `current.content` is the seed. On the not-drifted branch the
- * caller's disk-read clean content already is that state and seeds directly.
+ * not change, so `current.content` is the seed. Every seed path threads
+ * forward, not only the reconstruction recovery: the not-drifted branch's
+ * disk-read clean content and the two short-circuit branches' `current.content`
+ * are also only the post-newest-commit state when the declaration is fresh --
+ * a committed-but-unreconciled anchor reads back the recorded (c1-era) bytes,
+ * older than the newest commit, and needs the same forward threading (safe
+ * when fresh, because every pre-recording diff then skips on pre-region
+ * mismatch).
  *
  * **Rungs**: a first-add supplies `content` directly and terminates (the
  * origin needs no reconstruction); a full addition/deletion (a `/dev/null`
@@ -124,12 +137,19 @@ export interface BuildHistorySnapshotLadderOptions {
  * `applyDiffForward` advances the running snapshot through them; a diff whose
  * pre-region does not match was committed at-or-before the recording (the
  * running text already is that commit's post-state) and is skipped. A
- * first-add or `/dev/null`-sided diff supplies no chainable pre-region and a
- * rename or rebound block changes no bytes, so all of those are skipped
- * too -- nothing between them can move the running text. A diff that should
- * chain but does not (a recorded state outside this timeline) leaves the
- * running text too old, and the backward walk's own post-image match fails
- * closed at rung zero rather than rendering a fabricated history.
+ * committed full re-add carries no chainable pre-region, but it still moves
+ * the running text by construction -- the delete-then-re-add cycle's forward
+ * motion comes from the re-add's own new side -- so the threading advances
+ * through it unconditionally. A committed full deletion is skipped: it never
+ * contributes to the threaded value (a re-add newer than it overwrites the
+ * running text from its own side, and a deletion-newest rung resolves its own
+ * old side in the walk without the seed), and advancing through it would
+ * clobber a fresh seed that already postdates the deletion. A first-add
+ * (recorded before the origin) and a rename or rebound block change no bytes
+ * and are skipped. A diff that should chain but does not (a recorded state outside
+ * this timeline) leaves the running text too old, and the backward walk's own
+ * post-image match fails closed at rung zero rather than rendering a
+ * fabricated history.
  *
  * @param recorded - The state the declaration's recorded token names.
  * @param lineage - The anchor's lineage matches, newest-first (as returned by
@@ -154,9 +174,24 @@ function threadForward(recorded: string, lineage: LineageMatch[]): string {
       continue;
     }
     const diff = anchor.diff;
-    if (isFullAddition(diff) || isFullDeletion(diff) || !hasHunks(diff)) {
-      // `/dev/null`-sided diffs carry no chainable pre-region, and a
-      // header-only block (a pure rename, a relocation) changes no bytes.
+    if (isFullDeletion(diff)) {
+      // A committed full deletion empties the file but never contributes to
+      // the threaded value: a re-add newer than it fills the running text
+      // from its own side regardless, and a deletion-newest rung resolves
+      // its own old side in the walk without the seed. Advancing through it
+      // would clobber a fresh seed that already postdates the deletion.
+      continue;
+    }
+    if (isFullAddition(diff)) {
+      // A committed full addition (re-)creates the content: threading
+      // forward, the running state after this commit is the diff's own new
+      // side. Same no-pre-region reasoning as the deletion: the delete-then-
+      // re-add cycle must advance the recorded state to the re-created bytes.
+      running = extractHunkSide(diff, 'new');
+      continue;
+    }
+    if (!hasHunks(diff)) {
+      // A header-only block (a pure rename, a relocation) changes no bytes.
       continue;
     }
     const extentStartLine = extentStartLineOf(address);
@@ -194,11 +229,26 @@ function threadForward(recorded: string, lineage: LineageMatch[]): string {
 export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOptions): HistorySnapshotLadderResult {
   const { liveAddress, commits, current, seedContent } = options;
 
-  const lineage = walkAddressLineage(commits, liveAddress);
+  // An uncommitted re-anchor makes the `current` entry itself a rename, and
+  // the committed history lives under its `rename from` address -- the walk
+  // must start there or the whole lineage is invisible (see
+  // `walkAddressLineage`).
+  const lineage = walkAddressLineage(commits, liveAddress, current);
 
   let running: string;
   if (current === undefined) {
-    running = seedContent;
+    // Disk-read clean content is normally the post-newest-commit state by
+    // definition -- but a committed-but-unreconciled anchor (recorded at c1,
+    // edited and committed at c2 without re-anchoring, worktree reverted to
+    // the recorded bytes) reads back the c1-era bytes, OLDER than the newest
+    // commit. Thread the seed forward through the lineage like the drifted
+    // branches below: on a fresh anchor every pre-recording diff skips on
+    // pre-region mismatch and the seed passes through unchanged.
+    try {
+      running = threadForward(seedContent, lineage);
+    } catch {
+      return { rungs: [], truncated: true };
+    }
   } else if (current.content === undefined) {
     if (isFullDeletion(current.diff)) {
       // Deleted anchor: the live bytes are gone, so there is no post-image to
@@ -224,17 +274,34 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
     // Full deletion: `content` IS the recorded bytes -- the post-newest-commit
     // state the walk seeds from. Header-only diff (a relocation, or a rename
     // whose content is unchanged): the bytes did not change, so `content` is
-    // the seed.
-    running = current.content;
+    // the seed. Either way `content` can be OLDER than the newest commit when
+    // the declaration is stale (recorded once, edited without re-anchoring),
+    // so thread it forward through the lineage exactly like the clean branch
+    // above -- on a fresh declaration every pre-recording diff skips on
+    // pre-region mismatch and the seed passes through unchanged.
+    try {
+      running = threadForward(current.content, lineage);
+    } catch {
+      return { rungs: [], truncated: true };
+    }
   } else {
     // Ordinary in-place drift. Recover the recorded state (the content the
     // declaration's recorded token names), then thread it forward through the
     // lineage: on a fresh declaration that state already is the
     // post-newest-commit state, and on a stale one the threading advances it
-    // through every commit newer than the recording (see the module doc).
+    // through every commit newer than the recording (see the module doc). A
+    // rename block's old side lives in the old address's line space, so it
+    // rebases against the rename-from extent start like the ladder's rename
+    // rungs do.
     try {
+      const renameFrom = extractRenameFrom(current.diff);
       running = threadForward(
-        reconstructOriginal(current.diff, current.content, extentStartLineOf(liveAddress)),
+        reconstructOriginal(
+          current.diff,
+          current.content,
+          extentStartLineOf(liveAddress),
+          renameFrom === undefined ? extentStartLineOf(liveAddress) : extentStartLineOf(renameFrom)
+        ),
         lineage
       );
     } catch {
