@@ -12,6 +12,7 @@
 
 import * as assert from 'node:assert';
 import {
+  declarationRenameFrom,
   extentStartLineOf,
   matchAllAnchors,
   matchAnchor,
@@ -449,6 +450,104 @@ describe('anchorMatcher', () => {
         current: 'hello\nhi\n'
       });
     });
+
+    it('classifies a byte-identical uncommitted re-anchor as clean, not dangling, when the current block carries no anchors', () => {
+      // The REAL `git span history` shape for the CLI's documented re-anchor
+      // flow: record f.txt#L1-L3, insert a line above, run `stale --fix`. The
+      // re-anchor is byte-identical (the recorded token preserved, the
+      // content unchanged), so the resolver classifies it as non-reportable
+      // and `current.anchors` is EMPTY -- `current.span_diff` is the only
+      // trace of the move, as a same-token address rewrite of the declaration
+      // line. Without the span_diff the walk finds no timeline entry wearing
+      // f.txt#L2-L4 and the anchor is misclassified `dangling` -- while the
+      // CLI itself certifies "0 stale" and the recording lives in history.
+      const history = historyFixture({
+        commits: [commit('c2', 'record anchor', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])],
+        current: {
+          anchors: [],
+          span_diff: [
+            'diff --git a/.span/demo b/.span/demo',
+            'index c817b57..ebf85ae 100644',
+            '--- a/.span/demo',
+            '+++ b/.span/demo',
+            '@@ -1,2 +1,2 @@',
+            '-f.txt#L1-L3 rk64:455e176970060f71',
+            '+f.txt#L2-L4 rk64:455e176970060f71',
+            ' '
+          ].join('\n')
+        }
+      });
+      assert.deepStrictEqual(matchAnchor('f.txt#L2-L4', history), { kind: 'clean' });
+    });
+
+    it('classifies the committed delete+add re-anchor (kept token, different target bytes) as relocated with the old recording in lineage', () => {
+      // The REAL `git span history` shape for a committed re-anchor that keeps
+      // the recorded token while the target address's bytes differ: the commit
+      // emits a content block at the new address (its content is the
+      // ADDRESS's file bytes, not the recorded token's) plus a full deletion
+      // at the old address -- no rename headers anywhere -- and the resolver
+      // finds the recorded bytes at the old address, so the current entry is a
+      // relocation. The declaration move is the commit's own span_diff.
+      const history = historyFixture({
+        commits: [
+          commit('c3', 'c3-reanchor-keep-token', [
+            { path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' },
+            {
+              path: 'f.txt#L3-L5',
+              diff: [
+                'diff --git a/f.txt#L3-L5 b/dev/null',
+                'deleted anchor',
+                'index rk64:e0c06c534424c68e..0000000000000000',
+                '--- a/f.txt#L3-L5',
+                '+++ /dev/null',
+                '@@ -3,3 +0,0 @@',
+                '-gamma',
+                '-delta',
+                '-epsilon'
+              ].join('\n')
+            }
+          ]).valueOf() as HistoryCommit & { span_diff: string },
+          commit('c2', 'c2-record', [{ path: 'f.txt#L3-L5', content: 'gamma\ndelta\nepsilon\n' }])
+        ],
+        current: {
+          anchors: [
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3',
+                'proposed anchor f.txt#L3-L5',
+                'drift source head',
+                'index rk64:e0c06c534424c68e..rk64:e0c06c534424c68e'
+              ].join('\n'),
+              content: 'alpha\nbeta\ngamma\n',
+              proposed: 'f.txt#L3-L5',
+              sources: ['HEAD']
+            }
+          ]
+        }
+      });
+      // The span_diff on the committed re-anchor (here set after construction,
+      // since the local commit() helper does not carry one) is what connects
+      // the new address to the old recording.
+      const reanchor = history.commits[0];
+      assert.ok(reanchor !== undefined);
+      (reanchor as { span_diff?: string }).span_diff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index 45dc756..a9b3db2 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L3-L5 rk64:e0c06c534424c68e',
+        '+f.txt#L1-L3 rk64:e0c06c534424c68e',
+        ' '
+      ].join('\n');
+      assert.deepStrictEqual(matchAnchor('f.txt#L1-L3', history), {
+        kind: 'relocated',
+        content: 'alpha\nbeta\ngamma\n',
+        proposed: 'f.txt#L3-L5',
+        sources: ['HEAD']
+      });
+    });
   });
 
   describe('walkAddressLineage', () => {
@@ -549,6 +648,240 @@ describe('anchorMatcher', () => {
     it('returns no matches for a genuinely dangling address', () => {
       const commits: HistoryCommit[] = [commit('c1', 'Add', [{ path: 'web/other.tsx', content: 'unrelated' }])];
       assert.deepStrictEqual(walkAddressLineage(commits, 'web/never-seen.tsx'), []);
+    });
+
+    it('starts at the current span_diff from-address when the current block carries no anchors', () => {
+      // The byte-identical uncommitted re-anchor (the CLI's `stale --fix`
+      // output before the fix is committed): the declaration moved the
+      // recorded token from f.txt#L1-L3 to f.txt#L2-L4 with no content
+      // change, so the resolver classifies the move as non-reportable and
+      // `current.anchors` is empty. `current.span_diff` -- the same-token
+      // address rewrite of the declaration line -- is the only trace that the
+      // committed history lives under the OLD address.
+      const commits: HistoryCommit[] = [
+        commit('c1', 'record anchor', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])
+      ];
+      const currentSpanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:455e176970060f71',
+        ' '
+      ].join('\n');
+
+      const matches = walkAddressLineage(commits, 'f.txt#L2-L4', undefined, currentSpanDiff);
+      assert.strictEqual(matches.length, 1, 'the span_diff from-address connects to the committed history');
+      assert.strictEqual(matches[0]?.commitIndex, 0);
+      assert.strictEqual(matches[0]?.address, 'f.txt#L1-L3');
+      assert.deepStrictEqual(
+        walkAddressLineage(commits, 'f.txt#L2-L4'),
+        [],
+        'without the span_diff the declared address is genuinely dangling'
+      );
+    });
+
+    it('crosses a committed delete+add re-anchor via the commit span_diff instead of terminating at the content block', () => {
+      // The REAL routine shape for a committed re-anchor (record f.txt#L1-L3,
+      // insert two lines above, run `stale --fix`, commit the fix): the fix
+      // commit carries a CONTENT block at the new address (its content is the
+      // moved address's file bytes) plus a full deletion at the old address --
+      // no rename headers anywhere -- and its own span_diff carries the
+      // same-token address move. The content block is a re-anchor destination,
+      // not the origin, so the walk must cross into the old address's lineage
+      // or the intermediate edit and the recording rungs are silently dropped.
+      const commits: HistoryCommit[] = [
+        {
+          hash: 'c4',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'c4-stale-fix',
+          anchors: [
+            { path: 'f.txt#L3-L5', content: 'a\nb\nc\n' },
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L1-L3 b/dev/null',
+                'deleted anchor',
+                'index rk64:fe623ff0f6be667f..0000000000000000',
+                '--- a/f.txt#L1-L3',
+                '+++ /dev/null',
+                '@@ -1,3 +0,0 @@',
+                '-x',
+                '-y',
+                '-a'
+              ].join('\n')
+            }
+          ],
+          span_diff: [
+            'diff --git a/.span/demo b/.span/demo',
+            'index c15d20c..e930320 100644',
+            '--- a/.span/demo',
+            '+++ b/.span/demo',
+            '@@ -1,2 +1,2 @@',
+            '-f.txt#L1-L3 rk64:9e8ea13137a80ccb',
+            '+f.txt#L3-L5 rk64:9e8ea13137a80ccb',
+            ' '
+          ].join('\n')
+        },
+        commit('c3', 'c3-modify', [
+          {
+            path: 'f.txt#L1-L3',
+            diff: [
+              'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3',
+              'index rk64:9e8ea13137a80ccb..rk64:fe623ff0f6be667f',
+              '--- a/f.txt#L1-L3',
+              '+++ b/f.txt#L1-L3',
+              '@@ -1,3 +1,3 @@',
+              '+x',
+              '+y',
+              ' a',
+              '-b',
+              '-c'
+            ].join('\n')
+          }
+        ]),
+        commit('c2', 'c2-record', [{ path: 'f.txt#L1-L3', content: 'a\nb\nc\n' }])
+      ];
+      const matches = walkAddressLineage(commits, 'f.txt#L3-L5');
+      assert.strictEqual(matches.length, 3);
+      assert.strictEqual(
+        matches[0]?.crossedFrom,
+        'f.txt#L1-L3',
+        'the content block is crossed, not treated as the origin'
+      );
+      assert.deepStrictEqual(
+        matches.map((match) => match.address),
+        ['f.txt#L3-L5', 'f.txt#L1-L3', 'f.txt#L1-L3']
+      );
+      assert.strictEqual(matches[1]?.commitIndex, 1);
+      assert.strictEqual(matches[2]?.commitIndex, 2);
+      assert.strictEqual(matches[2]?.anchor.content, 'a\nb\nc\n');
+    });
+
+    it('treats a first-add content block as the origin when the commit declares no same-token move', () => {
+      // Guard against over-crossing: a delete+add pair in one commit whose
+      // declaration lines carry DIFFERENT tokens (the old anchor was dropped
+      // and a genuinely new recording added at another address) is not a
+      // re-anchor, so the content block still terminates the walk.
+      const commits: HistoryCommit[] = [
+        {
+          hash: 'c2',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'c2-unrelated',
+          anchors: [
+            { path: 'f.txt#L3-L5', content: 'a\nb\nc\n' },
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L1-L3 b/dev/null',
+                'deleted anchor',
+                'index rk64:fe623ff0f6be667f..0000000000000000',
+                '--- a/f.txt#L1-L3',
+                '+++ /dev/null',
+                '@@ -1,3 +0,0 @@',
+                '-x',
+                '-y',
+                '-a'
+              ].join('\n')
+            }
+          ],
+          span_diff: [
+            'diff --git a/.span/demo b/.span/demo',
+            'index c15d20c..e930320 100644',
+            '--- a/.span/demo',
+            '+++ b/.span/demo',
+            '@@ -1,2 +1,2 @@',
+            '-f.txt#L1-L3 rk64:fe623ff0f6be667f',
+            '+f.txt#L3-L5 rk64:9e8ea13137a80ccb',
+            ' '
+          ].join('\n')
+        },
+        commit('c1', 'c1-record', [{ path: 'f.txt#L1-L3', content: 'a\nb\nc\n' }])
+      ];
+      const matches = walkAddressLineage(commits, 'f.txt#L3-L5');
+      assert.strictEqual(matches.length, 1, 'a different-token move does not cross the delete+add pair');
+      assert.strictEqual(matches[0]?.crossedFrom, undefined);
+      assert.strictEqual(matches[0]?.anchor.content, 'a\nb\nc\n');
+    });
+  });
+
+  describe('declarationRenameFrom', () => {
+    it('returns the from-address for a same-token declaration move onto the live address', () => {
+      const spanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:455e176970060f71',
+        ' '
+      ].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L2-L4'), 'f.txt#L1-L3');
+    });
+
+    it('returns undefined when no added anchor line lands on the live address', () => {
+      const spanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:455e176970060f71',
+        ' '
+      ].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L9-L11'), undefined);
+    });
+
+    it('returns undefined for an in-place token rewrite (rebound) at the live address', () => {
+      const spanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L1-L3 rk64:bb9e92ed860ae671',
+        ' '
+      ].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L1-L3'), undefined);
+    });
+
+    it('returns undefined for a move carrying a different token (unrelated add and remove)', () => {
+      const spanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:bb9e92ed860ae671',
+        ' '
+      ].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L2-L4'), undefined);
+    });
+
+    it('ignores the --- a/ and +++ b/ header lines and non-anchor context', () => {
+      const spanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:455e176970060f71',
+        ' ',
+        '\\ No newline at end of file'
+      ].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L2-L4'), 'f.txt#L1-L3');
+    });
+
+    it('returns undefined when the span diff carries no hunks at all', () => {
+      const spanDiff = ['diff --git a/.span/demo b/.span/demo', 'index c817b57..ebf85ae 100644'].join('\n');
+      assert.strictEqual(declarationRenameFrom(spanDiff, 'f.txt#L2-L4'), undefined);
     });
   });
 

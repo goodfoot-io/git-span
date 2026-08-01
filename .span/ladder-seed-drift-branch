@@ -1,4 +1,4 @@
-packages/extension/src/spanViewer/anchorMatcher.ts#L202-L202 rk64:c9494e0d34be1da7
-packages/extension/src/spanViewer/historySnapshotLadder.ts#L299-L299 rk64:6824c35cdbd0e767
+packages/extension/src/spanViewer/anchorMatcher.ts#L324-L324 rk64:c9494e0d34be1da7
+packages/extension/src/spanViewer/historySnapshotLadder.ts#L315-L315 rk64:6824c35cdbd0e767
 
 Both the anchor matcher's ordinary-drift branch and the history ladder's drifted-seed recovery call reconstructOriginal with extentStartLine — a divergence in one call but not the other produces different historical content for the same anchor

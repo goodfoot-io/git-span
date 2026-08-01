@@ -1,4 +1,4 @@
-packages/extension/src/spanViewer/anchorMatcher.ts#L76-L76 rk64:8c0e5f4199bea89d
-packages/extension/src/spanViewer/historySnapshotLadder.ts#L81-L81 rk64:2e2774281058326e
+packages/extension/src/spanViewer/anchorMatcher.ts#L179-L179 rk64:8c0e5f4199bea89d
+packages/extension/src/spanViewer/historySnapshotLadder.ts#L88-L88 rk64:2e2774281058326e
 
 Both the anchor matcher and the history ladder walk address lineage through rename headers — if the lineage parser in walkAddressLineage changes, both callers must agree on which entry it resolves at a rename boundary

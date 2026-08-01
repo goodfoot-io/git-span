@@ -53,6 +53,97 @@ export interface LineageMatch {
    * "this address has history".
    */
   anchor: TimelineAnchor;
+  /**
+   * Set when the matched anchor is a first-add content block that is NOT the
+   * lineage origin: the commit's `span_diff` declares a re-anchor of the same
+   * recorded token FROM this address TO the matched one, and the CLI renders
+   * a committed re-anchor whose target bytes differ as that content block
+   * plus a full deletion at the old address -- no rename headers anywhere.
+   * The walk crosses the delete+add pair and continues at `crossedFrom`
+   * instead of terminating at the content block.
+   */
+  crossedFrom?: string;
+}
+
+/**
+ * The address a `.span` declaration diff moved a recorded token FROM, when a
+ * hunk rewrites one anchor line `oldAddr token` to `newAddr token` carrying
+ * the same token -- the CLI's declaration-level shape of a re-anchor. Its
+ * anchor block renders as a rename or as a delete+add pair depending on the
+ * target bytes' similarity, but the declaration hunk always moves the token
+ * between addresses, so this is the one signal present in both forms.
+ *
+ * Returns the old address only when the move's destination equals
+ * `liveAddress`; `undefined` when the diff is not a same-token move to it
+ * (an unrelated anchor add/remove rewrites different token lines, and a
+ * `rebound` rewrites the token in place at one address).
+ *
+ * @param spanDiff - A `.span` declaration diff (`current.span_diff`, or a
+ *   commit's own `span_diff`).
+ * @param liveAddress - The address the move must land on.
+ * @returns The address the token moved from, when the diff declares it.
+ */
+export function declarationRenameFrom(spanDiff: string, liveAddress: string): string | undefined {
+  const removed: Array<{ address: string; token: string }> = [];
+  const added: Array<{ address: string; token: string }> = [];
+  let inHunk = false;
+  for (const line of spanDiff.split('\n')) {
+    if (/^@@ /.test(line)) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) {
+      continue;
+    }
+    const body = /^([+-])(.*)$/.exec(line);
+    if (body === null) {
+      // Context line, `\ No newline at end of file` marker, or a stray
+      // header line -- never an anchor line.
+      continue;
+    }
+    const parsed = parseAnchorLine(body[1] === '+' ? (body[2] ?? '') : (body[2] ?? ''));
+    if (parsed === undefined) {
+      continue;
+    }
+    if (body[1] === '-') {
+      removed.push(parsed);
+    } else {
+      added.push(parsed);
+    }
+  }
+  for (const dest of added) {
+    if (dest.address !== liveAddress) {
+      continue;
+    }
+    for (const source of removed) {
+      if (source.token === dest.token && source.address !== dest.address) {
+        return source.address;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Split one `.span` declaration line (`address token`) into its halves,
+ * mirroring the CLI's own anchor-line test: the token is the last
+ * space-delimited field and must carry an `algo:hash` shape.
+ *
+ * @param content - A hunk body line's content (the `-`/`+` prefix stripped).
+ * @returns The address and token, or `undefined` for a non-anchor line.
+ */
+function parseAnchorLine(content: string): { address: string; token: string } | undefined {
+  const space = content.lastIndexOf(' ');
+  if (space < 1) {
+    return undefined;
+  }
+  const address = content.slice(0, space);
+  const token = content.slice(space + 1);
+  const colon = token.indexOf(':');
+  if (colon < 1 || colon === token.length - 1) {
+    return undefined;
+  }
+  return { address, token };
 }
 
 /**
@@ -63,33 +154,63 @@ export interface LineageMatch {
  * itself a rename: a re-anchor edits the worktree declaration's address
  * without committing, so no timeline entry ever wears the declared address --
  * the committed history lives under the `rename from` address and the walk
- * must start there or the anchor's entire lineage is invisible.
+ * must start there or the anchor's entire lineage is invisible. The same is
+ * true when the declaration moved the token to `liveAddress` without
+ * emitting any current anchor at all (a byte-identical re-anchor -- the
+ * CLI's `stale --fix` output -- is non-reportable, so `current.anchors` is
+ * empty and `current.span_diff` is the only trace of the move).
+ *
+ * A committed re-anchor is crossed the same way: a first-add content block
+ * whose commit's `span_diff` declares a same-token move from an older
+ * address is a re-anchor destination, not the origin, and the walk continues
+ * at the old address (see {@link LineageMatch.crossedFrom}).
  *
  * @param commits - The history document's commits, newest-first.
  * @param liveAddress - The anchor's current declared address.
  * @param currentEntry - The `current.anchors[]` entry for `liveAddress`, when
  *   one exists; its rename header, if any, names the address the committed
  *   history lives under.
+ * @param currentSpanDiff - The `current` block's `span_diff`, when the
+ *   declaration has an uncommitted edit; consulted for a same-token move to
+ *   `liveAddress` when no current entry asserts one.
  * @returns One match per commit that touches the tracked lineage, newest
  *   first; `address` is the tracked address at that commit.
  */
 export function walkAddressLineage(
   commits: HistoryCommit[],
   liveAddress: string,
-  currentEntry?: CurrentAnchor
+  currentEntry?: CurrentAnchor,
+  currentSpanDiff?: string
 ): LineageMatch[] {
   const matches: LineageMatch[] = [];
-  let tracked = extractRenameFrom(currentEntry?.diff ?? '') ?? liveAddress;
+  let tracked =
+    extractRenameFrom(currentEntry?.diff ?? '') ??
+    declarationRenameFrom(currentSpanDiff ?? '', liveAddress) ??
+    liveAddress;
   commits.forEach((commit, commitIndex) => {
     const contentEntry = commit.anchors.find((anchor) => anchor.path === tracked && anchor.rebound === undefined);
     const entry = contentEntry ?? commit.anchors.find((anchor) => anchor.path === tracked);
     if (entry === undefined) {
       return;
     }
-    matches.push({ commit, commitIndex, address: tracked, anchor: entry });
+    const match: LineageMatch = { commit, commitIndex, address: tracked, anchor: entry };
+    matches.push(match);
     const renameFrom = RENAME_FROM.exec(entry.diff ?? '')?.[1];
     if (renameFrom !== undefined) {
       tracked = renameFrom;
+    } else if (entry.content !== undefined) {
+      // A first-add content block terminates the walk only when it is the
+      // origin. A committed re-anchor whose target bytes differ from the
+      // recorded token's renders as a content block at the new address plus
+      // a full deletion at the old one -- no rename headers anywhere -- so
+      // the commit's own span_diff (the same-token address move) is the
+      // signal that this block is a re-anchor destination, and the walk
+      // crosses into the old address's lineage.
+      const crossedFrom = declarationRenameFrom(commit.span_diff ?? '', tracked);
+      if (crossedFrom !== undefined) {
+        match.crossedFrom = crossedFrom;
+        tracked = crossedFrom;
+      }
     }
   });
   return matches;
@@ -148,7 +269,8 @@ export function signalsDrift(entry: CurrentAnchor): boolean {
  */
 export function matchAnchor(liveAddress: string, history: HistoryDocument): AnchorPlan {
   const currentEntry = history.current?.anchors.find((anchor) => anchor.path === liveAddress);
-  const hasLineage = walkAddressLineage(history.commits, liveAddress, currentEntry).length > 0;
+  const hasLineage =
+    walkAddressLineage(history.commits, liveAddress, currentEntry, history.current?.span_diff).length > 0;
 
   if (currentEntry === undefined || !signalsDrift(currentEntry)) {
     return hasLineage ? { kind: 'clean' } : { kind: 'dangling' };

@@ -1354,5 +1354,220 @@ describe('historySnapshotLadder', () => {
         modified: x0
       });
     });
+
+    it('renders the recording rung for a byte-identical uncommitted re-anchor, walking the span_diff from-address', () => {
+      // The REAL `git span history` shape for the CLI's `stale --fix` output
+      // before the fix is committed: record f.txt#L1-L3, insert a line above,
+      // run `stale --fix`. The re-anchor is byte-identical, so the resolver
+      // reports nothing under `current.anchors` (the provider finds no entry
+      // and passes no `current`) and `current.span_diff`'s same-token address
+      // move is the only trace that the committed history lives under the OLD
+      // address -- the walk must start there or the recording rung is dropped
+      // and the anchor is left dangling.
+      const t0 = 'alpha\nbeta\ngamma\n';
+      const commits: HistoryCommit[] = [commit('c2', 'record anchor', [{ path: 'f.txt#L1-L3', content: t0 }])];
+      const currentSpanDiff = [
+        'diff --git a/.span/demo b/.span/demo',
+        'index c817b57..ebf85ae 100644',
+        '--- a/.span/demo',
+        '+++ b/.span/demo',
+        '@@ -1,2 +1,2 @@',
+        '-f.txt#L1-L3 rk64:455e176970060f71',
+        '+f.txt#L2-L4 rk64:455e176970060f71',
+        ' '
+      ].join('\n');
+
+      const result = buildHistorySnapshotLadder({
+        liveAddress: 'f.txt#L2-L4',
+        commits,
+        currentSpanDiff,
+        seedContent: t0
+      });
+
+      assert.strictEqual(result.truncated, false);
+      assert.deepStrictEqual(result.rungs, [
+        {
+          hash: 'c2',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'record anchor',
+          original: '',
+          modified: t0
+        }
+      ]);
+    });
+
+    it('crosses a committed re-anchor destination rung and renders the true origin below', () => {
+      // The REAL routine shape for a committed re-anchor (record f.txt#L1-L3
+      // with a/b/c at c2, commit an edit at c3, run `stale --fix` and commit
+      // the fix at c4): the fix commit carries a CONTENT block at the new
+      // address (its content is the moved address's file bytes, a/b/c) plus a
+      // full deletion at the old address (the pre-fix bytes x/y/a) -- no
+      // rename headers anywhere -- and its own span_diff carries the
+      // same-token address move. Without the crossing the walk terminates at
+      // the content block as a false "first-add" origin and the c3 edit and c2
+      // record rungs are silently dropped; with it, the destination rung
+      // renders the delete+add pair and the walk continues to the real
+      // recording.
+      const commits: HistoryCommit[] = [
+        {
+          hash: 'c4',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'c4-stale-fix',
+          anchors: [
+            { path: 'f.txt#L3-L5', content: 'a\nb\nc\n' },
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L1-L3 b/dev/null',
+                'deleted anchor',
+                'index rk64:fe623ff0f6be667f..0000000000000000',
+                '--- a/f.txt#L1-L3',
+                '+++ /dev/null',
+                '@@ -1,3 +0,0 @@',
+                '-x',
+                '-y',
+                '-a'
+              ].join('\n')
+            }
+          ],
+          span_diff: [
+            'diff --git a/.span/demo b/.span/demo',
+            'index c15d20c..e930320 100644',
+            '--- a/.span/demo',
+            '+++ b/.span/demo',
+            '@@ -1,2 +1,2 @@',
+            '-f.txt#L1-L3 rk64:9e8ea13137a80ccb',
+            '+f.txt#L3-L5 rk64:9e8ea13137a80ccb',
+            ' '
+          ].join('\n')
+        },
+        commit('c3', 'c3-modify', [
+          {
+            path: 'f.txt#L1-L3',
+            diff: [
+              'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3',
+              'index rk64:9e8ea13137a80ccb..rk64:fe623ff0f6be667f',
+              '--- a/f.txt#L1-L3',
+              '+++ b/f.txt#L1-L3',
+              '@@ -1,3 +1,3 @@',
+              '+x',
+              '+y',
+              ' a',
+              '-b',
+              '-c'
+            ].join('\n')
+          }
+        ]),
+        commit('c2', 'c2-record', [{ path: 'f.txt#L1-L3', content: 'a\nb\nc\n' }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'f.txt#L3-L5', commits, seedContent: 'a\nb\nc\n' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'the destination rung is crossed, the edit and record rungs render');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c4',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'c4-stale-fix',
+        original: 'x\ny\na\n',
+        modified: 'a\nb\nc\n'
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'c3-modify',
+        original: 'a\nb\nc\n',
+        modified: 'x\ny\na\n'
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'c2-record',
+        original: '',
+        modified: 'a\nb\nc\n'
+      });
+    });
+
+    it('crosses a committed re-anchor destination rung from a drifted seed, rendering the delete+add pair and the true origin', () => {
+      // The real drifted variant of the committed re-anchor (a kept-token
+      // move whose target bytes differ from the recorded ones): the fix
+      // commit carries a content block at the new address plus a full
+      // deletion at the old, the current entry at the new address is a
+      // relocation (`proposed` names the old address), and the seed comes
+      // from the current entry's own bytes -- the destination rung must
+      // still render the delete+add pair (old side = the deletion block's
+      // bytes, new side = the content block's) and the walk must reach the
+      // actual recording at the old address.
+      const commits: HistoryCommit[] = [
+        {
+          hash: 'c3',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'c3-reanchor-keep-token',
+          anchors: [
+            { path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' },
+            {
+              path: 'f.txt#L3-L5',
+              diff: [
+                'diff --git a/f.txt#L3-L5 b/dev/null',
+                'deleted anchor',
+                'index rk64:e0c06c534424c68e..0000000000000000',
+                '--- a/f.txt#L3-L5',
+                '+++ /dev/null',
+                '@@ -3,3 +0,0 @@',
+                '-gamma',
+                '-delta',
+                '-epsilon'
+              ].join('\n')
+            }
+          ],
+          span_diff: [
+            'diff --git a/.span/demo b/.span/demo',
+            'index 45dc756..a9b3db2 100644',
+            '--- a/.span/demo',
+            '+++ b/.span/demo',
+            '@@ -1,2 +1,2 @@',
+            '-f.txt#L3-L5 rk64:e0c06c534424c68e',
+            '+f.txt#L1-L3 rk64:e0c06c534424c68e',
+            ' '
+          ].join('\n')
+        },
+        commit('c2', 'c2-record', [{ path: 'f.txt#L3-L5', content: 'gamma\ndelta\nepsilon\n' }])
+      ];
+      const current: CurrentAnchor = {
+        path: 'f.txt#L1-L3',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3',
+          'proposed anchor f.txt#L3-L5',
+          'drift source head',
+          'index rk64:e0c06c534424c68e..rk64:e0c06c534424c68e'
+        ].join('\n'),
+        content: 'alpha\nbeta\ngamma\n',
+        proposed: 'f.txt#L3-L5',
+        sources: ['HEAD']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'f.txt#L1-L3', commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(
+        result.rungs.length,
+        2,
+        'the destination rung renders the delete+add pair, the record rung follows'
+      );
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'c3-reanchor-keep-token',
+        original: 'gamma\ndelta\nepsilon\n',
+        modified: 'alpha\nbeta\ngamma\n'
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'c2-record',
+        original: '',
+        modified: 'gamma\ndelta\nepsilon\n'
+      });
+    });
   });
 });

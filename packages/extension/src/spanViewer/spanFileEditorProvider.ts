@@ -636,8 +636,12 @@ function resolveLadders(
     // An uncommitted re-anchor makes `current` itself a rename; the committed
     // history lives under its `rename from` address, so the walk must start
     // there or the accordion blocks and the ladder rungs would diverge (see
-    // `walkAddressLineage`).
-    const matches = walkAddressLineage(history.commits, address, current);
+    // `walkAddressLineage`). A byte-identical re-anchor (the CLI's
+    // `stale --fix` output) emits NO current entry at all -- `current.span_diff`
+    // is the only trace of the move, so it feeds the walk the same way a
+    // rename header does.
+    const currentSpanDiff = history.current?.span_diff;
+    const matches = walkAddressLineage(history.commits, address, current, currentSpanDiff);
     let seedContent: string;
     if (plan.kind === 'clean') {
       // A clean anchor whose disk read raced the CLI has no `cleanContents`
@@ -650,7 +654,13 @@ function resolveLadders(
     } else {
       seedContent = '';
     }
-    const ladder = buildHistorySnapshotLadder({ liveAddress: address, commits: history.commits, current, seedContent });
+    const ladder = buildHistorySnapshotLadder({
+      liveAddress: address,
+      commits: history.commits,
+      current,
+      currentSpanDiff,
+      seedContent
+    });
     ladderInfos.push({
       address,
       matches,

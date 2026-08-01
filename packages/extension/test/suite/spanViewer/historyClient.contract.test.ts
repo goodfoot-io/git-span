@@ -256,4 +256,99 @@ describe('historyClient contract (live git-span binary)', function () {
     assert.strictEqual(doc.commits[2]?.anchors[0]?.content, 'line one\nline two\nline three\n');
     assert.strictEqual(doc.current, undefined, 're-anchored and committed: nothing drifted, no current block');
   });
+
+  it('emits an empty current block with a same-token span_diff move for a byte-identical uncommitted re-anchor', async () => {
+    // The CLI's `stale --fix` flow: record f.txt#L1-L3, insert a line above
+    // (the extent's bytes unchanged, so the anchor is byte-identical), run
+    // `stale --fix`. The resolver classifies the re-anchor as non-reportable,
+    // so `current.anchors` is EMPTY and `current.span_diff` -- the
+    // declaration's same-token address rewrite -- is the only trace of the
+    // move. The extension's matching layer reads exactly this signal.
+    const binary = resolveRealGitSpan();
+    const dir = makeRepoWithSpan('alpha\nbeta\ngamma\n');
+    await runGitSpan(binary, dir, ['add', 'test-span', 'f.txt#L1-L3']);
+    runGit(dir, ['add', '.span']);
+    runGit(dir, ['commit', '-qm', 'add span']);
+
+    fs.writeFileSync(path.join(dir, 'f.txt'), 'INSERTED\nalpha\nbeta\ngamma\n');
+    await runGitSpan(binary, dir, ['stale', '--fix']);
+
+    const stdout = await runGitSpan(binary, dir, ['history', 'test-span', '--format', 'json']);
+    const doc = parseHistoryJson(stdout);
+
+    assert.strictEqual(doc.schemaVersion, 2);
+    assert.ok(doc.current, 'the uncommitted declaration edit must surface a current block');
+    assert.deepStrictEqual(
+      doc.current.anchors,
+      [],
+      'a byte-identical re-anchor is non-reportable: no anchor entry is emitted'
+    );
+    const spanDiff = doc.current.span_diff;
+    assert.ok(spanDiff, 'the declaration diff must be carried in the current block');
+    const moveFrom = /^-f\.txt#L1-L3 (rk64:[0-9a-f]{16})$/m.exec(spanDiff)?.[1];
+    const moveTo = /^\+f\.txt#L2-L4 (rk64:[0-9a-f]{16})$/m.exec(spanDiff)?.[1];
+    assert.ok(moveFrom && moveTo, 'span_diff must rewrite the anchor line from L1-L3 to L2-L4');
+    assert.strictEqual(moveTo, moveFrom, 'a re-anchor keeps the recorded token, so both lines share it');
+    assert.strictEqual(doc.commits[0]?.anchors[0]?.content, 'alpha\nbeta\ngamma\n');
+  });
+
+  it('emits a content block plus full deletion without rename headers for a committed stale-fix re-anchor', async () => {
+    // The routine flow: record f.txt#L1-L3 with a/b/c, insert two lines above
+    // and commit the edit, then run `stale --fix` and commit the fix. The fix
+    // commit's moved bytes equal the recorded token's, so the re-anchor keeps
+    // the token -- but the deleted extent's bytes differ from the recorded
+    // ones, so the CLI renders the move as a CONTENT block at the new address
+    // plus a FULL DELETION at the old one, with NO rename headers anywhere,
+    // and the commit's own span_diff carries the same-token address move. The
+    // extension's matching layer crosses exactly this delete+add pair.
+    const binary = resolveRealGitSpan();
+    const dir = makeRepoWithSpan('a\nb\nc\n');
+    await runGitSpan(binary, dir, ['add', 'test-span', 'f.txt#L1-L3']);
+    runGit(dir, ['add', '.span']);
+    runGit(dir, ['commit', '-qm', 'add span']);
+
+    fs.writeFileSync(path.join(dir, 'f.txt'), 'x\ny\na\nb\nc\n');
+    runGit(dir, ['add', 'f.txt']);
+    runGit(dir, ['commit', '-qm', 'edit content']);
+    await runGitSpan(binary, dir, ['stale', '--fix']);
+    runGit(dir, ['add', '.span']);
+    runGit(dir, ['commit', '-qm', 'stale fix']);
+
+    const stdout = await runGitSpan(binary, dir, ['history', 'test-span', '--format', 'json']);
+    const doc = parseHistoryJson(stdout);
+
+    assert.strictEqual(doc.schemaVersion, 2);
+    assert.strictEqual(doc.commits.length, 3, 'add, edit, stale-fix -- newest-first');
+    assert.strictEqual(doc.current, undefined, 'the fix is committed: nothing drifted');
+
+    const fixCommit = doc.commits[0];
+    assert.ok(fixCommit);
+    assertShapeOfCommit(fixCommit);
+    assert.strictEqual(fixCommit.summary, 'stale fix');
+    assert.strictEqual(
+      fixCommit.anchors.length,
+      2,
+      'the committed re-anchor renders as a content block plus a deletion'
+    );
+    assert.strictEqual(
+      fixCommit.anchors.some((anchor) => anchor.diff?.includes('rename from')),
+      false,
+      'the differing-target re-anchor carries no rename headers'
+    );
+
+    const reanchoredBlock = fixCommit.anchors.find((anchor) => anchor.path === 'f.txt#L3-L5');
+    assert.ok(reanchoredBlock, 'the content block lands at the new address');
+    assert.strictEqual(reanchoredBlock.content, 'a\nb\nc\n', 'the block content is the moved address bytes');
+    const deletedBlock = fixCommit.anchors.find((anchor) => anchor.path === 'f.txt#L1-L3');
+    assert.ok(deletedBlock, 'the full deletion lands at the old address');
+    assert.ok(deletedBlock.diff?.includes('deleted anchor'));
+    assert.ok(deletedBlock.diff?.includes('@@ -1,3 +0,0 @@\n-x\n-y\n-a'), 'the deletion names the pre-commit bytes');
+
+    const spanDiff = fixCommit.span_diff;
+    assert.ok(spanDiff, 'the commit must carry its own declaration diff');
+    const moveFrom = /^-f\.txt#L1-L3 (rk64:[0-9a-f]{16})$/m.exec(spanDiff)?.[1];
+    const moveTo = /^\+f\.txt#L3-L5 (rk64:[0-9a-f]{16})$/m.exec(spanDiff)?.[1];
+    assert.ok(moveFrom && moveTo, 'span_diff must rewrite the anchor line from L1-L3 to L3-L5');
+    assert.strictEqual(moveTo, moveFrom, 'the kept-token move shares the token across both lines');
+  });
 });

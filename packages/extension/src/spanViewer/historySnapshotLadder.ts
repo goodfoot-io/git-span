@@ -49,14 +49,21 @@
  * mismatch).
  *
  * **Rungs**: a first-add supplies `content` directly and terminates (the
- * origin needs no reconstruction); a full addition/deletion (a `/dev/null`
- * side) is resolved directly from the diff's own real side -- the walk
- * terminates there only when the rung is the lineage origin, and otherwise
- * continues through it (a committed delete-then-re-add at the same address
- * renders the deletion and record rungs below instead of dropping them
- * silently); a pure rename (rename headers, no hunks) changes no bytes and
- * renders `original = modified = running` while the walk crosses the address
- * boundary (an empty `running` -- the raced-clean fallback's empty seed --
+ * origin needs no reconstruction) -- unless the commit's `span_diff` declares
+ * a same-token re-anchor into the block's address, which makes the block a
+ * RE-ANCHOR destination rather than the origin: the rung renders the
+ * delete+add pair the CLI emits for a committed re-anchor whose target bytes
+ * differ (`original` = the same commit's full-deletion block's old side at
+ * the old address, `modified` = the block's content) and the walk crosses
+ * into the old address's lineage instead of terminating; a full
+ * addition/deletion (a `/dev/null` side) is resolved directly from the
+ * diff's own real side -- the walk terminates there only when the rung is
+ * the lineage origin, and otherwise continues through it (a committed
+ * delete-then-re-add at the same address renders the deletion and record
+ * rungs below instead of dropping them silently); a pure rename (rename
+ * headers, no hunks) changes no bytes and renders
+ * `original = modified = running` while the walk crosses the address boundary
+ * (an empty `running` -- the raced-clean fallback's empty seed --
  * fails that rung closed with a `truncatedAt` marker rather than a silent
  * empty pair); an ordinary in-place edit reverse-applies that commit's own
  * `diff` onto the running snapshot -- the result is both that commit's
@@ -120,6 +127,13 @@ export interface BuildHistorySnapshotLadderOptions {
    * the post-newest-commit state.
    */
   current?: CurrentAnchor;
+  /**
+   * The `current` block's `span_diff`, when the declaration has an uncommitted
+   * edit: a byte-identical re-anchor (the CLI's `stale --fix` output) is
+   * non-reportable, so `current.anchors` is empty and this diff is the only
+   * trace that the committed history lives under the move's source address.
+   */
+  currentSpanDiff?: string;
   /**
    * Disk-read clean content: the seed used on the not-drifted branch, where
    * it is the post-newest-commit state by definition.
@@ -227,13 +241,15 @@ function threadForward(recorded: string, lineage: LineageMatch[]): string {
  * @returns Newer-to-older rungs and whether the walk truncated.
  */
 export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOptions): HistorySnapshotLadderResult {
-  const { liveAddress, commits, current, seedContent } = options;
+  const { liveAddress, commits, current, currentSpanDiff, seedContent } = options;
 
   // An uncommitted re-anchor makes the `current` entry itself a rename, and
   // the committed history lives under its `rename from` address -- the walk
   // must start there or the whole lineage is invisible (see
-  // `walkAddressLineage`).
-  const lineage = walkAddressLineage(commits, liveAddress, current);
+  // `walkAddressLineage`). The same holds when the re-anchor is
+  // byte-identical: the CLI reports nothing under `current.anchors`, and
+  // `current.span_diff`'s same-token address move is the only trace.
+  const lineage = walkAddressLineage(commits, liveAddress, current, currentSpanDiff);
 
   let running: string;
   if (current === undefined) {
@@ -322,6 +338,47 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
       continue;
     }
     if (anchor.content !== undefined) {
+      // A first-add content block terminates the walk when it is the lineage
+      // origin. When the commit's span_diff re-anchored this token here from
+      // `crossedFrom` (a committed re-anchor whose target bytes differ
+      // renders as this content block plus a full deletion at the old
+      // address, with no rename headers anywhere), the block is a RE-ANCHOR
+      // destination, not the origin: the same commit's deletion at
+      // crossedFrom carries the pre-commit bytes -- the rung's original side
+      // and the state the older walk continues from -- so the walk crosses
+      // the delete+add pair instead of terminating.
+      const crossedFrom = match.crossedFrom;
+      if (crossedFrom !== undefined) {
+        const siblingDeletion = commit.anchors.find(
+          (candidate) =>
+            candidate.path === crossedFrom && candidate.diff !== undefined && isFullDeletion(candidate.diff)
+        );
+        if (siblingDeletion?.diff !== undefined) {
+          let original: string;
+          try {
+            original = extractHunkSide(siblingDeletion.diff, 'old');
+          } catch {
+            rungs.push({
+              hash: commit.hash,
+              date: commit.date,
+              summary: commit.summary,
+              original: '',
+              modified: '',
+              truncatedAt: true
+            });
+            return { rungs, truncated: true };
+          }
+          rungs.push({
+            hash: commit.hash,
+            date: commit.date,
+            summary: commit.summary,
+            original,
+            modified: anchor.content
+          });
+          running = original;
+          continue;
+        }
+      }
       // First-add: the origin supplies its snapshot directly and the walk
       // terminates -- there is nothing older to reconstruct.
       rungs.push({
