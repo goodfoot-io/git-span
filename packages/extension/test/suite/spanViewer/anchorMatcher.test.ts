@@ -1,17 +1,34 @@
 /**
- * Tests for the pure anchor-matching state machine.
+ * Tests for the pure anchor-matching state machine (schema v2).
+ *
+ * The discriminator is structural, never hash-based: drift is asserted by the
+ * current block's own fields (`proposed`, `recorded`, `unavailable`,
+ * non-empty `sources`, or real hunks), and membership in history is a lineage
+ * walk that follows `rename from <old>` headers.
  *
  * @summary Anchor matcher tests.
  * @module test/suite/spanViewer/anchorMatcher.test
  */
 
 import * as assert from 'node:assert';
-import { matchAllAnchors, matchAnchor } from '../../../src/spanViewer/anchorMatcher.js';
-import type { HistoryDocument, LiveAnchor } from '../../../src/spanViewer/types.js';
+import {
+  extentStartLineOf,
+  matchAllAnchors,
+  matchAnchor,
+  walkAddressLineage
+} from '../../../src/spanViewer/anchorMatcher.js';
+import { ReconstructionError } from '../../../src/spanViewer/patchReconstruction.js';
+import type { HistoryCommit, HistoryDocument, LiveAnchor } from '../../../src/spanViewer/types.js';
+
+const FIRST_ADD = 'web/checkout.tsx#L1-L5';
+
+function commit(hash: string, summary: string, anchors: HistoryCommit['anchors']): HistoryCommit {
+  return { hash, date: '2026-01-01T00:00:00-04:00', summary, anchors };
+}
 
 function historyFixture(overrides: Partial<HistoryDocument> = {}): HistoryDocument {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     span: 'web/checkout.tsx',
     commits: [],
     ...overrides
@@ -20,137 +37,366 @@ function historyFixture(overrides: Partial<HistoryDocument> = {}): HistoryDocume
 
 describe('anchorMatcher', () => {
   describe('matchAnchor', () => {
-    it('returns clean with the most recent added/modified content when no drift', () => {
+    it('returns clean when the address has history and nothing asserts drift', () => {
       const history = historyFixture({
         commits: [
-          {
-            hash: 'c2',
-            date: '2026-02-01',
-            summary: 'Modify',
-            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'modified', content: 'newer content' }]
-          },
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Add',
-            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'added', content: 'older content' }]
-          }
+          commit('c2', 'Modify', [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx b/web/checkout.tsx\n@@ -1,3 +1,3 @@\n hello\n-hi\n+hey\n'
+            }
+          ]),
+          commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])
         ]
       });
-      const plan = matchAnchor('web/checkout.tsx#L1-L5', history);
-      assert.deepStrictEqual(plan, { kind: 'clean', content: 'newer content' });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), { kind: 'clean' });
     });
 
     it('returns clean for a whole-file (rangeless) address', () => {
       const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: 'web/checkout.tsx', content: 'whole file content' }])]
+      });
+      assert.deepStrictEqual(matchAnchor('web/checkout.tsx', history), { kind: 'clean' });
+    });
+
+    it('treats a current block with no drift signals as absent (identical-hash no-hunk block)', () => {
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nindex rk64:aaaa..rk64:aaaa\n',
+              content: 'hello\nhi\n'
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), { kind: 'clean' });
+    });
+
+    it('returns clean, not dangling, when the only history entry is a rebound-only block', () => {
+      const history = historyFixture({
         commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Add',
-            anchors: [{ path: 'web/checkout.tsx', event: 'added', content: 'whole file content' }]
-          }
+          commit('c2', 'Re-anchor', [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nrebound anchor\nindex rk64:aaaa..rk64:bbbb\n',
+              rebound: { from: 'rk64:aaaa', to: 'rk64:bbbb' }
+            }
+          ]),
+          commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])
         ]
       });
-      const plan = matchAnchor('web/checkout.tsx', history);
-      assert.deepStrictEqual(plan, { kind: 'clean', content: 'whole file content' });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), { kind: 'clean' });
     });
 
-    it('returns drifted when a clean-matching address also appears in current.anchors[]', () => {
+    it('returns drifted for a rebound-only-only lineage when the current block asserts drift', () => {
       const history = historyFixture({
         commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Add',
-            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'added', content: 'historical content' }]
-          }
+          commit('c2', 'Re-anchor', [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nrebound anchor\nindex rk64:aaaa..rk64:bbbb\n',
+              rebound: { from: 'rk64:aaaa', to: 'rk64:bbbb' }
+            }
+          ]),
+          commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])
         ],
         current: {
-          anchors: [{ path: 'web/checkout.tsx#L1-L5', status: 'edited', content: 'live content' }]
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx b/web/checkout.tsx\n@@ -1,2 +1,2 @@\n hello\n-hi\n+hey\n',
+              content: 'hello\nhey\n',
+              sources: ['WORKTREE']
+            }
+          ]
         }
       });
-      const plan = matchAnchor('web/checkout.tsx#L1-L5', history);
-      assert.deepStrictEqual(plan, { kind: 'drifted', historical: 'historical content', current: 'live content' });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'drifted',
+        historical: 'hello\nhi\n',
+        current: 'hello\nhey\n'
+      });
     });
 
-    it('returns reconciled (historical: null) for an uncommitted address rewrite present only in current', () => {
+    it('finds history across a rename boundary', () => {
       const history = historyFixture({
         commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Unrelated',
-            anchors: [{ path: 'web/other.tsx', event: 'added', content: 'unrelated' }]
-          }
-        ],
-        current: {
-          anchors: [{ path: 'web/checkout.tsx#L1-L9', status: 'reconciled', content: 'live content' }]
-        }
+          commit('c2', 'Rename', [
+            {
+              path: 'g.txt#L1-L10',
+              diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L3-L12\nrename to g.txt#L1-L10\nindex rk64:aaaa..rk64:bbbb\n'
+            }
+          ]),
+          commit('c1', 'Add', [{ path: 'f.txt#L3-L12', content: 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n' }])
+        ]
       });
-      const plan = matchAnchor('web/checkout.tsx#L1-L9', history);
-      assert.deepStrictEqual(plan, { kind: 'reconciled', historical: null, current: 'live content' });
+      assert.deepStrictEqual(matchAnchor('g.txt#L1-L10', history), { kind: 'clean' });
     });
 
-    it('returns reconciled (historical: null) for a brand-new never-committed anchor', () => {
+    it('returns dangling when the address has no history and nothing asserts drift', () => {
+      assert.deepStrictEqual(matchAnchor('web/never-seen.tsx', historyFixture()), { kind: 'dangling' });
+    });
+
+    it('returns drifted with offset-normalized historical content for ordinary drift', () => {
+      // Extent f.txt#L5-L8: the diff renders at file-absolute 5 while the
+      // content strings only carry the four extent lines, so the historical
+      // side is only recoverable after rebasing by extentStartLine - 1.
+      const pre = 'line five\nline six\nline seven\nline eight\n';
+      const post = 'line five\nline six EDITED\nline seven\nline eight\n';
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: 'f.txt#L5-L8', content: pre }])],
+        current: {
+          anchors: [
+            {
+              path: 'f.txt#L5-L8',
+              diff: 'diff --git a/f.txt b/f.txt\n@@ -5,4 +5,4 @@\n line five\n-line six\n+line six EDITED\n line seven\n line eight\n',
+              content: post,
+              sources: ['WORKTREE']
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor('f.txt#L5-L8', history), {
+        kind: 'drifted',
+        historical: pre,
+        current: post
+      });
+    });
+
+    it('returns relocated with content, proposed, and sources for a proposed current entry', () => {
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L10-L14\n@@ -1,2 +1,2 @@\n hello\n-hi\n+hey\n',
+              content: 'hello\nhey\n',
+              proposed: 'web/checkout.tsx#L10-L14',
+              sources: ['HEAD', 'WORKTREE']
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'relocated',
+        content: 'hello\nhey\n',
+        proposed: 'web/checkout.tsx#L10-L14',
+        sources: ['HEAD', 'WORKTREE']
+      });
+    });
+
+    it('returns relocated without a sources key when the current entry has none', () => {
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L10-L14\n',
+              content: 'hello\nhi\n',
+              proposed: 'web/checkout.tsx#L10-L14'
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'relocated',
+        content: 'hello\nhi\n',
+        proposed: 'web/checkout.tsx#L10-L14'
+      });
+    });
+
+    it('returns drifted with current: null for a deleted anchor (new side /dev/null)', () => {
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\ndeleted anchor\n--- a/web/checkout.tsx#L1-L5\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-hello\n-hi\n',
+              content: 'hello\nhi\n'
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'drifted',
+        historical: 'hello\nhi\n',
+        current: null
+      });
+    });
+
+    it('returns drifted with historical: null for a new anchor (old side /dev/null)', () => {
       const history = historyFixture({
         commits: [],
         current: {
-          anchors: [{ path: 'web/new-file.tsx#L1-L3', status: 'new', content: 'brand new content' }]
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nnew anchor\n--- /dev/null\n+++ b/web/checkout.tsx#L1-L5\n@@ -0,0 +1,2 @@\n+hello\n+hi\n',
+              content: 'hello\nhi\n'
+            }
+          ]
         }
       });
-      const plan = matchAnchor('web/new-file.tsx#L1-L3', history);
-      assert.deepStrictEqual(plan, { kind: 'reconciled', historical: null, current: 'brand new content' });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'drifted',
+        historical: null,
+        current: 'hello\nhi\n'
+      });
     });
 
-    it('returns drifted with current: null when the current entry has no content (removed in the working tree)', () => {
+    it('returns reconciled when a current-only address asserts drift with real hunks', () => {
       const history = historyFixture({
-        commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Add',
-            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'added', content: 'historical content' }]
-          }
-        ],
+        commits: [commit('c1', 'Unrelated', [{ path: 'web/other.tsx', content: 'unrelated' }])],
         current: {
-          anchors: [{ path: 'web/checkout.tsx#L1-L5', status: 'removed in the working tree' }]
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx b/web/checkout.tsx\n@@ -1,2 +1,2 @@\n hello\n-hi\n+hey\n',
+              content: 'hello\nhey\n',
+              sources: ['HEAD']
+            }
+          ]
         }
       });
-      const plan = matchAnchor('web/checkout.tsx#L1-L5', history);
-      assert.deepStrictEqual(plan, { kind: 'drifted', historical: 'historical content', current: null });
-    });
-
-    it('returns reconciled with current: null when the current entry has no content (removed in the working tree)', () => {
-      const history = historyFixture({
-        commits: [],
-        current: {
-          anchors: [{ path: 'web/new-file.tsx#L1-L3', status: 'removed in the working tree' }]
-        }
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
+        kind: 'reconciled',
+        historical: null,
+        current: 'hello\nhey\n'
       });
-      const plan = matchAnchor('web/new-file.tsx#L1-L3', history);
-      assert.deepStrictEqual(plan, { kind: 'reconciled', historical: null, current: null });
     });
 
-    it('returns dangling when the most recent event at the address is removed and no current entry exists', () => {
-      const history = historyFixture({
-        commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Remove',
-            anchors: [{ path: 'web/checkout.tsx#L1-L5', event: 'removed' }]
+    it('returns unavailable with the exact reason for every current unavailable value', () => {
+      for (const reason of ['absent', 'range-past-eof', 'binary', 'filter-failed'] as const) {
+        const history = historyFixture({
+          current: {
+            anchors: [
+              {
+                path: FIRST_ADD,
+                diff: `diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\ncontent unavailable ${reason}\n`,
+                unavailable: reason
+              }
+            ]
           }
-        ]
-      });
-      const plan = matchAnchor('web/checkout.tsx#L1-L5', history);
-      assert.deepStrictEqual(plan, { kind: 'dangling' });
+        });
+        assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), { kind: 'unavailable', reason });
+      }
     });
 
-    it('returns dangling when nothing matches anywhere', () => {
-      const history = historyFixture();
-      const plan = matchAnchor('web/never-seen.tsx', history);
-      assert.deepStrictEqual(plan, { kind: 'dangling' });
+    it('maps recorded to the unrecoverable unavailable plan', () => {
+      const history = historyFixture({
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\n',
+              content: 'hello\nhi\n',
+              recorded: 'unrecoverable'
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), { kind: 'unavailable', reason: 'unrecoverable' });
+    });
+
+    it('throws ReconstructionError when drift is asserted but the diff cannot be reverse-applied', () => {
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])],
+        current: {
+          anchors: [
+            {
+              path: FIRST_ADD,
+              diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\ncontent unavailable binary\n',
+              content: 'hello\nhi\n',
+              sources: ['WORKTREE']
+            }
+          ]
+        }
+      });
+      assert.throws(() => matchAnchor(FIRST_ADD, history), ReconstructionError);
+    });
+  });
+
+  describe('walkAddressLineage', () => {
+    it('matches a single rename hop, switching the tracked address for older commits', () => {
+      const commits: HistoryCommit[] = [
+        commit('c2', 'Rename', [
+          {
+            path: 'g.txt#L1-L10',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L3-L12\nrename to g.txt#L1-L10\nindex rk64:aaaa..rk64:bbbb\n'
+          }
+        ]),
+        commit('c1', 'Add', [{ path: 'f.txt#L3-L12', content: 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n' }])
+      ];
+      const matches = walkAddressLineage(commits, 'g.txt#L1-L10');
+      assert.strictEqual(matches.length, 2);
+      assert.strictEqual(matches[0]?.commitIndex, 0);
+      assert.strictEqual(matches[0]?.address, 'g.txt#L1-L10');
+      assert.strictEqual(matches[1]?.commitIndex, 1);
+      assert.strictEqual(matches[1]?.address, 'f.txt#L3-L12');
+    });
+
+    it('follows a multi-hop rename chain to the origin', () => {
+      const commits: HistoryCommit[] = [
+        commit('c3', 'Rename again', [
+          {
+            path: 'h.txt#L1-L5',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from g.txt#L1-L5\nrename to h.txt#L1-L5\nindex rk64:aaaa..rk64:bbbb\n'
+          }
+        ]),
+        commit('c2', 'Rename', [
+          {
+            path: 'g.txt#L1-L5',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L1-L5\nrename to g.txt#L1-L5\nindex rk64:aaaa..rk64:bbbb\n'
+          }
+        ]),
+        commit('c1', 'Add', [{ path: 'f.txt#L1-L5', content: 'a\nb\nc\nd\ne\n' }])
+      ];
+      const matches = walkAddressLineage(commits, 'h.txt#L1-L5');
+      assert.strictEqual(matches.length, 3);
+      assert.deepStrictEqual(
+        matches.map((match) => match.address),
+        ['h.txt#L1-L5', 'g.txt#L1-L5', 'f.txt#L1-L5']
+      );
+    });
+
+    it('prefers the content block over a same-path rebound block at a rebind-plus-edit commit', () => {
+      const commits: HistoryCommit[] = [
+        commit('c2', 'Re-anchor and edit', [
+          {
+            path: FIRST_ADD,
+            diff: 'diff --git a/web/checkout.tsx#L1-L5 b/web/checkout.tsx#L1-L5\nrebound anchor\nindex rk64:aaaa..rk64:bbbb\n',
+            rebound: { from: 'rk64:aaaa', to: 'rk64:bbbb' }
+          },
+          {
+            path: FIRST_ADD,
+            diff: 'diff --git a/web/checkout.tsx b/web/checkout.tsx\n@@ -1,2 +1,2 @@\n hello\n-hi\n+hey\n'
+          }
+        ]),
+        commit('c1', 'Add', [{ path: FIRST_ADD, content: 'hello\nhi\n' }])
+      ];
+      const matches = walkAddressLineage(commits, FIRST_ADD);
+      assert.strictEqual(matches.length, 2);
+      assert.strictEqual(matches[0]?.anchor.rebound, undefined, 'the content block wins');
+      assert.ok(matches[0]?.anchor.diff?.includes('-hi\n+hey'));
+    });
+
+    it('returns no matches for a genuinely dangling address', () => {
+      const commits: HistoryCommit[] = [commit('c1', 'Add', [{ path: 'web/other.tsx', content: 'unrelated' }])];
+      assert.deepStrictEqual(walkAddressLineage(commits, 'web/never-seen.tsx'), []);
+    });
+  });
+
+  describe('extentStartLineOf', () => {
+    it('parses the declared range start, defaulting to 1 for whole-file addresses', () => {
+      assert.strictEqual(extentStartLineOf('web/checkout.tsx#L10-L12'), 10);
+      assert.strictEqual(extentStartLineOf('web/checkout.tsx#L1-L1'), 1);
+      assert.strictEqual(extentStartLineOf('web/checkout.tsx'), 1);
     });
   });
 
@@ -158,15 +404,10 @@ describe('anchorMatcher', () => {
     it('produces one plan per live anchor, in file order', () => {
       const history = historyFixture({
         commits: [
-          {
-            hash: 'c1',
-            date: '2026-01-01',
-            summary: 'Add both',
-            anchors: [
-              { path: 'a.ts', event: 'added', content: 'a content' },
-              { path: 'b.ts#L1-L2', event: 'added', content: 'b content' }
-            ]
-          }
+          commit('c1', 'Add both', [
+            { path: 'a.ts', content: 'a content' },
+            { path: 'b.ts#L1-L2', content: 'b content' }
+          ])
         ]
       });
       const liveAnchors: LiveAnchor[] = [
@@ -175,8 +416,8 @@ describe('anchorMatcher', () => {
       ];
       const plans = matchAllAnchors(liveAnchors, history);
       assert.strictEqual(plans.length, 2);
-      assert.deepStrictEqual(plans[0], { kind: 'clean', content: 'a content' });
-      assert.deepStrictEqual(plans[1], { kind: 'clean', content: 'b content' });
+      assert.deepStrictEqual(plans[0], { kind: 'clean' });
+      assert.deepStrictEqual(plans[1], { kind: 'clean' });
     });
   });
 });

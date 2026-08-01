@@ -8,5 +8,7 @@
 export * from './anchorMatcher.js';
 export * from './anchorUri.js';
 export * from './historyClient.js';
+export * from './historySnapshotLadder.js';
+export * from './patchReconstruction.js';
 export * from './spanFileGrammar.js';
 export * from './types.js';

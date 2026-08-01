@@ -267,14 +267,14 @@ if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
   const spanName = args[1];
   if (spanName === 'fixture-span-test') {
     writeJson({
-      schema_version: 1,
+      schema_version: 2,
       span: spanName,
       commits: [
         {
-          hash: 'abc123',
+          hash: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
           date: '2024-01-01T00:00:00Z',
           summary: 'Add fixture anchor',
-          anchors: [{ path: 'README.md', event: 'added', content: 'hello from fixture' }]
+          anchors: [{ path: 'README.md', content: 'hello from fixture' }]
         }
       ]
     });

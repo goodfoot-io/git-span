@@ -403,8 +403,18 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         const realFileUri = vscode.Uri.file(path.join(repoRoot, anchor.path));
         watchedPaths.add(realFileUri.fsPath);
 
-        const originalText = plan.kind === 'clean' ? plan.content : (plan.historical ?? '');
-        const modifiedText = plan.kind === 'clean' ? plan.content : (plan.current ?? '');
+        // TODO: Phase B cleanup -- v2 `AnchorPlan` no longer carries content on
+        // the clean plan (Phase D step 2 reads it from the workspace file); the
+        // multi-diff provider is retired in Phase B, so view the plan through a
+        // structural shape that keeps the existing panes compiling until then.
+        const legacyPlan = plan as {
+          kind: string;
+          content?: string;
+          historical?: string | null;
+          current?: string | null;
+        };
+        const originalText = legacyPlan.kind === 'clean' ? (legacyPlan.content ?? '') : (legacyPlan.historical ?? '');
+        const modifiedText = legacyPlan.kind === 'clean' ? (legacyPlan.content ?? '') : (legacyPlan.current ?? '');
 
         const originalBuilt = buildAnchorUri({
           spanPath: spanName,
