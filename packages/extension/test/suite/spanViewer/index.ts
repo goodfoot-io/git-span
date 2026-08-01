@@ -6,7 +6,6 @@
  */
 
 export * from './anchorMatcher.test.js';
-export * from './anchorUri.test.js';
 export * from './historyClient.contract.test.js';
 export * from './historyClient.test.js';
 export * from './historySnapshotLadder.test.js';

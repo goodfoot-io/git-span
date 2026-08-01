@@ -2268,6 +2268,31 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@lit-labs/ssr-dom-shim@npm:^1.5.0":
+  version: 1.6.0
+  resolution: "@lit-labs/ssr-dom-shim@npm:1.6.0"
+  checksum: 10c0/deffcfd765d268820beef600a1c1cf9d3cf1a5cb4bbe7e80843796ff33d1a122f4e5651ef4a44b33d36e5fa6538e6ee87a95b9d40b4a26cabf3c35b45194c87a
+  languageName: node
+  linkType: hard
+
+"@lit/context@npm:^1.1.3":
+  version: 1.1.6
+  resolution: "@lit/context@npm:1.1.6"
+  dependencies:
+    "@lit/reactive-element": "npm:^1.6.2 || ^2.1.0"
+  checksum: 10c0/203f761eda19c8b37d77f01d9a0148535c5b28c47b76e28b321cb6e5ed0546c45332512e68b1647ce92ca67690d8c66de31972ec115410b080d69fa25a5d86f3
+  languageName: node
+  linkType: hard
+
+"@lit/reactive-element@npm:^1.6.2 || ^2.1.0, @lit/reactive-element@npm:^2.1.0":
+  version: 2.1.2
+  resolution: "@lit/reactive-element@npm:2.1.2"
+  dependencies:
+    "@lit-labs/ssr-dom-shim": "npm:^1.5.0"
+  checksum: 10c0/557069ce6ebbbafb1140e1e0a25ce73d3501bf455cda231d42bb131baa9065c54b6b7ca1655507eede397decd7ddde16c84192cb72a07d4edf41d54e07725933
+  languageName: node
+  linkType: hard
+
 "@mdx-js/mdx@npm:^3.1.1":
   version: 3.1.1
   resolution: "@mdx-js/mdx@npm:3.1.1"
@@ -4218,6 +4243,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/trusted-types@npm:^2.0.2, @types/trusted-types@npm:^2.0.7":
+  version: 2.0.7
+  resolution: "@types/trusted-types@npm:2.0.7"
+  checksum: 10c0/4c4855f10de7c6c135e0d32ce462419d8abbbc33713b31d294596c0cc34ae1fa6112a2f9da729c8f7a20707782b0d69da3b1f8df6645b0366d08825ca1522e0c
+  languageName: node
+  linkType: hard
+
 "@types/unist@npm:*, @types/unist@npm:^3.0.0":
   version: 3.0.3
   resolution: "@types/unist@npm:3.0.3"
@@ -4599,6 +4631,25 @@ __metadata:
     convert-source-map: "npm:^2.0.0"
     tinyrainbow: "npm:^3.1.0"
   checksum: 10c0/72409717e68018e5fe42fa173cc4eff6def8c35bd52013f86ddb414cd28d73fcc425ac62968e01a52371b3fd5a7a775536283d2f1d64432753f628712a6a4908
+  languageName: node
+  linkType: hard
+
+"@vscode-elements/elements@npm:^2.5.1":
+  version: 2.5.1
+  resolution: "@vscode-elements/elements@npm:2.5.1"
+  dependencies:
+    "@lit/context": "npm:^1.1.3"
+    lit: "npm:^3.2.1"
+  peerDependencies:
+    "@vscode/codicons": ">=0.0.40"
+  checksum: 10c0/7cbefb1eb7b1a5bc109e81dfed5ae5df89311308c156679361f74dfb2b03cc1c59a1302b1ffdaefd611115286fc08dc3abf74deacb4550d699dcd23164051edf
+  languageName: node
+  linkType: hard
+
+"@vscode/codicons@npm:0.0.46-24":
+  version: 0.0.46-24
+  resolution: "@vscode/codicons@npm:0.0.46-24"
+  checksum: 10c0/a18877cf13335e63d595a5f285385c64e68dc1397b91a03ba226c603b7cb46fd0780bfdbf26f98f498b85c077d8aa9aa993b773b64be19ba90946d6cce8694a5
   languageName: node
   linkType: hard
 
@@ -5826,6 +5877,18 @@ __metadata:
   dependencies:
     domelementtype: "npm:^2.3.0"
   checksum: 10c0/bba1e5932b3e196ad6862286d76adc89a0dbf0c773e5ced1eb01f9af930c50093a084eff14b8de5ea60b895c56a04d5de8bbc4930c5543d029091916770b2d2a
+  languageName: node
+  linkType: hard
+
+"dompurify@npm:3.4.8":
+  version: 3.4.8
+  resolution: "dompurify@npm:3.4.8"
+  dependencies:
+    "@types/trusted-types": "npm:^2.0.7"
+  dependenciesMeta:
+    "@types/trusted-types":
+      optional: true
+  checksum: 10c0/8f56a53d0ac80c76068772c9b72721f31fad68cac64a528e2420699ce2bd26b3516e29a5a7bd2205c2732d7114b9859998bf922d20cdb9361c4a05dab8352570
   languageName: node
   linkType: hard
 
@@ -7333,12 +7396,15 @@ __metadata:
     "@types/node": "npm:24.x"
     "@types/vscode": "npm:^1.100.0"
     "@typescript/native-preview": "npm:^7.0.0-dev"
+    "@vscode-elements/elements": "npm:^2.5.1"
+    "@vscode/codicons": "npm:0.0.46-24"
     "@vscode/test-electron": "npm:^2.5.2"
     "@vscode/vsce": "npm:3.7.1"
     esbuild: "npm:^0.27.2"
     glob: "npm:^13.0.0"
     jsdoczoom: "npm:^1.2.3"
     mocha: "npm:^11.7.5"
+    monaco-editor: "npm:^0.56.0"
     tsx: "npm:^4.21.0"
     typescript: "npm:^5.9.3"
   languageName: unknown
@@ -8442,6 +8508,37 @@ __metadata:
   languageName: node
   linkType: hard
 
+"lit-element@npm:^4.2.0":
+  version: 4.2.2
+  resolution: "lit-element@npm:4.2.2"
+  dependencies:
+    "@lit-labs/ssr-dom-shim": "npm:^1.5.0"
+    "@lit/reactive-element": "npm:^2.1.0"
+    lit-html: "npm:^3.3.0"
+  checksum: 10c0/114ab5837f1f9e03a30b1ed1c055fa0e31f01e444464e5ab0453ef88be12d778508235533267c42614d323e3048ee58f865b5c612948a53bd6219abca404c710
+  languageName: node
+  linkType: hard
+
+"lit-html@npm:^3.3.0":
+  version: 3.3.3
+  resolution: "lit-html@npm:3.3.3"
+  dependencies:
+    "@types/trusted-types": "npm:^2.0.2"
+  checksum: 10c0/84e57314412ff385cc67fc482d26b77057370e2cfe3c6495cc45f692bdad840d5ed0519ddddcfae1d043bb098c66daa7e807593d5a21ac72094da14274497879
+  languageName: node
+  linkType: hard
+
+"lit@npm:^3.2.1":
+  version: 3.3.3
+  resolution: "lit@npm:3.3.3"
+  dependencies:
+    "@lit/reactive-element": "npm:^2.1.0"
+    lit-element: "npm:^4.2.0"
+    lit-html: "npm:^3.3.0"
+  checksum: 10c0/11b6175ebffce92f4cf835ddd8a198d49707c27f34b0a7c538d2cb294f6c2fb7ff40aabd3589fcf0c2ed162404faaf2bb7c966fad9024bb9e02d013e2d5aa0b5
+  languageName: node
+  linkType: hard
+
 "locate-path@npm:^6.0.0":
   version: 6.0.0
   resolution: "locate-path@npm:6.0.0"
@@ -8652,6 +8749,15 @@ __metadata:
   version: 3.0.4
   resolution: "markdown-table@npm:3.0.4"
   checksum: 10c0/1257b31827629a54c24a5030a3dac952256c559174c95ce3ef89bebd6bff0cb1444b1fd667b1a1bb53307f83278111505b3e26f0c4e7b731e0060d435d2d930b
+  languageName: node
+  linkType: hard
+
+"marked@npm:14.0.0":
+  version: 14.0.0
+  resolution: "marked@npm:14.0.0"
+  bin:
+    marked: bin/marked.js
+  checksum: 10c0/57a47cb110f7b1a10f398b0a7236f9183aad2dcd5345ee73f2732b6387e585d04cef472bc655d2f84c542296be9728e179aebe3ed7f2f8666b8a0a9dae592876
   languageName: node
   linkType: hard
 
@@ -9561,6 +9667,16 @@ __metadata:
     _mocha: bin/_mocha
     mocha: bin/mocha.js
   checksum: 10c0/e6150cba85345aaabbc5b2e7341b1e6706b878f5a9782960cad57fd4cc458730a76d08c5f1a3e05d3ebb49cad93b455764bb00727bd148dcaf0c6dd4fa665b3d
+  languageName: node
+  linkType: hard
+
+"monaco-editor@npm:^0.56.0":
+  version: 0.56.0
+  resolution: "monaco-editor@npm:0.56.0"
+  dependencies:
+    dompurify: "npm:3.4.8"
+    marked: "npm:14.0.0"
+  checksum: 10c0/8ed728880042c5a1f42040f955e017b798fc1602fc59ef7a1f0e4da8f354e928b32cc0dba93ff677c538a37a542be3898210f9d1801f339e3c0f65f9ad3dc73e
   languageName: node
   linkType: hard
 

@@ -1,11 +1,11 @@
 /**
- * Shared pure-logic types for the `.span/**` Multi-Diff viewer.
+ * Shared pure-logic types for the `.span/**` viewer.
  *
  * Every type here is consumed by the pure modules under `spanViewer/`
  * (`spanFileGrammar.ts`, `historyClient.ts`, `anchorMatcher.ts`,
- * `patchReconstruction.ts`, `historySnapshotLadder.ts`, `anchorUri.ts`)
- * and by their integration-layer callers in a later group. Nothing in this
- * file imports `vscode` -- these are plain data shapes.
+ * `patchReconstruction.ts`, `historySnapshotLadder.ts`) and by their
+ * integration-layer callers. Nothing in this file imports `vscode` -- these
+ * are plain data shapes.
  *
  * @summary Shared types for the span viewer's pure logic layer.
  * @module spanViewer/types
@@ -137,8 +137,8 @@ export interface HistoryDocument {
 
 /**
  * The per-anchor render plan produced by matching a live anchor address
- * against a `HistoryDocument`. Drives which two (or fewer) content strings
- * populate a Multi-Diff pane, or which status card replaces it.
+ * against a `HistoryDocument`. Drives which content strings a card shows, or
+ * which status card replaces it.
  *
  * Derived from field shape plus `current` presence, never from an `event`:
  * `has-history` comes from the lineage walk, and the shape rules come from
@@ -158,11 +158,3 @@ export type AnchorPlan =
   | { kind: 'relocated'; content: string; proposed: string; sources?: DriftSource[] }
   /** No content either side -- a header-only status card. */
   | { kind: 'unavailable'; reason: UnavailableReason };
-
-/** Query-string parameters encoded into a `gitspan-anchor:` virtual document URI. */
-export interface AnchorUriParams {
-  spanPath: string;
-  anchorPath: string;
-  anchorIndex: number;
-  side: 'original' | 'modified';
-}

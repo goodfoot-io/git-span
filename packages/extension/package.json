@@ -73,5 +73,10 @@
   "author": {
     "name": "Goodfoot Media LLC",
     "url": "https://goodfoot.io"
+  },
+  "dependencies": {
+    "@vscode-elements/elements": "^2.5.1",
+    "@vscode/codicons": "0.0.46-24",
+    "monaco-editor": "^0.56.0"
   }
 }

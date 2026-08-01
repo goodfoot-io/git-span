@@ -1,8 +1,8 @@
 /**
- * End-to-end test for the `.span/**` custom Multi-Diff viewer, exercised
- * through the real `gitSpan.spanFileViewer` custom editor registered by the
- * extension's `activate()` -- not a hand-rolled provider instance -- against
- * the fixture `git-span` binary installed on `PATH` by `test/runTest.ts`.
+ * End-to-end test for the `.span/**` custom editor, exercised through the
+ * real `gitSpan.spanFileViewer` custom editor registered by the extension's
+ * `activate()` -- not a hand-rolled provider instance -- against the fixture
+ * `git-span` binary installed on `PATH` by `test/runTest.ts`.
  *
  * @summary End-to-end test for the `.span/**` custom editor.
  * @module test/suite/spanViewer/spanFileEditorProvider.test
@@ -61,7 +61,7 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   });
 
-  it('opens a valid-looking span file with a real Multi-Diff editor, not the error fallback', async () => {
+  it('renders a valid-looking span file with a successful outcome, not the error fallback', async () => {
     const spanFilePath = path.join(spanDir, 'fixture-span-test');
     fs.writeFileSync(spanFilePath, 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
 
@@ -78,51 +78,12 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     const outcome = testOnlyRenderOutcomes.get(uri.toString());
     assert.ok(
       outcome?.ok,
-      `Expected the Multi-Diff editor to open successfully (no "Failed to load span history" fallback), got: ${JSON.stringify(outcome)}`
+      `Expected the span to render successfully (no "Failed to load span history" fallback), got: ${JSON.stringify(outcome)}`
     );
-    assert.strictEqual(outcome.resourceCount, 1, 'Expected exactly one anchor pane to be opened');
     assert.strictEqual(outcome.danglingCount, 0, 'Expected no dangling anchors for this fixture span');
     assert.ok(
       !outcome.message.includes('Failed to load span history'),
       `Expected no error message, got: ${outcome.message}`
-    );
-  });
-
-  it('does not steal editor focus on a content-only refresh triggered by the watched anchor file', async () => {
-    const spanFilePath = path.join(spanDir, 'fixture-span-test');
-    fs.writeFileSync(spanFilePath, 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
-    const readmePath = path.join(workspacePath, 'README.md');
-
-    const uri = vscode.Uri.file(spanFilePath);
-    testOnlyRenderOutcomes.delete(uri.toString());
-    await vscode.commands.executeCommand('vscode.openWith', uri, SPAN_FILE_VIEW_TYPE);
-    const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
-    assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open for a valid-looking span file');
-    await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
-
-    const otherFilePath = path.join(workspacePath, 'focus-steal-other.txt');
-    fs.writeFileSync(otherFilePath, 'unrelated content\n');
-    const otherUri = vscode.Uri.file(otherFilePath);
-    const otherDoc = await vscode.workspace.openTextDocument(otherUri);
-    await vscode.window.showTextDocument(otherDoc);
-    assert.strictEqual(
-      vscode.window.activeTextEditor?.document.uri.toString(),
-      otherUri.toString(),
-      'Expected the unrelated file to be focused before triggering the refresh'
-    );
-
-    // Content-only change to the anchor's real file: the watched file changes,
-    // but the anchor set (and thus the vscode.changes resource set) does not.
-    // Re-invoking vscode.changes on every render steals focus even when the
-    // resource set is unchanged -- confirmed by a targeted spike -- so a
-    // correct implementation must skip the re-invocation here.
-    fs.writeFileSync(readmePath, '# Test Workspace (touched)\n');
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-
-    assert.strictEqual(
-      vscode.window.activeTextEditor?.document.uri.toString(),
-      otherUri.toString(),
-      'Expected focus to remain on the unrelated file after a content-only span refresh'
     );
   });
 
