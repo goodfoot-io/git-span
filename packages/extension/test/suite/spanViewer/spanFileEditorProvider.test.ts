@@ -4,6 +4,10 @@
  * `activate()` -- not a hand-rolled provider instance -- against the fixture
  * `git-span` binary installed on `PATH` by `test/runTest.ts`.
  *
+ * `vscode-test-electron` has no CDP hook into a webview's rendered DOM, so the
+ * assertions run against `testOnlyLastPostedDocument` -- the exact object the
+ * provider posted to the webview -- and `testOnlyRenderOutcomes`.
+ *
  * @summary End-to-end test for the `.span/**` custom editor.
  * @module test/suite/spanViewer/spanFileEditorProvider.test
  */
@@ -12,7 +16,8 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { testOnlyRenderOutcomes } from '../../../src/spanViewer/spanFileEditorProvider.js';
+import { testOnlyLastPostedDocument, testOnlyRenderOutcomes } from '../../../src/spanViewer/spanFileEditorProvider.js';
+import type { PostedDocument } from '../../../src/spanViewer/types.js';
 
 const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
 
@@ -53,6 +58,11 @@ describe('spanFileEditorProvider (end-to-end)', () => {
   }
   const spanDir = path.join(workspacePath, '.span');
 
+  /** Content strings shared by the drifted fixture's ladder and the tests. */
+  const S1 = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n';
+  const S2 = 'one\ntwo2\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n';
+  const S3 = 'one\ntwo2\nthree\nfour\nfive\nsix\nseven\neight drift\nnine\nten\n';
+
   before(() => {
     fs.mkdirSync(spanDir, { recursive: true });
   });
@@ -61,30 +71,99 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   });
 
-  it('renders a valid-looking span file with a successful outcome, not the error fallback', async () => {
-    const spanFilePath = path.join(spanDir, 'fixture-span-test');
-    fs.writeFileSync(spanFilePath, 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
-
+  /**
+   * Write a span file, open it in the custom editor, and clear both test
+   * hooks for it.
+   *
+   * @param spanFileName - The span file name under `.span/`.
+   * @param content - The span file's content.
+   * @returns The opened document's URI.
+   * @throws Never.
+   */
+  async function openSpan(spanFileName: string, content: string): Promise<vscode.Uri> {
+    const spanFilePath = path.join(spanDir, spanFileName);
+    fs.writeFileSync(spanFilePath, content);
     const uri = vscode.Uri.file(spanFilePath);
     testOnlyRenderOutcomes.delete(uri.toString());
+    testOnlyLastPostedDocument.delete(uri.toString());
     await vscode.commands.executeCommand('vscode.openWith', uri, SPAN_FILE_VIEW_TYPE);
+    return uri;
+  }
+
+  /**
+   * Wait for a render outcome to be recorded for `uri` and assert it is a
+   * success (vs. the error or all-dangling fallback pane).
+   *
+   * @param uri - The opened span document's URI.
+   * @returns The recorded outcome.
+   * @throws Never.
+   */
+  async function waitForSuccessfulOutcome(uri: vscode.Uri) {
+    const rendered = await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
+    assert.ok(rendered, 'Expected a render outcome to be recorded for the opened span document');
+    const outcome = testOnlyRenderOutcomes.get(uri.toString());
+    assert.ok(
+      outcome?.ok,
+      `Expected the span to render successfully (no fallback pane), got: ${JSON.stringify(outcome)}`
+    );
+    return outcome;
+  }
+
+  /**
+   * Wait for the posted document to be recorded for `uri` and return it.
+   *
+   * @param uri - The opened span document's URI.
+   * @returns The exact object posted to the webview.
+   * @throws Never.
+   */
+  async function waitForPostedDocument(uri: vscode.Uri): Promise<PostedDocument> {
+    const posted = await waitFor(() => testOnlyLastPostedDocument.has(uri.toString()));
+    assert.ok(posted, 'Expected the provider to post a document to the webview');
+    const document = testOnlyLastPostedDocument.get(uri.toString());
+    assert.ok(document !== undefined, 'Expected the posted document to be readable back');
+    return document;
+  }
+
+  it('renders a valid-looking span file with a successful outcome, not the error fallback', async () => {
+    const uri = await openSpan('fixture-span-test', 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
 
     const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
     assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open for a valid-looking span file');
 
-    const rendered = await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
-    assert.ok(rendered, 'Expected a render outcome to be recorded for the opened span document');
-
-    const outcome = testOnlyRenderOutcomes.get(uri.toString());
-    assert.ok(
-      outcome?.ok,
-      `Expected the span to render successfully (no "Failed to load span history" fallback), got: ${JSON.stringify(outcome)}`
-    );
+    const outcome = await waitForSuccessfulOutcome(uri);
     assert.strictEqual(outcome.danglingCount, 0, 'Expected no dangling anchors for this fixture span');
     assert.ok(
       !outcome.message.includes('Failed to load span history'),
       `Expected no error message, got: ${outcome.message}`
     );
+
+    const posted = await waitForPostedDocument(uri);
+    assert.strictEqual(posted.spanName, 'fixture-span-test');
+    assert.strictEqual(posted.why, 'Why this coupling exists.');
+    assert.strictEqual(posted.stale, false, 'Expected a clean span to not carry the Stale pill');
+    assert.deepStrictEqual(posted.staleReasons, []);
+
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'clean',
+      `Expected a clean anchor card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(anchor.path, 'README.md');
+    assert.strictEqual(anchor.range, null);
+    assert.strictEqual(
+      anchor.content,
+      '# Test Workspace\n',
+      'Expected the whole-file disk content in the clean preview'
+    );
+
+    assert.strictEqual(posted.history.length, 1, 'Expected one history accordion entry');
+    const firstBlocks = posted.history[0]?.blocks;
+    assert.ok(
+      firstBlocks !== undefined && firstBlocks[0] !== undefined,
+      'Expected the first commit to have a content block'
+    );
+    assert.deepStrictEqual(firstBlocks[0].pair, { original: '', modified: 'hello from fixture' });
   });
 
   it('falls back gracefully for non-span content under .span/', async () => {
@@ -96,5 +175,147 @@ describe('spanFileEditorProvider (end-to-end)', () => {
 
     const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
     assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open (fallback pane) for non-span content');
+  });
+
+  it('posts a drifted anchor with the reverse-applied historical side, and ladder-resolved history pairs', async () => {
+    // The worktree file: drifted at line 8, outside the newest commit's hunk.
+    fs.writeFileSync(path.join(workspacePath, 'src.ts'), S3);
+    const uri = await openSpan('fixture-span-drifted', 'src.ts#L1-L10 rk64:deadbeef\n\nWhy.\n');
+
+    const outcome = await waitForSuccessfulOutcome(uri);
+    assert.strictEqual(outcome.danglingCount, 0);
+
+    const posted = await waitForPostedDocument(uri);
+    assert.strictEqual(posted.stale, true, 'Expected a drifted span to carry the Stale pill');
+    assert.deepStrictEqual(posted.staleReasons, ['1 anchor drifted']);
+
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'drifted',
+      `Expected a drifted anchor card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(anchor.historical, S2, 'Expected the offset-normalized reverse-apply as the historical side');
+    assert.strictEqual(anchor.current, S3, 'Expected the worktree content as the current side');
+
+    assert.strictEqual(posted.history.length, 2, 'Expected both commits in the history accordion');
+    const newestBlocks = posted.history[0]?.blocks;
+    assert.ok(
+      newestBlocks !== undefined && newestBlocks[0] !== undefined,
+      'Expected the newest commit to have a content block'
+    );
+    assert.deepStrictEqual(newestBlocks[0].pair, { original: S1, modified: S2 });
+    const oldestBlocks = posted.history[1]?.blocks;
+    assert.ok(
+      oldestBlocks !== undefined && oldestBlocks[0] !== undefined,
+      'Expected the oldest commit to have a content block'
+    );
+    assert.deepStrictEqual(oldestBlocks[0].pair, { original: '', modified: S1 });
+  });
+
+  it('posts both the header-only rebound block and the content block for a rebind-plus-edit commit', async () => {
+    const postState = 'one\ntwo changed\nthree\n';
+    const preState = 'one\ntwo\nthree\n';
+    fs.writeFileSync(path.join(workspacePath, 'src.ts'), postState);
+    const uri = await openSpan('fixture-span-rebind-edit', 'src.ts#L1-L3 rk64:deadbeef\n\nWhy.\n');
+
+    await waitForSuccessfulOutcome(uri);
+    const posted = await waitForPostedDocument(uri);
+
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'clean',
+      `Expected a clean anchor card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(anchor.content, postState, 'Expected the disk content in the clean preview');
+
+    assert.strictEqual(posted.history.length, 1, 'Expected one history accordion entry');
+    const blocks = posted.history[0]?.blocks;
+    assert.ok(
+      blocks !== undefined && blocks.length === 2,
+      `Expected two blocks at one address, got: ${JSON.stringify(blocks)}`
+    );
+    assert.strictEqual(blocks[0]?.path, 'src.ts#L1-L3');
+    assert.deepStrictEqual(blocks[0]?.rebound, { from: 'rk64:aaaa', to: 'rk64:bbbb' });
+    assert.ok(blocks[0]?.pair === undefined, 'Expected the rebound block to be header-only (no diff editor)');
+    assert.strictEqual(blocks[1]?.path, 'src.ts#L1-L3');
+    assert.deepStrictEqual(blocks[1]?.pair, { original: preState, modified: postState });
+  });
+
+  it('posts the "content changed" status card when the anchor file is edited between the CLI spawn and the disk read', async () => {
+    // The fixture binary appends to race-target.ts during the CLI spawn, so
+    // the provider's pre-spawn stat (original size) disagrees with its
+    // post-read stat (appended size) -- the read must not be trusted.
+    fs.writeFileSync(path.join(workspacePath, 'race-target.ts'), 'hello from fixture\n');
+    const uri = await openSpan('fixture-span-race', 'race-target.ts rk64:deadbeef\n\nWhy.\n');
+
+    await waitForSuccessfulOutcome(uri);
+    const posted = await waitForPostedDocument(uri);
+
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'changed',
+      `Expected the raced read to post a "content changed" status card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(posted.stale, true, 'Expected a raced read to make the span stale');
+  });
+
+  it('falls back to the all-dangling panel when every anchor is dangling, without the pre-spawn stat throwing', async () => {
+    // missing-file.ts does not exist: the pre-spawn stat's ENOENT must be
+    // recorded as the absent-at-snapshot sentinel, not thrown upstream of the
+    // dangling fallback panel.
+    const uri = await openSpan('fixture-span-dangling', 'missing-file.ts rk64:deadbeef\n\nWhy.\n');
+
+    const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
+    assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open for a dangling span');
+
+    const rendered = await waitFor(() => testOnlyRenderOutcomes.has(uri.toString()));
+    assert.ok(rendered, 'Expected a render outcome to be recorded for the dangling span');
+    const outcome = testOnlyRenderOutcomes.get(uri.toString());
+    assert.ok(
+      outcome !== undefined && !outcome.ok,
+      `Expected the all-dangling fallback outcome, got: ${JSON.stringify(outcome)}`
+    );
+    assert.strictEqual(outcome.danglingCount, 1, 'Expected the dangling anchor to be counted');
+    assert.ok(
+      !testOnlyLastPostedDocument.has(uri.toString()),
+      'Expected no document to be posted for the all-dangling fallback panel'
+    );
+  });
+
+  it('posts the uncommitted declaration edit card from current.span_diff', async () => {
+    fs.writeFileSync(path.join(workspacePath, 'src.ts'), 'line one\nline two\nline three\n');
+    // current.span_diff's new side is the worktree declaration -- the disk
+    // text must carry it for the reverse-apply's post-region check to match.
+    const uri = await openSpan(
+      'fixture-span-uncommitted',
+      'src.ts#L1-L3 rk64:deadbeef\n\nWhy this coupling still exists.\n'
+    );
+
+    await waitForSuccessfulOutcome(uri);
+    const posted = await waitForPostedDocument(uri);
+
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'clean',
+      `Expected a clean anchor card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(anchor.content, 'line one\nline two\nline three\n');
+
+    assert.ok(posted.uncommittedEdit !== undefined, 'Expected the uncommitted edit card to be posted');
+    assert.ok(
+      posted.uncommittedEdit !== 'unavailable',
+      'Expected the uncommitted edit to be resolved, not unavailable'
+    );
+    assert.deepStrictEqual(posted.uncommittedEdit, {
+      path: '.span/fixture-span-uncommitted',
+      original: 'src.ts#L1-L3 rk64:deadbeef\n\nWhy this coupling exists.\n',
+      modified: 'src.ts#L1-L3 rk64:deadbeef\n\nWhy this coupling still exists.\n'
+    });
+    assert.strictEqual(posted.stale, true, 'Expected an uncommitted declaration edit to make the span stale');
+    assert.deepStrictEqual(posted.staleReasons, ['span file edited in the working tree']);
   });
 });

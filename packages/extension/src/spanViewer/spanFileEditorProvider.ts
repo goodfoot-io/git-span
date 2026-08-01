@@ -1,9 +1,18 @@
 /**
  * `CustomReadonlyEditorProvider` for `.span/**` files -- the integration seam
  * that wires the pure `spanViewer` modules (`spanFileGrammar.ts`,
- * `historyClient.ts`, `anchorMatcher.ts`) around VS Code's custom-editor
- * lifecycle: parse the span file, fetch `git span history --format json`,
- * match anchors against it, and render the webview panel.
+ * `historyClient.ts`, `anchorMatcher.ts`, `historySnapshotLadder.ts`) around
+ * VS Code's custom-editor lifecycle: parse the span file, fetch
+ * `git span history --format json`, match anchors against it, read clean
+ * anchor content from disk, and `postMessage` the fully-resolved
+ * `PostedDocument` to the Monaco webview.
+ *
+ * The webview has no filesystem access and no CSP allowance to fetch anchor
+ * content, so every content byte, ladder-resolved history pair, and the
+ * span-diff threading are pre-computed here and shipped in one
+ * structured-clone-safe postMessage. The loading/error/dangling fallback HTML
+ * panel is the only fallback surface, reachable when spawning `git span
+ * history` fails or the CLI reports dangling anchors.
  *
  * This is deliberately the *only* module that imports both `vscode` and the
  * pure `spanViewer` logic -- every other file in this directory is either
@@ -13,14 +22,26 @@
  * @module spanViewer/spanFileEditorProvider
  */
 
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { type GitSpanCommandResult, resolveGitSpanBinaryOnPath, runGitSpanCommand } from '../utils/gitSpanBinary.js';
-import { matchAllAnchors } from './anchorMatcher.js';
+import { type LineageMatch, matchAllAnchors, walkAddressLineage } from './anchorMatcher.js';
 import { getRepositoryForUri } from './gitRepository.js';
 import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
-import { parseSpanFile } from './spanFileGrammar.js';
-import type { AnchorPlan, LiveAnchor } from './types.js';
+import { buildHistorySnapshotLadder, type LadderRung } from './historySnapshotLadder.js';
+import { reconstructOriginal } from './patchReconstruction.js';
+import { formatAnchorAddress, parseSpanFile } from './spanFileGrammar.js';
+import type {
+  AnchorPlan,
+  HistoryDocument,
+  LiveAnchor,
+  PostedAnchor,
+  PostedDocument,
+  PostedHistoryBlock,
+  PostedHistoryCommit,
+  PostedUncommittedEdit
+} from './types.js';
 
 /** The `viewType` this provider is registered under in `package.json`'s `customEditors`. */
 export const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
@@ -65,6 +86,32 @@ export const testOnlyRenderOutcomes: Map<string, SpanRenderOutcome> = ((): Map<s
   }
   const created = new Map<string, SpanRenderOutcome>();
   globalRecord[TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY] = created;
+  return created;
+})();
+
+/**
+ * Key under which {@linkcode testOnlyLastPostedDocument}'s backing `Map` is
+ * stashed on `globalThis`, for the same per-bundle sharing reason as
+ * {@linkcode TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY}.
+ */
+const TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyLastPostedDocument__';
+
+/**
+ * Test-only hook recording the exact object most recently posted to each open
+ * span document's webview, keyed by `uri.toString()`. `vscode-test-electron`
+ * has no CDP hook into a webview's rendered DOM, so this is the only way the
+ * end-to-end tests can assert anchor count, per-anchor drift kind, history
+ * entry count, and the raced-read status card. Not read by any production
+ * code path.
+ */
+export const testOnlyLastPostedDocument: Map<string, PostedDocument> = ((): Map<string, PostedDocument> => {
+  const globalRecord = globalThis as unknown as Record<string, Map<string, PostedDocument> | undefined>;
+  const existing = globalRecord[TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY];
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, PostedDocument>();
+  globalRecord[TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY] = created;
   return created;
 })();
 
@@ -143,7 +190,9 @@ function makeNonce(): string {
 
 /**
  * Render the info/fallback/error pane shown in this custom editor's own
- * webview panel -- the tab for the `.span/*` file itself.
+ * webview panel -- the tab for the `.span/*` file itself. This is the only
+ * fallback surface: the loaded document renders through the Monaco webview
+ * template, never through this panel.
  *
  * Always offers "Reopen as Text," per the card's requirement that a span's
  * own prose remain one action away from editing even when the span rendered
@@ -181,6 +230,47 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
 }
 
 /**
+ * The webview-resource directory holding the Monaco bundle and its workers,
+ * derived from this bundle's own location: the production build emits the
+ * webview assets at `dist/webview` (next to `dist/bundle.cjs`), while the
+ * testing build emits them at `OUT_DIR/webview` (next to `OUT_DIR/bundle.cjs`)
+ * -- `__dirname` resolves in both CJS layouts. (Inside the per-test esbuild
+ * bundles the path points at a nonexistent sibling, which is harmless: the
+ * posted-document assertions never touch the webview's resources.)
+ */
+const WEBVIEW_DIR = path.join(__dirname, 'webview');
+
+/**
+ * Build the Monaco webview template: CSP covering the bundle's nonce-scoped
+ * script, Monaco's injected inline styles, the codicon font, the worker
+ * scripts' fetch (`connect-src`) and the Blob-wrapped worker construction
+ * (`worker-src blob:`).
+ *
+ * The webview's content arrives exclusively via `postMessage` -- the template
+ * itself only loads this bundle and its CSS.
+ *
+ * @param webview - The webview to build the template for.
+ * @returns The HTML document string.
+ * @throws Never.
+ */
+function renderWebviewHtml(webview: vscode.Webview): string {
+  const nonce = makeNonce();
+  const mainJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.js')));
+  const mainCssUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.css')));
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; worker-src blob:;">
+<link rel="stylesheet" href="${mainCssUri}">
+</head>
+<body>
+  <div id="app"><div class="loading">Loading span history…</div></div>
+  <script nonce="${nonce}" type="module" src="${mainJsUri}"></script>
+</body>
+</html>`;
+}
+
+/**
  * Find the nearest ancestor directory literally named `.span` in `filePath`
  * and derive the span name (the path relative to that directory, slash
  * separated) from it.
@@ -212,14 +302,328 @@ function resolveSpanName(filePath: string): string | null {
 }
 
 /**
+ * A file's stat at the CLI-spawn instant: either its `(mtimeMs, size)` pair,
+ * or the **absent-at-snapshot** sentinel recorded when the pre-spawn stat
+ * rejected (most often ENOENT on a dangling anchor's file). The sentinel
+ * compares equal to a later stat also finding the file absent, and unequal to
+ * one finding it present -- so absent-then-present and present-then-absent
+ * both read as the same "content changed since this was checked" mismatch.
+ */
+type PreSpawnStat = { kind: 'present'; mtimeMs: number; size: number } | { kind: 'absent' };
+
+/**
+ * Whether the file's state at the post-read instant equals its state at the
+ * CLI-spawn instant. Any difference -- absent either direction, or a changed
+ * `(mtimeMs, size)` pair -- means the provider's read raced the CLI's own
+ * read, so the read cannot be trusted to back a "clean" verdict.
+ *
+ * @param pre - The pre-spawn stat or absent-at-snapshot sentinel.
+ * @param post - The post-read stat, or `null` when that stat rejected.
+ * @returns Whether the two instants agree.
+ * @throws Never.
+ */
+function statsEqual(pre: PreSpawnStat | undefined, post: { mtimeMs: number; size: number } | null): boolean {
+  if (pre === undefined) {
+    return false;
+  }
+  if (pre.kind === 'absent') {
+    return post === null;
+  }
+  if (post === null) {
+    return false;
+  }
+  return pre.mtimeMs === post.mtimeMs && pre.size === post.size;
+}
+
+/**
+ * Slice a file's raw text to an anchor's declared 1-indexed inclusive range,
+ * mirroring the CLI's own `slice_line_range` semantics exactly: split on
+ * `'\n'`, strip a trailing `'\r'` from each line (Rust `str::lines()`), drop
+ * the final empty element produced by a trailing newline, and emit each
+ * sliced line terminated by `'\n'` -- so a non-empty result always ends with
+ * `'\n'`, agreeing with what the CLI would hash.
+ *
+ * @param text - The file's raw text, as read from disk.
+ * @param range - The declared range, or `null` for a whole-file anchor (raw
+ *   text as-is).
+ * @returns The sliced extent, or `null` when the file has fewer lines than
+ *   the declared range end -- which means the file changed since the CLI's
+ *   read, so the caller must render the "content changed" status card, never
+ *   a fabricated empty preview.
+ * @throws Never.
+ */
+function sliceLineRange(text: string, range: { start: number; end: number } | null): string | null {
+  if (range === null) {
+    return text;
+  }
+  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  if (lines.length < range.end) {
+    // The CLI certified this anchor clean, so its own read had at least
+    // `range.end` lines; fewer here means the file changed in the gap.
+    return null;
+  }
+  return lines
+    .slice(range.start - 1, range.end)
+    .map((line) => `${line}\n`)
+    .join('');
+}
+
+/**
+ * Read one `clean`-plan anchor's extent from disk and verify the read did not
+ * race the CLI's own read: `fs.stat` immediately after the read must equal
+ * the pre-spawn stat. A read failure, a stat mismatch, or a file shorter
+ * than the declared extent all return `null` (the "content changed" card) --
+ * never a fabricated empty preview, since an empty result must mean
+ * "genuinely empty extent".
+ *
+ * @param anchor - The live anchor to read.
+ * @param preSpawnStats - The pre-spawn stat map, keyed by filesystem path.
+ * @param repoRoot - The repository root the anchor's path resolves against.
+ * @returns The sliced extent, or `null` when the read cannot be trusted.
+ * @throws Never.
+ */
+async function readCleanContent(
+  anchor: LiveAnchor,
+  preSpawnStats: Map<string, PreSpawnStat>,
+  repoRoot: string
+): Promise<string | null> {
+  const fsPath = path.join(repoRoot, anchor.path);
+  let raw: string;
+  try {
+    raw = await fs.readFile(fsPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const postStatResults = await Promise.allSettled([fs.stat(fsPath)]);
+  const postStat = postStatResults[0]?.status === 'fulfilled' ? postStatResults[0].value : null;
+  if (!statsEqual(preSpawnStats.get(fsPath), postStat)) {
+    return null;
+  }
+  return sliceLineRange(raw, anchor.range);
+}
+
+/**
+ * Thread the worktree `.span` text backward through `current.span_diff` and
+ * each commit's own `span_diff`, recovering the `(original, modified)` pair
+ * every commit with a declaration change renders. The new side of a
+ * `span_diff` is always the commit's own version (worktree for
+ * `current.span_diff`, the commit's blob for a timeline `span_diff`), and the
+ * thread runs along the first-parent chain -- commits without a `span_diff`
+ * preserve the declaration, so `running` stays valid across them. A
+ * reconstruction failure leaves the failing commit and every older one
+ * `'unavailable'`: without the failing commit's original side, nothing older
+ * can be confirmed (fail-closed, never a fabricated pair).
+ *
+ * @param history - The parsed history document.
+ * @param worktreeSpanText - The `.span` file's disk text at open time.
+ * @returns Per-commit-hash resolved pairs, or `'unavailable'`.
+ * @throws Never.
+ */
+function threadSpanDiffs(
+  history: HistoryDocument,
+  worktreeSpanText: string
+): Map<string, { original: string; modified: string } | 'unavailable'> {
+  const result = new Map<string, { original: string; modified: string } | 'unavailable'>();
+  let running = worktreeSpanText;
+  if (history.current?.span_diff !== undefined) {
+    try {
+      running = reconstructOriginal(history.current.span_diff, worktreeSpanText, 1);
+    } catch {
+      for (const commit of history.commits) {
+        if (commit.span_diff !== undefined) {
+          result.set(commit.hash, 'unavailable');
+        }
+      }
+      return result;
+    }
+  }
+  for (let index = 0; index < history.commits.length; index++) {
+    const commit = history.commits[index];
+    if (commit?.span_diff === undefined) {
+      continue;
+    }
+    try {
+      const original = reconstructOriginal(commit.span_diff, running, 1);
+      result.set(commit.hash, { original, modified: running });
+      running = original;
+    } catch {
+      result.set(commit.hash, 'unavailable');
+      for (let older = index + 1; older < history.commits.length; older++) {
+        const olderCommit = history.commits[older];
+        if (olderCommit?.span_diff !== undefined) {
+          result.set(olderCommit.hash, 'unavailable');
+        }
+      }
+      break;
+    }
+  }
+  return result;
+}
+
+/** The ladder resolution for one anchor address. */
+interface LadderInfo {
+  /** The tracked address, matching `walkAddressLineage`'s per-commit addresses. */
+  address: string;
+  /** The lineage matches for this address, newest first. */
+  matches: LineageMatch[];
+  /** Ladder rungs by commit hash. */
+  rungsByHash: Map<string, LadderRung>;
+  /** True when the ladder produced nothing (seed recovery failed at rung zero). */
+  seedFailed: boolean;
+}
+
+/**
+ * Resolve one anchor address's history ladder once per address (the ladder
+ * threads backward, so walking it per commit would redo every older hop).
+ * Skipped entirely for `dangling` anchors (no lineage) and for `clean`
+ * anchors whose disk read raced the CLI (no trustworthy seed).
+ *
+ * @param history - The parsed history document.
+ * @param liveAnchors - The live anchors, in file order.
+ * @param plans - One plan per live anchor.
+ * @param cleanContents - Sliced disk content per `clean`-plan address.
+ * @returns One entry per address with resolvable history.
+ * @throws Never -- the ladder itself is fail-closed to `seedFailed`.
+ */
+function resolveLadders(
+  history: HistoryDocument,
+  liveAnchors: LiveAnchor[],
+  plans: AnchorPlan[],
+  cleanContents: Map<string, string>
+): LadderInfo[] {
+  const ladderInfos: LadderInfo[] = [];
+  liveAnchors.forEach((anchor, index) => {
+    const plan = plans[index];
+    if (plan === undefined) {
+      return;
+    }
+    if (plan.kind === 'dangling') {
+      return;
+    }
+    const address = formatAnchorAddress(anchor.path, anchor.range);
+    const matches = walkAddressLineage(history.commits, address);
+    const current = history.current?.anchors.find((entry) => entry.path === address);
+    let seedContent: string;
+    if (plan.kind === 'clean') {
+      const content = cleanContents.get(address);
+      if (content === undefined) {
+        return;
+      }
+      seedContent = content;
+    } else {
+      seedContent = '';
+    }
+    const ladder = buildHistorySnapshotLadder({ liveAddress: address, commits: history.commits, current, seedContent });
+    ladderInfos.push({
+      address,
+      matches,
+      rungsByHash: new Map(ladder.rungs.map((rung) => [rung.hash, rung])),
+      seedFailed: ladder.rungs.length === 0 && ladder.truncated
+    });
+  });
+  return ladderInfos;
+}
+
+/**
+ * Build the history accordion's per-commit entries: each commit's resolved
+ * `span_diff` pair plus one block per anchor address the commit touches,
+ * respecting `(path, block form)` identity -- a rebind-plus-edit commit
+ * renders both the header-only rebound block and the content block for the
+ * same path.
+ *
+ * @param history - The parsed history document.
+ * @param worktreeSpanText - The `.span` file's disk text.
+ * @param ladderInfos - Per-address ladder resolutions.
+ * @returns The history entries, newest first.
+ * @throws Never.
+ */
+function buildPostedHistory(
+  history: HistoryDocument,
+  worktreeSpanText: string,
+  ladderInfos: LadderInfo[]
+): PostedHistoryCommit[] {
+  const spanDiffs = threadSpanDiffs(history, worktreeSpanText);
+  const posted: PostedHistoryCommit[] = [];
+
+  for (let commitIndex = 0; commitIndex < history.commits.length; commitIndex++) {
+    const commit = history.commits[commitIndex];
+    if (commit === undefined) {
+      continue;
+    }
+    const blocks: PostedHistoryBlock[] = [];
+    for (const info of ladderInfos) {
+      const match = info.matches.find((candidate) => candidate.commitIndex === commitIndex);
+      if (match === undefined) {
+        continue;
+      }
+      // The rebound sibling at the same (path, block form), when this commit
+      // both rebinds the address and edits it.
+      const reboundEntry = commit.anchors.find((entry) => entry.path === match.address && entry.rebound !== undefined);
+      if (reboundEntry?.rebound !== undefined) {
+        blocks.push({
+          path: match.address,
+          rebound: { from: reboundEntry.rebound.from, to: reboundEntry.rebound.to }
+        });
+      }
+      if (match.anchor.rebound !== undefined) {
+        // Rebound-only match: the header-only block above is the whole story.
+        continue;
+      }
+      const rung = info.rungsByHash.get(commit.hash);
+      if (rung !== undefined) {
+        blocks.push(
+          rung.truncatedAt === undefined
+            ? { path: match.address, pair: { original: rung.original, modified: rung.modified } }
+            : { path: match.address, unavailable: true, truncated: true }
+        );
+      } else if (info.seedFailed) {
+        // Seed failure is rung zero: one "history unavailable" card at the
+        // newest commit that touches this address, nothing older.
+        blocks.push({ path: match.address, unavailable: true, truncated: true });
+        info.seedFailed = false;
+      }
+    }
+    const entry: PostedHistoryCommit = {
+      hash: commit.hash,
+      date: commit.date,
+      summary: commit.summary,
+      blocks
+    };
+    const spanDiff = spanDiffs.get(commit.hash);
+    if (spanDiff !== undefined) {
+      entry.spanDiff = spanDiff;
+    }
+    posted.push(entry);
+  }
+  return posted;
+}
+
+/**
+ * `N anchor(s)` / `N anchors` noun-phrase helper for stale-reason copy.
+ *
+ * @param count - The number of affected anchors.
+ * @param noun - The singular noun to pluralize.
+ * @returns The `count`-prefixed, correctly pluralized noun phrase.
+ * @throws Never.
+ */
+function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
  * Read-only viewer for `.span/**` files.
  *
  * On open, parses the document as a span file, runs `git span history
- * --format json` for it, and matches every anchor's live address against
- * that history. Dangling anchors are listed in this custom editor's own
- * webview panel. Non-span content and any failure along the way falls back
- * to the same webview panel with an explanatory message and a "Reopen as
- * Text" escape hatch.
+ * --format json` for it, matches every anchor's live address against that
+ * history, reads clean-anchor content from disk, and posts the fully-resolved
+ * `PostedDocument` to the Monaco webview. Dangling anchors render as
+ * header-only cards in the posted document; when every anchor is dangling,
+ * the fallback panel lists them instead. Non-span content and any failure
+ * along the way falls back to the same webview panel with an explanatory
+ * message and a "Reopen as Text" escape hatch.
  */
 export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvider<SpanCustomDocument> {
   constructor(private readonly runCommand: RunGitSpanCommandFn = runGitSpanCommand) {}
@@ -236,8 +640,9 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
   }
 
   /**
-   * Resolve the custom editor: parse, fetch history, match anchors, and
-   * render the resulting pane (or an explanatory fallback) for `document`.
+   * Resolve the custom editor: parse, fetch history, match anchors, read
+   * clean content from disk, and post the resulting `PostedDocument` to the
+   * Monaco webview (or render an explanatory fallback pane).
    *
    * @param document - The custom document model for the file being opened.
    * @param webviewPanel - The webview panel backing this editor's own tab.
@@ -245,23 +650,25 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
    * @throws Never -- all failures render as a pane rather than propagating.
    */
   async resolveCustomEditor(document: SpanCustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
-    webviewPanel.webview.options = { enableScripts: true };
-    renderPanel(webviewPanel.webview, 'Loading span history…', []);
+    webviewPanel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.file(WEBVIEW_DIR),
+        vscode.Uri.file(path.join(path.dirname(path.dirname(WEBVIEW_DIR)), 'node_modules'))
+      ]
+    };
+    webviewPanel.webview.html = renderWebviewHtml(webviewPanel.webview);
 
     let disposed = false;
     let inFlightController: AbortController | null = null;
+    /** The last successfully-built document, re-posted when the webview signals ready. */
+    let lastPosted: PostedDocument | null = null;
     document.addDisposable(
       webviewPanel.onDidDispose(() => {
         disposed = true;
         inFlightController?.abort();
       })
     );
-
-    webviewPanel.webview.onDidReceiveMessage((message: unknown) => {
-      if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'reopenAsText') {
-        void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
-      }
-    });
 
     const bytes = await vscode.workspace.fs.readFile(document.uri);
     if (disposed) {
@@ -306,10 +713,56 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     /** Filesystem paths already watched, so re-renders only add watchers for newly-seen paths. */
     const watchers = new Map<string, vscode.Disposable>();
 
+    webviewPanel.webview.onDidReceiveMessage((message: unknown) => {
+      if (typeof message !== 'object' || message === null) {
+        return;
+      }
+      const received = message as { type?: unknown };
+      if (received.type === 'ready') {
+        if (lastPosted !== null) {
+          webviewPanel.webview.postMessage({ type: 'document', document: lastPosted });
+        }
+        return;
+      }
+      if (received.type === 'reopenAsText') {
+        void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+        return;
+      }
+      if (received.type === 'goToFile') {
+        const goTo = received as { path?: unknown; range?: unknown };
+        if (typeof goTo.path !== 'string') {
+          return;
+        }
+        const fileUri = vscode.Uri.file(path.join(repoRoot, goTo.path));
+        const range = goTo.range as { start?: unknown; end?: unknown } | null;
+        if (range !== null && typeof range.start === 'number' && typeof range.end === 'number') {
+          const selection = new vscode.Range(range.start - 1, 0, range.end - 1, 0);
+          void vscode.window.showTextDocument(fileUri, { selection, preview: true });
+        } else {
+          void vscode.window.showTextDocument(fileUri, { preview: true });
+        }
+        return;
+      }
+      if (received.type === 'openCommit') {
+        const open = received as { hash?: unknown };
+        if (typeof open.hash !== 'string') {
+          return;
+        }
+        // VS Code's native commit navigation: the git extension's `git:`
+        // scheme URI, resolved from the repository's root path.
+        const uri = vscode.Uri.from({
+          scheme: 'git',
+          path: document.uri.fsPath,
+          query: JSON.stringify({ path: document.uri.fsPath, ref: open.hash })
+        });
+        void vscode.commands.executeCommand('vscode.open', uri);
+      }
+    });
+
     /**
-     * Fetch history, match anchors, and render the resulting pane (or an
-     * explanatory fallback). Re-invoked by file watchers on subsequent
-     * changes.
+     * Fetch history, match anchors, read clean content, and post the
+     * resulting `PostedDocument` (or render an explanatory fallback).
+     * Re-invoked by file watchers on subsequent changes.
      *
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every non-dangling anchor's real file), or `null` when
@@ -322,7 +775,24 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       inFlightController = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
 
-      let history: ReturnType<typeof parseHistoryJson>;
+      // Stat every distinct anchor path at the CLI-spawn instant, via
+      // Promise.allSettled so one ENOENT (a dangling anchor's missing file)
+      // never throws upstream of `git span history` being consulted -- a
+      // rejection is recorded as the absent-at-snapshot sentinel instead.
+      const statPaths = [...new Set(parsed.anchors.map((anchor) => path.join(repoRoot, anchor.path)))];
+      const statResults = await Promise.allSettled(statPaths.map((statPath) => fs.stat(statPath)));
+      const preSpawnStats = new Map<string, PreSpawnStat>();
+      statPaths.forEach((statPath, index) => {
+        const result = statResults[index];
+        preSpawnStats.set(
+          statPath,
+          result?.status === 'fulfilled'
+            ? { kind: 'present', mtimeMs: result.value.mtimeMs, size: result.value.size }
+            : { kind: 'absent' }
+        );
+      });
+
+      let history: HistoryDocument;
       try {
         const result = await this.runCommand(
           binaryPath,
@@ -355,50 +825,74 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         return null;
       }
 
-      const plans: AnchorPlan[] = matchAllAnchors(liveAnchors, history);
-      const watchedPaths = new Set<string>([document.uri.fsPath]);
-      const dangling: string[] = [];
-
-      plans.forEach((plan, index) => {
-        const anchor = parsed.anchors[index];
-        if (anchor === undefined) {
-          return;
+      let plans: AnchorPlan[];
+      try {
+        plans = matchAllAnchors(liveAnchors, history);
+      } catch (error) {
+        if (disposed) {
+          return null;
         }
-        if (plan.kind === 'dangling') {
-          dangling.push(
-            anchor.range === null ? anchor.path : `${anchor.path}#L${anchor.range.start}-L${anchor.range.end}`
-          );
-          return;
-        }
-
-        const realFileUri = vscode.Uri.file(path.join(repoRoot, anchor.path));
-        watchedPaths.add(realFileUri.fsPath);
-      });
-
-      if (disposed) {
+        const message = `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`;
+        renderPanel(webviewPanel.webview, message, []);
+        testOnlyRenderOutcomes.set(document.uri.toString(), { ok: false, danglingCount: 0, message });
         return null;
       }
 
-      if (dangling.length < parsed.anchors.length) {
-        const danglingNote =
-          dangling.length > 0 ? ` ${dangling.length} anchor(s) could not be matched -- see below.` : '';
-        const message = `Span "${spanName}" loaded successfully.${danglingNote}`;
-        renderPanel(webviewPanel.webview, message, dangling);
-        testOnlyRenderOutcomes.set(document.uri.toString(), {
-          ok: true,
-          danglingCount: dangling.length,
-          message
-        });
-      } else {
+      const watchedPaths = new Set<string>([document.uri.fsPath]);
+      plans.forEach((plan, index) => {
+        const anchor = parsed.anchors[index];
+        if (anchor === undefined || plan.kind === 'dangling') {
+          return;
+        }
+        watchedPaths.add(path.join(repoRoot, anchor.path));
+      });
+
+      const danglingCount = plans.filter((plan) => plan.kind === 'dangling').length;
+
+      if (danglingCount === parsed.anchors.length) {
         // Every anchor is dangling: keep this placeholder tab visible with
-        // its warning rather than rendering a success pane.
+        // its warning rather than posting a document.
         const message = `No anchors in span "${spanName}" could be matched against its history.`;
-        renderPanel(webviewPanel.webview, message, dangling);
+        renderPanel(webviewPanel.webview, message, []);
         testOnlyRenderOutcomes.set(document.uri.toString(), {
           ok: false,
-          danglingCount: dangling.length,
+          danglingCount,
           message
         });
+        return watchedPaths;
+      }
+
+      try {
+        const documentToPost = await this.buildPostedDocument({
+          liveAnchors,
+          plans,
+          history,
+          spanName,
+          text,
+          why: parsed.why,
+          preSpawnStats,
+          repoRoot
+        });
+        if (disposed) {
+          return null;
+        }
+        lastPosted = documentToPost;
+        webviewPanel.webview.postMessage({ type: 'document', document: documentToPost });
+        testOnlyLastPostedDocument.set(document.uri.toString(), documentToPost);
+        const danglingNote = danglingCount > 0 ? ` ${danglingCount} anchor(s) could not be matched -- see below.` : '';
+        const message = `Span "${spanName}" loaded successfully.${danglingNote}`;
+        testOnlyRenderOutcomes.set(document.uri.toString(), {
+          ok: true,
+          danglingCount,
+          message
+        });
+      } catch (error) {
+        if (disposed) {
+          return null;
+        }
+        const message = `Failed to render span history: ${error instanceof Error ? error.message : String(error)}`;
+        renderPanel(webviewPanel.webview, message, []);
+        testOnlyRenderOutcomes.set(document.uri.toString(), { ok: false, danglingCount: 0, message });
       }
 
       return watchedPaths;
@@ -437,6 +931,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     document.addDisposable(
       new vscode.Disposable(() => {
         testOnlyRenderOutcomes.delete(document.uri.toString());
+        testOnlyLastPostedDocument.delete(document.uri.toString());
       })
     );
 
@@ -446,5 +941,131 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         ensureWatcher(watchedPath);
       }
     }
+  }
+
+  /**
+   * Assemble the `PostedDocument` from the parsed span file, the anchor
+   * plans, and the history document: one card per anchor (clean content read
+   * from disk with the pre/post-stat race check), the uncommitted declaration
+   * edit, per-commit history blocks, and the Stale pill's reasons.
+   *
+   * @param options - Everything the build needs.
+   * @param options.liveAnchors - The live anchors, in file order.
+   * @param options.plans - One plan per live anchor.
+   * @param options.history - The parsed history document.
+   * @param options.spanName - The span's name (the `.span` file's basename).
+   * @param options.text - The `.span` file's raw disk text.
+   * @param options.why - The span's why prose, as parsed from the file.
+   * @param options.preSpawnStats - The pre-spawn stat map, keyed by path.
+   * @param options.repoRoot - The repository root anchor paths resolve against.
+   * @returns The document to post to the webview.
+   * @throws Never -- every failure path yields a status card or
+   *   `'unavailable'` marker, never a fabricated preview.
+   */
+  private async buildPostedDocument(options: {
+    liveAnchors: LiveAnchor[];
+    plans: AnchorPlan[];
+    history: HistoryDocument;
+    spanName: string;
+    text: string;
+    why: string;
+    preSpawnStats: Map<string, PreSpawnStat>;
+    repoRoot: string;
+  }): Promise<PostedDocument> {
+    const { liveAnchors, plans, history, spanName, text, why, preSpawnStats, repoRoot } = options;
+
+    const anchors: PostedAnchor[] = [];
+    const cleanContents = new Map<string, string>();
+    let drifted = 0;
+    let relocated = 0;
+    let unavailable = 0;
+    let changed = 0;
+    let dangling = 0;
+
+    for (let index = 0; index < liveAnchors.length; index++) {
+      const anchor = liveAnchors[index];
+      const plan = plans[index];
+      if (anchor === undefined || plan === undefined) {
+        continue;
+      }
+      const address = formatAnchorAddress(anchor.path, anchor.range);
+      const base = { address, path: anchor.path, range: anchor.range };
+      switch (plan.kind) {
+        case 'dangling':
+          dangling++;
+          anchors.push({ ...base, kind: 'dangling' });
+          break;
+        case 'clean': {
+          const content = await readCleanContent(anchor, preSpawnStats, repoRoot);
+          if (content === null) {
+            changed++;
+            anchors.push({ ...base, kind: 'changed' });
+          } else {
+            cleanContents.set(address, content);
+            anchors.push({ ...base, kind: 'clean', content });
+          }
+          break;
+        }
+        case 'drifted':
+        case 'reconciled':
+          drifted++;
+          anchors.push({ ...base, kind: plan.kind, historical: plan.historical, current: plan.current });
+          break;
+        case 'relocated':
+          relocated++;
+          anchors.push({ ...base, kind: 'relocated', content: plan.content, proposed: plan.proposed });
+          break;
+        case 'unavailable':
+          unavailable++;
+          anchors.push({ ...base, kind: 'unavailable', reason: plan.reason });
+          break;
+      }
+    }
+
+    let uncommittedEdit: PostedUncommittedEdit | 'unavailable' | undefined;
+    if (history.current?.span_diff !== undefined) {
+      try {
+        const original = reconstructOriginal(history.current.span_diff, text, 1);
+        uncommittedEdit = { path: `.span/${spanName}`, original, modified: text };
+      } catch {
+        uncommittedEdit = 'unavailable';
+      }
+    }
+
+    const ladderInfos = resolveLadders(history, liveAnchors, plans, cleanContents);
+    const postedHistory = buildPostedHistory(history, text, ladderInfos);
+
+    const staleReasons: string[] = [];
+    if (drifted > 0) {
+      staleReasons.push(`${countLabel(drifted, 'anchor')} drifted`);
+    }
+    if (relocated > 0) {
+      staleReasons.push(`${countLabel(relocated, 'anchor')} relocated`);
+    }
+    if (unavailable > 0) {
+      staleReasons.push(`${countLabel(unavailable, 'anchor')} unavailable`);
+    }
+    if (changed > 0) {
+      staleReasons.push(`${countLabel(changed, 'anchor')} changed while this span was being checked`);
+    }
+    if (dangling > 0) {
+      staleReasons.push(`${countLabel(dangling, 'anchor')} without history`);
+    }
+    if (uncommittedEdit !== undefined) {
+      staleReasons.push('span file edited in the working tree');
+    }
+
+    const posted: PostedDocument = {
+      spanName,
+      why,
+      stale: staleReasons.length > 0,
+      staleReasons,
+      anchors,
+      history: postedHistory
+    };
+    if (uncommittedEdit !== undefined) {
+      posted.uncommittedEdit = uncommittedEdit;
+    }
+    return posted;
   }
 }

@@ -251,6 +251,8 @@ function installGitSpanFixtureBinary(): void {
     fixtureScriptPath,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
+const fs = require('node:fs');
+const path = require('node:path');
 const writeJson = (value) => process.stdout.write(JSON.stringify(value));
 
 if (args[0] === '--version') {
@@ -280,6 +282,134 @@ if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
     });
     process.exit(0);
   }
+
+  if (spanName === 'fixture-span-drifted') {
+    // A 10-line extent: the newest commit edits line 2 (hunk @@ -1,5 +1,5 @@,
+    // context lines 1-5 only), while the worktree drift is at line 8 -- outside
+    // every hunk's context -- so an omitted ladder-seed call reconstructs the
+    // newest rung's modified side from the drifted content instead of
+    // throwing, and the test's pair assertion bites.
+    const driftedFirstAdd = 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n';
+    const driftedHistorical = 'one\\ntwo2\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n';
+    const driftedCurrent = 'one\\ntwo2\\nthree\\nfour\\nfive\\nsix\\nseven\\neight drift\\nnine\\nten\\n';
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'b2b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-02T00:00:00Z',
+          summary: 'Edit drifted anchor',
+          anchors: [
+            {
+              path: 'src.ts#L1-L10',
+              diff: 'diff --git a/src.ts#L1-L10 b/src.ts#L1-L10\\nindex rk64:aaa..rk64:bbb 100644\\n--- a/src.ts#L1-L10\\n+++ b/src.ts#L1-L10\\n@@ -1,5 +1,5 @@\\n one\\n-two\\n+two2\\n three\\n four\\n five\\n'
+            }
+          ]
+        },
+        {
+          hash: 'b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-01T00:00:00Z',
+          summary: 'Add drifted anchor',
+          anchors: [{ path: 'src.ts#L1-L10', content: driftedFirstAdd }]
+        }
+      ],
+      current: {
+        anchors: [
+          {
+            path: 'src.ts#L1-L10',
+            diff: 'diff --git a/src.ts#L1-L10 b/src.ts#L1-L10\\nindex rk64:bbb..rk64:ccc 100644\\n--- a/src.ts#L1-L10\\n+++ b/src.ts#L1-L10\\n@@ -5,6 +5,6 @@\\n five\\n six\\n seven\\n-eight\\n+eight drift\\n nine\\n ten\\n',
+            content: driftedCurrent
+          }
+        ]
+      }
+    });
+    process.exit(0);
+  }
+
+  if (spanName === 'fixture-span-rebind-edit') {
+    // One commit that rebinds the address's token and edits the content in the
+    // same change: two timeline anchors at the same path -- a header-only
+    // rebound block (diff carrying only the index-line token transition) and
+    // the content block.
+    const preState = 'one\\ntwo\\nthree\\n';
+    const postState = 'one\\ntwo changed\\nthree\\n';
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'c1c2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-03T00:00:00Z',
+          summary: 'Rebind and edit the anchor',
+          anchors: [
+            {
+              path: 'src.ts#L1-L3',
+              diff: 'diff --git a/src.ts#L1-L3 b/src.ts#L1-L3\\nindex rk64:aaaa..rk64:bbbb 100644\\n--- a/src.ts#L1-L3\\n+++ b/src.ts#L1-L3\\n',
+              rebound: { from: 'rk64:aaaa', to: 'rk64:bbbb' }
+            },
+            {
+              path: 'src.ts#L1-L3',
+              diff: 'diff --git a/src.ts#L1-L3 b/src.ts#L1-L3\\nindex rk64:bbbb..rk64:cccc 100644\\n--- a/src.ts#L1-L3\\n+++ b/src.ts#L1-L3\\n@@ -1,3 +1,3 @@\\n one\\n-two\\n+two changed\\n three\\n'
+            }
+          ]
+        }
+      ]
+    });
+    process.exit(0);
+  }
+
+  if (spanName === 'fixture-span-race') {
+    // Simulate a save landing between the provider's pre-spawn stat and its
+    // post-read stat: append to the anchor's file during the CLI spawn, so
+    // the provider's disk read sees different bytes than the stat it took at
+    // spawn time and must render the "content changed" status card.
+    fs.appendFileSync(path.join(process.cwd(), 'race-target.ts'), 'raced content\\n');
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'd1d2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-04T00:00:00Z',
+          summary: 'Add race target anchor',
+          anchors: [{ path: 'race-target.ts', content: 'hello from fixture' }]
+        }
+      ]
+    });
+    process.exit(0);
+  }
+
+  if (spanName === 'fixture-span-dangling') {
+    // No commits: the anchor cannot be matched against history, and its file
+    // does not exist -- the pre-spawn stat's ENOENT must not throw upstream of
+    // the all-dangling fallback panel.
+    writeJson({ schema_version: 2, span: spanName, commits: [] });
+    process.exit(0);
+  }
+
+  if (spanName === 'fixture-span-uncommitted') {
+    // The worktree declaration differs from HEAD: current.span_diff is the
+    // only signal, resolved by the provider into the uncommitted edit card.
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'e1e2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-05T00:00:00Z',
+          summary: 'Add uncommitted span anchor',
+          anchors: [{ path: 'src.ts#L1-L3', content: 'line one\\nline two\\nline three\\n' }]
+        }
+      ],
+      current: {
+        span_diff: 'diff --git a/.span/fixture-span-uncommitted b/.span/fixture-span-uncommitted\\nindex rk64:aaaa..rk64:bbbb 100644\\n--- a/.span/fixture-span-uncommitted\\n+++ b/.span/fixture-span-uncommitted\\n@@ -1,3 +1,3 @@\\n src.ts#L1-L3 rk64:deadbeef\\n \\n-Why this coupling exists.\\n+Why this coupling still exists.\\n',
+        anchors: []
+      }
+    });
+    process.exit(0);
+  }
+
   process.stderr.write('git-span-fixture: unknown fixture span ' + spanName + '\\n');
   process.exit(1);
 }

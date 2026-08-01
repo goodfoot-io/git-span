@@ -135,6 +135,94 @@ export interface HistoryDocument {
   };
 }
 
+/** The base fields every posted anchor card carries. */
+export interface PostedAnchorBase {
+  /** The live declared address, e.g. `web/checkout.tsx#L10-L12`. */
+  address: string;
+  /** Repository-relative, slash-separated file path. */
+  path: string;
+  /** 1-based inclusive line range, or `null` for a whole-file anchor. */
+  range: { start: number; end: number } | null;
+}
+
+/**
+ * One anchor card in the posted document, mirroring the matcher's plan kind
+ * plus the provider-side status cards (`changed` for a raced disk read,
+ * `dangling` for a mixed span's unmatched anchor).
+ */
+export type PostedAnchor =
+  | (PostedAnchorBase & { kind: 'clean'; content: string })
+  | (PostedAnchorBase & { kind: 'drifted'; historical: string | null; current: string | null })
+  | (PostedAnchorBase & { kind: 'reconciled'; historical: string | null; current: string | null })
+  | (PostedAnchorBase & { kind: 'relocated'; content: string; proposed: string })
+  | (PostedAnchorBase & { kind: 'unavailable'; reason: UnavailableReason })
+  | (PostedAnchorBase & { kind: 'changed' })
+  | (PostedAnchorBase & { kind: 'dangling' });
+
+/**
+ * One block inside a history accordion entry: a header-only rebound block,
+ * a ladder-resolved content pair, or a status marker where the ladder
+ * stopped.
+ */
+export interface PostedHistoryBlock {
+  /** The address (path with optional range) this block concerns. */
+  path: string;
+  /** Present on a header-only rebound block, which has no diff editor. */
+  rebound?: ReboundTransition;
+  /** Present on a content block: the ladder-resolved `(original, modified)` pair. */
+  pair?: { original: string; modified: string };
+  /** True on a block whose ladder produced nothing (seed unrecoverable). */
+  unavailable?: boolean;
+  /** True on the rung where the walk stopped; nothing older is rendered. */
+  truncated?: boolean;
+}
+
+/** One collapsed-by-default history accordion entry. */
+export interface PostedHistoryCommit {
+  hash: string;
+  date: string;
+  summary: string;
+  /**
+   * The declaration diff pair, resolved by threading the worktree `.span`
+   * content backward through `current.span_diff` and each commit's own
+   * `span_diff`; `'unavailable'` when that reconstruction failed.
+   */
+  spanDiff?: { original: string; modified: string } | 'unavailable';
+  blocks: PostedHistoryBlock[];
+}
+
+/** The uncommitted declaration edit (`current.span_diff`), pre-resolved. */
+export interface PostedUncommittedEdit {
+  /** The `.span/<name>` declaration file's repo-relative path. */
+  path: string;
+  original: string;
+  modified: string;
+}
+
+/**
+ * The exact object the provider posts to the webview via `postMessage`.
+ *
+ * Everything the webview needs is pre-computed here -- the webview has no
+ * filesystem access and no CSP allowance to fetch an `asWebviewUri` URL, so
+ * content bytes, ladder-resolved history pairs, and the span-diff threading
+ * all arrive in this one structured-clone-safe payload.
+ */
+export interface PostedDocument {
+  spanName: string;
+  /** Why prose parsed from the `.span` file itself, never from history. */
+  why: string;
+  /** True when any anchor drifted/relocated/unavailable or the declaration has an uncommitted edit. */
+  stale: boolean;
+  /** Human-readable causes for the Stale pill's tooltip, e.g. `1 anchor drifted`. */
+  staleReasons: string[];
+  /** One card per live anchor, in file order. */
+  anchors: PostedAnchor[];
+  /** The uncommitted declaration edit card, when `current.span_diff` exists. */
+  uncommittedEdit?: PostedUncommittedEdit | 'unavailable';
+  /** Collapsed-by-default history accordion entries. */
+  history: PostedHistoryCommit[];
+}
+
 /**
  * The per-anchor render plan produced by matching a live anchor address
  * against a `HistoryDocument`. Drives which content strings a card shows, or
