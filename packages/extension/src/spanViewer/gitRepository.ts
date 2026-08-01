@@ -35,27 +35,46 @@ interface GitExtensionExports {
   getAPI(version: 1): GitApiV1;
 }
 
+/** How long {@linkcode waitForInitializedState} waits for `vscode.git` to report `'initialized'` before giving up. */
+const GIT_INITIALIZED_TIMEOUT_MS = 5000;
+
 /**
  * Wait for the `vscode.git` API to report `state === 'initialized'`.
  *
  * Covers the session-restore race where a span editor can resolve before
- * repository discovery completes.
+ * repository discovery completes. Bounded by {@linkcode GIT_INITIALIZED_TIMEOUT_MS}:
+ * VS Code documents that a git-disabled (or failing-to-initialize) extension
+ * never leaves `'uninitialized'`, so an unbounded wait would hang the caller.
+ * The rejection surfaces through {@linkcode getRepositoryForUri} as `null`,
+ * letting the provider's `findRepoRootUpward` fallback take over.
  *
  * @param api - The activated `vscode.git` API.
  * @returns Resolves once `api.state` is `'initialized'`.
- * @throws Never.
+ * @throws A timeout error when `api.state` is still `'uninitialized'` after
+ *   {@linkcode GIT_INITIALIZED_TIMEOUT_MS}; the event subscription is disposed
+ *   before rejecting.
  */
 function waitForInitializedState(api: GitApiV1): Promise<void> {
   if (api.state === 'initialized') {
     return Promise.resolve();
   }
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const subscription = api.onDidChangeState((state) => {
       if (state === 'initialized') {
+        clearTimeout(timeout);
         subscription.dispose();
         resolve();
       }
     });
+    timeout = setTimeout(() => {
+      subscription.dispose();
+      reject(
+        new Error(
+          `vscode.git state did not become 'initialized' within ${GIT_INITIALIZED_TIMEOUT_MS}ms; git extension disabled or failed to initialize`
+        )
+      );
+    }, GIT_INITIALIZED_TIMEOUT_MS);
   });
 }
 

@@ -10,9 +10,12 @@
  * The webview has no filesystem access and no CSP allowance to fetch anchor
  * content, so every content byte, ladder-resolved history pair, and the
  * span-diff threading are pre-computed here and shipped in one
- * structured-clone-safe postMessage. The loading/error/dangling fallback HTML
- * panel is the only fallback surface, reachable when spawning `git span
- * history` fails or the CLI reports dangling anchors.
+ * structured-clone-safe postMessage. The loading/error fallback HTML panel is
+ * the only fallback surface, reached when spawning `git span history` fails,
+ * the span cannot be parsed, or the repository/binary is unavailable; an
+ * all-dangling span renders in the webview's own DOM as dangling anchor cards,
+ * never by replacing the webview HTML (which would kill the 'document'
+ * listener the watcher-triggered re-renders depend on).
  *
  * This is deliberately the *only* module that imports both `vscode` and the
  * pure `spanViewer` logic -- every other file in this directory is either
@@ -225,6 +228,16 @@ function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoThemeKind {
  * fallback surface: the loaded document renders through the Monaco webview
  * template, never through this panel.
  *
+ * The panel cannot render a posted document (no Monaco bundle), so it must
+ * not lose one: its script listens for `'document'` messages and relays a
+ * `'reload'` message back to the host, which swaps the webview back to the
+ * Monaco template -- the fresh webview posts `'ready'` on load and the host
+ * re-posts `lastPosted`. This keeps the error state recoverable: a later
+ * watcher-triggered render that succeeds posts its document into the panel,
+ * which hands it to the Monaco webview to render. The panel deliberately does
+ * not post `'ready'` itself -- the host would answer by re-posting a stale
+ * `lastPosted`, bouncing it straight back here into a reload loop.
+ *
  * Always offers "Reopen as Text," per the card's requirement that a span's
  * own prose remain one action away from editing even when the span rendered
  * successfully.
@@ -254,6 +267,17 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
     const vscode = acquireVsCodeApi();
     document.getElementById('reopen-as-text').addEventListener('click', () => {
       vscode.postMessage({ type: 'reopenAsText' });
+    });
+    // A 'document' message reaching this panel means a render succeeded after
+    // this error panel was shown -- swap back to the Monaco webview, which
+    // renders the document it is re-posted on 'ready'. Without this listener
+    // the panel would be dead to watcher-triggered re-renders, leaving the
+    // tab stuck on the error until the user reopens it.
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (message !== null && typeof message === 'object' && message.type === 'document') {
+        vscode.postMessage({ type: 'reload' });
+      }
     });
   </script>
 </body>
@@ -553,13 +577,14 @@ interface LadderInfo {
 /**
  * Resolve one anchor address's history ladder once per address (the ladder
  * threads backward, so walking it per commit would redo every older hop).
- * Skipped entirely for `dangling` anchors (no lineage) and for `clean`
- * anchors whose disk read raced the CLI (no trustworthy seed).
+ * Skipped entirely for `dangling` anchors (no lineage).
  *
  * @param history - The parsed history document.
  * @param liveAnchors - The live anchors, in file order.
  * @param plans - One plan per live anchor.
- * @param cleanContents - Sliced disk content per `clean`-plan address.
+ * @param cleanContents - Sliced disk content per `clean`-plan address; a
+ *   clean anchor whose disk read raced the CLI is absent here and passes an
+ *   empty ladder seed instead.
  * @returns One entry per address with resolvable history.
  * @throws Never -- the ladder itself is fail-closed to `seedFailed`.
  */
@@ -583,11 +608,13 @@ function resolveLadders(
     const current = history.current?.anchors.find((entry) => entry.path === address);
     let seedContent: string;
     if (plan.kind === 'clean') {
-      const content = cleanContents.get(address);
-      if (content === undefined) {
-        return;
-      }
-      seedContent = content;
+      // A clean anchor whose disk read raced the CLI has no `cleanContents`
+      // entry: the race only invalidates the clean preview, never the history
+      // walk -- a pure string computation over the certified JSON payload --
+      // so the ladder is still computed and the accordion keeps its entries.
+      // With no trustworthy disk-read seed it passes an empty one; the ladder
+      // handles the missing-seed case on the not-drifted branch itself.
+      seedContent = cleanContents.get(address) ?? '';
     } else {
       seedContent = '';
     }
@@ -696,9 +723,11 @@ function countLabel(count: number, noun: string): string {
  * history, reads clean-anchor content from disk, and posts the fully-resolved
  * `PostedDocument` to the Monaco webview. Dangling anchors render as
  * header-only cards in the posted document; when every anchor is dangling,
- * the fallback panel lists them instead. Non-span content and any failure
- * along the way falls back to the same webview panel with an explanatory
- * message and a "Reopen as Text" escape hatch.
+ * the posted document renders all-dangling status cards in the webview's own
+ * DOM, keeping its 'document' listener alive for watcher-triggered
+ * re-renders. Non-span content and any failure along the way falls back to
+ * the error webview panel with an explanatory message and a "Reopen as Text"
+ * escape hatch.
  */
 export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvider<SpanCustomDocument> {
   constructor(private readonly runCommand: RunGitSpanCommandFn = runGitSpanCommand) {}
@@ -834,6 +863,17 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         }
         return;
       }
+      if (received.type === 'reload') {
+        // The error/fallback panel caught a 'document' post but cannot render
+        // Monaco: swap back to the webview template. The fresh webview posts
+        // 'ready' on load and the host re-posts `lastPosted` -- the document
+        // the panel was handed.
+        webviewPanel.webview.html = renderWebviewHtml(
+          webviewPanel.webview,
+          monacoThemeKind(vscode.window.activeColorTheme.kind)
+        );
+        return;
+      }
       if (received.type === 'reopenAsText') {
         void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
         return;
@@ -965,21 +1005,40 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       const danglingCount = plans.filter((plan) => plan.kind === 'dangling').length;
 
       if (danglingCount === parsed.anchors.length) {
-        // Every anchor is dangling: keep this placeholder tab visible with
-        // its warning listing each unaccounted address rather than posting a
-        // document.
+        // Every anchor is dangling: post an all-dangling document so the
+        // Monaco webview renders the fallback state in its own DOM. Never
+        // replace the webview HTML here -- the webview's 'document' listener
+        // must stay alive so a later watcher-triggered render (the anchor's
+        // file restored, history grown to cover it) re-renders in place
+        // instead of posting into a dead panel.
         if (generation !== renderGeneration) {
           return null;
         }
-        const danglingAddresses: string[] = [];
+        const danglingAnchors: PostedAnchor[] = [];
         plans.forEach((plan, index) => {
           const anchor = parsed.anchors[index];
-          if (anchor !== undefined && plan.kind === 'dangling') {
-            danglingAddresses.push(formatAnchorAddress(anchor.path, anchor.range));
+          if (anchor === undefined || plan.kind !== 'dangling') {
+            return;
           }
+          danglingAnchors.push({
+            address: formatAnchorAddress(anchor.path, anchor.range),
+            path: anchor.path,
+            range: anchor.range,
+            kind: 'dangling'
+          });
         });
         const message = `No anchors in span "${spanName}" could be matched against its history.`;
-        renderPanel(webviewPanel.webview, message, danglingAddresses);
+        const documentToPost: PostedDocument = {
+          spanName,
+          why: parsed.why,
+          stale: true,
+          staleReasons: [`${countLabel(danglingCount, 'anchor')} without history`],
+          anchors: danglingAnchors,
+          history: []
+        };
+        lastPosted = documentToPost;
+        webviewPanel.webview.postMessage({ type: 'document', document: documentToPost });
+        testOnlyLastPostedDocument.set(document.uri.toString(), documentToPost);
         testOnlyRenderOutcomes.set(document.uri.toString(), {
           ok: false,
           danglingCount,
@@ -1061,11 +1120,20 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       })
     );
 
-    const watchedPaths = await render();
-    if (watchedPaths !== null) {
-      for (const watchedPath of watchedPaths) {
-        ensureWatcher(watchedPath);
-      }
+    await render();
+    if (disposed) {
+      return;
+    }
+    // Register watchers for the span file and every anchor's real file
+    // regardless of the initial render's outcome: a failed first render
+    // (history load error, anchor matching error) returned without registering
+    // anything, leaving the error panel dead to recovery -- with watchers in
+    // place, fixing the underlying condition re-triggers the render, and the
+    // panel's 'reload' handshake swaps back to the Monaco webview when the
+    // next render posts a document.
+    ensureWatcher(document.uri.fsPath);
+    for (const anchor of parsed.anchors) {
+      ensureWatcher(path.join(repoRoot, anchor.path));
     }
   }
 

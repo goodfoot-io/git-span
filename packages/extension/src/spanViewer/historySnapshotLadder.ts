@@ -9,14 +9,29 @@
  *
  * **Seeding**: on the drifted branch, `current.content` is today's worktree
  * extent -- the one value guaranteed *not* to equal the post-newest-commit
- * state the walk must start from -- so a `reconstructOriginal` call on the
- * `current` block's own diff recovers the true seed before the walk begins.
- * Two shapes short-circuit that recovery: a full-deletion diff carries the
- * recorded bytes as its own old side (`current.content`, or the diff's `-`
- * lines when the live side is unreadable), and a header-only diff (a
- * relocation, or a rename whose content is unchanged) proves the bytes did
- * not change, so `current.content` is the seed. On the not-drifted branch the
- * caller's disk-read clean content already is that state and seeds directly.
+ * state the walk must start from. A `reconstructOriginal` call on the
+ * `current` block's own diff recovers the **recorded** state: the content the
+ * declaration's recorded token names, i.e. the anchor's state as of the last
+ * commit where it was recorded or re-anchored. When the declaration is fresh
+ * (recorded at the newest commit), that state *is* the post-newest-commit
+ * state and seeds directly. When it is stale -- the CLI's own default
+ * `stale --fix` posture, a user who records once and then keeps editing
+ * without re-anchoring -- the recorded state is older than the newest commit,
+ * so the walk's first reverse-apply would fail its post-image match against
+ * it and truncate at rung zero. The fix threads the recorded state FORWARD
+ * through the lineage first: each diff whose pre-region matches the running
+ * text chains forward onto it, and one whose pre-region does not was
+ * committed at-or-before the recording (the running text is already that
+ * commit's post-state) and is skipped. The threaded result is the true
+ * post-newest-commit state -- it agrees with the recording state everywhere
+ * no later commit changed anything, and with each later commit's post-state
+ * inside that commit's own hunks. Two shapes short-circuit the recovery: a
+ * full-deletion diff carries the recorded bytes as its own old side
+ * (`current.content`, or the diff's `-` lines when the live side is
+ * unreadable), and a header-only diff (a relocation, or a rename whose
+ * content is unchanged) proves the bytes did not change, so `current.content`
+ * is the seed. On the not-drifted branch the caller's disk-read clean content
+ * already is that state and seeds directly.
  *
  * **Rungs**: a first-add supplies `content` directly and terminates (the
  * origin needs no reconstruction); a full addition/deletion (a `/dev/null`
@@ -43,13 +58,15 @@
  * @module spanViewer/historySnapshotLadder
  */
 
-import { extentStartLineOf, walkAddressLineage } from './anchorMatcher.js';
+import { extentStartLineOf, type LineageMatch, walkAddressLineage } from './anchorMatcher.js';
 import {
+  applyDiffForward,
   extractHunkSide,
   extractRenameFrom,
   hasHunks,
   isFullAddition,
   isFullDeletion,
+  ReconstructionError,
   reconstructOriginal
 } from './patchReconstruction.js';
 import type { CurrentAnchor, HistoryCommit } from './types.js';
@@ -91,6 +108,76 @@ export interface BuildHistorySnapshotLadderOptions {
 }
 
 /**
+ * Thread a recorded state forward through the anchor's lineage (oldest-first)
+ * to recover the post-newest-commit state the backward walk must seed from.
+ *
+ * The recorded state is the anchor's content as of the last commit where it
+ * was recorded or re-anchored. Every committed diff after that point chains
+ * forward from it -- its pre-region equals the running text -- so
+ * `applyDiffForward` advances the running snapshot through them; a diff whose
+ * pre-region does not match was committed at-or-before the recording (the
+ * running text already is that commit's post-state) and is skipped. A
+ * first-add or `/dev/null`-sided diff supplies no chainable pre-region and a
+ * rename or rebound block changes no bytes, so all of those are skipped
+ * too -- nothing between them can move the running text. A diff that should
+ * chain but does not (a recorded state outside this timeline) leaves the
+ * running text too old, and the backward walk's own post-image match fails
+ * closed at rung zero rather than rendering a fabricated history.
+ *
+ * @param recorded - The state the declaration's recorded token names.
+ * @param lineage - The anchor's lineage matches, newest-first (as returned by
+ *   `walkAddressLineage`); iterated oldest-first here.
+ * @returns The threaded post-newest-commit state.
+ * @throws {ReconstructionError} Never -- `applyDiffForward` raises only
+ *   `ReconstructionError` (a pre-region mismatch is a skip, not a fault);
+ *   malformed-address errors from `extentStartLineOf` rethrow and the caller
+ *   fails closed into truncation.
+ */
+function threadForward(recorded: string, lineage: LineageMatch[]): string {
+  let running = recorded;
+  for (let index = lineage.length - 1; index >= 0; index--) {
+    const match = lineage[index];
+    if (match === undefined) {
+      continue;
+    }
+    const { anchor, address } = match;
+    if (anchor.rebound !== undefined || anchor.content !== undefined || anchor.diff === undefined) {
+      // Rebound-only block: no content. First-add: the origin predates the
+      // recording. Both change nothing the threading can advance through.
+      continue;
+    }
+    const diff = anchor.diff;
+    if (isFullAddition(diff) || isFullDeletion(diff) || !hasHunks(diff)) {
+      // `/dev/null`-sided diffs carry no chainable pre-region, and a
+      // header-only block (a pure rename, a relocation) changes no bytes.
+      continue;
+    }
+    const extentStartLine = extentStartLineOf(address);
+    const renameFrom = extractRenameFrom(diff);
+    // A diff whose pre-region does not match the running text was committed
+    // at-or-before the recording (the running text already is that commit's
+    // post-state): skip it and keep threading the newer commits.
+    try {
+      running = applyDiffForward(
+        diff,
+        running,
+        extentStartLine,
+        renameFrom === undefined ? extentStartLine : extentStartLineOf(renameFrom)
+      );
+    } catch (error) {
+      // A pre-region mismatch is the skip signal; anything else (only
+      // malformed-address errors from `extentStartLineOf` can be) rethrows so
+      // the caller fails closed into truncation instead of skipping a defect.
+      if (error instanceof ReconstructionError) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return running;
+}
+
+/**
  * Build the snapshot ladder for one anchor address.
  *
  * @param options - The address, commits, optional drifted `current` entry,
@@ -99,6 +186,8 @@ export interface BuildHistorySnapshotLadderOptions {
  */
 export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOptions): HistorySnapshotLadderResult {
   const { liveAddress, commits, current, seedContent } = options;
+
+  const lineage = walkAddressLineage(commits, liveAddress);
 
   let running: string;
   if (current === undefined) {
@@ -126,8 +215,16 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
     // the seed.
     running = current.content;
   } else {
+    // Ordinary in-place drift. Recover the recorded state (the content the
+    // declaration's recorded token names), then thread it forward through the
+    // lineage: on a fresh declaration that state already is the
+    // post-newest-commit state, and on a stale one the threading advances it
+    // through every commit newer than the recording (see the module doc).
     try {
-      running = reconstructOriginal(current.diff, current.content, extentStartLineOf(liveAddress));
+      running = threadForward(
+        reconstructOriginal(current.diff, current.content, extentStartLineOf(liveAddress)),
+        lineage
+      );
     } catch {
       // Seed-recovery failure is rung zero: the whole ladder is unavailable.
       return { rungs: [], truncated: true };
@@ -136,7 +233,7 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
 
   const rungs: LadderRung[] = [];
   let truncated = false;
-  for (const match of walkAddressLineage(commits, liveAddress)) {
+  for (const match of lineage) {
     const { anchor, address, commit } = match;
     const extentStartLine = extentStartLineOf(address);
 

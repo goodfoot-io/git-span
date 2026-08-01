@@ -243,10 +243,13 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     assert.deepStrictEqual(blocks[1]?.pair, { original: preState, modified: postState });
   });
 
-  it('posts the "content changed" status card when the anchor file is edited between the CLI spawn and the disk read', async () => {
+  it('posts the "content changed" status card when the anchor file is edited between the CLI spawn and the disk read, and still posts the history accordion entry', async () => {
     // The fixture binary appends to race-target.ts during the CLI spawn, so
     // the provider's pre-spawn stat (original size) disagrees with its
-    // post-read stat (appended size) -- the read must not be trusted.
+    // post-read stat (appended size) -- the read must not be trusted. The
+    // race only invalidates the clean preview, never the history ladder (a
+    // pure string computation over the certified JSON payload), so the
+    // accordion must still show the anchor's per-commit diff.
     fs.writeFileSync(path.join(workspacePath, 'race-target.ts'), 'hello from fixture\n');
     const uri = await openSpan('fixture-span-race', 'race-target.ts rk64:deadbeef\n\nWhy.\n');
 
@@ -260,12 +263,20 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       `Expected the raced read to post a "content changed" status card, got: ${JSON.stringify(anchor)}`
     );
     assert.strictEqual(posted.stale, true, 'Expected a raced read to make the span stale');
+
+    assert.strictEqual(posted.history.length, 1, 'Expected the raced anchor to keep its history accordion entry');
+    const blocks = posted.history[0]?.blocks;
+    assert.ok(
+      blocks !== undefined && blocks[0] !== undefined,
+      'Expected a content block for the raced anchor in the history accordion'
+    );
+    assert.deepStrictEqual(blocks[0].pair, { original: '', modified: 'hello from fixture' });
   });
 
-  it('falls back to the all-dangling panel when every anchor is dangling, without the pre-spawn stat throwing', async () => {
+  it('renders the all-dangling state as a posted document and re-renders when the anchor file is restored', async () => {
     // missing-file.ts does not exist: the pre-spawn stat's ENOENT must be
     // recorded as the absent-at-snapshot sentinel, not thrown upstream of the
-    // dangling fallback panel.
+    // all-dangling state.
     const uri = await openSpan('fixture-span-dangling', 'missing-file.ts rk64:deadbeef\n\nWhy.\n');
 
     const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
@@ -279,10 +290,29 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       `Expected the all-dangling fallback outcome, got: ${JSON.stringify(outcome)}`
     );
     assert.strictEqual(outcome.danglingCount, 1, 'Expected the dangling anchor to be counted');
+
+    // The all-dangling state is a posted document, not a replaced webview:
+    // the Monaco webview keeps its 'document' listener so a watcher-triggered
+    // render can re-render in place once the underlying condition is fixed.
+    const firstPosted = await waitForPostedDocument(uri);
+    assert.strictEqual(firstPosted.anchors.length, 1, 'Expected exactly one dangling anchor card');
+    const anchor = firstPosted.anchors[0];
     assert.ok(
-      !testOnlyLastPostedDocument.has(uri.toString()),
-      'Expected no document to be posted for the all-dangling fallback panel'
+      anchor !== undefined && anchor.kind === 'dangling',
+      `Expected a dangling anchor card, got: ${JSON.stringify(anchor)}`
     );
+    assert.deepStrictEqual(firstPosted.history, [], 'Expected no history accordion entries for a dangling span');
+    assert.strictEqual(firstPosted.stale, true, 'Expected an all-dangling span to carry the Stale pill');
+    assert.deepStrictEqual(firstPosted.staleReasons, ['1 anchor without history']);
+
+    // Restore the anchor file: the watcher re-renders and posts a fresh
+    // document into the same, still-listening webview -- never into a dead
+    // fallback panel. (This fixture's history has no commits at all, so the
+    // anchor stays dangling; the assertion is that the re-render still
+    // reaches the webview.)
+    fs.writeFileSync(path.join(workspacePath, 'missing-file.ts'), 'recovered content\n');
+    const reRendered = await waitFor(() => testOnlyLastPostedDocument.get(uri.toString()) !== firstPosted);
+    assert.ok(reRendered, 'Expected the watcher-triggered render to post a fresh document into the webview');
   });
 
   it('posts the uncommitted declaration edit card from current.span_diff', async () => {

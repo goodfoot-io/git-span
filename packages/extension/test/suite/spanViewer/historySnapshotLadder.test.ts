@@ -432,6 +432,176 @@ describe('historySnapshotLadder', () => {
       });
     });
 
+    it('threads a stale declaration seed forward: records once, edits at c2 and c3 without re-anchoring, and still renders every rung', () => {
+      // Recorded at c1 (the declaration's recorded token hashes t0); c2 edits
+      // line two and c3 edits line seven WITHOUT re-anchoring -- the CLI's
+      // own default `stale --fix` posture -- so the recorded state stays t0
+      // while the timeline moves on to t2. The current block's old side is
+      // therefore the c1-era recorded bytes (t0), not the post-newest-commit
+      // state: seeding straight from it makes c3's reverse-apply fail its
+      // post-image match and truncate at rung zero. The ladder must thread
+      // the recorded state forward through c2's and c3's diffs to recover t2,
+      // then walk back through all three rungs.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t2 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine\nline ten\n';
+      const worktree =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine WORKTREE\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit line seven', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -6,3 +6,3 @@\n line six\n-line seven\n+line seven EDITED\n line eight\n'
+          }
+        ]),
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'record anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        // The old side is the RECORDED snapshot (t0, from c1), not the
+        // post-newest-commit state -- the stale-declaration shape. The diff
+        // covers every difference between t0 and the worktree (lines two,
+        // seven, and nine), exactly as the CLI renders recorded-vs-live.
+        diff: [
+          'diff --git a/f.txt b/f.txt',
+          'index rk64:aaaa..rk64:bbbb',
+          '--- a/f.txt',
+          '+++ b/f.txt',
+          '@@ -1,10 +1,10 @@',
+          ' line one',
+          '-line two',
+          '+line two EDITED',
+          ' line three',
+          ' line four',
+          ' line five',
+          ' line six',
+          '-line seven',
+          '+line seven EDITED',
+          ' line eight',
+          '-line nine',
+          '+line nine WORKTREE',
+          ' line ten'
+        ].join('\n'),
+        content: worktree,
+        sources: ['WORKTREE']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: worktree });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'all three rungs render despite the stale declaration');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line seven',
+        original: t1,
+        modified: t2
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'record anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('threads a stale declaration recorded mid-history: the pre-recording diff is skipped, newer ones chain', () => {
+      // Recorded at c2 (re-anchored there: the recorded token hashes t1),
+      // then c3 edits line seven without re-anchoring. The current block's
+      // old side is the c2-era recorded bytes (t1). Threading from t1 must
+      // skip c2's own diff -- its pre-region is t0, the pre-recording state,
+      // so the running text already is that commit's post-state -- and chain
+      // c3's diff to recover t2, then walk back through all three rungs.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t2 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine\nline ten\n';
+      const worktree =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine WORKTREE\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit line seven', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -6,3 +6,3 @@\n line six\n-line seven\n+line seven EDITED\n line eight\n'
+          }
+        ]),
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        // The old side is t1: the recorded snapshot from the c2 re-anchor.
+        // The diff covers every difference between t1 and the worktree
+        // (lines seven and nine).
+        diff: [
+          'diff --git a/f.txt b/f.txt',
+          'index rk64:aaaa..rk64:bbbb',
+          '--- a/f.txt',
+          '+++ b/f.txt',
+          '@@ -6,5 +6,5 @@',
+          ' line six',
+          '-line seven',
+          '+line seven EDITED',
+          ' line eight',
+          '-line nine',
+          '+line nine WORKTREE',
+          ' line ten'
+        ].join('\n'),
+        content: worktree,
+        sources: ['WORKTREE']
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: worktree });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'the walk threads past the pre-recording diff to every rung');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line seven',
+        original: t1,
+        modified: t2
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
     it('seeds the drifted branch from the recorded bytes when the current diff is a full deletion', () => {
       // The anchor was deleted from the worktree declaration (a re-anchor
       // split), so the current diff's new side is /dev/null and `content`

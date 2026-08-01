@@ -17,10 +17,12 @@
  * post-image or its body does not match at the expected offset -- never
  * silently passes the text through unchanged, so "nothing to reconstruct" (a
  * header-only block) and "reconstruction failed" can never alias to the same
- * output. The two `/dev/null`-sided hunk shapes (`@@ -0,0 ... @@` and
- * `@@ ... +0,0 @@`) are the one honest `''` answer: the empty side makes the
- * recovered pre-image empty, not unknown. The diff dialect this module parses
- * is the CLI's own: hunk headers `@@ -oldStart[,oldCount] +newStart[,newCount] @@`
+ * output. The `/dev/null`-sided hunk shapes are the two honest non-error
+ * answers: a full addition (`@@ -0,0 +N,M @@`) has an empty pre-image, and a
+ * full deletion (`@@ -N,M +0,0 @@`) has the deleted bytes as its pre-image
+ * (carried verbatim by the diff's own old side, never `''` -- an empty
+ * recovery would lose the deleted content). The diff dialect this module
+ * parses is the CLI's own: hunk headers `@@ -oldStart[,oldCount] +newStart[,newCount] @@`
  * (count 1 renders bare,
  * `/dev/null`-side counts render as `N,0`), body lines prefixed with a single
  * space (context), `-`, or `+`, and `\ No newline at end of file` markers
@@ -174,7 +176,8 @@ function parseHunks(diff: string): ParsedHunk[] {
  *   it differs from `extentStartLine` (a rename block's old side lives in the
  *   old address's line space); defaults to `extentStartLine`.
  * @returns The pre-image text -- `''` when the diff is a hunk-level full
- *   addition or deletion (one side is `/dev/null`).
+ *   addition (`@@ -0,0 +N,M @@`), or the deleted bytes when it is a
+ *   hunk-level full deletion (`@@ -N,M +0,0 @@`).
  * @throws {ReconstructionError} When the diff has no hunks, when a rebased
  *   hunk's range does not fit `postImageText`, when hunks overlap or fall out
  *   of order, when body lines do not match the post-image at the expected
@@ -192,11 +195,16 @@ export function reconstructOriginal(
     throw new ReconstructionError('diff has no hunks; nothing to reconstruct');
   }
   const firstHunk = hunks[0];
-  if (firstHunk !== undefined && (firstHunk.oldStart === 0 || firstHunk.newStart === 0)) {
-    // A `/dev/null` side at the hunk level: the old side is empty (a full
-    // addition, `@@ -0,0 +N,M @@`) or the new side is (a full deletion,
-    // `@@ -N,M +0,0 @@`), so the recovered pre-image is empty.
+  if (firstHunk !== undefined && firstHunk.oldStart === 0) {
+    // `@@ -0,0 +N,M @@`: a full addition -- the old side is /dev/null, so the
+    // recovered pre-image is empty, not unknown.
     return '';
+  }
+  if (firstHunk !== undefined && firstHunk.newStart === 0) {
+    // `@@ -N,M +0,0 @@`: a full deletion -- the new side is /dev/null and the
+    // deleted bytes are the pre-image. Returning `''` here would lose the
+    // deleted content entirely; the diff's own old side carries it verbatim.
+    return extractHunkSide(diff, 'old');
   }
 
   const { lines: postLines, trailingNewline: postTrailingNewline } = splitLines(postImageText);
@@ -362,6 +370,212 @@ export function reconstructOriginal(
     return '';
   }
   const trailingNewline = lastFromPreRegion ? !lastPreLineMarked : postTrailingNewline;
+  return out.join('\n') + (trailingNewline ? '\n' : '');
+}
+
+/**
+ * Apply a diff FORWARD onto its pre-image: validate that each hunk's
+ * pre-region (context plus `-` lines) equals `preImageText` at the rebased
+ * offset, then produce the post-image by splicing in the `+` lines. This is
+ * {@link reconstructOriginal}'s inverse -- the same dialect, the same
+ * file-absolute coordinates, the same fail-closed contract (a shifted or
+ * wrong pre-image throws rather than passing text through). It exists to
+ * thread a known older snapshot forward through a chain of committed diffs
+ * to a newer state.
+ *
+ * @param diff - The CLI's unified diff with file-absolute hunk coordinates.
+ * @param preImageText - The full pre-image text (the old side of the diff).
+ * @param extentStartLine - The anchor's declared range start (`#Lstart`) of
+ *   the address the new side wears, or 1 for a whole-file anchor; every
+ *   hunk's new side rebases by subtracting `extentStartLine - 1` before
+ *   applying.
+ * @param originalExtentStartLine - The pre-image side's own range start when
+ *   it differs from `extentStartLine` (a rename block's old side lives in the
+ *   old address's line space); defaults to `extentStartLine`.
+ * @returns The post-image text -- `''` when the diff is a hunk-level full
+ *   deletion (`@@ -N,M +0,0 @@`), or the added bytes when it is a hunk-level
+ *   full addition (`@@ -0,0 +N,M @@`).
+ * @throws {ReconstructionError} When the diff has no hunks, when a rebased
+ *   hunk's range does not fit `preImageText`, when hunks overlap or fall out
+ *   of order, when body lines do not match the pre-image at the expected
+ *   offset, or when the diff's line-termination claims contradict
+ *   `preImageText`.
+ */
+export function applyDiffForward(
+  diff: string,
+  preImageText: string,
+  extentStartLine: number,
+  originalExtentStartLine: number = extentStartLine
+): string {
+  const hunks = parseHunks(diff);
+  if (hunks.length === 0) {
+    throw new ReconstructionError('diff has no hunks; nothing to apply');
+  }
+  const firstHunk = hunks[0];
+  if (firstHunk !== undefined && firstHunk.oldStart === 0) {
+    // `@@ -0,0 +N,M @@`: a full addition -- the pre-image is empty and the
+    // diff's new side is the complete post-image.
+    return extractHunkSide(diff, 'new');
+  }
+  if (firstHunk !== undefined && firstHunk.newStart === 0) {
+    // `@@ -N,M +0,0 @@`: a full deletion -- the new side is /dev/null, so the
+    // post-image is empty, not unknown.
+    return '';
+  }
+
+  const { lines: preLines, trailingNewline: preTrailingNewline } = splitLines(preImageText);
+  const preLen = preLines.length;
+  const rebase = extentStartLine - 1;
+  const originalRebase = originalExtentStartLine - 1;
+  const totalOld = hunks.reduce((sum, hunk) => sum + hunk.oldCount, 0);
+  const totalNew = hunks.reduce((sum, hunk) => sum + hunk.newCount, 0);
+  const postLen = preLen + totalNew - totalOld;
+  if (postLen < 0) {
+    throw new ReconstructionError('diff deletes more lines than the pre-image contains');
+  }
+
+  let previousNewStart = 0;
+  let previousOldStart = 0;
+  for (const hunk of hunks) {
+    const newStart = hunk.newStart - rebase;
+    const oldStart = hunk.oldStart - originalRebase;
+    if (newStart < 1) {
+      throw new ReconstructionError(
+        `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ rebases to ` +
+          `new start ${newStart}, before the extent's first line`
+      );
+    }
+    if (oldStart < 1) {
+      throw new ReconstructionError(
+        `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ rebases to ` +
+          `old start ${oldStart}, before the extent's first line`
+      );
+    }
+    if (hunk.oldCount === 0) {
+      if (oldStart > preLen + 1) {
+        throw new ReconstructionError(
+          `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ inserts at ` +
+            `${oldStart}, past the pre-image's end (${preLen} lines)`
+        );
+      }
+    } else if (oldStart + hunk.oldCount - 1 > preLen) {
+      throw new ReconstructionError(
+        `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ spans lines ` +
+          `${oldStart}-${oldStart + hunk.oldCount - 1} after rebasing, past the pre-image's end ` +
+          `(${preLen} lines)`
+      );
+    }
+    if (newStart <= previousNewStart) {
+      throw new ReconstructionError(
+        `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ overlaps or ` +
+          `precedes the previous hunk's new-side range`
+      );
+    }
+    if (oldStart <= previousOldStart) {
+      throw new ReconstructionError(
+        `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ overlaps or ` +
+          `precedes the previous hunk's old-side range`
+      );
+    }
+    previousNewStart = newStart;
+    previousOldStart = oldStart;
+
+    // The pre-region (context plus '-' lines) must equal the pre-image at the
+    // rebased offset -- a shifted or wrong pre-image fails closed here.
+    let preIndex = 0;
+    for (const line of hunk.body) {
+      if (line.kind === 'new') {
+        continue;
+      }
+      const expected = preLines[oldStart - 1 + preIndex];
+      if (expected === undefined || expected !== line.text) {
+        throw new ReconstructionError(
+          `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ body does not ` +
+            `match the pre-image at line ${oldStart + preIndex}: expected ${JSON.stringify(line.text)}, ` +
+            `found ${JSON.stringify(expected)}`
+        );
+      }
+      preIndex++;
+    }
+
+    // Line-termination claims, mirrored from reconstructOriginal: a marker
+    // names the final line of a side, and claims about the pre-image must
+    // agree with the passed text's own termination, or the text is not the
+    // diff's pre-image. The first check pins a marked pre-side line to the
+    // pre-image's final position; the second (position already settled) pins
+    // its newline claim to the pre-image's own termination. Markers on '+'
+    // lines speak about the post side, which is this function's output, so
+    // they are consumed by the splice's trailing-newline decision below
+    // instead of being validated here -- a marked '+' replacing a
+    // newline-terminated final line (pre `beta\n` -> post `beta EDITED`
+    // without one) is legitimate. A marked '-' line may be followed by '+'
+    // lines; any pre-side line after it would extend the pre-image past its
+    // claimed end and is already caught by the pre-region match above.
+    preIndex = 0;
+    hunk.body.forEach((line) => {
+      if (line.markedNoNewline) {
+        if (line.kind !== 'new' && oldStart + preIndex !== preLen) {
+          throw new ReconstructionError(
+            `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ marks line ` +
+              `${oldStart + preIndex} as the pre-image's final line, but the pre-image continues past it`
+          );
+        }
+        if (line.kind !== 'new' && preTrailingNewline) {
+          throw new ReconstructionError(
+            `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ marks its final ` +
+              `line as having no trailing newline, but the pre-image ends with one`
+          );
+        }
+      }
+      if (line.kind !== 'new') {
+        preIndex++;
+      }
+    });
+  }
+
+  // The final body line of the final hunk, when it is the pre-image's final
+  // line too, must agree with the pre-image's own termination in both
+  // directions (a marker absent where the text lacks a newline is a lie).
+  const lastHunk = hunks[hunks.length - 1];
+  if (lastHunk !== undefined && lastHunk.body.length > 0) {
+    const lastLine = lastHunk.body[lastHunk.body.length - 1];
+    if (lastLine !== undefined && lastLine.kind !== 'new') {
+      const preIndex = lastHunk.body.slice(0, lastHunk.body.length - 1).filter((line) => line.kind !== 'new').length;
+      const oldStart = lastHunk.oldStart - originalRebase;
+      if (oldStart + preIndex === preLen && !lastLine.markedNoNewline && !preTrailingNewline) {
+        throw new ReconstructionError(
+          `hunk @@ -${lastHunk.oldStart},${lastHunk.oldCount} +${lastHunk.newStart},${lastHunk.newCount} @@ ` +
+            `does not mark its final line as missing a trailing newline, but the pre-image ends without one`
+        );
+      }
+    }
+  }
+
+  // Splice: replace each hunk's pre-region with its post-region, walking
+  // forward so untouched spans are carried across unchanged.
+  const out: string[] = [];
+  let cursor = 0;
+  let lastFromPostRegion = false;
+  let lastPostLineMarked = false;
+  for (const hunk of hunks) {
+    const oldStart = hunk.oldStart - originalRebase;
+    out.push(...preLines.slice(cursor, oldStart - 1));
+    for (const line of hunk.body) {
+      if (line.kind === 'old') {
+        continue;
+      }
+      out.push(line.text);
+      lastFromPostRegion = true;
+      lastPostLineMarked = line.markedNoNewline;
+    }
+    cursor = oldStart - 1 + hunk.oldCount;
+  }
+  out.push(...preLines.slice(cursor));
+
+  if (out.length === 0) {
+    return '';
+  }
+  const trailingNewline = lastFromPostRegion ? !lastPostLineMarked : preTrailingNewline;
   return out.join('\n') + (trailingNewline ? '\n' : '');
 }
 
