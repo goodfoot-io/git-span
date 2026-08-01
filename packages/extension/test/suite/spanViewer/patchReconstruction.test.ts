@@ -160,6 +160,65 @@ describe('patchReconstruction', () => {
       ].join('\n');
       assert.throws(() => reconstructOriginal(headerOnly, 'alpha\nbeta\ngamma\n', 1), ReconstructionError);
     });
+
+    it('returns "" for a hunk-level full addition (@@ -0,0 +N,M @@)', () => {
+      // The new-file diff every span's adding commit carries: the old side is
+      // /dev/null at the hunk level, so there is no old content to
+      // reconstruct -- the pre-image is empty, not an error.
+      const diff = [
+        'diff --git a/.span/x b/.span/x',
+        'new file mode 100644',
+        'index 0000000..aaaaaaa',
+        '--- /dev/null',
+        '+++ b/.span/x',
+        '@@ -0,0 +1,3 @@',
+        '+alpha',
+        '+beta',
+        '+gamma'
+      ].join('\n');
+      assert.strictEqual(reconstructOriginal(diff, 'alpha\nbeta\ngamma\n', 1), '');
+    });
+
+    it('returns "" for a hunk-level full deletion (@@ -N,M +0,0 @@)', () => {
+      // The removed-span-file diff a deleting commit carries: the new side is
+      // /dev/null at the hunk level, so there is no new content to modify --
+      // the recovered pre-image is empty, not an error.
+      const diff = [
+        'diff --git a/.span/x b/.span/x',
+        'deleted file mode 100644',
+        'index aaaaaaa..0000000',
+        '--- a/.span/x',
+        '+++ /dev/null',
+        '@@ -1,3 +0,0 @@',
+        '-alpha',
+        '-beta',
+        '-gamma'
+      ].join('\n');
+      assert.strictEqual(reconstructOriginal(diff, '', 1), '');
+    });
+
+    it('rebases old and new hunk sides against their own extent start lines', () => {
+      // A rename-and-edit block: the old side's hunks render in the old
+      // address's line space (f.txt#L1-L10, file-absolute 1) and the new
+      // side's in the new address's (g.txt#L6-L15, file-absolute 6). A single
+      // rebase by the new address's start would push the old side below
+      // line 1 and throw; each side must rebase against its own address.
+      const diff = [
+        'diff --git a/.span/x b/.span/x',
+        'rename from f.txt#L1-L10',
+        'rename to g.txt#L6-L15',
+        'index rk64:aaaa..rk64:bbbb',
+        '--- a/f.txt#L1-L10',
+        '+++ b/g.txt#L6-L15',
+        '@@ -1,2 +6,2 @@',
+        '-a',
+        '-b',
+        '+A',
+        '+B'
+      ].join('\n');
+      const preImage = reconstructOriginal(diff, 'A\nB\nc\nd\ne\nf\ng\nh\ni\nj\n', 6, 1);
+      assert.strictEqual(preImage, 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n');
+    });
   });
 
   describe('full addition / deletion detection', () => {

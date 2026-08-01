@@ -93,7 +93,9 @@ describe('historySnapshotLadder', () => {
         commit('c2', 'rename and edit', [
           {
             path: 'g.txt#L1-L10',
-            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L3-L12\nrename to g.txt#L1-L10\nindex rk64:bbbb..rk64:cccc\n--- a/f.txt#L3-L12\n+++ b/g.txt#L1-L10\n@@ -1,2 +1,2 @@\n-a\n-b\n+A\n+B\n'
+            // The old side's hunks render at f.txt's own first line (3), the
+            // new side's at g.txt's (1) -- the CLI's real-file coordinates.
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L3-L12\nrename to g.txt#L1-L10\nindex rk64:bbbb..rk64:cccc\n--- a/f.txt#L3-L12\n+++ b/g.txt#L1-L10\n@@ -3,2 +1,2 @@\n-a\n-b\n+A\n+B\n'
           }
         ]),
         commit('c1', 'edit d', [
@@ -344,9 +346,13 @@ describe('historySnapshotLadder', () => {
     });
 
     it('truncates to zero rungs when the drifted seed cannot be recovered', () => {
+      // A header-only current diff now proves the bytes did not change and
+      // seeds directly, so the unrecoverable shape is an in-place diff whose
+      // post-region contradicts the content -- the pair the CLI certified
+      // disagrees, and the recovery must fail closed.
       const current: CurrentAnchor = {
         path: 'f.txt#L1-L3',
-        diff: 'diff --git a/f.txt b/f.txt\nrebound anchor\nindex rk64:aaaa..rk64:bbbb\n',
+        diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n x\n-y\n+z\n',
         content: 'a\nb\nc\n'
       };
       const result = buildHistorySnapshotLadder({
@@ -357,6 +363,300 @@ describe('historySnapshotLadder', () => {
       });
       assert.strictEqual(result.truncated, true);
       assert.deepStrictEqual(result.rungs, []);
+    });
+
+    it('walks multiple committed edits after the recording, resolving every hop from a worktree-drift seed', () => {
+      // Recorded at c1; c2 edits line two; c3 edits line seven; the worktree
+      // drifts on line nine after c3. The seed must be c3's post-image
+      // (recovered from the current block's own diff), not the worktree text
+      // and not c2's state -- only then do both hops reverse-apply cleanly.
+      const t0 =
+        'line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t1 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n';
+      const t2 =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine\nline ten\n';
+      const worktree =
+        'line one\nline two EDITED\nline three\nline four\nline five\nline six\nline seven EDITED\nline eight\nline nine WORKTREE\nline ten\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit line seven', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -6,3 +6,3 @@\n line six\n-line seven\n+line seven EDITED\n line eight\n'
+          }
+        ]),
+        commit('c2', 'edit line two', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -6,5 +6,5 @@\n line six\n line seven EDITED\n line eight\n-line nine\n+line nine WORKTREE\n line ten\n',
+        content: worktree,
+        sources: ['WORKTREE']
+      };
+
+      const result = buildHistorySnapshotLadder({
+        liveAddress: ADDRESS,
+        commits,
+        current,
+        seedContent: worktree
+      });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'every hop resolves, nothing truncates');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line seven',
+        original: t1,
+        modified: t2
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit line two',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('seeds the drifted branch from the recorded bytes when the current diff is a full deletion', () => {
+      // The anchor was deleted from the worktree declaration (a re-anchor
+      // split), so the current diff's new side is /dev/null and `content`
+      // carries the recorded bytes -- the post-newest-commit state the walk
+      // seeds from, no reconstruction needed.
+      const t0 = 'line one\nline two\nline three\n';
+      const t1 = 'line one\nline two EDITED\nline three\n';
+      const commits: HistoryCommit[] = [
+        commit('c2', 'edit', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\ndeleted anchor\nindex rk64:bbbb..rk64:aaaa\n--- a/f.txt#L1-L3\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-line one\n-line two EDITED\n-line three\n',
+        content: t1
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 2);
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('seeds the drifted branch from unchanged content when the current diff is a header-only relocation', () => {
+      // A relocation is a pure move: identical bytes at a new address, so the
+      // current diff carries the `proposed anchor` header and no hunks -- the
+      // content could not have changed, and is the seed.
+      const t0 = 'line one\nline two\nline three\n';
+      const t1 = 'line one\nline two EDITED\nline three\n';
+      const commits: HistoryCommit[] = [
+        commit('c2', 'edit', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line two EDITED\n line three\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\nproposed anchor f.txt#L4-L6\nindex rk64:aaaa..rk64:bbbb\n',
+        content: t1,
+        proposed: 'f.txt#L4-L6'
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 2);
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it('walks the timeline when the current anchor is a full deletion with no readable content', () => {
+      // The anchor's live bytes are gone (worktree deletion), so there is no
+      // post-image to seed from -- but the timeline's deletion commit
+      // resolves its old side directly from its own diff, producing the
+      // rung without a seed.
+      const t0 = 'line one\nline two\nline three\n';
+      const commits: HistoryCommit[] = [
+        commit('c2', 'delete anchor', [
+          {
+            path: ADDRESS,
+            diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\ndeleted anchor\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt#L1-L3\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-line one\n-line two\n-line three\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: ADDRESS, content: t0 }])
+      ];
+      const current: CurrentAnchor = {
+        path: ADDRESS,
+        diff: 'diff --git a/f.txt#L1-L3 b/f.txt#L1-L3\ndeleted anchor\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt#L1-L3\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-line one\n-line two\n-line three\n',
+        unavailable: 'absent'
+      };
+
+      const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: '' });
+
+      assert.strictEqual(result.truncated, false);
+      assert.deepStrictEqual(result.rungs, [
+        {
+          hash: 'c2',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'delete anchor',
+          original: t0,
+          modified: ''
+        }
+      ]);
+    });
+
+    it('renders a pure rename rung with unchanged content and continues the walk past it', () => {
+      // C2 re-anchors the block to a new address without touching its bytes:
+      // the diff carries rename headers and no hunks, so the rung is
+      // original = modified = running and the walk continues onto the old
+      // address's older history instead of truncating.
+      const t0 = 'a\nb\nc\n';
+      const t1 = 'a\nb EDITED\nc\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit', [
+          {
+            path: 'g.txt#L1-L3',
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+b EDITED\n c\n'
+          }
+        ]),
+        commit('c2', 'rename', [
+          {
+            path: 'g.txt#L1-L3',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L1-L3\nrename to g.txt#L1-L3\nindex rk64:aaaa..rk64:bbbb\n'
+          }
+        ]),
+        commit('c1', 'add anchor', [{ path: 'f.txt#L1-L3', content: t0 }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'g.txt#L1-L3', commits, seedContent: t1 });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 3, 'the walk crosses the rename boundary instead of truncating');
+      assert.deepStrictEqual(result.rungs[0], {
+        hash: 'c3',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'edit',
+        original: t0,
+        modified: t1
+      });
+      assert.deepStrictEqual(result.rungs[1], {
+        hash: 'c2',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'rename',
+        original: t0,
+        modified: t0
+      });
+      assert.deepStrictEqual(result.rungs[2], {
+        hash: 'c1',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: t0
+      });
+    });
+
+    it("rebases a rename-and-edit rung's old side against the old address's extent start", () => {
+      // Rename from f.txt#L1-L10 (extent start 1) to g.txt#L6-L15 (extent
+      // start 6) with a two-line edit at the head of the extent: the old
+      // side's hunks render in f.txt's line space (file-absolute 1) and the
+      // new side's in g.txt's (file-absolute 6). Rebasing both sides by the
+      // new address's start would push the old side below line 1 and throw;
+      // each side must rebase against its own address.
+      const x0 = 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n';
+      const x1 = 'a\nb\nc\nd EDITED\ne\nf\ng\nh\ni\nj\n';
+      const x2 = 'A\nB\nc\nd EDITED\ne\nf\ng\nh\ni\nj\n';
+      const x3 = 'A\nB\nc\nd EDITED\ne\nf\ng EDITED\nh\ni\nj\n';
+      const commits: HistoryCommit[] = [
+        commit('c3', 'edit g', [
+          {
+            path: 'g.txt#L6-L15',
+            // Extent-relative line 7 = g.txt file-absolute 12; the hunk's
+            // context starts one line earlier, at file-absolute 11.
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -11,3 +11,3 @@\n f\n-g\n+g EDITED\n h\n'
+          }
+        ]),
+        commit('c2', 'rename and edit', [
+          {
+            path: 'g.txt#L6-L15',
+            diff: 'diff --git a/.span/x b/.span/x\nrename from f.txt#L1-L10\nrename to g.txt#L6-L15\nindex rk64:bbbb..rk64:cccc\n--- a/f.txt#L1-L10\n+++ b/g.txt#L6-L15\n@@ -1,2 +6,2 @@\n-a\n-b\n+A\n+B\n'
+          }
+        ]),
+        commit('c1', 'edit d', [
+          {
+            path: 'f.txt#L1-L10',
+            diff: 'diff --git a/f.txt b/f.txt\nindex rk64:aaaa..rk64:bbbb\n--- a/f.txt\n+++ b/f.txt\n@@ -3,3 +3,3 @@\n c\n-d\n+d EDITED\n e\n'
+          }
+        ]),
+        commit('c0', 'add anchor', [{ path: 'f.txt#L1-L10', content: x0 }])
+      ];
+
+      const result = buildHistorySnapshotLadder({ liveAddress: 'g.txt#L6-L15', commits, seedContent: x3 });
+
+      assert.strictEqual(result.truncated, false);
+      assert.strictEqual(result.rungs.length, 4);
+      assert.deepStrictEqual(result.rungs[0]?.original, x2);
+      assert.deepStrictEqual(result.rungs[0]?.modified, x3);
+      assert.deepStrictEqual(
+        result.rungs[1]?.original,
+        x1,
+        'the rename commit reverse-applies its old side against the old address'
+      );
+      assert.deepStrictEqual(result.rungs[1]?.modified, x2);
+      assert.deepStrictEqual(result.rungs[2]?.original, x0);
+      assert.deepStrictEqual(result.rungs[2]?.modified, x1);
+      assert.deepStrictEqual(result.rungs[3], {
+        hash: 'c0',
+        date: '2026-01-01T00:00:00-04:00',
+        summary: 'add anchor',
+        original: '',
+        modified: x0
+      });
     });
   });
 });

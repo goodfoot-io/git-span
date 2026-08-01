@@ -267,7 +267,8 @@ function splitPath(filePath: string): { dir: string; base: string } {
  * Split an anchor address into its file path and `#L`-range fragment.
  *
  * @param address - A full anchor address (`path#Lstart-Lend` or bare path).
- * @returns The path and the range fragment (minus the `#L` prefix), or `null`.
+ * @returns The path and the range fragment (minus the `#L` prefix and the
+ *   fragment's own leading `L`), or `null`.
  * @throws Never.
  */
 function splitAddress(address: string): { path: string; range: string | null } {
@@ -275,25 +276,30 @@ function splitAddress(address: string): { path: string; range: string | null } {
   if (hashIndex === -1) {
     return { path: address, range: null };
   }
-  return { path: address.slice(0, hashIndex), range: address.slice(hashIndex + 1) };
+  // Drop the fragment's leading `L` so callers prepending their own `#L`
+  // prefix produce `#L10-L20`, never `#LL10-L20`.
+  return { path: address.slice(0, hashIndex), range: address.slice(hashIndex + 1).replace(/^L/, '') };
 }
 
 /**
  * Resolve a Monaco language id from a file path's extension, via the
  * languages Monaco itself has registered (a small lookup, not a maintained
  * map). An extension matching no registered language falls back to
- * `'plaintext'` explicitly.
+ * `'plaintext'` explicitly. A `#L` range suffix on a history-block path
+ * (`src.ts#L1-L3`) is stripped before the extension is extracted.
  *
- * @param filePath - The repo-relative file path.
+ * @param filePath - The repo-relative file path, with or without a range.
  * @returns A Monaco language id (`'plaintext'` when nothing matches).
  * @throws Never.
  */
 function resolveLanguage(filePath: string): string {
-  const dotIndex = filePath.lastIndexOf('.');
-  if (dotIndex <= 0 || dotIndex === filePath.length - 1) {
+  const hashIndex = filePath.indexOf('#');
+  const pathOnly = hashIndex === -1 ? filePath : filePath.slice(0, hashIndex);
+  const dotIndex = pathOnly.lastIndexOf('.');
+  if (dotIndex <= 0 || dotIndex === pathOnly.length - 1) {
     return 'plaintext';
   }
-  const extension = `.${filePath.slice(dotIndex + 1).toLowerCase()}`;
+  const extension = `.${pathOnly.slice(dotIndex + 1).toLowerCase()}`;
   for (const language of monaco.languages.getLanguages()) {
     if (language.extensions?.some((registered) => registered.toLowerCase() === extension)) {
       return language.id;

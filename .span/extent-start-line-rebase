@@ -1,4 +1,4 @@
-packages/extension/src/spanViewer/patchReconstruction.ts#L174-L182 rk64:9a5773d4237c2d6b
+packages/extension/src/spanViewer/patchReconstruction.ts#L184-L205 rk64:d39e7abe590c582b
 packages/git-span/src/cli/unified_diff.rs#L1-L6 rk64:103040ce3ceb3b72
 
 The  rebase in reconstructOriginal inverts the CLI's  hunk coordinate convention

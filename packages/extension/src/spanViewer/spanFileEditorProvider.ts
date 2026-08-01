@@ -239,7 +239,7 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
   const nonce = makeNonce();
   const warningsHtml =
     warnings.length > 0
-      ? `<h2>${warnings.length} anchor(s) omitted from the diff</h2><p>git-span's history could not account for the following anchor(s) -- they may reference content this span's history has no record of. They are not shown in the Multi-Diff editor.</p><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
+      ? `<h2>${warnings.length} anchor(s) omitted from the diff</h2><p>git-span's history could not account for the following anchor(s) -- they may reference content this span's history has no record of. They are not shown in the span viewer.</p><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
       : '';
   webview.html = `<!DOCTYPE html>
 <html>
@@ -335,6 +335,45 @@ function resolveSpanName(filePath: string): string | null {
     return null;
   }
   return nameSegments.join('/');
+}
+
+/**
+ * Whether `dir` contains a `.git` entry -- a directory in a plain checkout, a
+ * file in a worktree or submodule.
+ *
+ * @param dir - The directory to check.
+ * @returns Whether a `.git` entry exists there.
+ * @throws Never.
+ */
+async function hasGitEntry(dir: string): Promise<boolean> {
+  try {
+    await fs.stat(path.join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find the nearest ancestor directory of `startDir` that contains a `.git`
+ * entry, i.e. the repository root, or `null` when no ancestor does.
+ *
+ * @param startDir - The directory to walk up from.
+ * @returns The repository root path, or `null` when none is found.
+ * @throws Never.
+ */
+async function findRepoRootUpward(startDir: string): Promise<string | null> {
+  let current = startDir;
+  for (;;) {
+    if (await hasGitEntry(current)) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
 }
 
 /**
@@ -708,6 +747,13 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
 
     let disposed = false;
     let inFlightController: AbortController | null = null;
+    /**
+     * Monotonic render generation: incremented at the start of every
+     * `render()` call, so a superseded render (a newer one already started)
+     * can detect it is stale and skip posting -- only the most recently
+     * initiated render's result may reach the webview.
+     */
+    let renderGeneration = 0;
     /** The last successfully-built document, re-posted when the webview signals ready. */
     let lastPosted: PostedDocument | null = null;
     document.addDisposable(
@@ -744,7 +790,24 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       return;
     }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-    const repoRoot = repository?.rootUri.fsPath ?? workspaceFolder?.uri.fsPath ?? path.dirname(document.uri.fsPath);
+    let repoRoot = repository?.rootUri.fsPath ?? workspaceFolder?.uri.fsPath ?? null;
+    if (repoRoot === null) {
+      // Neither vscode.git nor a workspace folder can place this span file in
+      // a repository (e.g. the workspace does not contain the repo): walk up
+      // from the span file's own directory to find a git repository root.
+      repoRoot = await findRepoRootUpward(path.dirname(document.uri.fsPath));
+    }
+    if (disposed) {
+      return;
+    }
+    if (repoRoot === null) {
+      renderPanel(
+        webviewPanel.webview,
+        'Could not determine the git repository containing this span file (no ".git" directory found above it); cannot load its history.',
+        []
+      );
+      return;
+    }
 
     const binaryPath = await resolveGitSpanBinaryOnPath();
     if (disposed) {
@@ -812,12 +875,13 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
      * Re-invoked by file watchers on subsequent changes.
      *
      * @returns The set of filesystem paths watched for this render (the span
-     *   file plus every non-dangling anchor's real file), or `null` when
-     *   history could not be loaded or the tab was disposed before this
-     *   render could complete.
+     *   file plus every anchor's real file, dangling or not), or `null` when
+     *   history could not be loaded, the tab was disposed, or a newer render
+     *   superseded this one before it could post.
      * @throws Never -- failures render as a pane rather than propagating.
      */
     const render = async (): Promise<Set<string> | null> => {
+      const generation = ++renderGeneration;
       const controller = new AbortController();
       inFlightController = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -854,7 +918,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         }
         history = parseHistoryJson(result.stdout);
       } catch (error) {
-        if (disposed) {
+        if (disposed || generation !== renderGeneration) {
           return null;
         }
         const message = `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`;
@@ -876,7 +940,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       try {
         plans = matchAllAnchors(liveAnchors, history);
       } catch (error) {
-        if (disposed) {
+        if (disposed || generation !== renderGeneration) {
           return null;
         }
         const message = `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`;
@@ -885,10 +949,14 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         return null;
       }
 
+      // Every anchor's real file is watched -- dangling ones included, so a
+      // later create/restore of a missing file re-triggers the render and the
+      // anchor re-resolves as clean/drifted. The watcher is disposed with the
+      // document, so watching a path that never materializes is harmless.
       const watchedPaths = new Set<string>([document.uri.fsPath]);
-      plans.forEach((plan, index) => {
+      plans.forEach((_plan, index) => {
         const anchor = parsed.anchors[index];
-        if (anchor === undefined || plan.kind === 'dangling') {
+        if (anchor === undefined) {
           return;
         }
         watchedPaths.add(path.join(repoRoot, anchor.path));
@@ -898,9 +966,20 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
 
       if (danglingCount === parsed.anchors.length) {
         // Every anchor is dangling: keep this placeholder tab visible with
-        // its warning rather than posting a document.
+        // its warning listing each unaccounted address rather than posting a
+        // document.
+        if (generation !== renderGeneration) {
+          return null;
+        }
+        const danglingAddresses: string[] = [];
+        plans.forEach((plan, index) => {
+          const anchor = parsed.anchors[index];
+          if (anchor !== undefined && plan.kind === 'dangling') {
+            danglingAddresses.push(formatAnchorAddress(anchor.path, anchor.range));
+          }
+        });
         const message = `No anchors in span "${spanName}" could be matched against its history.`;
-        renderPanel(webviewPanel.webview, message, []);
+        renderPanel(webviewPanel.webview, message, danglingAddresses);
         testOnlyRenderOutcomes.set(document.uri.toString(), {
           ok: false,
           danglingCount,
@@ -920,7 +999,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           preSpawnStats,
           repoRoot
         });
-        if (disposed) {
+        if (disposed || generation !== renderGeneration) {
           return null;
         }
         lastPosted = documentToPost;
@@ -934,7 +1013,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           message
         });
       } catch (error) {
-        if (disposed) {
+        if (disposed || generation !== renderGeneration) {
           return null;
         }
         const message = `Failed to render span history: ${error instanceof Error ? error.message : String(error)}`;

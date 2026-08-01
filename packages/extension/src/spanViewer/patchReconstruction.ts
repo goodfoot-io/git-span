@@ -8,14 +8,20 @@
  * against the content string. `reconstructOriginal` rebases every hunk by
  * subtracting `extentStartLine - 1` (recovering the CLI's snapshot-relative
  * coordinates) and reverse-applies the rebased hunks onto the post-image to
- * recover the pre-image.
+ * recover the pre-image. A rename block's two sides live in two addresses'
+ * line spaces, so the old side rebases by `originalExtentStartLine - 1`
+ * (defaulting to the new side's rebase) and the new side by
+ * `extentStartLine - 1`.
  *
  * Failure contract: throws when a rebased hunk's range does not fit the
  * post-image or its body does not match at the expected offset -- never
  * silently passes the text through unchanged, so "nothing to reconstruct" (a
  * header-only block) and "reconstruction failed" can never alias to the same
- * output. The diff dialect this module parses is the CLI's own: hunk headers
- * `@@ -oldStart[,oldCount] +newStart[,newCount] @@` (count 1 renders bare,
+ * output. The two `/dev/null`-sided hunk shapes (`@@ -0,0 ... @@` and
+ * `@@ ... +0,0 @@`) are the one honest `''` answer: the empty side makes the
+ * recovered pre-image empty, not unknown. The diff dialect this module parses
+ * is the CLI's own: hunk headers `@@ -oldStart[,oldCount] +newStart[,newCount] @@`
+ * (count 1 renders bare,
  * `/dev/null`-side counts render as `N,0`), body lines prefixed with a single
  * space (context), `-`, or `+`, and `\ No newline at end of file` markers
  * following any body line whose bytes lack a trailing newline.
@@ -164,22 +170,39 @@ function parseHunks(diff: string): ParsedHunk[] {
  * @param extentStartLine - The anchor's declared range start (`#Lstart`), or
  *   1 for a whole-file anchor; every hunk is rebased by subtracting
  *   `extentStartLine - 1` before applying.
- * @returns The pre-image text.
+ * @param originalExtentStartLine - The pre-image side's own range start when
+ *   it differs from `extentStartLine` (a rename block's old side lives in the
+ *   old address's line space); defaults to `extentStartLine`.
+ * @returns The pre-image text -- `''` when the diff is a hunk-level full
+ *   addition or deletion (one side is `/dev/null`).
  * @throws {ReconstructionError} When the diff has no hunks, when a rebased
  *   hunk's range does not fit `postImageText`, when hunks overlap or fall out
  *   of order, when body lines do not match the post-image at the expected
  *   offset, or when the diff's line-termination claims contradict
  *   `postImageText`.
  */
-export function reconstructOriginal(diff: string, postImageText: string, extentStartLine: number): string {
+export function reconstructOriginal(
+  diff: string,
+  postImageText: string,
+  extentStartLine: number,
+  originalExtentStartLine: number = extentStartLine
+): string {
   const hunks = parseHunks(diff);
   if (hunks.length === 0) {
     throw new ReconstructionError('diff has no hunks; nothing to reconstruct');
+  }
+  const firstHunk = hunks[0];
+  if (firstHunk !== undefined && (firstHunk.oldStart === 0 || firstHunk.newStart === 0)) {
+    // A `/dev/null` side at the hunk level: the old side is empty (a full
+    // addition, `@@ -0,0 +N,M @@`) or the new side is (a full deletion,
+    // `@@ -N,M +0,0 @@`), so the recovered pre-image is empty.
+    return '';
   }
 
   const { lines: postLines, trailingNewline: postTrailingNewline } = splitLines(postImageText);
   const postLen = postLines.length;
   const rebase = extentStartLine - 1;
+  const originalRebase = originalExtentStartLine - 1;
   const totalOld = hunks.reduce((sum, hunk) => sum + hunk.oldCount, 0);
   const totalNew = hunks.reduce((sum, hunk) => sum + hunk.newCount, 0);
   const preLen = postLen + totalOld - totalNew;
@@ -191,7 +214,7 @@ export function reconstructOriginal(diff: string, postImageText: string, extentS
   let previousOldStart = 0;
   for (const hunk of hunks) {
     const newStart = hunk.newStart - rebase;
-    const oldStart = hunk.oldStart - rebase;
+    const oldStart = hunk.oldStart - originalRebase;
     if (newStart < 1) {
       throw new ReconstructionError(
         `hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ rebases to ` +
@@ -362,6 +385,33 @@ export function isFullDeletion(diff: string): boolean {
  */
 export function isFullAddition(diff: string): boolean {
   return /^--- \/dev\/null$/m.test(diff);
+}
+
+/**
+ * True when the diff carries at least one `@@` hunk header.
+ *
+ * A header-only block (a pure rename, a rebound anchor, an unavailable-side
+ * modify) has no hunks, which means its content is either unchanged or
+ * unknown -- never a recoverable edit.
+ *
+ * @param diff - The CLI's unified diff string.
+ * @returns Whether the diff carries any hunk.
+ */
+export function hasHunks(diff: string): boolean {
+  return /^@@ /m.test(diff);
+}
+
+const RENAME_FROM = /^rename from (.+)$/m;
+
+/**
+ * The address a rename block's old side lived at, from its `rename from`
+ * header -- the coordinate space that side's hunks are rendered in.
+ *
+ * @param diff - The CLI's unified diff string.
+ * @returns The old address, when the diff is a rename.
+ */
+export function extractRenameFrom(diff: string): string | undefined {
+  return RENAME_FROM.exec(diff)?.[1];
 }
 
 /**
