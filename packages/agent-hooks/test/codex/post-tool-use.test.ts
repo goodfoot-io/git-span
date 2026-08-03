@@ -363,4 +363,47 @@ describe('codex post-tool-use touch signal', () => {
       repo.cleanup();
     }
   });
+
+  it('surfaces a touch for a Bash shell command (harness-unwrapped envelope — the live Codex shape)', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        stale: [staleRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'Bash',
+        tool_input: { command: `sed -n '39,60p' ${filePath}` }
+      };
+
+      const result = toResult(await handler(input as never, { logger } as never));
+      expect(calls.fix).toBe(0); // read path never heals
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('returns undefined for a Bash command with no recognized idiom', async () => {
+    const repo = makeTempRepo();
+    try {
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello && git status' }
+      };
+
+      const result = await handler(input as never, { logger } as never);
+      expect(result).toBeUndefined();
+      expect(calls.list).toBe(0);
+    } finally {
+      repo.cleanup();
+    }
+  });
 });
