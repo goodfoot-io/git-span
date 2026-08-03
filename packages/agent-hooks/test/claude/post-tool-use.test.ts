@@ -286,4 +286,25 @@ describe('claude post-tool-use touch signal', () => {
     const result = toResult(await handler(input as never, { logger }));
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
   });
+
+  it('a Bash heredoc > overwrite surfaces a span truncated beyond the new EOF (whole-file scope)', async () => {
+    const filePath = join(repo.root, 'out3.txt');
+    // Post-edit state: the heredoc wrote only 3 lines, down from 10.
+    writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+    const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+    const { executors, calls } = makeExecutors({
+      list: [{ name: SPAN, path: 'out3.txt', start: 8, end: 10 }],
+      stale: [staleRow('DELETED')]
+    });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(calls.fix).toBe(1); // write path heals
+    // The span at lines 8-10 was beyond the new EOF (3 lines). With
+    // `written: ''` (whole-file scope from `redirect: '>'`) the touch core
+    // surfaces it as deleted — previously this was silent because the body
+    // was not threaded into the touch.
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+  });
 });
