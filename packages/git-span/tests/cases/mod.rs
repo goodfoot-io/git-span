@@ -1,5 +1,6 @@
 // Integration-test cases, compiled as modules of a single test crate
 // rather than 51 separate crates auto-discovered by Cargo.
+pub mod add_filter_rewritten_anchor_reject;
 pub mod add_gitignored_anchor_reject;
 pub mod add_index_loaded_once;
 pub mod anchor_inside_span_root_reject;
