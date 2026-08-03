@@ -1,10 +1,12 @@
 /**
  * Claude PostToolUse touch hook — thin SDK-bound entry point.
  *
- * Fires after a successful `Read`/`Edit`/`Write`. The Claude-specific job is
- * translating the structured `tool_input` (`file_path`, `new_string`/`content`,
- * `offset`/`limit`) and `tool_name` into a harness-agnostic {@link TouchInput},
- * then handing off to the shared {@link runTouchHook} core: on a write it heals
+ * Fires after a successful `Read`/`Edit`/`Write`, or a `Bash` call whose
+ * `command` statically resolves to recognizable file+line-range idioms. The
+ * Claude-specific job is translating the structured `tool_input`
+ * (`file_path`, `new_string`/`content`, `offset`/`limit`) and `tool_name` into
+ * a harness-agnostic {@link TouchInput}, then handing off to the shared
+ * {@link runTouchHook} core: on a write it heals
  * positional span drift in the working tree (`git span stale <file> --fix`) and
  * folds any semantic residue into one `<git-span>` block; on a read it surfaces
  * spans overlapping the read's `offset`/`limit` window (whole-file when neither
@@ -24,6 +26,7 @@ import {
   postToolUseOutput
 } from '@goodfoot/claude-code-hooks';
 import { derivePath } from '../common/agent-hooks-common.js';
+import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -78,6 +81,46 @@ export function createHandler(
     const toolName = input.tool_name;
     const toolInput = (input.tool_input ?? {}) as ToolInput;
 
+    // Bash has no `file_path` field, so it gets its own branch: run the static
+    // command parser and translate every resolved span into a touch through the
+    // same shared core. Read idioms carry the parsed line window; a heredoc
+    // write is a whole-file touch (`written: ''`) because the parser does not
+    // expose the written body. A command with no recognizable idiom yields no
+    // blocks and returns `null` — fail-open, same as the tool path below.
+    if (toolName === 'Bash') {
+      const command = typeof toolInput.command === 'string' ? toolInput.command : null;
+      if (!command) return null;
+      const matches = parseCommandDetailed(command, cwd);
+      const blocks: string[] = [];
+      for (const match of matches) {
+        if (match.status !== 'resolved') continue;
+        const span: ResolvedSpan = match.span;
+        const scope = resolveTouchScope(cwd, span.absolutePath);
+        if (!scope) continue;
+        let touch: TouchInput;
+        if (match.idiom === 'heredoc-write') {
+          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written: '' };
+        } else {
+          touch = {
+            kind: 'read',
+            sessionId,
+            cwd,
+            filePath: span.absolutePath,
+            offset: span.lineStart,
+            limit: span.lineEnd - span.lineStart + 1
+          };
+        }
+        const output = await runTouchHook(touch, executors, memo);
+        if (output.additionalContext) blocks.push(output.additionalContext);
+      }
+      if (blocks.length === 0) return null;
+      const combined = blocks.join('');
+      return postToolUseOutput({
+        hookSpecificOutput: { additionalContext: combined },
+        systemMessage: combined
+      });
+    }
+
     const absPath = derivePath(toolInput, cwd);
     if (!absPath) return null;
 
@@ -99,4 +142,4 @@ export function createHandler(
   };
 }
 
-export default postToolUseHook({ matcher: 'Read|Edit|Write', timeout: 10_000 }, createHandler());
+export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 10_000 }, createHandler());

@@ -112,9 +112,9 @@ function toResult(raw: unknown): HookResult {
 // ---------------------------------------------------------------------------
 
 describe('claude post-tool-use hook registration', () => {
-  it('registers PostToolUse with matcher Read|Edit|Write', () => {
+  it('registers PostToolUse with matcher Read|Edit|Write|Bash', () => {
     expect(hook.hookEventName).toBe('PostToolUse');
-    expect(hook.matcher).toBe('Read|Edit|Write');
+    expect(hook.matcher).toBe('Read|Edit|Write|Bash');
   });
 });
 

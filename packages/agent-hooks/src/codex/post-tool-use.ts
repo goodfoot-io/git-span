@@ -1,14 +1,18 @@
 /**
- * Codex PostToolUse touch hook — heal + surface after a confirmed `apply_patch`.
+ * Codex PostToolUse touch hook — heal + surface after a confirmed `apply_patch`,
+ * or a shell/exec call whose command statically resolves to file+line idioms.
  *
  * PostToolUse fires after `apply_patch` has run, so this is the accurate home for
  * the touch signal: the file is already written, so a scoped `git span stale
  * <file> --fix` heals positional drift against real bytes and the surfaced block
  * reflects the healed anchors. The handler narrows the `apply_patch` envelope
  * (`tool_input.command`, SDK-typed `unknown`) into per-file anchors via the
- * shared [apply-patch parser](./apply-patch.ts), scopes each touched file to the
- * CWD repo, and drives the harness-agnostic {@link runTouchHook} core — the same
- * core the Claude adapter uses.
+ * shared [apply-patch parser](./apply-patch.ts), and recovers shell commands
+ * from either Codex envelope (classic `exec_command` JSON `arguments`, or
+ * code-mode `exec` wrapping `tools.exec_command({...})`) via the shared
+ * [command parser](../common/parse-command.ts); each touched file is scoped to
+ * the CWD repo, and drives the harness-agnostic {@link runTouchHook} core — the
+ * same core the Claude adapter uses.
  *
  * Two Codex-specific concerns are preserved from this file's journaling
  * predecessor:
@@ -32,8 +36,14 @@
 
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import { abspathAgainst } from '../common/agent-hooks-common.js';
+import { parseCommandDetailed } from '../common/parse-command.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
-import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
+import {
+  createDefaultTouchExecutors,
+  runTouchHook,
+  type TouchExecutors,
+  type TouchInput
+} from '../common/touch-core.js';
 import { parseApplyPatch } from './apply-patch.js';
 
 /**
@@ -56,6 +66,55 @@ export function narrowApplyPatchCommand(toolInput: unknown): string | null {
   if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
     const command = (toolInput as { command: unknown }).command;
     if (typeof command === 'string') return command;
+  }
+  return null;
+}
+
+/**
+ * Narrow the classic `exec_command` envelope (cli_version ≤ 0.130.0):
+ * `tool_input.arguments` is a JSON *string* of shape
+ * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd`. Returns
+ * `null` for any other shape (not JSON, no `cmd` field, or not this envelope).
+ */
+function narrowExecCommand(toolInput: unknown): string | null {
+  if (toolInput !== null && typeof toolInput === 'object' && 'arguments' in toolInput) {
+    const args = (toolInput as { arguments: unknown }).arguments;
+    if (typeof args === 'string') {
+      try {
+        const parsed = JSON.parse(args);
+        if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+          return parsed.cmd;
+        }
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Narrow the code-mode `exec` envelope (cli_version ≥ 0.144.0):
+ * `tool_input.input` is JS source that calls `tools.exec_command({...})` —
+ * recover the literal JSON-object argument via balanced-brace matching. A
+ * command built from variables or template literals is statically unresolvable
+ * and correctly out of scope — `null`.
+ */
+function narrowCodeModeExec(toolInput: unknown): string | null {
+  if (toolInput !== null && typeof toolInput === 'object' && 'input' in toolInput) {
+    const input = (toolInput as { input: unknown }).input;
+    if (typeof input !== 'string') return null;
+    // Match tools.exec_command({...}) — extract the JSON literal argument
+    const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
+    if (!match) return null;
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+        return parsed.cmd;
+      }
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -105,6 +164,71 @@ export function createHandler(
   memoFactory: MemoFactory = createDiskMemoStore
 ) {
   return async (input: PostToolUseInput, ctx: HookContext) => {
+    // Diagnostic capture for the code-mode apply_patch blind-spot check (card
+    // non-goal: report, don't fix): a code-mode apply_patch is wrapped inside a
+    // custom_tool_call "exec" body as tools.apply_patch(...), so the hook log
+    // shows whether it arrives here as tool_name 'apply_patch' (clean — the
+    // adapter below works) or tool_name 'exec' (wrapped — the adapter is blind).
+    ctx.logger.info('git-span post-tool-use observed tool', {
+      tool_name: input.tool_name,
+      tool_input_type: typeof input.tool_input,
+      tool_input_keys:
+        input.tool_input !== null && typeof input.tool_input === 'object'
+          ? Object.keys(input.tool_input as Record<string, unknown>)
+          : undefined
+    });
+
+    const tool_name = input.tool_name;
+    const cwd = input.cwd ?? '';
+    const sessionId = input.session_id;
+    const memo = memoFactory(ctx.logger);
+
+    // Shell touch: extract the command from either envelope shape, parse, and
+    // run each resolved span through the shared touch core — same pattern as
+    // apply_patch but driven by the static command parser instead of the patch
+    // parser. A command with no recognized idiom yields no blocks and returns
+    // undefined — fail-open, same as the apply_patch path below.
+    if (tool_name === 'exec_command' || tool_name === 'exec') {
+      const command = narrowExecCommand(input.tool_input) ?? narrowCodeModeExec(input.tool_input);
+      if (!command) return undefined;
+
+      const matches = parseCommandDetailed(command, cwd);
+      const blocks: string[] = [];
+      for (const match of matches) {
+        if (match.status !== 'resolved') continue;
+        const span = match.span;
+        const absPath = abspathAgainst(cwd, span.absolutePath);
+        const scope = resolveTouchScope(cwd, absPath);
+        if (!scope) continue;
+        let touchInput: {
+          kind: 'read' | 'write';
+          sessionId: string;
+          cwd: string;
+          filePath: string;
+          offset?: number;
+          limit?: number;
+          written?: string;
+        };
+        if (match.idiom === 'heredoc-write') {
+          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written: '' };
+        } else {
+          touchInput = {
+            kind: 'read',
+            sessionId,
+            cwd,
+            filePath: absPath,
+            offset: span.lineStart,
+            limit: span.lineEnd - span.lineStart + 1
+          };
+        }
+        const output = await runTouchHook(touchInput as TouchInput, executors, memo);
+        if (output.additionalContext) blocks.push(output.additionalContext);
+      }
+      if (blocks.length === 0) return undefined;
+      const combined = blocks.join('');
+      return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
+    }
+
     const command = narrowApplyPatchCommand(input.tool_input);
     if (command === null) return undefined;
 
@@ -121,10 +245,6 @@ export function createHandler(
             : undefined
       });
     }
-
-    const cwd = input.cwd ?? '';
-    const sessionId = input.session_id;
-    const memo = memoFactory(ctx.logger);
 
     // One envelope may touch several files; force whole-file anchors (Codex never
     // recovers a post-edit range) and run the shared touch core per touched file.
@@ -149,4 +269,4 @@ export function createHandler(
   };
 }
 
-export default postToolUseHook({ matcher: 'apply_patch', timeout: 10_000 }, createHandler());
+export default postToolUseHook({ matcher: 'apply_patch|exec_command|exec', timeout: 10_000 }, createHandler());
