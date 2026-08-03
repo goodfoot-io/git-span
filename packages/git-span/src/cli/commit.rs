@@ -109,6 +109,13 @@ pub(crate) fn hash_anchor_content(
             .map(|en| en.oid.to_string().into_bytes())
     };
 
+    // Whether `bytes` came from a git-normalized worktree read (clean
+    // filter applied). Only such reads can disagree with the file the
+    // user sees in the worktree: `--at` reads the committed blob
+    // directly, a submodule gitlink has no worktree file, and the
+    // `FilterFailed` fallback below already uses the raw bytes.
+    let mut normalized_worktree_read = false;
+
     let bytes = match anchor_oid {
         Some(commit_oid) => {
             let blob_oid = crate::git::path_blob_at(repo, commit_oid, path).map_err(|e| {
@@ -126,7 +133,10 @@ pub(crate) fn hash_anchor_content(
                     &mut custom_filters,
                     path,
                 ) {
-                    Ok(b) => b,
+                    Ok(b) => {
+                        normalized_worktree_read = true;
+                        b
+                    }
                     // A required custom filter driver that fails has no
                     // canonical content. The resolver short-circuits such
                     // a path to `ContentUnavailable(FilterFailed)` and
@@ -147,6 +157,32 @@ pub(crate) fn hash_anchor_content(
         let line_count = count_lines(&bytes);
         if *start < 1 || *end < *start {
             anyhow::bail!("invalid anchor: start={start} end={end}");
+        }
+        // A worktree read applies git's clean filter (LFS, custom
+        // smudge/clean drivers, EOL normalization), which can rewrite
+        // the content the user sees on disk. When the filtered bytes
+        // have a different line count than the raw worktree file, the
+        // anchor's line numbers address one text in the user's editor
+        // and a different text in the hashed content — the recorded
+        // hash would silently cover bytes the user never wrote. Fail
+        // closed instead. The raw read is best-effort: a
+        // tracked-but-deleted file falls through to the count check
+        // below (which rejects on the empty content), and the
+        // `--at`/gitlink/`FilterFailed` paths never reach here.
+        if normalized_worktree_read
+            && let Ok(raw) = crate::git::read_worktree_bytes(repo, path)
+        {
+            let raw_line_count = count_lines(&raw);
+            if raw_line_count != line_count {
+                anyhow::bail!(
+                    "invalid anchor: git's clean filter rewrites `{path}` \
+                     ({raw_line_count} lines on disk) into different content \
+                     ({line_count} lines), so `{path}#L{start}-L{end}` would \
+                     not address the file you are looking at. Use `--at \
+                     <commit>` to pin the anchor to a specific commit's \
+                     (filtered) content instead."
+                );
+            }
         }
         if *end > line_count {
             anyhow::bail!("invalid anchor: end={end} exceeds file line count ({line_count})");
