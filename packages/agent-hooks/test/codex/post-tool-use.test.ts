@@ -13,9 +13,16 @@
  * `A/M/D <path>` lines) rather than pasting the literal the detector checks for.
  */
 
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { describe, expect, it } from 'vitest';
-import hook, { classifyApplyPatchResponse, createHandler } from '../../src/codex/post-tool-use.js';
+import hook, {
+  classifyApplyPatchResponse,
+  createHandler,
+  narrowCodeModeExec,
+  narrowExecCommand
+} from '../../src/codex/post-tool-use.js';
 import type { PorcelainRow, PorcelainStatus, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
@@ -167,6 +174,49 @@ describe('classifyApplyPatchResponse', () => {
   });
 });
 
+describe('shell envelope narrowing', () => {
+  it('narrowExecCommand recovers cmd from the classic JSON arguments envelope', () => {
+    const toolInput = { arguments: JSON.stringify({ cmd: "sed -n '1,2p' /tmp/f", workdir: '/tmp' }) };
+    expect(narrowExecCommand(toolInput)).toBe("sed -n '1,2p' /tmp/f");
+  });
+
+  it('narrowExecCommand returns null for non-JSON arguments, a missing cmd, or a non-envelope shape', () => {
+    expect(narrowExecCommand({ arguments: 'not json' })).toBeNull();
+    expect(narrowExecCommand({ arguments: '{"workdir": "/tmp"}' })).toBeNull();
+    expect(narrowExecCommand({ arguments: 42 })).toBeNull();
+    expect(narrowExecCommand({})).toBeNull();
+    expect(narrowExecCommand(null)).toBeNull();
+  });
+
+  it('narrowCodeModeExec recovers cmd from an unquoted-key code-mode literal', () => {
+    const result = narrowCodeModeExec({
+      input:
+        'const r = await tools.exec_command({cmd:"sed -n \'1,240p\' /path", shell:"bash", workdir:"/path"});\ntext(JSON.stringify(r));'
+    });
+    expect(result).toEqual({ matched: true, cmd: "sed -n '1,240p' /path" });
+  });
+
+  it('narrowCodeModeExec leaves an already-quoted literal untouched', () => {
+    const result = narrowCodeModeExec({ input: 'tools.exec_command({"cmd":"echo hi", "workdir":"/tmp"})' });
+    expect(result).toEqual({ matched: true, cmd: 'echo hi' });
+  });
+
+  it('narrowCodeModeExec does not mistake a comma-colon inside a string value for a key', () => {
+    const result = narrowCodeModeExec({ input: 'tools.exec_command({cmd:"sed -i \'s/a,b:c/d/\' f", workdir:"/tmp"})' });
+    expect(result).toEqual({ matched: true, cmd: "sed -i 's/a,b:c/d/' f" });
+  });
+
+  it('narrowCodeModeExec distinguishes an unmatched envelope from a matched-but-unparsable one', () => {
+    expect(narrowCodeModeExec({ input: 'const x = 1;' })).toEqual({ matched: false, cmd: null });
+    expect(narrowCodeModeExec(null)).toEqual({ matched: false, cmd: null });
+    // Variable-built command: the call matches, but the literal cannot parse.
+    expect(narrowCodeModeExec({ input: 'tools.exec_command({cmd: process.cwd()})' })).toEqual({
+      matched: true,
+      cmd: null
+    });
+  });
+});
+
 describe('codex post-tool-use touch signal', () => {
   it('heals and surfaces a semantic directive on a confirmed apply', async () => {
     const repo = makeTempRepo();
@@ -238,6 +288,76 @@ describe('codex post-tool-use touch signal', () => {
       const result = toResult(await handler(postInput(repo.root, undefined) as never, { logger } as never));
       // narrowApplyPatchCommand rejects a missing command → no touch.
       expect(calls.fix).toBe(0);
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('surfaces a touch for a shell command with a recognized read idiom (classic exec_command envelope)', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        stale: [staleRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'exec_command',
+        tool_input: { arguments: JSON.stringify({ cmd: `sed -n '39,60p' ${filePath}` }) }
+      };
+
+      const result = toResult(await handler(input as never, { logger } as never));
+      expect(calls.fix).toBe(0); // read path never heals
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('surfaces a touch for a code-mode exec envelope (unquoted-key literal)', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const { executors } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        stale: [staleRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'exec',
+        tool_input: {
+          input: `const r = await tools.exec_command({cmd:"sed -n '39,60p' ${filePath}", shell:"bash", workdir:"${repo.root}"});\ntext(JSON.stringify(r));`
+        }
+      };
+
+      const result = toResult(await handler(input as never, { logger } as never));
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('warns (but fails open) when a code-mode exec envelope matches yet cannot be parsed', async () => {
+    const repo = makeTempRepo();
+    try {
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()] });
+      const { logger: capture, warnings } = warnCapturingLogger();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'exec',
+        tool_input: { input: 'tools.exec_command({cmd: process.cwd()})' }
+      };
+
+      const result = toResult(await handler(input as never, { logger: capture } as never));
+      expect(calls.list).toBe(0);
+      expect(warnings.some((m) => m.includes('code-mode exec envelope'))).toBe(true);
       expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
     } finally {
       repo.cleanup();

@@ -84,9 +84,12 @@ export function createHandler(
     // Bash has no `file_path` field, so it gets its own branch: run the static
     // command parser and translate every resolved span into a touch through the
     // same shared core. Read idioms carry the parsed line window; a heredoc
-    // write is a whole-file touch (`written: ''`) because the parser does not
-    // expose the written body. A command with no recognizable idiom yields no
-    // blocks and returns `null` — fail-open, same as the tool path below.
+    // write carries its written body (`span.body`) so the touch core can narrow
+    // the write to the lines that changed — `>` overwrites locate the written
+    // block, `>>` appends locate the appended block, and a `written: ''` whole-
+    // file scope covers truncations. A command with no recognizable idiom
+    // yields no blocks and returns `null` — fail-open, same as the tool path
+    // below.
     if (toolName === 'Bash') {
       const command = typeof toolInput.command === 'string' ? toolInput.command : null;
       if (!command) return null;
@@ -99,7 +102,7 @@ export function createHandler(
         if (!scope) continue;
         let touch: TouchInput;
         if (match.idiom === 'heredoc-write') {
-          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written: '' };
+          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written: span.body ?? '' };
         } else {
           touch = {
             kind: 'read',

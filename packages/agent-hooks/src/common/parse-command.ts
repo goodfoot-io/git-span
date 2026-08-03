@@ -21,6 +21,14 @@ export interface ResolvedSpan {
   lineStart: number;
   lineEnd: number;
   absolutePath: string;
+  /**
+   * The exact body of a `heredoc-write` span — the content the heredoc writes.
+   * Absent (undefined) for read idioms. Adapters feed it to the touch core as
+   * `written` so a post-edit range recovery can narrow `>` overwrites to the
+   * written lines and locate the appended block of a `>>` append; an empty
+   * body means "truncate to empty" and scopes the touch whole-file.
+   */
+  body?: string;
 }
 
 export type Idiom =
@@ -490,7 +498,18 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
       }
       const absolutePath = resolvePath(currentDir, w.target);
       const bodyLines = w.body.length === 0 ? 0 : w.body.split('\n').length;
-      if (bodyLines === 0) continue;
+      if (bodyLines === 0) {
+        // `cat > f <<'EOF'` with an empty body truncates the file to empty — a
+        // real write that must produce a touch (whole-file, via `body: ''`).
+        // `>>` with an empty body appends nothing and is a genuine no-op.
+        if (w.redirect !== '>') continue;
+        results.push({
+          status: 'resolved',
+          idiom: 'heredoc-write',
+          span: { lineStart: 1, lineEnd: 1, absolutePath, body: '' }
+        });
+        continue;
+      }
       const spec: LineRangeSpec =
         w.redirect === '>' ? { kind: 'literal', start: 1, end: bodyLines } : { kind: 'appendLines', count: bodyLines };
       const range = resolveSpec(spec, cachedFsTotalLines(absolutePath));
@@ -505,7 +524,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
         results.push({
           status: 'resolved',
           idiom: 'heredoc-write',
-          span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath }
+          span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath, body: w.body }
         });
       }
       continue;

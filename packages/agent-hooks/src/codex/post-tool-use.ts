@@ -76,7 +76,7 @@ export function narrowApplyPatchCommand(toolInput: unknown): string | null {
  * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd`. Returns
  * `null` for any other shape (not JSON, no `cmd` field, or not this envelope).
  */
-function narrowExecCommand(toolInput: unknown): string | null {
+export function narrowExecCommand(toolInput: unknown): string | null {
   if (toolInput !== null && typeof toolInput === 'object' && 'arguments' in toolInput) {
     const args = (toolInput as { arguments: unknown }).arguments;
     if (typeof args === 'string') {
@@ -94,29 +94,89 @@ function narrowExecCommand(toolInput: unknown): string | null {
 }
 
 /**
+ * The result of narrowing the code-mode `exec` envelope. `matched` separates
+ * "the envelope was a `tools.exec_command({...})` call whose argument could not
+ * be recovered" (a variable/template-built command — statically unresolvable)
+ * from "the envelope is not code-mode exec at all", so the handler can warn on
+ * the former instead of silently conflating it with the latter.
+ */
+export interface CodeModeExecNarrow {
+  /** Whether `tool_input.input` contained a `tools.exec_command({...})` call. */
+  matched: boolean;
+  /** The recovered `cmd` string, or `null` when matched but unparsable / absent. */
+  cmd: string | null;
+}
+
+/**
+ * Quote bare identifier keys in a JS object literal so `JSON.parse` can read
+ * it. Real code-mode call sites emit JS-style unquoted keys
+ * (`{cmd:"sed -n '1,240p' /path",...}`), which is valid JS but invalid JSON.
+ * String values (single- or double-quoted) are copied verbatim — including any
+ * `, key:`-shaped text inside them — and already-quoted keys pass through
+ * untouched.
+ */
+function quoteObjectKeys(literal: string): string {
+  let out = '';
+  let i = 0;
+  const n = literal.length;
+  while (i < n) {
+    const c = literal[i];
+    if (c === '"' || c === "'") {
+      const quote = c;
+      const start = i;
+      i += 1;
+      while (i < n) {
+        if (literal[i] === '\\' && i + 1 < n) i += 2;
+        else if (literal[i] === quote) {
+          i += 1;
+          break;
+        } else i += 1;
+      }
+      out += literal.slice(start, i);
+      continue;
+    }
+    const key = literal.slice(i).match(/^(\{|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+    if (key) {
+      out += `${key[1]}"${key[2]}":`;
+      i += key[0].length;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Narrow the code-mode `exec` envelope (cli_version ≥ 0.144.0):
  * `tool_input.input` is JS source that calls `tools.exec_command({...})` —
- * recover the literal JSON-object argument via balanced-brace matching. A
- * command built from variables or template literals is statically unresolvable
- * and correctly out of scope — `null`.
+ * recover the literal object argument via balanced-brace matching, quote its
+ * unquoted JS keys, and parse it. A command built from variables or template
+ * literals is statically unresolvable: the call still *matched* but yields
+ * `cmd: null`, reported distinctly from a non-code-mode envelope.
  */
-function narrowCodeModeExec(toolInput: unknown): string | null {
+export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
   if (toolInput !== null && typeof toolInput === 'object' && 'input' in toolInput) {
     const input = (toolInput as { input: unknown }).input;
-    if (typeof input !== 'string') return null;
-    // Match tools.exec_command({...}) — extract the JSON literal argument
-    const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
-    if (!match) return null;
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
-        return parsed.cmd;
+    if (typeof input === 'string') {
+      // Match tools.exec_command({...}) — extract the literal object argument
+      const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
+      if (match) {
+        try {
+          const parsed = JSON.parse(quoteObjectKeys(match[1]));
+          if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+            return { matched: true, cmd: parsed.cmd };
+          }
+          return { matched: true, cmd: null };
+        } catch {
+          // matched, but the literal did not parse — the call is still a
+          // code-mode exec whose command cannot be recovered statically.
+          return { matched: true, cmd: null };
+        }
       }
-    } catch {
-      return null;
     }
   }
-  return null;
+  return { matched: false, cmd: null };
 }
 
 /**
@@ -164,20 +224,6 @@ export function createHandler(
   memoFactory: MemoFactory = createDiskMemoStore
 ) {
   return async (input: PostToolUseInput, ctx: HookContext) => {
-    // Diagnostic capture for the code-mode apply_patch blind-spot check (card
-    // non-goal: report, don't fix): a code-mode apply_patch is wrapped inside a
-    // custom_tool_call "exec" body as tools.apply_patch(...), so the hook log
-    // shows whether it arrives here as tool_name 'apply_patch' (clean — the
-    // adapter below works) or tool_name 'exec' (wrapped — the adapter is blind).
-    ctx.logger.info('git-span post-tool-use observed tool', {
-      tool_name: input.tool_name,
-      tool_input_type: typeof input.tool_input,
-      tool_input_keys:
-        input.tool_input !== null && typeof input.tool_input === 'object'
-          ? Object.keys(input.tool_input as Record<string, unknown>)
-          : undefined
-    });
-
     const tool_name = input.tool_name;
     const cwd = input.cwd ?? '';
     const sessionId = input.session_id;
@@ -189,7 +235,27 @@ export function createHandler(
     // parser. A command with no recognized idiom yields no blocks and returns
     // undefined — fail-open, same as the apply_patch path below.
     if (tool_name === 'exec_command' || tool_name === 'exec') {
-      const command = narrowExecCommand(input.tool_input) ?? narrowCodeModeExec(input.tool_input);
+      let command: string | null = narrowExecCommand(input.tool_input);
+      if (command === null) {
+        // Code-mode `exec` wraps the same call in JS source. A matched call
+        // whose argument could not be parsed (variable/template-built command)
+        // is a distinct outcome from "not a code-mode envelope at all": warn so
+        // the blind spot is visible instead of silently conflated with no match.
+        const codeMode = narrowCodeModeExec(input.tool_input);
+        if (codeMode.matched && codeMode.cmd === null) {
+          ctx.logger.warn(
+            'Codex code-mode exec envelope matched but its exec_command argument could not be parsed; no shell touch',
+            {
+              toolInputType: typeof input.tool_input,
+              toolInputKeys:
+                input.tool_input !== null && typeof input.tool_input === 'object'
+                  ? Object.keys(input.tool_input as Record<string, unknown>)
+                  : undefined
+            }
+          );
+        }
+        command = codeMode.cmd;
+      }
       if (!command) return undefined;
 
       const matches = parseCommandDetailed(command, cwd);
@@ -210,7 +276,7 @@ export function createHandler(
           written?: string;
         };
         if (match.idiom === 'heredoc-write') {
-          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written: '' };
+          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written: span.body ?? '' };
         } else {
           touchInput = {
             kind: 'read',

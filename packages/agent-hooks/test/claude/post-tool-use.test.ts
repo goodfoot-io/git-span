@@ -215,4 +215,75 @@ describe('claude post-tool-use touch signal', () => {
     expect(calls.fix).toBe(0);
     expect(result.stdout.systemMessage).toBeUndefined();
   });
+
+  it('surfaces a span covered by a Bash read idiom, without healing', async () => {
+    const filePath = join(repo.root, 'mod.rs');
+    writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const { executors, calls } = makeExecutors({
+      list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+      stale: [staleRow('CHANGED')]
+    });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({
+      cwd: repo.root,
+      tool_name: 'Bash',
+      tool_input: { command: `sed -n '39,60p' ${filePath}` }
+    });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(calls.fix).toBe(0); // read path never heals
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+  });
+
+  it('returns null for a Bash command with no recognized idiom (no executor calls)', async () => {
+    const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({
+      cwd: repo.root,
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hello && git status' }
+    });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(calls.list).toBe(0);
+    expect(calls.fix).toBe(0);
+    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+  });
+
+  it('a Bash heredoc write is a write touch scoped to the written body, not the whole file', async () => {
+    const filePath = join(repo.root, 'out.txt');
+    // Post-edit state: the heredoc body sits at lines 1-3, further content after.
+    writeFileSync(filePath, `${['alpha', 'beta', 'gamma', 'tail1', 'tail2'].join('\n')}\n`);
+    const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+    const { executors, calls } = makeExecutors({
+      list: [{ name: SPAN, path: 'out.txt', start: 4, end: 5 }],
+      stale: [staleRow('CHANGED')]
+    });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(calls.fix).toBe(1); // write path heals
+    // The span anchored outside the written body is out of scope: the touch
+    // carried the body, so recoverRange narrowed to lines 1-3. With the old
+    // hardcoded `written: ''` the touch would be whole-file and this would
+    // surface — the empty result proves the body reached the touch core.
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+  });
+
+  it('a Bash heredoc write with the body present surfaces a span inside the written lines', async () => {
+    const filePath = join(repo.root, 'out2.txt');
+    writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+    const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+    const { executors } = makeExecutors({
+      list: [{ name: SPAN, path: 'out2.txt', start: 1, end: 2 }],
+      stale: [staleRow('CHANGED')]
+    });
+    const handler = createHandler(executors, inMemoryMemoFactory());
+    const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
+
+    const result = toResult(await handler(input as never, { logger }));
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+  });
 });

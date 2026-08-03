@@ -31,6 +31,15 @@ export function splitTopLevel(cmd: string): SimpleCommand[] {
     pendingOp = nextOp;
   };
 
+  /**
+   * Whether the operator currently pending is a pipe (`|`/`|&`). A helper
+   * rather than an inline comparison: TypeScript's control-flow narrowing
+   * cannot see the assignments `flush` makes to `pendingOp` from inside its
+   * closure, and would otherwise narrow the direct comparison to the
+   * initializer `'start'`.
+   */
+  const isPendingPipe = (): boolean => pendingOp === '|';
+
   while (i < n) {
     const c = cmd[i];
     if (inSquote) {
@@ -106,6 +115,14 @@ export function splitTopLevel(cmd: string): SimpleCommand[] {
         continue;
       }
       if (c === '\n') {
+        // A newline immediately after a pipe operator is a line continuation
+        // (`cat a.txt |\nsed ...` keeps the pipeline), not a statement
+        // separator: skipping it preserves `precededBy: '|'` for the next
+        // stage instead of degrading it to 'other'.
+        if (isPendingPipe()) {
+          i += 1;
+          continue;
+        }
         flush('other');
         i += 1;
         continue;

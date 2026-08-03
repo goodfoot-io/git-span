@@ -215,32 +215,50 @@ describe('git log -L', () => {
 });
 
 describe('heredoc writes', () => {
-  it('cat > file <<EOF overwrite: whole body is the range', () => {
+  it('cat > file <<EOF overwrite: whole body is the range, and the span carries the body', () => {
     const cmd = `cat > ${join(dir, 'out1.txt')} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const spans = parseCommand(cmd);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'out1.txt') }]);
+    expect(spans).toEqual([
+      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'out1.txt'), body: 'alpha\nbeta\ngamma' }
+    ]);
   });
 
-  it('cat >> file <<EOF append: range starts after existing EOF', () => {
+  it('cat >> file <<EOF append: range starts after existing EOF, and the span carries the appended body', () => {
     const target = join(dir, 'five.txt');
     const cmd = `cat >> ${target} <<'EOF'\nnew1\nnew2\nEOF\n`;
     const spans = parseCommand(cmd);
-    expect(spans).toEqual([{ lineStart: 6, lineEnd: 7, absolutePath: target }]);
+    expect(spans).toEqual([{ lineStart: 6, lineEnd: 7, absolutePath: target, body: 'new1\nnew2' }]);
   });
 
   it('heredoc body containing && is not mis-split by the outer command splitter', () => {
     const cmd = `cat > ${join(dir, 'out2.sh')} <<'EOF'\necho a && echo b\necho c\nEOF\n`;
     const spans = parseCommand(cmd);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'out2.sh') }]);
+    expect(spans).toEqual([
+      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'out2.sh'), body: 'echo a && echo b\necho c' }
+    ]);
   });
 
   it('two heredocs in one command both resolve, in order', () => {
     const cmd = `cat > ${join(dir, 'a.txt')} <<'EOF'\nx\nEOF\ncat > ${join(dir, 'b.txt')} <<'EOF'\ny\nz\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 1, absolutePath: join(dir, 'a.txt') },
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'b.txt') }
+      { lineStart: 1, lineEnd: 1, absolutePath: join(dir, 'a.txt'), body: 'x' },
+      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'b.txt'), body: 'y\nz' }
     ]);
+  });
+
+  it('empty-body > heredoc truncates the file: emits a write span with an empty body', () => {
+    const target = join(dir, 'trunc.txt');
+    const cmd = `cat > ${target} <<'EOF'\nEOF\n`;
+    const detailed = parseCommandDetailed(cmd);
+    expect(detailed).toEqual([
+      { status: 'resolved', idiom: 'heredoc-write', span: { lineStart: 1, lineEnd: 1, absolutePath: target, body: '' } }
+    ]);
+  });
+
+  it('empty-body >> heredoc appends nothing: no span', () => {
+    const cmd = `cat >> ${join(dir, 'five.txt')} <<'EOF'\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([]);
   });
 });
 
@@ -258,6 +276,24 @@ describe('pipe-source propagation (one hop only)', () => {
   it('does not propagate two hops', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} | grep foo | head -3`);
     expect(spans).toEqual([]);
+  });
+
+  it('cat file | newline sed -n: the newline continues the pipeline (no standalone cat span, precise range)', () => {
+    const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} |\nsed -n '2,4p'`);
+    expect(spans).toEqual([{ lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') }]);
+  });
+
+  it('cat file | newline head -N: the newline continues the pipeline', () => {
+    const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} |\nhead -3`);
+    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt') }]);
+  });
+
+  it('plain newline still separates commands: standalone cat span stays', () => {
+    const spans = parseCommand(`cat ${join(dir, 'twenty.txt')}\nhead -3 ${join(dir, 'five.txt')}`);
+    expect(spans).toEqual([
+      { lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') },
+      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'five.txt') }
+    ]);
   });
 });
 
