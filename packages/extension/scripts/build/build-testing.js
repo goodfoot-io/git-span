@@ -113,6 +113,9 @@ await esbuild.build({
 });
 
 // Individual test suites.
+// `empty-import-meta` is silenced: webviewBundle.test.ts deliberately reads
+// `__filename` in this CJS build and falls back to `import.meta.url` only when
+// the suite runs as ESM via tsx, so the blanked `import.meta` is never used.
 const testFiles = await glob('test/suite/**/*.test.ts', { cwd: EXTENSION_ROOT });
 for (const rel of testFiles) {
   const baseName = path.basename(rel, '.ts') + '.cjs';
@@ -124,7 +127,8 @@ for (const rel of testFiles) {
     platform: 'node',
     target: 'node22',
     external: ['vscode', 'mocha'],
-    sourcemap: true
+    sourcemap: true,
+    logOverride: { 'empty-import-meta': 'silent' }
   });
 }
 
