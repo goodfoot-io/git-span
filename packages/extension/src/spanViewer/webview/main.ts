@@ -30,7 +30,32 @@
  * @summary Webview bundle: renders the posted span document with Monaco.
  */
 
-import * as monaco from 'monaco-editor';
+import * as monaco from 'monaco-editor/editor/editor.api.js';
+
+// Narrowed Monaco imports: the editor API core (Monarch highlighting, diff
+// algorithm) instead of the full package entry, which also registers the
+// css/html/typescript language-service features. The TypeScript one installs
+// worker-backed providers for `.ts`/`.tsx`/`.js`/`.jsx` anchors that the
+// bundle's editor worker cannot answer ("Missing requestHandler or method:
+// getNavigationTree"). The curated basic-language definitions below keep
+// `resolveLanguage()` reporting the same ids for every anchor extension, and
+// the JSON language feature is kept because its worker is genuinely bundled.
+import 'monaco-editor/language/json/monaco.contribution.js';
+import 'monaco-editor/languages/definitions/cpp/register.js';
+import 'monaco-editor/languages/definitions/css/register.js';
+import 'monaco-editor/languages/definitions/go/register.js';
+import 'monaco-editor/languages/definitions/html/register.js';
+import 'monaco-editor/languages/definitions/ini/register.js';
+import 'monaco-editor/languages/definitions/java/register.js';
+import 'monaco-editor/languages/definitions/javascript/register.js';
+import 'monaco-editor/languages/definitions/markdown/register.js';
+import 'monaco-editor/languages/definitions/python/register.js';
+import 'monaco-editor/languages/definitions/ruby/register.js';
+import 'monaco-editor/languages/definitions/rust/register.js';
+import 'monaco-editor/languages/definitions/shell/register.js';
+import 'monaco-editor/languages/definitions/typescript/register.js';
+import 'monaco-editor/languages/definitions/xml/register.js';
+import 'monaco-editor/languages/definitions/yaml/register.js';
 
 import '@vscode/codicons/dist/codicon.css';
 import './main.css';
@@ -67,11 +92,10 @@ const cardOpenStore = new CardOpenStore(vscode);
 
 /**
  * Worker script per Monaco worker label, resolved relative to this bundle
- * (both live in dist/webview, served via asWebviewUri). The full package
- * entry registers css/html/typescript language contributions too, but per
- * the plan only the editor and JSON workers are bundled -- "JSON/generic
- * Monarch only" -- and any other label falls back to the editor worker,
- * matching Monaco's own default.
+ * (both live in dist/webview, served via asWebviewUri). The narrowed import
+ * above registers no language-service feature beyond JSON, so only the editor
+ * and JSON workers are bundled -- "JSON/generic Monarch only" -- and any other
+ * label falls back to the editor worker, matching Monaco's own default.
  */
 const WORKER_SCRIPTS: Readonly<Record<string, string>> = {
   editorWorkerService: 'editor.worker.js',
