@@ -106,7 +106,8 @@ pub(crate) struct EngineState {
 /// post-fix re-resolve in `stale --fix` can skip re-reading the worktree
 /// source layer (`read_worktree_layer*`) on the cold path.
 ///
-/// Carries ONLY the static source-layer fields. It deliberately does NOT
+/// Carries the static source-layer fields plus the post-scan
+/// [`index_changed`](Self::index_changed) verdict. It deliberately does NOT
 /// carry `warnings` or `index_trailer_start`: those are consumed/emitted by
 /// the pre-fix `finish_retaining_layers` and must not be re-emitted by the
 /// post-fix pass (see the stderr-parity equivalence guard).
@@ -119,6 +120,11 @@ pub(crate) struct SourceLayers {
     pub(crate) conflicted_paths: HashSet<String>,
     pub(crate) lfs: LfsState,
     pub(crate) custom_filters: CustomFilters,
+    /// `true` when the index trailer changed between `EngineState` construction
+    /// and `finish`/`finish_retaining_layers` — the scan's per-anchor verdicts
+    /// are not trustworthy and the caller should treat this result as
+    /// indeterminate.
+    pub(crate) index_changed: bool,
 }
 
 impl EngineState {
@@ -226,16 +232,19 @@ impl EngineState {
         })
     }
 
-    fn finish(mut self, repo: &gix::Repository) {
+    fn finish(mut self, repo: &gix::Repository) -> bool {
         // Forward reverse-walk warnings (rename budget, budget downgrade,
         // etc.) from the shared context into the engine's warning buffer.
         self.warnings.append(&mut self.shared.warnings);
-        if let Some(start) = self.index_trailer_start
+        let index_changed = if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
         {
             eprintln!("warning: index changed during stale; consider re-running");
-        }
+            true
+        } else {
+            false
+        };
         for w in self.warnings {
             eprintln!("{w}");
         }
@@ -243,6 +252,7 @@ impl EngineState {
         // closes stdin (signalling EOF) before waiting on the child.
         let _ = self.local.lfs;
         let _ = self.local.custom_filters;
+        index_changed
     }
 
     /// Like `finish`, but returns the reusable source-layer state instead of
@@ -257,12 +267,15 @@ impl EngineState {
         // Forward reverse-walk warnings (rename budget, budget downgrade,
         // etc.) from the shared context into the engine's warning buffer.
         self.warnings.append(&mut self.shared.warnings);
-        if let Some(start) = self.index_trailer_start
+        let index_changed = if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
         {
             eprintln!("warning: index changed during stale; consider re-running");
-        }
+            true
+        } else {
+            false
+        };
         for w in &self.warnings {
             eprintln!("{w}");
         }
@@ -277,6 +290,7 @@ impl EngineState {
             conflicted_paths: self.shared.conflicted_paths,
             lfs: self.local.lfs,
             custom_filters: self.local.custom_filters,
+            index_changed,
         }
     }
 
@@ -318,6 +332,7 @@ impl EngineState {
             conflicted_paths: state.shared.conflicted_paths,
             lfs: state.local.lfs,
             custom_filters: state.local.custom_filters,
+            index_changed: false,
         })
     }
 
@@ -1260,17 +1275,21 @@ pub(crate) fn resolve_named_spans_parallel(
     Ok(out)
 }
 
+/// Result of a stale-spans resolve pass.
+struct StaleSpansOutput {
+    spans: Vec<SpanResolved>,
+    trace_rows: Vec<crate::perf::TraceRow>,
+    source_layers: Option<SourceLayers>,
+    index_changed: bool,
+}
+
 fn stale_spans_inner(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
     enable_trace: bool,
     retain_layers: bool,
-) -> Result<(
-    Vec<SpanResolved>,
-    Vec<crate::perf::TraceRow>,
-    Option<SourceLayers>,
-)> {
+) -> Result<StaleSpansOutput> {
     crate::perf::reset_subroutine_counters();
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
@@ -1449,16 +1468,23 @@ fn stale_spans_inner(
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.concurrent.per_anchor_trace.take().unwrap_or_default();
-    let source_layers = if retain_layers {
-        Some(state.finish_retaining_layers(repo))
+    let (source_layers, index_changed) = if retain_layers {
+        let layers = state.finish_retaining_layers(repo);
+        let changed = layers.index_changed;
+        (Some(layers), changed)
     } else {
-        state.finish(repo);
-        None
+        let changed = state.finish(repo);
+        (None, changed)
     };
     if out.len() > 1 {
         sort_spans_by_anchor_path(&mut out);
     }
-    Ok((out, trace_rows, source_layers))
+    Ok(StaleSpansOutput {
+        spans: out,
+        trace_rows,
+        source_layers,
+        index_changed,
+    })
 }
 
 pub fn stale_spans(
@@ -1476,8 +1502,8 @@ pub fn stale_spans(
     {
         return Ok(spans);
     }
-    let (spans, _, _) = stale_spans_inner(repo, span_root, options, false, false)?;
-    Ok(spans)
+    let output = stale_spans_inner(repo, span_root, options, false, false)?;
+    Ok(output.spans)
 }
 
 /// Like `stale_spans`, but on the uncached cold path (store bypass → an
@@ -1512,8 +1538,8 @@ pub(crate) fn stale_spans_retaining_source_layers(
     {
         return Ok((spans, None, whole_result));
     }
-    let (spans, _, source_layers) = stale_spans_inner(repo, span_root, options, false, true)?;
-    Ok((spans, source_layers, None))
+    let output = stale_spans_inner(repo, span_root, options, false, true)?;
+    Ok((output.spans, output.source_layers, None))
 }
 
 pub fn stale_spans_with_trace(
@@ -1521,8 +1547,8 @@ pub fn stale_spans_with_trace(
     span_root: &str,
     options: EngineOptions,
 ) -> Result<(Vec<SpanResolved>, Vec<crate::perf::TraceRow>)> {
-    let (spans, trace_rows, _) = stale_spans_inner(repo, span_root, options, true, false)?;
-    Ok((spans, trace_rows))
+    let output = stale_spans_inner(repo, span_root, options, true, false)?;
+    Ok((output.spans, output.trace_rows))
 }
 
 pub(crate) fn sort_spans_by_anchor_path(spans: &mut [SpanResolved]) {
@@ -2190,5 +2216,69 @@ mod tests {
         sort_spans_by_anchor_path(&mut spans_a);
         sort_spans_by_anchor_path(&mut spans_b);
         assert_eq!(spans_a, spans_b);
+    }
+
+    /// When the index changes between `EngineState` construction and `finish`,
+    /// the returned `SourceLayers` must carry `index_changed = true` so callers
+    /// can distinguish a racy scan from a genuine stale/clean verdict. Before
+    /// the fix for card main-199-2, `finish` only printed a stderr warning and
+    /// the signal was lost.
+    #[test]
+    fn finish_retaining_layers_reports_index_changed() {
+        use std::process::Command;
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        for args in [
+            &["init", "--initial-branch=main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let repo = gix::open(dir).unwrap();
+        let state = EngineState::new(
+            &repo,
+            LayerSet {
+                index: true,
+                worktree: true,
+                staged_span: false,
+            },
+            true,
+        )
+        .unwrap();
+
+        // Mutate `.git/index` so the trailer read in `finish_retaining_layers`
+        // disagrees with `index_trailer_start` captured at construction.
+        // Appending a byte changes the SHA-1 trailer (last 20 bytes).
+        let index_path = dir.join(".git").join("index");
+        let mut index_bytes = std::fs::read(&index_path).unwrap();
+        index_bytes.push(0);
+        std::fs::write(&index_path, &index_bytes).unwrap();
+
+        let layers = state.finish_retaining_layers(&repo);
+        assert!(
+            layers.index_changed,
+            "finish_retaining_layers must report index_changed when the index \
+             was mutated between construction and finish"
+        );
     }
 }

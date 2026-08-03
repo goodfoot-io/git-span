@@ -927,6 +927,22 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs, span_root: &str) -> Re
         Vec::new()
     };
 
+    // When the index changes between the start and end of a stale scan, every
+    // per-anchor verdict is potentially a false positive — the resolver read a
+    // snapshot that another process was mutating. Rather than printing a list of
+    // specific anchors as drifted (which sends the reader to fix things that
+    // were never broken), surface the indeterminate outcome so the caller can
+    // retry. Exit code 2 is distinct from both 0 (clean) and 1 (stale).
+    let index_changed = pre_fix_source_layers
+        .as_ref()
+        .is_some_and(|l| l.index_changed);
+    if index_changed {
+        eprintln!(
+            "git span stale: index changed during scan; result is indeterminate — re-run the command"
+        );
+        return Ok(2);
+    }
+
     match args.format {
         StaleFormat::Human => {
             let _perf = crate::perf::span("stale.render-human");
