@@ -406,4 +406,64 @@ describe('codex post-tool-use touch signal', () => {
       repo.cleanup();
     }
   });
+
+  it('a Bash heredoc > overwrite surfaces a span truncated beyond the new EOF (whole-file scope)', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'out.txt');
+      // Post-edit state: the heredoc wrote only 3 lines, down from 10.
+      writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+      const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'out.txt', start: 8, end: 10 }],
+        stale: [staleRow('DELETED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'Bash',
+        tool_input: { command }
+      };
+
+      const result = toResult(await handler(input as never, { logger } as never));
+      expect(calls.fix).toBe(1); // write path heals
+      // The span at lines 8-10 was beyond the new EOF (3 lines). With
+      // `written: ''` (whole-file scope from `redirect: '>'`) the touch core
+      // surfaces it as deleted — previously this was silent because the body
+      // was not threaded into the touch.
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('a Bash heredoc >> append is scoped to the appended body, not the whole file', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'out.txt');
+      // Post-edit state: original two lines + appended three lines.
+      writeFileSync(filePath, `${['orig1', 'orig2', 'alpha', 'beta', 'gamma'].join('\n')}\n`);
+      const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
+        stale: [staleRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = {
+        ...postInput(repo.root, null),
+        tool_name: 'Bash',
+        tool_input: { command }
+      };
+
+      const result = toResult(await handler(input as never, { logger } as never));
+      expect(calls.fix).toBe(1); // write path heals
+      // The span anchored at lines 1-2 (original content) is outside the
+      // appended body at lines 3-5. With `written: span.body` the touch is
+      // scoped to the append range and this span does not surface — proving
+      // the body reached the touch core.
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    } finally {
+      repo.cleanup();
+    }
+  });
 });
