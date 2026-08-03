@@ -143,6 +143,17 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     assert.strictEqual(posted.stale, false, 'Expected a clean span to not carry the Stale pill');
     assert.deepStrictEqual(posted.staleReasons, []);
 
+    // The test workspace is not a git repository, so `git log` reports nothing
+    // and the resolver falls back to the declaration file's mtime -- the
+    // never-committed case. Which of the two sources leads for a *tracked*
+    // declaration is pinned by spanTimestamp.test.ts against injected readers.
+    assert.ok(posted.updatedAt !== undefined, 'Expected the declaration timestamp to be posted');
+    assert.strictEqual(
+      posted.updatedAt,
+      new Date(fs.statSync(path.join(spanDir, 'fixture-span-test')).mtimeMs).toISOString(),
+      'Expected the never-committed declaration to fall back to its worktree mtime'
+    );
+
     assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
     const anchor = posted.anchors[0];
     assert.ok(
@@ -347,5 +358,36 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     });
     assert.strictEqual(posted.stale, true, 'Expected an uncommitted declaration edit to make the span stale');
     assert.deepStrictEqual(posted.staleReasons, ['span file edited in the working tree']);
+
+    // The dirty branch leads with the worktree mtime, so the posted timestamp
+    // tracks the edit rather than any commit date.
+    assert.ok(posted.updatedAt !== undefined, 'Expected the declaration timestamp to be posted');
+    assert.strictEqual(
+      posted.updatedAt,
+      new Date(fs.statSync(path.join(spanDir, 'fixture-span-uncommitted')).mtimeMs).toISOString(),
+      'Expected a dirty declaration to report its worktree mtime'
+    );
+  });
+
+  // The titlebar's edit button posts `reopenAsText`, whose handler runs
+  // `vscode.openWith(uri, 'default')`. A `.span` file already has a custom
+  // editor bound to it, so this pins the non-obvious half of that call: that
+  // `'default'` overrides the custom editor rather than being ignored. It
+  // exercises the handler's payload, not its dispatch -- the webview's
+  // postMessage channel is not reachable from the extension host.
+  it("reopens a span already showing in the custom editor as plain text via the 'default' view type", async () => {
+    const uri = await openSpan('fixture-span-test', 'README.md rk64:deadbeef\n\nWhy this coupling exists.\n');
+    const opened = await waitFor(() => hasOpenCustomEditorTab(SPAN_FILE_VIEW_TYPE));
+    assert.ok(opened, 'Expected the custom editor to claim the span file first');
+
+    await vscode.commands.executeCommand('vscode.openWith', uri, 'default');
+
+    const asText = await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === uri.fsPath);
+    assert.ok(asText, "Expected 'default' to open the span file in a real text editor");
+    assert.strictEqual(
+      vscode.window.activeTextEditor?.document.getText(),
+      'README.md rk64:deadbeef\n\nWhy this coupling exists.\n',
+      'Expected the text editor to show the span file itself, not a rendered view'
+    );
   });
 });

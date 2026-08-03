@@ -35,6 +35,7 @@ import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
 import { buildHistorySnapshotLadder, type LadderRung } from './historySnapshotLadder.js';
 import { reconstructOriginal } from './patchReconstruction.js';
 import { formatAnchorAddress, type ParsedSpanFile, parseSpanFile } from './spanFileGrammar.js';
+import { resolveSpanUpdatedAt } from './spanTimestamp.js';
 import type {
   AnchorPlan,
   HistoryDocument,
@@ -1222,7 +1223,8 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
    * Assemble the `PostedDocument` from the parsed span file, the anchor
    * plans, and the history document: one card per anchor (clean content read
    * from disk with the pre/post-stat race check), the uncommitted declaration
-   * edit, per-commit history blocks, and the Stale pill's reasons.
+   * edit, the declaration's last-edited timestamp, per-commit history blocks,
+   * and the Stale pill's reasons.
    *
    * @param options - Everything the build needs.
    * @param options.liveAnchors - The live anchors, in file order.
@@ -1298,15 +1300,26 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       }
     }
 
+    const spanRelativePath = `.span/${spanName}`;
+
     let uncommittedEdit: PostedUncommittedEdit | 'unavailable' | undefined;
     if (history.current?.span_diff !== undefined) {
       try {
         const original = reconstructOriginal(history.current.span_diff, text, 1);
-        uncommittedEdit = { path: `.span/${spanName}`, original, modified: text };
+        uncommittedEdit = { path: spanRelativePath, original, modified: text };
       } catch {
         uncommittedEdit = 'unavailable';
       }
     }
+
+    // `current.span_diff` -- the same signal the card above is built from --
+    // is exactly "the worktree declaration differs from HEAD", so the
+    // committed date is stale by construction whenever the card is present.
+    const updatedAt = await resolveSpanUpdatedAt({
+      repoRoot,
+      relativePath: spanRelativePath,
+      dirty: uncommittedEdit !== undefined
+    });
 
     const ladderInfos = resolveLadders(history, liveAnchors, plans, cleanContents);
     const postedHistory = buildPostedHistory(history, text, ladderInfos);
@@ -1339,6 +1352,9 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       anchors,
       history: postedHistory
     };
+    if (updatedAt !== undefined) {
+      posted.updatedAt = updatedAt;
+    }
     if (uncommittedEdit !== undefined) {
       posted.uncommittedEdit = uncommittedEdit;
     }

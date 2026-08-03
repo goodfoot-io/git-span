@@ -64,10 +64,14 @@ body {
   margin: 0;
   padding: 0 0 4rem;
 }
+/* Full-bleed like the multi-diff editor: cards, header rows and the embedded
+   Monaco editors span the viewport. The 0.5rem horizontal inset matches the
+   8px each side that the multi-diff editor reserves around every entry
+   (diffEditorItemTemplate subtracts 2 * 8 + 2 * 1 from the entry width). Prose
+   keeps its own measure via .why p / .updated / .footnote rather than being
+   held in by the frame. */
 .frame {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 1.25rem 1.25rem;
+  padding: 1.25rem 0.5rem;
 }
 a {
   color: var(--link);
@@ -131,6 +135,22 @@ pre {
   white-space: pre-wrap;
 }
 
+/* The .span declaration's last-edited line, between the why prose and the first
+   anchor card. Low contrast, and held to the prose measure so it reads with the
+   text above it rather than stretching across the full-width cards below. */
+.updated {
+  margin: 0 0 1.5rem;
+  max-width: 68ch;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* When the line is present it takes over the gap before the first card, so the
+   prose and the timestamp sit together as one block. Absent, .why keeps its own
+   1.5rem and nothing shifts. */
+.why:has(+ .updated) {
+  margin-bottom: 0.35rem;
+}
+
 /* Section heading, styled like vscode-collapsible headings. */
 h2 {
   font-size: 11px;
@@ -169,14 +189,19 @@ details.anchor > summary {
 details.anchor > summary::-webkit-details-marker {
   display: none;
 }
-details.anchor > summary::before {
-  content: '\25b8';
+/* Disclosure chevron: a real codicon swapped between chevron-right and
+   chevron-down by createDisclosureChevron, matching the control VS Code's
+   multi-diff editor uses. One rule for both card kinds so the two disclosure
+   idioms cannot drift apart. The direct-child selector keeps this off the
+   go-to-file button's codicon, which is nested inside .icon-btn.
+   `align-self` is a no-op in the anchor row (align-items: center) and is what
+   keeps the glyph off the text baseline in the commit row. */
+details.anchor > summary > .codicon,
+details.commit > summary > .codicon {
   color: var(--muted);
-  font-size: 10px;
-  transition: transform 0.1s;
-}
-details.anchor[open] > summary::before {
-  transform: rotate(90deg);
+  font-size: 16px;
+  flex: none;
+  align-self: center;
 }
 details.anchor[open] > summary {
   border-bottom: 1px solid var(--border);
@@ -184,14 +209,32 @@ details.anchor[open] > summary {
 details.anchor > summary:hover {
   background: var(--hover);
 }
+/* Paths carry no spaces, so they offer no soft-wrap opportunity and, as flex
+   items defaulting to min-width:auto, would push the row past the viewport
+   now that .frame has no width cap. `anywhere` (unlike break-word) also
+   shrinks the min-content size, which is what lets the flex item yield. */
 details.anchor > summary .fname {
   font-family: var(--font-code);
   font-size: 12.5px;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+/* The `L4-L100` suffix. Same family, size and weight as .fname so the name and
+   its range read as one label -- only the contrast drops, which is the whole
+   of the distinction asked for. Never wraps internally: a range broken across
+   lines is unreadable, and it is short enough that keeping it whole costs the
+   row nothing. */
+details.anchor > summary .frange {
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
 }
 details.anchor > summary .fpath {
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 details.anchor > summary .spacer {
   flex: 1;
@@ -220,39 +263,18 @@ details.anchor > summary .spacer {
   border-radius: 50%;
   flex: none;
 }
-.dot.clean {
-  background: var(--vscode-gitDecoration-addedResourceForeground, var(--fb-git-renamed));
-  opacity: 0.85;
-}
+/* Only drifted kinds get a dot -- a clean anchor renders none at all, so there
+   is no `.dot.clean`. */
 .dot.drift {
   background: var(--git-modified);
 }
 
-/* Monaco hosts: editors size themselves, the host only provides the box. */
+/* Monaco hosts: the host is sized to the editor's exact content height, so it
+   carries no min-height floor -- one that clamped short previews open would
+   leave dead space below them. `overflow: hidden` stays: Monaco draws its own
+   horizontal scrollbar inside the host. */
 .monaco-host {
-  min-height: 60px;
   overflow: hidden;
-}
-
-/* Preview truncation cap -- not a diff unchanged-region strip. */
-.capped {
-  position: relative;
-}
-.showall {
-  display: block;
-  width: 100%;
-  padding: 0.3rem 0.75rem;
-  font-size: 12px;
-  color: var(--link);
-  cursor: pointer;
-  background: var(--widget-bg);
-  border: none;
-  border-top: 1px solid var(--border);
-  text-align: left;
-  user-select: none;
-}
-.showall:hover {
-  text-decoration: underline;
 }
 
 /* Header-only status cards for unavailable/raced/dangling anchors. */
@@ -281,6 +303,9 @@ details.anchor > summary .spacer {
   color: var(--git-renamed);
   font-family: var(--font-code);
   flex-wrap: wrap;
+  /* Inherited by the bare address spans, which are unbreakable paths in the
+     same flex-item position as .fname/.fpath. */
+  overflow-wrap: anywhere;
 }
 .rename-banner .arrow {
   color: var(--muted);
@@ -341,16 +366,6 @@ details.commit > summary:hover {
 details.commit > summary::-webkit-details-marker {
   display: none;
 }
-details.commit > summary::before {
-  content: '\25b8';
-  color: var(--muted);
-  font-size: 10px;
-  align-self: center;
-  transition: transform 0.1s;
-}
-details.commit[open] > summary::before {
-  transform: rotate(90deg);
-}
 details.commit[open] > summary {
   border-bottom: 1px solid var(--border);
 }
@@ -365,6 +380,11 @@ details.commit[open] > summary {
   flex: 1;
   font-size: 12.5px;
   font-weight: 600;
+  /* The row does not wrap and .cdate/.csha refuse to, so this flex item is the
+     only one that can yield. A summary carrying one long unbroken token (a URL,
+     a generated identifier) would otherwise push the hash link off-viewport. */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .cdate {
   color: var(--muted);
@@ -376,6 +396,9 @@ details.commit[open] > summary {
   font-size: 11px;
   color: var(--muted);
   font-family: var(--font-code);
+  /* Anchor addresses carry no spaces, so they offer no soft-wrap opportunity
+     and would scroll the page sideways in a narrow panel. */
+  overflow-wrap: anywhere;
 }
 
 .footnote {

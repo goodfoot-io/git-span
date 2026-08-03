@@ -25,7 +25,8 @@ process.setMaxListeners(0);
  * Must export a `run` function — that is the contract required by the test runner.
  *
  * @returns Promise that resolves when all tests pass, rejects on any failure.
- * @throws Error with failure count when one or more tests fail.
+ * @throws Error with failure count when one or more tests fail, or when the
+ *   glob pattern matched no compiled suites at all.
  */
 export async function run(): Promise<void> {
   // __dirname resolves to the directory containing this compiled .cjs file, which
@@ -45,6 +46,20 @@ export async function run(): Promise<void> {
   const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 10000 });
 
   const files = await glob(globPattern, { cwd: testsRoot });
+
+  // A pattern that matches nothing must fail the run, never report a green
+  // zero-test pass. build-testing.js compiles each suite to
+  // `basename(file) + '.cjs'` directly under test/suite/, discarding the
+  // source directory -- so a directory-qualified TEST_PATTERN such as
+  // `spanViewer/foo.test` can never match, and silently ran nothing.
+  if (files.length === 0) {
+    throw new Error(
+      `No test files matched '${globPattern}' under ${testsRoot}. ` +
+        'Compiled suites are flattened into test/suite/, so a directory-qualified ' +
+        "pattern never matches -- use '**/<name>.test' instead."
+    );
+  }
+
   for (const f of files) {
     mocha.addFile(path.resolve(testsRoot, f));
   }

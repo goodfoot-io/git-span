@@ -57,9 +57,14 @@ export async function resolveGitSpanBinaryOnPath(
 }
 
 /**
- * Spawn the resolved Git Span CLI by absolute path and capture its output.
+ * Spawn an executable by absolute path and capture its output.
  *
- * @param binaryPath - Absolute path to the git-span executable.
+ * Named for its original and primary caller, the Git Span CLI, but the
+ * implementation is binary-agnostic: it is also the single spawn path used to
+ * invoke `git` directly (see {@link ../spanViewer/spanTimestamp.js}), so the
+ * package never grows a second way to shell out.
+ *
+ * @param binaryPath - Absolute path to the executable to spawn.
  * @param args - CLI arguments to pass through.
  * @param signal - Optional AbortSignal to cancel the running process.
  * @param cwd - Optional working directory for the git-span process.

@@ -211,6 +211,19 @@ export interface PostedDocument {
   spanName: string;
   /** Why prose parsed from the `.span` file itself, never from history. */
   why: string;
+  /**
+   * When the `.span` declaration file was last edited, as an ISO string.
+   *
+   * Always describes the declaration file and nothing else -- never a commit
+   * that only touched anchored code -- so the rendered age never changes
+   * subject between renders. Resolved as the committer date of the last commit
+   * touching `.span/<name>`, or the file's worktree mtime when the declaration
+   * is edited-but-uncommitted or has never been committed at all.
+   *
+   * Omitted, never faked, when neither source resolves (no git, no stat); the
+   * webview renders no "Updated" line at all rather than an invented date.
+   */
+  updatedAt?: string;
   /** True when any anchor drifted/relocated/unavailable or the declaration has an uncommitted edit. */
   stale: boolean;
   /** Human-readable causes for the Stale pill's tooltip, e.g. `1 anchor drifted`. */
