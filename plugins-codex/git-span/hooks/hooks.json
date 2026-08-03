@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "apply_patch|exec_command|exec",
+        "matcher": "apply_patch|exec_command|exec|Bash",
         "hooks": [
           {
             "type": "command",

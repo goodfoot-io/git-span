@@ -229,14 +229,30 @@ export function createHandler(
     const sessionId = input.session_id;
     const memo = memoFactory(ctx.logger);
 
-    // Shell touch: extract the command from either envelope shape, parse, and
-    // run each resolved span through the shared touch core — same pattern as
-    // apply_patch but driven by the static command parser instead of the patch
-    // parser. A command with no recognized idiom yields no blocks and returns
-    // undefined — fail-open, same as the apply_patch path below.
-    if (tool_name === 'exec_command' || tool_name === 'exec') {
-      let command: string | null = narrowExecCommand(input.tool_input);
-      if (command === null) {
+    // Shell touch: extract the command from whichever envelope shape the harness
+    // delivers, parse, and run each resolved span through the shared touch core.
+    //
+    // - `Bash`: the harness-unwrapped shape Codex ≥0.144 actually sends —
+    //   `tool_input.command` is the raw shell command string (same shape the
+    //   Claude adapter handles).
+    // - `exec_command`: classic function_call envelope (cli ≤0.130) —
+    //   `tool_input.arguments` is a JSON string with a `cmd` field.
+    // - `exec`: direct code-mode envelope (may ship in a future CLI) —
+    //   `tool_input.input` is JS source wrapping `tools.exec_command({...})`.
+    //
+    // A command with no recognized idiom yields no blocks and returns undefined —
+    // fail-open, same as the apply_patch path below.
+    if (tool_name === 'Bash' || tool_name === 'exec_command' || tool_name === 'exec') {
+      let command: string | null = null;
+      if (tool_name === 'Bash') {
+        // The harness already unwrapped the code-mode envelope — the command is
+        // in `tool_input.command`, exactly as the Claude adapter receives it.
+        const raw = (input.tool_input as Record<string, unknown> | null)?.command;
+        command = typeof raw === 'string' ? raw : null;
+      } else {
+        command = narrowExecCommand(input.tool_input);
+      }
+      if (command === null && tool_name === 'exec') {
         // Code-mode `exec` wraps the same call in JS source. A matched call
         // whose argument could not be parsed (variable/template-built command)
         // is a distinct outcome from "not a code-mode envelope at all": warn so
@@ -335,4 +351,4 @@ export function createHandler(
   };
 }
 
-export default postToolUseHook({ matcher: 'apply_patch|exec_command|exec', timeout: 10_000 }, createHandler());
+export default postToolUseHook({ matcher: 'apply_patch|exec_command|exec|Bash', timeout: 10_000 }, createHandler());
