@@ -292,7 +292,10 @@ export function createHandler(
           written?: string;
         };
         if (match.idiom === 'heredoc-write') {
-          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written: span.body ?? '' };
+          // `>` overwrites: whole-file scope so deleted spans beyond the new
+          // EOF are surfaced. `>>` appends: narrow to the appended lines.
+          const written = span.redirect === '>' ? '' : (span.body ?? '');
+          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written };
         } else {
           touchInput = {
             kind: 'read',

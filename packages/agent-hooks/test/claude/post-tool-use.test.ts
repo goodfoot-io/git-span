@@ -251,13 +251,13 @@ describe('claude post-tool-use touch signal', () => {
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
   });
 
-  it('a Bash heredoc write is a write touch scoped to the written body, not the whole file', async () => {
+  it('a Bash heredoc append is scoped to the written body, not the whole file', async () => {
     const filePath = join(repo.root, 'out.txt');
-    // Post-edit state: the heredoc body sits at lines 1-3, further content after.
-    writeFileSync(filePath, `${['alpha', 'beta', 'gamma', 'tail1', 'tail2'].join('\n')}\n`);
-    const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
+    // Post-edit state: original two lines + appended three lines.
+    writeFileSync(filePath, `${['orig1', 'orig2', 'alpha', 'beta', 'gamma'].join('\n')}\n`);
+    const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors, calls } = makeExecutors({
-      list: [{ name: SPAN, path: 'out.txt', start: 4, end: 5 }],
+      list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
       stale: [staleRow('CHANGED')]
     });
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -265,10 +265,10 @@ describe('claude post-tool-use touch signal', () => {
 
     const result = toResult(await handler(input as never, { logger }));
     expect(calls.fix).toBe(1); // write path heals
-    // The span anchored outside the written body is out of scope: the touch
-    // carried the body, so recoverRange narrowed to lines 1-3. With the old
-    // hardcoded `written: ''` the touch would be whole-file and this would
-    // surface — the empty result proves the body reached the touch core.
+    // The span anchored at lines 1-2 (original content) is outside the
+    // appended body at lines 3-5. With `written: span.body` the touch is
+    // scoped to the append range and this span does not surface — proving
+    // the body reached the touch core (a whole-file touch would surface it).
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
   });
 

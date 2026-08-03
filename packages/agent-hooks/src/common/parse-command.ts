@@ -23,12 +23,16 @@ export interface ResolvedSpan {
   absolutePath: string;
   /**
    * The exact body of a `heredoc-write` span — the content the heredoc writes.
-   * Absent (undefined) for read idioms. Adapters feed it to the touch core as
-   * `written` so a post-edit range recovery can narrow `>` overwrites to the
-   * written lines and locate the appended block of a `>>` append; an empty
-   * body means "truncate to empty" and scopes the touch whole-file.
+   * Absent (undefined) for read idioms.
    */
   body?: string;
+  /**
+   * The heredoc redirect operator. `>` means the file was overwritten
+   * (whole-file scope — any span beyond the new EOF was deleted and must
+   * surface); `>>` means the body was appended (narrow to the append range).
+   * Absent (undefined) for read idioms.
+   */
+  redirect?: '>' | '>>';
 }
 
 export type Idiom =
@@ -506,7 +510,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
         results.push({
           status: 'resolved',
           idiom: 'heredoc-write',
-          span: { lineStart: 1, lineEnd: 1, absolutePath, body: '' }
+          span: { lineStart: 1, lineEnd: 1, absolutePath, body: '', redirect: w.redirect }
         });
         continue;
       }
@@ -524,7 +528,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
         results.push({
           status: 'resolved',
           idiom: 'heredoc-write',
-          span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath, body: w.body }
+          span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath, body: w.body, redirect: w.redirect }
         });
       }
       continue;

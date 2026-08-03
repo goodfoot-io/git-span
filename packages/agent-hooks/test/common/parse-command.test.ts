@@ -219,7 +219,7 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${join(dir, 'out1.txt')} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'out1.txt'), body: 'alpha\nbeta\ngamma' }
+      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'out1.txt'), body: 'alpha\nbeta\ngamma', redirect: '>' }
     ]);
   });
 
@@ -227,14 +227,14 @@ describe('heredoc writes', () => {
     const target = join(dir, 'five.txt');
     const cmd = `cat >> ${target} <<'EOF'\nnew1\nnew2\nEOF\n`;
     const spans = parseCommand(cmd);
-    expect(spans).toEqual([{ lineStart: 6, lineEnd: 7, absolutePath: target, body: 'new1\nnew2' }]);
+    expect(spans).toEqual([{ lineStart: 6, lineEnd: 7, absolutePath: target, body: 'new1\nnew2', redirect: '>>' }]);
   });
 
   it('heredoc body containing && is not mis-split by the outer command splitter', () => {
     const cmd = `cat > ${join(dir, 'out2.sh')} <<'EOF'\necho a && echo b\necho c\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'out2.sh'), body: 'echo a && echo b\necho c' }
+      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'out2.sh'), body: 'echo a && echo b\necho c', redirect: '>' }
     ]);
   });
 
@@ -242,8 +242,8 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${join(dir, 'a.txt')} <<'EOF'\nx\nEOF\ncat > ${join(dir, 'b.txt')} <<'EOF'\ny\nz\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 1, absolutePath: join(dir, 'a.txt'), body: 'x' },
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'b.txt'), body: 'y\nz' }
+      { lineStart: 1, lineEnd: 1, absolutePath: join(dir, 'a.txt'), body: 'x', redirect: '>' },
+      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'b.txt'), body: 'y\nz', redirect: '>' }
     ]);
   });
 
@@ -252,7 +252,11 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${target} <<'EOF'\nEOF\n`;
     const detailed = parseCommandDetailed(cmd);
     expect(detailed).toEqual([
-      { status: 'resolved', idiom: 'heredoc-write', span: { lineStart: 1, lineEnd: 1, absolutePath: target, body: '' } }
+      {
+        status: 'resolved',
+        idiom: 'heredoc-write',
+        span: { lineStart: 1, lineEnd: 1, absolutePath: target, body: '', redirect: '>' }
+      }
     ]);
   });
 

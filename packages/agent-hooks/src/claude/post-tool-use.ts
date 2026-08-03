@@ -102,7 +102,10 @@ export function createHandler(
         if (!scope) continue;
         let touch: TouchInput;
         if (match.idiom === 'heredoc-write') {
-          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written: span.body ?? '' };
+          // `>` overwrites: whole-file scope so deleted spans beyond the new
+          // EOF are surfaced. `>>` appends: narrow to the appended lines.
+          const written = span.redirect === '>' ? '' : (span.body ?? '');
+          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written };
         } else {
           touch = {
             kind: 'read',
