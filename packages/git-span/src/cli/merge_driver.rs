@@ -22,7 +22,7 @@
 //! ```
 
 use crate::cli::MergeDriverArgs;
-use crate::cli::stale_fix::format_residue_markers;
+use crate::cli::drift_fix::format_residue_markers;
 use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
 use git_span_core::merge_span_files;
@@ -76,7 +76,7 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
         write_file(&args.ours, &output)?;
         // Exit non-zero: git keeps this path unmerged (the idiomatic
         // partial-resolution signal). The user can then run
-        // `git span stale --fix` for the authoritative full resolution
+        // `git span drift --fix` for the authoritative full resolution
         // (which trusts the worktree).
         Ok(1)
     }
@@ -97,7 +97,7 @@ fn serialize_with_driver_markers(
     let close_marker = format!("{} theirs\n", ">".repeat(marker_len as usize));
 
     // Defensive sort by canonical (path, start_line, end_line) ordering,
-    // consistent with write_residue_span in stale_fix.rs.
+    // consistent with write_residue_span in drift_fix.rs.
     let mut sorted = merged.anchors.clone();
     sorted.sort_by(|a: &AnchorRecord, b: &AnchorRecord| {
         a.path

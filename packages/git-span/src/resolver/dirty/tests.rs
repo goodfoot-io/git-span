@@ -15,7 +15,7 @@
 
 use super::*;
 use crate::resolver::core::capture::capture_state_token;
-use crate::resolver::exact::stale_spans_new_store;
+use crate::resolver::exact::drift_spans_new_store;
 use crate::resolver::store::{CacheStore, GetOutcome};
 use crate::types::EngineOptions;
 use std::path::{Path, PathBuf};
@@ -147,7 +147,7 @@ fn fresh_three_span_repo(tag: &str) -> (tempfile::TempDir, PathBuf) {
 fn publish_baseline(dir: &Path) {
     enable_store();
     let repo = reopen(dir);
-    let _ = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
+    let _ = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
 }
 
 /// Full resolve of the live worktree state — the byte-equality ground truth.
@@ -157,7 +157,7 @@ fn full_live_core(repo: &gix::Repository) -> ResolutionCore {
         repo,
         SPAN_ROOT,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )
     .expect("full")
 }
@@ -314,7 +314,7 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
     let repo = reopen(&dir);
     let clean_token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("token");
     let clean_key = clean_token.canonical_key_digest();
-    let clean_out = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("clean");
+    let clean_out = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("clean");
     let clean_names = resolved_names(&clean_out);
 
     // Dirty ONLY an unrelated, uncommitted `.gitignore`.
@@ -331,7 +331,7 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
         "an unrelated .gitignore edit must not change the canonical key"
     );
 
-    let dirty_out = stale_spans_new_store(&repo2, SPAN_ROOT, EngineOptions::full()).expect("dirty");
+    let dirty_out = drift_spans_new_store(&repo2, SPAN_ROOT, EngineOptions::full()).expect("dirty");
     let dirty_names = resolved_names(&dirty_out);
     assert_eq!(
         dirty_names, clean_names,
@@ -408,7 +408,7 @@ fn unreadable_file_degrades_fail_closed() {
 
     // Resolving over a path that is a directory is a hard resolver error. The
     // dirty tier surfaces it IDENTICALLY to the authoritative full resolve —
-    // fail-closed: a resolver error stays an error, never masked as a stale or
+    // fail-closed: a resolver error stays an error, never masked as a drifted or
     // fresh cache result (`notes/correctness-contract.md` "Fail-Closed").
     let names = crate::span::read::list_span_names_in(&repo, SPAN_ROOT).expect("names");
     let dirty_res = build_dirty_core(&repo, SPAN_ROOT, &token, &mut store);
@@ -416,7 +416,7 @@ fn unreadable_file_degrades_fail_closed() {
         &repo,
         SPAN_ROOT,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     );
     assert!(
         dirty_res.is_err(),
@@ -491,7 +491,7 @@ fn repeated_identical_dirty_state_becomes_exact_hit() {
     std::fs::write(dir.join("src/a.txt"), "repeat-CHANGED\na2r\na3r\n").expect("dirty a");
     enable_store();
     let repo = reopen(&dir);
-    let first = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("first");
+    let first = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("first");
     assert!(
         matches!(first, ExactAttempt::Resolved { .. }),
         "dirty tier resolves"
@@ -512,7 +512,7 @@ fn repeated_identical_dirty_state_becomes_exact_hit() {
     );
 
     // And the second invocation renders the same discovery set.
-    let second = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("second");
+    let second = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("second");
     assert_eq!(
         resolved_names(&first),
         resolved_names(&second),

@@ -95,7 +95,7 @@ follow-up `git span` read is required.
 ### Positional drift is healed, not surfaced
 
 Before computing what to show, the hook first runs the equivalent of `git
-span stale --fix` scoped to the touched file, re-anchoring any pure line-shift
+span drift --fix` scoped to the touched file, re-anchoring any pure line-shift
 drift (`MOVED`, whitespace-only `CHANGED`) against the edit's real post-edit
 range. This happens silently — no block, nothing in the transcript — because
 there is nothing left to act on by the time the agent sees output. Only what
@@ -132,12 +132,12 @@ The advisor inspects `git commit`/`git push`/`git status` before they run —
 never a Read, Edit, or Write. It resolves the actual changeset (staged files,
 plus tracked-modified files when the command uses `-a`/`-am`; for `git
 status`, staged plus tracked-modified — the same working-tree picture `git
-status` itself prints), reruns a scoped `stale --fix`, then classifies what's
+status` itself prints), reruns a scoped `drift --fix`, then classifies what's
 left. For `git commit`/`git push`, a hold becomes a `permissionDecision:
 'deny'` result whose `permissionDecisionReason` (and `systemMessage`, so it's
 visible in the transcript) is one of two shapes:
 
-**Semantic staleness** — the same human span format the touch hook renders
+**Semantic drift** — the same human span format the touch hook renders
 (full anchor list, drifted anchors labeled, the description), held once per
 distinct set of findings; an identical retry (same findings) passes, and
 editing a span's anchors changes the findings and earns one fresh hold. The
@@ -174,7 +174,7 @@ pluralizes, and the closing commands use a `<name>` placeholder.
 distinct debt state (a digest of the sorted findings/uncovered paths); an
 unchanged retry passes, and so does a `git commit`/`git push` whose exact
 debt state a prior `git status` already showed in full — same reasoning as
-semantic staleness above. When another file in the same changeset already
+semantic drift above. When another file in the same changeset already
 belongs to a span, a related-spans section follows the checklist — every
 qualifying anchor (no cap), restricted to paths in this changeset, rendered as
 a line range wherever the covering row carries one, followed by that span's
@@ -243,7 +243,7 @@ to memoize because every evaluation of a still-failing scan warns again.
 
 **`git status`** is never held — it only reports. The same two checklists
 above render as `systemMessage` (never `permissionDecision: 'deny'`), with one
-difference: each drops its retry phrasing — staleness drops `— then retry`
+difference: each drops its retry phrasing — drift drops `— then retry`
 from its closing sentence, and uncovered writes drops the whole `If none
 exist, retry the command to proceed (one-time check).` sentence — since a
 status preview never held the command and there's nothing to retry. A `git
@@ -258,7 +258,7 @@ didn't already say.
 
 ### Resolving a held commit
 
-1. Semantic staleness: fix each listed span the normal way (`git span add`
+1. Semantic drift: fix each listed span the normal way (`git span add`
    the drifted anchors, or `git span delete` if the coupling is gone), then
    retry the same commit — or just retry with the findings unchanged, since
    an identical set of findings is only held on once.
@@ -272,7 +272,7 @@ didn't already say.
 
 Both hooks apply the same principle from opposite ends: positional-only drift
 never reaches the agent as something to act on. The touch hook heals it before
-building its block; the advisor's `stale --fix` pre-pass heals it before
+building its block; the advisor's `drift --fix` pre-pass heals it before
 classifying the changeset. Only genuine semantic drift — content that no
 longer matches what a span asserts — ever surfaces in a block or holds a
 command.

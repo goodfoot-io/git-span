@@ -18,7 +18,7 @@ import {
   AdvisorScanError,
   type GitExecutor
 } from '../../src/common/advisor-core.js';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 
 const logger = new Logger();
 
@@ -41,7 +41,7 @@ function fakeExecutors(overrides: Partial<AdvisorExecutors> = {}): AdvisorExecut
   return {
     fix: async () => {},
     list: async (): Promise<PorcelainRow[]> => [],
-    stale: async (): Promise<StalePorcelainRow[]> => [],
+    drift: async (): Promise<DriftPorcelainRow[]> => [],
     listBlocks: async (): Promise<string> => '',
     ...overrides
   };
@@ -63,7 +63,7 @@ const SPAN = 'billing/checkout-request-flow';
 function porcelainRow(path = 'src/app.ts'): PorcelainRow {
   return { name: SPAN, path, start: 1, end: 10 };
 }
-function staleRow(status: StalePorcelainRow['status'], path = 'src/app.ts'): StalePorcelainRow {
+function driftRow(status: DriftPorcelainRow['status'], path = 'src/app.ts'): DriftPorcelainRow {
   return { name: SPAN, path, start: 1, end: 10, status };
 }
 
@@ -128,9 +128,9 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
   });
 
-  it('hard-denies a commit carrying semantic staleness (README-documented path)', async () => {
+  it('hard-denies a commit carrying semantic drift (README-documented path)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
 
@@ -139,13 +139,13 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 
-  it('with hard-deny disabled, a semantic-staleness deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
+  it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
     // Exercises the CARD.md-documented fallback branch (CODEX_ADVISOR_HARD_DENY =
     // false): when deny is not trusted to block live, the same checklist is
     // surfaced as a loud warning and the command is allowed through, with the CI
     // recipe as Codex's enforcement backstop. Nothing must set a deny decision.
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory(), false);
     const result = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
 
@@ -158,9 +158,9 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.systemMessage).toContain('Could not block');
   });
 
-  it('allows an identical retry after a semantic-staleness deny (consider-once per debt-state digest)', async () => {
+  it('allows an identical retry after a semantic-drift deny (consider-once per debt-state digest)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory());
 
     const first = toResult(await handler(preInput(['bash', '-lc', 'git commit -m x']) as never, { logger } as never));
@@ -174,7 +174,7 @@ describe('codex advisor adapter', () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('LFS_NOT_FETCHED')]
+      drift: async () => [driftRow('LFS_NOT_FETCHED')]
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
@@ -186,7 +186,7 @@ describe('codex advisor adapter', () => {
   it('surfaces a scan failure as additionalContext + systemMessage and allows (fail-open)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
-      stale: async () => {
+      drift: async () => {
         throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
       }
     });
@@ -211,7 +211,7 @@ describe('codex advisor adapter', () => {
 
   it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext + systemMessage instead', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git status') as never, { logger } as never));
 
@@ -223,7 +223,7 @@ describe('codex advisor adapter', () => {
 
   it('`git status` never consumes the one-time hold credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [staleRow('CHANGED')] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const memoFactory = sharedMemoFactory();
     const handler = createHandler(git, executors, memoFactory);
 
@@ -240,7 +240,7 @@ describe('codex advisor adapter', () => {
 
   it('allows `git status` silently when the changeset is clean', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [] });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git status') as never, { logger } as never));
 

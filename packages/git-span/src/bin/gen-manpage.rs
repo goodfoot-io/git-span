@@ -90,7 +90,7 @@ and PR descriptions.
 .PP
 .B Re\-anchoring on drift.
 When
-.B git span stale
+.B git span drift
 reports drift, review the change at each anchor and decide which side of the
 coupling changed deliberately \[em]
 .B git span history
@@ -168,7 +168,7 @@ Check for drift and inspect a span:
 .PP
 .RS 4
 .nf
-git span stale
+git span drift
 git span billing/charge-request-contract
 git span show billing/charge-request-contract
 .fi

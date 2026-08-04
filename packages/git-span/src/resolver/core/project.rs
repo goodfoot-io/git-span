@@ -100,7 +100,7 @@ pub(crate) fn project_committed(core: &super::resolution::ResolutionCore) -> Vec
 /// every enabled drifting layer in `layer_sources` in the SAME order the
 /// live resolver's [`compute_layer_sources`] emits. The order depends on the
 /// extent: Worktree → Index → Head for line ranges, Index → Worktree → Head for
-/// whole files. `stale_output` renders one `Finding` per entry in list order,
+/// whole files. `drift_output` renders one `Finding` per entry in list order,
 /// so single-pass capture must remain byte-identical to direct resolution when
 /// both Index and Worktree drift.
 ///
@@ -138,7 +138,7 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
     // `resolver/engine/anchor.rs`'s `compute_layer_sources` lists them
     // Worktree → Index → Head; whole-file anchors compare each layer absolutely
     // to the stored fingerprint and `resolver/engine/whole_file.rs` lists them
-    // Index → Worktree → Head. Matching this order is load-bearing: the stale
+    // Index → Worktree → Head. Matching this order is load-bearing: the drift
     // renderer emits one `Finding` per `layer_sources` entry in list order, so a
     // whole-file anchor that drifts at every layer (clean worktree, content
     // changed vs the fingerprint) must project I → W → H to stay byte-identical

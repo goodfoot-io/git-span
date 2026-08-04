@@ -49,14 +49,14 @@ fn seed_subdir_lfs_corpus(repo: &TestRepo) -> Result<()> {
 
 fn assert_format_parity(repo: &TestRepo, format: &str) -> Result<()> {
     let off = repo.run_span_with_env(
-        ["stale", "--no-exit-code", "--format", format],
+        ["drift", "--no-exit-code", "--format", format],
         "GIT_SPAN_CACHE",
         "0",
     )?;
     let off_text = stdout(&off);
 
-    let cold = repo.run_span(["stale", "--no-exit-code", "--format", format])?;
-    let warm = repo.run_span(["stale", "--no-exit-code", "--format", format])?;
+    let cold = repo.run_span(["drift", "--no-exit-code", "--format", format])?;
+    let warm = repo.run_span(["drift", "--no-exit-code", "--format", format])?;
 
     assert_eq!(
         stdout(&cold),

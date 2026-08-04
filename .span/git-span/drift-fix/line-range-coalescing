@@ -1,0 +1,4 @@
+packages/git-span/src/cli/drift_fix.rs#L996-L1238 rk64:2853a4268eefec0e
+packages/git-span/tests/cases/cli_drift_fix.rs#L604-L664 rk64:0a5640acea83b455
+
+Line-range coalescing in drift --fix that collapses contiguous and overlapping worktree-fresh anchors on one path into a single anchor, gated by the worktree-fresh barrier so only provably-correct unions merge.

@@ -62,8 +62,8 @@ function postedDocument(addresses: string[], hashes: string[] = [], uncommitted 
   const posted: PostedDocument = {
     spanName: SPAN,
     why: 'because',
-    stale: false,
-    staleReasons: [],
+    drift: false,
+    driftReasons: [],
     anchors: addresses.map((address) => ({
       kind: 'changed',
       address,

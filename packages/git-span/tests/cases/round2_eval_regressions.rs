@@ -2,11 +2,11 @@
 //!
 //! - R2-A1: relocated stored content (different path or range; line +
 //!   whole-file; committed `git mv` + staged copy-then-replace) →
-//!   `Moved`; the word `orphaned`/`Orphaned` never appears in stale
+//!   `Moved`; the word `orphaned`/`Orphaned` never appears in drift
 //!   output, and a committed relocation is not mislabeled
 //!   "in the working tree".
 //! - R2-A2: an unmerged/conflicted span file → `Conflict`,
-//!   `git span stale` exits non-zero, and `git span <span>` (show)
+//!   `git span drift` exits non-zero, and `git span <span>` (show)
 //!   refuses to present conflict-marker content (fail-closed).
 //! - R2-A4: the card-named read-mode flags `--head` / `--staged` /
 //!   `--worktree` each select the right layered view.
@@ -46,18 +46,18 @@ fn committed_git_mv_line_anchor_subdir_is_moved() -> Result<()> {
     repo.run_git(["commit", "-m", "git mv a->b"])?;
     repo.write_commit_graph()?;
 
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("moved") && stale.contains("b/moved.ts"),
-        "committed git mv of a line range must read 'moved' to the new path; stale=\n{stale}"
+        drift.contains("moved") && drift.contains("b/moved.ts"),
+        "committed git mv of a line range must read 'moved' to the new path; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     assert!(
-        !stale.contains("in the working tree"),
-        "a committed relocation must not be mislabeled 'in the working tree'; stale=\n{stale}"
+        !drift.contains("in the working tree"),
+        "a committed relocation must not be mislabeled 'in the working tree'; drift=\n{drift}"
     );
     Ok(())
 }
@@ -79,18 +79,18 @@ fn committed_git_mv_whole_file_subdir_is_moved() -> Result<()> {
     repo.run_git(["commit", "-m", "git mv orig->dest"])?;
     repo.write_commit_graph()?;
 
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("moved") && stale.contains("dest.ts"),
-        "committed git mv of a whole-file anchor must read 'moved' to the new path; stale=\n{stale}"
+        drift.contains("moved") && drift.contains("dest.ts"),
+        "committed git mv of a whole-file anchor must read 'moved' to the new path; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     assert!(
-        !stale.contains("in the working tree"),
-        "a committed relocation must not be mislabeled 'in the working tree'; stale=\n{stale}"
+        !drift.contains("in the working tree"),
+        "a committed relocation must not be mislabeled 'in the working tree'; drift=\n{drift}"
     );
     Ok(())
 }
@@ -112,14 +112,14 @@ fn staged_copy_then_replace_line_is_moved() -> Result<()> {
     repo.write_file("src.ts", "REPLACED\n")?;
     repo.run_git(["add", "copy.ts", "src.ts"])?;
 
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("moved") && stale.contains("copy.ts"),
-        "staged copy-then-replace must read 'moved' to the copy, not 'changed in the index'; stale=\n{stale}"
+        drift.contains("moved") && drift.contains("copy.ts"),
+        "staged copy-then-replace must read 'moved' to the copy, not 'changed in the index'; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     Ok(())
 }
@@ -129,7 +129,7 @@ fn staged_copy_then_replace_line_is_moved() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// A merge-conflicted span file (`UU`, stage 1/2/3 index entries) →
-/// `git span stale` reports `conflict` and exits non-zero;
+/// `git span drift` reports `conflict` and exits non-zero;
 /// `git span <span>` refuses to render the conflict-marker content.
 #[test]
 fn merge_conflicted_span_file_is_conflict_and_fails_closed() -> Result<()> {
@@ -157,17 +157,17 @@ fn merge_conflicted_span_file_is_conflict_and_fails_closed() -> Result<()> {
         "test precondition: .span/m/a must be UU; status={status}"
     );
 
-    // stale (no --no-exit-code) must surface Conflict and exit non-zero.
-    let stale = repo.run_span(["stale"])?;
-    let stale_out = String::from_utf8_lossy(&stale.stdout);
+    // drift (no --no-exit-code) must surface Conflict and exit non-zero.
+    let drift = repo.run_span(["drift"])?;
+    let drift_out = String::from_utf8_lossy(&drift.stdout);
     assert!(
-        stale.status.code() != Some(0),
-        "stale on a conflicted span must exit non-zero; code={:?} stdout=\n{stale_out}",
-        stale.status.code()
+        drift.status.code() != Some(0),
+        "drift on a conflicted span must exit non-zero; code={:?} stdout=\n{drift_out}",
+        drift.status.code()
     );
     assert!(
-        stale_out.to_lowercase().contains("conflict"),
-        "stale must report the span as Conflict; stdout=\n{stale_out}"
+        drift_out.to_lowercase().contains("conflict"),
+        "drift must report the span as Conflict; stdout=\n{drift_out}"
     );
 
     // show must refuse conflict-marker content (fail-closed: error, not

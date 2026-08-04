@@ -10,7 +10,7 @@ distinct steps, none of which happen automatically.
 
 ## 0. Prerequisite — the `git span` binary on `PATH`
 
-The bundled hooks shell out to `git span list` and `git span stale`. Codex
+The bundled hooks shell out to `git span list` and `git span drift`. Codex
 does not install or manage this binary — build or install the `git-span`
 CLI (`packages/git-span`) and confirm it resolves before going further:
 
@@ -71,7 +71,7 @@ tool under Codex has never been confirmed by direct execution in this repo —
 only by documentary evidence from the `@goodfoot/codex-hooks` SDK's own
 example. The advisor surfaces its `systemMessage` checklist either way, so
 you'll see the same span-debt listing whether or not the command pauses.
-Don't count on a trusted advisor to stop anything; rely on `git span stale`
+Don't count on a trusted advisor to stop anything; rely on `git span drift`
 in CI (see `references/ci-and-sync.md`) as the real backstop, and see
 `references/understanding-hook-output.md` for what a held command looks
 like.

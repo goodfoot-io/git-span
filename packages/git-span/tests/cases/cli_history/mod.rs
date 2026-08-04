@@ -327,7 +327,7 @@ fn old_index_hashes(diff: &str) -> Vec<&str> {
 
 
 /// The same drift as [`drifted_repo`], but *committed* and never re-anchored.
-/// `git status` is clean; `git span stale` still reports the anchor, sourced at
+/// `git status` is clean; `git span drift` still reports the anchor, sourced at
 /// `HEAD`. This is the state the `current` block used to describe as an
 /// uncommitted working-tree edit.
 fn committed_drift_repo(span: &str) -> Result<TestRepo> {
@@ -338,7 +338,7 @@ fn committed_drift_repo(span: &str) -> Result<TestRepo> {
 
 
 /// The drift staged and not committed: the index holds bytes the declaration
-/// does not record, and `HEAD` is clean. The third of `stale`'s three layers,
+/// does not record, and `HEAD` is clean. The third of `drift`'s three layers,
 /// and the one no `current` fixture reached before.
 fn staged_drift_repo(span: &str) -> Result<TestRepo> {
     let repo = drifted_repo(span)?;
@@ -348,7 +348,7 @@ fn staged_drift_repo(span: &str) -> Result<TestRepo> {
 
 
 /// Drift at two layers at once: committed without re-anchoring, then edited
-/// again in the working tree. `git span stale` names both, and this is the
+/// again in the working tree. `git span drift` names both, and this is the
 /// fixture that decides `sources` must be a list — a scalar has to pick one of
 /// these two and drop the other.
 fn composed_drift_repo(span: &str) -> Result<TestRepo> {
@@ -568,8 +568,8 @@ fn assert_topology_rejected_without_effects(
     let before = std::fs::read(&declaration)?;
     for (name, args) in [
         ("history", vec!["history", span, "--format=json"]),
-        ("stale", vec!["stale", "--format=json"]),
-        ("stale --fix", vec!["stale", "--fix"]),
+        ("drift", vec!["drift", "--format=json"]),
+        ("drift --fix", vec!["drift", "--fix"]),
     ] {
         let out = repo.run_span_with_envs(args, env)?;
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -586,7 +586,7 @@ fn assert_topology_rejected_without_effects(
     assert_eq!(
         std::fs::read(&declaration)?,
         before,
-        "stale --fix must not mutate declarations after topology rejection"
+        "drift --fix must not mutate declarations after topology rejection"
     );
     Ok(())
 }
@@ -594,7 +594,7 @@ fn assert_topology_rejected_without_effects(
 
 /// Commit `alpha/beta/gamma` anchored at `f.txt#L1-L3`, then prepend two
 /// lines in the worktree and edit `beta` — the ordinary drift state, with the
-/// declaration untouched. `stale` calls it "changed in the working tree" and
+/// declaration untouched. `drift` calls it "changed in the working tree" and
 /// proposes nothing.
 fn drifted_repo(span: &str) -> Result<TestRepo> {
     let repo = TestRepo::new()?;
@@ -626,7 +626,7 @@ fn never_recorded_repo(span: &str) -> Result<TestRepo> {
 
 
 /// Rewrite the worktree declaration, leaving the recorded tokens alone. This
-/// is how a user (or `git span stale --fix`) re-anchors: the address moves,
+/// is how a user (or `git span drift --fix`) re-anchors: the address moves,
 /// the token stays, and HEAD's copy still names the old address.
 fn rewrite_declaration(repo: &TestRepo, span: &str, from: &str, to: &str) -> Result<()> {
     let decl = repo.path().join(format!(".span/{span}"));
@@ -1235,7 +1235,7 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
             "both",
         ),
         ("in-place drift", drifted_repo("ch")?, "ch"),
-        // The layer axis. `current` covers every layer `stale` reports, so a
+        // The layer axis. `current` covers every layer `drift` reports, so a
         // set whose every fixture drifts in the working tree certifies the
         // `sources` vocabulary against one third of it — which is how the
         // block came to describe a committed edit as an uncommitted one.
@@ -1810,11 +1810,11 @@ fn sole_anchor_in<'a>(container: &'a Value, address: &str, whose: &str) -> &'a V
 }
 
 
-/// `git span stale`'s verdict for one anchor, as the resolver computed it.
-fn stale_status(repo: &TestRepo, span: &str) -> Result<String> {
+/// `git span drift`'s verdict for one anchor, as the resolver computed it.
+fn drift_status(repo: &TestRepo, span: &str) -> Result<String> {
     // Drift exits 1 by design, so the status is read off stdout rather than
     // gated on success.
-    let out = repo.run_span(["stale", span, "--format", "json"])?;
+    let out = repo.run_span(["drift", span, "--format", "json"])?;
     let json: Value = serde_json::from_slice(&out.stdout)?;
     let findings = json["findings"].as_array().expect("findings array");
     anyhow::ensure!(findings.len() == 1, "expected one finding; got: {json:#}");

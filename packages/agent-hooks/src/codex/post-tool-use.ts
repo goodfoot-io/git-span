@@ -3,7 +3,7 @@
  * or a shell/exec call whose command statically resolves to file+line idioms.
  *
  * PostToolUse fires after `apply_patch` has run, so this is the accurate home for
- * the touch signal: the file is already written, so a scoped `git span stale
+ * the touch signal: the file is already written, so a scoped `git span drift
  * <file> --fix` heals positional drift against real bytes and the surfaced block
  * reflects the healed anchors. The handler narrows the `apply_patch` envelope
  * (`tool_input.command`, SDK-typed `unknown`) into per-file anchors via the

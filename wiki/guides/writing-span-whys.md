@@ -202,7 +202,7 @@ The ban is not a style preference; it follows from where whys are read.
 - **Definitions don't rot.** Invariants change more often than subsystem
   identity. A why that only defines stays true across rewrites and re-anchors,
   which is what makes it trustworthy when a hook injects it — the reader has no
-  cheap way to notice that a stale why is lying.
+  cheap way to notice that a drifted why is lying.
 
 The practical consequence for span authors: declaring a span isn't finished
 when the anchors and the why are written. Leave a comment at each load-bearing

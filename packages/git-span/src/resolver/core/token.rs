@@ -1,7 +1,7 @@
 //! `StateToken`: the complete invocation-state snapshot (card main-157
 //! Phase 1).
 //!
-//! Captures every output-affecting input to a `stale` resolution as one
+//! Captures every output-affecting input to a `drift` resolution as one
 //! typed value. See `notes/architecture-and-complexity.md` "Semantic Model"
 //! and `notes/correctness-contract.md` "Incomplete Semantic Keys" /
 //! "Mutable-State Publication Races" for the defects this closes: today's
@@ -199,7 +199,7 @@ impl From<crate::types::LayerSet> for LayerSetToken {
 }
 
 /// The complete invocation-state snapshot: everything that determines a
-/// `stale` resolution's output. See module docs and
+/// `drift` resolution's output. See module docs and
 /// `notes/architecture-and-complexity.md` "Semantic Model" for the field
 /// rationale.
 ///
@@ -359,7 +359,7 @@ impl StateToken {
     /// [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
     /// resolves, while none of them moves HEAD. Reusing the baseline's stored
     /// cores under the new config would silently re-serve (and re-publish) a
-    /// stale result under the new key. Persisting this fingerprint alongside a
+    /// drifted result under the new key. Persisting this fingerprint alongside a
     /// baseline's reuse rows lets the reuse tiers prove the resolution config
     /// still matches before trusting any stored core, and fall through to a full
     /// cold resolve when it does not (fail closed).

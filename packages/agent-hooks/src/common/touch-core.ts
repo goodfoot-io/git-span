@@ -9,8 +9,8 @@
  * {@link TouchOutput} in their own output builder.
  *
  * Reused from the shared kernel (not redefined): `isDebt()` +
- * `PorcelainStatus`/`StalePorcelainRow`/`PorcelainRow`/`parsePorcelain`/
- * `parseStalePorcelain` (agent-hooks-common.ts), `rangesIntersect` and the
+ * `PorcelainStatus`/`DriftPorcelainRow`/`PorcelainRow`/`parsePorcelain`/
+ * `parseDriftPorcelain` (agent-hooks-common.ts), `rangesIntersect` and the
  * repo/span-root path utilities (agent-hooks-common.ts), and the `MemoStore`
  * cadence store (span-surface.ts).
  */
@@ -19,18 +19,18 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { basename } from 'node:path';
 import {
+  type DriftPorcelainRow,
   humanStatusLabel,
   isDebt,
   type LineRange,
   type PorcelainRow,
   type PorcelainStatus,
+  parseDriftPorcelain,
   parsePorcelain,
-  parseStalePorcelain,
   rangesIntersect,
   relativeToRepo,
   resolveRepoRoot,
-  resolveSpanRoot,
-  type StalePorcelainRow
+  resolveSpanRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import type { MemoStore } from './span-surface.js';
@@ -155,7 +155,7 @@ export type TouchInput = TouchReadInput | TouchWriteInput;
 // Injected executors
 // ---------------------------------------------------------------------------
 
-/** Structured result of a scoped `git span stale <file> --fix`. */
+/** Structured result of a scoped `git span drift <file> --fix`. */
 export interface TouchFixResult {
   /**
    * Whether `--fix` re-anchored at least one span in the working tree. Drives
@@ -166,7 +166,7 @@ export interface TouchFixResult {
 }
 
 /**
- * Run `git span stale <file> --fix` scoped to the touched file (write path
+ * Run `git span drift <file> --fix` scoped to the touched file (write path
  * only), reporting whether the working tree was healed. Async so the eventual
  * implementation and its tests can inject a fake without a real subprocess.
  */
@@ -180,12 +180,12 @@ export type TouchFixExecutor = (filePath: string, cwd: string) => Promise<TouchF
 export type TouchListExecutor = (filePath: string, cwd: string) => Promise<PorcelainRow[]>;
 
 /**
- * Run `git span stale --format porcelain <args>` (scoped to the touched file or
+ * Run `git span drift --format porcelain <args>` (scoped to the touched file or
  * its spans) and return its parsed rows — one per drifted anchor, empty when
  * clean. Status classification is via `isDebt()`; positional (`MOVED`,
  * `RESOLVED_PENDING_COMMIT`) rows are never debt.
  */
-export type TouchStaleExecutor = (args: string[], cwd: string) => Promise<StalePorcelainRow[]>;
+export type TouchDriftExecutor = (args: string[], cwd: string) => Promise<DriftPorcelainRow[]>;
 
 /**
  * Run bare `git span why <name>` and return the span's recorded why sentence,
@@ -203,7 +203,7 @@ export type TouchWhyExecutor = (name: string, cwd: string) => Promise<string | n
 export interface TouchExecutors {
   fix: TouchFixExecutor;
   list: TouchListExecutor;
-  stale: TouchStaleExecutor;
+  drift: TouchDriftExecutor;
   why: TouchWhyExecutor;
 }
 
@@ -291,7 +291,7 @@ function rangeLabel(row: PorcelainRow): RangeLabel {
  * before any grouping — the tree layout must never be able to change *which*
  * anchors get labeled, only where they sit on the page.
  */
-function anchorBullets(anchors: PorcelainRow[], debtRows: StalePorcelainRow[]): string[] {
+function anchorBullets(anchors: PorcelainRow[], debtRows: DriftPorcelainRow[]): string[] {
   const rows = anchors.map((anchor) => {
     const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
     const statuses = new Set<PorcelainStatus>();
@@ -336,7 +336,7 @@ function anchorBullets(anchors: PorcelainRow[], debtRows: StalePorcelainRow[]): 
 function renderSpanSection(
   name: string,
   anchors: PorcelainRow[],
-  debtRows: StalePorcelainRow[],
+  debtRows: DriftPorcelainRow[],
   why: string | null
 ): string {
   const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
@@ -461,12 +461,12 @@ async function computeSurface(
   );
   if (touchedNames.length === 0) return null;
 
-  const staleRows = await executors.stale([input.filePath], input.cwd);
-  const staleByName = new Map<string, StalePorcelainRow[]>();
-  for (const row of staleRows) {
-    const rows = staleByName.get(row.name) ?? [];
+  const driftRows = await executors.drift([input.filePath], input.cwd);
+  const driftByName = new Map<string, DriftPorcelainRow[]>();
+  for (const row of driftRows) {
+    const rows = driftByName.get(row.name) ?? [];
     rows.push(row);
-    staleByName.set(row.name, rows);
+    driftByName.set(row.name, rows);
   }
 
   const surfaced = memo.getSurfaced(input.sessionId);
@@ -475,9 +475,9 @@ async function computeSurface(
   const driftedNames: string[] = [];
 
   for (const name of touchedNames) {
-    const spanStale = staleByName.get(name) ?? [];
-    const debtRows = spanStale.filter((row) => isDebt(row.status));
-    if (spanStale.length > 0 && debtRows.length === 0) continue; // positional-only drift never surfaces
+    const spanDrift = driftByName.get(name) ?? [];
+    const debtRows = spanDrift.filter((row) => isDebt(row.status));
+    if (spanDrift.length > 0 && debtRows.length === 0) continue; // positional-only drift never surfaces
 
     const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
     const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
@@ -503,7 +503,7 @@ async function computeSurface(
 /**
  * Run the touch hook for a single tool call, branching on {@link TouchInput.kind}.
  *
- * - **Write path**: run `executors.fix` (`git span stale <file> --fix`) scoped
+ * - **Write path**: run `executors.fix` (`git span drift <file> --fix`) scoped
  *   to the touched file to heal positional drift in the working tree, then
  *   compute the merged `<git-span>` block against the healed anchors, rendering
  *   each surfaced span as a full human-format section with any remaining
@@ -588,14 +588,14 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
       if (!resolved) return { modified: false };
       const before = spanStatusSnapshot(resolved.repoRoot);
       try {
-        execFileSync('git', ['span', 'stale', resolved.relPath, '--fix'], {
+        execFileSync('git', ['span', 'drift', resolved.relPath, '--fix'], {
           cwd: resolved.repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs
         });
       } catch {
-        // `git span stale` exits 1 on drift even when `--fix` healed something,
+        // `git span drift` exits 1 on drift even when `--fix` healed something,
         // and non-zero on genuine failure; the snapshot diff is the source of
         // truth for whether the tree changed, so the exit code is ignored here.
       }
@@ -619,15 +619,15 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
       }
     },
 
-    stale: async (args, cwd) => {
+    drift: async (args, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       const runCwd = repoRoot ?? cwd;
-      // The core passes an absolute file path; scope `git span stale` to it
+      // The core passes an absolute file path; scope `git span drift` to it
       // relative to the repo root so the path index resolves it.
       const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
       let out: string;
       try {
-        out = execFileSync('git', ['span', 'stale', '--format', 'porcelain', ...scoped], {
+        out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...scoped], {
           cwd: runCwd,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -641,7 +641,7 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
           return [];
         }
       }
-      return parseStalePorcelain(out);
+      return parseDriftPorcelain(out);
     },
 
     why: async (name, cwd) => {

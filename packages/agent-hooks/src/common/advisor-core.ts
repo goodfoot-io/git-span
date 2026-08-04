@@ -18,7 +18,7 @@
  * Reused from the shared kernel (not redefined): `isDebt()` (the single
  * source of truth for the semantic-only debt invariant — `MOVED` and
  * `RESOLVED_PENDING_COMMIT` are never debt), the porcelain status vocabulary
- * (`PorcelainStatus`/`PorcelainRow`/`StalePorcelainRow`), and `advisorMemoDir()`
+ * (`PorcelainStatus`/`PorcelainRow`/`DriftPorcelainRow`), and `advisorMemoDir()`
  * (the `<git-common-dir>/git-span/advisor/` path the disk-backed
  * {@link AdvisorMemoState} will persist under) — all from agent-hooks-common.ts.
  *
@@ -34,16 +34,16 @@ import * as nodePath from 'node:path';
 import { isAdvisorIgnored, loadAdvisorIgnore } from './advisor-ignore.js';
 import {
   advisorMemoDir,
+  type DriftPorcelainRow,
   humanStatusLabel,
   isDebt,
   isEnvironmentalStatus,
   isInsideSpanRoot,
   type PorcelainRow,
   type PorcelainStatus,
+  parseDriftPorcelain,
   parsePorcelain,
-  parseStalePorcelain,
   resolveRepoRoot,
-  type StalePorcelainRow,
   toPosix
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
@@ -61,8 +61,8 @@ import type { CoreLogger } from './span-surface.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Raised by the `stale` executor when `git span stale` could not *complete* its
- * scoped scan — as opposed to completing and reporting drift. `git span stale`
+ * Raised by the `drift` executor when `git span drift` could not *complete* its
+ * scoped scan — as opposed to completing and reporting drift. `git span drift`
  * exits non-zero in two very different situations: on legitimate drift (real
  * porcelain rows on stdout) and on a hard scan failure (e.g. an unreadable
  * anchor file aborts the whole scoped query, leaving stdout empty and an error
@@ -74,7 +74,7 @@ import type { CoreLogger } from './span-surface.js';
 export class AdvisorScanError extends Error {
   readonly detail: string;
   constructor(detail: string) {
-    super(`git span stale could not complete its scan: ${detail}`);
+    super(`git span drift could not complete its scan: ${detail}`);
     this.name = 'AdvisorScanError';
     this.detail = detail;
   }
@@ -449,7 +449,7 @@ export interface GitExecutor {
 
 /**
  * Resolve the concrete list of repo-relative paths an inspected command would land,
- * so the advisor can scope its staleness/coverage check to exactly that changeset.
+ * so the advisor can scope its drift/coverage check to exactly that changeset.
  *
  * - `commit` with explicit `paths` (a `git commit -- <pathspec>…` form): only
  *   the working-tree content under those pathspecs (`pathspecPaths`), since a
@@ -529,22 +529,22 @@ function mergeUniquePaths(...groups: string[][]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The injected execution surface advisor evaluation needs — the `fix`/`stale`/
+ * The injected execution surface advisor evaluation needs — the `fix`/`drift`/
  * `list` async functions, mirroring `touch-core.ts`'s `TouchExecutors`. Tests
  * inject fakes returning structured data; the core never spawns a subprocess
  * itself. All paths are repo-relative POSIX paths.
  */
 export interface AdvisorExecutors {
   /**
-   * Run a scoped `git span stale <paths> --fix` — the belt-and-braces heal that
+   * Run a scoped `git span drift <paths> --fix` — the belt-and-braces heal that
    * runs before classification (per CARD.md), re-anchoring any positional drift
    * in the changeset that the touch hook has not already healed. Reports nothing;
-   * its effect is on the working tree, and the subsequent {@link AdvisorExecutors.stale}
+   * its effect is on the working tree, and the subsequent {@link AdvisorExecutors.drift}
    * read observes the healed state.
    */
   fix(paths: string[], cwd: string): Promise<void>;
   /**
-   * Run a scoped `git span stale --format porcelain <paths>` and return its
+   * Run a scoped `git span drift --format porcelain <paths>` and return its
    * parsed rows — one per drifted anchor among the changeset's spans, empty when
    * clean. Debt is classified from these rows via `isDebt()`; positional
    * (`MOVED`/`RESOLVED_PENDING_COMMIT`) rows are never debt and never hold.
@@ -555,7 +555,7 @@ export interface AdvisorExecutors {
    * rather than returning `[]`, so {@link evaluateAdvisor} does not mistake an
    * aborted scan for a clean one and silently allow unverified debt through.
    */
-  stale(paths: string[], cwd: string): Promise<StalePorcelainRow[]>;
+  drift(paths: string[], cwd: string): Promise<DriftPorcelainRow[]>;
   /**
    * Run a scoped `git span list --porcelain <paths>` and return the covering
    * anchors. Used to compute *uncovered writes*: a changed path with zero
@@ -563,7 +563,7 @@ export interface AdvisorExecutors {
    * `.span/.advisorignore`-excluded paths — see {@link file://./advisor-ignore.ts})
    * is an uncovered write.
    *
-   * As with {@link AdvisorExecutors.stale}, an empty result must mean the query
+   * As with {@link AdvisorExecutors.drift}, an empty result must mean the query
    * *ran and found no covering anchors*, never that it *could not run* — here
    * the stakes are inverted, since an empty covered set makes every changed
    * path look uncovered. When the query aborts before completing, the
@@ -585,7 +585,7 @@ export interface AdvisorExecutors {
 
 /**
  * The advisor's per-changeset memo — "have I already presented this exact debt
- * state once?" The persisted unit is a digest of the sorted staleness findings
+ * state once?" The persisted unit is a digest of the sorted drift findings
  * plus the sorted uncovered paths (design-decisions.md #9's "hold once per
  * distinct debt-state"); the disk-backed implementation stores one marker per
  * digest under {@link advisorMemoDir} (`<git-common-dir>/git-span/advisor/`), where
@@ -622,17 +622,17 @@ export interface AdvisorMemoState {
  *   allow with no output. Internal errors and parse failures also resolve here:
  *   the advisor fails open and must never brick a commit.
  * - `allow` / `already-presented` — debt is present, but this exact debt state
- *   was already presented once (semantic-staleness or uncovered-writes
+ *   was already presented once (semantic-drift or uncovered-writes
  *   consider-once, an unchanged retry, or a state already shown in full by a
  *   prior `'report-only'` preview). The command passes.
- * - `allow` / `environmental` — the changeset's only staleness rows are
+ * - `allow` / `environmental` — the changeset's only drift rows are
  *   terminal/environmental conditions (`CONFLICT`, `SUBMODULE`, `LFS_*`,
  *   `PROMISOR_MISSING`, `SPARSE_EXCLUDED`, `FILTER_FAILED`, `IO_ERROR`) the CLI
  *   could not resolve at all — not span drift a user can fix by editing a span.
  *   The advisor fails OPEN (allow) but carries `conditions`/`reason` so the adapter
  *   surfaces the condition instead of swallowing it. Holding here would re-hold
  *   forever on an infra failure the user cannot clear from the advisor.
- * - `allow` / `scan-failed` — `git span stale` could not *complete* its scoped
+ * - `allow` / `scan-failed` — `git span drift` could not *complete* its scoped
  *   scan (a {@link AdvisorScanError}, e.g. an unreadable anchor file aborting the
  *   whole query). This is distinct from both `environmental` (the scan completed
  *   and carried terminal rows) and a clean pass (the scan completed with zero
@@ -642,7 +642,7 @@ export interface AdvisorMemoState {
  *   surfaces a warning that span debt was NOT verified for this changeset
  *   instead of staying silent. There is no debt-state to memoize: every
  *   evaluation of a still-failing scan warns again.
- * - `hold` / `semantic-staleness` — the changeset carries semantic staleness,
+ * - `hold` / `semantic-drift` — the changeset carries semantic drift,
  *   and this exact findings digest has not been presented before *and* was
  *   not already shown in full by a prior `'report-only'` preview. Hold
  *   **once**, listing `findings` as a checklist in `reason`. The hold exists
@@ -660,7 +660,7 @@ export interface AdvisorMemoState {
  *   listing `uncovered`; the retry with an unchanged state — or a state
  *   already shown via `'report-only'` — resolves to `already-presented` and
  *   passes (per design-decisions.md #3).
- * - `allow` / `semantic-staleness-report`, `allow` / `uncovered-writes-report`
+ * - `allow` / `semantic-drift-report`, `allow` / `uncovered-writes-report`
  *   — the same two reports, delivered without the one-time hold. These are
  *   what `'report-only'` mode returns: identical `findings`/`uncovered`/
  *   `reason` payload, no `decision: 'hold'`, and no read or write of
@@ -671,11 +671,11 @@ export interface AdvisorMemoState {
 export type AdvisorResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
-  | { decision: 'allow'; kind: 'environmental'; conditions: StalePorcelainRow[]; reason: string }
+  | { decision: 'allow'; kind: 'environmental'; conditions: DriftPorcelainRow[]; reason: string }
   | { decision: 'allow'; kind: 'scan-failed'; reason: string }
-  | { decision: 'allow'; kind: 'semantic-staleness-report'; findings: StalePorcelainRow[]; reason: string }
+  | { decision: 'allow'; kind: 'semantic-drift-report'; findings: DriftPorcelainRow[]; reason: string }
   | { decision: 'allow'; kind: 'uncovered-writes-report'; uncovered: string[]; reason: string }
-  | { decision: 'hold'; kind: 'semantic-staleness'; findings: StalePorcelainRow[]; reason: string }
+  | { decision: 'hold'; kind: 'semantic-drift'; findings: DriftPorcelainRow[]; reason: string }
   | { decision: 'hold'; kind: 'uncovered-writes'; uncovered: string[]; reason: string };
 
 /**
@@ -708,14 +708,14 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * spent per *distinct* debt state: change the debt and the advisor asks for
  * attention once more; leave it unchanged and the advisor steps aside.
  *
- * Runs `executors.fix` (scoped belt-and-braces `stale --fix`), then reads
- * `executors.stale` and classifies each debt row (`isDebt()`) into *semantic*
+ * Runs `executors.fix` (scoped belt-and-braces `drift --fix`), then reads
+ * `executors.drift` and classifies each debt row (`isDebt()`) into *semantic*
  * drift and *environmental* conditions (`isEnvironmentalStatus()`).
  *
  * Semantic drift (`CHANGED`/`DELETED`) is checked against `memoState` via its
  * own digest (`advisorStateDigest(semantic, [])`), the same distinct-debt-state
  * memo the uncovered-writes check already uses: not yet presented → record it
- * and `hold`/`semantic-staleness` (a `memoState.record` failure fails open to
+ * and `hold`/`semantic-drift` (a `memoState.record` failure fails open to
  * `allow`/`silent`, since a non-persisting memo would re-hold the identical
  * retry forever); already presented → **fall through** rather than returning,
  * so a retry still surfaces environmental advisories and still runs the
@@ -723,10 +723,10 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * tracked so that, if the evaluation then ends clean, it resolves to
  * `allow`/`already-presented` rather than a bare `allow`/`silent` — mirroring
  * the uncovered branch's own memo-hit result. A changeset carrying both
- * unpresented semantic staleness and unpresented uncovered writes therefore
- * holds twice (staleness first, uncovered on the retry) before a third
+ * unpresented semantic drift and unpresented uncovered writes therefore
+ * holds twice (drift first, uncovered on the retry) before a third
  * attempt passes — two reports, two attention-grabs, no enforcement; editing
- * one stale span while another remains stale produces a new findings set,
+ * one drifted span while another remains drifted produces a new findings set,
  * hence a new digest and one fresh hold. Digest collision
  * between the two categories is impossible: the payload is
  * `JSON.stringify({findings, uncovered})`, and the semantic digest populates
@@ -748,7 +748,7 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * contribute to any branch and never hold. Any internal error resolves to
  * `allow`/`silent` — the advisor fails open and never bricks a commit.
  *
- * A {@link AdvisorScanError} from `executors.stale` or `executors.list` is the
+ * A {@link AdvisorScanError} from `executors.drift` or `executors.list` is the
  * one case handled outside that flow: a scan that *could not complete* (e.g.
  * an unreadable anchor file aborts the scoped query, or the coverage query
  * cannot resolve an argument) yields an empty result that is NOT evidence of
@@ -762,7 +762,7 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  *
  * In `'report-only'` mode (`status`), the same classification runs but neither
  * `hold` branch fires and `memoState` is never read or written: semantic
- * staleness resolves to `allow`/`semantic-staleness-report` and uncovered
+ * drift resolves to `allow`/`semantic-drift-report` and uncovered
  * writes to `allow`/`uncovered-writes-report` — the same reports, the same
  * `findings`/`uncovered`/`reason` payload, simply without the one-time hold.
  * The environmental/scan-failed/silent branches are unaffected by mode — they
@@ -771,7 +771,7 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * @param paths The resolved changeset from {@link resolveChangeset}. Empty →
  *   `allow`/`silent`.
  * @param cwd The working directory the git command ran in.
- * @param executors The injected `fix`/`stale`/`list` surface.
+ * @param executors The injected `fix`/`drift`/`list` surface.
  * @param memoState The per-changeset debt-state memo. Unused in `'report-only'` mode.
  * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
  *   delivers the same report and never holds. Neither enforces.
@@ -793,7 +793,7 @@ export async function evaluateAdvisor(
   try {
     // Belt-and-braces heal, then classify against the healed state.
     await executors.fix(paths, cwd);
-    const staleRows = await executors.stale(paths, cwd);
+    const driftRows = await executors.drift(paths, cwd);
 
     // Split debt rows into semantic drift (a user can fix by editing a span)
     // and terminal/environmental conditions (the CLI could not resolve the
@@ -801,7 +801,7 @@ export async function evaluateAdvisor(
     // error). `isDebt()` is the single source of truth for what is debt at all;
     // `isEnvironmentalStatus()` splits the fixable from the unresolvable.
     // `MOVED`/`RESOLVED_PENDING_COMMIT` are never debt and never contribute.
-    const debtRows = staleRows.filter((row) => isDebt(row.status));
+    const debtRows = driftRows.filter((row) => isDebt(row.status));
     const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
 
@@ -817,9 +817,9 @@ export async function evaluateAdvisor(
         const seen = wasAlreadySeen(memoState, advisorStateDigest(semantic, []));
         return {
           decision: 'allow',
-          kind: 'semantic-staleness-report',
+          kind: 'semantic-drift-report',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'report-only', seen)
+          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'report-only', seen)
         };
       }
       if (environmental.length > 0) {
@@ -847,7 +847,7 @@ export async function evaluateAdvisor(
       };
     }
 
-    // Semantic staleness joins the same distinct-debt-state memo the uncovered
+    // Semantic drift joins the same distinct-debt-state memo the uncovered
     // check uses: hold once per findings digest, then fall through (rather than
     // returning) on an identical retry so the rest of the evaluation still runs.
     let semanticAlreadyPresented = false;
@@ -870,9 +870,9 @@ export async function evaluateAdvisor(
         memoState.record(`seen-${semanticDigest}`);
         return {
           decision: 'hold',
-          kind: 'semantic-staleness',
+          kind: 'semantic-drift',
           findings: semantic,
-          reason: renderStalenessReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold')
+          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold')
         };
       }
     }
@@ -897,7 +897,7 @@ export async function evaluateAdvisor(
     // paths never reach here — git does not stage/publish them.
     const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
     if (uncovered.length === 0) {
-      // A retry that fell through past an already-presented semantic-staleness
+      // A retry that fell through past an already-presented semantic-drift
       // digest ends clean here: surface already-presented rather than a bare
       // silent allow, mirroring the uncovered branch's own memo-hit result.
       return semanticAlreadyPresented
@@ -1118,8 +1118,8 @@ async function computeUncoveredPaths(
 
 /**
  * `path#Lstart-Lend`, or a bare path for a whole-file anchor. Typed against
- * the fields shared by {@link StalePorcelainRow} and {@link PorcelainRow}
- * (rather than either specifically) so both the staleness/environmental
+ * the fields shared by {@link DriftPorcelainRow} and {@link PorcelainRow}
+ * (rather than either specifically) so both the drift/environmental
  * renderers and the uncovered-writes related-spans section ({@link
  * groupCoveringByName}) can format an anchor the same way.
  */
@@ -1130,10 +1130,10 @@ function anchorText(row: { path: string; start: number; end: number }): string {
 
 /**
  * The distinct-debt-state digest (design-decisions.md #9): a stable hash of the
- * sorted staleness findings plus the sorted uncovered paths. Presence in the
+ * sorted drift findings plus the sorted uncovered paths. Presence in the
  * memo means "this exact state was already presented once."
  */
-function advisorStateDigest(findings: StalePorcelainRow[], uncovered: string[]): string {
+function advisorStateDigest(findings: DriftPorcelainRow[], uncovered: string[]): string {
   const findingKeys = findings.map((row) => `${row.status}\t${row.name}\t${row.path}\t${row.start}\t${row.end}`).sort();
   const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
   return createHash('sha256').update(payload).digest('hex');
@@ -1169,8 +1169,8 @@ function wasAlreadySeen(memoState: AdvisorMemoState, digest: string): boolean {
  * into a silent allow via {@link evaluateAdvisor}'s outer catch —
  * {@link annotateBlocks} synthesizes minimal blocks from the rows instead, and
  * {@link renderRelatedSpansSection} simply omits a `why` sentence it can't
- * find. Typed against `{ name: string }` (rather than {@link StalePorcelainRow}
- * specifically) so both the staleness/environmental renderers and the
+ * find. Typed against `{ name: string }` (rather than {@link DriftPorcelainRow}
+ * specifically) so both the drift/environmental renderers and the
  * uncovered-writes related-spans section can share this one fetch.
  */
 async function fetchSpanBlocks(executors: AdvisorExecutors, rows: { name: string }[], cwd: string): Promise<string> {
@@ -1208,13 +1208,13 @@ function extractWhy(blocksText: string, name: string): string {
 /**
  * Collapse rows that name the same anchor address into one entry, combining
  * their distinct statuses (sorted) and preserving first-seen order. The CLI's
- * `stale --format porcelain` emits one row per *drifting layer* for a single
+ * `drift --format porcelain` emits one row per *drifting layer* for a single
  * anchor (e.g. both worktree and index changed) — a distinction the `src`
- * column carries but {@link parseStalePorcelain} deliberately drops — so
+ * column carries but {@link parseDriftPorcelain} deliberately drops — so
  * without this collapse the same anchor would otherwise render as two (or
  * more) identical bullets instead of one bullet with every status it earned.
  */
-function dedupeByAnchor(rows: StalePorcelainRow[]): { addr: string; statuses: PorcelainStatus[] }[] {
+function dedupeByAnchor(rows: DriftPorcelainRow[]): { addr: string; statuses: PorcelainStatus[] }[] {
   const order: string[] = [];
   const byAddr = new Map<string, Set<PorcelainStatus>>();
   for (const row of rows) {
@@ -1276,7 +1276,7 @@ function parseAnchorAddr(addr: string, suffix: string): AnchorRow {
  *
  * **The catch below is the FAIL-CLOSED choice, not a `<greenfield>`-forbidden
  * fallback. Do not remove it.** {@link evaluateAdvisor} builds
- * `reason: renderStalenessReason(...)` *inline* inside its own `try`, and its
+ * `reason: renderDriftReason(...)` *inline* inside its own `try`, and its
  * outer catch resolves any uncaught error to `{ decision: 'allow', kind:
  * 'silent' }` so the advisor can never brick a commit on its own failure. So
  * an exception escaping a tree render here would not degrade to a flat list —
@@ -1343,13 +1343,13 @@ function renderPathRun(paths: string[]): string[] {
  * formatted bullet would mean splitting on ` — `, which a path is free to
  * contain.
  */
-function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]): { addr: string; suffix: string }[] {
+function annotateBulletRun(bulletLines: string[], pending: DriftPorcelainRow[]): { addr: string; suffix: string }[] {
   const addrs = bulletLines.map((line) => line.slice(2));
   const paths = addrs.map((addr) => addr.split('#')[0]);
-  const claimed: StalePorcelainRow[][] = addrs.map(() => []);
-  const used = new Set<StalePorcelainRow>();
+  const claimed: DriftPorcelainRow[][] = addrs.map(() => []);
+  const used = new Set<DriftPorcelainRow>();
 
-  const claim = (index: number, matches: (row: StalePorcelainRow) => boolean): void => {
+  const claim = (index: number, matches: (row: DriftPorcelainRow) => boolean): void => {
     for (const row of pending) {
       if (used.has(row) || !matches(row)) continue;
       claimed[index].push(row);
@@ -1404,8 +1404,8 @@ function annotateBulletRun(bulletLines: string[], pending: StalePorcelainRow[]):
  * paragraph) still falls through to the unconditional passthrough at the end
  * of the loop.
  */
-function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
-  const remaining = new Map<string, StalePorcelainRow[]>();
+function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
+  const remaining = new Map<string, DriftPorcelainRow[]>();
   for (const row of rows) {
     const group = remaining.get(row.name);
     if (group) group.push(row);
@@ -1413,7 +1413,7 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
   }
 
   const out: string[] = [];
-  let pending: StalePorcelainRow[] = [];
+  let pending: DriftPorcelainRow[] = [];
   let bullets: string[] = [];
   let inBullets = false;
   // The bullet run collected under the current header, in both forms: `runRows`
@@ -1478,13 +1478,13 @@ function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
 }
 
 /**
- * The full-span checklist a semantic-staleness `hold` (or, in `'report-only'` mode,
+ * The full-span checklist a semantic-drift `hold` (or, in `'report-only'` mode,
  * a `status` advisory) renders into `reason`. The closing sentence drops "—
  * then retry" in `'report-only'` mode: a `status` check never held anything, so
  * there is nothing to retry.
  */
-function renderStalenessReason(
-  findings: StalePorcelainRow[],
+function renderDriftReason(
+  findings: DriftPorcelainRow[],
   blocksText: string,
   mode: AdvisorMode = 'may-hold',
   alreadySeen = false
@@ -1528,11 +1528,11 @@ export function wrapGitSpanContext(text: string): string {
 }
 
 /**
- * The advisory surfaced when the changeset's only staleness is environmental —
+ * The advisory surfaced when the changeset's only drift is environmental —
  * the advisor allows but says why, so the unresolvable condition is not silently
  * swallowed.
  */
-function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
+function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: string): string {
   return [
     'Could not check these implicit dependencies (unfetched LFS, sparse checkout, or similar) — not blocking:',
     '',
@@ -1686,7 +1686,7 @@ function groupCoveringByName(
  * The "other files in this change already belong to spans" section appended
  * to {@link renderUncoveredReason}'s output — empty (renders nothing) when
  * `covering` is empty, i.e. no other file in the changeset has any span
- * coverage. Still tighter than the staleness/environmental blocks elsewhere
+ * coverage. Still tighter than the drift/environmental blocks elsewhere
  * in this file — no anchors outside this changeset — but each `## <name>`
  * group's `why` sentence (via {@link extractWhy} against `coveringBlocksText`)
  * follows its anchors, same as those blocks, since that's the sentence that
@@ -2021,14 +2021,14 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
   };
 }
 
-/** The production {@link AdvisorExecutors}: scoped `git span` fix/stale/list at the repo root. */
+/** The production {@link AdvisorExecutors}: scoped `git span` fix/drift/list at the repo root. */
 export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): AdvisorExecutors {
   return {
     fix: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return;
       try {
-        execFileSync('git', ['span', 'stale', ...paths, '--fix'], {
+        execFileSync('git', ['span', 'drift', ...paths, '--fix'], {
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -2036,18 +2036,18 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           maxBuffer: MAX_STDOUT_BYTES
         });
       } catch (err) {
-        // `git span stale` exits 1 on drift even after healing, and non-zero on
-        // genuine failure; either way the subsequent `stale` read is the source
+        // `git span drift` exits 1 on drift even after healing, and non-zero on
+        // genuine failure; either way the subsequent `drift` read is the source
         // of truth, so the exit code is ignored here.
         void err;
       }
     },
-    stale: async (paths, cwd) => {
+    drift: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
       let out: string;
       try {
-        out = execFileSync('git', ['span', 'stale', '--format', 'porcelain', ...paths], {
+        out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...paths], {
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -2055,7 +2055,7 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
           maxBuffer: MAX_STDOUT_BYTES
         });
       } catch (err) {
-        // `git span stale` exits non-zero in two very different ways, and they
+        // `git span drift` exits non-zero in two very different ways, and they
         // must not be conflated:
         //  - Legitimate drift: real porcelain rows on stdout describing the
         //    drift. Parse them (this is the whole point of the read).
@@ -2073,7 +2073,7 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
         }
         out = stdoutText;
       }
-      return parseStalePorcelain(out);
+      return parseDriftPorcelain(out);
     },
     list: async (paths, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
@@ -2094,7 +2094,7 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
         // writes an error to stderr and emits empty stdout; parsing that to
         // `[]` would turn a failed scan into a confident, maximal hold with no
         // related-spans section. Signal it distinctly instead, exactly as the
-        // `stale` executor above does, and let `evaluateAdvisor` fail open with
+        // `drift` executor above does, and let `evaluateAdvisor` fail open with
         // the `scan-failed` warning. Any partial stdout is still parsed.
         const stdout = (err as { stdout?: string }).stdout;
         const stderr = (err as { stderr?: string }).stderr;

@@ -4,7 +4,7 @@
 //! - Layer 1 (add-time): `git span add` refuses an anchor path inside the span root before
 //!   any I/O, with a message naming both the offending path and the span root.
 //! - Layer 2 (read-time surfacing): `SpanFile::parse` stays a pure text→struct transform so a
-//!   poisoned span remains loadable and repairable. `stale`/`doctor` surface the interior
+//!   poisoned span remains loadable and repairable. `drift`/`doctor` surface the interior
 //!   anchor per-span as a loud, actionable report (without aborting the whole corpus), while
 //!   `show`/`list`/`remove`/`delete` continue to operate on the poisoned span.
 //!
@@ -158,13 +158,13 @@ fn add_rejects_anchor_inside_git_span_dir_env() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 2 — read-time enforcement via SpanFile::parse / stale / show
+// Layer 2 — read-time enforcement via SpanFile::parse / drift / show
 // ---------------------------------------------------------------------------
 
 /// A hand-edited span file carrying a span-root-interior anchor causes
-/// `git span stale` to surface an error rather than honor the anchor.
+/// `git span drift` to surface an error rather than honor the anchor.
 #[test]
-fn stale_surfaces_error_for_span_root_anchor_in_span_file() -> Result<()> {
+fn drift_surfaces_error_for_span_root_anchor_in_span_file() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "line1\nline2\n")?;
     repo.commit_all("seed")?;
@@ -178,22 +178,22 @@ fn stale_surfaces_error_for_span_root_anchor_in_span_file() -> Result<()> {
     repo.commit_all("add bad span file")?;
     repo.write_commit_graph()?;
 
-    let out = repo.run_span(["stale"])?;
-    // stale surfaces the interior anchor as a loud per-span report on stderr
+    let out = repo.run_span(["drift"])?;
+    // drift surfaces the interior anchor as a loud per-span report on stderr
     // and drives a non-zero exit (fail-closed), without aborting the corpus.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "stale must exit non-zero for a span-root anchor; stdout:\n{stdout}\nstderr:\n{stderr}"
+        "drift must exit non-zero for a span-root anchor; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         stderr.contains("interior-anchor") && stderr.contains(".span/something"),
-        "stale must name the interior anchor in its report; stderr:\n{stderr}"
+        "drift must name the interior anchor in its report; stderr:\n{stderr}"
     );
     assert!(
         stderr.contains("git span remove bad-span"),
-        "stale report must name a working repair command; stderr:\n{stderr}"
+        "drift report must name a working repair command; stderr:\n{stderr}"
     );
     Ok(())
 }

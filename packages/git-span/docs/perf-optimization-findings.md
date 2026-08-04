@@ -1,7 +1,7 @@
 # git-span user-perceived latency: optimization findings (2026-06)
 
 A seven-iteration optimization pass targeting user-perceived latency on common
-operations, with a focus on `git span stale --fix` and `git span list <glob>`.
+operations, with a focus on `git span drift --fix` and `git span list <glob>`.
 Each iteration: establish/extend the measurement surface, attribute the cost,
 implement (verify byte-identical + validate), commit. Wins were committed only
 when verified; unverifiable changes were reverted.
@@ -10,7 +10,7 @@ when verified; unverifiable changes were reverted.
 
 The benchmark harness clones into `/tmp` (**overlayfs**, fast), but the real
 checkout is on **fuse/virtiofs** (slow per-syscall). The same `list` is ~12 ms
-on `/tmp` and ~70-126 ms on the real workspace; cold `stale` is ~180 ms on
+on `/tmp` and ~70-126 ms on the real workspace; cold `drift` is ~180 ms on
 `/tmp` vs ~550-1700 ms on fuse. **User-perceived latency lives on fuse, where
 cost is dominated by per-file/per-object I/O round-trips, not CPU.** Two tools
 made wins provable despite a noisy shared host:
@@ -25,8 +25,8 @@ made wins provable despite a noisy shared host:
 | # | Change | Result | Committed? |
 |---|--------|--------|-----------|
 | 2 | Parallelize the corpus **parse** loop (`std::thread::scope`, per-thread `repo.clone()`) | parse 11.7→3.3 ms (3.5×) | yes |
-| 3 | `stale --fix`: build source layers once, reuse in the post-fix re-resolve | post-resolve −41% | yes |
-| 4 | `stale`: load the `.span` corpus once per state (was 4-6×) | loads 4→2 / 6→3; corpus-handling 25-32→3 ms (fuse) | yes |
+| 3 | `drift --fix`: build source layers once, reuse in the post-fix re-resolve | post-resolve −41% | yes |
+| 4 | `drift`: load the `.span` corpus once per state (was 4-6×) | loads 4→2 / 6→3; corpus-handling 25-32→3 ms (fuse) | yes |
 | 6 | `history`: per-path blob-OID compare instead of per-commit full-tree diff | 867→302 ms fuse (2.87×); 175→42 ms local | yes |
 | — | Parallelize the **discover** phase | break-even warm, cold unverifiable | reverted |
 | — | Parallelize the **cold resolve** | byte-identical but **regressed** on fuse | reverted |
@@ -49,10 +49,10 @@ without risky gix-internals surgery and is dwarfed by the work.
 |----|--------|-------|--------|
 | `list 'packages/**'` | ~20.8 ms | ~11.1 ms | −47% |
 | `history <span>` | ~955 ms | ~272 ms | −72% (3.5×) |
-| `stale` (cold) | ~555 ms | ~540 ms | ~flat |
+| `drift` (cold) | ~555 ms | ~540 ms | ~flat |
 
-`stale --fix` improved on its `--fix`-specific overhead (post-resolve −41%,
-corpus loads 6→3) but, like cold `stale`, remains dominated by the resolver.
+`drift --fix` improved on its `--fix`-specific overhead (post-resolve −41%,
+corpus loads 6→3) but, like cold `drift`, remains dominated by the resolver.
 
 ## Scale validation (`size_sweep`, 25→2000 spans)
 
@@ -62,7 +62,7 @@ criterion reported −40% to −70% vs the pre-work baseline.
 
 ## Stopping analysis — where the floor is
 
-After these iterations the remaining cold `stale` cost (~500 ms on fuse) is the
+After these iterations the remaining cold `drift` cost (~500 ms on fuse) is the
 **resolver's per-anchor content resolution**: 136 anchors each doing one
 memoized HEAD-blob lookup + decompress + line-index + hash. It is already
 linear, memoized, and cached; profiling found no algorithmic hotspot. The only

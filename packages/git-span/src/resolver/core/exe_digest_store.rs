@@ -26,7 +26,7 @@
 //! ## `GIT_SPAN_CACHE=0`
 //!
 //! Bypassed exactly like every other cache tier: the only two call sites that
-//! construct a [`SharedExeDigestMemo`] (`resolver::exact::stale_spans_new_store`'s
+//! construct a [`SharedExeDigestMemo`] (`resolver::exact::drift_spans_new_store`'s
 //! initial state-token capture and its pre-publish revalidate) live entirely
 //! behind that entry point's `cache_disabled()` guard, so a disabled run never
 //! reads or writes this database.

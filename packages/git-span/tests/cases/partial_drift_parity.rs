@@ -1,7 +1,7 @@
 //! Regression (originally a `cache_v2` bug, guards the new store): the warm
 //! render of a partially-drifted span must keep its fresh anchors.
 //!
-//! For a span with some drifted and some fresh anchors, `git span stale`
+//! For a span with some drifted and some fresh anchors, `git span drift`
 //! renders the drifted anchors as findings and the fresh siblings as bare
 //! bullets. The deleted `cache_v2` persisted only the non-`Fresh` finding rows
 //! and, on the warm path, skipped the fresh-anchor backfill when a whole result
@@ -48,7 +48,7 @@ fn cache_matches_cache_off_for_partial_drift() -> Result<()> {
     seed_partial_drift(&repo)?;
 
     // Ground truth: cache fully disabled.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
+    let off = repo.run_span_with_env(["drift", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
 
     // Sanity: the partially-drifted span shows the drifted anchor *and*
@@ -64,8 +64,8 @@ fn cache_matches_cache_off_for_partial_drift() -> Result<()> {
 
     // Cold cache build, then warm cache hit. Both must be byte-identical
     // to the ground truth.
-    let cold = repo.run_span(["stale", "--no-exit-code"])?;
-    let warm = repo.run_span(["stale", "--no-exit-code"])?;
+    let cold = repo.run_span(["drift", "--no-exit-code"])?;
+    let warm = repo.run_span(["drift", "--no-exit-code"])?;
 
     assert_eq!(
         stdout(&cold),

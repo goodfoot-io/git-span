@@ -14,8 +14,8 @@
  * declaration's recorded token names, i.e. the anchor's state as of the last
  * commit where it was recorded or re-anchored. When the declaration is fresh
  * (recorded at the newest commit), that state *is* the post-newest-commit
- * state and seeds directly. When it is stale -- the CLI's own default
- * `stale --fix` posture, a user who records once and then keeps editing
+ * state and seeds directly. When it is drifted -- the CLI's own default
+ * `drift --fix` posture, a user who records once and then keeps editing
  * without re-anchoring -- the recorded state is older than the newest commit,
  * so the walk's first reverse-apply would fail its post-image match against
  * it and truncate at rung zero. The fix threads the recorded state FORWARD
@@ -36,7 +36,7 @@
  * the recovery: a full-deletion diff carries the recorded bytes as its own
  * old side (`current.content`, or the diff's `-` lines when the live side is
  * unreadable -- threaded forward through the lineage like the reconstruction
- * recovery, so a stale declaration whose file was deleted from the worktree
+ * recovery, so a drifted declaration whose file was deleted from the worktree
  * still reaches the post-newest-commit state), and a header-only diff (a
  * relocation, or a rename whose content is unchanged) proves the bytes did
  * not change, so `current.content` is the seed. Every seed path threads
@@ -129,7 +129,7 @@ export interface BuildHistorySnapshotLadderOptions {
   current?: CurrentAnchor;
   /**
    * The `current` block's `span_diff`, when the declaration has an uncommitted
-   * edit: a byte-identical re-anchor (the CLI's `stale --fix` output) is
+   * edit: a byte-identical re-anchor (the CLI's `drift --fix` output) is
    * non-reportable, so `current.anchors` is empty and this diff is the only
    * trace that the committed history lives under the move's source address.
    */
@@ -272,7 +272,7 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
       // (the walk's full-deletion rung resolves directly from its own diff,
       // and an older edit rung reverse-applies onto the recovered bytes).
       // Thread the recorded bytes forward through the lineage exactly like the
-      // reconstruction recovery above: on a stale declaration (recorded before
+      // reconstruction recovery above: on a drifted declaration (recorded before
       // newer committed edits) that recovers the post-newest-commit state the
       // backward walk must seed from, instead of failing the newest rung's
       // post-image match against the c1-era recorded bytes.
@@ -291,7 +291,7 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
     // state the walk seeds from. Header-only diff (a relocation, or a rename
     // whose content is unchanged): the bytes did not change, so `content` is
     // the seed. Either way `content` can be OLDER than the newest commit when
-    // the declaration is stale (recorded once, edited without re-anchoring),
+    // the declaration is drifted (recorded once, edited without re-anchoring),
     // so thread it forward through the lineage exactly like the clean branch
     // above -- on a fresh declaration every pre-recording diff skips on
     // pre-region mismatch and the seed passes through unchanged.
@@ -304,7 +304,7 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
     // Ordinary in-place drift. Recover the recorded state (the content the
     // declaration's recorded token names), then thread it forward through the
     // lineage: on a fresh declaration that state already is the
-    // post-newest-commit state, and on a stale one the threading advances it
+    // post-newest-commit state, and on a drifted one the threading advances it
     // through every commit newer than the recording (see the module doc). A
     // rename block's old side lives in the old address's line space, so it
     // rebases against the rename-from extent start like the ladder's rename
@@ -498,7 +498,7 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
     } catch {
       // One bad hunk truncates the tail of this anchor's history: newer
       // rungs are already computed and survive; nothing older can be
-      // resolved without a non-stale snapshot.
+      // resolved without a non-drifted snapshot.
       rungs.push({
         hash: commit.hash,
         date: commit.date,

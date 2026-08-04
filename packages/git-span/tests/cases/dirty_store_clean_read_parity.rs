@@ -54,7 +54,7 @@ fn cache_matches_cache_off_after_dirty_store_then_clean_read() -> Result<()> {
     seed_committed_drift(&repo)?;
 
     // Ground truth on the CLEAN committed tree: cache fully disabled.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
+    let off = repo.run_span_with_env(["drift", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
     // The committed corpus has no anchor on d.txt — a phantom anchor would
     // show `d.txt`.
@@ -75,7 +75,7 @@ fn cache_matches_cache_off_after_dirty_store_then_clean_read() -> Result<()> {
     // Cold build with cache ON while the tree is dirty. The run itself
     // correctly takes the warm-dirty path; the danger is what gets STORED
     // into the committed-keyed whole-result entry.
-    let _dirty = repo.run_span(["stale", "--no-exit-code"])?;
+    let _dirty = repo.run_span(["drift", "--no-exit-code"])?;
 
     // Revert the worktree span to the committed version WITHOUT committing:
     // tree is clean again, committed key unchanged, no cache rebuild.
@@ -83,7 +83,7 @@ fn cache_matches_cache_off_after_dirty_store_then_clean_read() -> Result<()> {
 
     // Warm-clean read on the clean tree. Must be byte-identical to the
     // cache-off ground truth — no phantom d.txt anchor.
-    let warm = repo.run_span(["stale", "--no-exit-code"])?;
+    let warm = repo.run_span(["drift", "--no-exit-code"])?;
     let warm_text = stdout(&warm);
 
     assert!(

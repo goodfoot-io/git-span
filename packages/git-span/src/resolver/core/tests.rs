@@ -415,7 +415,7 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
         &repo,
         ".span",
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )?;
 
     assert_eq!(
@@ -473,7 +473,7 @@ fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktr
         &repo,
         ".span",
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )?;
 
     // Both layers captured independent drift — the exact property the

@@ -258,9 +258,9 @@ describe('historyClient contract (live git-span binary)', function () {
   });
 
   it('emits an empty current block with a same-token span_diff move for a byte-identical uncommitted re-anchor', async () => {
-    // The CLI's `stale --fix` flow: record f.txt#L1-L3, insert a line above
+    // The CLI's `drift --fix` flow: record f.txt#L1-L3, insert a line above
     // (the extent's bytes unchanged, so the anchor is byte-identical), run
-    // `stale --fix`. The resolver classifies the re-anchor as non-reportable,
+    // `drift --fix`. The resolver classifies the re-anchor as non-reportable,
     // so `current.anchors` is EMPTY and `current.span_diff` -- the
     // declaration's same-token address rewrite -- is the only trace of the
     // move. The extension's matching layer reads exactly this signal.
@@ -271,7 +271,7 @@ describe('historyClient contract (live git-span binary)', function () {
     runGit(dir, ['commit', '-qm', 'add span']);
 
     fs.writeFileSync(path.join(dir, 'f.txt'), 'INSERTED\nalpha\nbeta\ngamma\n');
-    await runGitSpan(binary, dir, ['stale', '--fix']);
+    await runGitSpan(binary, dir, ['drift', '--fix']);
 
     const stdout = await runGitSpan(binary, dir, ['history', 'test-span', '--format', 'json']);
     const doc = parseHistoryJson(stdout);
@@ -292,9 +292,9 @@ describe('historyClient contract (live git-span binary)', function () {
     assert.strictEqual(doc.commits[0]?.anchors[0]?.content, 'alpha\nbeta\ngamma\n');
   });
 
-  it('emits a content block plus full deletion without rename headers for a committed stale-fix re-anchor', async () => {
+  it('emits a content block plus full deletion without rename headers for a committed drift-fix re-anchor', async () => {
     // The routine flow: record f.txt#L1-L3 with a/b/c, insert two lines above
-    // and commit the edit, then run `stale --fix` and commit the fix. The fix
+    // and commit the edit, then run `drift --fix` and commit the fix. The fix
     // commit's moved bytes equal the recorded token's, so the re-anchor keeps
     // the token -- but the deleted extent's bytes differ from the recorded
     // ones, so the CLI renders the move as a CONTENT block at the new address
@@ -310,21 +310,21 @@ describe('historyClient contract (live git-span binary)', function () {
     fs.writeFileSync(path.join(dir, 'f.txt'), 'x\ny\na\nb\nc\n');
     runGit(dir, ['add', 'f.txt']);
     runGit(dir, ['commit', '-qm', 'edit content']);
-    await runGitSpan(binary, dir, ['stale', '--fix']);
+    await runGitSpan(binary, dir, ['drift', '--fix']);
     runGit(dir, ['add', '.span']);
-    runGit(dir, ['commit', '-qm', 'stale fix']);
+    runGit(dir, ['commit', '-qm', 'drift fix']);
 
     const stdout = await runGitSpan(binary, dir, ['history', 'test-span', '--format', 'json']);
     const doc = parseHistoryJson(stdout);
 
     assert.strictEqual(doc.schemaVersion, 2);
-    assert.strictEqual(doc.commits.length, 3, 'add, edit, stale-fix -- newest-first');
+    assert.strictEqual(doc.commits.length, 3, 'add, edit, drift-fix -- newest-first');
     assert.strictEqual(doc.current, undefined, 'the fix is committed: nothing drifted');
 
     const fixCommit = doc.commits[0];
     assert.ok(fixCommit);
     assertShapeOfCommit(fixCommit);
-    assert.strictEqual(fixCommit.summary, 'stale fix');
+    assert.strictEqual(fixCommit.summary, 'drift fix');
     assert.strictEqual(
       fixCommit.anchors.length,
       2,

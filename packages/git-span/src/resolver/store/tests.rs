@@ -1419,7 +1419,7 @@ fn superseded_generations_reconciled_and_evicted() {
 /// cannot grow the store without bound. The moving-HEAD test above supersedes
 /// each generation by moving to a fresh commit; this one never moves — it holds
 /// one HEAD fixed and publishes many distinct summary-only overlays, exactly a
-/// developer (or an editor extension running `git span stale` on save) sitting
+/// developer (or an editor extension running `git span drift` on save) sitting
 /// on one commit and producing many distinct dirty worktree states.
 ///
 /// Head-scoped liveness alone leaves every same-head overlay permanently live,

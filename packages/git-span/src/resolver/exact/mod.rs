@@ -1,10 +1,10 @@
 //! Execution seam wiring the `core` resolution contract and the `store` engine
-//! into the live `git span stale` path (card main-157).
+//! into the live `git span drift` path (card main-157).
 //!
-//! This is THE cache path for `git span stale`: the greenfield cutover
+//! This is THE cache path for `git span drift`: the greenfield cutover
 //! (Phase 7) deleted both legacy caches (`resolver::cache`, `resolver::cache_v2`),
 //! so an [`ExactAttempt::Bypass`] falls straight through to the uncached
-//! authoritative resolver ([`stale_spans_inner`](crate::resolver::engine)) with
+//! authoritative resolver ([`drift_spans_inner`](crate::resolver::engine)) with
 //! no intervening legacy tier. The pieces this seam drives:
 //!
 //! * [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core)
@@ -41,7 +41,7 @@
 //!   on the *cache*, never on the command — the already-computed result is
 //!   rendered regardless. The "exactly one build" guarantee holds *across
 //!   concurrent callers too*: after the unlocked exact read misses, the miss
-//!   tail ([`stale_spans_new_store_inner`]) serializes same-key rebuilders on
+//!   tail ([`drift_spans_new_store_inner`]) serializes same-key rebuilders on
 //!   the key's build-lock shard and rechecks the store under it, so N
 //!   simultaneous cold callers for one missing key collapse to a single build
 //!   and the losers render the winner's published generation.
@@ -55,7 +55,7 @@
 //!   output is content-only — see `notes/correctness-contract.md` "Explicit
 //!   Decisions") and every resolution input unchanged, so the single-pass core
 //!   is still a consistent, correct result. We render it and simply skip the
-//!   publish (the stored HEAD *hint* would be stale).
+//!   publish (the stored HEAD *hint* would be drifted).
 //! * any **other** field moving means a resolution input changed mid-build, so
 //!   the single-pass core may be a torn read. We discard it and return
 //!   [`ExactAttempt::Bypass`], falling back to the authoritative path rather
@@ -75,7 +75,7 @@ use crate::resolver::core::capture::{
 use crate::resolver::core::project::project_effective;
 use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
-    capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_stale_discovery,
+    capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_drift_discovery,
 };
 use crate::resolver::store::dto::SpanResolvedDto;
 use crate::resolver::store::lock::{acquire_build_shard, shard_index};
@@ -92,7 +92,7 @@ use crate::resolver::incremental;
 mod tests;
 
 /// Payload/schema version for every generation this seam publishes. The stored
-/// summary is a bincode-encoded [`StaleSummary`] — the compact, render-ready
+/// summary is a bincode-encoded [`DriftSummary`] — the compact, render-ready
 /// projection, NOT the full [`ResolutionCore`]. Bump on any change to that
 /// encoding so an old-shape row is rejected (a miss + rebuild) rather than
 /// misdecoded.
@@ -116,7 +116,7 @@ mod tests;
 pub(crate) const SUMMARY_VERSION: u32 = 3;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
-/// per-process working-set cache for repeated same-key `stale` calls within one
+/// per-process working-set cache for repeated same-key `drift` calls within one
 /// library run (e.g. tests, or a long-lived embedding), not a persistence tier.
 const MEMO_CAP: usize = 32;
 
@@ -128,7 +128,7 @@ pub(crate) enum ExactAttempt {
     /// `whole_result` carries the render-ready full command result (every
     /// committed span with every anchor in stored order, plus per-span anchor
     /// totals) — the warm-clean shape. Handing it back lets
-    /// [`run_stale`](crate::cli::stale_output) skip the per-invocation corpus
+    /// [`run_drift`](crate::cli::drift_output) skip the per-invocation corpus
     /// reload (`load_all_spans_in` for count-totals, the Fresh-anchor backfill,
     /// and the interior-anchor scan). It is
     /// `Some` whenever the summary is available (exact hit, memo hit, or the
@@ -145,7 +145,7 @@ pub(crate) enum ExactAttempt {
 }
 
 /// The compact, render-ready generation summary this seam persists (schema
-/// [`SUMMARY_VERSION`]). It carries exactly what `run_stale` renders from — the
+/// [`SUMMARY_VERSION`]). It carries exactly what `run_drift` renders from — the
 /// projected effective view — and nothing the cold path needs but a warm render
 /// does not (no per-layer `head`/`index`/`worktree` observations, no ordinal
 /// digests, no anchored-source scan input).
@@ -162,7 +162,7 @@ pub(crate) enum ExactAttempt {
 /// reshaping this summary. It serializes through
 /// [`SpanResolvedDto`](crate::resolver::store::dto::SpanResolvedDto).
 #[derive(Serialize, Deserialize)]
-struct StaleSummary {
+struct DriftSummary {
     /// Full effective set: every committed span with every anchor in stored
     /// order (Fresh + non-Fresh), render-ready.
     spans: Vec<SpanResolvedDto>,
@@ -187,7 +187,7 @@ impl RenderReady {
     /// On the clean, persistence-eligible state that publishes a generation the
     /// worktree equals HEAD, so the projected effective set's span/anchor
     /// membership is exactly the committed corpus — the same set (and the same
-    /// per-span anchor counts) `run_stale`'s `count-totals` derives from
+    /// per-span anchor counts) `run_drift`'s `count-totals` derives from
     /// `load_all_spans_in`. Deriving totals here (rather than reloading the
     /// corpus on the warm hit) is what removes the duplicate read.
     fn from_core(core: &ResolutionCore, layers: LayerSet) -> Self {
@@ -211,7 +211,7 @@ impl RenderReady {
         let mut spans: Vec<SpanResolved> = self
             .full
             .iter()
-            .filter(|s| span_is_reportable_in_stale_discovery(s))
+            .filter(|s| span_is_reportable_in_drift_discovery(s))
             .cloned()
             .collect();
         if spans.len() > 1 {
@@ -299,13 +299,13 @@ pub(crate) fn global_copy_widen(token: &crate::resolver::core::token::StateToken
     )
 }
 
-/// The store execution path for `git span stale` discovery.
+/// The store execution path for `git span drift` discovery.
 ///
 /// Returns [`ExactAttempt::Resolved`] with the reportable span set on an exact
 /// hit or a one-build cold miss, or [`ExactAttempt::Bypass`] when the cache is
 /// disabled / the run is ineligible / a store fault occurs, in which case the
 /// caller runs the uncached authoritative resolver.
-pub(crate) fn stale_spans_new_store(
+pub(crate) fn drift_spans_new_store(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
@@ -374,8 +374,8 @@ pub(crate) fn stale_spans_new_store(
         );
     }
 
-    let attempt = stale_spans_new_store_inner(repo, span_root, options, &token, &mut store)?;
-    // Two whole-result short-circuit guards `run_stale` depends on. Both keep
+    let attempt = drift_spans_new_store_inner(repo, span_root, options, &token, &mut store)?;
+    // Two whole-result short-circuit guards `run_drift` depends on. Both keep
     // the reportable `spans` intact; only the whole-result (which lets the CLI
     // skip its per-invocation corpus scans) is withheld.
     let attempt = withhold_whole_result_for_interior_anchor(span_root, attempt);
@@ -383,7 +383,7 @@ pub(crate) fn stale_spans_new_store(
 }
 
 /// Whether any anchor in the resolved full set points inside the span root — a
-/// poisoned "interior anchor" that `run_stale` must surface as a loud,
+/// poisoned "interior anchor" that `run_drift` must surface as a loud,
 /// fail-closed violation report.
 fn full_set_has_interior_anchor(span_root: &str, spans: &[SpanResolved]) -> bool {
     spans.iter().any(|m| {
@@ -397,7 +397,7 @@ fn full_set_has_interior_anchor(span_root: &str, spans: &[SpanResolved]) -> bool
 /// Drop the render-ready whole-result when the corpus carries a span-root
 /// interior anchor.
 ///
-/// `run_stale` skips its interior-anchor scan whenever the store hands back a
+/// `run_drift` skips its interior-anchor scan whenever the store hands back a
 /// whole-result (`use_whole_result`), trusting that a persisted result was
 /// interior-clean. The store makes no such guarantee, so — exactly as the
 /// pre-cutover path did by withholding the whole-result for a poisoned corpus —
@@ -422,7 +422,7 @@ fn withhold_whole_result_for_interior_anchor(
 
 /// Drop the render-ready whole-result when the tree is dirty.
 ///
-/// `run_stale` skips its conflict detection and interior-anchor scans on a
+/// `run_drift` skips its conflict detection and interior-anchor scans on a
 /// whole-result hit, trusting (as the pre-cutover cache guaranteed by only
 /// returning a whole-result on the warm-CLEAN path) that a dirty or conflicted
 /// span could not be hidden behind one. The store's dirty and incremental tiers
@@ -463,7 +463,7 @@ fn withhold_whole_result_for_dirty_tree(
     }
 }
 
-fn stale_spans_new_store_inner(
+fn drift_spans_new_store_inner(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
@@ -480,7 +480,7 @@ fn stale_spans_new_store_inner(
     }
 
     // The store is already open (and was used as the executable-digest memo
-    // for the state-token capture above) — see `stale_spans_new_store`.
+    // for the state-token capture above) — see `drift_spans_new_store`.
 
     // ── Exact hit (unlocked fast path) ───────────────────────────────────────
     //
@@ -555,7 +555,7 @@ fn stale_spans_new_store_inner(
 }
 
 /// The exact-generation read, shared by the unlocked fast path and the
-/// under-lock recheck in [`stale_spans_new_store_inner`].
+/// under-lock recheck in [`drift_spans_new_store_inner`].
 ///
 /// On a verified, decodable hit it touches, memoizes, and returns the rendered
 /// [`ExactAttempt::Resolved`]. A store fault (a `get` error) returns
@@ -619,7 +619,7 @@ fn cold_miss(
         repo,
         span_root,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )?;
     incr_cold_miss_builds();
     crate::perf::counter("cache-path.cold-miss-builds", 1);
@@ -643,7 +643,7 @@ fn cold_miss(
 ///
 /// * `Unchanged` → publish (populating reuse rows), memoize, render.
 /// * `Changed{head}` → render (the content-only key and every resolution input
-///   are unchanged, so the core is still correct), skip publish (stale HEAD
+///   are unchanged, so the core is still correct), skip publish (drifted HEAD
 ///   hint) and memo (state is moving).
 /// * `Changed{other}` → a resolution input moved mid-build (possible torn
 ///   read); discard and fall back to the authoritative path.
@@ -700,7 +700,7 @@ fn project_revalidate_publish_impl(
     // revalidation re-capture's memo: this is the pre-publish re-read of the
     // state token, and any filter executable it re-hashes was, on the
     // ordinary cold path, already hashed and recorded by the initial capture
-    // in `stale_spans_new_store` moments ago — reusing that row here is what
+    // in `drift_spans_new_store` moments ago — reusing that row here is what
     // removes the "hashed twice on every cold build" cost the memo exists to
     // close. `store` itself is no longer involved (Round 5 moved the memo out
     // of the per-repo store).
@@ -802,7 +802,7 @@ fn publish_if_eligible(
             // foreground work, gated by a cheap high-water check (see
             // [`maybe_maintain`]), right after a generation lands. The just-
             // published `(head, key)` is the current worktree's live generation
-            // — passed through so reconciliation can demote the stale same-head
+            // — passed through so reconciliation can demote the drifted same-head
             // overlays dirty-state churn leaves behind (card main-157 F2).
             maybe_maintain(repo, store, &token.head, key);
         }
@@ -904,18 +904,18 @@ fn emit_gc_stats(cap: u64, stats: &GcStats) {
 /// bytes wrapped in the integrity envelope by `publish_generation` — the
 /// compact replacement for the former `bincode(ResolutionCore)`.
 fn encode_summary(rr: &RenderReady) -> Vec<u8> {
-    let dto = StaleSummary {
+    let dto = DriftSummary {
         spans: rr.full.iter().map(SpanResolvedDto::from).collect(),
         span_anchor_totals: rr.span_anchor_totals.clone(),
     };
-    bincode::serialize(&dto).expect("serialize StaleSummary for generation summary")
+    bincode::serialize(&dto).expect("serialize DriftSummary for generation summary")
 }
 
 /// Decode a verified summary back into the render-ready form. `Err(())` on any
 /// decode/convert failure — the caller treats a verified-but-undecodable
 /// summary as a miss and rebuilds (fail closed on trust, not on the command).
 fn decode_summary(bytes: &[u8]) -> std::result::Result<RenderReady, ()> {
-    let dto: StaleSummary = bincode::deserialize(bytes).map_err(|_| ())?;
+    let dto: DriftSummary = bincode::deserialize(bytes).map_err(|_| ())?;
     let mut full = Vec::with_capacity(dto.spans.len());
     for s in dto.spans {
         full.push(SpanResolved::try_from(s).map_err(|_| ())?);
@@ -927,7 +927,7 @@ fn decode_summary(bytes: &[u8]) -> std::result::Result<RenderReady, ()> {
 }
 
 /// Emit the Phase 0 normalized cache-path hit-class label (stderr only under
-/// `--perf`/`GIT_SPAN_PERF`), matching the labels `stale_spans` emits so a
+/// `--perf`/`GIT_SPAN_PERF`), matching the labels `drift_spans` emits so a
 /// single legend covers both the legacy and new paths.
 fn emit_hit_class(class: &str) {
     crate::perf::note(&format!("cache-path.hit-class: {class}"));

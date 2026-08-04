@@ -550,6 +550,12 @@ fn read_worktree_cleaned(
         return Ok(Some(target.to_string_lossy().into_owned().into_bytes()));
     }
     let file = std::fs::File::open(abs)?;
+    // Unlike the anchor-layer readers, this one hands `filter=<name>` paths
+    // straight to gix, so a configured-but-missing driver is spawned here too
+    // — and gix writes the filter payload to that child's stdin. Same race,
+    // same remedy: `EPIPE` instead of signal 13, so the `Err` arms below can
+    // fall back to the raw bytes.
+    let _sigpipe = crate::sigpipe::SigpipeIgnored::new();
     let Ok((mut pipeline, index)) = repo.filter_pipeline(None) else {
         let mut buf = Vec::new();
         let mut f = std::fs::File::open(abs)?;

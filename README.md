@@ -31,7 +31,7 @@ git span doctor
 git span add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
 git span why checkout-request-flow "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 git add .span && git commit -m "Record checkout-request-flow span"
-git span stale checkout-request-flow
+git span drift checkout-request-flow
 ```
 
 ### Exit codes
@@ -45,7 +45,7 @@ git span stale checkout-request-flow
 - **2** — usage error: the command itself is malformed (unknown
   flag, missing required argument). Example: `git span show --bogus`.
 
-`git span stale` overlays its own §10.4 contract on top of this:
+`git span drift` overlays its own §10.4 contract on top of this:
 exit 1 when drift is found, exit 0 with `--no-exit-code`. There is no
 `pre-commit` subcommand; span coverage is instead enforced by the
 `.githooks/pre-commit.wiki.sh` hook, which runs `wiki check` as a

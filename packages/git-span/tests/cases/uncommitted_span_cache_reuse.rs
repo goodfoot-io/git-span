@@ -7,7 +7,7 @@
 //! ordinary states hit it on every invocation: the documented authoring
 //! workflow (`git span add <slug>` leaves an uncommitted `.span` file until
 //! `git add .span && git commit`) and any repo carrying a gitignored/local
-//! work-in-progress span. Throughout those windows every `git span stale` was a
+//! work-in-progress span. Throughout those windows every `git span drift` was a
 //! cold resolve of the committed corpus — a measured ~60x per-invocation
 //! penalty on large corpora, versus the pre-cutover cache which routed
 //! uncommitted spans through a dirty overlay.
@@ -22,11 +22,11 @@
 //! committed corpus keeps its exact/dirty-tier reuse.
 //!
 //! This suite pins both halves of the contract against a *real* `git span
-//! stale` invocation:
+//! drift` invocation:
 //!
 //! * **Correctness** — output is byte-identical to the `GIT_SPAN_CACHE=0`
 //!   oracle across every format while an uncommitted span is present, added,
-//!   and after it is deleted (no stale replay of the deleted span).
+//!   and after it is deleted (no drifted replay of the deleted span).
 //! * **Performance** — the committed corpus is served from the dirty tier's
 //!   reuse (`cache-path.dirty-reused-spans`), NOT fully re-resolved, and the
 //!   run is no longer a whole-store bypass.
@@ -137,11 +137,11 @@ fn build_committed_corpus() -> Result<TestRepo> {
 /// Publish a baseline generation at the current HEAD (a rows-bearing baseline
 /// the dirty tier's `load_head_baseline` reuses), then snapshot the store.
 fn publish_and_snapshot(repo: &TestRepo) -> BTreeMap<&'static str, Vec<u8>> {
-    let _ = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let _ = run(repo.path(), &["drift"], Mode::NewStore, false);
     snapshot_store(repo.path())
 }
 
-/// Restore the baseline-only store, run `git span stale --format <fmt>` under
+/// Restore the baseline-only store, run `git span drift --format <fmt>` under
 /// both the cache-off oracle and the store, and assert byte-identical stdout and
 /// exit code across every format. Returns the concatenated store `--perf` stderr
 /// so a caller can assert which cache-path class served the runs.
@@ -152,7 +152,7 @@ fn assert_parity_all_formats(
 ) -> String {
     let mut perf = String::new();
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
 
         restore_store(repo.path(), snap);
         let (disabled, _, dis_code) = run(repo.path(), &args, Mode::Disabled, false);
@@ -238,10 +238,10 @@ fn repeated_uncommitted_state_is_exact_hit() -> Result<()> {
     repo.write_file("src/n.txt", "n-1CHANGED\nn-2x\nn-3x\nn-4\n")?;
 
     // First run publishes the fully-keyed generation for this uncommitted state.
-    let (first_out, _, _) = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let (first_out, _, _) = run(repo.path(), &["drift"], Mode::NewStore, false);
     // Second identical run must be a warm exact hit with no cold rebuild.
-    let (second_out, second_err, _) = run(repo.path(), &["stale"], Mode::NewStore, true);
-    let (oracle, _, _) = run(repo.path(), &["stale"], Mode::Disabled, false);
+    let (second_out, second_err, _) = run(repo.path(), &["drift"], Mode::NewStore, true);
+    let (oracle, _, _) = run(repo.path(), &["drift"], Mode::Disabled, false);
 
     assert_eq!(
         second_out, oracle,
@@ -267,7 +267,7 @@ fn repeated_uncommitted_state_is_exact_hit() -> Result<()> {
 /// Correctness backstop: deleting the uncommitted span must drop it from the
 /// output without a manual cache clear (the deletion changes the canonical key
 /// via the withdrawn worktree-state entry, forcing an exact miss instead of a
-/// stale replay), while the committed corpus continues to render identically to
+/// drifted replay), while the committed corpus continues to render identically to
 /// the oracle.
 #[test]
 fn deleted_uncommitted_span_not_replayed_and_corpus_intact() -> Result<()> {
@@ -279,7 +279,7 @@ fn deleted_uncommitted_span_not_replayed_and_corpus_intact() -> Result<()> {
     repo.write_file("src/n.txt", "n-1CHANGED\nn-2x\nn-3x\nn-4\n")?;
 
     // Warm the store with the uncommitted-span state present.
-    let _ = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let _ = run(repo.path(), &["drift"], Mode::NewStore, false);
 
     // Revert the drift and delete the uncommitted span file.
     repo.write_file("src/n.txt", "n-1\nn-2\nn-3\nn-4\n")?;
@@ -288,8 +288,8 @@ fn deleted_uncommitted_span_not_replayed_and_corpus_intact() -> Result<()> {
     // The deleted span must not be replayed, and the committed corpus must match
     // the cache-off oracle byte-for-byte.
     restore_store(repo.path(), &snap);
-    let (oracle, _, oracle_code) = run(repo.path(), &["stale"], Mode::Disabled, false);
-    let (store, _, store_code) = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let (oracle, _, oracle_code) = run(repo.path(), &["drift"], Mode::Disabled, false);
+    let (store, _, store_code) = run(repo.path(), &["drift"], Mode::NewStore, false);
 
     assert!(
         !store.contains("newbie"),

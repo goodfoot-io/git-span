@@ -794,7 +794,7 @@ pub(crate) fn resolve_anchor_inner(
         // and the HEAD blob's decoded text are each read at most once per
         // session regardless of how many anchors share the path/blob (the
         // worktree and HEAD are both constant for the duration of one
-        // `stale` run). The hash computations themselves are byte-for-byte
+        // `drift` run). The hash computations themselves are byte-for-byte
         // identical to the un-memoized form — only the disk/ODB reads are
         // cached, so the fingerprints below match exactly what a fresh
         // `read_worktree_normalized` / `read_git_text` pair would produce.

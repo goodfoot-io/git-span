@@ -9,7 +9,7 @@
  *
  * Fakes are constructed against the real exported types from touch-core.ts
  * (`TouchInput`, `TouchExecutors`, `TouchFixResult`, `PorcelainRow`,
- * `StalePorcelainRow`, `MemoStore`) rather than loosened/`any`-typed shapes —
+ * `DriftPorcelainRow`, `MemoStore`) rather than loosened/`any`-typed shapes —
  * that fidelity is the payoff of the bootstrap: an awkward fake here is a
  * contract-ergonomics finding, not something to work around.
  */
@@ -17,7 +17,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
 import { recoverRange, runTouchHook } from '../../src/common/touch-core.js';
@@ -72,8 +72,8 @@ function porcelainRow(overrides: Partial<PorcelainRow> = {}): PorcelainRow {
   return { name: 'billing/checkout-request-flow', path: 'src/app.ts', start: 1, end: 10, ...overrides };
 }
 
-/** A stale porcelain row (drift row) for a span covering the touched file. */
-function staleRow(overrides: Partial<StalePorcelainRow> = {}): StalePorcelainRow {
+/** A drifted porcelain row (drift row) for a span covering the touched file. */
+function driftRow(overrides: Partial<DriftPorcelainRow> = {}): DriftPorcelainRow {
   return {
     name: 'billing/checkout-request-flow',
     path: 'src/app.ts',
@@ -93,9 +93,9 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
         // Only positional statuses remain after the fix healed the tree —
         // MOVED/RESOLVED_PENDING_COMMIT never constitute debt (isDebt()).
-        stale: async (): Promise<StalePorcelainRow[]> => [
-          staleRow({ status: 'MOVED' }),
-          staleRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'MOVED' }),
+          driftRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
         ],
         why: async (): Promise<string | null> => WHY
       };
@@ -114,7 +114,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           porcelainRow(),
           porcelainRow({ path: 'api/charge.ts', start: 30, end: 76 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         why: async (): Promise<string | null> => WHY
       };
       const input = writeInput();
@@ -150,7 +150,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => (drifted ? [staleRow({ status: 'CHANGED' })] : []),
+        drift: async (): Promise<DriftPorcelainRow[]> => (drifted ? [driftRow({ status: 'CHANGED' })] : []),
         why: async (): Promise<string | null> => WHY
       };
       const input = writeInput();
@@ -193,7 +193,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           return { modified: true };
         },
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         why: async (): Promise<string | null> => WHY
       };
 
@@ -211,7 +211,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           porcelainRow(),
           porcelainRow({ path: 'api/charge.ts', start: 30, end: 76 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         why: async (): Promise<string | null> => WHY
       };
 
@@ -228,9 +228,9 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [
-          staleRow({ status: 'MOVED' }),
-          staleRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'MOVED' }),
+          driftRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
         ],
         why: async (): Promise<string | null> => WHY
       };
@@ -265,7 +265,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const executors: TouchExecutors = {
           fix: async (): Promise<TouchFixResult> => ({ modified: false }),
           list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 371, end: 387 })],
-          stale: async (): Promise<StalePorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => [],
           why: async (): Promise<string | null> => WHY
         };
 
@@ -280,7 +280,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const executors: TouchExecutors = {
           fix: async (): Promise<TouchFixResult> => ({ modified: false }),
           list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 39, end: 189 })],
-          stale: async (): Promise<StalePorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => [],
           why: async (): Promise<string | null> => WHY
         };
 
@@ -297,7 +297,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           fix: async (): Promise<TouchFixResult> => ({ modified: false }),
           // Just past a 2000-line window starting at offset 1 — must not surface.
           list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 2001, end: 2010 })],
-          stale: async (): Promise<StalePorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => [],
           why: async (): Promise<string | null> => WHY
         };
 
@@ -312,7 +312,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const executors: TouchExecutors = {
           fix: async (): Promise<TouchFixResult> => ({ modified: false }),
           list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 371, end: 387 })],
-          stale: async (): Promise<StalePorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => [],
           why: async (): Promise<string | null> => WHY
         };
 
@@ -339,7 +339,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         list: async (): Promise<PorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         },
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         },
         why: async (): Promise<string | null> => {
@@ -374,7 +374,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const executors: TouchExecutors = {
           fix: async (): Promise<TouchFixResult> => ({ modified: false }),
           list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-          stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+          drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
           why: async (): Promise<string | null> => WHY
         };
 

@@ -27,7 +27,7 @@ fn perf_trace_emits_row_per_anchor() -> Result<()> {
     seed_and_drift(&repo, "m")?;
 
     let trace_path = repo.path().join("trace.csv");
-    let out = repo.run_span(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;
+    let out = repo.run_span(["drift", "--perf-trace", trace_path.to_str().unwrap()])?;
     assert_eq!(out.status.code(), Some(1), "drift should exit 1");
 
     let csv = std::fs::read_to_string(&trace_path)?;
@@ -50,7 +50,7 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     seed_and_drift(&repo, "m")?;
 
     let trace_path = repo.path().join("trace.csv");
-    repo.run_span(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;
+    repo.run_span(["drift", "--perf-trace", trace_path.to_str().unwrap()])?;
 
     let csv = std::fs::read_to_string(&trace_path)?;
     let mut lines = csv.lines();
@@ -89,7 +89,7 @@ fn perf_trace_includes_clean_pinned_span() -> Result<()> {
     repo.commit_all("span: clean-span")?;
 
     let trace_path = repo.path().join("trace.csv");
-    let out = repo.run_span(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;
+    let out = repo.run_span(["drift", "--perf-trace", trace_path.to_str().unwrap()])?;
     assert_eq!(out.status.code(), Some(0), "clean span should exit 0");
 
     let csv = std::fs::read_to_string(&trace_path)?;
@@ -114,7 +114,7 @@ fn perf_trace_rejects_positional_paths() -> Result<()> {
     seed_and_drift(&repo, "m")?;
 
     let trace_path = repo.path().join("trace.csv");
-    let out = repo.run_span(["stale", "m", "--perf-trace", trace_path.to_str().unwrap()])?;
+    let out = repo.run_span(["drift", "m", "--perf-trace", trace_path.to_str().unwrap()])?;
     assert_ne!(
         out.status.code(),
         Some(0),

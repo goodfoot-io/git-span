@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import hook, { createHandler } from '../../src/claude/post-tool-use.js';
-import type { PorcelainRow, PorcelainStatus, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
@@ -26,16 +26,16 @@ const logger = new Logger();
 
 interface FakeOpts {
   list?: PorcelainRow[];
-  stale?: StalePorcelainRow[];
+  drift?: DriftPorcelainRow[];
   fixModified?: boolean;
   reject?: boolean;
 }
 
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
-  calls: { fix: number; list: number; stale: number; why: number };
+  calls: { fix: number; list: number; drift: number; why: number };
 } {
-  const calls = { fix: 0, list: 0, stale: 0, why: 0 };
+  const calls = { fix: 0, list: 0, drift: 0, why: 0 };
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
@@ -50,10 +50,10 @@ function makeExecutors(opts: FakeOpts = {}): {
       if (opts.reject) boom();
       return opts.list ?? [];
     },
-    stale: async (): Promise<StalePorcelainRow[]> => {
-      calls.stale += 1;
+    drift: async (): Promise<DriftPorcelainRow[]> => {
+      calls.drift += 1;
       if (opts.reject) boom();
-      return opts.stale ?? [];
+      return opts.drift ?? [];
     },
     why: async (): Promise<string | null> => {
       calls.why += 1;
@@ -81,7 +81,7 @@ const WHY = 'Checkout request flow that carries a charge attempt from the browse
 function porcelainRow(): PorcelainRow {
   return { name: SPAN, path: 'app.ts', start: 1, end: 10 };
 }
-function staleRow(status: PorcelainStatus): StalePorcelainRow {
+function driftRow(status: PorcelainStatus): DriftPorcelainRow {
   return { name: SPAN, path: 'app.ts', start: 1, end: 10, status };
 }
 
@@ -126,7 +126,7 @@ describe('claude post-tool-use touch signal', () => {
   afterAll(() => repo.cleanup());
 
   it('heals and folds a semantic directive on an Edit, on both output channels', async () => {
-    const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+    const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({
       cwd: repo.root,
@@ -143,7 +143,7 @@ describe('claude post-tool-use touch signal', () => {
   });
 
   it('never invokes fix on a Read and surfaces nothing for positional-only drift', async () => {
-    const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('MOVED')] });
+    const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('MOVED')] });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({
       cwd: repo.root,
@@ -202,7 +202,7 @@ describe('claude post-tool-use touch signal', () => {
   });
 
   it('does not run the touch core for an out-of-repo cwd', async () => {
-    const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+    const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({
       cwd: '/',
@@ -221,7 +221,7 @@ describe('claude post-tool-use touch signal', () => {
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
-      stale: [staleRow('CHANGED')]
+      drift: [driftRow('CHANGED')]
     });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({
@@ -236,7 +236,7 @@ describe('claude post-tool-use touch signal', () => {
   });
 
   it('returns null for a Bash command with no recognized idiom (no executor calls)', async () => {
-    const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+    const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({
       cwd: repo.root,
@@ -258,7 +258,7 @@ describe('claude post-tool-use touch signal', () => {
     const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
-      stale: [staleRow('CHANGED')]
+      drift: [driftRow('CHANGED')]
     });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
@@ -278,7 +278,7 @@ describe('claude post-tool-use touch signal', () => {
     const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors } = makeExecutors({
       list: [{ name: SPAN, path: 'out2.txt', start: 1, end: 2 }],
-      stale: [staleRow('CHANGED')]
+      drift: [driftRow('CHANGED')]
     });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
@@ -294,7 +294,7 @@ describe('claude post-tool-use touch signal', () => {
     const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'out3.txt', start: 8, end: 10 }],
-      stale: [staleRow('DELETED')]
+      drift: [driftRow('DELETED')]
     });
     const handler = createHandler(executors, inMemoryMemoFactory());
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });

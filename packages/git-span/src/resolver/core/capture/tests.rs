@@ -476,7 +476,7 @@ fn unrelated_env_variation_does_not_change_key_with_lfs() {
 // transform depends on ambient variables (`envsubst` reads `$VAR` from the
 // environment and substitutes it into the file body). Under the prior narrowing,
 // its env digest was the empty set regardless of which variables actually drove
-// the substitution, so changing one produced the same key — a stale exact hit.
+// the substitution, so changing one produced the same key — a drifted exact hit.
 // A non-LFS driver now keys the whole environment, so that change invalidates.
 #[test]
 fn envsubst_style_custom_filter_invalidates_on_unreferenced_env_change() {
@@ -510,7 +510,7 @@ fn envsubst_style_custom_filter_invalidates_on_unreferenced_env_change() {
     assert_ne!(
         t1.canonical_key_digest(),
         t2.canonical_key_digest(),
-        "changing an internally-read env var must invalidate the key (no stale exact hit)"
+        "changing an internally-read env var must invalidate the key (no drifted exact hit)"
     );
     unsafe {
         std::env::remove_var("GIT_SPAN_TEMPLATE_VALUE");

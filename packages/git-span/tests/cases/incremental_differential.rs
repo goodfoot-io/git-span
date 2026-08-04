@@ -5,7 +5,7 @@
 //! Phase 4B proved the incremental affected-set/reuse logic white-box, in
 //! process, against `capture_resolution_core` directly (see
 //! `src/resolver/incremental/tests.rs`). This suite proves the missing thing:
-//! that a *real `git span stale` invocation* served by the incremental path
+//! that a *real `git span drift` invocation* served by the incremental path
 //! emits output byte-identical to the cache-off oracle across real git-history
 //! transitions and every output format — the property the card's correctness
 //! contract actually promises a user.
@@ -21,7 +21,7 @@
 //!    to engage on every format, not just the first.
 //! 3. Apply the scenario's transition to reach commit/state **B**.
 //! 4. For each of human / porcelain / JSON: restore the A-only store, run
-//!    `git span stale` under the cache-off oracle and under the new store, and
+//!    `git span drift` under the cache-off oracle and under the new store, and
 //!    assert byte-identical stdout AND identical process exit code.
 //!
 //! Every subprocess isolates global/system git config to `/dev/null` (as in
@@ -160,10 +160,10 @@ fn build_base_corpus() -> Result<TestRepo> {
 }
 
 /// Publish an ancestor generation at the current HEAD via the new store, then
-/// snapshot the resulting store. The `stale` exit code is intentionally
+/// snapshot the resulting store. The `drift` exit code is intentionally
 /// ignored — a drifted corpus exits non-zero and that is fine.
 fn publish_and_snapshot(repo: &TestRepo) -> BTreeMap<&'static str, Vec<u8>> {
-    let _ = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let _ = run(repo.path(), &["drift"], Mode::NewStore, false);
     snapshot_store(repo.path())
 }
 
@@ -180,7 +180,7 @@ fn assert_parity_all_formats(
 ) -> String {
     let mut perf = String::new();
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
 
         restore_store(repo.path(), snap);
         let (disabled, _, dis_code) = run(repo.path(), &args, Mode::Disabled, false);
@@ -390,7 +390,7 @@ fn rename_scenario() -> Result<(TestRepo, BTreeMap<&'static str, Vec<u8>>)> {
 fn rename_incremental_output_equals_cold_new_store() -> Result<()> {
     let (repo, snap) = rename_scenario()?;
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
 
         // Incremental: start from the ancestor-only store.
         restore_store(repo.path(), &snap);
@@ -458,7 +458,7 @@ fn rename_with_further_worktree_move_collapses_to_worktree_finding() -> Result<(
     restore_store(repo.path(), &snap);
     let disabled = run(
         repo.path(),
-        &["stale", "--format", "json"],
+        &["drift", "--format", "json"],
         Mode::Disabled,
         false,
     )

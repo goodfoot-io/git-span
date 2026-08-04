@@ -13,7 +13,7 @@
 //! The fix makes `index_identity` content-based (a digest over each entry's
 //! mode/path/blob-oid, excluding stat fields), so two worktrees with
 //! byte-identical staged content key identically. This test primes a generation
-//! in the primary worktree, then runs `stale` in a second linked worktree at the
+//! in the primary worktree, then runs `drift` in a second linked worktree at the
 //! same HEAD with a clean status, and asserts an exact hit whose output is
 //! byte-identical to the cache-off oracle.
 //!
@@ -74,7 +74,7 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     run_git(&main, &["add", "-A"]);
     run_git(&main, &["commit", "-m", "seed"]);
 
-    // A span whose committed source then drifts, so `stale` reports a non-empty
+    // A span whose committed source then drifts, so `drift` reports a non-empty
     // finding and the parity check is meaningful (an exact hit serves a drifted
     // committed corpus so long as the worktree is clean).
     run_span(&main, &["add", "m", "src.txt#L1-L3"], false, false);
@@ -90,7 +90,7 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     );
 
     // ── Prime a warm generation in the primary worktree. ─────────────────────
-    let (_out, prime_perf) = run_span(&main, &["stale", "--no-exit-code"], true, true);
+    let (_out, prime_perf) = run_span(&main, &["drift", "--no-exit-code"], true, true);
     assert!(
         prime_perf.contains("cache-path.hit-class: miss"),
         "priming run should be a cold build; perf:\n{prime_perf}"
@@ -114,12 +114,12 @@ fn sibling_worktree_at_identical_head_is_an_exact_hit() {
     );
 
     // Cache-off oracle in the linked worktree.
-    let (oracle, _) = run_span(&linked, &["stale", "--no-exit-code"], false, false);
+    let (oracle, _) = run_span(&linked, &["drift", "--no-exit-code"], false, false);
 
     // The new store in the linked worktree: a clean tree at the same HEAD sharing
     // the same on-disk store (common `.git/span`) must serve the primed
     // generation as an EXACT hit.
-    let (new_store, perf) = run_span(&linked, &["stale", "--no-exit-code"], true, true);
+    let (new_store, perf) = run_span(&linked, &["drift", "--no-exit-code"], true, true);
 
     assert_eq!(
         new_store, oracle,

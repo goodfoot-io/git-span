@@ -2,7 +2,7 @@
 
 /**
  * Webview bundle entry for the span viewer: builds the whole DOM -- title row
- * with conditional Stale pill, why prose, the declaration's last-edited line,
+ * with conditional Drift pill, why prose, the declaration's last-edited line,
  * one card per anchor, uncommitted declaration edit card,
  * collapsed-by-default History accordion -- from the posted `PostedDocument`.
  *
@@ -985,11 +985,11 @@ function renderDocument(posted: PostedDocument): void {
 
   const titlebar = el('div', 'titlebar');
   titlebar.appendChild(el('h1', undefined, posted.spanName));
-  if (posted.stale) {
-    const pill = el('span', 'stale-pill');
-    pill.title = posted.staleReasons.join('; ');
+  if (posted.drift) {
+    const pill = el('span', 'drift-pill');
+    pill.title = posted.driftReasons.join('; ');
     pill.appendChild(el('span', 'dot-sm'));
-    pill.append('Stale');
+    pill.append('Drift');
     titlebar.appendChild(pill);
   }
 

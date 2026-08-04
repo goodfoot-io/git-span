@@ -46,7 +46,7 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
 ///
 /// Ordinary repositories carry no replacement refs, so
 /// [`reject_replacement_topology`] uses this to skip its `for-each-ref`
-/// subprocess on the hot path of `history` and `stale`. The probe reads the
+/// subprocess on the hot path of `history` and `drift`. The probe reads the
 /// same loose+packed ref store `for-each-ref` consults. It may only ever
 /// suppress work, never change classification: any failure to open or
 /// iterate the store — including a broken ref surfacing as an `Err` item —
@@ -579,7 +579,7 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
 /// resolves a conflict by hand, or that drops a file, changes the mainline
 /// state at a seed path with no other commit accounting for it: skipping it
 /// made the breaking commit anchor-silent, and where the merge was HEAD the
-/// newest rendered state contradicted both HEAD and `git span stale` — whose
+/// newest rendered state contradicted both HEAD and `git span drift` — whose
 /// engine ([`crate::resolver::attribution`]) has never skipped merges. The two
 /// commands must walk the same history.
 ///
@@ -1187,7 +1187,7 @@ pub fn blob_line_count(repo: &gix::Repository, blob_oid: &str) -> Result<u32> {
 /// This is the *one* line-range policy in the product, deliberately shared by
 /// every path that turns a file into an anchor's snapshot: the blob read
 /// ([`extract_blob_lines`]), the working-tree read behind `git span history`'s
-/// `current` block, and `git span stale`'s display slicing. Two
+/// `current` block, and `git span drift`'s display slicing. Two
 /// implementations is how the same file state came to be a structural
 /// `range-past-eof` when read from a commit and a fabricated empty string when
 /// read from disk — the same class of split as the lossy-versus-strict UTF-8
@@ -1195,7 +1195,7 @@ pub fn blob_line_count(repo: &gix::Repository, blob_oid: &str) -> Result<u32> {
 ///
 /// A range that *overlaps* the end is clipped, not rejected (`L2-L9` over a
 /// three-line file yields two lines): the drift being visualized is precisely
-/// that the file shrank under a stale range, and truncation is the honest
+/// that the file shrank under a drifted range, and truncation is the honest
 /// account of it. Only a range with no overlap at all — `lo >= hi`, i.e. a start
 /// past the last line — has nothing to show.
 ///
@@ -1251,7 +1251,7 @@ pub fn log_l_resolve(
     _end: u32,
     _copy_detection: crate::types::CopyDetection,
 ) -> Result<Option<(String, u32, u32, String)>> {
-    // Resolver lives in stale.rs (ported from v1). This hook exists only
+    // Resolver lives in drift.rs (ported from v1). This hook exists only
     // to preserve the Slice B signature.
     Err(Error::Git(
         "git::log_l_resolve is not used; call resolver::resolve_anchor".into(),
@@ -1706,7 +1706,7 @@ mod line_range_policy_tests {
 
     /// The other side of the boundary must not move: one line of overlap is
     /// still a clip, which is the honest account of a file that shrank under a
-    /// stale range.
+    /// drifted range.
     #[test]
     fn a_range_overlapping_by_one_line_is_still_clipped() {
         for start in 1..=6u32 {

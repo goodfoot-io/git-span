@@ -1,9 +1,9 @@
-# Profiling `git span stale`
+# Profiling `git span drift`
 
 Three complementary tools cover the common perf questions:
 
 1. **`perf record` + `inferno-flamegraph`** — self-time profile. "Which functions are hot?"
-2. **`git span stale --perf-trace <path>`** — per-anchor wall-clock distribution. "Is the runtime uniform across many anchors, or concentrated in a few?"
+2. **`git span drift --perf-trace <path>`** — per-anchor wall-clock distribution. "Is the runtime uniform across many anchors, or concentrated in a few?"
 3. **`--perf` / `GIT_SPAN_PERF=1` cache-path counters** — "which cache path did this run take, and why?" See [Cache-path counters](#cache-path-counters-perf--git_span_perf1) below.
 
 Both `perf` and `inferno` are pre-installed in the devcontainer image
@@ -14,11 +14,11 @@ Both `perf` and `inferno` are pre-installed in the devcontainer image
 
 ```bash
 perf record -F 199 -g --call-graph=dwarf \
-    -o /tmp/stale.perf \
-    -- git span stale --perf
-perf script -i /tmp/stale.perf 2>/dev/null \
+    -o /tmp/drift.perf \
+    -- git span drift --perf
+perf script -i /tmp/drift.perf 2>/dev/null \
     | inferno-collapse-perf \
-    | inferno-flamegraph > /tmp/stale.svg
+    | inferno-flamegraph > /tmp/drift.svg
 ```
 
 `-F 199` samples at 199 Hz (prime, to avoid lock-step with periodic events). `--call-graph=dwarf` walks DWARF unwind info so Rust frames resolve cleanly without frame-pointer instrumentation.
@@ -36,7 +36,7 @@ The devcontainer image does not set this at startup — many hardened hosts reje
 ## Per-anchor wall-clock trace (`--perf-trace`)
 
 ```bash
-git span stale --perf-trace /tmp/trace.csv
+git span drift --perf-trace /tmp/trace.csv
 ```
 
 Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag is opt-in; without it, no per-anchor instrumentation runs.
@@ -62,11 +62,11 @@ Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-41
 `--perf-trace` requires a full scan and rejects positional paths — partial scans defeat the "where did the time go?" question the flag exists to answer:
 
 ```bash
-git span stale --perf-trace /tmp/trace.csv          # OK: full scan
-git span stale --perf-trace /tmp/trace.csv some/path  # CliError
+git span drift --perf-trace /tmp/trace.csv          # OK: full scan
+git span drift --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-The only other flag conflict `git span stale` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format.
+The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format.
 
 ### Quick analyses
 
@@ -99,7 +99,7 @@ When `--perf-trace` is absent, the resolver does not capture per-anchor traces; 
 The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`src/perf.rs`](../src/perf.rs)):
 
 ```bash
-GIT_SPAN_PERF=1 git span stale --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
+GIT_SPAN_PERF=1 git span drift --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
 ```
 
 These counters are THE cache diagnostics surface. There is one cache — the

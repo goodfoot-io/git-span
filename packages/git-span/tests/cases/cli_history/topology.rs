@@ -9,7 +9,7 @@ use super::*;
 /// The declaration is the one file whose merge result is neither side's, so the
 /// merge entry is where a renderer pairing on the walk's predecessor invents an
 /// anchor deletion — the entry above it saw only one branch's anchors, so the
-/// other branch's look like they left. `git span stale` disagrees on the spot:
+/// other branch's look like they left. `git span drift` disagrees on the spot:
 /// it reports the merged declaration clean at HEAD, so the timeline would be
 /// announcing a deletion the resolver can see never happened.
 #[test]
@@ -58,11 +58,11 @@ fn a_merge_that_unions_the_declaration_asserts_no_anchor_deletion() -> Result<()
             "fixture assumption: the merged declaration keeps {addr}; got:\n{listed}"
         );
     }
-    let stale = repo.run_span(["stale"])?;
+    let drift = repo.run_span(["drift"])?;
     assert!(
-        stale.status.success(),
+        drift.status.success(),
         "fixture assumption: the merged declaration is clean at HEAD; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
+        String::from_utf8_lossy(&drift.stdout)
     );
 
     let json = history_json(&repo, "un")?;
@@ -92,7 +92,7 @@ fn a_merge_that_unions_the_declaration_asserts_no_anchor_deletion() -> Result<()
     assert!(
         !text.contains("deleted anchor"),
         "no commit in this history removed an anchor; a deletion is invented by \
-         the pairing, and `git span stale` calls the merged declaration clean:\n{text}"
+         the pairing, and `git span drift` calls the merged declaration clean:\n{text}"
     );
     assert!(
         text.contains("new anchor") && text.contains("f.txt#L4-L5"),
@@ -106,8 +106,8 @@ fn a_merge_that_unions_the_declaration_asserts_no_anchor_deletion() -> Result<()
 /// and the timeline says so.
 ///
 /// It used to be skipped by an explicit `--no-merges` clause. The resolver never
-/// agreed: `git span stale` attributes drift to a merge without hesitation, so a
-/// span whose content arrived through one had a `stale` finding pointing at a
+/// agreed: `git span drift` attributes drift to a merge without hesitation, so a
+/// span whose content arrived through one had a `drift` finding pointing at a
 /// commit `history` refused to print. The qualifying test that follows the skip
 /// compares each seed path's blob against `parent_ids.first()`, which is exactly
 /// the mainline question, so removing the clause needed no replacement gate.
@@ -162,9 +162,9 @@ fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -
             .contains("+MAIN"),
         "the visible entry must describe the bytes at HEAD: {main:#}"
     );
-    // `stale`'s human renderer deliberately describes the classification and
+    // `drift`'s human renderer deliberately describes the classification and
     // address, not the anchored bytes. Prove the bytes from Git, then use the
-    // machine contract to prove stale attributed that exact committed layer.
+    // machine contract to prove drift attributed that exact committed layer.
     // This makes the fixture reject both ways the discarded side can leak:
     // choosing `SIDE` for HEAD, or reporting the right status for the wrong
     // layer.
@@ -173,28 +173,28 @@ fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -
         "one\nMAIN\nthree",
         "the ours merge must preserve the first-parent/mainline blob at HEAD"
     );
-    let stale = repo.run_span(["stale", "ours", "--format=json"])?;
+    let drift = repo.run_span(["drift", "ours", "--format=json"])?;
     assert!(
-        stale.status.code() == Some(1),
-        "the declaration predates the mainline edit, so stale must report that HEAD drift: stdout={} stderr={}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.code() == Some(1),
+        "the declaration predates the mainline edit, so drift must report that HEAD drift: stdout={} stderr={}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
     );
-    let stale_json: Value = serde_json::from_slice(&stale.stdout)?;
+    let drift_json: Value = serde_json::from_slice(&drift.stdout)?;
     assert!(
-        stale_json["findings"]
+        drift_json["findings"]
             .as_array()
             .is_some_and(|findings| findings.len() == 1)
-            && stale_json["findings"][0]["status"]["code"] == "CHANGED"
-            && stale_json["findings"][0]["source"] == "HEAD",
-        "stale must resolve the mainline blob as committed HEAD drift, never the discarded side: {stale_json:#}"
+            && drift_json["findings"][0]["status"]["code"] == "CHANGED"
+            && drift_json["findings"][0]["source"] == "HEAD",
+        "drift must resolve the mainline blob as committed HEAD drift, never the discarded side: {drift_json:#}"
     );
     assert_no_fabricated_lines(&repo, "ours")
 }
 
 
 #[test]
-fn history_and_stale_reject_git_replacement_topology_before_output() -> Result<()> {
+fn history_and_drift_reject_git_replacement_topology_before_output() -> Result<()> {
     let repo = committed_drift_repo("replace")?;
     let head = repo.head_sha()?;
     let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
@@ -215,8 +215,8 @@ fn history_and_stale_reject_git_replacement_topology_before_output() -> Result<(
     );
 
     let history = repo.run_span(["history", "replace", "--format=json"])?;
-    let stale = repo.run_span(["stale", "--format=json"])?;
-    for (name, out) in [("history", history), ("stale", stale)] {
+    let drift = repo.run_span(["drift", "--format=json"])?;
+    for (name, out) in [("history", history), ("drift", drift)] {
         assert!(
             !out.status.success() && out.stdout.is_empty(),
             "{name} must fail closed without rendering raw-topology output; stdout={} stderr={}",
@@ -248,7 +248,7 @@ fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Re
     repo.run_git(["replace", &head, &parent])?;
 
     // Git's own off-switch must disable the boundary as well as replacement
-    // processing. History succeeds, while stale retains its ordinary drift
+    // processing. History succeeds, while drift retains its ordinary drift
     // exit status and emits findings rather than a topology error.
     let history = repo.run_span_with_env(
         ["history", "replace-controls", "--format=json"],
@@ -261,15 +261,15 @@ fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Re
         String::from_utf8_lossy(&history.stdout),
         String::from_utf8_lossy(&history.stderr)
     );
-    let stale =
-        repo.run_span_with_env(["stale", "--format=json"], "GIT_NO_REPLACE_OBJECTS", "1")?;
+    let drift =
+        repo.run_span_with_env(["drift", "--format=json"], "GIT_NO_REPLACE_OBJECTS", "1")?;
     assert!(
-        stale.status.code() == Some(1)
-            && !stale.stdout.is_empty()
-            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
-        "disabled replacements must preserve stale's normal finding: stdout={} stderr={}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.code() == Some(1)
+            && !drift.stdout.is_empty()
+            && !String::from_utf8_lossy(&drift.stderr).contains("replacement topology"),
+        "disabled replacements must preserve drift's normal finding: stdout={} stderr={}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
     );
 
     repo.run_git(["replace", "-d", &head])?;
@@ -282,20 +282,20 @@ fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Re
         "a replacement outside HEAD ancestry cannot block history: {}",
         String::from_utf8_lossy(&history.stderr)
     );
-    let stale = repo.run_span(["stale", "--format=json"])?;
+    let drift = repo.run_span(["drift", "--format=json"])?;
     assert!(
-        stale.status.code() == Some(1)
-            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
-        "a replacement outside HEAD ancestry cannot block stale: stdout={} stderr={}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.code() == Some(1)
+            && !String::from_utf8_lossy(&drift.stderr).contains("replacement topology"),
+        "a replacement outside HEAD ancestry cannot block drift: stdout={} stderr={}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
     );
     Ok(())
 }
 
 
 #[test]
-fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Result<()> {
+fn custom_replacement_namespace_rejects_history_and_drift_before_effects() -> Result<()> {
     let repo = committed_drift_repo("custom-replace")?;
     let head = repo.head_sha()?;
     let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
@@ -331,8 +331,8 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
             "history",
             vec!["history", "custom-replace", "--format=json"],
         ),
-        ("stale", vec!["stale", "--format=json"]),
-        ("stale --fix", vec!["stale", "--fix"]),
+        ("drift", vec!["drift", "--format=json"]),
+        ("drift --fix", vec!["drift", "--fix"]),
     ] {
         let out =
             repo.run_span_with_envs(args, &[("GIT_REPLACE_REF_BASE", configured_namespace)])?;
@@ -353,7 +353,7 @@ fn custom_replacement_namespace_rejects_history_and_stale_before_effects() -> Re
     assert_eq!(
         std::fs::read(&declaration)?,
         before,
-        "stale --fix must not mutate declarations after topology rejection"
+        "drift --fix must not mutate declarations after topology rejection"
     );
     Ok(())
 }
@@ -496,14 +496,14 @@ fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
         String::from_utf8_lossy(&history.stdout),
         String::from_utf8_lossy(&history.stderr)
     );
-    let stale = repo.run_span(["stale", "--format=json"])?;
+    let drift = repo.run_span(["drift", "--format=json"])?;
     assert!(
-        stale.status.code() == Some(1)
-            && !stale.stdout.is_empty()
-            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
-        "an unreachable graft must preserve stale's ordinary result: stdout={} stderr={}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.code() == Some(1)
+            && !drift.stdout.is_empty()
+            && !String::from_utf8_lossy(&drift.stderr).contains("replacement topology"),
+        "an unreachable graft must preserve drift's ordinary result: stdout={} stderr={}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
     );
 
     std::fs::write(&grafts, format!("{head}\n"))?;
@@ -583,7 +583,7 @@ fn config_disabled_replacements_define_the_same_boundary_as_the_env_var() -> Res
     repo.run_git(["replace", &head, &parent])?;
 
     // Git's persistent off-switch must disable the boundary exactly like
-    // GIT_NO_REPLACE_OBJECTS. History succeeds, while stale retains its
+    // GIT_NO_REPLACE_OBJECTS. History succeeds, while drift retains its
     // ordinary drift exit status and emits findings rather than a topology
     // error.
     repo.run_git(["config", "core.useReplaceRefs", "false"])?;
@@ -594,14 +594,14 @@ fn config_disabled_replacements_define_the_same_boundary_as_the_env_var() -> Res
         String::from_utf8_lossy(&history.stdout),
         String::from_utf8_lossy(&history.stderr)
     );
-    let stale = repo.run_span(["stale", "--format=json"])?;
+    let drift = repo.run_span(["drift", "--format=json"])?;
     assert!(
-        stale.status.code() == Some(1)
-            && !stale.stdout.is_empty()
-            && !String::from_utf8_lossy(&stale.stderr).contains("replacement topology"),
-        "config-disabled replacements must preserve stale's normal finding: stdout={} stderr={}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.code() == Some(1)
+            && !drift.stdout.is_empty()
+            && !String::from_utf8_lossy(&drift.stderr).contains("replacement topology"),
+        "config-disabled replacements must preserve drift's normal finding: stdout={} stderr={}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
     );
 
     // An explicit `true` restores the default boundary, proving the gate
@@ -658,7 +658,7 @@ fn a_non_boolean_use_replace_refs_fails_closed() -> Result<()> {
             "history",
             vec!["history", "replace-config-invalid", "--format=json"],
         ),
-        ("stale", vec!["stale", "--format=json"]),
+        ("drift", vec!["drift", "--format=json"]),
     ] {
         let out = repo.run_span(args)?;
         let stderr = String::from_utf8_lossy(&out.stderr);

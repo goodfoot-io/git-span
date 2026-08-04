@@ -90,7 +90,7 @@ never carry a coupling worth declaring (generated output, vendored code, pure
 config) and the one-time uncovered-writes prompt on those paths is pure noise
 rather than an occasional useful nudge.
 
-`.advisorignore` never affects the advisor's **semantic-staleness** check — a
+`.advisorignore` never affects the advisor's **semantic-drift** check — a
 changeset that already carries a drifted anchor is still held regardless of
 this file (once per distinct set of findings; an identical retry passes on
 its own). It only silences the "nothing anchors this new/changed file"

@@ -19,7 +19,7 @@ import {
   AdvisorScanError,
   type GitExecutor
 } from '../../src/common/advisor-core.js';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 
 const logger = new Logger();
 
@@ -42,7 +42,7 @@ function fakeExecutors(overrides: Partial<AdvisorExecutors> = {}): AdvisorExecut
   return {
     fix: async () => {},
     list: async (): Promise<PorcelainRow[]> => [],
-    stale: async (): Promise<StalePorcelainRow[]> => [],
+    drift: async (): Promise<DriftPorcelainRow[]> => [],
     listBlocks: async (): Promise<string> => '',
     ...overrides
   };
@@ -65,7 +65,7 @@ const SPAN = 'billing/checkout-request-flow';
 function porcelainRow(path = 'src/app.ts'): PorcelainRow {
   return { name: SPAN, path, start: 1, end: 10 };
 }
-function staleRow(status: StalePorcelainRow['status'], path = 'src/app.ts'): StalePorcelainRow {
+function driftRow(status: DriftPorcelainRow['status'], path = 'src/app.ts'): DriftPorcelainRow {
   return { name: SPAN, path, start: 1, end: 10, status };
 }
 
@@ -120,11 +120,11 @@ describe('claude advisor adapter', () => {
     expect(result.stdout.systemMessage).toBeUndefined();
   });
 
-  it('denies a commit carrying semantic staleness, with the checklist as the reason', async () => {
+  it('denies a commit carrying semantic drift, with the checklist as the reason', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('CHANGED')]
+      drift: async () => [driftRow('CHANGED')]
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
@@ -135,11 +135,11 @@ describe('claude advisor adapter', () => {
     expect(result.stdout.systemMessage).toContain(SPAN);
   });
 
-  it('allows an identical retry after a semantic-staleness deny (consider-once per debt-state digest)', async () => {
+  it('allows an identical retry after a semantic-drift deny (consider-once per debt-state digest)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('CHANGED')]
+      drift: async () => [driftRow('CHANGED')]
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
 
@@ -152,7 +152,7 @@ describe('claude advisor adapter', () => {
 
   it('allows a clean commit (staged, covered, no drift)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [] });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
@@ -163,7 +163,7 @@ describe('claude advisor adapter', () => {
     // Two staged files — a single-file changeset can never carry a cross-file
     // coupling and short-circuits to no uncovered paths.
     const git = fakeGit({ stagedPaths: async () => ['src/uncovered.ts', 'src/other.ts'] });
-    const executors = fakeExecutors({ list: async () => [], stale: async () => [] });
+    const executors = fakeExecutors({ list: async () => [], drift: async () => [] });
     const memoFactory = sharedMemoFactory();
     const handler = createHandler(git, executors, memoFactory);
 
@@ -179,7 +179,7 @@ describe('claude advisor adapter', () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('SPARSE_EXCLUDED')]
+      drift: async () => [driftRow('SPARSE_EXCLUDED')]
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
@@ -191,7 +191,7 @@ describe('claude advisor adapter', () => {
   it('surfaces a scan failure as a transcript-visible systemMessage and allows (fail-open)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
-      stale: async () => {
+      drift: async () => {
         throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
       }
     });
@@ -219,7 +219,7 @@ describe('claude advisor adapter', () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('CHANGED')]
+      drift: async () => [driftRow('CHANGED')]
     });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git status') as never, { logger } as never));
@@ -233,7 +233,7 @@ describe('claude advisor adapter', () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       list: async () => [porcelainRow()],
-      stale: async () => [staleRow('CHANGED')]
+      drift: async () => [driftRow('CHANGED')]
     });
     const memoFactory = sharedMemoFactory();
     const handler = createHandler(git, executors, memoFactory);
@@ -251,7 +251,7 @@ describe('claude advisor adapter', () => {
 
   it('allows `git status` silently when the changeset is clean', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
-    const executors = fakeExecutors({ list: async () => [porcelainRow()], stale: async () => [] });
+    const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [] });
     const handler = createHandler(git, executors, sharedMemoFactory());
     const result = toResult(await handler(preInput('git status') as never, { logger } as never));
 

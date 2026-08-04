@@ -8,7 +8,7 @@
 //! representation and vice versa.
 //!
 //! These DTOs back the compact, render-ready generation summary the store
-//! persists (`resolver::exact::StaleSummary`): the summary is
+//! persists (`resolver::exact::DriftSummary`): the summary is
 //! `bincode::serialize`(DTO). A `format_version: u8` field is the first
 //! field of every top-level DTO so a future shape change can be detected as
 //! a deserialization failure (and reported as a miss). The store's

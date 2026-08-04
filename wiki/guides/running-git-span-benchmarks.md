@@ -1,6 +1,6 @@
 ---
 title: Running the git-span benchmarks
-summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-stale SLA gate, the synthetic size-sweep and its deterministic corpus generator, the one active SQLite store and its single GIT_SPAN_CACHE=0 disable switch, the quota/GC/diagnostics surface, and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
+summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-drift SLA gate, the synthetic size-sweep and its deterministic corpus generator, the one active SQLite store and its single GIT_SPAN_CACHE=0 disable switch, the quota/GC/diagnostics surface, and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
 aliases: [git-span benchmarks, bench:check, yarn bench, size sweep, perf-baseline, real_corpus]
 ---
 
@@ -15,7 +15,7 @@ The guiding invariant across every benchmark: **an optimized command must never 
 | Command | What it does | Timed? |
 |---------|--------------|--------|
 | `yarn bench:check` | Compiles every bench + the feature-gated targets (`cargo bench --no-run --locked --features bench-corpus`). The anti-rot guard. | no |
-| `yarn bench` | Runs the real-corpus scoreboard ([real_corpus.rs](../../packages/git-span/benches/real_corpus.rs)) + the in-process warm/cold benches ([stale_warm.rs](../../packages/git-span/benches/stale_warm.rs), [stale_head_only.rs](../../packages/git-span/benches/stale_head_only.rs)). | yes |
+| `yarn bench` | Runs the real-corpus scoreboard ([real_corpus.rs](../../packages/git-span/benches/real_corpus.rs)) + the in-process warm/cold benches ([drift_warm.rs](../../packages/git-span/benches/drift_warm.rs), [drift_head_only.rs](../../packages/git-span/benches/drift_head_only.rs)). | yes |
 | `cargo bench --bench size_sweep --features bench-corpus` | Runs the synthetic scaling sweep ([size_sweep.rs](../../packages/git-span/benches/size_sweep.rs)). Slow (up to 2000 spans). | yes |
 
 Both scripts live in [packages/git-span/package.json](../../packages/git-span/package.json) and route through [scripts/with-target-lock.sh](../../packages/git-span/scripts/with-target-lock.sh) into the shared `build` cargo target group, so they serialize against sibling-worktree builds rather than corrupting them.
@@ -28,11 +28,11 @@ The benches build their fixtures from **library symbols** (`SpanFile`, `AnchorRe
 
 [real_corpus.rs](../../packages/git-span/benches/real_corpus.rs) drives the **actual `git-span` binary** (`env!("CARGO_BIN_EXE_git-span")`) over the repository's own [.span/](../../.span) corpus, so the numbers include process startup, repo discovery, and corpus parse — the real cost a developer feels. It clones the workspace into a tempdir (`git clone --local`, with a `--no-hardlinks` fallback for cross-device `/tmp`) so it never mutates the developer's real `store.db`.
 
-Per-operation cells: `list`, `tree`, `show`, `history`, `stale-cold`, `stale-warm`, `dirty-tree-stale-cold`, `dirty-tree-stale-warm`, the interior-anchor cell, `list <glob>` variants, and `stale-fix`.
+Per-operation cells: `list`, `tree`, `show`, `history`, `drift-cold`, `drift-warm`, `dirty-tree-drift-cold`, `dirty-tree-drift-warm`, the interior-anchor cell, `list <glob>` variants, and `drift-fix`.
 
 ### The byte-identical correctness oracle
 
-Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **the one cache disabled** (`GIT_SPAN_CACHE=0`, the single "disable all caching" switch, hence the genuine ground truth) and once with the store live — and asserts all three are identical, across **all five `stale` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
+Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **the one cache disabled** (`GIT_SPAN_CACHE=0`, the single "disable all caching" switch, hence the genuine ground truth) and once with the store live — and asserts all three are identical, across **all five `drift` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
 
 `GIT_SPAN_CACHE=0` is a genuine ground truth on its own: after the Phase 7 cutover there is a single cache — the SQLite store — and that switch bypasses it entirely. No sibling tier can leave a "cache-disabled" run partly warm, because both legacy tiers (`resolver/cache`, `resolver/cache_v2`) were deleted. Historically this was a real gap — a two-tier era where disabling only one tier left the other live, see `notes/investigation-question-log.md` Step 2, "Does the documented cache-off oracle provide ground truth?" (card main-157) — which the collapse to one store and one switch closes structurally.
 
@@ -56,7 +56,7 @@ The store is bounded by a byte high-water mark (default **256 MiB**), overridabl
 
 ### The in-process warm SLA
 
-[stale_warm.rs](../../packages/git-span/benches/stale_warm.rs) measures `stale_spans()` **in-process** (no process spawn) and enforces the historical warm-clean SLA: a manual median over 30 iterations must stay under 40 ms, or the bench panics. This is the apples-to-apples home for the 40 ms figure — the process-level `stale-warm` cell in `real_corpus.rs` is necessarily higher (it includes ~17 ms startup + ~12 ms discovery) and carries its own, looser, process-level ceiling.
+[drift_warm.rs](../../packages/git-span/benches/drift_warm.rs) measures `drift_spans()` **in-process** (no process spawn) and enforces the historical warm-clean SLA: a manual median over 30 iterations must stay under 40 ms, or the bench panics. This is the apples-to-apples home for the 40 ms figure — the process-level `drift-warm` cell in `real_corpus.rs` is necessarily higher (it includes ~17 ms startup + ~12 ms discovery) and carries its own, looser, process-level ceiling.
 
 ## `size_sweep` — scaling-cliff detection
 
@@ -70,4 +70,4 @@ The sweep's corpora come from [src/bench_corpus.rs](../../packages/git-span/src/
 
 ## Relationship to the profiling tools
 
-The benchmarks tell you *how fast* and *whether output is correct*; the profiling tools in [packages/git-span/docs/profiling.md](../../packages/git-span/docs/profiling.md) tell you *where the time goes*. `GIT_SPAN_PERF=1` emits span/counter breakdowns (and confirms which cache path a run took — invaluable when a measurement looks wrong), and `git span stale --perf-trace <csv>` emits per-anchor wall-clock. Reach for those when a benchmark surfaces a regression and you need to localize it.
+The benchmarks tell you *how fast* and *whether output is correct*; the profiling tools in [packages/git-span/docs/profiling.md](../../packages/git-span/docs/profiling.md) tell you *where the time goes*. `GIT_SPAN_PERF=1` emits span/counter breakdowns (and confirms which cache path a run took — invaluable when a measurement looks wrong), and `git span drift --perf-trace <csv>` emits per-anchor wall-clock. Reach for those when a benchmark surfaces a regression and you need to localize it.

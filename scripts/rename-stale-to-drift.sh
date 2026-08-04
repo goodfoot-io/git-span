@@ -14,6 +14,12 @@
 #   --apply       Perform the rename (requires a clean tracked worktree).
 #   --skip-post   With --apply: skip rebuild / re-anchor / yarn validate.
 #   --diff [p..]  Dry run only: unified diff of the content rewrite.
+#   --verify      Run only the post-apply acceptance checks against the current
+#                 tree. Skips the pre-flight assertions, which by design read
+#                 zero once the rename has landed.
+#   --rewrite <p> Filter stdin through the content rewrite as if it were the
+#                 file at pre-rename path <p>, and exit. Reproduces the expected
+#                 post-rename bytes of any file from its pre-rename blob.
 #
 # ALLOWLIST, NOT DENYLIST. A repo-wide grep for "stale" returns ~1,700 hits
 # and most are unrelated (the website story engine's stale clock, `wiki
@@ -22,8 +28,12 @@
 # everything else, so an unrelated hit can never be caught by accident.
 #
 # What it does, in order:
-#   1. Span renames (`git span move`, not `git mv`) for the repo's own
-#      `.span/` spans whose *names* carry the word.
+#   1. Span renames for the repo's own `.span/` spans whose *names* carry
+#      the word. A span's name IS its path under `.span/` — there is no
+#      index and no `git span` subcommand that renames one — so these are
+#      plain `git mv`s, kept in their own step because they also have to
+#      create the new `drift/` and `drift-fix/` parent directories and must
+#      run before the content rewrite re-enumerates the tree.
 #   2. Content rewrite of every allowlisted tracked file:
 #        a. curated exclusions are sentinel-protected (false positives that
 #           must survive verbatim),
@@ -57,7 +67,7 @@
 # session pruning) — if the sentence would still be true in a tool with no
 # concept of anchors, it is excluded, not renamed.
 #
-# `.span/` gets both treatments: names move via `git span move` (step 1) and
+# `.span/` gets both treatments: names move in step 1 and
 # content is rewritten (step 2) so anchor *paths* follow their renamed files.
 # The `rk64:` digests and line ranges are left for the re-anchor step, which
 # only has to relocate within a file it can actually find.
@@ -79,6 +89,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --apply) MODE=apply ;;
         --dry-run) MODE=dry ;;
+        --verify) MODE=verify ;;
+        --rewrite) MODE=rewrite; REWRITE_PATH="$2"; shift ;;
         --skip-post) SKIP_POST=1 ;;
         --diff) SHOW_DIFF=1 ;;
         --*) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -330,9 +342,10 @@ s/stale/drift/g
 '
 
 # ---------------------------------------------------------------------------
-# `.span/` span names. These are span *names*, not paths on disk that `git mv`
-# may move: renaming them goes through `git span move` so git-span's own
-# bookkeeping stays consistent. `history-stale-shared-drift-rendering` reads
+# `.span/` span names. A span's name is exactly its path under `.span/`, so
+# renaming one is a `git mv` of the declaration file; they are listed here
+# rather than derived because two of them are not mechanical.
+# `history-stale-shared-drift-rendering` reads
 # "history and stale share drift rendering" — the mechanical name would be
 # `history-drift-shared-drift-rendering`, so it is spelled out here.
 # ---------------------------------------------------------------------------
@@ -361,6 +374,81 @@ COUPLED_BENCH_KEYS=(stale-cold stale-warm dirty-tree-stale-warm stale-fix)
 
 RESERVED_FILE=packages/git-span-core/src/validation.rs
 DTO_FILE=packages/git-span/src/resolver/store/dto.rs
+
+# Read the pinned value from HEAD, not the worktree, so `--verify` after an
+# uncommitted apply compares against the same pre-rename baseline `--apply` does.
+FORMAT_VERSION_BEFORE=$(git show "HEAD:$DTO_FILE" | grep -oE 'FORMAT_VERSION: u8 = [0-9]+' | head -1 || true)
+
+# ---------------------------------------------------------------------------
+# Verification: the acceptance checks, callable on their own via --verify so a
+# tree that has already been rewritten can be re-checked without re-running the
+# (deliberately non-idempotent) rename.
+# ---------------------------------------------------------------------------
+
+run_verification() {
+    head_ln "verification"
+    FAIL=0
+
+    # Paths that keep the word on purpose: this script, and the wholly excluded
+    # files (build-artifact cleanup, session pruning) whose *names* carry it too.
+    PATH_EXEMPT_ARGS=(-e "$SELF")
+    for f in "${EXCLUDE_FILES[@]}"; do PATH_EXEMPT_ARGS+=(-e "$f"); done
+    LEFTOVER_PATHS=$( { git ls-files -- "${ALLOW_ROOTS[@]}" | grep -i stale || true; } \
+        | grep -vxF "${PATH_EXEMPT_ARGS[@]}" || true)
+    if [ -n "$LEFTOVER_PATHS" ]; then
+        printf '%s\n' "$LEFTOVER_PATHS"
+        say "FAIL: allowlisted paths above still contain 'stale'"
+        FAIL=1
+    fi
+
+    RESIDUAL=$(git grep -inI stale -- "${PATHSPEC[@]}" || true)
+    if [ -n "$RESIDUAL" ]; then
+        HARD="$RESIDUAL"
+        for entry in "${GLOBAL_EXCLUSIONS[@]}"; do
+            phrase="${entry%|*}"
+            HARD=$(printf '%s\n' "$HARD" | grep -vF -- "$phrase" || true)
+        done
+        for entry in "${EXCLUSIONS[@]}"; do
+            phrase="${entry#*|}"; phrase="${phrase%|*}"
+            HARD=$(printf '%s\n' "$HARD" | grep -vF -- "$phrase" || true)
+        done
+        if [ -n "$HARD" ]; then
+            say "FAIL: residual 'stale' in allowlisted content:"
+            printf '%s\n' "$HARD" | cut -c1-160
+            FAIL=1
+        else
+            say "residual 'stale' is exactly the ${#GLOBAL_EXCLUSIONS[@]} global + ${#EXCLUSIONS[@]} per-file curated exclusions"
+        fi
+    fi
+
+    FORMAT_VERSION_AFTER=$(grep -oE 'FORMAT_VERSION: u8 = [0-9]+' "$DTO_FILE" | head -1 || true)
+    if [ "$FORMAT_VERSION_AFTER" != "$FORMAT_VERSION_BEFORE" ]; then
+        say "FAIL: FORMAT_VERSION changed ($FORMAT_VERSION_BEFORE -> $FORMAT_VERSION_AFTER);"
+        say "      the DriftSummary rename is source-level only"
+        FAIL=1
+    fi
+
+    if ! grep -qF '"drift",' "$RESERVED_FILE"; then
+        say "FAIL: RESERVED_SPAN_NAMES lost the subcommand token"
+        FAIL=1
+    fi
+
+    # Every bench cell name emitted by real_corpus.rs must resolve to a
+    # perf-baseline.json key, or the no-regression gate silently loses its baseline.
+    for key in "${COUPLED_BENCH_KEYS[@]}"; do
+        new_key=$(printf '%s' "$key" | sed -e "$MAIN_SED")
+        if ! grep -qF "\"$new_key\"" "$BASELINE_FILE" || ! grep -qF "\"$new_key\"" "$CORPUS_FILE"; then
+            say "FAIL: bench cell/baseline pair out of lockstep: $new_key"
+            FAIL=1
+        fi
+    done
+
+    if [ "$FAIL" -ne 0 ]; then
+        echo "verification failed" >&2
+        exit 1
+    fi
+    say "verification passed"
+}
 
 # ---------------------------------------------------------------------------
 # Rewrite pipeline
@@ -428,6 +516,15 @@ rewrite_stream() {
 
 map_path() { printf '%s' "$1" | sed -e "$MAIN_SED"; }
 
+# `--rewrite <pre-rename-path>`: filter stdin through the same rewrite the apply
+# step uses, as if the stream were that file. Lets an auditor reproduce the
+# expected post-rename bytes of any file from its pre-rename blob, so "the whole
+# diff is exactly this rename" is checkable rather than asserted.
+if [ "$MODE" = rewrite ]; then
+    rewrite_stream "$REWRITE_PATH"
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Enumerate allowlisted tracked files
 # ---------------------------------------------------------------------------
@@ -446,6 +543,11 @@ for f in "${ALL_TRACKED[@]}"; do
 done
 
 mapfile -t TOUCHED < <(git grep -lI -i stale -- "${PATHSPEC[@]}" || true)
+
+if [ "$MODE" = verify ]; then
+    run_verification
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Pre-flight report (both modes)
@@ -544,7 +646,6 @@ else
     say "reserved [1] $RESERVED_FILE :: \"stale\" -> \"drift\""
 fi
 
-FORMAT_VERSION_BEFORE=$(grep -oE 'FORMAT_VERSION: u8 = [0-9]+' "$DTO_FILE" | head -1 || true)
 if [ -z "$FORMAT_VERSION_BEFORE" ]; then
     say "FORMAT_VERSION not found in $DTO_FILE"
     MISS=1
@@ -560,11 +661,11 @@ if [ "$MISS" -ne 0 ]; then
     exit 1
 fi
 
-head_ln "step 1: span renames (git span move)"
+head_ln "step 1: span renames (git mv under .span/)"
 for entry in "${SPAN_RENAMES[@]}"; do
     old="${entry%%|*}"; new="${entry#*|}"
     if [ -e ".span/$old" ]; then
-        say "  git span move $old $new"
+        say "  .span/$old -> .span/$new"
     else
         say "  MISSING SPAN: .span/$old"
         MISS=1
@@ -588,8 +689,8 @@ head_ln "step 3: path renames (git mv)"
 RENAME_OLD=()
 RENAME_NEW=()
 for f in "${SCOPED[@]}"; do
-    # `.span/` paths ARE span names: they move via `git span move` in step 1,
-    # which rewrites the declaration's identity, not just its filename. The
+    # `.span/` paths ARE span names, so they move in step 1, which also
+    # creates the new parent directories the names imply. The
     # unlisted-span guard above proves SPAN_RENAMES covers all of them.
     case "$f" in .span/*) continue ;; esac
     case "$f" in
@@ -619,7 +720,7 @@ if [ "$SKIP_POST" -eq 1 ]; then
     say "  (verification still runs)"
 else
     say "yarn workspace agent-hooks build          # bundled hooks embed the renamed source"
-    say "yarn workspace @goodfoot/git-span build   # release binary + regenerated man page"
+    say "yarn workspace git-span build   # release binary + regenerated man page"
     say "git span drift --fix && git span drift    # re-anchor .span/, confirm clean"
     say "yarn validate                             # full typecheck/lint/test/build gate"
 fi
@@ -655,7 +756,10 @@ fi
 # Apply
 # ---------------------------------------------------------------------------
 
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+# The guard exists so that after apply, `git diff` IS the rename and nothing
+# else. Uncommitted edits to this script are exempt: it is excluded from both
+# the rewrite and the path renames, so it cannot contaminate that diff.
+if [ -n "$(git status --porcelain --untracked-files=no -- . ":!$SELF")" ]; then
     echo "tracked worktree is not clean; commit or stash first" >&2
     exit 1
 fi
@@ -663,9 +767,13 @@ fi
 head_ln "applying span renames"
 for entry in "${SPAN_RENAMES[@]}"; do
     old="${entry%%|*}"; new="${entry#*|}"
-    git span move "$old" "$new"
+    mkdir -p ".span/$(dirname "$new")"
+    git mv ".span/$old" ".span/$new"
 done
 say "spans renamed: ${#SPAN_RENAMES[@]}"
+# `git mv` empties `.span/stale/` and `.span/*/stale-fix/` but leaves the
+# directories on disk; git does not track them, so nothing else would.
+find .span -mindepth 1 -type d -empty -delete
 
 # `git span move` renamed files out from under the list captured at startup, so
 # re-enumerate before rewriting content or the moved declarations are skipped.
@@ -707,7 +815,7 @@ if [ "$SKIP_POST" -eq 0 ]; then
     yarn workspace agent-hooks build
 
     head_ln "post: build git-span (binary + man page)"
-    yarn workspace @goodfoot/git-span build
+    yarn workspace git-span build
 
     head_ln "post: re-anchor .span/"
     BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build/release"
@@ -719,57 +827,7 @@ if [ "$SKIP_POST" -eq 0 ]; then
     PATH="$BIN_DIR:$PATH" git span drift
 fi
 
-head_ln "verification"
-FAIL=0
-
-if git ls-files -- "${ALLOW_ROOTS[@]}" | grep -i stale | grep -vxF "$SELF"; then
-    say "FAIL: allowlisted paths above still contain 'stale'"
-    FAIL=1
-fi
-
-RESIDUAL=$(git grep -inI stale -- "${PATHSPEC[@]}" || true)
-if [ -n "$RESIDUAL" ]; then
-    HARD="$RESIDUAL"
-    for entry in "${EXCLUSIONS[@]}"; do
-        phrase="${entry#*|}"; phrase="${phrase%|*}"
-        HARD=$(printf '%s\n' "$HARD" | grep -vF -- "$phrase" || true)
-    done
-    if [ -n "$HARD" ]; then
-        say "FAIL: residual 'stale' in allowlisted content:"
-        printf '%s\n' "$HARD" | cut -c1-160
-        FAIL=1
-    else
-        say "residual 'stale' is exactly the ${#EXCLUSIONS[@]} curated exclusions"
-    fi
-fi
-
-FORMAT_VERSION_AFTER=$(grep -oE 'FORMAT_VERSION: u8 = [0-9]+' "$DTO_FILE" | head -1 || true)
-if [ "$FORMAT_VERSION_AFTER" != "$FORMAT_VERSION_BEFORE" ]; then
-    say "FAIL: FORMAT_VERSION changed ($FORMAT_VERSION_BEFORE -> $FORMAT_VERSION_AFTER);"
-    say "      the DriftSummary rename is source-level only"
-    FAIL=1
-fi
-
-if ! grep -qF '"drift",' "$RESERVED_FILE"; then
-    say "FAIL: RESERVED_SPAN_NAMES lost the subcommand token"
-    FAIL=1
-fi
-
-# Every bench cell name emitted by real_corpus.rs must resolve to a
-# perf-baseline.json key, or the no-regression gate silently loses its baseline.
-for key in "${COUPLED_BENCH_KEYS[@]}"; do
-    new_key=$(printf '%s' "$key" | sed -e "$MAIN_SED")
-    if ! grep -qF "\"$new_key\"" "$BASELINE_FILE" || ! grep -qF "\"$new_key\"" "$CORPUS_FILE"; then
-        say "FAIL: bench cell/baseline pair out of lockstep: $new_key"
-        FAIL=1
-    fi
-done
-
-if [ "$FAIL" -ne 0 ]; then
-    echo "verification failed" >&2
-    exit 1
-fi
-say "verification passed"
+run_verification
 
 if [ "$SKIP_POST" -eq 0 ]; then
     head_ln "final gate: yarn validate"

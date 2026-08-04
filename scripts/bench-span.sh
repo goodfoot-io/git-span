@@ -37,9 +37,9 @@ ITERATIONS=5
 OUT_CSV="./bench-span.csv"
 # `commit`/`restore`/`pre-commit`/`ls` are not git-span subcommands (removed
 # from the CLI, or never existed under those names — see §10.2 in
-# src/cli/mod.rs). `add`/`why`/`show`/`list`/`stale` are the current `.span/`
+# src/cli/mod.rs). `add`/`why`/`show`/`list`/`drift` are the current `.span/`
 # file lifecycle operations this harness exercises.
-OPS=(add why show list stale)
+OPS=(add why show list drift)
 KEEP_FIXTURE=0
 
 # ----------------------------- Cache-mode controls -----------------------------
@@ -58,7 +58,7 @@ KEEP_FIXTURE=0
 #   incremental-ancestor    -- warm cache, then an unrelated commit lands before sampling (ancestor-reuse path)
 #   dirty-exact              -- warm cache, then the anchored source itself is dirtied before sampling
 #   dirty-affected           -- warm cache, then an UNRELATED tracked file is dirtied before sampling
-#   concurrent-miss          -- cold cache, N processes race `stale` against the same missing key
+#   concurrent-miss          -- cold cache, N processes race `drift` against the same missing key
 CACHE_MODE="${CACHE_MODE:-exact-warm}"
 CONCURRENT_MISS_PROCS="${CONCURRENT_MISS_PROCS:-4}"
 
@@ -107,17 +107,17 @@ apply_cache_mode_state() {
       clear_all_cache_tiers "$workdir"
       ;;
     exact-cold)
-      # Each sample independently clears the cache (see the `stale` op case
+      # Each sample independently clears the cache (see the `drift` op case
       # in the sweep below) so every sample measures a first build.
       clear_all_cache_tiers "$workdir"
       ;;
     exact-warm)
       clear_all_cache_tiers "$workdir"
-      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$workdir" && git-span drift --no-exit-code >/dev/null 2>&1 || true )
       ;;
     incremental-ancestor)
       clear_all_cache_tiers "$workdir"
-      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$workdir" && git-span drift --no-exit-code >/dev/null 2>&1 || true )
       # An unrelated committed change (no span anchors it) so a warm cache
       # must locate an ancestor generation rather than rebuild from scratch.
       ( cd "$workdir" \
@@ -131,7 +131,7 @@ apply_cache_mode_state() {
       # switch — the Phase 7 cutover removed the development `GIT_SPAN_CACHE_STORE_V3`
       # selector), so priming warm and then dirtying is all these modes need.
       clear_all_cache_tiers "$workdir"
-      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$workdir" && git-span drift --no-exit-code >/dev/null 2>&1 || true )
       # Dirty exactly one anchored source file (the first bench anchor path).
       if [[ ${#bench_anchors[@]} -gt 0 ]]; then
         local target="${bench_anchors[0]%%#L*}"
@@ -141,7 +141,7 @@ apply_cache_mode_state() {
     dirty-affected)
       # Same store dirty-overlay path as `dirty-exact`; no selector switch.
       clear_all_cache_tiers "$workdir"
-      ( cd "$workdir" && git-span stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$workdir" && git-span drift --no-exit-code >/dev/null 2>&1 || true )
       # Dirty a tracked file NO span anchors, so the affected-set stays
       # small relative to corpus size (the path this card's dirty-reuse
       # work optimizes for).
@@ -406,19 +406,19 @@ for ref in "${REFS[@]}"; do
             list)
               t=$(cd "$WORKDIR" && timed 0 -- git-span list) || continue
               ;;
-            stale)
+            drift)
               if [[ "$CACHE_MODE" == "exact-cold" ]]; then
                 clear_all_cache_tiers "$WORKDIR"
               fi
               if [[ "$CACHE_MODE" == "concurrent-miss" ]]; then
                 clear_all_cache_tiers "$WORKDIR"
-                # N processes race `stale` against the same missing key; the
+                # N processes race `drift` against the same missing key; the
                 # sample is the WALL time of the slowest racer (what a caller
                 # of a stampede actually waits for).
                 local_pids=()
                 t0=$(date +%s.%N)
                 for (( p = 0; p < CONCURRENT_MISS_PROCS; p++ )); do
-                  ( cd "$WORKDIR" && git-span stale --no-exit-code >/dev/null 2>&1 ) &
+                  ( cd "$WORKDIR" && git-span drift --no-exit-code >/dev/null 2>&1 ) &
                   local_pids+=("$!")
                 done
                 rc=0
@@ -432,10 +432,10 @@ for ref in "${REFS[@]}"; do
                 fi
                 t=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }')
               else
-                # `stale --no-exit-code` always exits 0 by design; `stale`
+                # `drift --no-exit-code` always exits 0 by design; `drift`
                 # itself may legitimately exit 0 or 1 (drift found) — this
                 # harness uses --no-exit-code so 0 is the only accepted code.
-                t=$(cd "$WORKDIR" && timed 0 -- git-span stale --no-exit-code) || continue
+                t=$(cd "$WORKDIR" && timed 0 -- git-span drift --no-exit-code) || continue
               fi
               ;;
           esac

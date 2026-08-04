@@ -140,8 +140,8 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     const posted = await waitForPostedDocument(uri);
     assert.strictEqual(posted.spanName, 'fixture-span-test');
     assert.strictEqual(posted.why, 'Why this coupling exists.');
-    assert.strictEqual(posted.stale, false, 'Expected a clean span to not carry the Stale pill');
-    assert.deepStrictEqual(posted.staleReasons, []);
+    assert.strictEqual(posted.drift, false, 'Expected a clean span to not carry the Drift pill');
+    assert.deepStrictEqual(posted.driftReasons, []);
 
     // The test workspace is not a git repository, so `git log` reports nothing
     // and the resolver falls back to the declaration file's mtime -- the
@@ -197,8 +197,8 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     assert.strictEqual(outcome.danglingCount, 0);
 
     const posted = await waitForPostedDocument(uri);
-    assert.strictEqual(posted.stale, true, 'Expected a drifted span to carry the Stale pill');
-    assert.deepStrictEqual(posted.staleReasons, ['1 anchor drifted']);
+    assert.strictEqual(posted.drift, true, 'Expected a drifted span to carry the Drift pill');
+    assert.deepStrictEqual(posted.driftReasons, ['1 anchor drifted']);
 
     assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
     const anchor = posted.anchors[0];
@@ -273,7 +273,7 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       anchor !== undefined && anchor.kind === 'changed',
       `Expected the raced read to post a "content changed" status card, got: ${JSON.stringify(anchor)}`
     );
-    assert.strictEqual(posted.stale, true, 'Expected a raced read to make the span stale');
+    assert.strictEqual(posted.drift, true, 'Expected a raced read to make the span drift');
 
     assert.strictEqual(posted.history.length, 1, 'Expected the raced anchor to keep its history accordion entry');
     const blocks = posted.history[0]?.blocks;
@@ -313,8 +313,8 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       `Expected a dangling anchor card, got: ${JSON.stringify(anchor)}`
     );
     assert.deepStrictEqual(firstPosted.history, [], 'Expected no history accordion entries for a dangling span');
-    assert.strictEqual(firstPosted.stale, true, 'Expected an all-dangling span to carry the Stale pill');
-    assert.deepStrictEqual(firstPosted.staleReasons, ['1 anchor without history']);
+    assert.strictEqual(firstPosted.drift, true, 'Expected an all-dangling span to carry the Drift pill');
+    assert.deepStrictEqual(firstPosted.driftReasons, ['1 anchor without history']);
 
     // Restore the anchor file: the watcher re-renders and posts a fresh
     // document into the same, still-listening webview -- never into a dead
@@ -356,8 +356,8 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       original: 'src.ts#L1-L3 rk64:deadbeef\n\nWhy this coupling exists.\n',
       modified: 'src.ts#L1-L3 rk64:deadbeef\n\nWhy this coupling still exists.\n'
     });
-    assert.strictEqual(posted.stale, true, 'Expected an uncommitted declaration edit to make the span stale');
-    assert.deepStrictEqual(posted.staleReasons, ['span file edited in the working tree']);
+    assert.strictEqual(posted.drift, true, 'Expected an uncommitted declaration edit to make the span drift');
+    assert.deepStrictEqual(posted.driftReasons, ['span file edited in the working tree']);
 
     // The dirty branch leads with the worktree mtime, so the posted timestamp
     // tracks the edit rather than any commit date.

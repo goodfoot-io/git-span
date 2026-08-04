@@ -2,7 +2,7 @@
 //! main-157 Phase 3, sub-scope 3B).
 //!
 //! Phase 1 froze the *shape* of [`StateToken`] (`super::token`); this module
-//! is the first code that builds a real one from an actual `git span stale`
+//! is the first code that builds a real one from an actual `git span drift`
 //! invocation's live git/filesystem/option state, and the companion
 //! `revalidate` that re-reads every mutable component after computation and
 //! reports whether the snapshot still holds. Together they implement the
@@ -16,7 +16,7 @@
 //! 4. if any token field changed, the caller discards the candidate.
 //!
 //! This module deliberately does **no** storage, no env switch, and no wiring
-//! into [`stale_spans_retaining_source_layers`](crate::resolver::engine)
+//! into [`drift_spans_retaining_source_layers`](crate::resolver::engine)
 //! — that is sibling task 3C, which calls `capture_state_token_with_memo`
 //! before resolution and `revalidate_with_memo` before publication. Every git
 //! read reuses the existing plumbing layer ([`crate::git`],
@@ -56,7 +56,7 @@
 //!   `decrypt --key-env SECRET_KEY` binary reading `$SECRET_KEY`. A command-line
 //!   `$VAR` scan is a sound lower bound on *referenced* names but not a proof of
 //!   *total* dependency, so keying only referenced names would be fail-OPEN: a
-//!   changed variable the scan cannot see would serve a stale exact hit. These
+//!   changed variable the scan cannot see would serve a drifted exact hit. These
 //!   drivers therefore key the WHOLE process environment (fail-closed): any env
 //!   change fragments the key rather than risk a false hit (CLAUDE.md
 //!   `<fail-closed>`). The over-broad whole-`vars_os()` digest this restores for
@@ -119,11 +119,11 @@ const EMPTY_TREE_HEX: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// proxy.
 ///
 /// `options` is the caller's [`EngineOptions`]; `span_root` is the already
-/// precedence-resolved span root (as `stale_spans_cached` receives it).
+/// precedence-resolved span root (as `drift_spans_cached` receives it).
 ///
 /// Equivalent to [`capture_state_token_with_memo`] with no digest memo (every
 /// filter executable is hashed directly). The one production call site
-/// (`resolver::exact::stale_spans_new_store`) always has an open `CacheStore`
+/// (`resolver::exact::drift_spans_new_store`) always has an open `CacheStore`
 /// to offer and uses [`capture_state_token_with_memo`] directly; this plain
 /// entry point survives only as the convenience the many in-process tests
 /// (which have no store handle to thread through) call instead — hence
@@ -737,7 +737,7 @@ fn is_executable_file(p: &Path) -> bool {
 /// resolved file's current stat identity matches a previously recorded row,
 /// the stored digest is reused with no read of the file at all. This is what
 /// removes the repeated mmap+hash of a large filter binary (e.g. an ~11 MiB
-/// git-lfs install) across separate `git span stale` invocations — the
+/// git-lfs install) across separate `git span drift` invocations — the
 /// per-call `content_cache` alone only dedupes *within* one call's several
 /// filter commands sharing one binary.
 fn executable_content_digest(
@@ -809,7 +809,7 @@ fn hash_executable(resolved: &Path) -> Option<[u8; 32]> {
 ///   variable internally (`getenv`), which a command-line `$VAR` scan cannot
 ///   detect. It therefore takes the fail-closed [`whole_env_digest`]: the whole
 ///   process environment, so any env change fragments the key rather than
-///   risking a stale exact hit (CLAUDE.md `<fail-closed>`).
+///   risking a drifted exact hit (CLAUDE.md `<fail-closed>`).
 fn filter_env_digest(driver: &str, kv: &BTreeMap<String, String>) -> [u8; 32] {
     if crate::types::is_core_filter(driver) {
         declared_env_digest(kv)
@@ -860,7 +860,7 @@ fn declared_env_digest(kv: &BTreeMap<String, String>) -> [u8; 32] {
 /// substituting `$VAR` into file CONTENT, a `decrypt --key-env SECRET_KEY` binary
 /// reading `$SECRET_KEY`. A command-line `$VAR` scan proves only *referenced*
 /// names, not a driver's *total* dependency, so keying only those would be
-/// fail-OPEN: a changed variable the scan cannot see would serve a stale exact
+/// fail-OPEN: a changed variable the scan cannot see would serve a drifted exact
 /// hit. Keying the whole environment fails closed — any env change fragments the
 /// key. The cost (no reuse across ambient env changes for custom-filter repos) is
 /// the correct trade for a dependency that cannot be statically proven complete.
@@ -898,7 +898,7 @@ fn referenced_env_var_names(kv: &BTreeMap<String, String>) -> BTreeSet<String> {
 /// referenced name regardless of quoting or escaping (a `$VAR` the shell would
 /// not actually expand inside `'single quotes'` is still keyed). Over-specifying
 /// identity this way is fail-closed — it can only reject a legitimate reuse, not
-/// serve a stale one — whereas under-scanning would risk a false cache hit.
+/// serve a drifted one — whereas under-scanning would risk a false cache hit.
 fn scan_env_refs(s: &str, out: &mut BTreeSet<String>) {
     let b = s.as_bytes();
     let mut i = 0;

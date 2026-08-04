@@ -34,7 +34,7 @@ pub(crate) struct EngineLocal {
     pub(crate) layers: LayerSet,
     /// Phase 4 (layer neutrality): when false, `compute_layer_sources` may
     /// short-circuit once it has enough information to drive the exit code.
-    /// Set by `cli/stale.rs` based on whether the output mode requires
+    /// Set by `cli/drift.rs` based on whether the output mode requires
     /// per-layer detail (`--patch`, `--stat`, the `human` renderer).
     pub(crate) needs_all_layers: bool,
     pub(crate) lfs: LfsState,
@@ -85,7 +85,7 @@ pub(crate) struct SharedEngineContext {
     pub(crate) warnings: Vec<String>,
 }
 
-/// Engine-level state cached for one `stale` run.
+/// Engine-level state cached for one `drift` run.
 ///
 /// Card main-162 split what was one flat struct into three: the per-worker
 /// [`EngineLocal`], the read-only [`SharedEngineContext`], and the
@@ -103,7 +103,7 @@ pub(crate) struct EngineState {
 }
 
 /// Reusable source-layer state captured from a pre-fix `EngineState` so the
-/// post-fix re-resolve in `stale --fix` can skip re-reading the worktree
+/// post-fix re-resolve in `drift --fix` can skip re-reading the worktree
 /// source layer (`read_worktree_layer*`) on the cold path.
 ///
 /// Carries the static source-layer fields plus the post-scan
@@ -240,7 +240,7 @@ impl EngineState {
             && let Ok(end) = read_index_trailer(repo)
             && end != start
         {
-            eprintln!("warning: index changed during stale; consider re-running");
+            eprintln!("warning: index changed during drift; consider re-running");
             true
         } else {
             false
@@ -256,7 +256,7 @@ impl EngineState {
     }
 
     /// Like `finish`, but returns the reusable source-layer state instead of
-    /// dropping it, so the post-fix re-resolve in `stale --fix` can rebuild an
+    /// dropping it, so the post-fix re-resolve in `drift --fix` can rebuild an
     /// `EngineState` without re-reading the worktree source layer.
     ///
     /// Emits the pre-fix session + engine warnings and the index-trailer
@@ -271,7 +271,7 @@ impl EngineState {
             && let Ok(end) = read_index_trailer(repo)
             && end != start
         {
-            eprintln!("warning: index changed during stale; consider re-running");
+            eprintln!("warning: index changed during drift; consider re-running");
             true
         } else {
             false
@@ -296,7 +296,7 @@ impl EngineState {
 
     /// Build ONLY the reusable source-layer state — the worktree/index source
     /// layer scan (`read_layer_status` + `read_worktree_layer*`) — without
-    /// resolving any span. Used by `stale --fix` to compute the source layers
+    /// resolving any span. Used by `drift --fix` to compute the source layers
     /// once (before `apply_fix` mutates `.span/` files) and reuse them for the
     /// post-fix re-resolve via `from_source_layers`, so the post-fix pass does
     /// NOT re-run the `git status` source scan.
@@ -516,7 +516,7 @@ fn resolve_span_with_state_at(
         // `parse` is a pure text→struct transform; surface a genuine
         // parse/conflict error rather than masking it as a missing span.
         // Interior-anchor containment is NOT enforced here — it is surfaced
-        // at the `stale`/`doctor` reporting surfaces so drift never silently
+        // at the `drift`/`doctor` reporting surfaces so drift never silently
         // honors an interior anchor while a poisoned span stays repairable.
         let file = crate::span_file::SpanFile::parse(&text)?;
         span_from_file(name, &file)
@@ -677,59 +677,59 @@ fn emit_timeline_cache_counters(session: &ConcurrentSession) {
     );
 }
 
-/// Where one [`AnchorStatus`] sits relative to stale's two reporting
+/// Where one [`AnchorStatus`] sits relative to drift's two reporting
 /// boundaries. Both predicates below are projections of this single
 /// exhaustive classification, so a new `AnchorStatus` variant cannot land on
 /// one side of one boundary without the author deciding both here.
-enum StaleReportingClass {
+enum DriftReportingClass {
     /// Current bytes equal anchored bytes; nothing to report anywhere.
     Fresh,
-    /// Shown in stale's human presentation, but does not drive stale's exit
+    /// Shown in drift's human presentation, but does not drive drift's exit
     /// status, clustering, or history's `current` anchors.
     Informational,
     /// Actionable drift on every surface.
     ActionableDrift,
 }
 
-fn stale_reporting_class(status: &AnchorStatus) -> StaleReportingClass {
+fn drift_reporting_class(status: &AnchorStatus) -> DriftReportingClass {
     match status {
-        AnchorStatus::Fresh => StaleReportingClass::Fresh,
-        AnchorStatus::ResolvedPendingCommit => StaleReportingClass::Informational,
+        AnchorStatus::Fresh => DriftReportingClass::Fresh,
+        AnchorStatus::ResolvedPendingCommit => DriftReportingClass::Informational,
         AnchorStatus::Moved
         | AnchorStatus::Changed
         | AnchorStatus::Deleted
         | AnchorStatus::MergeConflict
         | AnchorStatus::Submodule
-        | AnchorStatus::ContentUnavailable(_) => StaleReportingClass::ActionableDrift,
+        | AnchorStatus::ContentUnavailable(_) => DriftReportingClass::ActionableDrift,
     }
 }
 
-/// A fully-freshened span (every anchor `Fresh`) is omitted from stale
-/// rendering. The `stale --fix` output-equivalence tests assert this holds
+/// A fully-freshened span (every anchor `Fresh`) is omitted from drift
+/// rendering. The `drift --fix` output-equivalence tests assert this holds
 /// identically on both the read-only and `--fix` passes.
 ///
 /// Informational anchors keep a span reportable here — a span whose only
 /// non-`Fresh` anchor is `ResolvedPendingCommit` is still shown — while
-/// [`anchor_status_is_stale_drift`] excludes them; both boundaries are
-/// spelled over [`stale_reporting_class`].
-pub(crate) fn span_is_reportable_in_stale_discovery(m: &SpanResolved) -> bool {
+/// [`anchor_status_is_drift`] excludes them; both boundaries are
+/// spelled over [`drift_reporting_class`].
+pub(crate) fn span_is_reportable_in_drift_discovery(m: &SpanResolved) -> bool {
     m.anchors.iter().any(|a| {
         !matches!(
-            stale_reporting_class(&a.status),
-            StaleReportingClass::Fresh
+            drift_reporting_class(&a.status),
+            DriftReportingClass::Fresh
         )
     })
 }
 
-/// Whether an anchor contributes actionable stale drift.
+/// Whether an anchor contributes actionable drift.
 ///
 /// [`AnchorStatus::ResolvedPendingCommit`] remains an informational state in
-/// stale's human presentation, but like [`AnchorStatus::Fresh`] it does not
-/// drive stale's exit status, clustering, or history's `current` anchors.
-pub(crate) fn anchor_status_is_stale_drift(status: &AnchorStatus) -> bool {
+/// drift's human presentation, but like [`AnchorStatus::Fresh`] it does not
+/// drive drift's exit status, clustering, or history's `current` anchors.
+pub(crate) fn anchor_status_is_drift(status: &AnchorStatus) -> bool {
     matches!(
-        stale_reporting_class(status),
-        StaleReportingClass::ActionableDrift
+        drift_reporting_class(status),
+        DriftReportingClass::ActionableDrift
     )
 }
 
@@ -738,7 +738,7 @@ pub(crate) fn anchor_status_is_stale_drift(status: &AnchorStatus) -> bool {
 /// each name through its span file. Preserves input order; per-name
 /// resolution failures are returned alongside the name rather than aborting
 /// the whole call so the path-index candidate workflow stays robust against a
-/// stale path-index entry.
+/// drifted path-index entry.
 /// Per-name resolution outcomes: input order preserved, each name paired with
 /// its `Ok(SpanResolved)` or a per-name resolution `Err`.
 type NamedSpanResults = Vec<(String, std::result::Result<SpanResolved, Error>)>;
@@ -762,7 +762,7 @@ pub(crate) fn resolve_named_spans(
 
 /// Floor on the chunk size rayon's adaptive work-stealing will split the
 /// flattened anchor batch down to in [`capture_resolution_core`], for the
-/// **primary cold `stale` path** ([`resolver::exact::cold_miss`]). `map_init`
+/// **primary cold `drift` path** ([`resolver::exact::cold_miss`]). `map_init`
 /// spawns a fresh `EngineLocal` (and a real `FilterProcess`/`LfsState`
 /// subprocess plus a `gix::Repository` clone) per rayon job, and rayon splits
 /// the batch into roughly `anchors / floor` jobs — so the floor sets both the
@@ -783,7 +783,7 @@ pub(crate) fn resolve_named_spans(
 /// overlap and measurably regress trivially-cheap (all-fresh) corpora, where the
 /// clone overhead dominates; 16 is the balance point across the 50/150/300/600-
 /// anchor sweep.
-pub(crate) const COLD_STALE_MIN_ANCHORS_PER_TASK: usize = 16;
+pub(crate) const COLD_DRIFT_MIN_ANCHORS_PER_TASK: usize = 16;
 
 /// Floor for the small-batch `incremental`/`dirty` callers, which pass only the
 /// re-resolved `affected_names` subset (typically a handful of spans). Set above
@@ -792,7 +792,7 @@ pub(crate) const COLD_STALE_MIN_ANCHORS_PER_TASK: usize = 16;
 /// serial-vs-parallel threshold — forking a tiny subset would spend more on
 /// per-job `EngineLocal`/repo-clone init than the overlap could ever recover.
 ///
-/// Deliberately distinct from [`COLD_STALE_MIN_ANCHORS_PER_TASK`]: card
+/// Deliberately distinct from [`COLD_DRIFT_MIN_ANCHORS_PER_TASK`]: card
 /// main-162's finding fix lowered the cold path's floor for real multi-core
 /// scaling, but that must not drag the small-batch callers into forking. This
 /// preserves their pre-fix behavior (the original shared `64`) byte-for-byte.
@@ -807,18 +807,18 @@ pub(crate) const SMALL_BATCH_MIN_ANCHORS_PER_TASK: usize = 64;
 /// Worktree drift).
 ///
 /// This is additive instrumentation: it neither alters nor is reachable from
-/// the default resolution path (`resolve_named_spans` / `stale_spans_*`).
+/// the default resolution path (`resolve_named_spans` / `drift_spans_*`).
 /// Capture always observes all three layers regardless of any eventual view,
 /// so the core is genuinely layer-neutral; `super::core::project` reconstructs
 /// the committed or effective `SpanResolved` from it by pure selection.
 ///
 /// `min_anchors_per_task` is the rayon split floor (see
-/// [`COLD_STALE_MIN_ANCHORS_PER_TASK`] / [`SMALL_BATCH_MIN_ANCHORS_PER_TASK`]):
-/// the primary cold `stale` path passes the low cold-path floor for real
+/// [`COLD_DRIFT_MIN_ANCHORS_PER_TASK`] / [`SMALL_BATCH_MIN_ANCHORS_PER_TASK`]):
+/// the primary cold `drift` path passes the low cold-path floor for real
 /// multi-core scaling; the small-batch `incremental`/`dirty` callers pass the
 /// higher small-batch floor to stay pinned to one task. It affects scheduling
 /// only — output is byte-identical across any floor (guarded by
-/// `tests/cases/cli_stale_parallel_equivalence.rs`).
+/// `tests/cases/cli_drift_parallel_equivalence.rs`).
 pub(crate) fn capture_resolution_core(
     repo: &gix::Repository,
     span_root: &str,
@@ -903,8 +903,8 @@ pub(crate) fn capture_resolution_core(
     // precedent in `resolve_named_spans_parallel`. `shared`/`concurrent` are the
     // read-only context and the interior-mutable memo store, shared by plain
     // `&`. `.with_min_len(min_anchors_per_task)` floors rayon's split
-    // granularity: the primary cold `stale` path passes the low
-    // `COLD_STALE_MIN_ANCHORS_PER_TASK` so realistic anchor counts fork across
+    // granularity: the primary cold `drift` path passes the low
+    // `COLD_DRIFT_MIN_ANCHORS_PER_TASK` so realistic anchor counts fork across
     // the machine's cores, while the small-batch `incremental`/`dirty` callers
     // pass the higher `SMALL_BATCH_MIN_ANCHORS_PER_TASK`, which sits above their
     // typical anchor counts and keeps them on one task (one `EngineLocal`) with
@@ -994,7 +994,7 @@ pub(crate) fn capture_resolution_core(
 }
 
 /// Build the reusable source-layer state (worktree/index `git status` scan)
-/// without resolving any span. Used by `stale --fix` to compute the source
+/// without resolving any span. Used by `drift --fix` to compute the source
 /// layers once before `apply_fix` mutates `.span/`, then reuse them for the
 /// post-fix re-resolve so the post-fix pass skips its own source scan.
 pub(crate) fn build_source_layers(
@@ -1005,9 +1005,9 @@ pub(crate) fn build_source_layers(
 }
 
 /// Like `resolve_named_spans`, but reuses source-layer state captured by a
-/// pre-fix `stale_spans_retaining_source_layers` instead of re-reading the
+/// pre-fix `drift_spans_retaining_source_layers` instead of re-reading the
 /// worktree source layer via `EngineState::new`. Used by the cold-path
-/// post-fix re-resolve in `stale --fix` to skip a second `read-worktree-layer`.
+/// post-fix re-resolve in `drift --fix` to skip a second `read-worktree-layer`.
 pub(crate) fn resolve_named_spans_with_source_layers(
     repo: &gix::Repository,
     span_root: &str,
@@ -1078,7 +1078,7 @@ pub(crate) fn resolve_named_spans_with_state(
         let resolved = resolve_span_with_state(repo, span_root, &mut state, name, options);
         out.push((name.clone(), resolved));
     }
-    // Emit walk perf counters matching stale_spans_inner so named-span
+    // Emit walk perf counters matching drift_spans_inner so named-span
     // resolution is observable through the same perf counter interface.
     emit_session_walk_counters(&state.concurrent);
     // Finishing is the caller's decision: each wrapper either drops the
@@ -1090,7 +1090,7 @@ pub(crate) fn resolve_named_spans_with_state(
 }
 
 /// Emit the per-session walk/cache perf counters shared by every batch
-/// resolution surface (`stale_spans_inner`, named-span resolution, and
+/// resolution surface (`drift_spans_inner`, named-span resolution, and
 /// each parallel baseline worker).
 fn emit_session_walk_counters(session: &ConcurrentSession) {
     crate::perf::counter("session.walk-bloom-skips", session.walk_bloom_skips);
@@ -1275,21 +1275,21 @@ pub(crate) fn resolve_named_spans_parallel(
     Ok(out)
 }
 
-/// Result of a stale-spans resolve pass.
-struct StaleSpansOutput {
+/// Result of a drift-spans resolve pass.
+struct DriftSpansOutput {
     spans: Vec<SpanResolved>,
     trace_rows: Vec<crate::perf::TraceRow>,
     source_layers: Option<SourceLayers>,
     index_changed: bool,
 }
 
-fn stale_spans_inner(
+fn drift_spans_inner(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
     enable_trace: bool,
     retain_layers: bool,
-) -> Result<StaleSpansOutput> {
+) -> Result<DriftSpansOutput> {
     crate::perf::reset_subroutine_counters();
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
@@ -1317,7 +1317,7 @@ fn stale_spans_inner(
             .concurrent
             .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
 
-        let _perf = crate::perf::span("resolver.resolve-stale-spans");
+        let _perf = crate::perf::span("resolver.resolve-drift-spans");
         for (name, span) in span_pairs {
             // When tracing is active we must resolve every span so every anchor
             // gets a TraceRow. Skipping here would silently drop clean spans from
@@ -1333,7 +1333,7 @@ fn stale_spans_inner(
                 }
             }
             let resolved = resolve_loaded_span_with_state(repo, &mut state, span, options)?;
-            if span_is_reportable_in_stale_discovery(&resolved) {
+            if span_is_reportable_in_drift_discovery(&resolved) {
                 out.push(resolved);
             }
         }
@@ -1392,7 +1392,7 @@ fn stale_spans_inner(
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
     // the engine-state memo (one increment per `filter_short_circuit` call,
     // misses count distinct paths); the remaining counters are process-global
-    // and reset at the top of `stale_spans`.
+    // and reset at the top of `drift_spans`.
     crate::perf::counter(
         "session.filter-attr-calls",
         filter_attr_hits + filter_attr_misses,
@@ -1479,7 +1479,7 @@ fn stale_spans_inner(
     if out.len() > 1 {
         sort_spans_by_anchor_path(&mut out);
     }
-    Ok(StaleSpansOutput {
+    Ok(DriftSpansOutput {
         spans: out,
         trace_rows,
         source_layers,
@@ -1487,7 +1487,7 @@ fn stale_spans_inner(
     })
 }
 
-pub fn stale_spans(
+pub fn drift_spans(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
@@ -1498,24 +1498,24 @@ pub fn stale_spans(
     // — falls through to the uncached authoritative resolver directly; there is
     // no legacy cache tier to fall back on.
     if let crate::resolver::exact::ExactAttempt::Resolved { spans, .. } =
-        crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
+        crate::resolver::exact::drift_spans_new_store(repo, span_root, options)?
     {
         return Ok(spans);
     }
-    let output = stale_spans_inner(repo, span_root, options, false, false)?;
+    let output = drift_spans_inner(repo, span_root, options, false, false)?;
     Ok(output.spans)
 }
 
-/// Like `stale_spans`, but on the uncached cold path (store bypass → an
+/// Like `drift_spans`, but on the uncached cold path (store bypass → an
 /// `EngineState` is built) it retains the source-layer state so the post-fix
-/// re-resolve in `stale --fix` can skip a second `read-worktree-layer`.
+/// re-resolve in `drift --fix` can skip a second `read-worktree-layer`.
 ///
 /// Returns `(spans, Some(source_layers), None)` on the uncached cold path and
 /// `(spans, None, Option<whole_result>)` on a store hit. `whole_result` is
 /// `Some` whenever the store rendered from its compact summary; it carries the
-/// full anchor set and anchor totals so `run_stale` can skip its per-invocation
+/// full anchor set and anchor totals so `run_drift` can skip its per-invocation
 /// phases.
-pub(crate) fn stale_spans_retaining_source_layers(
+pub(crate) fn drift_spans_retaining_source_layers(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
@@ -1526,7 +1526,7 @@ pub(crate) fn stale_spans_retaining_source_layers(
 )> {
     // The SQLite store is the only cache path. On a `Resolved` outcome the store
     // rendered the reportable set and hands back the render-ready whole-result
-    // so `run_stale` skips its per-invocation corpus reload (count-totals /
+    // so `run_drift` skips its per-invocation corpus reload (count-totals /
     // Fresh-anchor backfill / interior-anchor scan). There is no retained
     // `SourceLayers` (a `--fix` post-pass rebuilds them). A `Bypass` — cache
     // disabled, ineligible run, or store fault — runs the uncached authoritative
@@ -1534,20 +1534,20 @@ pub(crate) fn stale_spans_retaining_source_layers(
     if let crate::resolver::exact::ExactAttempt::Resolved {
         spans,
         whole_result,
-    } = crate::resolver::exact::stale_spans_new_store(repo, span_root, options)?
+    } = crate::resolver::exact::drift_spans_new_store(repo, span_root, options)?
     {
         return Ok((spans, None, whole_result));
     }
-    let output = stale_spans_inner(repo, span_root, options, false, true)?;
+    let output = drift_spans_inner(repo, span_root, options, false, true)?;
     Ok((output.spans, output.source_layers, None))
 }
 
-pub fn stale_spans_with_trace(
+pub fn drift_spans_with_trace(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
 ) -> Result<(Vec<SpanResolved>, Vec<crate::perf::TraceRow>)> {
-    let output = stale_spans_inner(repo, span_root, options, true, false)?;
+    let output = drift_spans_inner(repo, span_root, options, true, false)?;
     Ok((output.spans, output.trace_rows))
 }
 
@@ -1782,7 +1782,7 @@ mod tests {
 
     /// Every `AnchorStatus` variant, so the boundary tests below are
     /// exhaustive by construction: a new variant that is not added here
-    /// leaves the compile-time `match` in `stale_reporting_class` red first,
+    /// leaves the compile-time `match` in `drift_reporting_class` red first,
     /// and this list second.
     fn every_anchor_status() -> Vec<AnchorStatus> {
         vec![
@@ -1797,18 +1797,18 @@ mod tests {
         ]
     }
 
-    /// The actionable-drift boundary `git span stale`'s exit status and
+    /// The actionable-drift boundary `git span drift`'s exit status and
     /// `git span history`'s `current` block share: exactly `Fresh` and
     /// `ResolvedPendingCommit` are excluded, everything else is drift.
     #[test]
-    fn stale_drift_boundary_excludes_exactly_fresh_and_pending_commit() {
+    fn drift_boundary_excludes_exactly_fresh_and_pending_commit() {
         for status in every_anchor_status() {
             let expected = !matches!(
                 status,
                 AnchorStatus::Fresh | AnchorStatus::ResolvedPendingCommit
             );
             assert_eq!(
-                anchor_status_is_stale_drift(&status),
+                anchor_status_is_drift(&status),
                 expected,
                 "actionable-drift boundary moved for {status:?}"
             );
@@ -1825,7 +1825,7 @@ mod tests {
             let mut span = make_span("m", &[("a.ts", AnchorExtent::WholeFile)]);
             span.anchors[0].status = status.clone();
 
-            let reportable = span_is_reportable_in_stale_discovery(&span);
+            let reportable = span_is_reportable_in_drift_discovery(&span);
             assert_eq!(
                 reportable,
                 status != AnchorStatus::Fresh,
@@ -1834,7 +1834,7 @@ mod tests {
 
             let informational = matches!(status, AnchorStatus::ResolvedPendingCommit);
             assert_eq!(
-                reportable && !anchor_status_is_stale_drift(&status),
+                reportable && !anchor_status_is_drift(&status),
                 informational,
                 "informational gap between the two boundaries moved for {status:?}"
             );
@@ -1929,7 +1929,7 @@ mod tests {
     }
 
     /// Regression: `EngineState::filter_short_circuit` memoizes per-path
-    /// across an entire `stale` run. Two probes for the same path produce
+    /// across an entire `drift` run. Two probes for the same path produce
     /// exactly one miss (the cold lookup); two probes for distinct paths
     /// produce two misses. This is the binding contract for the
     /// performance fix in main-65 — without the memo, every call to
@@ -2220,7 +2220,7 @@ mod tests {
 
     /// When the index changes between `EngineState` construction and `finish`,
     /// the returned `SourceLayers` must carry `index_changed = true` so callers
-    /// can distinguish a racy scan from a genuine stale/clean verdict. Before
+    /// can distinguish a racy scan from a genuine drift/clean verdict. Before
     /// the fix for card main-199-2, `finish` only printed a stderr warning and
     /// the signal was lost.
     #[test]

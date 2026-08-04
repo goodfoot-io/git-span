@@ -368,22 +368,22 @@ fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
 #[test]
 fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
     let repo = swap_repo()?;
-    // `stale` exits non-zero while anchors are stale, so read stdout directly.
-    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
-    // `stale` is the authority on where each anchor's content went. The
+    // `drift` exits non-zero while anchors are drifted, so read stdout directly.
+    let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
+    // `drift` is the authority on where each anchor's content went. The
     // current block must repeat that instruction, never invert it, and never
     // dress it up as a move that already happened.
     assert!(
-        stale.contains("src.txt#L1-L3 — moved to src.txt#L5-L7")
-            && stale.contains("src.txt#L5-L7 — moved to src.txt#L1-L3"),
-        "fixture assumption: stale proposes the mirrored relocations; got:\n{stale}"
+        drift.contains("src.txt#L1-L3 — moved to src.txt#L5-L7")
+            && drift.contains("src.txt#L5-L7 — moved to src.txt#L1-L3"),
+        "fixture assumption: drift proposes the mirrored relocations; got:\n{drift}"
     );
 
     let json = history_json(&repo, "swap")?;
     let anchors = json["current"]["anchors"]
         .as_array()
         .expect("current anchors array");
-    assert_eq!(anchors.len(), 2, "both anchors are stale; got: {json:#}");
+    assert_eq!(anchors.len(), 2, "both anchors are drifted; got: {json:#}");
 
     let out = history_text(&repo, "swap")?;
     for anchor in anchors {
@@ -392,10 +392,10 @@ fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
             panic!("a relocated anchor carries the resolver's proposal; got: {anchor:#}")
         });
         // Direction is per anchor: the declared address is the `from` side of
-        // stale's line, the proposal is its `to` side.
+        // drift's line, the proposal is its `to` side.
         assert!(
-            stale.contains(&format!("{path} — moved to {proposed}")),
-            "the proposal must point where stale points; got:\n{stale}"
+            drift.contains(&format!("{path} — moved to {proposed}")),
+            "the proposal must point where drift points; got:\n{drift}"
         );
         let diff = anchor["diff"].as_str().expect("diff string");
         assert!(
@@ -440,12 +440,14 @@ fn current_old_sides_carry_the_declarations_recorded_token() -> Result<()> {
     let drift = TestRepo::new()?;
     drift.write_file("src.txt", "alpha\nbeta\ngamma\n")?;
     drift.commit_all("initial")?;
-    drift.span_stdout(["add", "drift", "src.txt#L1-L3"])?;
-    drift.span_stdout(["why", "drift", "tracks the block"])?;
+    // The span cannot be named `drift`: that is the subcommand, and so a
+    // reserved span name.
+    drift.span_stdout(["add", "block", "src.txt#L1-L3"])?;
+    drift.span_stdout(["why", "block", "tracks the block"])?;
     drift.run_git(["add", ".span"])?;
     drift.run_git(["commit", "-m", "create span"])?;
     drift.write_file("src.txt", "alpha\nBETA-CHANGED\ngamma\n")?;
-    scenarios.push(("in-place drift", drift, "drift"));
+    scenarios.push(("in-place drift", drift, "block"));
 
     let truncated = TestRepo::new()?;
     truncated.write_file("src.txt", "one\ntwo\nthree\nfour\nfive\n")?;

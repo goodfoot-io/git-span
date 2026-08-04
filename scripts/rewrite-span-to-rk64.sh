@@ -3,8 +3,8 @@
 # anchor via `git span add`.  The CLI now produces rk64-fingerprinted hashes,
 # so re-adding recomputes the fingerprint and writes `rk64:<16-hex>`.
 #
-# Safe to run when `git span stale` reports 0 stale anchors (all content is
-# fresh at recorded extents).  If stale anchors exist the re-add would
+# Safe to run when `git span drift` reports 0 drifted anchors (all content is
+# fresh at recorded extents).  If drifted anchors exist the re-add would
 # fingerprint the *current* (drifted) content, which may not match the
 # authored anchor.
 #

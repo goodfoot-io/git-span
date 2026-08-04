@@ -17,7 +17,7 @@
 //!
 //! The current (unfixed) code will frequently produce only 2 anchors:
 //! both threads read {A}, thread A writes {A, B}, thread B writes {A, C}
-//! (B's write is based on the same stale starting state {A}, so it
+//! (B's write is based on the same drifted starting state {A}, so it
 //! overwrites thread A's addition).
 //!
 //! Note: we intentionally do NOT use a Barrier here. A Barrier that

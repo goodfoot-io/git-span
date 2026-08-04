@@ -1,14 +1,14 @@
 ---
 title: Reconciliation Authority
-summary: What to do with the stale anchors `git span stale --fix` leaves drifting — decide which coupled artifact is the source of truth via git history, conform docs to intentional code changes automatically, and escalate to the user when the fix requires editing code or authority is ambiguous.
+summary: What to do with the drifted anchors `git span drift --fix` leaves drifting — decide which coupled artifact is the source of truth via git history, conform docs to intentional code changes automatically, and escalate to the user when the fix requires editing code or authority is ambiguous.
 aliases: [Drift Authority, Docs Follow Source]
 tags: [guide, git-span]
-keywords: [reconcile, stale, drift, authority, source of truth, fail closed, doc rewrite]
+keywords: [reconcile, drift, authority, source of truth, fail closed, doc rewrite]
 ---
 
 # Reconciliation authority
 
-`git span stale --fix` auto-resolves `Moved` and whitespace-equivalent
+`git span drift --fix` auto-resolves `Moved` and whitespace-equivalent
 `Changed` anchors; a `Changed` anchor whose content differs beyond whitespace
 is left drifting so it resurfaces for confirmation
 ([mod.rs](../../packages/git-span/src/cli/mod.rs#L70-L77)). This page governs
@@ -26,7 +26,7 @@ disagreement hides the drift signal without resolving it.
 When coupled artifacts disagree, decide which side is authoritative, then act
 by cost of error:
 
-1. **Locate authority via demonstrated intent.** `git span stale` reports the
+1. **Locate authority via demonstrated intent.** `git span drift` reports the
    resolver layers that observed drift, but `HEAD` alone does not prove the
    declaration or content change was committed: a worktree-only declaration
    re-anchor can compare against `HEAD` and produce that source too. Inspect the

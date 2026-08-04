@@ -21,7 +21,7 @@ The primary source of truth for top-level CLI behavior is the Clap configuration
 
 The pre-classification logic that makes `git span <name>` route to `Commands::Show` rather than failing as an unknown subcommand lives in [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100). That block is what resolves the ambiguity between a span name positional and a subcommand name before Clap parses the arguments. The reserved subcommand set it checks against is defined in [packages/git-span/src/validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 
-When documentation changes are about subcommand behavior or exit-code semantics, the relevant handler implementations live under `packages/git-span/src/cli/` (e.g., `stale_output.rs`, `commit.rs`, `show.rs`).
+When documentation changes are about subcommand behavior or exit-code semantics, the relevant handler implementations live under `packages/git-span/src/cli/` (e.g., `drift_output.rs`, `commit.rs`, `show.rs`).
 
 ## Operator-Facing Documentation
 

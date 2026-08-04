@@ -3,10 +3,10 @@
 //!
 //! ## What is measured
 //!
-//! `stale_spans` called with `EngineOptions::full()` and `GIT_SPAN_CACHE=0`
+//! `drift_spans` called with `EngineOptions::full()` and `GIT_SPAN_CACHE=0`
 //! set — the single "disable all caching" switch the Phase 7 cutover left as
 //! the only cache control — so every iteration exercises the cold algorithmic
-//! path (`stale_spans_inner`).  A warm store hit would measure cache machinery
+//! path (`drift_spans_inner`).  A warm store hit would measure cache machinery
 //! rather than the relocation scan and reverse-walk bookkeeping that are the
 //! historical super-linear hazards.
 //!
@@ -41,7 +41,7 @@
 //! 2000-span cold resolve is slow by design — that is the point.
 
 use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
-use git_span::{EngineOptions, stale_spans};
+use git_span::{EngineOptions, drift_spans};
 use std::time::{Duration, Instant};
 
 // -------------------------------------------------------------------------
@@ -121,14 +121,14 @@ fn build_fixture(span_count: usize, with_commit_graph: bool) -> Fixture {
 // Cold resolver timing
 // -------------------------------------------------------------------------
 
-/// Time a single cold `stale_spans` call.
+/// Time a single cold `drift_spans` call.
 ///
 /// `GIT_SPAN_CACHE` must be `"0"` in the environment before calling this
 /// (set once in `sweep_group`) so the store is disabled and the cold path runs.
-fn time_cold_stale(repo_path: &std::path::Path) -> Duration {
+fn time_cold_drift(repo_path: &std::path::Path) -> Duration {
     let repo = gix::open(repo_path).expect("gix::open");
     let t0 = Instant::now();
-    let out = stale_spans(&repo, ".span", EngineOptions::full()).expect("stale_spans");
+    let out = drift_spans(&repo, ".span", EngineOptions::full()).expect("drift_spans");
     let elapsed = t0.elapsed();
     std::hint::black_box(out);
     elapsed
@@ -202,7 +202,7 @@ fn check_exponents(label: &str, sizes: &[usize], medians_ms: &[f64]) {
 // -------------------------------------------------------------------------
 
 fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
-    // Force cold uncached resolver path for every stale_spans() call in this
+    // Force cold uncached resolver path for every drift_spans() call in this
     // process. One switch disables the one cache:
     //   GIT_SPAN_CACHE=0  — the single "disable all caching" control; bypasses
     //                       the SQLite store entirely (Phase 7 cutover).
@@ -232,7 +232,7 @@ fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
         .map(|(f, &span_count)| {
             let reps = reps_for(span_count);
             let samples: Vec<f64> = (0..reps)
-                .map(|_| time_cold_stale(&f.repo_path).as_secs_f64() * 1000.0)
+                .map(|_| time_cold_drift(&f.repo_path).as_secs_f64() * 1000.0)
                 .collect();
             robust_median_ms(&samples)
         })
@@ -257,7 +257,7 @@ fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
         group.bench_function(&bench_id, |b| {
             b.iter_custom(|iters| {
                 (0..iters)
-                    .map(|_| time_cold_stale(&fixture.repo_path))
+                    .map(|_| time_cold_drift(&fixture.repo_path))
                     .sum()
             });
         });

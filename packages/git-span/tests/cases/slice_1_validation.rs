@@ -3,7 +3,7 @@
 //! Each rejection asserts a non-zero exit code and a stderr substring.
 //! The positive tests exercise the `<category>/<slug>` and the
 //! hierarchical `<category>/<subcategory>/<identifier-slug>` span-name
-//! forms end to end (add → commit → ls / show / stale).
+//! forms end to end (add → commit → ls / show / drift).
 
 use crate::support;
 
@@ -92,12 +92,12 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
         "show output missing why:\n{shown}"
     );
 
-    let stale = repo.run_span(["stale", "--format=porcelain"])?;
+    let drift = repo.run_span(["drift", "--format=porcelain"])?;
     assert_ne!(
-        stale.status.code(),
+        drift.status.code(),
         Some(2),
-        "stale errored: {}",
-        String::from_utf8_lossy(&stale.stderr)
+        "drift errored: {}",
+        String::from_utf8_lossy(&drift.stderr)
     );
 
     let listed_b = repo.span_stdout(["list", "b.ts"])?;

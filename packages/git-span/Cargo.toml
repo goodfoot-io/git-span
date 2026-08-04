@@ -91,11 +91,11 @@ test = false
 bench = false
 
 [[bench]]
-name = "stale_head_only"
+name = "drift_head_only"
 harness = false
 
 [[bench]]
-name = "stale_warm"
+name = "drift_warm"
 harness = false
 
 [[bench]]

@@ -82,7 +82,7 @@ export function createHandler(
           systemMessage: result.reason
         });
       }
-      // Environmental staleness and a failed staleness scan both allow
+      // Environmental drift and a failed drift scan both allow
       // (fail-open), but must not be swallowed: log and surface the reason so
       // the unresolvable anchor / unverified changeset is visible.
       if (result.kind === 'environmental' || result.kind === 'scan-failed') {
@@ -91,7 +91,7 @@ export function createHandler(
       }
       // `status`-only advisory kinds: span debt exists, but a status check
       // never holds the command — surface it as information, not a warning.
-      if (result.kind === 'semantic-staleness-report' || result.kind === 'uncovered-writes-report') {
+      if (result.kind === 'semantic-drift-report' || result.kind === 'uncovered-writes-report') {
         return preToolUseOutput({ systemMessage: result.reason });
       }
       return null;

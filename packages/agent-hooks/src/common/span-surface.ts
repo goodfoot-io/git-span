@@ -3,14 +3,14 @@
  *
  * Given an already-resolved repo-relative path and a line range, this module
  * runs the shared `git span list --porcelain` / `.hookignore` / session-memo /
- * `git span stale` pipeline and assembles the human-readable `<git-span>…</git-span>`
+ * `git span drift` pipeline and assembles the human-readable `<git-span>…</git-span>`
  * block that both adapters surface inline before an edit. It imports nothing
  * from either hook SDK: the Claude PreToolUse hook feeds it a range derived from
  * `file_path`/`offset`/`old_string`; the Codex PreToolUse hook feeds it the
  * ranges recovered from an `apply_patch` envelope. Each adapter wraps the
  * returned block string in its own SDK output builder.
  *
- * The executor/stale/memo dependencies are injected so the pipeline is testable
+ * The executor/drift/memo dependencies are injected so the pipeline is testable
  * with fakes exactly like the porcelain parsers in the shared kernel.
  */
 
@@ -22,8 +22,8 @@ import {
   isInsideSpanRoot,
   type LineRange,
   type PorcelainRow,
+  parseDriftPorcelain,
   parsePorcelain,
-  parseStalePorcelain,
   pruneStaleSessions,
   rangesIntersect,
   relativeToRepo,
@@ -69,18 +69,18 @@ export function createDefaultSpanExecutor(timeoutMs = 10_000): SpanExecutor {
 }
 
 /**
- * Runs `git span stale --format porcelain <slugs>` and returns its porcelain stdout —
+ * Runs `git span drift --format porcelain <slugs>` and returns its porcelain stdout —
  * one row per *drifted* anchor among the given spans, empty when all are clean.
- * `git span stale` exits 0 in porcelain mode whether or not drift exists, but we
+ * `git span drift` exits 0 in porcelain mode whether or not drift exists, but we
  * still capture stdout from a thrown error so a drift signal is never lost to a
  * non-zero exit. Throws only when no stdout is available (genuine failure).
  */
-export type StaleExecutor = (slugs: string[], cwd: string) => string;
+export type DriftExecutor = (slugs: string[], cwd: string) => string;
 
-export function createDefaultStaleExecutor(timeoutMs = 10_000): StaleExecutor {
+export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
   return (slugs, cwd) => {
     try {
-      return execFileSync('git', ['span', 'stale', '--format', 'porcelain', ...slugs], {
+      return execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...slugs], {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -205,7 +205,7 @@ export function resolveTouchScope(cwd: string, absPath: string): TouchScope | nu
 /** Injected dependencies for {@link surfaceOverlappingSpans}. */
 export interface SurfaceDeps {
   executor: SpanExecutor;
-  staleExecutor: StaleExecutor;
+  driftExecutor: DriftExecutor;
   memo: MemoStore;
   loadRules: HookIgnoreLoader;
   logger: CoreLogger;
@@ -219,9 +219,9 @@ export interface SurfaceDeps {
  * The pipeline: `git span list <path> --porcelain` → keep line-ranged anchors on
  * the same file that intersect the range and are not `.hookignore`-suppressed →
  * drop slugs already surfaced this session (memo) → render `git span list
- * <names…>` → append a `git span history <name>` pointer for any already-stale
+ * <names…>` → append a `git span history <name>` pointer for any already-drift
  * span. On success the surfaced names are recorded in the memo. Executor and
- * stale-probe failures are logged and degrade to null / the plain block; they
+ * drift-probe failures are logged and degrade to null / the plain block; they
  * never throw.
  */
 export function surfaceOverlappingSpans(
@@ -231,7 +231,7 @@ export function surfaceOverlappingSpans(
   range: LineRange,
   sessionId: string
 ): string | null {
-  const { executor, staleExecutor, memo, loadRules, logger } = deps;
+  const { executor, driftExecutor, memo, loadRules, logger } = deps;
 
   // Filter pass: git span list <path> --porcelain
   let porcelainStdout: string;
@@ -272,24 +272,24 @@ export function surfaceOverlappingSpans(
     return null;
   }
 
-  // Of the spans being surfaced, flag any already stale — the touched lines have
+  // Of the spans being surfaced, flag any already drifted — the touched lines have
   // drifted from their anchored state — with a `git span history <name>` pointer.
   // Detection is as-of-now (surfacing runs before the edit applies), so this
   // catches pre-existing drift; drift this session causes is the Stop hook's job.
-  // Failure to compute staleness is non-fatal: fall back to the plain block.
-  let staleHint = '';
+  // Failure to compute drift is non-fatal: fall back to the plain block.
+  let driftHint = '';
   try {
-    const staleNames = new Set(parseStalePorcelain(staleExecutor(toSurface, repoRoot)).map((r) => r.name));
-    const staleSurfaced = toSurface.filter((n) => staleNames.has(n));
-    if (staleSurfaced.length > 0) {
-      const lines = staleSurfaced.map((n) => `  git span history ${n}`).join('\n');
-      staleHint = `\nStale — the lines you're touching have drifted from these spans' anchored state. Review how each subsystem evolved before changing it:\n${lines}`;
+    const driftNames = new Set(parseDriftPorcelain(driftExecutor(toSurface, repoRoot)).map((r) => r.name));
+    const driftSurfaced = toSurface.filter((n) => driftNames.has(n));
+    if (driftSurfaced.length > 0) {
+      const lines = driftSurfaced.map((n) => `  git span history ${n}`).join('\n');
+      driftHint = `\nDrift — the lines you're touching have drifted from these spans' anchored state. Review how each subsystem evolved before changing it:\n${lines}`;
     }
   } catch (err) {
-    logger.warn('git span stale (history hint) failed', { err });
+    logger.warn('git span drift (history hint) failed', { err });
   }
 
-  const wrapped = `\n<git-span>\n${renderStdout}${staleHint}\n</git-span>\n`;
+  const wrapped = `\n<git-span>\n${renderStdout}${driftHint}\n</git-span>\n`;
 
   // Update memo
   memo.addSurfaced(sessionId, toSurface);

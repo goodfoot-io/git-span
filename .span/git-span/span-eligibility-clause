@@ -1,4 +1,4 @@
-packages/git-span/README.md#L3-L3 rk64:0ff153ec28375be2
+packages/git-span/README.md#L3-L3 rk64:2928022ae18f9b52
 packages/git-span/man/git-span.1#L14-L16 rk64:6686b7f4381ab3f3
 packages/git-span/src/bin/gen-manpage.rs#L63-L65 rk64:6686b7f4381ab3f3
 packages/git-span/src/cli/mod.rs#L46-L46 rk64:c8c5ab2fb1412387

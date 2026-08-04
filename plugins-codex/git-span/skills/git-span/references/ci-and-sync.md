@@ -26,11 +26,11 @@ git show <commit>:.span/<name>
 ## Advisory report (no gating)
 
 ```bash
-git span stale --no-exit-code --format json > span-report.json
+git span drift --no-exit-code --format json > span-report.json
 ```
 
-`--no-exit-code` forces exit 0 regardless of findings (`stale` otherwise exits
-1 on any drift). Use for dashboards or audit work where stale spans are
+`--no-exit-code` forces exit 0 regardless of findings (`drift` otherwise exits
+1 on any drift). Use for dashboards or audit work where drifted spans are
 counted, not blocked. `--format json` emits one JSON object —
 `{"findings": [...], "schema_version": N, "span": "..."}` — not
 newline-delimited records.
@@ -54,11 +54,11 @@ a hooked Claude Code or Codex session. It's high-leverage but not exhaustive —
 a human-authored commit, a session with hooks disabled, or a Codex session
 where `permissionDecision: 'deny'` doesn't actually block (see
 `references/codex-install-and-trust.md`) can all land span debt. `git span
-stale` with its default exit code is the backstop that catches what the advisor
+drift` with its default exit code is the backstop that catches what the advisor
 missed, at the point where it's cheapest to catch: before merge.
 
 ```bash
-git span stale                # exits 1 on any drift, 0 when clean
+git span drift                # exits 1 on any drift, 0 when clean
 ```
 
 No `--no-exit-code` here — CI wants the failing exit code, unlike the
@@ -70,7 +70,7 @@ advisory report above.
 name: git-span
 on: [pull_request]
 jobs:
-  stale-check:
+  drift-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,11 +78,11 @@ jobs:
           fetch-depth: 0   # spans compare against real git history
       - name: Build git-span
         run: cargo build --release -p git-span   # or install a prebuilt binary
-      - name: Check for stale spans
-        run: git span stale
+      - name: Check for drifted spans
+        run: git span drift
 ```
 
-`fetch-depth: 0` matters — a shallow checkout can make `stale` misjudge
+`fetch-depth: 0` matters — a shallow checkout can make `drift` misjudge
 history-dependent findings the same way a partial clone does (see
 `references/content-unavailable.md`).
 
@@ -91,12 +91,12 @@ history-dependent findings the same way a partial clone does (see
 For any CI system that isn't GitHub Actions:
 
 ```bash
-git span stale || { echo "::error::stale spans found — run 'git span stale' locally to see them"; exit 1; }
+git span drift || { echo "::error::drifted spans found — run 'git span drift' locally to see them"; exit 1; }
 ```
 
 ### Wiring into `yarn validate` (or an equivalent aggregate script)
 
-Add `git span stale` as its own step, not folded into lint/typecheck/test —
+Add `git span drift` as its own step, not folded into lint/typecheck/test —
 its failure mode (semantic drift) is a different signal than a type error or
 a failing assertion, and a project's own validation aggregator should report
 it distinctly:
@@ -104,7 +104,7 @@ it distinctly:
 ```bash
 # in the project's validate script, alongside lint/typecheck/test/build:
 echo "Checking spans..."
-git span stale || { echo "git span stale found drift — see above"; exit 1; }
+git span drift || { echo "git span drift found drift — see above"; exit 1; }
 ```
 
 Keep this step **after** lint/typecheck/test in the aggregate script order —

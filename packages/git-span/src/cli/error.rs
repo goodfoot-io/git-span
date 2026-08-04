@@ -115,7 +115,7 @@ pub fn from_lib_error(
     }
 }
 
-/// Wrap a resolver failure into the curated shape for `stale`/`history`.
+/// Wrap a resolver failure into the curated shape for `drift`/`history`.
 ///
 /// The resolver reads HEAD trees and blobs directly; when one of those reads
 /// fails the repository itself is unreadable (a damaged or incomplete object

@@ -1,6 +1,6 @@
 //! Per-span reuse rows and the reverse path index (card main-157 Phase 4A).
 //!
-//! Phase 3 published one compact render-ready [`StaleSummary`](super::StaleSummary)
+//! Phase 3 published one compact render-ready [`DriftSummary`](super::DriftSummary)
 //! per generation and left [`GenerationInput::rows`](crate::resolver::store::GenerationInput)
 //! / `path_index` empty (`super::publish_if_eligible`). Phase 4's incremental
 //! path needs the *layer-neutral* detail back — one reusable

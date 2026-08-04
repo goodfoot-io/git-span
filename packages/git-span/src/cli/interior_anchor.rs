@@ -4,8 +4,8 @@
 //! `SpanFile::parse` is a pure text→struct transform and deliberately does
 //! NOT reject interior anchors — that would make a hand-edited / poisoned
 //! span un-loadable, breaking the very repair commands (`remove`, `delete`,
-//! `move`, `stale --fix`) an operator needs to fix it. Instead, the
-//! reporting/validate surfaces (`stale`, `doctor`) load each span
+//! `move`, `drift --fix`) an operator needs to fix it. Instead, the
+//! reporting/validate surfaces (`drift`, `doctor`) load each span
 //! independently and surface interior anchors here as a **loud, actionable,
 //! per-span** report. One poisoned span never blanks the others.
 
@@ -70,7 +70,7 @@ pub fn scan_interior_anchors(
 }
 
 /// Same scan as [`scan_interior_anchors`] but over an already-loaded corpus,
-/// so the stale path can reuse a single corpus load for both the backfill and
+/// so the drift path can reuse a single corpus load for both the backfill and
 /// this scan. Byte-identical to the loading variant: it iterates the corpus in
 /// the same order and emits one violation per offending anchor identically.
 pub fn scan_interior_anchors_in(
@@ -94,13 +94,13 @@ pub fn scan_interior_anchors_in(
 
 /// Whether any span in scope carries an interior anchor (an anchor whose path
 /// is under `span_root`), classified over an already-loaded corpus so the
-/// `stale --fix` pre-scan can reuse the single pre-fix corpus load instead of
+/// `drift --fix` pre-scan can reuse the single pre-fix corpus load instead of
 /// re-reading every span file.
 ///
-/// `stale --fix` uses this as a fail-closed gate: when an interior anchor is
+/// `drift --fix` uses this as a fail-closed gate: when an interior anchor is
 /// present, the scoped post-fix splice and source-layer reuse are unsound (a
 /// rewritten span file is also an anchor target, so reused pre-fix
-/// `worktree_diffs` and un-re-resolved sibling spans can render stale drift
+/// `worktree_diffs` and un-re-resolved sibling spans can render drift
 /// status). In that case the caller falls back to a full whole-corpus /
 /// full-named re-resolve, which matches the baseline byte-for-byte. Interior
 /// anchors are a loud, rare error condition, so the perf cost of the fallback
@@ -108,7 +108,7 @@ pub fn scan_interior_anchors_in(
 ///
 /// `scope` is `None` for a bare scan (check the whole corpus) or `Some(names)`
 /// for a named-scope query (check only the requested spans), mirroring the
-/// scoping `run_stale` already applies to `scan_interior_anchors`.
+/// scoping `run_drift` already applies to `scan_interior_anchors`.
 pub(crate) fn scope_has_interior_anchor_in(
     span_root: &str,
     spans: &[(String, crate::types::Span)],

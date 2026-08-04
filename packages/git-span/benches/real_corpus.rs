@@ -42,42 +42,42 @@ use std::time::{Duration, Instant};
 // All ceilings here are PROCESS-LEVEL: each measurement includes ~17ms binary
 // startup + ~12ms gix::discover + corpus parse on top of the core work.  These
 // are NOT the same as the in-process 40ms warm-clean SLA, which is enforced
-// separately in benches/stale_warm.rs.
+// separately in benches/drift_warm.rs.
 //
 // Re-measured medians on this host (2026-06-15, POST-F6 — synthetic and real
 // anchors resolve via canonical rk64; the corpus is genuinely fresh, so cold
-// stale now does full resolution rather than short-circuiting):
+// drift now does full resolution rather than short-circuiting):
 //   list:        ~11–16 ms
 //   tree:        ~10–16 ms
 //   show:         ~7–10 ms
 //   history:    ~130–176 ms
-//   stale-cold: ~150–216 ms  (high variance under concurrent-build load)
-//   stale-warm:  ~21–27 ms
+//   drift-cold: ~150–216 ms  (high variance under concurrent-build load)
+//   drift-warm:  ~21–27 ms
 //
 // Ceilings are a COARSE guard set at ~2.5–3× the median to catch gross 2–3×
 // regressions while ignoring host noise; the baseline-relative regression rule
 // in perf-baseline.json is the tight signal and sits BELOW each ceiling. The
-// stale-cold ceiling is 500ms: its ~180ms operating point under load needs the
+// drift-cold ceiling is 500ms: its ~180ms operating point under load needs the
 // 35% regression band (≈246ms) to sit meaningfully below the ceiling, which a
 // 250ms ceiling could not provide; 500ms still catches a gross >2.5× regression
-// and is well within the plan's 900ms cold budget. The stale-warm ceiling is
-// 200ms — NOT 40ms; 40ms is the in-process SLA in stale_warm.rs.
+// and is well within the plan's 900ms cold budget. The drift-warm ceiling is
+// 200ms — NOT 40ms; 40ms is the in-process SLA in drift_warm.rs.
 // ---------------------------------------------------------------------------
 const SLA_LIST_MS: u64 = 250; // post-F6 ~11–16ms; coarse guard, plan budget 250ms
 const SLA_TREE_MS: u64 = 250; // post-F6 ~10–16ms; coarse guard, plan budget 250ms
 const SLA_SHOW_MS: u64 = 250; // post-F6 ~7–10ms; coarse guard, plan budget 250ms
 const SLA_HISTORY_MS: u64 = 750; // post-F6 ~130–176ms; coarse guard ~4× median
-const SLA_STALE_COLD_MS: u64 = 500; // post-F6 ~150–216ms under load; coarse guard, below plan's 900ms budget
-const SLA_STALE_WARM_MS: u64 = 200; // post-F6 ~21–27ms; coarse guard; NOT the in-process 40ms SLA
+const SLA_DRIFT_COLD_MS: u64 = 500; // post-F6 ~150–216ms under load; coarse guard, below plan's 900ms budget
+const SLA_DRIFT_WARM_MS: u64 = 200; // post-F6 ~21–27ms; coarse guard; NOT the in-process 40ms SLA
 // `list <glob>` does the same corpus parse as bare `list` plus a glob filter, so
 // its operating point tracks `list`; the same 250ms coarse guard applies to all
 // three glob variants (selective subset, broad most-of-corpus, nomatch).
 const SLA_LIST_GLOB_MS: u64 = 250; // mirrors SLA_LIST_MS; glob filter is cheap on top of the parse
-// `stale --fix` does a full cold resolve AND rewrites every drifted span file on
-// disk; it is strictly heavier than read-only `stale-cold` (~150–216ms under
+// `drift --fix` does a full cold resolve AND rewrites every drifted span file on
+// disk; it is strictly heavier than read-only `drift-cold` (~150–216ms under
 // load). 1500ms is a generous coarse guard (~7–10× the read-only cold median)
 // pending an orchestrator measurement of the real operating point.
-const SLA_STALE_FIX_MS: u64 = 1500;
+const SLA_DRIFT_FIX_MS: u64 = 1500;
 // `startup` measures pure process spawn with NO repo work: `git-span --version`
 // parses args and exits before discovering a repo or loading the corpus. It
 // isolates the fixed process-spawn cost so the other ops can be read as
@@ -258,7 +258,7 @@ fn setup_interior_anchor_repo() -> BenchRepo {
 /// span-file edit). Returns `true` if a file was dirtied, `false` if no
 /// suitable tracked file exists (the cell then skips).
 ///
-/// A dirty source edit forces `stale_spans_cached` past the warm-clean
+/// A dirty source edit forces `drift_spans_cached` past the warm-clean
 /// early-return onto the warm-dirty / dirty-overlay path, where non-dirty-set
 /// spans are rendered from the committed baseline. This is the path whose
 /// byte-for-byte parity with the cache-off effective resolution this cell
@@ -292,26 +292,26 @@ fn dirty_one_tracked_file(repo: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// stale --fix drift fixture
+// drift --fix drift fixture
 // ---------------------------------------------------------------------------
 
-/// Anchored source files the `stale-fix` cell perturbs to manufacture drift.
+/// Anchored source files the `drift-fix` cell perturbs to manufacture drift.
 /// Each is a real source file that several corpus anchors point at (verified
 /// against `git span list`), so a one-line shift at the top moves every anchor
 /// in those files past its committed line range — `--fix` then re-anchors them.
 /// All three live under `packages/git-span/src/` and are tracked in the corpus.
-const STALE_FIX_DRIFT_FILES: &[&str] = &[
+const DRIFT_FIX_DRIFT_FILES: &[&str] = &[
     "packages/git-span/src/cli/mod.rs",
     "packages/git-span/src/main.rs",
     "packages/git-span/src/validation.rs",
 ];
 
-/// Insert a blank line at the TOP of each `STALE_FIX_DRIFT_FILES` entry in the
+/// Insert a blank line at the TOP of each `DRIFT_FIX_DRIFT_FILES` entry in the
 /// clone, shifting every anchor in those files down one line so the resolver
 /// classifies them as `Moved`/`Changed`. Returns `false` (cell skips) if any
 /// target file is missing — the real corpus always has them, so this is a guard.
-fn drift_stale_fix_sources(repo: &Path) -> bool {
-    for rel in STALE_FIX_DRIFT_FILES {
+fn dirty_drift_fix_sources(repo: &Path) -> bool {
+    for rel in DRIFT_FIX_DRIFT_FILES {
         let path = repo.join(rel);
         let Ok(orig) = fs::read(&path) else {
             return false;
@@ -343,7 +343,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
-/// Snapshot of the dirtied-but-unfixed state the `stale-fix` cell restores
+/// Snapshot of the dirtied-but-unfixed state the `drift-fix` cell restores
 /// before every timed `--fix` invocation: the whole `.span/` tree plus the
 /// perturbed source files, captured ONCE outside the timed region.
 struct FixBaseline {
@@ -352,14 +352,14 @@ struct FixBaseline {
     source_snapshots: Vec<(PathBuf, PathBuf)>, // (live path in repo, snapshot path)
 }
 
-/// Capture the dirtied baseline (call after `drift_stale_fix_sources`): copies
+/// Capture the dirtied baseline (call after `dirty_drift_fix_sources`): copies
 /// the clone's `.span/` tree and each perturbed source file into a temp dir.
 fn snapshot_fix_baseline(repo: &Path) -> FixBaseline {
     let tmp = tempfile::TempDir::new().expect("fix-baseline tempdir");
     let root = tmp.path();
     let span_snapshot = root.join("span");
     copy_dir_recursive(&repo.join(".span"), &span_snapshot);
-    let source_snapshots = STALE_FIX_DRIFT_FILES
+    let source_snapshots = DRIFT_FIX_DRIFT_FILES
         .iter()
         .enumerate()
         .map(|(i, rel)| {
@@ -417,13 +417,13 @@ fn delete_cache(repo: &Path) {
     }
 }
 
-/// Run `git span stale --no-exit-code` to prime the cache.
+/// Run `git span drift --no-exit-code` to prime the cache.
 fn prime_cache(repo: &Path) {
     let out = Command::new(SPAN_BIN)
         .current_dir(repo)
-        .args(["stale", "--no-exit-code"])
+        .args(["drift", "--no-exit-code"])
         .output()
-        .expect("prime stale");
+        .expect("prime drift");
     if !out.status.success() {
         eprintln!(
             "[real_corpus] cache prime stderr: {}",
@@ -483,7 +483,7 @@ fn capture_stdout(repo: &Path, args: &[&str], cache_off: bool) -> Vec<u8> {
 /// `packages/git-span/docs/profiling.md`), so stderr is expected to be
 /// byte-identical between cache-on and cache-off exactly like stdout.
 fn assert_oracle(repo: &Path, op_name: &str, args: &[&str]) {
-    // For stale cold oracle: ensure cache is absent for both runs.
+    // For drift cold oracle: ensure cache is absent for both runs.
     delete_cache(repo);
     let ground_truth = run_oracle(repo, args, true);
     delete_cache(repo);
@@ -573,36 +573,36 @@ fn assert_oracle_list_glob(repo: &Path, op_name: &str, glob: &str, expect_proper
     }
 }
 
-/// Every `--format` value `git span stale` accepts (mirrors the
-/// `StaleFormat` value-enum in `src/cli/mod.rs`, kebab-cased). The oracle
+/// Every `--format` value `git span drift` accepts (mirrors the
+/// `DriftFormat` value-enum in `src/cli/mod.rs`, kebab-cased). The oracle
 /// compares cache-on vs cache-off for ALL of these, not just the default
 /// human output: only `json` currently exposes the divergent `current.blob`
 /// field, but enforcing byte-identity across every format means a future
 /// format-only divergence cannot hide.
-const STALE_FORMATS: &[&str] = &["human", "porcelain", "json", "junit", "github-actions"];
+const DRIFT_FORMATS: &[&str] = &["human", "porcelain", "json", "junit", "github-actions"];
 
-/// Oracle for cold stale across ALL output formats. Cache is absent for both
+/// Oracle for cold drift across ALL output formats. Cache is absent for both
 /// runs of each format.
-fn assert_oracle_stale_cold_all_formats(repo: &Path) {
-    for fmt in STALE_FORMATS {
-        let op = format!("stale-cold[--format {fmt}]");
-        assert_oracle(repo, &op, &["stale", "--no-exit-code", "--format", fmt]);
+fn assert_oracle_drift_cold_all_formats(repo: &Path) {
+    for fmt in DRIFT_FORMATS {
+        let op = format!("drift-cold[--format {fmt}]");
+        assert_oracle(repo, &op, &["drift", "--no-exit-code", "--format", fmt]);
     }
 }
 
-/// Oracle for warm stale across ALL output formats: prime the cache once,
+/// Oracle for warm drift across ALL output formats: prime the cache once,
 /// then for each format compare a warm cache-on run against a cache-off
 /// ground truth. Compares stdout, the stderr contract, and exit status —
 /// see `assert_oracle`'s doc comment for why stderr is expected to match.
-fn assert_oracle_stale_warm(repo: &Path) {
-    for fmt in STALE_FORMATS {
+fn assert_oracle_drift_warm(repo: &Path) {
+    for fmt in DRIFT_FORMATS {
         delete_cache(repo);
         prime_cache(repo);
-        let args = ["stale", "--no-exit-code", "--format", fmt];
+        let args = ["drift", "--no-exit-code", "--format", fmt];
         // Ground truth: cache disabled (every tier). Warm run: cache primed above, kept.
         let ground_truth = run_oracle(repo, &args, true);
         let cached = run_oracle(repo, &args, false);
-        let op = format!("stale-warm[--format {fmt}]");
+        let op = format!("drift-warm[--format {fmt}]");
         if cached.stdout != ground_truth.stdout {
             let gt_str = String::from_utf8_lossy(&ground_truth.stdout);
             let cached_str = String::from_utf8_lossy(&cached.stdout);
@@ -819,7 +819,7 @@ fn time_invocations(repo: &Path, args: &[&str], n: u64) -> Vec<Duration> {
                 .unwrap_or_else(|e| panic!("spawn git-span {args:?}: {e}"));
             let elapsed = t0.elapsed();
             if !out.status.success() {
-                // stale exits non-zero when drift is present; allow that.
+                // drift exits non-zero when drift is present; allow that.
                 let _ignore = out.status.code();
             }
             elapsed
@@ -885,24 +885,24 @@ fn fmt_count(v: Option<u64>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
-/// Time cold stale invocations (delete cache before each).
-fn time_stale_cold(repo: &Path, n: u64) -> Vec<Duration> {
+/// Time cold drift invocations (delete cache before each).
+fn time_drift_cold(repo: &Path, n: u64) -> Vec<Duration> {
     (0..n)
         .map(|_| {
             delete_cache(repo);
             let t0 = Instant::now();
             let _out = Command::new(SPAN_BIN)
                 .current_dir(repo)
-                .args(["stale", "--no-exit-code"])
+                .args(["drift", "--no-exit-code"])
                 .output()
-                .expect("spawn stale cold");
+                .expect("spawn drift cold");
             t0.elapsed()
         })
         .collect()
 }
 
-/// Time warm stale invocations (prime once, then measure repeated runs).
-fn time_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
+/// Time warm drift invocations (prime once, then measure repeated runs).
+fn time_drift_warm(repo: &Path, n: u64) -> Vec<Duration> {
     delete_cache(repo);
     prime_cache(repo);
     (0..n)
@@ -910,21 +910,21 @@ fn time_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
             let t0 = Instant::now();
             let _out = Command::new(SPAN_BIN)
                 .current_dir(repo)
-                .args(["stale", "--no-exit-code"])
+                .args(["drift", "--no-exit-code"])
                 .output()
-                .expect("spawn stale warm");
+                .expect("spawn drift warm");
             t0.elapsed()
         })
         .collect()
 }
 
-/// Time warm-DIRTY stale invocations: prime the cache ONCE on the
+/// Time warm-DIRTY drift invocations: prime the cache ONCE on the
 /// already-dirtied tree, then measure repeated runs. Each run takes the
 /// warm-dirty path (a primed cache plus a dirty worktree), which renders the
 /// committed baseline for unaffected spans and overlays the dirty set — the
 /// path this card optimizes to scale with dirty-span count, not corpus size.
 /// The caller dirties the tree BEFORE calling this.
-fn time_dirty_tree_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
+fn time_dirty_tree_drift_warm(repo: &Path, n: u64) -> Vec<Duration> {
     delete_cache(repo);
     prime_cache(repo);
     (0..n)
@@ -932,36 +932,36 @@ fn time_dirty_tree_stale_warm(repo: &Path, n: u64) -> Vec<Duration> {
             let t0 = Instant::now();
             let _out = Command::new(SPAN_BIN)
                 .current_dir(repo)
-                .args(["stale", "--no-exit-code"])
+                .args(["drift", "--no-exit-code"])
                 .output()
-                .expect("spawn stale warm-dirty");
+                .expect("spawn drift warm-dirty");
             t0.elapsed()
         })
         .collect()
 }
 
-/// Time `stale --fix` invocations. State reset is OUTSIDE the timed region:
+/// Time `drift --fix` invocations. State reset is OUTSIDE the timed region:
 /// before each sample the clone is restored to the dirtied baseline (so every
-/// invocation does the same rewrite work), and ONLY the `git span stale --fix`
+/// invocation does the same rewrite work), and ONLY the `git span drift --fix`
 /// process is timed. `--fix` requires `--format human`; `--no-exit-code` keeps a
 /// drift exit from being treated as failure.
-fn time_stale_fix(repo: &Path, baseline: &FixBaseline, n: u64) -> Vec<Duration> {
+fn time_drift_fix(repo: &Path, baseline: &FixBaseline, n: u64) -> Vec<Duration> {
     (0..n)
         .map(|_| {
             restore_fix_baseline(repo, baseline);
-            delete_cache(repo); // each sample is a cold fix, matching stale-cold
+            delete_cache(repo); // each sample is a cold fix, matching drift-cold
             let t0 = Instant::now();
             let _out = Command::new(SPAN_BIN)
                 .current_dir(repo)
-                .args(["stale", "--fix", "--no-exit-code"])
+                .args(["drift", "--fix", "--no-exit-code"])
                 .output()
-                .expect("spawn stale --fix");
+                .expect("spawn drift --fix");
             t0.elapsed()
         })
         .collect()
 }
 
-/// Idempotence oracle for `stale --fix` (the important correctness gate). On a
+/// Idempotence oracle for `drift --fix` (the important correctness gate). On a
 /// SEPARATE throwaway clone — so it never perturbs the timing clone — manufacture
 /// drift, run `--fix` once, snapshot the rewritten `.span/` tree, run `--fix` a
 /// SECOND time, and assert the `.span/` tree is byte-identical: a second fix
@@ -969,22 +969,22 @@ fn time_stale_fix(repo: &Path, baseline: &FixBaseline, n: u64) -> Vec<Duration> 
 /// moved-vs-committed-source — the source files stay perturbed — so a "zero
 /// fixed" stdout assertion would not hold; on-disk idempotence is the invariant
 /// that does, and is what we assert.)
-fn assert_oracle_stale_fix_idempotent() {
+fn assert_oracle_drift_fix_idempotent() {
     let repo = match setup_bench_repo() {
         Some(r) => r,
         None => return, // no .span/: nothing to check (cell also skips)
     };
-    if !drift_stale_fix_sources(&repo.path) {
-        eprintln!("[real_corpus] SKIP stale-fix idempotence oracle: drift source files missing");
+    if !dirty_drift_fix_sources(&repo.path) {
+        eprintln!("[real_corpus] SKIP drift-fix idempotence oracle: drift source files missing");
         return;
     }
 
     let run_fix = || {
         Command::new(SPAN_BIN)
             .current_dir(&repo.path)
-            .args(["stale", "--fix", "--no-exit-code"])
+            .args(["drift", "--fix", "--no-exit-code"])
             .output()
-            .expect("spawn stale --fix (oracle)");
+            .expect("spawn drift --fix (oracle)");
     };
 
     // First fix: re-anchors the drifted spans in place.
@@ -1005,7 +1005,7 @@ fn assert_oracle_stale_fix_idempotent() {
     );
     if !diffs.is_empty() {
         panic!(
-            "[real_corpus] ORACLE FAIL for 'stale-fix' (idempotence): a second --fix changed \
+            "[real_corpus] ORACLE FAIL for 'drift-fix' (idempotence): a second --fix changed \
              {} span path(s):\n  - {}",
             diffs.len(),
             diffs.join("\n  - ")
@@ -1199,49 +1199,49 @@ fn bench_history(c: &mut Criterion) {
     g.finish();
 }
 
-fn bench_stale_cold(c: &mut Criterion) {
+fn bench_drift_cold(c: &mut Criterion) {
     let repo = match setup_bench_repo() {
         Some(r) => r,
         None => return,
     };
 
-    // Oracle for cold stale across every output format (human, porcelain,
+    // Oracle for cold drift across every output format (human, porcelain,
     // json, junit, github-actions). json is the format that historically
     // diverged cache-on vs cache-off via current.blob; the others are
     // regression insurance.
-    assert_oracle_stale_cold_all_formats(&repo.path);
+    assert_oracle_drift_cold_all_formats(&repo.path);
 
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
     g.sampling_mode(SamplingMode::Flat);
 
-    g.bench_function("stale-cold", |b| {
+    g.bench_function("drift-cold", |b| {
         b.iter_custom(|iters| {
-            let samples = time_stale_cold(&repo.path, iters);
-            record_samples("stale-cold", &samples, SLA_STALE_COLD_MS);
+            let samples = time_drift_cold(&repo.path, iters);
+            record_samples("drift-cold", &samples, SLA_DRIFT_COLD_MS);
             samples.iter().copied().sum()
         });
     });
     g.finish();
 }
 
-fn bench_stale_warm(c: &mut Criterion) {
+fn bench_drift_warm(c: &mut Criterion) {
     let repo = match setup_bench_repo() {
         Some(r) => r,
         None => return,
     };
 
-    // Oracle for warm stale
-    assert_oracle_stale_warm(&repo.path);
+    // Oracle for warm drift
+    assert_oracle_drift_warm(&repo.path);
 
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
     g.sampling_mode(SamplingMode::Flat);
 
-    g.bench_function("stale-warm", |b| {
+    g.bench_function("drift-warm", |b| {
         b.iter_custom(|iters| {
-            let samples = time_stale_warm(&repo.path, iters);
-            record_samples("stale-warm", &samples, SLA_STALE_WARM_MS);
+            let samples = time_drift_warm(&repo.path, iters);
+            record_samples("drift-warm", &samples, SLA_DRIFT_WARM_MS);
             samples.iter().copied().sum()
         });
     });
@@ -1251,32 +1251,32 @@ fn bench_stale_warm(c: &mut Criterion) {
 /// Interior-anchor corpus cell: a span anchored inside `.span/`. The real
 /// `.span/` corpus has no interior anchor, so without this cell a cache
 /// divergence specific to interior-anchor rendering would escape the oracle.
-/// Compares cache-on vs cache-off across every stale output format both cold
+/// Compares cache-on vs cache-off across every drift output format both cold
 /// and warm.
 fn bench_interior_anchor(c: &mut Criterion) {
     let repo = setup_interior_anchor_repo();
 
     // Cold + warm oracle across all formats.
-    assert_oracle_stale_cold_all_formats(&repo.path);
-    assert_oracle_stale_warm(&repo.path);
+    assert_oracle_drift_cold_all_formats(&repo.path);
+    assert_oracle_drift_warm(&repo.path);
 
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
     g.sampling_mode(SamplingMode::Flat);
-    g.bench_function("interior-anchor-stale-cold", |b| {
-        b.iter_custom(|iters| time_stale_cold(&repo.path, iters).iter().copied().sum());
+    g.bench_function("interior-anchor-drift-cold", |b| {
+        b.iter_custom(|iters| time_drift_cold(&repo.path, iters).iter().copied().sum());
     });
     g.finish();
 }
 
 /// Dirty-tree oracle cell: clone the real corpus, DIRTY one unrelated tracked
-/// source file, then assert cache-on == cache-off across every stale format,
+/// source file, then assert cache-on == cache-off across every drift format,
 /// both cold and warm. The clean clone the other cells use never reaches the
 /// warm-DIRTY / dirty-overlay path, so without this cell the committed_only
 /// baseline that the dirty path renders for non-affected spans (a populated
 /// `current.blob` and a "changed" vs "changed in the working tree" drift label)
 /// could diverge from the effective cache-off ground truth unnoticed. Dirtying
-/// the clone forces every subsequent stale run onto the dirty path.
+/// the clone forces every subsequent drift run onto the dirty path.
 fn bench_dirty_tree_oracle(c: &mut Criterion) {
     let repo = match setup_bench_repo() {
         Some(r) => r,
@@ -1288,23 +1288,23 @@ fn bench_dirty_tree_oracle(c: &mut Criterion) {
     }
 
     // Cold + warm oracle across all formats, now on a DIRTY working tree.
-    assert_oracle_stale_cold_all_formats(&repo.path);
-    assert_oracle_stale_warm(&repo.path);
+    assert_oracle_drift_cold_all_formats(&repo.path);
+    assert_oracle_drift_warm(&repo.path);
 
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
     g.sampling_mode(SamplingMode::Flat);
-    g.bench_function("dirty-tree-stale-cold", |b| {
-        b.iter_custom(|iters| time_stale_cold(&repo.path, iters).iter().copied().sum());
+    g.bench_function("dirty-tree-drift-cold", |b| {
+        b.iter_custom(|iters| time_drift_cold(&repo.path, iters).iter().copied().sum());
     });
     // Warm-dirty timing cell: the path this card optimizes. Primed cache + dirty
-    // tree, recorded under `dirty-tree-stale-warm` against the same per-op SLA
-    // ceiling as warm-clean (`SLA_STALE_WARM_MS`) and gated by the
-    // `dirty-tree-stale-warm` perf-baseline no-regression rule.
-    g.bench_function("dirty-tree-stale-warm", |b| {
+    // tree, recorded under `dirty-tree-drift-warm` against the same per-op SLA
+    // ceiling as warm-clean (`SLA_DRIFT_WARM_MS`) and gated by the
+    // `dirty-tree-drift-warm` perf-baseline no-regression rule.
+    g.bench_function("dirty-tree-drift-warm", |b| {
         b.iter_custom(|iters| {
-            let samples = time_dirty_tree_stale_warm(&repo.path, iters);
-            record_samples("dirty-tree-stale-warm", &samples, SLA_STALE_WARM_MS);
+            let samples = time_dirty_tree_drift_warm(&repo.path, iters);
+            record_samples("dirty-tree-drift-warm", &samples, SLA_DRIFT_WARM_MS);
             samples.iter().copied().sum()
         });
     });
@@ -1372,20 +1372,20 @@ fn bench_list_glob_nomatch(c: &mut Criterion) {
     bench_list_glob(c, "list-glob-nomatch", "zzz-nonexistent/**", false);
 }
 
-/// `stale --fix` cell: a mutating command. The idempotence oracle runs first on
+/// `drift --fix` cell: a mutating command. The idempotence oracle runs first on
 /// a SEPARATE throwaway clone; then this cell manufactures drift on its own
 /// clone, snapshots the dirtied baseline ONCE, and times repeated cold `--fix`
 /// runs that each restore the baseline OUTSIDE the timed window.
-fn bench_stale_fix(c: &mut Criterion) {
+fn bench_drift_fix(c: &mut Criterion) {
     // Idempotence oracle on its own throwaway clone (does not touch timing clone).
-    assert_oracle_stale_fix_idempotent();
+    assert_oracle_drift_fix_idempotent();
 
     let repo = match setup_bench_repo() {
         Some(r) => r,
         None => return,
     };
-    if !drift_stale_fix_sources(&repo.path) {
-        eprintln!("[real_corpus] SKIP stale-fix: drift source files missing");
+    if !dirty_drift_fix_sources(&repo.path) {
+        eprintln!("[real_corpus] SKIP drift-fix: drift source files missing");
         return;
     }
     let baseline = snapshot_fix_baseline(&repo.path);
@@ -1393,10 +1393,10 @@ fn bench_stale_fix(c: &mut Criterion) {
     let mut g = c.benchmark_group("real_corpus");
     g.sample_size(10);
     g.sampling_mode(SamplingMode::Flat);
-    g.bench_function("stale-fix", |b| {
+    g.bench_function("drift-fix", |b| {
         b.iter_custom(|iters| {
-            let samples = time_stale_fix(&repo.path, &baseline, iters);
-            record_samples("stale-fix", &samples, SLA_STALE_FIX_MS);
+            let samples = time_drift_fix(&repo.path, &baseline, iters);
+            record_samples("drift-fix", &samples, SLA_DRIFT_FIX_MS);
             samples.iter().copied().sum()
         });
     });
@@ -1517,14 +1517,14 @@ criterion_group!(
     bench_tree,
     bench_show,
     bench_history,
-    bench_stale_cold,
-    bench_stale_warm,
+    bench_drift_cold,
+    bench_drift_warm,
     bench_interior_anchor,
     bench_dirty_tree_oracle,
     bench_list_glob_selective,
     bench_list_glob_broad,
     bench_list_glob_nomatch,
-    bench_stale_fix,
+    bench_drift_fix,
     bench_report
 );
 criterion_main!(benches);

@@ -40,13 +40,13 @@ export type CurrentUnavailableReason = TimelineUnavailableReason | 'filter-faile
 
 /**
  * Every reason a `current` anchor's content cannot be shown, including
- * `recorded: 'unrecoverable'`, which names a different failure (a stale or
+ * `recorded: 'unrecoverable'`, which names a different failure (a drifted or
  * impossible recorded token, not an unreadable file) and so gets its own
  * status card.
  */
 export type UnavailableReason = CurrentUnavailableReason | 'unrecoverable';
 
-/** The layer at which an anchor was observed drifted, per `git span stale`. */
+/** The layer at which an anchor was observed drifted, per `git span drift`. */
 export type DriftSource = 'HEAD' | 'INDEX' | 'WORKTREE';
 
 /**
@@ -225,9 +225,9 @@ export interface PostedDocument {
    */
   updatedAt?: string;
   /** True when any anchor drifted/relocated/unavailable or the declaration has an uncommitted edit. */
-  stale: boolean;
-  /** Human-readable causes for the Stale pill's tooltip, e.g. `1 anchor drifted`. */
-  staleReasons: string[];
+  drift: boolean;
+  /** Human-readable causes for the Drift pill's tooltip, e.g. `1 anchor drifted`. */
+  driftReasons: string[];
   /** One card per live anchor, in file order. */
   anchors: PostedAnchor[];
   /** The uncommitted declaration edit card, when `current.span_diff` exists. */

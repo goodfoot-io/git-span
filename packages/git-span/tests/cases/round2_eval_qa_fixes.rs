@@ -130,8 +130,8 @@ fn seed_two_anchors(repo: &TestRepo) -> Result<()> {
     Ok(())
 }
 
-fn stale(repo: &TestRepo) -> Result<String> {
-    repo.span_stdout(["stale", "--no-exit-code"])
+fn drift(repo: &TestRepo) -> Result<String> {
+    repo.span_stdout(["drift", "--no-exit-code"])
 }
 
 #[test]
@@ -140,14 +140,14 @@ fn committed_whole_file_deletion_is_deleted() -> Result<()> {
     seed_two_anchors(&repo)?;
     repo.run_git(["rm", "src/bar.txt"])?;
     repo.run_git(["commit", "-m", "rm bar"])?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/bar.txt") && s.contains("deleted"),
-        "committed whole-file deletion must read 'deleted'; stale=\n{s}"
+        "committed whole-file deletion must read 'deleted'; drift=\n{s}"
     );
     assert!(
         !s.contains("src/bar.txt — changed"),
-        "deletion must not be mislabeled 'changed'; stale=\n{s}"
+        "deletion must not be mislabeled 'changed'; drift=\n{s}"
     );
     Ok(())
 }
@@ -157,10 +157,10 @@ fn staged_whole_file_deletion_is_deleted() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_two_anchors(&repo)?;
     repo.run_git(["rm", "src/bar.txt"])?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/bar.txt") && s.contains("deleted"),
-        "staged whole-file deletion must read 'deleted'; stale=\n{s}"
+        "staged whole-file deletion must read 'deleted'; drift=\n{s}"
     );
     Ok(())
 }
@@ -170,10 +170,10 @@ fn worktree_whole_file_deletion_is_deleted() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_two_anchors(&repo)?;
     std::fs::remove_file(repo.path().join("src/bar.txt"))?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/bar.txt") && s.contains("deleted"),
-        "worktree whole-file deletion must read 'deleted'; stale=\n{s}"
+        "worktree whole-file deletion must read 'deleted'; drift=\n{s}"
     );
     Ok(())
 }
@@ -184,10 +184,10 @@ fn committed_line_anchor_file_deletion_is_deleted() -> Result<()> {
     seed_two_anchors(&repo)?;
     repo.run_git(["rm", "src/foo.txt"])?;
     repo.run_git(["commit", "-m", "rm foo"])?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/foo.txt#L2-L4") && s.contains("deleted"),
-        "committed line-anchor file deletion must read 'deleted'; stale=\n{s}"
+        "committed line-anchor file deletion must read 'deleted'; drift=\n{s}"
     );
     Ok(())
 }
@@ -200,15 +200,15 @@ fn line_anchor_range_no_longer_exists_is_deleted() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_two_anchors(&repo)?;
     repo.write_file("src/foo.txt", "only\n")?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/foo.txt#L2-L4") && s.contains("deleted"),
         "a line range that no longer exists (no relocation) must read \
-         'deleted', not 'changed'; stale=\n{s}"
+         'deleted', not 'changed'; drift=\n{s}"
     );
     assert!(
         !s.contains("src/foo.txt#L2-L4 — changed"),
-        "the vanished range must not be mislabeled 'changed'; stale=\n{s}"
+        "the vanished range must not be mislabeled 'changed'; drift=\n{s}"
     );
     Ok(())
 }
@@ -221,14 +221,14 @@ fn relocated_line_anchor_still_moved_not_deleted() -> Result<()> {
     seed_two_anchors(&repo)?;
     std::fs::create_dir_all(repo.path().join("dst"))?;
     repo.run_git(["mv", "src/foo.txt", "dst/foo.txt"])?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("moved") && s.contains("dst/foo.txt"),
-        "a relocated line anchor must still read 'moved'; stale=\n{s}"
+        "a relocated line anchor must still read 'moved'; drift=\n{s}"
     );
     assert!(
         !s.contains("src/foo.txt#L2-L4 — deleted"),
-        "a relocation must not be mislabeled 'deleted'; stale=\n{s}"
+        "a relocation must not be mislabeled 'deleted'; drift=\n{s}"
     );
     Ok(())
 }
@@ -240,11 +240,11 @@ fn in_place_line_change_still_changed() -> Result<()> {
     let repo = TestRepo::new()?;
     seed_two_anchors(&repo)?;
     repo.write_file("src/foo.txt", "l1\nX\nY\nZ\nl5\n")?;
-    let s = stale(&repo)?;
+    let s = drift(&repo)?;
     assert!(
         s.contains("src/foo.txt#L2-L4") && s.contains("changed"),
         "a genuine in-place line change must still read 'changed'; \
-         stale=\n{s}"
+         drift=\n{s}"
     );
     Ok(())
 }

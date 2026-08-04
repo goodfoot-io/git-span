@@ -1,6 +1,6 @@
 //! Regression (originally F5): a worktree-only edit to an anchored source
 //! file must re-resolve against the *current* worktree bytes, never replay a
-//! prior dirty run's cached staleness verdict.
+//! prior dirty run's cached drift verdict.
 //!
 //! The historical bug lived in the deleted `cache_v2` dirty overlay: its key
 //! folded the dirty *source* contribution as `fingerprint(path, path)` — the
@@ -9,16 +9,16 @@
 //! replayed the previous run's verdict, a silent wrong result. The new
 //! store's `StateToken` folds each relevant path's typed worktree content
 //! identity, so a distinct dirty state yields a distinct key and cannot
-//! exact-hit a stale generation. This test pins that guarantee against the
+//! exact-hit a drifted generation. This test pins that guarantee against the
 //! new (and only) store.
 //!
 //! Scenario: span anchors `file1.txt#L1-L5`.
-//!   - Edit A drifts *inside* the anchored range → `stale` reports stale and
+//!   - Edit A drifts *inside* the anchored range → `drift` reports drift and
 //!     publishes a dirty generation for A's state.
 //!   - Edit B reverts lines 1-5 to the committed content but drifts line
 //!     10 (outside the anchor) so the file stays worktree-dirty with the
 //!     same path set, but the anchored range is now clean.
-//!   - The second `stale` must classify against B (NOT stale) and re-resolve
+//!   - The second `drift` must classify against B (NOT drifted) and re-resolve
 //!     (a cold-miss build), not exact-hit A's published "changed" verdict.
 //!
 //! The binary is spawned directly so `GIT_SPAN_CACHE`/`GIT_SPAN_PERF` can be
@@ -59,27 +59,27 @@ fn run_span(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Run `git span stale --no-exit-code` with the cache + perf enabled.
+/// Run `git span drift --no-exit-code` with the cache + perf enabled.
 /// Returns (stdout, `cache-path.cold-miss-builds` count) — the count of
 /// authoritative resolver builds this run performed (the new store's
 /// signal that the run re-resolved rather than replaying a cached verdict).
-fn run_stale(repo: &Path) -> (String, u64) {
+fn run_drift(repo: &Path) -> (String, u64) {
     let out = Command::new(GIT_SPAN_BIN)
         .current_dir(repo)
         .env("GIT_SPAN_CACHE", "1")
         .env("GIT_SPAN_PERF", "1")
-        .args(["stale", "--no-exit-code"])
+        .args(["drift", "--no-exit-code"])
         .output()
-        .expect("spawn git-span stale");
+        .expect("spawn git-span drift");
     assert!(
         out.status.success(),
-        "git span stale failed: {}",
+        "git span drift failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr);
     // The new store must NOT serve edit B as an exact hit of edit A's
-    // published dirty generation — that would replay A's stale verdict
+    // published dirty generation — that would replay A's drifted verdict
     // (the F5 bug). A re-resolve shows up as a cold-miss build.
     assert!(
         !stderr.contains("cache-path.hit-class: exact"),
@@ -130,10 +130,10 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
         "AAA1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nb10\n",
     )
     .expect("write A");
-    let (out_a, _) = run_stale(p);
+    let (out_a, _) = run_drift(p);
     assert!(
         out_a.contains("file1.txt#L1-L5"),
-        "edit A must report the anchored range stale; stdout=\n{out_a}"
+        "edit A must report the anchored range drift; stdout=\n{out_a}"
     );
 
     // ── Edit B: restore lines 1-5 to committed content; drift line 10
@@ -144,18 +144,18 @@ fn worktree_only_edit_to_anchored_source_misses_overlay_cache() {
         "a1\na2\na3\na4\na5\nb6\nb7\nb8\nb9\nBBB10\n",
     )
     .expect("write B");
-    let (out_b, cold_miss_builds_b) = run_stale(p);
+    let (out_b, cold_miss_builds_b) = run_drift(p);
 
-    // The verdict must reflect B (anchored range clean → not stale), not
+    // The verdict must reflect B (anchored range clean → not drifted), not
     // A's cached "changed" classification.
     assert!(
         !out_b.contains("file1.txt#L1-L5 — changed"),
-        "edit B replayed edit A's cached stale verdict (F5 regression); \
+        "edit B replayed edit A's cached drifted verdict (F5 regression); \
          stdout=\n{out_b}"
     );
     assert!(
-        out_b.contains("0 stale"),
-        "edit B must classify the anchored range as not stale; stdout=\n{out_b}"
+        out_b.contains("0 drift"),
+        "edit B must classify the anchored range as not drifted; stdout=\n{out_b}"
     );
 
     // And it must have been a recompute (an authoritative resolver build),

@@ -145,9 +145,9 @@ impl SpanFile {
     /// This is a pure text→struct transform. Span-root containment of anchor
     /// paths is NOT enforced here: `parse` is the single chokepoint every read
     /// funnels through, including repair/mutation commands (`remove`, `delete`,
-    /// `move`, `stale --fix`), which must be able to load a poisoned span in
+    /// `move`, `drift --fix`), which must be able to load a poisoned span in
     /// order to fix it. Interior-anchor violations are surfaced at the
-    /// reporting/validate surfaces (`stale`, `doctor`) instead.
+    /// reporting/validate surfaces (`drift`, `doctor`) instead.
     ///
     /// Returns `InvalidSpanFile` on malformed input.
     pub fn parse(input: &str) -> Result<Self> {
@@ -168,7 +168,7 @@ impl SpanFile {
         };
         // Fail-closed backstop: a span file carrying Git textual conflict
         // markers is the product of an unresolved merge. Refuse to parse
-        // it as valid span data so `show`/`list`/`stale` never present
+        // it as valid span data so `show`/`list`/`drift` never present
         // `<<<<<<<` / `=======` / `>>>>>>>` content as real why/anchors.
         if has_conflict_markers(input) {
             return Err(Error::SpanConflict(

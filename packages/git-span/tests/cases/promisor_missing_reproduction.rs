@@ -1,4 +1,4 @@
-//! Reproduction test: `git span stale` must emit
+//! Reproduction test: `git span drift` must emit
 //! `ContentUnavailable(PromisorMissing)` when a blob referenced by an anchor
 //! cannot be read from the local object store and promisor files are present,
 //! rather than misclassifying the anchor as `Deleted` or `Changed`.
@@ -6,7 +6,7 @@
 //! ## The bug
 //!
 //! `UnavailableReason::PromisorMissing` is defined in `types.rs` (line 135)
-//! and fully supported through the cache DTO, drift-label rendering, stale
+//! and fully supported through the cache DTO, drift-label rendering, drift
 //! output (human, JSON, porcelain), and `--ignore-unavailable` filtering.
 //! However, **no code path ever constructs this variant.** The resolver in
 //! `anchor.rs` calls `git::read_git_text()` through several `.unwrap_or_default()`

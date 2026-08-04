@@ -45,10 +45,10 @@ git span show: invalid span file: line 1: <parse error>
 The span file for `foo` could not be read.
 ```
 
-`git span list`, `git span stale`, and `git span doctor` instead enumerate
+`git span list`, `git span drift`, and `git span doctor` instead enumerate
 **every** span file before filtering — one malformed file anywhere aborts the
 whole command, even when you passed a specific, otherwise-healthy target:
-`git span stale bar/baz` fails too, while `foo` alone is broken. The failure
+`git span drift bar/baz` fails too, while `foo` alone is broken. The failure
 is a bare, repo-scoped line with **no span name attached**:
 
 ```
@@ -57,7 +57,7 @@ error: invalid span file: line 1: <parse error>
 
 (exit 1). `doctor` does not accept a name/path argument to narrow the scan
 (`git span doctor foo` errors `unexpected argument 'foo' found`), so once
-`doctor`/`list`/`stale` die this way you cannot ask them which span is at
+`doctor`/`list`/`drift` die this way you cannot ask them which span is at
 fault. Bisect with `git span show <name>` on suspect names instead — it is
 the only command that fails scoped to one span. Fix the malformed file
 (`git checkout -- .span/<name>` to revert to a known-good commit, or hand-edit

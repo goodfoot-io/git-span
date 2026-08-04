@@ -282,7 +282,7 @@ fn read_effective_serial(
         // than erroring so the batch resolves the live set.
         //
         // A span in a Git conflict state cannot be read reliably. It is
-        // surfaced separately as a `Conflict` finding by the stale path;
+        // surfaced separately as a `Conflict` finding by the drift path;
         // collecting it here lets callers avoid a separate
         // `conflicted_span_names_in` scan (still fail-closed: the conflict
         // is reported, exit is non-zero).
@@ -300,7 +300,7 @@ fn read_effective_serial(
 }
 
 /// Names of all visible spans that are currently in a Git conflict
-/// state (unmerged index entry or textual conflict markers). The stale
+/// state (unmerged index entry or textual conflict markers). The drift
 /// path renders each as a `Conflict` finding and forces a non-zero exit.
 pub fn conflicted_span_names_in(repo: &gix::Repository, span_root: &str) -> Result<Vec<String>> {
     let reader = SpanFileReader::new(repo, span_root.to_string());

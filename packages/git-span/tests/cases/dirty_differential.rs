@@ -5,7 +5,7 @@
 //! Phase 5A proved the dirty affected-set / reuse logic white-box, in process,
 //! against `capture_resolution_core` directly (see
 //! `src/resolver/dirty/tests.rs`). This suite proves the missing thing: that a
-//! *real `git span stale` invocation* over an uncommitted staged/worktree
+//! *real `git span drift` invocation* over an uncommitted staged/worktree
 //! overlay emits output byte-identical to the cache-off oracle across every
 //! required dirty state and every output format — the property the card's
 //! correctness contract actually promises a user, and the class of proof that
@@ -26,7 +26,7 @@
 //!    change, dirty span definition, conflict, …). HEAD does not move; only the
 //!    worktree/index differs.
 //! 4. For each of human / porcelain / JSON: restore the baseline-only store,
-//!    run `git span stale` under the cache-off oracle and under the new store,
+//!    run `git span drift` under the cache-off oracle and under the new store,
 //!    and assert byte-identical stdout AND identical exit code (and, for the
 //!    fault scenarios, stderr too).
 //!
@@ -188,10 +188,10 @@ fn build_base_corpus() -> Result<TestRepo> {
 }
 
 /// Publish a baseline generation at the current HEAD via the new store, then
-/// snapshot the resulting store. The `stale` exit code is intentionally
+/// snapshot the resulting store. The `drift` exit code is intentionally
 /// ignored — a drifted corpus exits non-zero and that is fine.
 fn publish_and_snapshot(repo: &TestRepo) -> BTreeMap<&'static str, Vec<u8>> {
-    let _ = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let _ = run(repo.path(), &["drift"], Mode::NewStore, false);
     snapshot_store(repo.path())
 }
 
@@ -208,7 +208,7 @@ fn assert_parity_all_formats(
 ) -> String {
     let mut perf = String::new();
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
 
         restore_store(repo.path(), snap);
         let (disabled, _, dis_code) = run(repo.path(), &args, Mode::Disabled, false);
@@ -239,7 +239,7 @@ fn assert_full_parity_all_formats(
     scenario: &str,
 ) {
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
 
         restore_store(repo.path(), snap);
         let (dis_out, dis_err, dis_code) = run(repo.path(), &args, Mode::Disabled, false);
@@ -370,7 +370,7 @@ fn staged_plus_worktree_parity() -> Result<()> {
 // Same-size / same-mtime edit: a mutation a naive stat-only cache would miss.
 // Proves the resolver keys off real content, not stat metadata — if it trusted
 // (size, mtime) the dirty state would be invisible and the exact-hit tier would
-// serve the stale clean baseline, diverging from the oracle.
+// serve the drifted clean baseline, diverging from the oracle.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -394,7 +394,7 @@ fn same_size_same_mtime_edit_parity() -> Result<()> {
     // report alpha as drifted — otherwise this proves nothing.
     let (oracle, _, _) = run(
         repo.path(),
-        &["stale", "--format", "porcelain"],
+        &["drift", "--format", "porcelain"],
         Mode::Disabled,
         false,
     );
@@ -492,7 +492,7 @@ fn conflict_parity() -> Result<()> {
 // Unreadable file: alpha's anchored source is replaced by a directory (a typed
 // `Unreadable`, distinct from `Absent`). Resolving over it is a hard resolver
 // error; the new store must surface it IDENTICALLY to the authoritative full
-// resolve — a resolver error stays an error, never masked as a stale/fresh
+// resolve — a resolver error stays an error, never masked as a drift/fresh
 // cache result (`notes/correctness-contract.md` "Fail-Closed"). stderr and exit
 // code are compared, not just stdout.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ fn unreadable_file_parity() -> Result<()> {
 // Changing-index race: the index moves between generations. A first dirty state
 // B1 is resolved and its generation published; the index is then moved to a
 // DIFFERENT dirty state B2 at the same HEAD. The new store must render B2
-// correctly and never serve the stale B1 generation.
+// correctly and never serve the drifted B1 generation.
 //
 // This is the CLI-observable consequence of the dirty tier's `revalidate()`
 // discard-on-torn-read integration: the index is part of the canonical key, so
@@ -534,7 +534,7 @@ fn changing_index_race_parity() -> Result<()> {
     // generation through the new store.
     repo.write_file("src/a.txt", "a-1B1\na-2\na-3\na-4\n")?;
     repo.run_git(["add", "src/a.txt"])?;
-    let _ = run(repo.path(), &["stale"], Mode::NewStore, false);
+    let _ = run(repo.path(), &["drift"], Mode::NewStore, false);
     // Snapshot the store — it now holds the baseline AND the B1 dirty generation.
     let snap = snapshot_store(repo.path());
 
@@ -542,7 +542,7 @@ fn changing_index_race_parity() -> Result<()> {
     repo.write_file("src/a.txt", "a-1B2-different\na-2\na-3\na-4\n")?;
     repo.run_git(["add", "src/a.txt"])?;
 
-    // The new store must render B2, never reuse B1's stale generation.
+    // The new store must render B2, never reuse B1's drifted generation.
     assert_parity_all_formats(&repo, &snap, "changing-index-race");
     Ok(())
 }
@@ -582,7 +582,7 @@ fn whole_file_multilayer_drift_blocked_upstream() -> Result<()> {
     // COLD new store (empty) vs cache-off, clean worktree — the dirty tier is
     // not reached; the divergence is entirely upstream.
     for fmt in FORMATS {
-        let args = ["stale", "--format", fmt];
+        let args = ["drift", "--format", fmt];
         let _ = std::fs::remove_dir_all(store_dir(repo.path()));
         let (disabled, _, dis_code) = run(repo.path(), &args, Mode::Disabled, false);
         let _ = std::fs::remove_dir_all(store_dir(repo.path()));

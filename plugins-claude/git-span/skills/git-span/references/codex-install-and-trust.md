@@ -10,7 +10,7 @@ distinct steps, none of which happen automatically.
 
 ## 0. Prerequisite — the `git span` binary on `PATH`
 
-The bundled hooks shell out to `git span list` and `git span stale`. Codex
+The bundled hooks shell out to `git span list` and `git span drift`. Codex
 does not install or manage this binary — build or install the `git-span`
 CLI (`packages/git-span`) and confirm it resolves before going further:
 

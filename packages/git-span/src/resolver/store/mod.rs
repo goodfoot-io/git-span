@@ -1,4 +1,4 @@
-//! Verified SQLite storage engine for `git span stale` (card main-157
+//! Verified SQLite storage engine for `git span drift` (card main-157
 //! Phase 2: "Build The Verified SQLite Core").
 //!
 //! [`CacheStore`] is a *standalone* store: this phase builds and verifies it
@@ -44,7 +44,7 @@ mod tests;
 /// The complete command-level result for a warm exact hit: the full anchor
 /// set (Fresh + non-Fresh) in stored order, plus per-span anchor counts.
 ///
-/// This is the render-ready shape `run_stale` short-circuits on — handing it
+/// This is the render-ready shape `run_drift` short-circuits on — handing it
 /// back lets the CLI skip its per-invocation corpus reload (count-totals, the
 /// Fresh-anchor backfill, and the interior-anchor scan). It carries runtime
 /// [`SpanResolved`](crate::types::SpanResolved) values directly; its persisted
@@ -104,7 +104,7 @@ pub(crate) struct GenerationInput {
     /// Caller-defined payload/schema version for every value in this
     /// generation.
     pub(crate) payload_version: u32,
-    /// The compact authoritative stale summary.
+    /// The compact authoritative drift summary.
     pub(crate) summary: Vec<u8>,
     /// Immutable normalized reuse rows, in stored order.
     pub(crate) rows: Vec<GenerationRow>,
@@ -792,7 +792,7 @@ impl CacheStore {
     /// non-live every generation whose publish-time HEAD hint is not one of
     /// `live_heads` (the commit OIDs currently checked out by an active
     /// worktree, per [`crate::git::live_worktree_heads`]), and — for the
-    /// current worktree's `(head, key)`, when supplied — demote the stale
+    /// current worktree's `(head, key)`, when supplied — demote the drift
     /// summary-only overlays that accumulate at a *single* live HEAD. Returns
     /// the number of generations demoted.
     ///
@@ -815,7 +815,7 @@ impl CacheStore {
     /// 2. **Same-HEAD dirty-state churn (card main-157 F2).** Liveness scoped to
     ///    the HEAD alone leaves *every* generation published at the current HEAD
     ///    permanently live, so a developer (or an editor extension running
-    ///    `git span stale` on save) sitting on one commit and producing many
+    ///    `git span drift` on save) sitting on one commit and producing many
     ///    distinct dirty worktree states accumulates one live summary-only
     ///    overlay per state, unbounded, none ever an eviction candidate. When
     ///    `current` is supplied, demote every live *summary-only* overlay

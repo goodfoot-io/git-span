@@ -108,7 +108,7 @@ pub struct Span {
 }
 
 /// Reason content should exist but is not readable locally without
-/// a network call. See docs/stale-layers-plan.md §D4.
+/// a network call. See docs/drift-layers-plan.md §D4.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UnavailableReason {
@@ -230,7 +230,7 @@ pub struct SpanResolved {
     /// stored order.
     pub anchors: Vec<AnchorResolved>,
     /// Committed `follow_moves` flag from the span config, carried through
-    /// so post-resolution code (e.g. `git span stale` auto-follow precheck)
+    /// so post-resolution code (e.g. `git span drift` auto-follow precheck)
     /// does not have to reload the span file to read it.
     pub follow_moves: bool,
 }
@@ -256,7 +256,7 @@ pub enum Error {
     #[error("span already exists: {0}")]
     SpanAlreadyExists(String),
 
-    // `DuplicateRangeLocation` removed per `docs/stale-layers-plan.md` §D5:
+    // `DuplicateRangeLocation` removed per `docs/drift-layers-plan.md` §D5:
     // staged `(path, extent)` duplicates are last-write-wins. The three
     // former raise sites in `span/commit.rs` now call `todo!()` pending
     // the dedup-pass implementation slice.
@@ -313,7 +313,7 @@ pub enum Error {
     /// A path's `.gitattributes` resolves to a `filter=<name>` driver
     /// outside the slice-2 core-filter allowlist. The engine surfaces
     /// this as `AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
-    /// See `docs/stale-layers-slices.md` "Standing rules" — fail loud.
+    /// See `docs/drift-layers-slices.md` "Standing rules" — fail loud.
     #[error("filter not implemented: {filter}")]
     FilterFailed { filter: String },
 
@@ -389,12 +389,12 @@ impl From<git_span_core::Error> for Error {
 //
 // These types are introduced ahead of the engine and renderer slices so the
 // public boundary exists when those slices land. See
-// `docs/stale-layers-plan.md` §"Key types" and §D1–D6. Only derives and
+// `docs/drift-layers-plan.md` §"Key types" and §D1–D6. Only derives and
 // constructors / a stubbed `ContentRef::read_normalized` live here — runtime
 // logic lands in later slices.
 // ---------------------------------------------------------------------------
 
-/// Which drift layers participate in a `stale` run. HEAD is always on;
+/// Which drift layers participate in a `drift` run. HEAD is always on;
 /// these toggles select additional layers on top.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerSet {
@@ -442,10 +442,10 @@ pub enum DriftSource {
 impl DriftSource {
     /// The JSON token for this layer.
     ///
-    /// One function, two commands: `git span stale` publishes it as `source`
+    /// One function, two commands: `git span drift` publishes it as `source`
     /// and `git span history` as the per-anchor `sources` array, so the two
     /// vocabularies agree by construction rather than by two transcriptions
-    /// staying in step. `history` dropping this distinction — while `stale`
+    /// staying in step. `history` dropping this distinction — while `drift`
     /// published it on both surfaces — is what made committed drift and a live
     /// worktree edit indistinguishable in `current`.
     pub fn as_json_str(self) -> &'static str {
@@ -500,7 +500,7 @@ impl ContentRef {
                     .ok_or_else(|| Error::Git("bare repositories are not supported".into()))?;
                 // Fail-loud: any `filter=<name>` outside the core-filter
                 // allowlist short-circuits before we touch gix's filter
-                // pipeline. See `docs/stale-layers-slices.md` standing
+                // pipeline. See `docs/drift-layers-slices.md` standing
                 // rules and `docs/gix-filter-audit.md`.
                 if let Some(name) = path_filter_attribute(workdir, path)?
                     && !is_core_filter(&name)
@@ -544,7 +544,7 @@ impl ContentRef {
                 // Slice 1: read raw. Re-normalization across filter changes
                 // (the .gitattributes-stamp dance in plan §B2) is a later
                 // slice.
-                // TODO(stale-layers-plan): re-normalize sidecars on read.
+                // TODO(drift-layers-plan): re-normalize sidecars on read.
                 Ok(std::fs::read(path)?)
             }
         }
@@ -568,7 +568,7 @@ pub(crate) fn path_filter_attribute(
 
 /// Variant of `path_filter_attribute` that reuses the caller's repository
 /// handle instead of re-opening from the workdir. The engine memo path
-/// uses this so a single `stale` run pays at most one `gix::open` for
+/// uses this so a single `drift` run pays at most one `gix::open` for
 /// attribute lookups.
 pub(crate) fn path_filter_attribute_with_repo(
     repo: &gix::Repository,
@@ -658,7 +658,7 @@ pub struct EngineOptions {
     /// Phase 4: does the caller need every layer's drift evaluated, or
     /// is HEAD's verdict alone sufficient to drive the exit code? Set
     /// to `true` for `--patch`, `--stat`, and the `human` renderer.
-    /// Defaults to `true` for safety; the `stale` CLI flips it to
+    /// Defaults to `true` for safety; the `drift` CLI flips it to
     /// `false` for plain oneline / porcelain / json output.
     pub needs_all_layers: bool,
     /// Confidence threshold for auto-fix: only fuzzy-successor matches at or
@@ -701,7 +701,7 @@ impl EngineOptions {
 pub enum AddPrecheckError {
     /// Anchor target matched by a `.gitignore` rule and not tracked by
     /// git. git-span resolves content through git's layers, so a path git
-    /// never sees can never resolve — `stale` would report it `deleted`
+    /// never sees can never resolve — `drift` would report it `deleted`
     /// forever, with no commit able to clear it. Rejected at `add` time,
     /// keying on the gitignore match (an untracked-but-not-ignored path
     /// is still allowed: it resolves the moment it is committed).
@@ -729,7 +729,7 @@ pub enum AddPrecheckError {
     WholeFileInSubmodule { path: String },
 
     /// `filter=lfs` path whose content is not locally cached. Reuses
-    /// `UnavailableReason::LfsNotFetched` vocabulary with `stale` output
+    /// `UnavailableReason::LfsNotFetched` vocabulary with `drift` output
     /// per plan §D4.
     #[error("content unavailable for {path}: {reason:?}")]
     ContentUnavailable {
@@ -764,7 +764,7 @@ pub fn validate_add_target(
     let submodule_kind = submodule_classify(index_snapshot, &path_str);
 
     // Gitignored target: git never tracks this path, so the resolver can
-    // never see it and `stale` would report it `deleted` forever. Reject
+    // never see it and `drift` would report it `deleted` forever. Reject
     // at the source — but only when the path is *not* tracked: a path
     // matched by a pattern yet force-added to git resolves normally, and
     // an untracked-but-not-ignored path is a legitimate anchor that
@@ -945,7 +945,7 @@ fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Snapshot of the active normalization rules at sidecar capture time.
-/// On `stale` read, an engine-side mismatch against the *current* stamp
+/// On `drift` read, an engine-side mismatch against the *current* stamp
 /// triggers re-normalization of both sides before comparison.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizationStamp {

@@ -3,7 +3,7 @@
 //!
 //! When the corpus carries an interior anchor (an anchor whose path is under
 //! `span_root`), the whole-result store is withheld (fail-closed — the new
-//! store's `withhold_whole_result_for_interior_anchor` gate keeps `run_stale`'s
+//! store's `withhold_whole_result_for_interior_anchor` gate keeps `run_drift`'s
 //! interior-anchor scan). The deleted `cache_v2` then fell back to a
 //! `committed_only` render that labeled an interior anchor's drift "changed"
 //! (HEAD) while the effective resolver labels it "changed in the working tree",
@@ -54,14 +54,14 @@ fn seed_interior_anchor_corpus(repo: &TestRepo) -> Result<()> {
 
 fn assert_format_parity(repo: &TestRepo, format: &str) -> Result<()> {
     let off = repo.run_span_with_env(
-        ["stale", "--no-exit-code", "--format", format],
+        ["drift", "--no-exit-code", "--format", format],
         "GIT_SPAN_CACHE",
         "0",
     )?;
     let off_text = stdout(&off);
 
-    let cold = repo.run_span(["stale", "--no-exit-code", "--format", format])?;
-    let warm = repo.run_span(["stale", "--no-exit-code", "--format", format])?;
+    let cold = repo.run_span(["drift", "--no-exit-code", "--format", format])?;
+    let warm = repo.run_span(["drift", "--no-exit-code", "--format", format])?;
 
     assert_eq!(
         stdout(&cold),
@@ -83,7 +83,7 @@ fn cache_matches_cache_off_for_interior_anchor_corpus() -> Result<()> {
 
     // Sanity: the ground truth surfaces the drifted normal span — otherwise
     // this test would not exercise the render path.
-    let off = repo.run_span_with_env(["stale", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
+    let off = repo.run_span_with_env(["drift", "--no-exit-code"], "GIT_SPAN_CACHE", "0")?;
     let off_text = stdout(&off);
     assert!(
         off_text.contains("a.txt#L1-L3"),

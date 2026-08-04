@@ -1,9 +1,9 @@
-//! `ConcurrentSession` — engine-wide shared memo store for one `stale` run.
+//! `ConcurrentSession` — engine-wide shared memo store for one `drift` run.
 //!
 //! The reverse-indexed HEAD walk (built by [`ConcurrentSession::build_reverse_walk`])
 //! runs once and produces per-anchor commit deltas. Each anchor's classifier
 //! consumes its slice of the walk output instead of running its own per-anchor
-//! walk. The session is constructed once at the top of the `stale` CLI path and
+//! walk. The session is constructed once at the top of the `drift` CLI path and
 //! threaded through `resolve_anchor_inner`. There is no caching across runs —
 //! the session lives only for the duration of one engine call and is dropped
 //! when it returns.
@@ -300,7 +300,7 @@ impl PathIndex {
 }
 
 /// Engine-wide shared state: session-scoped caches and counters for one
-/// `stale` run.
+/// `drift` run.
 ///
 /// This is the interior-mutability memo store of the resolver's three-way
 /// state split (card main-162): the per-worker scratch and subprocess
@@ -360,13 +360,13 @@ pub(crate) struct ConcurrentSession {
     /// `EngineState::filter_short_circuit` on cached `(rel_path)` reads.
     pub(crate) filter_attr_hits: AtomicU64,
     /// Counter: per-path filter-attribute memo misses (first lookup per
-    /// distinct path). On a warm `stale` run, this equals the number of
+    /// distinct path). On a warm `drift` run, this equals the number of
     /// distinct paths probed across all anchors in the session.
     pub(crate) filter_attr_misses: AtomicU64,
     /// Per-anchored-path memo for `resolver::attribution`'s deleted-locus
     /// walk (card main-168). Keyed by the anchored path string (not by
     /// anchor or span), so every subsequent anchor sharing a deleted path
-    /// within the same `stale` run reuses the first walk's answer instead of
+    /// within the same `drift` run reuses the first walk's answer instead of
     /// re-walking history — see "Cross-anchor memoization" in
     /// `plans/bounded-rename-chain.md`. `RwLock`-wrapped (card main-162
     /// staged-rollout step 2): a pure function of the anchored path for the
@@ -379,7 +379,7 @@ pub(crate) struct ConcurrentSession {
     /// pair. Many anchors in a span share the same underlying files and
     /// commit history, so the same pair is requested repeatedly across
     /// anchors. This memo eliminates the redundant traversals within a
-    /// single `stale` run; it does not persist across invocations.
+    /// single `drift` run; it does not persist across invocations.
     ///
     /// Nested by `commit_sha` then `path` (rather than a flat
     /// `HashMap<(String, String), _>`) so a repeated probe against the same
@@ -545,7 +545,7 @@ pub(crate) struct ConcurrentSession {
     /// per-commit cell's [`OnceLock::get_or_init`], once per distinct commit.
     pub(crate) before_tree_paths_memo: SingleFlightMemo<Arc<HashSet<String>>>,
     /// Session-scoped memo for normalized worktree bytes, keyed by path.
-    /// The worktree does not change during a `stale` run, so every reader
+    /// The worktree does not change during a `drift` run, so every reader
     /// of the same path — the deepest-layer `current` read and the
     /// `ResolvedPendingCommit` detection in `resolve_anchor_inner` alike —
     /// shares one disk-plus-filter read. Failed reads are not cached; the
@@ -555,7 +555,7 @@ pub(crate) struct ConcurrentSession {
     /// deliberately NOT the per-key `OnceLock` single-flight the two memos
     /// above use: only a *successful* read is inserted (a failing read is
     /// `?`-propagated before the write), so the next caller retries rather
-    /// than being pinned to a stale failure. A single-flight `OnceLock` cell
+    /// than being pinned to a drifted failure. A single-flight `OnceLock` cell
     /// would have to persist the first caller's transient failure for the
     /// rest of the session — a correctness regression — so this field keeps
     /// the racy generic pattern (redundant compute on a race is accepted).
@@ -620,7 +620,7 @@ pub(crate) struct ConcurrentSession {
 
 /// Session-scoped Jaccard interner and per-`(path, layer)` interned-line
 /// cache, shared across every anchor's fuzzy-similarity scan
-/// (`find_similar_ranges`) within one `stale` run.
+/// (`find_similar_ranges`) within one `drift` run.
 ///
 /// [`git_span_core::jaccard_window_scan`] normalizes and interns a candidate
 /// file's lines from scratch on every call. `find_similar_ranges` already
@@ -889,14 +889,14 @@ impl ConcurrentSession {
     }
 
     /// Get or read the normalized worktree bytes at `path`, memoized for
-    /// the session's lifetime. The worktree is constant for one `stale`
+    /// the session's lifetime. The worktree is constant for one `drift`
     /// run, so every anchor that needs `path`'s worktree content — whether
     /// through the deepest-layer `current` read or the
     /// `ResolvedPendingCommit` detection in `resolve_anchor_inner` — shares
     /// one disk-plus-filter read instead of repeating it. A failing read
     /// (rare: filter failure, I/O error) is propagated but not cached, so
     /// the next caller for the same path retries rather than being pinned
-    /// to a stale failure.
+    /// to a drifted failure.
     pub(crate) fn worktree_bytes(
         &self,
         repo: &gix::Repository,

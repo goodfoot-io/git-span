@@ -31,9 +31,9 @@ git span                                             # list every span
 git span <name>                                      # show one span (= git span show <name>)
 git span show <name>
 git span list [<target>...] [--porcelain] [--oneline] [--offset <n>] [--limit <n>]
-git span stale [<target>...] [--format human|porcelain|json] [--no-exit-code]
-git span stale [<target>...] [--fix]                 # re-anchor in place; resolve .span/ conflicts; human format only
-git span stale --perf-trace <path>                   # CSV of per-anchor wall-clock traces; full scan only, no positional paths
+git span drift [<target>...] [--format human|porcelain|json] [--no-exit-code]
+git span drift [<target>...] [--fix]                 # re-anchor in place; resolve .span/ conflicts; human format only
+git span drift --perf-trace <path>                   # CSV of per-anchor wall-clock traces; full scan only, no positional paths
 git span tree <glob>... [-d|--depth <n>] [--format human|json]
 git span history <name> [--format human|json] [-n|--limit <count>]
 git span doctor
@@ -42,7 +42,7 @@ git span doctor
 `--offset` skips the first N spans after filtering, before `--limit`; `--limit`
 caps output after filtering and `--offset`.
 
-Each `<target>` for `list`/`stale` is one of: a span name, a file path, or —
+Each `<target>` for `list`/`drift` is one of: a span name, a file path, or —
 `list` only — a line-range address `<path>#L<start>-L<end>`. Globs are
 expanded by the shell. Multiple targets are unioned and deduplicated.
 
@@ -52,12 +52,12 @@ try span-name resolution first and fall through to path lookup when no span
 matches. Arguments that don't match span-name shape (paths with extensions,
 globs) go straight to path lookup. A target that resolves to no spans is fine
 on its own — `list` exits 0 with an empty result ("No spans match the
-filters."); `stale` exits 0 silently ("0 stale across 0 spans"). The command
+filters."); `drift` exits 0 silently ("0 drift across 0 spans"). The command
 only errors when a target names a referent that doesn't exist at all (missing
 file, missing span name, unmatched literal glob) — see `references/inspect.md`
-§ "Selector trap" for the exact error text split between `list` and `stale`.
+§ "Selector trap" for the exact error text split between `list` and `drift`.
 
-`stale` exits 1 when it finds drift, 0 when clean; `--no-exit-code` forces exit
+`drift` exits 1 when it finds drift, 0 when clean; `--no-exit-code` forces exit
 0 regardless of findings (report-only).
 
 `git span show <name>` emits the span file's content (name, why, anchors, and
@@ -68,11 +68,11 @@ history on the tracked file: `git show <commit-ish>:.span/<name>`.
 impact tree rooted at the matched anchor paths, expanding outward through span
 co-occurrence to the files each could affect. Files that all anchor the same
 span — and are therefore mutually connected — collapse onto one
-comma-separated line and expand once as a unit. Unlike `list`/`stale`, `tree`
+comma-separated line and expand once as a unit. Unlike `list`/`drift`, `tree`
 requires at least one argument and **fails closed**: a pattern matching no
 anchored file is an error (there is no silent exit-0). Arguments are file
 **paths and globs only** — no `#L<start>-L<end>` line-range addresses or bare
-span names, resolved repo-relative with the same matching as `list`/`stale`.
+span names, resolved repo-relative with the same matching as `list`/`drift`.
 `-d`/`--depth` bounds the expansion (default `3`; `--depth 0` prints the roots
 only). `--format human` (default) prints the nested markdown list; `--format
 json` emits the same structure as nested
@@ -87,7 +87,7 @@ anchor plus a new anchor; and when the recorded side cannot be read —
 binary or unrecoverable content — it renders `rename from`/`rename to`
 lines with no similarity claim, the move asserted by the declaration
 itself), plus a leading, headerless section for the span's *live* drift
-against its declaration — every resolver layer `git span stale` reports, with
+against its declaration — every resolver layer `git span drift` reports, with
 the `drift source` line naming the observing layers. `HEAD` is an observational
 layer, not proof the declaration or content change was committed: inspect the
 declaration diff and timeline, then commit or revert a worktree-only declaration
@@ -188,15 +188,15 @@ A `.span/` file is a derived, line-oriented artifact, so a merge (or rebase,
 cherry-pick, stash apply) that touched the same anchored region on both
 branches leaves git's textual conflict markers in the span file. A
 conflict-markered span is a hard error for every read-only command (`show`,
-`list`, `stale`) until it is resolved. Two commands resolve it — you never
+`list`, `drift`) until it is resolved. Two commands resolve it — you never
 hand-edit an `rk64:` hash.
 
 ```bash
-git span stale --fix              # authoritative resolver (also re-anchors drift)
+git span drift --fix              # authoritative resolver (also re-anchors drift)
 git span merge-driver <BASE> <OURS> <THEIRS> <MARKER_LEN>   # git-invoked accelerator, never run by hand
 ```
 
-`git span stale --fix` is the authoritative finisher. It re-anchors every
+`git span drift --fix` is the authoritative finisher. It re-anchors every
 `Moved` anchor and whitespace-equivalent `Changed` anchor in place (re-hashing
 each against the deepest drifting layer, Worktree > Index > HEAD) — a
 `Changed` anchor whose content differs beyond whitespace is left drifting so
@@ -244,7 +244,7 @@ doubles as the output path, `<THEIRS>`=`%B`) and the marker length (`%L`), must
 structurally-derivable part — union of distinct anchors, three-way `--why`
 merge, identical anchors. Any same-anchor range/hash divergence is deferred: it
 writes a minimal conflict and exits non-zero (git's native partial-resolution
-signal), leaving `git span stale --fix` to finish authoritatively. It is a
+signal), leaving `git span drift --fix` to finish authoritatively. It is a
 strict subset of `--fix`: a developer who never registers it reaches the
 identical clean end state through `--fix` alone; the driver changes only how
 many conflicts surface mid-merge, never whether a clean result is reachable.
@@ -252,15 +252,15 @@ many conflicts surface mid-merge, never whether a clean result is reachable.
 **Known gap: multi-anchor spans mid-merge, before the merge commit.** A span
 with two or more anchors on the *same file*, both drifting from the same
 merge, where the `.span/` file itself carries **no** conflict markers (neither
-branch touched it) — only the source conflicted. Running `git span stale --fix`
+branch touched it) — only the source conflicted. Running `git span drift --fix`
 while `.git/MERGE_HEAD` is still present (source resolved and staged, merge
 commit not yet made) rewrites the *first* drifted anchor correctly but
-silently leaves the second one pointing at its stale location — even though
+silently leaves the second one pointing at its drifted location — even though
 the human-readable diagnostic for that second anchor reports the correct new
 location. Repeating `--fix` with no other change reproduces the identical
 partial result every time; it does not converge until the merge commit is
 made. **Workaround:** finish the merge commit before relying on `--fix` to
-fully resolve a multi-anchor span — run `git span stale --format porcelain`
+fully resolve a multi-anchor span — run `git span drift --format porcelain`
 after `git commit` to confirm it is actually clean, rather than trusting a
 mid-merge `--fix` run's exit code or diagnostic text at face value for spans
 with 2+ anchors on one file.
@@ -270,7 +270,7 @@ with 2+ anchors on one file.
 A span name must be kebab-case segments separated by `/`. The following
 tokens are reserved and cannot be used as a span name (so the bare
 `git span <name>` form is unambiguous): `add`, `remove`, `commit`, `why`,
-`restore`, `revert`, `delete`, `move`, `stale`, `tree`, `fetch`, `push`,
+`restore`, `revert`, `delete`, `move`, `drift`, `tree`, `fetch`, `push`,
 `doctor`, `log`, `config`, `list`, `help`, `pre-commit`, `advice`, `rewrite`,
 `hooks`, `merge-driver`, `history`. `show` is **not** reserved — `git span add
 show <anchor>` succeeds.

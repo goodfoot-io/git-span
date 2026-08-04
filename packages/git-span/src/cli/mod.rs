@@ -4,7 +4,7 @@
 //!
 //! * **`anyhow::Result<i32>` at the CLI boundary.** CLI handlers return
 //!   `anyhow::Result<i32>` so exit codes are first-class (§10.4
-//!   distinguishes `0`, `1`, `2` for `git span stale`). Library errors
+//!   distinguishes `0`, `1`, `2` for `git span drift`). Library errors
 //!   (`crate::Error`) convert via `?`; `anyhow` keeps the dispatch
 //!   layer from having to enumerate variants.
 //!
@@ -25,9 +25,9 @@ pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod show;
-pub mod stale_cluster;
-pub mod stale_fix;
-pub mod stale_output;
+pub mod drift_cluster;
+pub mod drift_fix;
+pub mod drift_output;
 pub mod tree;
 pub mod unified_diff;
 
@@ -90,7 +90,7 @@ pub enum Commands {
     /// range/hash with no clean source) or a divergent `--why` write the
     /// resolved anchors cleanly with minimal residue markers and are not
     /// re-staged.
-    Stale(StaleArgs),
+    Drift(DriftArgs),
 
     /// Add anchors to a span, writing the span file under the span root.
     /// Stage and commit the change with `git add .span && git commit`.
@@ -139,8 +139,8 @@ pub enum Commands {
     /// once as a unit, so a cluster that moves together reads as one line.
     ///
     /// Roots are file paths and globs only, resolved repo-relative with
-    /// the same `globset` matching and exact-path lookup as `list`/`stale`
-    /// (no CWD-relative joining). Unlike `list`/`stale`, `tree` does NOT
+    /// the same `globset` matching and exact-path lookup as `list`/`drift`
+    /// (no CWD-relative joining). Unlike `list`/`drift`, `tree` does NOT
     /// accept `#L<start>-L<end>` line-range addresses or bare span names.
     /// At least one argument is required, and a pattern matching no
     /// anchored file is an error. `-d`/`--depth` bounds the expansion
@@ -164,7 +164,7 @@ pub enum Commands {
     /// marker length from git. Resolves only what is structurally
     /// derivable without trusting the worktree (which may be mid-merge);
     /// defers same-anchor range/hash divergence by writing minimal
-    /// conflict markers and exiting non-zero so `git span stale --fix`
+    /// conflict markers and exiting non-zero so `git span drift --fix`
     /// can finish authoritatively.
     ///
     /// Register in `.gitattributes`:
@@ -186,7 +186,7 @@ pub enum Commands {
     /// declaration and of each anchor's content at its declared address, with
     /// the span's live drift rendered before the first commit as a headerless
     /// diff. That drift is not working-tree-only: it covers every resolver
-    /// layer `git span stale` reports, and each block names its observational
+    /// layer `git span drift` reports, and each block names its observational
     /// layers on a `drift source` line. `HEAD` identifies the comparison layer;
     /// it does not by itself prove that the declaration or content change was
     /// committed. Source order is the resolver's: line ranges use Worktree →
@@ -231,20 +231,20 @@ pub struct ListArgs {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
-pub enum StaleFormat {
+pub enum DriftFormat {
     Human,
     Porcelain,
     Json,
 }
 
 #[derive(Debug, Clone, clap::Args)]
-pub struct StaleArgs {
-    /// File paths, globs, or span names to report staleness for.
+pub struct DriftArgs {
+    /// File paths, globs, or span names to report drift for.
     /// Omit to scan all spans.
     pub paths: Vec<String>,
 
-    #[arg(long, value_enum, default_value_t = StaleFormat::Human)]
-    pub format: StaleFormat,
+    #[arg(long, value_enum, default_value_t = DriftFormat::Human)]
+    pub format: DriftFormat,
 
     /// Exit 0 even when drift is found (report-only mode).
     #[arg(long)]
@@ -274,7 +274,7 @@ pub struct StaleArgs {
     #[arg(long)]
     pub fix: bool,
 
-    /// Group this run's stale spans into connected-component clusters by
+    /// Group this run's drifted spans into connected-component clusters by
     /// shared anchored file, so each cluster can be dispatched
     /// independently. Rendered as an additional section/field in every
     /// `--format`.
@@ -461,9 +461,9 @@ pub fn dispatch(
             let _perf = crate::perf::span("command.list");
             show::run_list(repo, args, span_root)
         }
-        Commands::Stale(args) => {
-            let _perf = crate::perf::span("command.stale");
-            stale_output::run_stale(repo, args, span_root)
+        Commands::Drift(args) => {
+            let _perf = crate::perf::span("command.drift");
+            drift_output::run_drift(repo, args, span_root)
         }
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");

@@ -1,7 +1,7 @@
-packages/git-span/src/cli/mod.rs#L40-L195 rk64:493799ca78667307
-packages/git-span/src/cli/mod.rs#L437-L501 rk64:06cd09f6743e11e0
+packages/git-span/src/cli/mod.rs#L40-L195 rk64:15d9bde5a402bea7
+packages/git-span/src/cli/mod.rs#L437-L501 rk64:fa16545e16f43ce0
 packages/git-span/src/main.rs#L49-L113 rk64:c05ed91bbc3814dc
 packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420
-wiki/meta/git-span-documentation-touchpoints.md#L18-L24 rk64:0f747c53e8daff52
+wiki/meta/git-span-documentation-touchpoints.md#L18-L24 rk64:33fbd8e054b62542
 
 The touchpoints page's Command Behavior Source Of Truth section names the implementation chain — the Clap config and dispatch in cli/mod.rs, main.rs's reserved-name pre-classification, and validation.rs's reserved set — as the authority every git-span behavior doc follows.

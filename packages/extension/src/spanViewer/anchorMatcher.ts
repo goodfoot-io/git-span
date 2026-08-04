@@ -157,7 +157,7 @@ function parseAnchorLine(content: string): { address: string; token: string } | 
  * must start there or the anchor's entire lineage is invisible. The same is
  * true when the declaration moved the token to `liveAddress` without
  * emitting any current anchor at all (a byte-identical re-anchor -- the
- * CLI's `stale --fix` output -- is non-reportable, so `current.anchors` is
+ * CLI's `drift --fix` output -- is non-reportable, so `current.anchors` is
  * empty and `current.span_diff` is the only trace of the move).
  *
  * A committed re-anchor is crossed the same way: a first-add content block
@@ -309,7 +309,7 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
   }
   if (!hasHunks(currentEntry.diff)) {
     // Header-only diff with content: a committed-but-unreconciled anchor whose
-    // recorded hash is stale while the bytes are byte-identical -- the drift
+    // recorded hash is drifted while the bytes are byte-identical -- the drift
     // sources are non-empty so the anchor IS drifted, but the diff has no
     // hunks because the content never changed, so the historical side is the
     // content itself. Reconstructing would throw on the empty hunk list.

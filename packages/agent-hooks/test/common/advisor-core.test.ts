@@ -9,7 +9,7 @@
  * minimally against each.
  *
  * Fakes are constructed against the real exported types from advisor-core.ts
- * (`GitExecutor`, `AdvisorExecutors`, `AdvisorMemoState`, `StalePorcelainRow`,
+ * (`GitExecutor`, `AdvisorExecutors`, `AdvisorMemoState`, `DriftPorcelainRow`,
  * `PorcelainRow`, `ParsedGitCommand`, `AdvisorResult`) rather than
  * loosened/`any`-typed shapes — that fidelity is the payoff of the bootstrap:
  * an awkward fake here is a contract-ergonomics finding, not something to
@@ -30,7 +30,7 @@ import {
   parseGitCommand,
   resolveChangeset
 } from '../../src/common/advisor-core.js';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { FileDiff } from '../../src/common/mechanical-change.js';
 import { makeTempRepo } from '../helpers.js';
 
@@ -66,12 +66,12 @@ function createFakeGitExecutor(overrides: Partial<GitExecutor> = {}): GitExecuto
   };
 }
 
-/** A AdvisorExecutors fake with independently overridable fix/stale/list results. */
+/** A AdvisorExecutors fake with independently overridable fix/drift/list results. */
 function createFakeAdvisorExecutors(overrides: Partial<AdvisorExecutors> = {}): AdvisorExecutors {
   return {
     fix: async (): Promise<void> => {},
     list: async (): Promise<PorcelainRow[]> => [],
-    stale: async (): Promise<StalePorcelainRow[]> => [],
+    drift: async (): Promise<DriftPorcelainRow[]> => [],
     listBlocks: async (): Promise<string> => '',
     ...overrides
   };
@@ -82,8 +82,8 @@ function porcelainRow(overrides: Partial<PorcelainRow> = {}): PorcelainRow {
   return { name: 'billing/checkout-request-flow', path: 'src/app.ts', start: 1, end: 10, ...overrides };
 }
 
-/** A stale porcelain row (drift row) for a span covering a given path. */
-function staleRow(overrides: Partial<StalePorcelainRow> = {}): StalePorcelainRow {
+/** A drifted porcelain row (drift row) for a span covering a given path. */
+function driftRow(overrides: Partial<DriftPorcelainRow> = {}): DriftPorcelainRow {
   return {
     name: 'billing/checkout-request-flow',
     path: 'src/app.ts',
@@ -344,7 +344,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           calls += 1;
           return [];
         },
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           calls += 1;
           return [];
         }
@@ -356,18 +356,18 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(calls).toBe(0);
     });
 
-    it('semantic staleness (CHANGED/DELETED) → deny/semantic-staleness with findings once per digest, then falls through to allow/already-presented on an identical retry', async () => {
+    it('semantic drift (CHANGED/DELETED) → deny/semantic-drift with findings once per digest, then falls through to allow/already-presented on an identical retry', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
       const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(first.decision).toBe('hold');
-      expect(first.kind).toBe('semantic-staleness');
-      if (first.kind === 'semantic-staleness') {
+      expect(first.kind).toBe('semantic-drift');
+      if (first.kind === 'semantic-drift') {
         expect(first.findings).toHaveLength(1);
       }
 
@@ -379,7 +379,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(second).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
-    it('a semantic-staleness deny renders the full human span block with per-anchor drift labels', async () => {
+    it('a semantic-drift deny renders the full human span block with per-anchor drift labels', async () => {
       const memo = createMemoryAdvisorMemoState();
       const blocks = [
         '## billing/checkout-request-flow',
@@ -390,14 +390,14 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       ].join('\n');
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      expect(result.kind).toBe('semantic-staleness');
-      if (result.kind === 'semantic-staleness') {
+      expect(result.kind).toBe('semantic-drift');
+      if (result.kind === 'semantic-drift') {
         expect(result.reason).toContain('This change leaves an implicit dependency out of date:');
         // The bullet run is re-laid-out as a shared-prefix tree; the drifted
         // anchor is labeled and the clean sibling anchor is not.
@@ -413,7 +413,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => {
           throw new Error('spawn git ENOENT');
         }
@@ -422,8 +422,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result.decision).toBe('hold');
-      expect(result.kind).toBe('semantic-staleness');
-      if (result.kind === 'semantic-staleness') {
+      expect(result.kind).toBe('semantic-drift');
+      if (result.kind === 'semantic-drift') {
         expect(result.reason).toContain('## billing/checkout-request-flow');
         // A synthesized block trees exactly like a parsed one — it must not be
         // the odd one out in a second format inside the same message.
@@ -442,13 +442,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       ].join('\n\n---\n\n');
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain(['## empty/span', '*Span has no anchors*', '', 'An empty span'].join('\n'));
       expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
     });
@@ -462,13 +462,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const blocks = ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '', why].join('\n');
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain(`\n${why}`);
       expect(result.reason).not.toContain('─ Dashed why lines');
     });
@@ -487,13 +487,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       ].join('\n');
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain(
         [
           '   ├─ app.ts  #L1-L10 — changed',
@@ -511,25 +511,25 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const blocks = ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '- docs/guide.md'].join('\n');
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
         listBlocks: async (): Promise<string> => blocks
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
-      if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain('└─ docs/guide.md');
       expect(result.reason).not.toContain('truncated');
       expect(result.reason).not.toContain('guide.md#');
     });
 
-    it('renders the condensed `alreadySeen` staleness retry as a tree of bare paths', async () => {
+    it('renders the condensed `alreadySeen` drift retry as a tree of bare paths', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [
-          staleRow({ status: 'CHANGED' }),
-          staleRow({ status: 'CHANGED', path: 'api/charge.ts', start: 30, end: 76 })
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'CHANGED' }),
+          driftRow({ status: 'CHANGED', path: 'api/charge.ts', start: 30, end: 76 })
         ]
       });
       const paths = ['src/app.ts', 'api/charge.ts'];
@@ -539,7 +539,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       const condensed = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
 
-      if (condensed.kind !== 'semantic-staleness-report') throw new Error('unreachable');
+      if (condensed.kind !== 'semantic-drift-report') throw new Error('unreachable');
       expect(condensed.reason).toContain('This change still leaves an implicit dependency out of date:');
       // Bare-path leaves — this deduped retry list never claimed a range, so it
       // must not render one, and it must not diverge in format from the full
@@ -548,43 +548,43 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(condensed.reason).not.toContain('- src/app.ts');
     });
 
-    it('a changed findings set produces a fresh semantic-staleness deny (new digest) even after the prior digest was memoized', async () => {
+    it('a changed findings set produces a fresh semantic-drift deny (new digest) even after the prior digest was memoized', async () => {
       const memo = createMemoryAdvisorMemoState();
       let call = 0;
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           call += 1;
           // The first call's findings differ from the second's (a different
           // path drifted), so the digests differ and the second eval denies
           // fresh rather than falling through.
-          return [staleRow({ status: 'CHANGED', path: call === 1 ? 'src/app.ts' : 'src/other.ts' })];
+          return [driftRow({ status: 'CHANGED', path: call === 1 ? 'src/app.ts' : 'src/other.ts' })];
         }
       });
       const paths = ['src/app.ts'];
 
       const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(first.decision).toBe('hold');
-      expect(first.kind).toBe('semantic-staleness');
+      expect(first.kind).toBe('semantic-drift');
 
       const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(second.decision).toBe('hold');
-      expect(second.kind).toBe('semantic-staleness');
+      expect(second.kind).toBe('semantic-drift');
     });
 
-    it('a changeset carrying both unpresented semantic staleness and unpresented uncovered writes denies twice — staleness first, uncovered on the retry — then passes on the third attempt', async () => {
+    it('a changeset carrying both unpresented semantic drift and unpresented uncovered writes denies twice — drift first, uncovered on the retry — then passes on the third attempt', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
-        // src/app.ts is covered but semantically stale; src/uncovered.ts has no
+        // src/app.ts is covered but semantically drifted; src/uncovered.ts has no
         // covering span at all.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/app.ts' })],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED', path: 'src/app.ts' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED', path: 'src/app.ts' })]
       });
       const paths = ['src/app.ts', 'src/uncovered.ts'];
 
       const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo);
       expect(first.decision).toBe('hold');
-      expect(first.kind).toBe('semantic-staleness');
+      expect(first.kind).toBe('semantic-drift');
 
       // The semantic digest is now memoized, so this retry falls through past
       // the (already-presented) semantic check into the uncovered check, which
@@ -601,11 +601,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(third).toEqual({ decision: 'allow', kind: 'already-presented' });
     });
 
-    it('a memo that cannot persist (record returns false) fails OPEN on semantic staleness rather than denying with no escape', async () => {
+    it('a memo that cannot persist (record returns false) fails OPEN on semantic drift rather than denying with no escape', async () => {
       const unwritableMemo: AdvisorMemoState = { has: () => false, record: () => false };
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, unwritableMemo);
@@ -620,7 +620,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         // files, since a single-file changeset can never carry a cross-file
         // coupling and short-circuits to no uncovered paths.
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -641,7 +641,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const executors = createFakeAdvisorExecutors({
         // `src/other.ts` is covered; `src/uncovered.ts` is the only uncovered path.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts' })],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -661,7 +661,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         // `src/other.ts` is covered by `billing/checkout-request-flow`;
         // `src/uncovered.ts` has no span at all.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -678,7 +678,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 0, end: 0 })],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -700,7 +700,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'alpha/solo', path: 'src/a1.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
 
@@ -736,7 +736,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'zeta/pair', path: 'src/z2.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'alpha/solo', path: 'src/a1.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
         listBlocks: async (): Promise<string> => blocks
       });
       const paths = ['src/uncovered.ts', 'src/z1.ts', 'src/z2.ts', 'src/a1.ts'];
@@ -759,7 +759,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
-        stale: async (): Promise<StalePorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
         listBlocks: async (): Promise<string> =>
           ['## billing/checkout-request-flow', '- src/other.ts#L5-L20'].join('\n')
       });
@@ -776,7 +776,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other-uncovered.ts'];
 
@@ -797,7 +797,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'far/away', path: 'docs/guide/intro.md', start: 1, end: 5 }),
           porcelainRow({ name: 'near/by', path: 'src/billing/other.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/billing/uncovered.ts', 'docs/guide/intro.md', 'src/billing/other.ts'];
 
@@ -825,7 +825,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'small/span', path: 'src/s2.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'small/span', path: 'src/s3.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/b1.ts', 'src/s1.ts', 'src/s2.ts', 'src/s3.ts'];
 
@@ -853,7 +853,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'root/cfg', path: 'package.json', start: 0, end: 0 }),
           porcelainRow({ name: 'sub/tree', path: 'src/billing/other.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/billing/uncovered.ts', 'package.json', 'src/billing/other.ts'];
 
@@ -874,7 +874,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           porcelainRow({ name: 'b/span', path: 'src/b.ts', start: 1, end: 5 }),
           porcelainRow({ name: 'a/span', path: 'src/a.ts', start: 1, end: 5 })
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts'];
 
@@ -903,7 +903,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         REPO_ROOT,
         createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(8),
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         }),
         createMemoryAdvisorMemoState()
       );
@@ -916,7 +916,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         REPO_ROOT,
         createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(11),
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         }),
         createMemoryAdvisorMemoState()
       );
@@ -932,7 +932,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         REPO_ROOT,
         createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => spanRows(9),
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         }),
         createMemoryAdvisorMemoState()
       );
@@ -952,7 +952,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
             porcelainRow({ name: `span/${String(index).padStart(2, '0')}`, path: `src/f${index}.ts`, start: 1, end: 5 })
           )
         ],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = [
         'src/uncovered.ts',
@@ -989,7 +989,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -1010,7 +1010,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['packages/website/app/components/icons.tsx', 'packages/website/public/logo-positive.svg'];
 
@@ -1029,24 +1029,24 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('already-presented');
     });
 
-    it('an `enforce` (commit) deny of a semantic-staleness group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
+    it('an `enforce` (commit) deny of a semantic-drift group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
       const deny = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'may-hold');
       expect(deny.decision).toBe('hold');
-      expect(deny.kind).toBe('semantic-staleness');
-      if (deny.kind !== 'semantic-staleness') throw new Error('unreachable');
+      expect(deny.kind).toBe('semantic-drift');
+      if (deny.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(deny.reason).toContain('This change leaves an implicit dependency out of date');
 
       const info = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(info.decision).toBe('allow');
-      expect(info.kind).toBe('semantic-staleness-report');
-      if (info.kind !== 'semantic-staleness-report') throw new Error('unreachable');
+      expect(info.kind).toBe('semantic-drift-report');
+      if (info.kind !== 'semantic-drift-report') throw new Error('unreachable');
       expect(info.reason).not.toContain('This change leaves an implicit dependency out of date');
     });
 
@@ -1059,7 +1059,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
 
         const result = await evaluateAdvisor(['src/generated/out.ts'], repo.root, executors, memo);
@@ -1079,7 +1079,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
 
         const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
@@ -1100,7 +1100,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
 
         const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], repo.root, executors, memo);
@@ -1118,7 +1118,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
 
         const result = await evaluateAdvisor(['src/uncovered.ts'], repo.root, executors, memo);
@@ -1129,13 +1129,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it('MOVED/RESOLVED_PENDING_COMMIT-only staleness never denies, regardless of memoState state', async () => {
+    it('MOVED/RESOLVED_PENDING_COMMIT-only drift never denies, regardless of memoState state', async () => {
       const freshMemo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [
-          staleRow({ status: 'MOVED' }),
-          staleRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'MOVED' }),
+          driftRow({ name: 'other/span', status: 'RESOLVED_PENDING_COMMIT' })
         ]
       });
       const paths = ['src/app.ts'];
@@ -1154,7 +1154,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('an executor rejecting (internal/CLI error) resolves to allow/silent rather than throwing', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         }
       });
@@ -1184,7 +1184,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       };
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/sibling.ts' })],
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
@@ -1207,7 +1207,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('a hard scan failure keeps warning on repeated evaluations — no memo involvement', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
@@ -1224,7 +1224,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('a non-scan internal error (plain Error) still fails OPEN to allow/silent — only a scan failure fails closed', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new Error('spawn git ENOENT');
         }
       });
@@ -1238,7 +1238,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'SPARSE_EXCLUDED' })]
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
@@ -1257,17 +1257,17 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [
-          staleRow({ status: 'LFS_NOT_FETCHED', name: 'infra/anchor' }),
-          staleRow({ status: 'CHANGED', name: 'billing/flow' })
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'LFS_NOT_FETCHED', name: 'infra/anchor' }),
+          driftRow({ status: 'CHANGED', name: 'billing/flow' })
         ]
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
 
       expect(result.decision).toBe('hold');
-      expect(result.kind).toBe('semantic-staleness');
-      if (result.kind === 'semantic-staleness') {
+      expect(result.kind).toBe('semantic-drift');
+      if (result.kind === 'semantic-drift') {
         // Only the semantic row is a finding; the environmental row is not.
         expect(result.findings).toHaveLength(1);
         expect(result.findings[0].name).toBe('billing/flow');
@@ -1280,7 +1280,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const unwritableMemo: AdvisorMemoState = { has: () => false, record: () => false };
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
 
       const result = await evaluateAdvisor(['src/uncovered.ts', 'src/other.ts'], REPO_ROOT, executors, unwritableMemo);
@@ -1305,8 +1305,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const executors = createFakeAdvisorExecutors({
         // The scoped path is covered and clean; the (unevaluated) debt file is not in scope.
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/scoped.ts' })],
-        stale: async (paths): Promise<StalePorcelainRow[]> =>
-          paths.includes('src/debt.ts') ? [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })] : []
+        drift: async (paths): Promise<DriftPorcelainRow[]> =>
+          paths.includes('src/debt.ts') ? [driftRow({ path: 'src/debt.ts', status: 'CHANGED' })] : []
       });
 
       const result = await evaluateAdvisor(changeset.paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
@@ -1325,13 +1325,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/debt.ts' })],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ path: 'src/debt.ts', status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ path: 'src/debt.ts', status: 'CHANGED' })]
       });
 
       const result = await evaluateAdvisor(changeset.paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
 
       expect(result.decision).toBe('hold');
-      expect(result.kind).toBe('semantic-staleness');
+      expect(result.kind).toBe('semantic-drift');
     });
   });
 
@@ -1340,18 +1340,18 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe("evaluateAdvisor in 'report-only' mode", () => {
-    it('semantic staleness → allow/semantic-staleness-report (never deny), and repeats identically on a second call', async () => {
+    it('semantic drift → allow/semantic-drift-report (never deny), and repeats identically on a second call', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
       const first = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(first.decision).toBe('allow');
-      expect(first.kind).toBe('semantic-staleness-report');
-      if (first.kind === 'semantic-staleness-report') {
+      expect(first.kind).toBe('semantic-drift-report');
+      if (first.kind === 'semantic-drift-report') {
         expect(first.findings).toHaveLength(1);
         expect(first.reason).toContain('This change leaves an implicit dependency out of date:');
       }
@@ -1360,14 +1360,14 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // the same live debt again rather than falling through to already-presented.
       const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       expect(second.decision).toBe('allow');
-      expect(second.kind).toBe('semantic-staleness-report');
+      expect(second.kind).toBe('semantic-drift-report');
     });
 
     it('uncovered writes → allow/uncovered-writes-report (never deny), and repeats identically on a second call', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['src/uncovered.ts', 'src/other.ts'];
 
@@ -1387,7 +1387,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
@@ -1399,7 +1399,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'SPARSE_EXCLUDED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'SPARSE_EXCLUDED' })]
       });
 
       const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
@@ -1411,7 +1411,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     it('a hard scan failure → allow/scan-failed, same as enforce mode', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
-        stale: async (): Promise<StalePorcelainRow[]> => {
+        drift: async (): Promise<DriftPorcelainRow[]> => {
           throw new AdvisorScanError('fatal: unable to read src/app.ts: Permission denied');
         }
       });
@@ -1437,7 +1437,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       };
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
       const paths = ['src/app.ts'];
 
@@ -1460,22 +1460,22 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
 
     it('the rendered reason never contains deny/retry-flavored phrasing — a status preview held nothing, so there is nothing to retry', async () => {
-      const staleMemo = createMemoryAdvisorMemoState();
-      const staleExecutors = createFakeAdvisorExecutors({
+      const driftMemo = createMemoryAdvisorMemoState();
+      const driftExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
       });
-      const staleResult = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, staleExecutors, staleMemo, 'report-only');
-      expect(staleResult.kind).toBe('semantic-staleness-report');
-      if (staleResult.kind === 'semantic-staleness-report') {
-        expect(staleResult.reason).not.toContain('then retry');
-        expect(staleResult.reason).not.toContain('Otherwise retry the command to proceed');
+      const driftResult = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, driftExecutors, driftMemo, 'report-only');
+      expect(driftResult.kind).toBe('semantic-drift-report');
+      if (driftResult.kind === 'semantic-drift-report') {
+        expect(driftResult.reason).not.toContain('then retry');
+        expect(driftResult.reason).not.toContain('Otherwise retry the command to proceed');
       }
 
       const uncoveredMemo = createMemoryAdvisorMemoState();
       const uncoveredExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const uncoveredResult = await evaluateAdvisor(
         ['src/uncovered.ts', 'src/other.ts'],
@@ -1507,7 +1507,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const git = createFakeGitExecutor({
         changedHunks: async (): Promise<FileDiff[]> => [
@@ -1539,7 +1539,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const git = createFakeGitExecutor({
         changedHunks: async (): Promise<FileDiff[]> => [
@@ -1575,7 +1575,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const git = createFakeGitExecutor({
         changedHunks: async (): Promise<FileDiff[]> => [
@@ -1610,7 +1610,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const git = createFakeGitExecutor({
         changedHunks: async (): Promise<FileDiff[]> => {
@@ -1635,7 +1635,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const paths = ['package.json', 'src/app.ts'];
 
@@ -1659,7 +1659,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       const gitA = createFakeGitExecutor({
         changedHunks: async (): Promise<FileDiff[]> => [
@@ -1745,7 +1745,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
         const paths = ['package.json', 'src/app.ts'];
         const hunks: FileDiff[] = [
@@ -1803,7 +1803,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
-        stale: async (): Promise<StalePorcelainRow[]> => []
+        drift: async (): Promise<DriftPorcelainRow[]> => []
       });
       // Every read fails, batched and per-file alike: the category layer must
       // reach its verdict from the path, before any diff is requested.
@@ -1853,7 +1853,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         const memo = createMemoryAdvisorMemoState();
         const executors = createFakeAdvisorExecutors({
           list: async (): Promise<PorcelainRow[]> => [],
-          stale: async (): Promise<StalePorcelainRow[]> => []
+          drift: async (): Promise<DriftPorcelainRow[]> => []
         });
         // No diff is ever available — the exact no-diff-read path where the
         // per-file fallback's `if (!file) return true` is the only other guard.
@@ -1944,7 +1944,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * `evaluateAdvisor` builds `reason: renderStalenessReason(...)` *inline* inside
+ * `evaluateAdvisor` builds `reason: renderDriftReason(...)` *inline* inside
  * its own `try`, and its outer catch resolves any uncaught error to
  * `{ decision: 'allow', kind: 'silent' }`. So an exception escaping the tree
  * renderer would not degrade to a flat list — it would bypass the
@@ -1980,7 +1980,7 @@ describe('fail-closed anchor rendering', () => {
     const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
     const executors = createFakeAdvisorExecutors({
       list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-      stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })],
+      drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
       listBlocks: async (): Promise<string> => ['## billing/checkout-request-flow', '- src/app.ts#L1-L10'].join('\n')
     });
 
@@ -1989,8 +1989,8 @@ describe('fail-closed anchor rendering', () => {
     // The gate is unaffected: a rendering defect costs an uglier message, never
     // a missed hold.
     expect(result.decision).toBe('hold');
-    expect(result.kind).toBe('semantic-staleness');
-    if (result.kind !== 'semantic-staleness') throw new Error('unreachable');
+    expect(result.kind).toBe('semantic-drift');
+    if (result.kind !== 'semantic-drift') throw new Error('unreachable');
     expect(result.reason).toContain('- src/app.ts#L1-L10 — changed');
     expect(result.reason).not.toContain('└─');
   });
@@ -1999,7 +1999,7 @@ describe('fail-closed anchor rendering', () => {
     const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
     const executors = createFakeAdvisorExecutors({
       list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts', start: 5, end: 20 })],
-      stale: async (): Promise<StalePorcelainRow[]> => []
+      drift: async (): Promise<DriftPorcelainRow[]> => []
     });
 
     const result = await evaluate(
@@ -2020,13 +2020,13 @@ describe('fail-closed anchor rendering', () => {
     const memo = createMemoryAdvisorMemoState();
     const executors = createFakeAdvisorExecutors({
       list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-      stale: async (): Promise<StalePorcelainRow[]> => [staleRow({ status: 'CHANGED' })]
+      drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
     });
 
     await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
     const condensed = await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
 
-    if (condensed.kind !== 'semantic-staleness-report') throw new Error('unreachable');
+    if (condensed.kind !== 'semantic-drift-report') throw new Error('unreachable');
     expect(condensed.reason).toContain('- src/app.ts');
     expect(condensed.reason).not.toContain('└─');
   });

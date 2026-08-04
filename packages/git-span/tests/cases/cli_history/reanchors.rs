@@ -6,14 +6,14 @@ use super::*;
 #[test]
 fn a_changed_anchor_is_read_at_its_declared_address_and_proposes_nothing() -> Result<()> {
     let repo = drifted_repo("ch")?;
-    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+    let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
     assert!(
-        stale.contains("f.txt#L1-L3 — changed in the working tree"),
-        "fixture assumption: stale reports drift and no relocation; got:\n{stale}"
+        drift.contains("f.txt#L1-L3 — changed in the working tree"),
+        "fixture assumption: drift reports drift and no relocation; got:\n{drift}"
     );
     assert!(
-        !stale.contains("moved to"),
-        "fixture assumption: no relocation instruction; got:\n{stale}"
+        !drift.contains("moved to"),
+        "fixture assumption: no relocation instruction; got:\n{drift}"
     );
 
     let json = history_json(&repo, "ch")?;
@@ -62,7 +62,7 @@ fn a_changed_anchor_is_read_at_its_declared_address_and_proposes_nothing() -> Re
 fn a_drifted_reanchor_labels_the_old_side_with_heads_address() -> Result<()> {
     let repo = drifted_repo("re")?;
     // Re-anchor by rewriting the address in place, keeping the recorded token:
-    // this is the state `git span stale --fix` leaves behind, and unlike
+    // this is the state `git span drift --fix` leaves behind, and unlike
     // `remove`+`add` it does not re-record the drifted content as the anchored
     // content. A genuine declaration re-anchor carrying content drift.
     let decl = repo.path().join(".span/re");
@@ -347,13 +347,13 @@ fn a_reanchor_that_abandons_its_recorded_block_still_shows_it() -> Result<()> {
         "the newly covered block arrives whole; got:\n{arrived_diff}"
     );
     assert!(!out.contains("rename "), "nothing was renamed; got:\n{out}");
-    // ORACLE — `stale`, a different command reading the same declaration: it
+    // ORACLE — `drift`, a different command reading the same declaration: it
     // reports the new address as changed and issues no move, so history must
     // not pair the two blocks into a move of its own.
-    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+    let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
     assert!(
-        stale.contains("f.txt#L5-L7 — changed") && !stale.contains("moved to"),
-        "fixture assumption: a re-anchor onto non-matching content; got:\n{stale}"
+        drift.contains("f.txt#L5-L7 — changed") && !drift.contains("moved to"),
+        "fixture assumption: a re-anchor onto non-matching content; got:\n{drift}"
     );
     Ok(())
 }
@@ -392,7 +392,7 @@ fn anchors_sharing_a_token_resolve_against_their_own_address() -> Result<()> {
 /// A commit that breaks anchors must account for them. The declaration
 /// permutation is invisible to a content comparison — same addresses, same
 /// bytes at every one — so the timeline showed the one commit that broke every
-/// anchor as the one commit with no anchor-level output, while `stale`
+/// anchor as the one commit with no anchor-level output, while `drift`
 /// reported them all changed.
 #[test]
 fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
@@ -405,10 +405,10 @@ fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
                 .is_empty(),
             "{label}: fixture assumption — the commit is declaration-only"
         );
-        // ORACLE — `stale`. The worktree is exactly the breaking commit, so
-        // `stale` here is `stale` evaluated at it.
-        let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
-        let broken: Vec<String> = stale
+        // ORACLE — `drift`. The worktree is exactly the breaking commit, so
+        // `drift` here is `drift` evaluated at it.
+        let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
+        let broken: Vec<String> = drift
             .lines()
             .filter_map(|l| l.strip_prefix("- "))
             .filter(|l| l.contains(" — changed"))
@@ -418,7 +418,7 @@ fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
         assert_eq!(
             broken.len(),
             n,
-            "{label}: fixture assumption — every anchor is broken; got:\n{stale}"
+            "{label}: fixture assumption — every anchor is broken; got:\n{drift}"
         );
 
         let json = history_json(&repo, span)?;
@@ -522,9 +522,9 @@ fn a_rebinding_that_also_edits_its_block_states_both_facts() -> Result<()> {
         "fixture assumption — one edited file beside the rebinding; got:\n{touched}"
     );
 
-    // ORACLE — `stale`. The worktree is exactly the breaking commit.
-    let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
-    let broken: Vec<String> = stale
+    // ORACLE — `drift`. The worktree is exactly the breaking commit.
+    let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
+    let broken: Vec<String> = drift
         .lines()
         .filter_map(|l| l.strip_prefix("- "))
         .filter(|l| l.contains(" — changed"))
@@ -534,7 +534,7 @@ fn a_rebinding_that_also_edits_its_block_states_both_facts() -> Result<()> {
     assert_eq!(
         broken.len(),
         3,
-        "fixture assumption — every anchor is broken; got:\n{stale}"
+        "fixture assumption — every anchor is broken; got:\n{drift}"
     );
 
     let json = history_json(&repo, span)?;

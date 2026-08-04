@@ -88,7 +88,7 @@ fn build_listings_for_names(
 }
 
 // ---------------------------------------------------------------------------
-// BatchFilter — shared grammar for `list --batch` and `stale --batch`
+// BatchFilter — shared grammar for `list --batch` and `drift --batch`
 // ---------------------------------------------------------------------------
 
 /// A single stdin filter line for batch commands.
@@ -319,7 +319,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 // The span file exists but failed to parse (or another
                 // read error). Surface only the underlying error —
                 // a "not found" summary would be misleading for a
-                // span that exists. Matches what `list`/`stale` do.
+                // span that exists. Matches what `list`/`drift` do.
                 CliError {
                     subcommand: "show",
                     summary: format!("{}", e),
@@ -453,7 +453,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
 
     // Emit the per-phase corpus-load counters for the list path. Phase
     // timings recorded from deep call sites are read back here, mirroring the
-    // resolver's `stale_spans` emit block; `render_us` is the only timing
+    // resolver's `drift_spans` emit block; `render_us` is the only timing
     // measured locally. No-ops when perf is disabled.
     let emit_list_counters = |render_us: u64| {
         crate::perf::counter("list.discover-us", crate::perf::list_discover_us());

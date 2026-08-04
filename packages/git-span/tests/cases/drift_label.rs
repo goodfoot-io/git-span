@@ -30,17 +30,17 @@ fn seed_span(repo: &TestRepo, span: &str, file: &str, start: u32, end: u32) -> R
     Ok(())
 }
 
-/// Resolve the span and return the label for the first anchor via `stale` CLI.
-/// Returns `(stale_label, patch_label, show_label)`.
+/// Resolve the span and return the label for the first anchor via `drift` CLI.
+/// Returns `(drift_label, patch_label, show_label)`.
 #[allow(dead_code)]
 fn labels_for_first_anchor(repo: &TestRepo, span: &str) -> Result<(String, String, String)> {
-    let stale = repo.span_stdout(["stale", span, "--no-exit-code"])?;
-    let patch = repo.span_stdout(["stale", span, "--patch", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", span, "--no-exit-code"])?;
+    let patch = repo.span_stdout(["drift", span, "--patch", "--no-exit-code"])?;
     let show = repo.span_stdout([span])?;
-    Ok((stale, patch, show))
+    Ok((drift, patch, show))
 }
 
-/// Extract the drift label token from stale output.
+/// Extract the drift label token from drift output.
 /// The label appears after the anchor path, e.g. `file.txt — changed in the working tree`.
 #[allow(dead_code)]
 fn extract_label(output: &str) -> Option<&str> {
@@ -80,10 +80,10 @@ fn worktree_range_edit_labels_changed_in_working_tree() -> Result<()> {
         "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
 
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("changed in the working tree"),
-        "expected 'changed in the working tree'; stale=\n{stale}"
+        drift.contains("changed in the working tree"),
+        "expected 'changed in the working tree'; drift=\n{drift}"
     );
     Ok(())
 }
@@ -101,10 +101,10 @@ fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
     // Remove the file from the worktree without staging the removal.
     std::fs::remove_file(repo.path().join("file1.txt"))?;
 
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("deleted in the working tree"),
-        "expected 'deleted in the working tree'; stale=\n{stale}"
+        drift.contains("deleted in the working tree"),
+        "expected 'deleted in the working tree'; drift=\n{drift}"
     );
     Ok(())
 }
@@ -139,10 +139,10 @@ fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
     // does not attribute drift to a specific historical commit — the
     // label is the plain status word, not `changed in <sha>`.
     let _ = short;
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("changed") && !stale.contains("changed in "),
-        "expected plain 'changed' (no sha locus); stale=\n{stale}"
+        drift.contains("changed") && !drift.contains("changed in "),
+        "expected plain 'changed' (no sha locus); drift=\n{drift}"
     );
     Ok(())
 }
@@ -164,14 +164,14 @@ fn committed_path_deletion_labels_deleted() -> Result<()> {
     // Tracked-file model: the anchored path is gone from HEAD and the
     // stored content was not relocated, so the anchor is `Deleted`.
     // The word `orphaned` must never appear in user output.
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("deleted"),
-        "expected 'deleted'; stale=\n{stale}"
+        drift.contains("deleted"),
+        "expected 'deleted'; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     Ok(())
 }
@@ -193,14 +193,14 @@ fn committed_rename_of_anchored_path_is_moved() -> Result<()> {
 
     // Tracked-file model: the stored content hash is found at a
     // different path → `Moved`, never `Deleted`/`orphaned`.
-    let stale = repo.span_stdout(["stale", "m", "--no-exit-code"])?;
+    let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
-        stale.contains("moved") && stale.contains("file1_renamed.txt"),
-        "committed git mv must render 'moved' to the new path; stale=\n{stale}"
+        drift.contains("moved") && drift.contains("file1_renamed.txt"),
+        "committed git mv must render 'moved' to the new path; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     Ok(())
 }
@@ -225,15 +225,15 @@ fn anchored_path_absent_from_head_labels_deleted() -> Result<()> {
     repo.run_git(["commit", "-m", "remove anchored file"])?;
     repo.write_commit_graph()?;
 
-    let stale_out = repo.run_span(["stale", "m", "--no-exit-code"])?;
-    let stale = String::from_utf8(stale_out.stdout)?;
+    let drift_out = repo.run_span(["drift", "m", "--no-exit-code"])?;
+    let drift = String::from_utf8(drift_out.stdout)?;
     assert!(
-        stale.contains("deleted"),
-        "expected 'deleted'; stale=\n{stale}"
+        drift.contains("deleted"),
+        "expected 'deleted'; drift=\n{drift}"
     );
     assert!(
-        !stale.to_lowercase().contains("orphan"),
-        "the word 'orphaned' must never appear in stale output; stale=\n{stale}"
+        !drift.to_lowercase().contains("orphan"),
+        "the word 'orphaned' must never appear in drift output; drift=\n{drift}"
     );
     Ok(())
 }
@@ -243,5 +243,5 @@ fn anchored_path_absent_from_head_labels_deleted() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Cross-surface consistency: stale, stale --patch, and show emit identical labels
+// Cross-surface consistency: drift, drift --patch, and show emit identical labels
 // ---------------------------------------------------------------------------

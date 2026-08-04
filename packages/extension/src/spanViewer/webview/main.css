@@ -106,8 +106,8 @@ pre {
   flex: 1;
   overflow-wrap: anywhere;
 }
-/* Right-justified stale pill; absent entirely when the span is clean. */
-.stale-pill {
+/* Right-justified drift pill; absent entirely when the span is clean. */
+.drift-pill {
   display: inline-flex;
   align-items: center;
   gap: 0.35em;
@@ -119,7 +119,7 @@ pre {
   border: 1px solid currentColor;
   white-space: nowrap;
 }
-.stale-pill .dot-sm {
+.drift-pill .dot-sm {
   width: 7px;
   height: 7px;
   border-radius: 50%;

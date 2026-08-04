@@ -55,7 +55,7 @@ progress and this file is unresolved (`git status` shows it unmerged, e.g.
 
 **Fix.** Resolve the conflict in the **source** file first (`git add` it).
 Once every source file an affected span anchors is conflict-free, run
-`git span stale --fix` — it re-anchors `Moved` and whitespace-only `Changed`
+`git span drift --fix` — it re-anchors `Moved` and whitespace-only `Changed`
 anchors in place and structurally resolves any `.span/` file git itself left
 marker-laden (anchors unioned, re-pointed, re-hashed against the resolved
 worktree). You never hand-edit an `rk64:` hash. `--fix` fails closed —
@@ -63,7 +63,7 @@ reporting instead of guessing — when:
 - a referenced source file still carries conflict markers, or
 - the `--why` text diverged between ours and theirs with no merge base.
 
-Finish the merge (`git add .span`, `git commit`) and run `git span stale`
+Finish the merge (`git add .span`, `git commit`) and run `git span drift`
 again to confirm clean (0 findings, exit 0). See `./command-reference.md`
 § "Merge conflict resolution" for the optional `merge-driver` accelerator that
 collapses the easy conflicts during `git merge` itself, and for the exact
@@ -89,7 +89,7 @@ resolver compares gitlink SHAs without opening the submodule.
 
 **Note.** A line-range anchor whose path already sits inside a submodule at
 anchor-creation time is refused by `git span add` itself, so it never reaches
-`stale`. A directory that gets promoted to a submodule *after* anchors already
-exist inside it is correctly classified as `SUBMODULE` by `stale` — check
+`drift`. A directory that gets promoted to a submodule *after* anchors already
+exist inside it is correctly classified as `SUBMODULE` by `drift` — check
 `git ls-files -s <path>` for mode `160000` (gitlink) to confirm you're in this
 case before applying the fix above.

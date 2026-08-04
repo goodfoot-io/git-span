@@ -1,4 +1,4 @@
-packages/git-span/benches/perf-baseline.json rk64:38db8e8540025b2a
+packages/git-span/benches/perf-baseline.json rk64:8c265567f1889a4a
 packages/git-span/benches/real_corpus.rs#L751-L784 rk64:f8f41a209ff53fdf
 
 The real_corpus benchmark's no-regression gate loads perf-baseline.json by op name through load_baselines and baseline_for, treating each entry's median_ms and noise_floor_ms as the f64 baseline and additive noise floor for that op's regression threshold; an op absent from the JSON skips only the regression rule for that op, and a present entry missing either field panics.

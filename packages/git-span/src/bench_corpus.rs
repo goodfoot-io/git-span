@@ -180,7 +180,7 @@ pub fn generate(
 mod tests {
     use super::*;
     use crate::types::AnchorStatus;
-    use crate::{EngineOptions, resolve_span, stale_spans};
+    use crate::{EngineOptions, resolve_span, drift_spans};
 
     /// A freshly generated corpus must resolve with every anchor `Fresh`.
     ///
@@ -191,7 +191,7 @@ mod tests {
     /// computation ever drifts from what the resolver verifies against.
     ///
     /// Two checks, complementary:
-    ///   1. `stale_spans` (the staleness scan) returns NO stale spans — i.e.
+    ///   1. `drift_spans` (the drift scan) returns NO drifted spans — i.e.
     ///      the whole corpus is clean.
     ///   2. `resolve_span` per span returns the full anchor set, every anchor
     ///      `Fresh` — proving (1) is "no drift", not "no anchors".
@@ -203,13 +203,13 @@ mod tests {
 
         let repo = gix::open(dir.path()).expect("open repo");
 
-        // 1. The staleness scan reports nothing stale on a fresh corpus.
-        let stale = stale_spans(&repo, ".span", EngineOptions::full()).expect("stale");
+        // 1. The drift scan reports nothing drift on a fresh corpus.
+        let drift = drift_spans(&repo, ".span", EngineOptions::full()).expect("drift");
         assert!(
-            stale.is_empty(),
-            "fresh corpus should have no stale spans, got {} stale: {:?}",
-            stale.len(),
-            stale.iter().map(|m| &m.name).collect::<Vec<_>>()
+            drift.is_empty(),
+            "fresh corpus should have no drifted spans, got {} drift: {:?}",
+            drift.len(),
+            drift.iter().map(|m| &m.name).collect::<Vec<_>>()
         );
 
         // 2. Resolve each span fully and assert every anchor is Fresh.

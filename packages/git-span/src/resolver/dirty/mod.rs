@@ -232,7 +232,7 @@ pub(crate) fn relevant_dirty_paths(
 ///
 /// Returns an empty map when HEAD (or its tree) cannot be read — the caller then
 /// treats every relevant path as absent at HEAD, which the per-path predicates
-/// classify conservatively (never a stale reuse).
+/// classify conservatively (never a drifted reuse).
 fn head_blob_path_map(repo: &gix::Repository) -> Result<std::collections::HashMap<String, String>> {
     use crate::Error;
     let Ok(commit) = repo.head_commit() else {
@@ -291,7 +291,7 @@ fn build_dirty_core(
     // different config than the current invocation (a changed `core.autocrlf`,
     // filter binary, replace-ref, rename budget, sparse-checkout, ...). Reusing
     // its resolved cores under the new config would silently re-serve — and
-    // re-publish under the new key — a stale result. A widen-free clean corpus
+    // re-publish under the new key — a drifted result. A widen-free clean corpus
     // is the exact case that otherwise reuses every baseline core verbatim, so
     // this guard must precede that reuse. Mismatch ⇒ degrade to cold.
     if !reuse::config_matches(&baseline.generation.rows, token) {

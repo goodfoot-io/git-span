@@ -1,11 +1,11 @@
 //! Regression coverage for F1: a configured (non-default) span root
 //! must be honored identically by the writer and by every reader,
-//! management, and stale path — not silently ignored in favor of a
+//! management, and drift path — not silently ignored in favor of a
 //! hardcoded `.span`.
 //!
 //! Precedence under test (highest first): `--span-dir` >
 //! `GIT_SPAN_DIR` > `git config git-span.dir` > `.span`. Before this
-//! fix, `add` wrote `<root>/<name>` while `list`/`show`/`stale`/`move`
+//! fix, `add` wrote `<root>/<name>` while `list`/`show`/`drift`/`move`
 //! read `.span` and reported "nothing" / "not found".
 
 use crate::support;
@@ -13,7 +13,7 @@ use crate::support;
 use anyhow::Result;
 use support::TestRepo;
 
-/// `GIT_SPAN_DIR` threaded through add → list → show → stale.
+/// `GIT_SPAN_DIR` threaded through add → list → show → drift.
 #[test]
 fn configured_span_dir_flag_round_trips() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -75,20 +75,20 @@ fn configured_span_dir_flag_round_trips() -> Result<()> {
         "show emitted dead blob field: {show}"
     );
 
-    // stale must scan the configured root (reported clean/empty before).
+    // drift must scan the configured root (reported clean/empty before).
     repo.run_git(["add", "-A"])?;
     repo.run_git(["commit", "-m", "track span"])?;
     repo.write_commit_graph()?;
-    let stale = repo.run_span_with_env(["stale"], "GIT_SPAN_DIR", "spans")?;
+    let drift = repo.run_span_with_env(["drift"], "GIT_SPAN_DIR", "spans")?;
     assert!(
-        stale.status.success(),
-        "stale under configured root failed: {}",
-        String::from_utf8_lossy(&stale.stderr)
+        drift.status.success(),
+        "drift under configured root failed: {}",
+        String::from_utf8_lossy(&drift.stderr)
     );
-    let stale_out = String::from_utf8_lossy(&stale.stdout);
+    let drift_out = String::from_utf8_lossy(&drift.stdout);
     assert!(
-        stale_out.contains("demo/coupling") || stale_out.contains("0 stale"),
-        "stale did not account for the configured-root span: {stale_out}"
+        drift_out.contains("demo/coupling") || drift_out.contains("0 drift"),
+        "drift did not account for the configured-root span: {drift_out}"
     );
 
     Ok(())

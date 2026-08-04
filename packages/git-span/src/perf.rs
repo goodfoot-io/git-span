@@ -76,8 +76,8 @@ pub fn note(text: &str) {
 // ── Subroutine-level counters ──────────────────────────────────────────────
 //
 // Process-global counters incremented from deep call sites that have no
-// direct access to `ResolveSession`. The `git span stale` CLI invokes
-// `reset()` at the top of `stale_spans` and reads the values back inside
+// direct access to `ResolveSession`. The `git span drift` CLI invokes
+// `reset()` at the top of `drift_spans` and reads the values back inside
 // the perf-emit block; output is only meaningful for a single resolver run
 // per process invocation.
 
@@ -103,18 +103,18 @@ static LIST_SPANS_PARSED: AtomicU64 = AtomicU64::new(0);
 static LIST_BYTES_PARSED: AtomicU64 = AtomicU64::new(0);
 static LIST_LAYER_READS: AtomicU64 = AtomicU64::new(0);
 
-// ── `git span stale --fix` phase counters ────────────────────────────────────
+// ── `git span drift --fix` phase counters ────────────────────────────────────
 //
-// Attribution for the `--fix`-specific delta over plain `stale`. `--fix` does
+// Attribution for the `--fix`-specific delta over plain `drift`. `--fix` does
 // three things on top of a read-only scan: (1) a PRE-fix resolve to find drift,
 // (2) `apply_fix` which rewrites `.span/` files (each rewritten anchor recomputes
 // a content hash), and (3) a POST-fix re-resolve/splice of the rewritten spans
 // to render the final view. These wall-clock and count counters split the delta
 // across those phases. Unlike the resolver `session.*` counters (reset per
-// `stale_spans_inner` run), these MUST survive across BOTH the pre- and post-fix
+// `drift_spans_inner` run), these MUST survive across BOTH the pre- and post-fix
 // resolve passes within one `--fix` invocation, so they are reset once at the top
-// of `run_stale` and read back in the `fix.*` emit block at its end. Values are
-// meaningful for a single `stale --fix` invocation per process.
+// of `run_drift` and read back in the `fix.*` emit block at its end. Values are
+// meaningful for a single `drift --fix` invocation per process.
 static FIX_PRE_RESOLVE_NS: AtomicU64 = AtomicU64::new(0);
 static FIX_APPLY_NS: AtomicU64 = AtomicU64::new(0);
 static FIX_POST_RESOLVE_NS: AtomicU64 = AtomicU64::new(0);
@@ -252,15 +252,15 @@ pub fn reset_list_counters() {
     LIST_LAYER_READS.store(0, Ordering::Relaxed);
 }
 
-// ── `git span stale --fix` phase timers / counters ───────────────────────────
+// ── `git span drift --fix` phase timers / counters ───────────────────────────
 //
 // The three phase wall-clocks are recorded as raw nanosecond deltas rather than
-// via a closure-style `time_*` wrapper: each phase in `run_stale` is a large
+// via a closure-style `time_*` wrapper: each phase in `run_drift` is a large
 // block that propagates errors with `?`, which a `FnOnce` closure cannot do
 // cleanly. The caller takes one `Instant` (only when `args.fix && enabled()`,
 // keeping the off path zero-cost) and feeds the elapsed nanoseconds here.
 
-/// Record the PRE-fix stale resolve wall-clock (the pass that finds drift before
+/// Record the PRE-fix drift resolve wall-clock (the pass that finds drift before
 /// any span file is rewritten), in nanoseconds.
 pub fn record_fix_pre_resolve_ns(ns: u64) {
     if !enabled() {
@@ -333,8 +333,8 @@ pub fn fix_spans_rewritten() -> u64 {
     FIX_SPANS_REWRITTEN.load(Ordering::Relaxed)
 }
 
-/// Reset the `git span stale --fix` phase counters. Called once at the top of
-/// `run_stale` so the `fix.*` emit block reports values from a single `--fix`
+/// Reset the `git span drift --fix` phase counters. Called once at the top of
+/// `run_drift` so the `fix.*` emit block reports values from a single `--fix`
 /// invocation, accumulated across BOTH the pre- and post-fix resolve passes.
 pub fn reset_fix_counters() {
     FIX_PRE_RESOLVE_NS.store(0, Ordering::Relaxed);
@@ -362,7 +362,7 @@ pub struct TraceRow {
     pub status: &'static str,
 }
 
-/// Reset all subroutine-level counters. Called at the top of `stale_spans`
+/// Reset all subroutine-level counters. Called at the top of `drift_spans`
 /// so the emit block reports values from a single resolver run.
 pub fn reset_subroutine_counters() {
     GIX_OPEN_CALLS.store(0, Ordering::Relaxed);

@@ -106,7 +106,7 @@ impl LayerObservationCore {
     /// read `H` where the direct resolver renders `-`. Restricting to
     /// `Changed`/`Moved` makes the projection byte-identical to direct
     /// resolution for these statuses; the finding itself stays reportable via
-    /// the span-level `span_is_reportable_in_stale_discovery` (status !=
+    /// the span-level `span_is_reportable_in_drift_discovery` (status !=
     /// `Fresh`), which is a separate predicate.
     pub(crate) fn shows_drift(&self) -> bool {
         matches!(self.status, AnchorStatus::Changed | AnchorStatus::Moved)

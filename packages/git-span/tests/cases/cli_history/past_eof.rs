@@ -127,7 +127,7 @@ fn a_reanchor_past_end_of_file_is_unavailable_not_empty_content() -> Result<()> 
 /// Item 52b's route to the same state: the file is still there, so `"absent"` —
 /// glossed "no such file" — was a claim the file system contradicts.
 ///
-/// ORACLE — the file system, and `git span stale`, which separates these two
+/// ORACLE — the file system, and `git span drift`, which separates these two
 /// states on the same fixtures.
 #[test]
 fn a_truncated_file_is_past_eof_not_absent() -> Result<()> {
@@ -345,7 +345,7 @@ fn the_past_eof_boundary_holds_at_every_depth_below_the_declared_start() -> Resu
 /// cannot separate "the renderer distinguishes these states" from "the addresses
 /// happen to differ". These two fixtures differ in nothing but the state.
 ///
-/// ORACLE — `git span stale`, which separates the same two states in prose on
+/// ORACLE — `git span drift`, which separates the same two states in prose on
 /// the same fixtures, and the file system.
 #[test]
 fn the_human_format_tells_a_past_eof_range_from_an_absent_file() -> Result<()> {
@@ -425,13 +425,13 @@ fn the_human_format_tells_a_past_eof_range_from_an_absent_file() -> Result<()> {
 /// This is a different detector from the depth sweep beside it, and deliberately
 /// so. The sweep asks whether `history` matches the *documented* line-range
 /// predicate — it needs that predicate to be right. This asks a question with no
-/// reference document in it at all: across the depths where `git span stale`
+/// reference document in it at all: across the depths where `git span drift`
 /// returns one unchanging verdict, does `history` also return one unchanging
 /// answer? Two commands, one resolver state, and any disagreement is
 /// manufactured downstream of it.
 ///
 /// It is the assertion that survives being wrong about the policy. At the
-/// unfixed boundary `stale` said `DELETED` at file lengths 1, 2 and 3 while
+/// unfixed boundary `drift` said `DELETED` at file lengths 1, 2 and 3 while
 /// `history` said `range-past-eof`, `range-past-eof`, `absent` — same input,
 /// same resolver verdict, two different values out. Whichever of those two
 /// values one believes is correct, they cannot both be, and this catches that
@@ -443,7 +443,7 @@ fn the_human_format_tells_a_past_eof_range_from_an_absent_file() -> Result<()> {
 /// reason through. Here the resolver computes no distinction and `history`
 /// manufactures one, so the fix is to stop.
 ///
-/// ORACLE — `git span stale --format json`, an independently rendered read of
+/// ORACLE — `git span drift --format json`, an independently rendered read of
 /// the same resolver state.
 #[test]
 fn history_invents_no_distinction_the_resolver_did_not_make() -> Result<()> {
@@ -459,7 +459,7 @@ fn history_invents_no_distinction_the_resolver_did_not_make() -> Result<()> {
             let anchor = sole_anchor_in(&json["current"], &address, "current[]");
             verdicts.push((
                 depth,
-                stale_status(&repo, &span)?,
+                drift_status(&repo, &span)?,
                 anchor
                     .get("unavailable")
                     .and_then(Value::as_str)
@@ -477,7 +477,7 @@ fn history_invents_no_distinction_the_resolver_did_not_make() -> Result<()> {
         let rendered: Vec<Option<&str>> = verdicts.iter().map(|(_, _, u)| u.as_deref()).collect();
         assert!(
             rendered.windows(2).all(|w| w[0] == w[1]),
-            "{address}: `git span stale` returns {:?} at every one of these file \
+            "{address}: `git span drift` returns {:?} at every one of these file \
              lengths, so the resolver drew no line between them — but `history` \
              did: {verdicts:?}",
             resolver[0]

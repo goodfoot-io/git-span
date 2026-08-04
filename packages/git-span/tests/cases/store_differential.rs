@@ -72,7 +72,7 @@ fn clear_all_caches(repo: &Path) {
     let _ = std::fs::remove_dir_all(span_dir.join("cache"));
 }
 
-/// A clean multi-span corpus with committed drift at HEAD, so `stale` reports
+/// A clean multi-span corpus with committed drift at HEAD, so `drift` reports
 /// findings across formats without a dirty worktree.
 fn seed(repo: &TestRepo) -> Result<PathBuf> {
     repo.write_file("a.txt", "a1\na2\na3\na4\na5\n")?;
@@ -104,10 +104,10 @@ fn seed(repo: &TestRepo) -> Result<PathBuf> {
 fn store_matches_disabled_across_formats() -> Result<()> {
     let repo = TestRepo::new()?;
     let path = seed(&repo)?;
-    let stale = ["stale", "--no-exit-code"];
+    let drift = ["drift", "--no-exit-code"];
 
     for fmt in FORMATS {
-        let args = [stale[0], stale[1], "--format", fmt];
+        let args = [drift[0], drift[1], "--format", fmt];
 
         // Ground truth: fully disabled.
         clear_all_caches(&path);
@@ -136,7 +136,7 @@ fn store_matches_disabled_across_formats() -> Result<()> {
 fn store_engages_with_one_build_then_exact_hit() -> Result<()> {
     let repo = TestRepo::new()?;
     let path = seed(&repo)?;
-    let args = ["stale", "--no-exit-code"];
+    let args = ["drift", "--no-exit-code"];
 
     clear_all_caches(&path);
     let (_, cold_err) = run(&path, &args, Mode::NewStore, true);

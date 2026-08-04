@@ -73,7 +73,7 @@ mod tests;
 /// ancestor search reads at most this many commit ids and one tree diff; past
 /// it, the incremental path degrades to a full resolve, which republishes a
 /// generation near HEAD so the next nearby commit reuses again. 100 keeps the
-/// walk cheap while covering ordinary "a few commits since the last `stale`"
+/// walk cheap while covering ordinary "a few commits since the last `drift`"
 /// gaps.
 const MAX_ANCESTOR_WALK: usize = 100;
 
@@ -175,7 +175,7 @@ fn build_incremental_core(
     // sound only if the current invocation's config-sensitive inputs
     // (normalization, filters, replace-refs, rename budget, copy detection,
     // attributes, availability, ...) are byte-identical to the ancestor's. If
-    // config drifted, those cores are stale under the new config — degrade to
+    // config drifted, those cores are drifted under the new config — degrade to
     // the authoritative cold resolve rather than reuse or re-publish them.
     if !reuse::config_matches(&ancestor.generation.rows, token) {
         crate::perf::note("cache-path.bypass-reason: incremental-config-drift");
@@ -304,7 +304,7 @@ fn build_incremental_core(
 /// and worktree identities) compared against each path's HEAD blob. Conservative
 /// by construction: a filter-normalized path (whose raw worktree bytes differ
 /// from its raw HEAD blob bytes) is reported dirty even if git would call it
-/// clean — over-reporting only costs an extra re-resolve, never a stale reuse.
+/// clean — over-reporting only costs an extra re-resolve, never a drifted reuse.
 pub(crate) fn relevant_dirty_paths(
     repo: &gix::Repository,
     token: &StateToken,

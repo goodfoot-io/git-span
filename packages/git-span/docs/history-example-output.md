@@ -14,7 +14,7 @@ Both formats render the same underlying timeline, newest-first:
 - **`current`** — the span's *live* drift: how the content at each declared address now
   differs from the state the declaration records, rendered first (human) or as the
   `current` object (JSON). **Not only working-tree drift.** It covers every layer
-  `git span stale` reports because the resolver behind it is `stale`'s, run over
+  `git span drift` reports because the resolver behind it is `drift`'s, run over
   the same `HEAD`/index/worktree layer set. These are observational layers, not commit
   statuses: `HEAD` can describe committed content drift or a worktree-only declaration
   re-anchor compared with the declaration in `HEAD`. Which layers a given anchor drifted
@@ -43,7 +43,7 @@ dialect:
   the token the declaration records for it changed renders a `rebound anchor` block —
   beside the content block when the content changed too.
 
-Declared anchor ranges are taken at face value at every commit — a stale range
+Declared anchor ranges are taken at face value at every commit — a drifted range
 extracting "wrong" content *is* the drift being visualized, never remapped. Anchor diffs
 are always computed between extracted snapshots, never by clipping a file's real commit
 patch to a line range.
@@ -94,7 +94,7 @@ index rk64:8a020b17c9efd975..rk64:0a52ab2b949313f9
 -  }
 -
 -  const out: string[] = [];
--  let pending: StalePorcelainRow[] = [];
+-  let pending: DriftPorcelainRow[] = [];
 -  let inBullets = false;
 -  const closeBullets = (): void => {
 -    for (const { addr, statuses } of dedupeByAnchor(pending)) {
@@ -108,11 +108,11 @@ index rk64:8a020b17c9efd975..rk64:0a52ab2b949313f9
  }
 +
 +/**
-+ * The advisory surfaced when the changeset's only staleness is environmental —
++ * The advisory surfaced when the changeset's only drift is environmental —
 + * the gate allows but says why, so the unresolvable condition is not silently
 + * swallowed.
 + */
-+function renderEnvironmentalReason(conditions: StalePorcelainRow[], blocksText: string): string {
++function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: string): string {
 +  return [
 
 diff --git a/packages/agent-hooks/src/common/gate-core.ts#L1019-L1126 b/dev/null
@@ -137,8 +137,8 @@ index rk64:553a1236747ca251..0000000000000000
 +++ /dev/null
 @@ -1025,108 +0,0 @@
 - */
--function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
--  const remaining = new Map<string, StalePorcelainRow[]>();
+-function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
+-  const remaining = new Map<string, DriftPorcelainRow[]>();
 ⋮  (108-line deletion body continues, omitted here for length — this commit
    consolidated two near-duplicate anchor ranges into the single re-anchored
    range shown above, so both old ranges delete in the same commit)
@@ -172,8 +172,8 @@ index rk64:671b650278f9e4b5..rk64:f239cfdd91dbaf6c
 + * renders as more than one bullet regardless of how many drifting-layer rows
 + * the CLI emitted for it.
 + */
- function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
-   const remaining = new Map<string, StalePorcelainRow[]>();
+ function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
+   const remaining = new Map<string, DriftPorcelainRow[]>();
    for (const row of rows) {
 @@ -1117,10 +1124,3 @@
    ].join('\n');
@@ -194,8 +194,8 @@ index 0000000000000000..rk64:553a1236747ca251
 +++ b/packages/agent-hooks/src/common/gate-core.ts#L1025-L1132
 @@ -0,0 +1025,108 @@
 + */
-+function annotateBlocks(blocksText: string, rows: StalePorcelainRow[]): string {
-+  const remaining = new Map<string, StalePorcelainRow[]>();
++function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
++  const remaining = new Map<string, DriftPorcelainRow[]>();
 +  for (const row of rows) {
 +    const group = remaining.get(row.name);
 +    if (group) group.push(row);
@@ -302,8 +302,8 @@ index rk64:6fc01f81b6737e74..rk64:0ac1f50418017539
 **2. Resolver relocation** — the declaration is unchanged and the recorded content was
 found somewhere else. This renders as a *proposal*: `proposed anchor <address>` in the
 header, and **both** sides keep the declared address, because nothing has moved yet.
-`git span stale` says the same thing (`moved to touch-core.js#L4-L6`), and
-`git span stale --fix` is what would write it. There are no hunks — the content is
+`git span drift` says the same thing (`moved to touch-core.js#L4-L6`), and
+`git span drift --fix` is what would write it. There are no hunks — the content is
 byte-identical, which is why the two `index` hashes agree:
 
 ```
@@ -526,7 +526,7 @@ carry `content` instead of `diff`:
 
 ```json
 {
-  "content": "/** The full-span checklist a semantic-staleness deny renders into `reason`. */\nfunction renderStalenessReason(findings: StalePorcelainRow[], blocksText: string): string {\n  const names = [...new Set(findings.map((row) => row.name))];\n⋮ (rest of the extracted anchor snapshot, elided here for length)\n",
+  "content": "/** The full-span checklist a semantic-drift deny renders into `reason`. */\nfunction renderDriftReason(findings: DriftPorcelainRow[], blocksText: string): string {\n  const names = [...new Set(findings.map((row) => row.name))];\n⋮ (rest of the extracted anchor snapshot, elided here for length)\n",
   "path": "packages/agent-hooks/src/common/gate-core.ts#L797-L853"
 }
 ```
@@ -556,7 +556,7 @@ carry `content` instead of `diff`:
 - Each `current` anchor object carries `path` plus **both** `diff` and `content` when
   present, so a consumer never has to reconstruct live content from a patch.
 - `sources` on a `current` anchor is an **array**, and it is omitted rather than emitted as
-  `[]`. It names every layer the drift was observed at, using `git span stale`'s own three
+  `[]`. It names every layer the drift was observed at, using `git span drift`'s own three
   strings — one anchor can be drifted at more than one, and a scalar would have to pick a
   winner and drop the rest. Order is the resolver's, not sorted: line ranges use
   `WORKTREE` → `INDEX` → `HEAD`; whole files use `INDEX` → `WORKTREE` → `HEAD`.
@@ -606,7 +606,7 @@ This is the complete set of keys a `current` anchor object can emit; a key not o
 list is a contract violation, and [cli_history.rs](../tests/cases/cli_history.rs) asserts
 the two lists agree over a sweep of every state above.
 
-- `path` — always present. The anchor's **declared** address: the string `git span stale`
+- `path` — always present. The anchor's **declared** address: the string `git span drift`
   prints and the only join key a consumer can match against the `.span` file. Never the
   resolver's proposal.
 - `diff` — always present. The same bytes the human block prints for this anchor, header
@@ -636,7 +636,7 @@ the two lists agree over a sweep of every state above.
   render — no placeholder prose is ever emitted as content or as diff body text.
 
   `"filter-failed"` is the value that must not collapse into `"absent"`, and did. The
-  resolver has always computed it — `git span stale` prints `content unavailable (filter
+  resolver has always computed it — `git span drift` prints `content unavailable (filter
   failed)` for the same repository — but this enum could not carry it, so the reason was
   projected away and the fallback said "no such file at this commit" about a file with
   five readable lines, under a deletion hunk for lines `git diff` reported untouched. The
@@ -667,14 +667,14 @@ the two lists agree over a sweep of every state above.
   the default output can express what the structured field contracts. The marker is an echo,
   not a second contract: `unavailable` is still the only field a consumer reads.
 - `proposed` — present when the resolver believes the recorded content now lives at a
-  different address. A *proposal* (`git span stale --fix` would write it), not an
+  different address. A *proposal* (`git span drift --fix` would write it), not an
   accomplished move, so it never renders as `rename to` and never relabels either side of
-  the header. Agrees with `git span stale`'s `moved to <address>`.
+  the header. Agrees with `git span drift`'s `moved to <address>`.
 - `recorded` — present, with the single value `"unrecoverable"`, exactly when no snapshot
   in this render's snapshot set hashes to the declaration's recorded token. The `diff` then
   carries the `recorded snapshot unrecoverable` marker line and no hunks. Cannot co-occur
   with `proposed`.
-- `sources` — the layers this anchor drifted at, as an array over `git span stale`'s exact
+- `sources` — the layers this anchor drifted at, as an array over `git span drift`'s exact
   strings: `"HEAD"`, `"INDEX"`, `"WORKTREE"`. The resolver sequence is preserved exactly,
   not sorted: line-range anchors use `WORKTREE` → `INDEX` → `HEAD`, while whole-file
   anchors use `INDEX` → `WORKTREE` → `HEAD`.
@@ -683,7 +683,7 @@ the two lists agree over a sweep of every state above.
 
   An array, not a scalar, because one anchor is routinely drifted at more than one layer at
   once — commit an edit without re-anchoring, then edit the same lines again in the working
-  tree, and `stale` reports `WORKTREE` *and* `HEAD`. A scalar would have to pick the
+  tree, and `drift` reports `WORKTREE` *and* `HEAD`. A scalar would have to pick the
   first and silently drop another observation. No individual value proves commit status:
   in particular, `HEAD` can come from a worktree-only declaration re-anchor. Inspect the
   declaration diff and commit timeline before deciding whether to commit, revert, or

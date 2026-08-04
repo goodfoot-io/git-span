@@ -27,7 +27,7 @@
       "Drains a pre-commit record for the background reconciler to keep implicit semantic dependencies from silently drifting"
     ],
     "defaultPrompt": [
-      "Check `git span stale` for drifted spans and help me reconcile them."
+      "Check `git span drift` for drifted spans and help me reconcile them."
     ],
     "brandColor": "#6E56CF",
     "composerIcon": "link"

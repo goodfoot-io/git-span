@@ -317,7 +317,7 @@ fn a_binary_recorded_side_is_recovered_not_declared_lost() -> Result<()> {
 #[test]
 fn current_block_invariants_hold_in_every_state() -> Result<()> {
     for (label, repo, span) in every_current_state()? {
-        let stale = String::from_utf8_lossy(&repo.run_span(["stale"])?.stdout).into_owned();
+        let drift = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
         let render = history_text(&repo, span)?;
         // Nothing in the product produces this line any more, on either render
         // path: a measurable pair below the floor splits into two blocks, and
@@ -486,8 +486,8 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                         "{label}: a proposal is never a completed rename; got:\n{diff}"
                     );
                     assert!(
-                        stale.contains(&format!("{path} — moved to {proposed}")),
-                        "{label}: the proposal must agree with stale; got:\n{stale}"
+                        drift.contains(&format!("{path} — moved to {proposed}")),
+                        "{label}: the proposal must agree with drift; got:\n{drift}"
                     );
                     assert!(
                         anchor.get("recorded").is_none(),

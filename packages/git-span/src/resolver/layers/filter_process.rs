@@ -1,8 +1,9 @@
 //! Long-running `git filter-process` protocol orchestration. Used by
 //! both the LFS reader and the custom-driver dispatch. Each `FilterProcess`
-//! owns a child subprocess + stdio handles for the duration of a `stale` run.
+//! owns a child subprocess + stdio handles for the duration of a `drift` run.
 
 use crate::git;
+use crate::sigpipe::SigpipeIgnored;
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -31,6 +32,9 @@ impl FilterProcess {
 
 impl Drop for FilterProcess {
     fn drop(&mut self) {
+        // A driver that died mid-run leaves a stdin whose peer is gone; the
+        // farewell flush must not be the thing that takes the process with it.
+        let _sigpipe = SigpipeIgnored::new();
         if let Some(mut s) = self.stdin.take() {
             let _ = s.flush();
         }
@@ -41,6 +45,12 @@ impl Drop for FilterProcess {
 fn finalize_filter_process(
     mut child: Child,
 ) -> std::result::Result<FilterProcess, FilterSpawnError> {
+    // `sh -c '<driver>'` for a driver that is not installed exits 127 before
+    // the handshake bytes are written. With `main`'s default `SIGPIPE`
+    // disposition in force that write kills git-span outright; ignored, it
+    // returns `EPIPE` and lands in `HandshakeFailed`, which is the terminal
+    // state this whole module is built to report.
+    let _sigpipe = SigpipeIgnored::new();
     let stdin = child
         .stdin
         .take()
@@ -116,6 +126,9 @@ pub(crate) fn filter_smudge(
     pathname: &str,
     input_bytes: &[u8],
 ) -> std::io::Result<Vec<u8>> {
+    // A driver can also die between the handshake and a later payload — the
+    // write that discovers it must return `EPIPE`, not a signal.
+    let _sigpipe = SigpipeIgnored::new();
     pkt_write_text(p.stdin_mut(), "command=smudge\n")?;
     pkt_write_text(p.stdin_mut(), &format!("pathname={pathname}\n"))?;
     pkt_flush(p.stdin_mut())?;

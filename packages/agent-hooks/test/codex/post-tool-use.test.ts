@@ -23,7 +23,7 @@ import hook, {
   narrowCodeModeExec,
   narrowExecCommand
 } from '../../src/codex/post-tool-use.js';
-import type { PorcelainRow, PorcelainStatus, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
@@ -61,14 +61,14 @@ function updateEnvelope(path = 'foo.ts'): string {
 
 interface FakeOpts {
   list?: PorcelainRow[];
-  stale?: StalePorcelainRow[];
+  drift?: DriftPorcelainRow[];
   reject?: boolean;
 }
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
-  calls: { fix: number; list: number; stale: number; why: number };
+  calls: { fix: number; list: number; drift: number; why: number };
 } {
-  const calls = { fix: 0, list: 0, stale: 0, why: 0 };
+  const calls = { fix: 0, list: 0, drift: 0, why: 0 };
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
@@ -83,10 +83,10 @@ function makeExecutors(opts: FakeOpts = {}): {
       if (opts.reject) boom();
       return opts.list ?? [];
     },
-    stale: async (): Promise<StalePorcelainRow[]> => {
-      calls.stale += 1;
+    drift: async (): Promise<DriftPorcelainRow[]> => {
+      calls.drift += 1;
       if (opts.reject) boom();
-      return opts.stale ?? [];
+      return opts.drift ?? [];
     },
     why: async (): Promise<string | null> => {
       calls.why += 1;
@@ -113,7 +113,7 @@ const SPAN = 'billing/checkout-request-flow';
 function porcelainRow(): PorcelainRow {
   return { name: SPAN, path: 'foo.ts', start: 1, end: 10 };
 }
-function staleRow(status: PorcelainStatus): StalePorcelainRow {
+function driftRow(status: PorcelainStatus): DriftPorcelainRow {
   return { name: SPAN, path: 'foo.ts', start: 1, end: 10, status };
 }
 
@@ -221,7 +221,7 @@ describe('codex post-tool-use touch signal', () => {
   it('heals and surfaces a semantic directive on a confirmed apply', async () => {
     const repo = makeTempRepo();
     try {
-      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
 
@@ -236,7 +236,7 @@ describe('codex post-tool-use touch signal', () => {
   it('suppresses the touch entirely on a confirmed rejection (no executor calls, no warn)', async () => {
     const repo = makeTempRepo();
     try {
-      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
       const handler = createHandler(executors, inMemoryMemoFactory());
       const result = toResult(
@@ -255,7 +255,7 @@ describe('codex post-tool-use touch signal', () => {
   it('runs the touch (and warns) when the tool_response shape is unrecognized', async () => {
     const repo = makeTempRepo();
     try {
-      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
       const handler = createHandler(executors, inMemoryMemoFactory());
       await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
@@ -283,7 +283,7 @@ describe('codex post-tool-use touch signal', () => {
   it('surfaces nothing for a non-apply_patch tool_input', async () => {
     const repo = makeTempRepo();
     try {
-      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const result = toResult(await handler(postInput(repo.root, undefined) as never, { logger } as never));
       // narrowApplyPatchCommand rejects a missing command → no touch.
@@ -301,7 +301,7 @@ describe('codex post-tool-use touch signal', () => {
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
-        stale: [staleRow('CHANGED')]
+        drift: [driftRow('CHANGED')]
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {
@@ -325,7 +325,7 @@ describe('codex post-tool-use touch signal', () => {
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
       const { executors } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
-        stale: [staleRow('CHANGED')]
+        drift: [driftRow('CHANGED')]
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {
@@ -371,7 +371,7 @@ describe('codex post-tool-use touch signal', () => {
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
-        stale: [staleRow('CHANGED')]
+        drift: [driftRow('CHANGED')]
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {
@@ -391,7 +391,7 @@ describe('codex post-tool-use touch signal', () => {
   it('returns undefined for a Bash command with no recognized idiom', async () => {
     const repo = makeTempRepo();
     try {
-      const { executors, calls } = makeExecutors({ list: [porcelainRow()], stale: [staleRow('CHANGED')] });
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {
         ...postInput(repo.root, null),
@@ -416,7 +416,7 @@ describe('codex post-tool-use touch signal', () => {
       const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'out.txt', start: 8, end: 10 }],
-        stale: [staleRow('DELETED')]
+        drift: [driftRow('DELETED')]
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {
@@ -446,7 +446,7 @@ describe('codex post-tool-use touch signal', () => {
       const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
-        stale: [staleRow('CHANGED')]
+        drift: [driftRow('CHANGED')]
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const input = {

@@ -1,12 +1,12 @@
 /**
  * Porcelain contract test: verifies that the git span porcelain output formats
- * are parseable by the shared parsePorcelain / parseStalePorcelain functions.
+ * are parseable by the shared parsePorcelain / parseDriftPorcelain functions.
  *
- * These tests exercise the actual `git span stale --format porcelain` and
+ * These tests exercise the actual `git span drift --format porcelain` and
  * `git span list --porcelain` commands against a real temporary git repo with
  * a span, then validate the output through the same parsers touch-core and
  * advisor-core use. The two commands emit different porcelain shapes: `list --porcelain`
- * is `<name>\t<path>\t<start>-<end>`, while `stale --format porcelain` is a
+ * is `<name>\t<path>\t<start>-<end>`, while `drift --format porcelain` is a
  * `# porcelain v2` header followed by `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` rows.
  *
  * If `git span` is not available on PATH, all tests in this file are skipped
@@ -22,8 +22,8 @@ import {
   isEnvironmentalStatus,
   PORCELAIN_STATUSES,
   type PorcelainStatus,
-  parsePorcelain,
-  parseStalePorcelain
+  parseDriftPorcelain,
+  parsePorcelain
 } from '../../src/common/agent-hooks-common.js';
 
 // ---------------------------------------------------------------------------
@@ -174,8 +174,8 @@ suite('Porcelain contract (git span)', () => {
     });
   });
 
-  describe('git span stale --format porcelain', () => {
-    it('produces parseable rows for stale anchors', () => {
+  describe('git span drift --format porcelain', () => {
+    it('produces parseable rows for drifted anchors', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\n');
       gitAddCommit(repoRoot, 'initial');
@@ -184,21 +184,21 @@ suite('Porcelain contract (git span)', () => {
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L2');
       gitAddCommit(repoRoot, 'add span');
 
-      // Modify the source file so the anchor becomes stale
+      // Modify the source file so the anchor becomes drifted
       writeFile(repoRoot, 'src/app.ts', 'CHANGED\nline2\nline3\n');
 
-      // Run stale --format porcelain with the source path
+      // Run drift --format porcelain with the source path
       const out = execFileSync(
         'git',
-        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        ['-C', repoRoot, 'span', 'drift', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf8'
         }
       );
-      const rows = parseStalePorcelain(out);
+      const rows = parseDriftPorcelain(out);
 
-      // The stale anchor should be reported
+      // The drifted anchor should be reported
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
         expect(typeof row.name).toBe('string');
@@ -211,7 +211,7 @@ suite('Porcelain contract (git span)', () => {
         expect(row.end).toBeGreaterThanOrEqual(row.start);
       }
 
-      // Our specific span should be reported as stale, with a real status
+      // Our specific span should be reported as drifted, with a real status
       // token from the documented vocabulary (content changed → CHANGED).
       const ourSpan = rows.find((r) => r.name === 'my-module');
       expect(ourSpan).toBeDefined();
@@ -221,7 +221,7 @@ suite('Porcelain contract (git span)', () => {
       expect(isDebt(ourSpan!.status)).toBe(true);
     });
 
-    it('produces no rows for anchors that are not stale', () => {
+    it('produces no rows for anchors that are not drifted', () => {
       // Create source file and commit
       writeFile(repoRoot, 'src/app.ts', 'line1\nline2\nline3\n');
       gitAddCommit(repoRoot, 'initial');
@@ -230,30 +230,30 @@ suite('Porcelain contract (git span)', () => {
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L2');
       gitAddCommit(repoRoot, 'add span');
 
-      // Don't modify the source -- anchors should not be stale
+      // Don't modify the source -- anchors should not be drifted
       const out = execFileSync(
         'git',
-        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        ['-C', repoRoot, 'span', 'drift', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf8'
         }
       );
-      const rows = parseStalePorcelain(out);
+      const rows = parseDriftPorcelain(out);
       expect(rows).toHaveLength(0);
     });
 
-    it('produces no rows when no targets are given and no spans are stale', () => {
+    it('produces no rows when no targets are given and no spans are drifted', () => {
       writeFile(repoRoot, 'src/app.ts', 'content');
       gitAddCommit(repoRoot, 'initial');
       addSpan(repoRoot, 'my-module', 'src/app.ts#L1-L1');
       gitAddCommit(repoRoot, 'add span');
 
-      const out = execFileSync('git', ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code'], {
+      const out = execFileSync('git', ['-C', repoRoot, 'span', 'drift', '--format', 'porcelain', '--no-exit-code'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8'
       });
-      const rows = parseStalePorcelain(out);
+      const rows = parseDriftPorcelain(out);
       expect(rows).toEqual([]);
     });
 
@@ -266,7 +266,7 @@ suite('Porcelain contract (git span)', () => {
       expect(() =>
         execFileSync(
           'git',
-          ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'nonexistent.ts'],
+          ['-C', repoRoot, 'span', 'drift', '--format', 'porcelain', '--no-exit-code', 'nonexistent.ts'],
           {
             stdio: ['ignore', 'pipe', 'pipe'],
             encoding: 'utf8'
@@ -276,8 +276,8 @@ suite('Porcelain contract (git span)', () => {
     });
   });
 
-  describe('combined list + stale contract', () => {
-    it('list rows subset of stale rows when anchors are stale', () => {
+  describe('combined list + drift contract', () => {
+    it('list rows subset of drift rows when anchors are drifted', () => {
       writeFile(repoRoot, 'src/app.ts', 'a\nb\nc\n');
       gitAddCommit(repoRoot, 'initial');
 
@@ -286,7 +286,7 @@ suite('Porcelain contract (git span)', () => {
       writeFile(repoRoot, 'src/other.ts', 'x\ny\nz\n');
       gitAddCommit(repoRoot, 'add span and other file');
 
-      // Make the anchored file stale
+      // Make the anchored file drift
       writeFile(repoRoot, 'src/app.ts', 'MODIFIED\nb\nc\n');
 
       // List with the source paths
@@ -301,22 +301,22 @@ suite('Porcelain contract (git span)', () => {
       const listRows = parsePorcelain(listOut);
       expect(listRows.length).toBeGreaterThan(0);
 
-      // Stale with the source path
-      const staleOut = execFileSync(
+      // Drift with the source path
+      const driftOut = execFileSync(
         'git',
-        ['-C', repoRoot, 'span', 'stale', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
+        ['-C', repoRoot, 'span', 'drift', '--format', 'porcelain', '--no-exit-code', 'src/app.ts'],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf8'
         }
       );
-      const staleRows = parseStalePorcelain(staleOut);
-      expect(staleRows.length).toBeGreaterThan(0);
+      const driftRows = parseDriftPorcelain(driftOut);
+      expect(driftRows.length).toBeGreaterThan(0);
 
-      // The stale rows should be a subset of list rows (same name+path+range)
-      for (const stale of staleRows) {
+      // The drift rows should be a subset of list rows (same name+path+range)
+      for (const drift of driftRows) {
         const match = listRows.find(
-          (l) => l.name === stale.name && l.path === stale.path && l.start === stale.start && l.end === stale.end
+          (l) => l.name === drift.name && l.path === drift.path && l.start === drift.start && l.end === drift.end
         );
         expect(match).toBeDefined();
       }
@@ -329,20 +329,20 @@ suite('Porcelain contract (git span)', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Synthesizes a `stale --format porcelain` block for the given status tokens
+ * Synthesizes a `drift --format porcelain` block for the given status tokens
  * so the full vocabulary (including terminal/error statuses the real CLI is
  * hard to provoke in a unit test, e.g. CONFLICT/SUBMODULE/LFS_*) can be
  * exercised against the real parser.
  */
-function syntheticStalePorcelain(statuses: readonly string[]): string {
+function syntheticDriftPorcelain(statuses: readonly string[]): string {
   const header = '# porcelain v2';
   const rows = statuses.map((status, i) => `${status}\tW\tspan-${i}\tsrc/file-${i}.ts\t1\t2`);
   return [header, ...rows].join('\n');
 }
 
-describe('parseStalePorcelain — full status vocabulary', () => {
+describe('parseDriftPorcelain — full status vocabulary', () => {
   it('parses every documented status token, preserving row order and fields', () => {
-    const rows = parseStalePorcelain(syntheticStalePorcelain(PORCELAIN_STATUSES));
+    const rows = parseDriftPorcelain(syntheticDriftPorcelain(PORCELAIN_STATUSES));
     expect(rows).toHaveLength(PORCELAIN_STATUSES.length);
     rows.forEach((row, i) => {
       expect(row.status).toBe(PORCELAIN_STATUSES[i]);
@@ -357,14 +357,14 @@ describe('parseStalePorcelain — full status vocabulary', () => {
       'NOT_A_REAL_STATUS\tW\tspan-x\tsrc/x.ts\t1\t2',
       'FRESH\tW\tspan-y\tsrc/y.ts\t1\t2'
     ].join('\n');
-    const rows = parseStalePorcelain(input);
+    const rows = parseDriftPorcelain(input);
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe('span-y');
   });
 
   it('parses whole-file status rows with (whole)/- columns', () => {
     const input = ['# porcelain v2', 'DELETED\t-\tspan-whole\tsrc/gone.ts\t(whole)\t-'].join('\n');
-    const rows = parseStalePorcelain(input);
+    const rows = parseDriftPorcelain(input);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: 'DELETED', name: 'span-whole', path: 'src/gone.ts', start: 0, end: 0 });
   });

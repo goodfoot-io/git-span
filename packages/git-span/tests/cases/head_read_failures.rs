@@ -1,7 +1,7 @@
 //! Unreadable-HEAD reads fail closed with the curated resolver error.
 //!
 //! main-194 issue R3: a repository whose HEAD objects cannot be read must
-//! never classify an anchor as relocated/deleted — `stale` and `history`
+//! never classify an anchor as relocated/deleted — `drift` and `history`
 //! abort before rendering anything, and the failure prints the shared
 //! curated shape (`resolver_read_error`) rather than a raw `error: git: …`
 //! line. The fixture corrupts an intermediate tree object in place
@@ -93,20 +93,20 @@ fn assert_curated_read_failure(out: &std::process::Output, subcommand: &str) {
 }
 
 #[test]
-fn stale_fails_closed_on_unreadable_head_for_both_extents() -> Result<()> {
+fn drift_fails_closed_on_unreadable_head_for_both_extents() -> Result<()> {
     let repo = corrupted_head_repo()?;
 
     // Scoped per span so each extent independently exercises the boundary:
     // neither the whole-file nor the line-range resolver path may classify
     // (relocated/deleted) what it cannot read.
     for span in ["whole-span", "range-span"] {
-        let out = repo.run_span(["stale", span])?;
-        assert_curated_read_failure(&out, "stale");
+        let out = repo.run_span(["drift", span])?;
+        assert_curated_read_failure(&out, "drift");
     }
 
     // The unscoped scan shares the same fail-closed boundary.
-    let out = repo.run_span(["stale"])?;
-    assert_curated_read_failure(&out, "stale");
+    let out = repo.run_span(["drift"])?;
+    assert_curated_read_failure(&out, "drift");
     Ok(())
 }
 
@@ -115,7 +115,7 @@ fn history_fails_closed_on_unreadable_head_for_both_extents() -> Result<()> {
     let repo = corrupted_head_repo()?;
 
     // `history` renders its timeline only after the `current` block resolves
-    // through the same engine `stale` uses, so an unreadable HEAD aborts the
+    // through the same engine `drift` uses, so an unreadable HEAD aborts the
     // whole command with the identical curated shape — no partial timeline.
     for span in ["whole-span", "range-span"] {
         let out = repo.run_span(["history", span])?;

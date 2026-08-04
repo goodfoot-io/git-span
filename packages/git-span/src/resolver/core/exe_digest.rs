@@ -5,7 +5,7 @@
 //! identity by mmap+BLAKE3-hashing its resolved program file on every
 //! invocation (see that module's docs). For a large filter binary — a
 //! standard git-lfs install is ~11 MiB — that hash is the dominant cost of an
-//! otherwise-warm `git span stale` run, and it is paid *twice* on a cold
+//! otherwise-warm `git span drift` run, and it is paid *twice* on a cold
 //! build: once for the initial capture, once again for the pre-publish
 //! [`super::capture::revalidate`] re-read.
 //!

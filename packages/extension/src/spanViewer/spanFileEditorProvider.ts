@@ -236,7 +236,7 @@ function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoThemeKind {
  * re-posts `lastPosted`. This keeps the error state recoverable: a later
  * watcher-triggered render that succeeds posts its document into the panel,
  * which hands it to the Monaco webview to render. The panel deliberately does
- * not post `'ready'` itself -- the host would answer by re-posting a stale
+ * not post `'ready'` itself -- the host would answer by re-posting a drift
  * `lastPosted`, bouncing it straight back here into a reload loop.
  *
  * Always offers "Reopen as Text," per the card's requirement that a span's
@@ -407,7 +407,7 @@ async function findRepoRootUpward(startDir: string): Promise<string | null> {
  * Every `render()` pass -- the initial open and each watcher-triggered
  * re-render -- re-reads the span file through this, so anchors are matched
  * and `span_diff`s reconstructed against the current text, never an
- * open-time snapshot. The viewer is read-only, so the user's stale-fix
+ * open-time snapshot. The viewer is read-only, so the user's drift-fix
  * workflow is "Reopen as Text" -- a separate tab for the same file -- and a
  * save while the viewer is open is common; the watcher on the span file
  * itself fires after each save, and the re-render must parse the saved
@@ -638,7 +638,7 @@ function resolveLadders(
     // history lives under its `rename from` address, so the walk must start
     // there or the accordion blocks and the ladder rungs would diverge (see
     // `walkAddressLineage`). A byte-identical re-anchor (the CLI's
-    // `stale --fix` output) emits NO current entry at all -- `current.span_diff`
+    // `drift --fix` output) emits NO current entry at all -- `current.span_diff`
     // is the only trace of the move, so it feeds the walk the same way a
     // rename header does.
     const currentSpanDiff = history.current?.span_diff;
@@ -747,7 +747,7 @@ function buildPostedHistory(
 }
 
 /**
- * `N anchor(s)` / `N anchors` noun-phrase helper for stale-reason copy.
+ * `N anchor(s)` / `N anchors` noun-phrase helper for drift-reason copy.
  *
  * @param count - The number of affected anchors.
  * @param noun - The singular noun to pluralize.
@@ -826,7 +826,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     /**
      * Monotonic render generation: incremented at the start of every
      * `render()` call, so a superseded render (a newer one already started)
-     * can detect it is stale and skip posting -- only the most recently
+     * can detect it is drifted and skip posting -- only the most recently
      * initiated render's result may reach the webview.
      */
     let renderGeneration = 0;
@@ -964,7 +964,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
      * so a watcher-triggered re-render (e.g. the user saved an edit in a
      * "Reopen as Text" tab) matches anchors and reconstructs `span_diff`s
      * against the current text -- never the open-time snapshot, which would
-     * post stale addresses and degrade every diff card to 'unavailable'.
+     * post drift addresses and degrade every diff card to 'unavailable'.
      *
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every anchor's real file, dangling or not), or `null` when
@@ -1113,8 +1113,8 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         const documentToPost: PostedDocument = {
           spanName,
           why: currentParsed.why,
-          stale: true,
-          staleReasons: [`${countLabel(danglingCount, 'anchor')} without history`],
+          drift: true,
+          driftReasons: [`${countLabel(danglingCount, 'anchor')} without history`],
           anchors: danglingAnchors,
           history: []
         };
@@ -1224,7 +1224,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
    * plans, and the history document: one card per anchor (clean content read
    * from disk with the pre/post-stat race check), the uncommitted declaration
    * edit, the declaration's last-edited timestamp, per-commit history blocks,
-   * and the Stale pill's reasons.
+   * and the Drift pill's reasons.
    *
    * @param options - Everything the build needs.
    * @param options.liveAnchors - The live anchors, in file order.
@@ -1314,7 +1314,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
 
     // `current.span_diff` -- the same signal the card above is built from --
     // is exactly "the worktree declaration differs from HEAD", so the
-    // committed date is stale by construction whenever the card is present.
+    // committed date is drifted by construction whenever the card is present.
     const updatedAt = await resolveSpanUpdatedAt({
       repoRoot,
       relativePath: spanRelativePath,
@@ -1324,31 +1324,31 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     const ladderInfos = resolveLadders(history, liveAnchors, plans, cleanContents);
     const postedHistory = buildPostedHistory(history, text, ladderInfos);
 
-    const staleReasons: string[] = [];
+    const driftReasons: string[] = [];
     if (drifted > 0) {
-      staleReasons.push(`${countLabel(drifted, 'anchor')} drifted`);
+      driftReasons.push(`${countLabel(drifted, 'anchor')} drifted`);
     }
     if (relocated > 0) {
-      staleReasons.push(`${countLabel(relocated, 'anchor')} relocated`);
+      driftReasons.push(`${countLabel(relocated, 'anchor')} relocated`);
     }
     if (unavailable > 0) {
-      staleReasons.push(`${countLabel(unavailable, 'anchor')} unavailable`);
+      driftReasons.push(`${countLabel(unavailable, 'anchor')} unavailable`);
     }
     if (changed > 0) {
-      staleReasons.push(`${countLabel(changed, 'anchor')} changed while this span was being checked`);
+      driftReasons.push(`${countLabel(changed, 'anchor')} changed while this span was being checked`);
     }
     if (dangling > 0) {
-      staleReasons.push(`${countLabel(dangling, 'anchor')} without history`);
+      driftReasons.push(`${countLabel(dangling, 'anchor')} without history`);
     }
     if (uncommittedEdit !== undefined) {
-      staleReasons.push('span file edited in the working tree');
+      driftReasons.push('span file edited in the working tree');
     }
 
     const posted: PostedDocument = {
       spanName,
       why,
-      stale: staleReasons.length > 0,
-      staleReasons,
+      drift: driftReasons.length > 0,
+      driftReasons,
       anchors,
       history: postedHistory
     };

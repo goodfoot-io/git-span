@@ -1,0 +1,4 @@
+packages/git-span/src/cli/commit.rs#L83-L199 rk64:85dc84a63e43479a
+packages/git-span/src/cli/drift_fix.rs#L837-L966 rk64:2846d92fbc7dbfdd
+
+Anchor-content hashing canonicalization that drift --fix must reproduce when it recomputes hashes per drift layer (worktree, HEAD, index) by hand, so re-anchored hashes stay comparable with the resolver's add-time and resolve-time hashes.

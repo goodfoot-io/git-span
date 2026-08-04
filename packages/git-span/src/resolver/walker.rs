@@ -41,7 +41,7 @@ pub(crate) fn rename_budget() -> usize {
 /// looks up blob OIDs from the memo before falling back to tree
 /// traversal, and populates the memo on miss. This eliminates redundant
 /// `path_blob_at` calls when multiple anchors share the same commit ×
-/// path combination within a single `stale` run.
+/// path combination within a single `drift` run.
 pub(crate) fn advance_with_entries(
     repo: &gix::Repository,
     parent: &str,
@@ -137,7 +137,7 @@ pub(crate) fn compute_new_range(
 ) -> Result<(u32, u32)> {
     // Resolve blob OIDs, using the session-scoped memo when available to
     // avoid redundant tree traversals when multiple anchors share the same
-    // (commit, path) combination within a single stale run.
+    // (commit, path) combination within a single drift run.
     let old_blob_oid = blob_oid_at(repo, parent, &loc.path, blob_oid_memo.as_deref_mut());
     let new_blob_oid = blob_oid_at(repo, commit, new_path, blob_oid_memo);
 

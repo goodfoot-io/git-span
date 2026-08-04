@@ -191,7 +191,7 @@ export function parsePorcelain(stdout: string): PorcelainRow[] {
 }
 
 /**
- * The full `git span stale --format porcelain` status token vocabulary (the
+ * The full `git span drift --format porcelain` status token vocabulary (the
  * git-span CLI's porcelain contract): `FRESH`/`MOVED`/`RESOLVED_PENDING_COMMIT`
  * are positional-or-clean and never debt; every other token is semantic drift
  * or a terminal/error condition and is debt. See {@link isDebt} for the
@@ -221,8 +221,8 @@ function parsePorcelainStatus(raw: string): PorcelainStatus | null {
   return PORCELAIN_STATUS_SET.has(raw) ? (raw as PorcelainStatus) : null;
 }
 
-/** A `parseStalePorcelain` row: a {@link PorcelainRow} plus its status token. */
-export interface StalePorcelainRow extends PorcelainRow {
+/** A `parseDriftPorcelain` row: a {@link PorcelainRow} plus its status token. */
+export interface DriftPorcelainRow extends PorcelainRow {
   status: PorcelainStatus;
 }
 
@@ -239,7 +239,7 @@ export interface StalePorcelainRow extends PorcelainRow {
  * Note: the porcelain vocabulary does not currently distinguish
  * content-equivalent `CHANGED` (e.g. whitespace-only drift `--fix` can heal)
  * from genuinely semantic `CHANGED` — that classification is not present in
- * `git span stale --format porcelain` output today. Until the CLI exposes it,
+ * `git span drift --format porcelain` output today. Until the CLI exposes it,
  * every `CHANGED` row is treated as debt.
  */
 export function isDebt(status: PorcelainStatus): boolean {
@@ -299,7 +299,7 @@ export function isEnvironmentalStatus(status: PorcelainStatus): boolean {
 }
 
 /**
- * `git span stale --format porcelain` emits a different shape than
+ * `git span drift --format porcelain` emits a different shape than
  * `list --porcelain`: a `# porcelain v2` header, `# fuzzy N` comment lines,
  * and one `<status>\t<src>\t<name>\t<path>\t<start>\t<end>` row per drifted
  * anchor (whole-file anchors carry `(whole)`/`-` in place of the line columns).
@@ -307,8 +307,8 @@ export function isEnvironmentalStatus(status: PorcelainStatus): boolean {
  * an unrecognized token from a newer CLI is treated the same as a malformed
  * line rather than guessed at.
  */
-export function parseStalePorcelain(stdout: string): StalePorcelainRow[] {
-  const rows: StalePorcelainRow[] = [];
+export function parseDriftPorcelain(stdout: string): DriftPorcelainRow[] {
+  const rows: DriftPorcelainRow[] = [];
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;

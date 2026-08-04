@@ -6,7 +6,7 @@ description: Track, declare, and reconcile implicit semantic couplings — file/
 # git-span
 
 ```
-git span stale [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
+git span drift [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
 git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
 git span why <name> ["..."]           # bare = read; positional or stdin = write, after add/remove
 git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
@@ -27,25 +27,25 @@ re-checks the changeset and holds the command once if real span debt remains; se
 `references/understanding-hook-output.md` § "Resolving a held commit".
 
 ## Trust boundary
-`git span stale`/`show`/`why`/`history` output is ground truth. Never re-derive it with
+`git span drift`/`show`/`why`/`history` output is ground truth. Never re-derive it with
 `git log`, `git show <hash>`, or a raw `Read` of a `.span/*` file — act on the CLI's own
 output and stop.
 
 ## Core gotchas
-- `stale --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
+- `drift --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
   content drift stays reported on purpose — re-anchor directly with `add`; re-running
   `--fix` again will not change the result.
 - `add` never retires what it supersedes. Moving an anchor to a new path/range is
-  `remove <old-anchor>` then `add <new-anchor>`; skip `remove` and `stale` reports the old
+  `remove <old-anchor>` then `add <new-anchor>`; skip `remove` and `drift` reports the old
   one as `Moved` forever.
 - Anchor end-line must equal the file's *current* line count — `add` rejects
   `end=N exceeds file line count (M)`. Run `wc -l <path>` right before writing
   `#Lstart-Lend`, especially right after editing that file.
 - Names are kebab-case segments (`a-z0-9`, no leading dot/uppercase); `.github/x.yml` is
   an invalid name — pick a subsystem slug instead.
-- `stale`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
+- `drift`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
   not an error — that is not proof the span doesn't exist; confirm with `git span list`.
-- `stale` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
+- `drift` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
 - Don't span a path that a script or generator writes and nobody hand-edits — span the
   inputs instead. Committed output still counts: generated images, lockfiles, the man
   page.
@@ -79,16 +79,16 @@ in comments at the load-bearing anchor sites; a span isn't done until those exis
 example: "Product-listing pagination is a continuation-token flow defined by the API and
 mirrored by each client library."
 
-### Re-anchor + retire (stale names the drifted anchor; fix is obvious)
+### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```
-git span stale <name>                     # see which anchor(s) drifted and how
-# Moved (same content, new path):  git span stale --fix <name>   suffices
+git span drift <name>                     # see which anchor(s) drifted and how
+# Moved (same content, new path):  git span drift --fix <name>   suffices
 # Changed, anchors still agree:    keep the SAME range unless the file's line count moved
 # Changed, doc lags committed code: rewrite the doc first; code fixes need the user's say-so
 git span remove <name> <old-anchor>       # only if path or range actually changed
 git span add <name> <new-anchor>          # wc -l <path> first
 git span why <name> "..."              # only if the relationship itself changed
-git span stale <name>                     # must exit 0 before commit
+git span drift <name>                     # must exit 0 before commit
 git add .span && git commit -m "..."
 ```
 
@@ -96,7 +96,7 @@ git add .span && git commit -m "..."
 ```
 # edit the code value AND the doc sentence the span couples it to
 git span add <name> <anchor>...           # same anchor(s); refreshes the stored hash
-git span stale <name>                     # must exit 0
+git span drift <name>                     # must exit 0
 git add .span && git commit -m "..."
 ```
 If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
@@ -105,7 +105,7 @@ with `wc -l` and write the new range).
 ## Where to go next
 Pick the first that fits:
 1. Read-only question, no `.span` mutation intended → `references/inspect.md`.
-2. A `stale`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →
+2. A `drift`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →
    `references/terminal-statuses.md`.
 3. A finding says `CONTENT_UNAVAILABLE(...)`, or LFS / partial clone / sparse checkout is
    involved → `references/content-unavailable.md`.

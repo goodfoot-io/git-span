@@ -94,19 +94,19 @@ fn autocrlf_change_between_publish_and_same_head_reuse_falls_through_to_cold() {
     );
 
     // ── Publish a baseline generation at HEAD (autocrlf=false). ──────────────
-    let (_out, _err) = run_span(p, &["stale", "--no-exit-code"], true, true);
+    let (_out, _err) = run_span(p, &["drift", "--no-exit-code"], true, true);
 
     // ── Change ONLY the normalization config: no commit, no worktree edit. ───
     run_git(p, &["config", "core.autocrlf", "true"]);
 
     // Cache-off oracle under the new config (never touches the store).
-    let (oracle, _) = run_span(p, &["stale", "--no-exit-code"], false, false);
+    let (oracle, _) = run_span(p, &["drift", "--no-exit-code"], false, false);
 
     // The new store, against a store that still holds only the baseline. The
     // canonical key changed (normalization_digest moved), so the exact read
     // misses and the dirty tier finds the same-HEAD baseline — which it must
     // now reject on config drift rather than reuse.
-    let (new_store, perf) = run_span(p, &["stale", "--no-exit-code"], true, true);
+    let (new_store, perf) = run_span(p, &["drift", "--no-exit-code"], true, true);
 
     assert_eq!(
         new_store, oracle,
@@ -114,7 +114,7 @@ fn autocrlf_change_between_publish_and_same_head_reuse_falls_through_to_cold() {
          change\n--- oracle ---\n{oracle}\n--- new store ---\n{new_store}"
     );
 
-    // The run must have cold-resolved, NOT reused the stale baseline.
+    // The run must have cold-resolved, NOT reused the drifted baseline.
     assert!(
         perf.contains("cache-path.hit-class: miss"),
         "expected a cold resolve after config drift; perf:\n{perf}"

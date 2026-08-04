@@ -51,7 +51,7 @@ git span add perf-notes 'benchmarks/results.tsv#L1-L200'
 ```
 
 If content is not cached, `git span add` fails pointing at `git lfs fetch`,
-and a `stale` check surfaces `CONTENT_UNAVAILABLE` with reason `LfsNotFetched`
+and a `drift` check surfaces `CONTENT_UNAVAILABLE` with reason `LfsNotFetched`
 — see `./content-unavailable.md`. The fast path for whole-file LFS anchors is
 pointer-OID equality (the git blob, not the smudged bytes), so those usually
 resolve without the real content ever being fetched.

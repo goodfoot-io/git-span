@@ -13,7 +13,7 @@ use super::*;
 /// with five readable lines as "no such file at this commit".
 ///
 /// ORACLE — `git status` and `cmp` against `HEAD:f.txt`, asserted per fixture
-/// below, plus `git span stale`, which reads the same repository through the
+/// below, plus `git span drift`, which reads the same repository through the
 /// same resolver and has always named this state correctly.
 #[test]
 fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
@@ -128,22 +128,22 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
 
         // The other surface over the same resolver has always been right about
         // this state; the two must not describe one repository two ways.
-        // `stale` reports it as `content unavailable (filter failed)` where it
+        // `drift` reports it as `content unavailable (filter failed)` where it
         // can resolve at all and errors out where it cannot — either way it
         // attributes the state to the filter, and never to a missing file.
-        let out = repo.run_span(["stale"])?;
-        let stale = format!(
+        let out = repo.run_span(["drift"])?;
+        let drift = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            stale.contains("filter"),
-            "{label}: fixture assumption — `stale` names the filter; got:\n{stale}"
+            drift.contains("filter"),
+            "{label}: fixture assumption — `drift` names the filter; got:\n{drift}"
         );
         assert!(
-            !stale.contains("deleted") && !stale.contains("no such file"),
-            "{label}: the other surface never called this a deletion; got:\n{stale}"
+            !drift.contains("deleted") && !drift.contains("no such file"),
+            "{label}: the other surface never called this a deletion; got:\n{drift}"
         );
     }
     Ok(())

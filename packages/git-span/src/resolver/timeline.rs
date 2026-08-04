@@ -178,7 +178,7 @@ fn record_project_us(t0: std::time::Instant) {
 // because `PathTimeline::build_from_deltas` does not have the resolver
 // session at hand for every call site that may want to use it. They are
 // emitted alongside the existing resolver counters from
-// `engine::stale_spans`.
+// `engine::drift_spans`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -207,7 +207,7 @@ pub(crate) fn path_bytes_shared() -> u64 {
     PATH_BYTES_SHARED.load(Ordering::Relaxed)
 }
 
-/// Emit Phase 1 perf counters. Called from `engine::stale_spans` after
+/// Emit Phase 1 perf counters. Called from `engine::drift_spans` after
 /// resolution finishes.
 pub(crate) fn emit_counters() {
     perf::counter("timeline.paths-built", paths_built());

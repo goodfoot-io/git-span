@@ -7,7 +7,7 @@
  * (`file_path`, `new_string`/`content`, `offset`/`limit`) and `tool_name` into
  * a harness-agnostic {@link TouchInput}, then handing off to the shared
  * {@link runTouchHook} core: on a write it heals
- * positional span drift in the working tree (`git span stale <file> --fix`) and
+ * positional span drift in the working tree (`git span drift <file> --fix`) and
  * folds any semantic residue into one `<git-span>` block; on a read it surfaces
  * spans overlapping the read's `offset`/`limit` window (whole-file when neither
  * is given) with positional statuses filtered out, and never mutates the tree.

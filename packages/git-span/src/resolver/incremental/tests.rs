@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::resolver::core::capture::capture_state_token;
-use crate::resolver::exact::stale_spans_new_store;
+use crate::resolver::exact::drift_spans_new_store;
 use crate::resolver::store::CacheStore;
 use crate::types::EngineOptions;
 use std::path::{Path, PathBuf};
@@ -141,7 +141,7 @@ fn commit_unrelated(dir: &Path) {
 fn publish_ancestor(dir: &Path) {
     enable_store();
     let repo = reopen(dir);
-    let _ = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
+    let _ = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("cold publish");
 }
 
 // ── No ancestor degrades ─────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ fn changed_anchored_path_reresolves_only_affected() {
         &repo,
         SPAN_ROOT,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )
     .expect("full");
     assert_eq!(
@@ -288,7 +288,7 @@ fn reconstructed_core_byte_equal_to_full_unrelated() {
         &repo,
         SPAN_ROOT,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )
     .expect("full");
     assert_eq!(

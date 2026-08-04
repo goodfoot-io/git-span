@@ -50,9 +50,9 @@ the network. See `./ci-and-sync.md` for the CI/sync workflow.
 Registering a merge driver makes git collapse the easy majority of `.span/`
 conflicts in place during `git merge`, so they never surface. This is the one
 piece of git *config* spans can use — and it is entirely optional. Skipping it
-costs nothing: `.span/**` falls back to git's line merge, and `git span stale
+costs nothing: `.span/**` falls back to git's line merge, and `git span drift
 --fix` resolves the result afterward to the identical clean state (see
-SKILL.md's `stale --fix` gotcha). Registration has two parts, because git
+SKILL.md's `drift --fix` gotcha). Registration has two parts, because git
 distributes one and not the other:
 
 ```gitattributes

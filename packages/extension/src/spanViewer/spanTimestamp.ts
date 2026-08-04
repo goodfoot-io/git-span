@@ -13,7 +13,7 @@
  * - **Committed**: the committer date of the last commit touching
  *   `.span/<name>`, via `git log -1 --format=%cI`.
  * - **Worktree**: the file's mtime, used when the declaration is edited but
- *   uncommitted (where the commit date is stale by construction), and as the
+ *   uncommitted (where the commit date is drifted by construction), and as the
  *   fallback when the file is untracked or has never been committed (where
  *   `git log` legitimately reports nothing and mtime *is* when it was last
  *   edited).
@@ -115,7 +115,7 @@ export const readMtime: MtimeReader = async (filePath) => {
  *   slash-separated path, e.g. `.span/my-span`.
  * @param options.dirty - Whether the declaration differs from HEAD in the
  *   worktree, i.e. whether the provider produced an uncommitted-edit card. The
- *   committed date is stale by construction when this is true.
+ *   committed date is drifted by construction when this is true.
  * @param options.readCommittedDate - Injected git reader; defaults to
  *   {@linkcode readCommittedDate}.
  * @param options.readMtime - Injected stat reader; defaults to

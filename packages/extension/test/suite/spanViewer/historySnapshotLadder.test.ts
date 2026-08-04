@@ -438,10 +438,10 @@ describe('historySnapshotLadder', () => {
       });
     });
 
-    it('threads a stale declaration seed forward: records once, edits at c2 and c3 without re-anchoring, and still renders every rung', () => {
+    it('threads a drifted declaration seed forward: records once, edits at c2 and c3 without re-anchoring, and still renders every rung', () => {
       // Recorded at c1 (the declaration's recorded token hashes t0); c2 edits
       // line two and c3 edits line seven WITHOUT re-anchoring -- the CLI's
-      // own default `stale --fix` posture -- so the recorded state stays t0
+      // own default `drift --fix` posture -- so the recorded state stays t0
       // while the timeline moves on to t2. The current block's old side is
       // therefore the c1-era recorded bytes (t0), not the post-newest-commit
       // state: seeding straight from it makes c3's reverse-apply fail its
@@ -474,7 +474,7 @@ describe('historySnapshotLadder', () => {
       const current: CurrentAnchor = {
         path: ADDRESS,
         // The old side is the RECORDED snapshot (t0, from c1), not the
-        // post-newest-commit state -- the stale-declaration shape. The diff
+        // post-newest-commit state -- the drifted-declaration shape. The diff
         // covers every difference between t0 and the worktree (lines two,
         // seven, and nine), exactly as the CLI renders recorded-vs-live.
         diff: [
@@ -504,7 +504,7 @@ describe('historySnapshotLadder', () => {
       const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: worktree });
 
       assert.strictEqual(result.truncated, false);
-      assert.strictEqual(result.rungs.length, 3, 'all three rungs render despite the stale declaration');
+      assert.strictEqual(result.rungs.length, 3, 'all three rungs render despite the drifted declaration');
       assert.deepStrictEqual(result.rungs[0], {
         hash: 'c3',
         date: '2026-01-01T00:00:00-04:00',
@@ -528,7 +528,7 @@ describe('historySnapshotLadder', () => {
       });
     });
 
-    it('threads a stale declaration recorded mid-history: the pre-recording diff is skipped, newer ones chain', () => {
+    it('threads a drifted declaration recorded mid-history: the pre-recording diff is skipped, newer ones chain', () => {
       // Recorded at c2 (re-anchored there: the recorded token hashes t1),
       // then c3 edits line seven without re-anchoring. The current block's
       // old side is the c2-era recorded bytes (t1). Threading from t1 must
@@ -735,7 +735,7 @@ describe('historySnapshotLadder', () => {
       ]);
     });
 
-    it('threads a stale deleted-anchor seed forward: records once, edits at c2 and c3, then the worktree deletes the file, and still renders every rung', () => {
+    it('threads a drifted deleted-anchor seed forward: records once, edits at c2 and c3, then the worktree deletes the file, and still renders every rung', () => {
       // Recorded at c1 (the recorded token hashes t0); c2 edits line two and
       // c3 edits line seven WITHOUT re-anchoring; then the anchored file is
       // deleted from the worktree, so the current block carries no readable
@@ -769,7 +769,7 @@ describe('historySnapshotLadder', () => {
       const current: CurrentAnchor = {
         path: ADDRESS,
         // The old side is the RECORDED snapshot (t0, from c1), not the
-        // post-newest-commit state -- the stale-declaration-then-worktree-
+        // post-newest-commit state -- the drifted-declaration-then-worktree-
         // deletion shape: the recorded token still hashes t0 while the
         // timeline moved on to t2.
         diff: [
@@ -796,7 +796,11 @@ describe('historySnapshotLadder', () => {
       const result = buildHistorySnapshotLadder({ liveAddress: ADDRESS, commits, current, seedContent: '' });
 
       assert.strictEqual(result.truncated, false);
-      assert.strictEqual(result.rungs.length, 3, 'all three rungs render despite the stale deleted-anchor declaration');
+      assert.strictEqual(
+        result.rungs.length,
+        3,
+        'all three rungs render despite the drifted deleted-anchor declaration'
+      );
       assert.deepStrictEqual(result.rungs[0], {
         hash: 'c3',
         date: '2026-01-01T00:00:00-04:00',
@@ -820,7 +824,7 @@ describe('historySnapshotLadder', () => {
       });
     });
 
-    it('threads a stale declaration forward through a committed delete-then-re-add: every rung renders', () => {
+    it('threads a drifted declaration forward through a committed delete-then-re-add: every rung renders', () => {
       // Recorded at c1 (the recorded token hashes t0); the anchored file is
       // committed-deleted at c2 and re-created at c3, then edited at c4
       // WITHOUT re-anchoring, and the worktree drifts on top. The recorded
@@ -893,7 +897,7 @@ describe('historySnapshotLadder', () => {
       ];
       const current: CurrentAnchor = {
         path: ADDRESS,
-        // The old side is the RECORDED snapshot (t0, from c1) -- the stale-
+        // The old side is the RECORDED snapshot (t0, from c1) -- the drift-
         // declaration shape: the recorded token still hashes t0 while the
         // timeline moved through delete, re-add, and edit to t1.
         diff: [
@@ -991,11 +995,11 @@ describe('historySnapshotLadder', () => {
       });
     });
 
-    it('threads a stale header-only seed forward: recorded once, edited at c2, then re-anchored to identical bytes', () => {
+    it('threads a drifted header-only seed forward: recorded once, edited at c2, then re-anchored to identical bytes', () => {
       // A header-only current diff (here a pure rename: identical bytes at a
       // new address) proves the worktree bytes equal the recorded bytes -- but
       // those are the c1-era bytes, OLDER than the c2 edit, when the
-      // declaration is stale. The header-only branch must thread the recorded
+      // declaration is drifted. The header-only branch must thread the recorded
       // bytes forward through c2's diff just like the drifted branch, or the
       // c2 rung's post-image match fails and the ladder truncates at rung
       // zero.
@@ -1031,7 +1035,7 @@ describe('historySnapshotLadder', () => {
       const result = buildHistorySnapshotLadder({ liveAddress: 'f.txt#L30-L39', commits, current, seedContent: '' });
 
       assert.strictEqual(result.truncated, false);
-      assert.strictEqual(result.rungs.length, 2, 'both rungs render despite the stale header-only seed');
+      assert.strictEqual(result.rungs.length, 2, 'both rungs render despite the drifted header-only seed');
       assert.deepStrictEqual(result.rungs[0], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
@@ -1356,9 +1360,9 @@ describe('historySnapshotLadder', () => {
     });
 
     it('renders the recording rung for a byte-identical uncommitted re-anchor, walking the span_diff from-address', () => {
-      // The REAL `git span history` shape for the CLI's `stale --fix` output
+      // The REAL `git span history` shape for the CLI's `drift --fix` output
       // before the fix is committed: record f.txt#L1-L3, insert a line above,
-      // run `stale --fix`. The re-anchor is byte-identical, so the resolver
+      // run `drift --fix`. The re-anchor is byte-identical, so the resolver
       // reports nothing under `current.anchors` (the provider finds no entry
       // and passes no `current`) and `current.span_diff`'s same-token address
       // move is the only trace that the committed history lives under the OLD
@@ -1398,7 +1402,7 @@ describe('historySnapshotLadder', () => {
 
     it('crosses a committed re-anchor destination rung and renders the true origin below', () => {
       // The REAL routine shape for a committed re-anchor (record f.txt#L1-L3
-      // with a/b/c at c2, commit an edit at c3, run `stale --fix` and commit
+      // with a/b/c at c2, commit an edit at c3, run `drift --fix` and commit
       // the fix at c4): the fix commit carries a CONTENT block at the new
       // address (its content is the moved address's file bytes, a/b/c) plus a
       // full deletion at the old address (the pre-fix bytes x/y/a) -- no
@@ -1412,7 +1416,7 @@ describe('historySnapshotLadder', () => {
         {
           hash: 'c4',
           date: '2026-01-01T00:00:00-04:00',
-          summary: 'c4-stale-fix',
+          summary: 'c4-drift-fix',
           anchors: [
             { path: 'f.txt#L3-L5', content: 'a\nb\nc\n' },
             {
@@ -1468,7 +1472,7 @@ describe('historySnapshotLadder', () => {
       assert.deepStrictEqual(result.rungs[0], {
         hash: 'c4',
         date: '2026-01-01T00:00:00-04:00',
-        summary: 'c4-stale-fix',
+        summary: 'c4-drift-fix',
         original: 'x\ny\na\n',
         modified: 'a\nb\nc\n'
       });

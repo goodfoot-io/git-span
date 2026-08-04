@@ -427,7 +427,7 @@ describe('anchorMatcher', () => {
     });
 
     it('routes a header-only drifted diff to historical = content instead of throwing', () => {
-      // A committed-but-unreconciled anchor: the recorded hash is stale while
+      // A committed-but-unreconciled anchor: the recorded hash is drifted while
       // the bytes are byte-identical, so the current diff carries no hunks yet
       // the drift sources are non-empty -- the anchor IS drifted, and with no
       // content change the historical side is the content itself.
@@ -453,14 +453,14 @@ describe('anchorMatcher', () => {
 
     it('classifies a byte-identical uncommitted re-anchor as clean, not dangling, when the current block carries no anchors', () => {
       // The REAL `git span history` shape for the CLI's documented re-anchor
-      // flow: record f.txt#L1-L3, insert a line above, run `stale --fix`. The
+      // flow: record f.txt#L1-L3, insert a line above, run `drift --fix`. The
       // re-anchor is byte-identical (the recorded token preserved, the
       // content unchanged), so the resolver classifies it as non-reportable
       // and `current.anchors` is EMPTY -- `current.span_diff` is the only
       // trace of the move, as a same-token address rewrite of the declaration
       // line. Without the span_diff the walk finds no timeline entry wearing
       // f.txt#L2-L4 and the anchor is misclassified `dangling` -- while the
-      // CLI itself certifies "0 stale" and the recording lives in history.
+      // CLI itself certifies "0 drift" and the recording lives in history.
       const history = historyFixture({
         commits: [commit('c2', 'record anchor', [{ path: 'f.txt#L1-L3', content: 'alpha\nbeta\ngamma\n' }])],
         current: {
@@ -651,7 +651,7 @@ describe('anchorMatcher', () => {
     });
 
     it('starts at the current span_diff from-address when the current block carries no anchors', () => {
-      // The byte-identical uncommitted re-anchor (the CLI's `stale --fix`
+      // The byte-identical uncommitted re-anchor (the CLI's `drift --fix`
       // output before the fix is committed): the declaration moved the
       // recorded token from f.txt#L1-L3 to f.txt#L2-L4 with no content
       // change, so the resolver classifies the move as non-reportable and
@@ -685,7 +685,7 @@ describe('anchorMatcher', () => {
 
     it('crosses a committed delete+add re-anchor via the commit span_diff instead of terminating at the content block', () => {
       // The REAL routine shape for a committed re-anchor (record f.txt#L1-L3,
-      // insert two lines above, run `stale --fix`, commit the fix): the fix
+      // insert two lines above, run `drift --fix`, commit the fix): the fix
       // commit carries a CONTENT block at the new address (its content is the
       // moved address's file bytes) plus a full deletion at the old address --
       // no rename headers anywhere -- and its own span_diff carries the
@@ -696,7 +696,7 @@ describe('anchorMatcher', () => {
         {
           hash: 'c4',
           date: '2026-01-01T00:00:00-04:00',
-          summary: 'c4-stale-fix',
+          summary: 'c4-drift-fix',
           anchors: [
             { path: 'f.txt#L3-L5', content: 'a\nb\nc\n' },
             {

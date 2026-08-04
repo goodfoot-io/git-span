@@ -401,7 +401,7 @@ fn no_args_exits_nonzero() -> Result<()> {
 }
 
 /// The fail-closed unmatched-args error backtick-quotes each offending arg,
-/// mirroring the sibling `list`/`stale` error style (finding 5).
+/// mirroring the sibling `list`/`drift` error style (finding 5).
 #[test]
 fn unmatched_arg_error_backtick_quotes_arg() -> Result<()> {
     let repo = TestRepo::new()?;

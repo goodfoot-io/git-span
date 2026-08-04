@@ -123,9 +123,9 @@ fn no_documented_example_shows_a_rename_below_the_threshold() -> Result<()> {
 /// the same reason.
 ///
 /// It is a sharper question here, because the vocabulary is not this command's
-/// to invent: `sources` republishes `git span stale`'s three layer names, and a
+/// to invent: `sources` republishes `git span drift`'s three layer names, and a
 /// documented layer no fixture reaches means `current` is silent about a state
-/// `stale` reports every day. `INDEX` was exactly that until this sweep forced
+/// `drift` reports every day. `INDEX` was exactly that until this sweep forced
 /// a staged fixture into the set.
 #[test]
 fn every_documented_current_sources_value_has_a_producer() -> Result<()> {
@@ -247,19 +247,19 @@ fn the_drift_source_marker_accompanies_the_sources_key_in_every_current_state() 
 /// different repairs — the committed face wants re-anchoring, the working-tree
 /// face wants saving or reverting. A scalar has to pick the shallowest and drop
 /// the other, and dropping the committed face is dropping the one that changes
-/// what the reader should do. `git span stale` has always published both; this
+/// what the reader should do. `git span drift` has always published both; this
 /// asserts `history` publishes the same pair, in the same order.
 #[test]
 fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
     let repo = composed_drift_repo("cx")?;
 
-    // Fixture assumption, read off `stale` rather than assumed: the anchor is
-    // genuinely drifted at both layers, and this is the order `stale` uses.
-    // `stale` exits 1 on drift, which is the point of the fixture, so its
+    // Fixture assumption, read off `drift` rather than assumed: the anchor is
+    // genuinely drifted at both layers, and this is the order `drift` uses.
+    // `drift` exits 1 on drift, which is the point of the fixture, so its
     // stdout is read directly rather than through the exit-zero helper.
-    let stale = repo.run_span(["stale", "--format", "json"])?;
-    let stale: serde_json::Value = serde_json::from_slice(&stale.stdout)?;
-    let layers: Vec<&str> = stale["findings"]
+    let drift = repo.run_span(["drift", "--format", "json"])?;
+    let drift: serde_json::Value = serde_json::from_slice(&drift.stdout)?;
+    let layers: Vec<&str> = drift["findings"]
         .as_array()
         .expect("findings array")
         .iter()
@@ -267,7 +267,7 @@ fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
         .collect();
     assert!(
         layers.contains(&"WORKTREE") && layers.contains(&"HEAD"),
-        "fixture assumption: stale reports both layers; got {layers:?}"
+        "fixture assumption: drift reports both layers; got {layers:?}"
     );
 
     let json = history_json(&repo, "cx")?;
@@ -275,7 +275,7 @@ fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
     assert_eq!(
         anchor["sources"],
         serde_json::json!(["WORKTREE", "HEAD"]),
-        "both layers, shallow-to-deep, in `stale`'s own order: {anchor:#}"
+        "both layers, shallow-to-deep, in `drift`'s own order: {anchor:#}"
     );
 
     let text = history_text(&repo, "cx")?;
@@ -288,32 +288,32 @@ fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
 
 
 /// The resolver sequence is extent-dependent, not a globally sortable layer
-/// priority. Both history formats must preserve the exact sequence `stale`
+/// priority. Both history formats must preserve the exact sequence `drift`
 /// publishes for each anchor.
 #[test]
-fn staged_and_worktree_sources_preserve_stales_extent_dependent_order() -> Result<()> {
+fn staged_and_worktree_sources_preserve_drifts_extent_dependent_order() -> Result<()> {
     let repo = extent_dependent_source_order_repo("orders")?;
-    let stale_out = repo.run_span(["stale", "orders", "--format=json"])?;
-    let stale: Value = serde_json::from_slice(&stale_out.stdout)?;
+    let drift_out = repo.run_span(["drift", "orders", "--format=json"])?;
+    let drift: Value = serde_json::from_slice(&drift_out.stdout)?;
 
-    let stale_sources = |path: &str| -> Vec<&str> {
-        stale["findings"]
+    let drift_sources = |path: &str| -> Vec<&str> {
+        drift["findings"]
             .as_array()
-            .expect("stale findings")
+            .expect("drift findings")
             .iter()
             .filter(|finding| finding["anchored"]["path"] == path)
             .map(|finding| finding["source"].as_str().expect("source string"))
             .collect()
     };
     assert_eq!(
-        stale_sources("range.txt"),
+        drift_sources("range.txt"),
         vec!["WORKTREE", "INDEX", "HEAD"],
-        "line ranges retain the resolver's relative-layer sequence: {stale:#}"
+        "line ranges retain the resolver's relative-layer sequence: {drift:#}"
     );
     assert_eq!(
-        stale_sources("whole.txt"),
+        drift_sources("whole.txt"),
         vec!["INDEX", "WORKTREE", "HEAD"],
-        "whole-file anchors retain the resolver's absolute-layer sequence: {stale:#}"
+        "whole-file anchors retain the resolver's absolute-layer sequence: {drift:#}"
     );
 
     let json = history_json(&repo, "orders")?;
@@ -333,18 +333,18 @@ fn staged_and_worktree_sources_preserve_stales_extent_dependent_order() -> Resul
     };
     assert_eq!(
         history_sources("range.txt#L1-L3"),
-        stale_sources("range.txt")
+        drift_sources("range.txt")
     );
-    assert_eq!(history_sources("whole.txt"), stale_sources("whole.txt"));
+    assert_eq!(history_sources("whole.txt"), drift_sources("whole.txt"));
 
     let text = history_text(&repo, "orders")?;
     assert!(
         diff_block(&text, "range.txt#L1-L3").contains("\ndrift source worktree, index, head\n"),
-        "human range marker must preserve stale's order:\n{text}"
+        "human range marker must preserve drift's order:\n{text}"
     );
     assert!(
         diff_block(&text, "whole.txt").contains("\ndrift source index, worktree, head\n"),
-        "human whole-file marker must preserve stale's order:\n{text}"
+        "human whole-file marker must preserve drift's order:\n{text}"
     );
     Ok(())
 }

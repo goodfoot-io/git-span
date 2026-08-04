@@ -64,7 +64,7 @@
 //! qualifying test compares each seed path's blob against `parent_ids.first()`
 //! for any parent arity, so a merge qualifies exactly when it moved the
 //! mainline at a seed path, and parent #1 is well defined for an octopus merge
-//! too. The resolver never agreed with the exclusion either: `git span stale`
+//! too. The resolver never agreed with the exclusion either: `git span drift`
 //! attributes drift to a merge without hesitation, so a span whose content
 //! arrived through one had a finding pointing at a commit this command refused
 //! to print.
@@ -78,8 +78,8 @@
 //! # `current` covers every layer, and says which
 //!
 //! The `current` block is the span's *live* drift against its declaration, and
-//! it is not working-tree-only: it covers every layer `git span stale`
-//! reports because the resolver behind it is `stale`'s. Those layer names are
+//! it is not working-tree-only: it covers every layer `git span drift`
+//! reports because the resolver behind it is `drift`'s. Those layer names are
 //! observations, not commit-status claims: `HEAD` can arise from content in
 //! HEAD or from a worktree-only declaration re-anchor compared with HEAD's
 //! declaration.
@@ -91,7 +91,7 @@
 //! `HEAD` tells the reader to inspect the declaration and timeline; it does not
 //! prove which side was committed.
 //! So each block names its layers — `sources` in JSON, a `drift source` marker
-//! line in the header — over `stale`'s own three values, as a list rather than a
+//! line in the header — over `drift`'s own three values, as a list rather than a
 //! scalar because one anchor is routinely drifted at more than one at once and a
 //! scalar would have to drop the deeper face.
 //!
@@ -137,7 +137,7 @@
 //! | Skipped | Condition | Covered by |
 //! |---|---|---|
 //! | The whole section | Worktree declaration matches `HEAD` and no anchor is drifted | `clean_worktree_has_no_current_section` |
-//! | An anchor | The resolver reports it `Fresh` and its declared address did not move | A fresh anchor at an unmoved address has no drift to report; `git span stale` says the same |
+//! | An anchor | The resolver reports it `Fresh` and its declared address did not move | A fresh anchor at an unmoved address has no drift to report; `git span drift` says the same |
 //! | The rename form | Similarity measured below [`RENAME_SIMILARITY_FLOOR`] | `every_current_state`'s "declaration swap" and "cross-file swap" — splits into `deleted anchor` + `new anchor` |
 //! | The `similarity index` line | Either side cannot be read as text ([`measured_similarity`]) — an unrecoverable recorded side, or a binary snapshot | `an_unmeasurable_reanchor_states_the_move_and_no_similarity`, plus `a_binary_recorded_side_is_recovered_not_declared_lost` |
 //! | Hunks | Either side's content could not be produced by its filter (`Absence::suppresses_hunks`) — `a_filter_that_produces_no_content_never_asserts_a_deletion`. Content that was never read cannot stand opposite content that was: the hunk spells the unread half out as a deletion of lines `git diff` reports untouched |
@@ -150,7 +150,7 @@
 //! | A timeline entry | The two sides have equal bodies **and** the same reason for having none ([`crate::cli::unified_diff::render`]) | `a_change_of_unavailable_reason_renders_an_entry`. Two bodyless sides used to compare equal whatever they were: truncating a file past its declared range and then deleting the file is a change the render dropped entirely. Narrow on purpose — only two *both-bodyless* sides with differing reasons count; nothing else about change detection reads a reason |
 //! | The rebinding block | Always — this path never renders one | Deliberate: a rebinding is a transition between two *committed* declaration states. The current block already renders a committed rebinding's live drift honestly, one in-place diff per anchor |
 //!
-//! Declared anchor ranges are taken at face value at every commit — a stale
+//! Declared anchor ranges are taken at face value at every commit — a drift
 //! range extracting "wrong" content *is* the drift being visualized. Anchor
 //! diffs are always computed between extracted snapshots, never by clipping a
 //! file's real commit patch to a line range.
@@ -300,7 +300,7 @@ pub enum Unavailable {
     ///
     /// The resolver has always computed this
     /// ([`crate::types::UnavailableReason::FilterFailed`], which `git span
-    /// stale` prints as `content unavailable (filter failed)`); this enum did
+    /// drift` prints as `content unavailable (filter failed)`); this enum did
     /// not carry it, so it collapsed into [`Unavailable::Absent`] and the
     /// output said "no such file at this commit" about a file with readable
     /// lines in it — under a deletion hunk for lines `git diff` reported
@@ -418,18 +418,18 @@ pub struct CurrentSection {
 ///
 /// Both payloads are mandatory by construction: `diff` is always rendered
 /// (header-only when content is byte-identical but the recorded hash is
-/// stale — that mismatch *is* the finding), and exactly one of
+/// drift — that mismatch *is* the finding), and exactly one of
 /// `content`/`unavailable` describes the live snapshot. This is what keeps
 /// the human and JSON renderers emitting the same entry set: an anchor that
-/// `git span stale` reports can never silently vanish from the default
+/// `git span drift` reports can never silently vanish from the default
 /// output.
 pub struct CurrentAnchor {
-    /// The anchor's **declared** address — the same string `git span stale`
+    /// The anchor's **declared** address — the same string `git span drift`
     /// prints, and the only join key a consumer can match against the `.span`
     /// file. Never the resolver's proposal.
     pub path: String,
     /// Where the resolver believes the anchored content now lives, when that
-    /// differs from `path`. A *proposal* (`git span stale --fix` would write
+    /// differs from `path`. A *proposal* (`git span drift --fix` would write
     /// it), not an accomplished move — so it never renders as `rename to`.
     pub proposed: Option<String>,
     /// Diff from the anchor's last recorded state to its live content.
@@ -454,20 +454,20 @@ pub struct CurrentAnchor {
     pub recorded_unrecoverable: bool,
     /// Every layer that shows drift for this anchor, taken from the resolver's
     /// own extent-dependent `layer_sources` sequence — the same list `git span
-    /// stale` turns into one finding per entry. Line ranges use Worktree → Index
+    /// drift` turns into one finding per entry. Line ranges use Worktree → Index
     /// → Head; whole files use Index → Worktree → Head. JSON emits it as
-    /// `sources` over `stale`'s exact strings (`HEAD` / `INDEX` / `WORKTREE`),
+    /// `sources` over `drift`'s exact strings (`HEAD` / `INDEX` / `WORKTREE`),
     /// and the diff header carries the lowercase [`DRIFT_SOURCE`] marker built
     /// from it, so both formats name the same layers in the same order.
     ///
     /// Empty exactly when the resolver reports no layer, and the key is then
     /// **omitted** rather than emitted as `[]` or `null` — key presence is how
     /// `current.anchors[]` spells absence throughout, and this is history's
-    /// spelling of `stale`'s `"source": null`.
+    /// spelling of `drift`'s `"source": null`.
     ///
     /// A *list* and not a scalar because one anchor can drift at more than one
     /// layer at once: distinct observations at HEAD and in the working tree
-    /// make `stale` emit two findings for one anchor, and
+    /// make `drift` emit two findings for one anchor, and
     /// `current.anchors[]` carries one object per anchor, so a scalar would
     /// silently drop the `HEAD` face of every composed drift — the same class
     /// of loss this field exists to repair, one level down.
@@ -1388,7 +1388,7 @@ fn build_report(
 
     // The declaration's recorded `rk64` tokens, keyed by declared address, read
     // from the live (working-tree) `.span` file — the same record `git span
-    // stale` compares against.
+    // drift` compares against.
     let recorded = recorded_hashes(repo, span_name, span_root);
     // The rendered snapshot, if any, whose content the declaration's recorded
     // token actually hashes. Collected across the walk (newest match wins) so
@@ -1634,7 +1634,7 @@ enum CurrentState {
         first_line: u32,
     },
     /// Both declarations agree, and the resolver found the recorded bytes at
-    /// another address — exactly what `git span stale` prints `moved to` for.
+    /// another address — exactly what `git span drift` prints `moved to` for.
     /// Nothing moved in the declaration, so neither side is relabelled; the
     /// proposal alone names the destination.
     Relocated {
@@ -1737,7 +1737,7 @@ fn location_address(loc: &AnchorLocation) -> String {
 /// It used to be two, and they disagreed. The hash came from
 /// [`crate::resolver::layers::read_worktree_normalized`] (gix's
 /// `convert_to_git` plus any `filter.<name>.process` driver); the body came
-/// from `stale_output::read_location_bytes_present`, a plain `std::fs::read`.
+/// from `drift_output::read_location_bytes_present`, a plain `std::fs::read`.
 /// The comment that stood here justified the split — a hash must be the token
 /// a re-anchor would record, a body is what the file literally holds — and
 /// then called it unobservable, on the reasoning that a resolved location
@@ -1812,7 +1812,7 @@ fn read_live_bytes(
 ///
 /// * the newest snapshot *at the recorded address* is, for a `Moved` anchor,
 ///   a different block of source entirely — diffing against it fabricates a
-///   rewrite for what `git span stale` calls a pure move;
+///   rewrite for what `git span drift` calls a pure move;
 /// * for an in-place committed edit it is the *drifted* text, so the diff
 ///   comes out empty and the drift vanishes from the default output;
 /// * for a never-committed declaration there is no earlier state at all, and
@@ -2004,21 +2004,21 @@ fn unresolved_reason(
 
 /// Build the optional `current` section from two triggers:
 ///
-///   1. the resolver (the same `LayerSet::full()` engine `git span stale` uses)
-///      reports actionable stale drift for an anchor — committed-but-not-
+///   1. the resolver (the same `LayerSet::full()` engine `git span drift` uses)
+///      reports actionable drift for an anchor — committed-but-not-
 ///      re-anchored source drift, a relocated `moved` anchor, a working-tree
 ///      edit, a deletion, …; informational `ResolvedPendingCommit` does not
 ///      qualify;
 ///   2. the worktree declaration differs from HEAD — one `span_diff` covering
 ///      why edits and anchor add/remove alike.
 ///
-/// Each emitted anchor is keyed by its **declared** address (what `stale`
+/// Each emitted anchor is keyed by its **declared** address (what `drift`
 /// prints, and the only string a consumer can join against the `.span` file);
 /// a resolver relocation is reported as a `proposed` address, never as a
 /// completed rename. It carries both payloads: the live snapshot, and a diff
 /// from the last recorded state that degrades to a header-only
 /// `index rk64:<recorded>..rk64:<live>` block when the content is unchanged
-/// but the declaration's recorded hash is stale — the mismatch *is* the
+/// but the declaration's recorded hash is drifted — the mismatch *is* the
 /// finding, and eliding it is what used to hide committed drift from the
 /// default output.
 ///
@@ -2057,7 +2057,7 @@ fn build_current(
     let span_diff = blob_diff(span_path, head_blob.as_ref(), work_blob.as_ref());
 
     // Trigger 1 — resolve the live span through the same engine `git span
-    // stale` uses: worktree-over-index-over-HEAD, with the staged-span layer
+    // drift` uses: worktree-over-index-over-HEAD, with the staged-span layer
     // included.
     let options = crate::types::EngineOptions {
         layers: crate::types::LayerSet::full(),
@@ -2068,7 +2068,7 @@ fn build_current(
     };
     let names = [span_name.to_string()];
     // Repository-read failures out of the resolver get the same curated
-    // shape `stale` uses (the two commands share the engine); other library
+    // shape `drift` uses (the two commands share the engine); other library
     // errors keep their own rendering.
     let curate = |e: crate::Error| -> anyhow::Error {
         match e {
@@ -2100,18 +2100,18 @@ fn build_current(
         let mut reportable: Vec<bool> = Vec::with_capacity(span.anchors.len());
         let mut states: Vec<CurrentState> = Vec::with_capacity(span.anchors.len());
         // The resolver's own per-anchor layer list, carried across verbatim
-        // rather than recomputed: `stale` emits one finding per entry from this
-        // same vector, so history naming a different set than `stale` for the
+        // rather than recomputed: `drift` emits one finding per entry from this
+        // same vector, so history naming a different set than `drift` for the
         // same anchor is not expressible.
         let mut layer_sources: Vec<Vec<crate::types::DriftSource>> =
             Vec::with_capacity(span.anchors.len());
         for r in &span.anchors {
             let declared = location_address(&r.anchored);
             // The resolver only *recommends* a relocation for the bytes-equal
-            // statuses — the same ones `git span stale` prints `moved to
+            // statuses — the same ones `git span drift` prints `moved to
             // <address>` for. For a `Changed` anchor `r.current` is merely
             // where the search landed while establishing that the content
-            // differs; `stale` issues no instruction, so neither may history.
+            // differs; `drift` issues no instruction, so neither may history.
             let relocation = matches!(
                 r.status,
                 crate::types::AnchorStatus::Moved
@@ -2202,7 +2202,7 @@ fn build_current(
                 hash,
                 body,
             }));
-            reportable.push(crate::resolver::anchor_status_is_stale_drift(&r.status));
+            reportable.push(crate::resolver::anchor_status_is_drift(&r.status));
             states.push(state);
             layer_sources.push(r.layer_sources.clone());
         }
@@ -2214,7 +2214,7 @@ fn build_current(
         for (j, n) in live.iter().enumerate() {
             let paired = pairs[j].map(|i| old[i].as_ref());
             let state = &states[j];
-            // Only actionable stale drift produces a current anchor. Fresh and
+            // Only actionable drift produces a current anchor. Fresh and
             // resolved-pending-commit anchors may still have declaration edits,
             // but those are already represented by `span_diff`.
             if !reportable[j] {
@@ -2395,10 +2395,10 @@ pub fn render_human(report: &HistoryReport) -> String {
 /// of `content` (a first-add's full snapshot) or `diff` (every other change).
 ///
 /// **Current anchors** (`current.anchors[]`) carry `path` — always the
-/// *declared* address, the same string `git span stale` prints — plus **both**
+/// *declared* address, the same string `git span drift` prints — plus **both**
 /// payloads: `diff` and `content`. `diff` is always present; when the live
 /// content is byte-identical to the last recorded state but the declaration's
-/// recorded hash is stale, it degrades to a header-only block whose
+/// recorded hash is drifted, it degrades to a header-only block whose
 /// `index rk64:<recorded>..rk64:<live>` line is itself the finding. The human
 /// renderer emits exactly the same entry set.
 ///
@@ -2418,7 +2418,7 @@ pub fn render_human(report: &HistoryReport) -> String {
 ///
 /// **`proposed`** appears on a current anchor when the resolver believes the
 /// anchored content now lives at a different address. It is a *proposal*
-/// (`git span stale --fix` would write it), not an accomplished move.
+/// (`git span drift --fix` would write it), not an accomplished move.
 pub fn render_json(report: &HistoryReport) -> Value {
     let commits: Vec<Value> = report
         .commits

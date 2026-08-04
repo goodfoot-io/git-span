@@ -379,7 +379,7 @@ describe('historyClient', () => {
         schema_version: 2,
         span: 'web/checkout.tsx',
         commits: [
-          { hash: 'abc123', date: '2026-01-01T00:00:00-04:00', summary: 'No why', why: 'stale v1 key', anchors: [] }
+          { hash: 'abc123', date: '2026-01-01T00:00:00-04:00', summary: 'No why', why: 'drift v1 key', anchors: [] }
         ]
       });
       const doc = parseHistoryJson(stdout);

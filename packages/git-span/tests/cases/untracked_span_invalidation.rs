@@ -13,7 +13,7 @@
 //! and exiting non-zero — a CI false positive with no cache-bypass flag.
 //!
 //! These tests run against the new (and only) store to pin that a deleted
-//! untracked/gitignored span disappears from `git span stale` without a manual
+//! untracked/gitignored span disappears from `git span drift` without a manual
 //! cache clear.
 
 use crate::support;
@@ -21,8 +21,8 @@ use crate::support;
 use anyhow::Result;
 use support::TestRepo;
 
-/// A gitignored span file reported as stale must disappear from
-/// `git span stale` (and stop forcing a non-zero exit) once it is
+/// A gitignored span file reported as drifted must disappear from
+/// `git span drift` (and stop forcing a non-zero exit) once it is
 /// deleted from the worktree — without manually clearing the cache.
 #[test]
 fn deleted_gitignored_span_is_not_served_from_cache() -> Result<()> {
@@ -49,34 +49,34 @@ fn deleted_gitignored_span_is_not_served_from_cache() -> Result<()> {
     repo.write_commit_graph()?;
 
     // Cold build: the baseline is populated and the span is reported.
-    let first = repo.run_span(["stale"])?;
+    let first = repo.run_span(["drift"])?;
     let first_out = String::from_utf8_lossy(&first.stdout);
     assert!(
         first_out.contains("bld/build"),
-        "precondition: stale reports the drifting gitignored span; got:\n{first_out}"
+        "precondition: drift reports the drifting gitignored span; got:\n{first_out}"
     );
     assert_eq!(
         first.status.code(),
         Some(1),
-        "precondition: stale exits non-zero when a span is stale"
+        "precondition: drift exits non-zero when a span is drifted"
     );
 
     // Delete the gitignored span file from the worktree.
     std::fs::remove_file(repo.path().join(".span/bld/build"))?;
 
-    // Second run: the span is gone, so stale must neither list it nor
+    // Second run: the span is gone, so drift must neither list it nor
     // exit non-zero. Before the fix the warm-clean cache replayed the
     // pre-deletion baseline.
-    let second = repo.run_span(["stale"])?;
+    let second = repo.run_span(["drift"])?;
     let second_out = String::from_utf8_lossy(&second.stdout);
     assert!(
         !second_out.contains("bld/build"),
-        "deleted gitignored span must not be served from the stale cache; got:\n{second_out}"
+        "deleted gitignored span must not be served from the drift cache; got:\n{second_out}"
     );
     assert_eq!(
         second.status.code(),
         Some(0),
-        "stale must exit 0 after the only stale span was deleted; stdout:\n{second_out}\nstderr:\n{}",
+        "drift must exit 0 after the only drifted span was deleted; stdout:\n{second_out}\nstderr:\n{}",
         String::from_utf8_lossy(&second.stderr)
     );
     Ok(())
@@ -103,25 +103,25 @@ fn deleted_untracked_span_is_not_served_from_cache() -> Result<()> {
 
     // While it exists, the uncommitted span is surfaced (via the dirty
     // overlay — it is never part of the HEAD-keyed committed baseline).
-    let first = repo.run_span(["stale"])?;
+    let first = repo.run_span(["drift"])?;
     let first_out = String::from_utf8_lossy(&first.stdout);
     assert!(
         first_out.contains("## untracked"),
-        "an uncommitted span must still be reported as stale; got:\n{first_out}"
+        "an uncommitted span must still be reported as drifted; got:\n{first_out}"
     );
 
     std::fs::remove_file(repo.path().join(".span/untracked"))?;
 
-    let second = repo.run_span(["stale"])?;
+    let second = repo.run_span(["drift"])?;
     let second_out = String::from_utf8_lossy(&second.stdout);
     assert!(
         !second_out.contains("untracked"),
-        "deleted untracked span must not be served from the stale cache; got:\n{second_out}"
+        "deleted untracked span must not be served from the drift cache; got:\n{second_out}"
     );
     assert_eq!(
         second.status.code(),
         Some(0),
-        "stale must exit 0 after the deleted untracked span; stdout:\n{second_out}"
+        "drift must exit 0 after the deleted untracked span; stdout:\n{second_out}"
     );
     Ok(())
 }

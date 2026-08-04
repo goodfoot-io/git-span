@@ -15,7 +15,7 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "revert",
     "delete",
     "move",
-    "stale",
+    "drift",
     "tree",
     "fetch",
     "push",

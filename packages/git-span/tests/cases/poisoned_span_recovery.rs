@@ -5,10 +5,10 @@
 //! Contract:
 //! - `SpanFile::parse` is a pure text→struct transform, so a poisoned span
 //!   stays loadable and repairable.
-//! - `stale`/`doctor` surface the interior anchor per-span as a loud,
+//! - `drift`/`doctor` surface the interior anchor per-span as a loud,
 //!   actionable report, while still reporting other (clean) spans — one
 //!   poisoned span never blanks the whole corpus.
-//! - `remove`/`delete` repair the poisoned span; `stale --fix` does NOT
+//! - `remove`/`delete` repair the poisoned span; `drift --fix` does NOT
 //!   silently no-op (it excises the offending anchor); `show`/`list` operate.
 
 use crate::support;
@@ -44,19 +44,19 @@ fn repo_with_poisoned_and_clean_span() -> Result<TestRepo> {
 }
 
 #[test]
-fn stale_surfaces_poison_per_span_without_blanking_clean_span() -> Result<()> {
+fn drift_surfaces_poison_per_span_without_blanking_clean_span() -> Result<()> {
     let repo = repo_with_poisoned_and_clean_span()?;
 
-    // Make the clean span drift so stale has something to report for it too.
+    // Make the clean span drift so drift has something to report for it too.
     repo.write_file("src/lib.rs", "line1\nCHANGED\nline3\n")?;
 
-    let out = repo.run_span(["stale"])?;
+    let out = repo.run_span(["drift"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !out.status.success(),
-        "stale must exit non-zero with a poisoned span present;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "drift must exit non-zero with a poisoned span present;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     // Poison surfaced, actionably, naming file/anchor/root/fix.
     assert!(
@@ -145,30 +145,30 @@ fn delete_succeeds_on_poisoned_span() -> Result<()> {
 }
 
 #[test]
-fn stale_fix_does_not_silently_noop_on_poisoned_span() -> Result<()> {
+fn drift_fix_does_not_silently_noop_on_poisoned_span() -> Result<()> {
     let repo = repo_with_poisoned_and_clean_span()?;
 
-    let _ = repo.run_span(["stale", "--fix"])?;
+    let _ = repo.run_span(["drift", "--fix"])?;
 
     // --fix must ACT — never silently skip. The offending anchor line must
     // have been excised from the worktree span file.
     let contents = std::fs::read_to_string(repo.path().join(".span/poison"))?;
     assert!(
         !contents.contains(".span/clean/flow"),
-        "stale --fix must excise the interior anchor (not silently no-op); span file now:\n{contents}"
+        "drift --fix must excise the interior anchor (not silently no-op); span file now:\n{contents}"
     );
     Ok(())
 }
 
-/// `git span stale <filepath>` where the span anchoring `<filepath>` ALSO
+/// `git span drift <filepath>` where the span anchoring `<filepath>` ALSO
 /// carries an interior anchor must surface the violation and exit non-zero,
-/// matching the behavior of bare `stale` and span-name-form `stale`.
+/// matching the behavior of bare `drift` and span-name-form `drift`.
 ///
 /// Regression guard for the literal `p == &v.span_name` compare that silently
 /// dropped in-scope interior violations when the arg was a file path rather than
 /// a span name.
 #[test]
-fn scoped_stale_by_filepath_surfaces_interior_violation() -> Result<()> {
+fn scoped_drift_by_filepath_surfaces_interior_violation() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "line1\nline2\nline3\n")?;
     repo.commit_all("seed source")?;
@@ -198,13 +198,13 @@ fn scoped_stale_by_filepath_surfaces_interior_violation() -> Result<()> {
     repo.write_commit_graph()?;
 
     // Scoped by file path — the span my/flow anchors src/lib.rs.
-    let out = repo.run_span(["stale", "src/lib.rs"])?;
+    let out = repo.run_span(["drift", "src/lib.rs"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !out.status.success(),
-        "`git span stale src/lib.rs` must exit non-zero when in-scope span carries interior anchor;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "`git span drift src/lib.rs` must exit non-zero when in-scope span carries interior anchor;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         stderr.contains("interior-anchor"),
@@ -216,15 +216,15 @@ fn scoped_stale_by_filepath_surfaces_interior_violation() -> Result<()> {
     );
 
     // Span-name-form must behave identically (regression guard: this already worked).
-    let out2 = repo.run_span(["stale", "my/flow"])?;
+    let out2 = repo.run_span(["drift", "my/flow"])?;
     let stderr2 = String::from_utf8_lossy(&out2.stderr);
     assert!(
         !out2.status.success(),
-        "`git span stale my/flow` must also exit non-zero; stderr:\n{stderr2}"
+        "`git span drift my/flow` must also exit non-zero; stderr:\n{stderr2}"
     );
     assert!(
         stderr2.contains("interior-anchor"),
-        "span-name-form stale must report interior anchor; stderr:\n{stderr2}"
+        "span-name-form drift must report interior anchor; stderr:\n{stderr2}"
     );
 
     Ok(())

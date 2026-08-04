@@ -42,7 +42,7 @@ PACK_REFS=0
 #   incremental-ancestor    -- warm cache, then an unrelated commit lands before sampling
 #   dirty-exact              -- warm cache, then the anchored source itself is dirtied
 #   dirty-affected           -- warm cache, then an UNRELATED tracked file is dirtied
-#   concurrent-miss          -- cold cache, N processes race `stale` against the same missing key
+#   concurrent-miss          -- cold cache, N processes race `drift` against the same missing key
 CACHE_MODE="${CACHE_MODE:-exact-warm}"
 CONCURRENT_MISS_PROCS="${CONCURRENT_MISS_PROCS:-4}"
 
@@ -291,17 +291,17 @@ apply_cache_mode_state() {
       clear_all_cache_tiers "$repo"
       ;;
     exact-cold)
-      # Each sample independently clears the cache (see the `stale` op case
+      # Each sample independently clears the cache (see the `drift` op case
       # below) so every sample measures a first build.
       clear_all_cache_tiers "$repo"
       ;;
     exact-warm)
       clear_all_cache_tiers "$repo"
-      ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$repo" && "$GIT_SPAN_BIN" drift --no-exit-code >/dev/null 2>&1 || true )
       ;;
     incremental-ancestor)
       clear_all_cache_tiers "$repo"
-      ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$repo" && "$GIT_SPAN_BIN" drift --no-exit-code >/dev/null 2>&1 || true )
       # An unrelated committed change (no span anchors it) so a warm cache
       # must locate an ancestor generation rather than rebuild from scratch.
       ( cd "$repo" \
@@ -315,7 +315,7 @@ apply_cache_mode_state() {
       # switch — the Phase 7 cutover removed the development `GIT_SPAN_CACHE_STORE_V3`
       # selector), so priming warm and then dirtying is all these modes need.
       clear_all_cache_tiers "$repo"
-      ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$repo" && "$GIT_SPAN_BIN" drift --no-exit-code >/dev/null 2>&1 || true )
       # Dirty exactly the anchored source of the reader-glob anchor.
       local target="${hit_anchor%%#L*}"
       ( cd "$repo" && printf '\n// bench dirty-exact marker\n' >>"$target" )
@@ -323,7 +323,7 @@ apply_cache_mode_state() {
     dirty-affected)
       # Same store dirty-overlay path as `dirty-exact`; no selector switch.
       clear_all_cache_tiers "$repo"
-      ( cd "$repo" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 || true )
+      ( cd "$repo" && "$GIT_SPAN_BIN" drift --no-exit-code >/dev/null 2>&1 || true )
       # Dirty a tracked file NO span anchors, so the affected-set stays small
       # relative to corpus size (the path this card's dirty-reuse work
       # optimizes for).
@@ -379,10 +379,10 @@ for M in "${SPAN_COUNTS[@]}"; do
     apply_cache_mode_state "$REPO" "$hit_anchor"
 
     # `commit`, `pre_commit`, and `ls*` operations from the removed CLI are
-    # gone — `add`/`why`/`show`/`list`/`stale` are the current `.span/` file
+    # gone — `add`/`why`/`show`/`list`/`drift` are the current `.span/` file
     # lifecycle operations; `list_*` supersedes `ls_*` and `list <glob>`
     # supersedes `ls <glob>`.
-    for op in add why show list_all_porcelain list_filtered_hit list_filtered_miss stale wiki_hit_queries wiki_miss_queries; do
+    for op in add why show list_all_porcelain list_filtered_hit list_filtered_miss drift wiki_hit_queries wiki_miss_queries; do
       samples=()
       for (( it = 0; it < ITERATIONS; it++ )); do
         t=""
@@ -411,19 +411,19 @@ for M in "${SPAN_COUNTS[@]}"; do
             # code) still fails the sample instead of being masked.
             t=$(cd "$REPO" && timed 0,1 -- "$GIT_SPAN_BIN" list "$miss_anchor" --porcelain) || continue
             ;;
-          stale)
+          drift)
             if [[ "$CACHE_MODE" == "exact-cold" ]]; then
               clear_all_cache_tiers "$REPO"
             fi
             if [[ "$CACHE_MODE" == "concurrent-miss" ]]; then
               clear_all_cache_tiers "$REPO"
-              # N processes race `stale` against the same missing key; the
+              # N processes race `drift` against the same missing key; the
               # sample is the WALL time of the slowest racer (what a caller
               # of a stampede actually waits for).
               race_pids=()
               t0=$(date +%s.%N)
               for (( p = 0; p < CONCURRENT_MISS_PROCS; p++ )); do
-                ( cd "$REPO" && "$GIT_SPAN_BIN" stale --no-exit-code >/dev/null 2>&1 ) &
+                ( cd "$REPO" && "$GIT_SPAN_BIN" drift --no-exit-code >/dev/null 2>&1 ) &
                 race_pids+=("$!")
               done
               rc=0
@@ -437,7 +437,7 @@ for M in "${SPAN_COUNTS[@]}"; do
               fi
               t=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.6f", b - a }')
             else
-              t=$(cd "$REPO" && timed 0 -- "$GIT_SPAN_BIN" stale --no-exit-code) || continue
+              t=$(cd "$REPO" && timed 0 -- "$GIT_SPAN_BIN" drift --no-exit-code) || continue
             fi
             ;;
           wiki_hit_queries)

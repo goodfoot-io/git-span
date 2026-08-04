@@ -257,7 +257,7 @@ impl TestRepo {
     }
     /// Write a commit-graph with changed-path Bloom filters for all
     /// reachable commits.  Required before calling any resolver entry
-    /// point (`resolve_span`, `resolve_anchor`, `stale_spans`) — the
+    /// point (`resolve_span`, `resolve_anchor`, `drift_spans`) — the
     /// reverse-indexed walk fails closed without a commit-graph.
     pub fn write_commit_graph(&self) -> Result<()> {
         self.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;

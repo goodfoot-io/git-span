@@ -2,7 +2,7 @@
  * Cross-hook per-anchor attribution checks.
  *
  * The PostToolUse touch hook and the PreToolUse commit advisor render the same
- * span from the same `git span stale --format porcelain` rows, and an agent
+ * span from the same `git span drift --format porcelain` rows, and an agent
  * routinely sees both in one session. When they disagree about *which* anchor
  * drifted, the agent has no way to decide which to believe — so these checks
  * drive both renderers over one repository state and assert they mark the same
@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { type AdvisorExecutors, type AdvisorMemoState, evaluateAdvisor } from '../../src/common/advisor-core.js';
-import type { PorcelainRow, StalePorcelainRow } from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, type TouchExecutors, type TouchWriteInput } from '../../src/common/touch-core.js';
 
@@ -40,8 +40,8 @@ const ANCHORS: PorcelainRow[] = [
   { name: SPAN, path: SPECIMENS, start: 133, end: 134 }
 ];
 
-/** What `git span stale` reports for that state — one row, the second range. */
-const DRIFT: StalePorcelainRow[] = [{ name: SPAN, path: SPECIMENS, start: 133, end: 134, status: 'CHANGED' }];
+/** What `git span drift` reports for that state — one row, the second range. */
+const DRIFT: DriftPorcelainRow[] = [{ name: SPAN, path: SPECIMENS, start: 133, end: 134, status: 'CHANGED' }];
 
 /** The human block `git span list` renders for the span, bullets in anchor order. */
 const LIST_BLOCKS = [
@@ -80,24 +80,24 @@ function createMemoryAdvisorMemoState(): AdvisorMemoState {
 }
 
 /** The advisor's rendered checklist for the shared repository state. */
-async function advisorReason(anchors: PorcelainRow[], drift: StalePorcelainRow[], blocks: string): Promise<string> {
+async function advisorReason(anchors: PorcelainRow[], drift: DriftPorcelainRow[], blocks: string): Promise<string> {
   const executors: AdvisorExecutors = {
     fix: async (): Promise<void> => {},
     list: async (): Promise<PorcelainRow[]> => anchors,
-    stale: async (): Promise<StalePorcelainRow[]> => drift,
+    drift: async (): Promise<DriftPorcelainRow[]> => drift,
     listBlocks: async (): Promise<string> => blocks
   };
   const result = await evaluateAdvisor([SPECIMENS], REPO_ROOT, executors, createMemoryAdvisorMemoState());
-  expect(result.kind).toBe('semantic-staleness');
+  expect(result.kind).toBe('semantic-drift');
   return 'reason' in result ? (result.reason ?? '') : '';
 }
 
 /** The touch hook's rendered block for the same repository state. */
-async function touchBlock(anchors: PorcelainRow[], drift: StalePorcelainRow[]): Promise<string> {
+async function touchBlock(anchors: PorcelainRow[], drift: DriftPorcelainRow[]): Promise<string> {
   const executors: TouchExecutors = {
     fix: async (): Promise<{ modified: boolean }> => ({ modified: false }),
     list: async (): Promise<PorcelainRow[]> => anchors,
-    stale: async (): Promise<StalePorcelainRow[]> => drift,
+    drift: async (): Promise<DriftPorcelainRow[]> => drift,
     why: async (): Promise<string | null> => WHY
   };
   const input: TouchWriteInput = {
@@ -168,7 +168,7 @@ describe('per-anchor drift attribution agrees across both hooks', () => {
       { name: SPAN, path: COMPONENT, start: 36, end: 36 },
       { name: SPAN, path: SPECIMENS, start: 108, end: 109 }
     ];
-    const healedDrift: StalePorcelainRow[] = [{ name: SPAN, path: COMPONENT, start: 40, end: 60, status: 'CHANGED' }];
+    const healedDrift: DriftPorcelainRow[] = [{ name: SPAN, path: COMPONENT, start: 40, end: 60, status: 'CHANGED' }];
     const blocks = [`## ${SPAN}`, `- ${COMPONENT}#L36-L36`, `- ${SPECIMENS}#L108-L109`, '', WHY].join('\n');
 
     const reason = await advisorReason(soleAnchors, healedDrift, blocks);
@@ -181,7 +181,7 @@ describe('per-anchor drift attribution agrees across both hooks', () => {
     // Multiple anchors on the path *and* no exact range match: the guarded
     // fallback declines to guess, so the finding is appended as its own bullet
     // instead of mislabeling an anchor or vanishing.
-    const orphanDrift: StalePorcelainRow[] = [{ name: SPAN, path: SPECIMENS, start: 200, end: 210, status: 'CHANGED' }];
+    const orphanDrift: DriftPorcelainRow[] = [{ name: SPAN, path: SPECIMENS, start: 200, end: 210, status: 'CHANGED' }];
 
     const reason = await advisorReason(ANCHORS, orphanDrift, LIST_BLOCKS);
 

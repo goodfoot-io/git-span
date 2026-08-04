@@ -2,7 +2,7 @@
 //! gitignored.
 //!
 //! git-span resolves anchored content through git's layers, so a path git
-//! never sees (a gitignored build artifact) can never resolve — `stale`
+//! never sees (a gitignored build artifact) can never resolve — `drift`
 //! reports it `deleted` forever, with no commit able to clear it and no
 //! in-tool resolution. The fix rejects such a target at `add` time.
 //!

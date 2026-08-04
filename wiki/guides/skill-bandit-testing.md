@@ -80,7 +80,7 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
   triage fixture that later discriminated hardest. Keep authors blind to fixtures, or
   note the asymmetry in the conclusion.
 - **Transcript autopsies beat intuition.** The measurable cost drivers were
-  trust-boundary violations (re-verifying `stale` output via `git log`/`git show`,
+  trust-boundary violations (re-verifying `drift` output via `git log`/`git show`,
   ~50k wasted chars per occurrence), unbatched history calls, and silent router misses in
   multi-file skills. The bred-in countermeasures are visible in the winner's dispatch
   block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L105-L135) —
@@ -96,7 +96,7 @@ bounded 82-line core, section files loaded only on observable triggers
 ([triage](../../plugins-claude/git-span/skills/git-span/references/triage.md),
 [inspect](../../plugins-claude/git-span/skills/git-span/references/inspect.md)), and the
 bred-in anchor discipline (grep the `why`'s symbol before writing line ranges; trust
-`stale` output and stop) whose absence killed both retired variants on the identical trap.
+`drift` output and stop) whose absence killed both retired variants on the identical trap.
 The incumbent [git-span skill](../../plugins-claude/git-span/skills/git-span/SKILL.md)
 remains in place; v2 sits beside it.
 

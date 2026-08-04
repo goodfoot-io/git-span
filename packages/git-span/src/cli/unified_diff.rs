@@ -14,12 +14,12 @@
 //! file, not a file.
 //!
 //! [`compute_hunks_from_bytes()`](crate::resolver::layers::diff) computes
-//! `-U0` hunk tuples for stale-matching, optimized for match precision —
+//! `-U0` hunk tuples for drift-matching, optimized for match precision —
 //! this module is display-only and drives the same `gix::diff::blob`
 //! Histogram (imara-diff) engine independently, assembling its own `-U3`
 //! context-merged hunks via `gix::diff::blob::unified_diff::UnifiedDiff`.
 //! Do not call or reuse `compute_hunks_from_bytes()` from here: it stays
-//! tuned for `-U0` stale-matching, this module owns all patch-text
+//! tuned for `-U0` drift-matching, this module owns all patch-text
 //! production.
 
 use gix::diff::blob::sources::byte_lines;
@@ -104,12 +104,12 @@ pub const CONTENT_UNAVAILABLE: &str = "content unavailable";
 
 /// Marker line naming **which layer the drift lives at** — `drift source
 /// worktree`, `drift source head`, `drift source worktree, head` — over the
-/// same three layers `git span stale` publishes as `source`, lowercased and
+/// same three layers `git span drift` publishes as `source`, lowercased and
 /// comma-separated in the resolver's extent-dependent order.
 ///
 /// It exists because the leading `current` block described *that* an anchor
 /// drifted and never *where*, so different layer observations rendered
-/// byte-identically while `stale` separated them on both of its own surfaces.
+/// byte-identically while `drift` separated them on both of its own surfaces.
 /// The marker is observational: `head` may describe committed content drift or
 /// a worktree-only declaration compared with HEAD, so the declaration diff and
 /// timeline decide the repair. With drift accumulated over two commits
@@ -223,7 +223,7 @@ pub enum AnchorDiffKind {
     /// now lives elsewhere. `proposed anchor <address>` header line —
     /// deliberately *not* git's `rename to`, because nothing has moved:
     /// the declaration still says what it said, and this is what
-    /// `git span stale --fix` would write. Hunks appear only when the
+    /// `git span drift --fix` would write. Hunks appear only when the
     /// content changed as well.
     Proposed {
         /// The address the resolver proposes.
@@ -461,9 +461,9 @@ pub fn render_unified_diff(
 /// with no `---`/`+++` pair and no hunks.
 ///
 /// `git span history`'s `current` section uses this: a committed-but-
-/// unreconciled anchor has byte-identical content and a stale recorded
+/// unreconciled anchor has byte-identical content and a drifted recorded
 /// hash, so the `index rk64:<recorded>..rk64:<live>` line *is* the finding.
-/// Eliding it would hide the drift `git span stale` reports.
+/// Eliding it would hide the drift `git span drift` reports.
 pub fn render_unified_diff_always(
     header: &DiffHeader,
     old: DiffSide<'_>,
@@ -1475,7 +1475,7 @@ mod tests {
         assert_eq!(
             out, expected,
             "the differing index hashes are the whole finding: content is \
-             unchanged but the recorded hash is stale"
+             unchanged but the recorded hash is drifted"
         );
     }
 }

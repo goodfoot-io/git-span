@@ -4,7 +4,7 @@ For sweeping every span in `.span/**` up to the writing-span-whys standard (one
 present-tense sentence, subject+verb, role words, no rules/warnings/review steps —
 those live in comments at anchor sites). Batch 3-6 spans per pass; multiple batches
 can run in parallel if their span sets don't share anchor files (a shared file means
-one batch's `stale --fix` can silently re-anchor the other's span too — see Gotchas).
+one batch's `drift --fix` can silently re-anchor the other's span too — see Gotchas).
 
 ## Preflight
 `git status .span` before starting. Anything already modified is another
@@ -24,10 +24,10 @@ Classify each span, skip `clean`:
 | empty | why is blank | write one |
 | label-colon | `Label: description` instead of a sentence | rewrite as subject+verb |
 | work-order | carries invariants, "must change/stay in sync", review triggers — even as a trailing clause on an otherwise-clean sentence | trim the instruction, keep only the definition |
-| stale-claim | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
+| drift-claim | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | vague | true but generic; a leading blank line inside a triple-quoted why string is this class too (cosmetic, not meaningful) | tighten / strip the artifact |
-| stale-range | anchor content shifted but still the same logical site | `stale --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
-| mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `stale` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `stale` alone | `grep -n <symbol from the why>` in the target file to find the real site, then re-anchor (add new range, remove old) |
+| drift-range | anchor content shifted but still the same logical site | `drift --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
+| mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | `grep -n <symbol from the why>` in the target file to find the real site, then re-anchor (add new range, remove old) |
 | duplicate/overlap | two spans assert the same coupling | consolidate (Operations table) |
 | generated-output | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
 | mirror-bundle | ≥2 basename pairs of *near-identical copies* across two roots differing by one path segment, no anchored enforcer. Surfaces that restate one rule in their own register are distinct roles, not this class | keep ONE span (`add` rejects directory roots). Parity check exists: anchor the normative side's files plus the check. No check: the span *is* the parity mechanism — keep both sides of each pair, name the normative direction in the why, and recommend building a check; dropping the mirror side removes the only drift detection. Tree too large to enumerate (dozens of pairs): anchor one representative pair and say in the why it stands for the tree. Never split per pair, never delete |
@@ -52,18 +52,18 @@ Classify each span, skip `clean`:
    covers both). A comment edit that shifts an anchor's line count needs its
    own re-anchor check immediately after — don't assume a later blanket
    `--fix` will catch it.
-6. Verify: `git span stale` scoped by the batch's **span names**, not by
+6. Verify: `git span drift` scoped by the batch's **span names**, not by
    touched file paths — path-scoping surfaces unrelated spans that merely
-   share a file and reads as false drift. Expect 0 stale. A span shown
+   share a file and reads as false drift. Expect 0 drift. A span shown
    modified in `git status` with an empty `git diff HEAD -- <path>` is inert
    noise from another session, not a finding.
 7. A behavioral code fix is out of scope — report it, don't make it.
 
 ## Gotchas
-- `stale --fix` reconciles every span anchored to the file it touches, not
+- `drift --fix` reconciles every span anchored to the file it touches, not
   just the one you're fixing — diff the full set of spans it reports, not
   only your target.
-- `stale --fix` no-ops ("Reconciled 0 spans") on a non-trivial change even
+- `drift --fix` no-ops ("Reconciled 0 spans") on a non-trivial change even
   when it *looks* like a pure shift — don't retry it; re-anchor manually
   (`add` new range, `remove` old) once.
 - Anchor ranges can drift between your inspect step and your fix step
@@ -81,7 +81,7 @@ Classify each span, skip `clean`:
 | Operation | Command |
 |---|---|
 | Rewrite/write why | `git span why <name> "..."` |
-| Re-anchor, pure line-shift | `git span stale --fix` |
+| Re-anchor, pure line-shift | `git span drift --fix` |
 | Re-anchor, range/content changed | `git span add <name> <path#Lnew>` then `git span remove <name> <path#Lold>` — add appends, never replaces |
 | Re-hash whole-file anchor | `git span add <name> <path>` |
 | Consolidate duplicates | `git span add` the loser's anchors onto the keeper, then `git span delete <loser>`; merge the whys into one definition |
@@ -92,7 +92,7 @@ Classify each span, skip `clean`:
 - Why rewrites and `.span/**` edits: no validation.
 - Comment-only source edits: no validation.
 - Any behavioral code change: out of scope — flag it instead.
-- End of campaign: full `git span stale` exit 0 and `git span doctor` clean.
+- End of campaign: full `git span drift` exit 0 and `git span doctor` clean.
 
 ## Report
 Per span: classification → action (old why → new why for rewrites). List every

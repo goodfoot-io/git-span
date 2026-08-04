@@ -69,7 +69,7 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
 }
 
 /// A clean repo with one span whose anchored source has drifted at HEAD, so
-/// `stale` reports exactly one finding. `tag` makes the corpus content unique
+/// `drift` reports exactly one finding. `tag` makes the corpus content unique
 /// per test, so the content-derived canonical key never collides in the
 /// process-global memo.
 fn drifted_repo(tag: &str) -> (tempfile::TempDir, gix::Repository) {
@@ -155,7 +155,7 @@ fn store_engages_by_default() {
     let (_td, repo) = drifted_repo("default");
     // Default env (cache enabled): the store is unconditional and engages.
     enable_store();
-    let out = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
+    let out = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
     assert!(
         matches!(out, ExactAttempt::Resolved { .. }),
         "with the cache enabled the store must engage"
@@ -176,7 +176,7 @@ fn cache_disabled_bypasses_store() {
     unsafe {
         std::env::set_var("GIT_SPAN_CACHE", "0");
     }
-    let out = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
+    let out = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full()).expect("attempt");
     assert!(
         matches!(out, ExactAttempt::Bypass),
         "GIT_SPAN_CACHE=0 must bypass the store"
@@ -196,7 +196,7 @@ fn ineligible_options_bypass() {
     enable_store();
     // committed_only() has a non-full layer set → ineligible.
     let out =
-        stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::committed_only()).expect("attempt");
+        drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::committed_only()).expect("attempt");
     assert!(matches!(out, ExactAttempt::Bypass));
     assert_eq!(test_cold_miss_builds(), 0);
 }
@@ -212,7 +212,7 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
     let opts = EngineOptions::full();
 
     // Cold miss: exactly one resolver build, no exact hit, and a finding.
-    let cold = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
+    let cold = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
     assert_eq!(
         test_cold_miss_builds(),
         1,
@@ -224,7 +224,7 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
 
     // Drop the in-process memo so the next call must consult the store.
     clear_memo();
-    let warm = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("warm"));
+    let warm = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("warm"));
     assert_eq!(test_exact_hits(), 1, "second call is a store exact hit");
     assert_eq!(
         test_cold_miss_builds(),
@@ -238,7 +238,7 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
 
 /// Card main-157 finding F5: concurrent cold callers for one missing key must
 /// perform EXACTLY ONE build, not N. This exercises the real production seam
-/// (`stale_spans_new_store`) — the same entry point the CLI drives — not the
+/// (`drift_spans_new_store`) — the same entry point the CLI drives — not the
 /// store's `build_or_get` in isolation.
 ///
 /// N threads each open their own repo handle and race, released together by a
@@ -270,7 +270,7 @@ fn concurrent_cold_callers_build_exactly_once() {
                 // Release all callers into the miss path at the same instant so
                 // they genuinely contend on the shard.
                 barrier.wait();
-                let attempt = stale_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full())
+                let attempt = drift_spans_new_store(&repo, SPAN_ROOT, EngineOptions::full())
                     .expect("attempt");
                 // The build counter is thread-local; report this thread's count
                 // so the caller can sum the true total across all threads.
@@ -313,14 +313,14 @@ fn memo_serves_repeat_without_store_read() {
     enable_store();
     let opts = EngineOptions::full();
 
-    let first = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("first"));
+    let first = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("first"));
     assert_eq!(test_cold_miss_builds(), 1);
 
     // Delete the persistent store entirely; the memo must still answer.
     let store_dir = crate::git::common_dir(&repo).join("span");
     let _ = std::fs::remove_dir_all(&store_dir);
 
-    let again = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("again"));
+    let again = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("again"));
     assert_eq!(test_cold_miss_builds(), 1, "memo hit does not rebuild");
     assert_eq!(test_exact_hits(), 0, "memo hit does not read the store");
     assert_eq!(again, first);
@@ -370,7 +370,7 @@ fn revalidate_discard_publishes_nothing_and_falls_back() {
         std::fs::write(&mutate_path, "torn\nread\nmutation\n").expect("mutate worktree");
     });
 
-    let out = stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("attempt");
+    let out = drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("attempt");
     assert!(
         matches!(out, ExactAttempt::Bypass),
         "a resolution-input change mid-build must fall back, not render a torn read"
@@ -495,7 +495,7 @@ fn reuse_rows_round_trip_core_through_store() {
         &repo,
         SPAN_ROOT,
         &names,
-        crate::resolver::engine::COLD_STALE_MIN_ANCHORS_PER_TASK,
+        crate::resolver::engine::COLD_DRIFT_MIN_ANCHORS_PER_TASK,
     )
     .expect("core");
     let widen = reuse::compute_widen(&core, false);
@@ -545,7 +545,7 @@ fn clean_run_publishes_and_is_eligible() {
         "clean no-filter repo is eligible"
     );
 
-    let _ = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
+    let _ = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
     assert_eq!(test_revalidate_discards(), 0, "clean run must not discard");
 
     let store = CacheStore::open(&repo).expect("open store");
@@ -678,7 +678,7 @@ fn maybe_maintain_keeps_generation_under_cap() {
     );
 }
 
-/// A real `stale` run with a 1-byte cap still returns the correct result and
+/// A real `drift` run with a 1-byte cap still returns the correct result and
 /// leaves the just-published *live* generation intact (a live generation is
 /// never evicted, even at the high-water mark) — the trigger's only effect is
 /// on the store file, never on the command's output.
@@ -686,7 +686,7 @@ fn maybe_maintain_keeps_generation_under_cap() {
 fn tiny_cap_run_keeps_output_and_live_generation() {
     reset_test_state();
     clear_memo();
-    let (_td, repo) = drifted_repo("capstale");
+    let (_td, repo) = drifted_repo("capdrift");
     enable_store();
     unsafe {
         std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
@@ -696,7 +696,7 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
         .expect("token")
         .canonical_key_digest();
 
-    let spans = resolved(stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
+    let spans = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
     assert_eq!(spans.len(), 1, "the one drifted span is still reported");
 
     // The live generation published this run survives the maintenance pass.
@@ -716,7 +716,7 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
 /// active worktree HEADs from the actual repository. Each iteration commits
 /// fresh tracked content — a new HEAD, a new canonical key, a fresh `live`
 /// generation, exactly the "sequence of trivial commits each triggering a fresh
-/// generation" sub-case the exit gate names — then runs the real `stale` path.
+/// generation" sub-case the exit gate names — then runs the real `drift` path.
 ///
 /// The store footprint is flat across the whole sequence — bounded by the
 /// single live generation the current commit references, not by the commit
@@ -773,7 +773,7 @@ fn repeated_commits_cannot_grow_store_unbounded() {
         keys.push(key);
 
         clear_memo();
-        let _ = stale_spans_new_store(&repo, SPAN_ROOT, opts).expect("stale");
+        let _ = drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("drift");
 
         let store = CacheStore::open(&repo).expect("open");
         sizes.push(store.database_size_bytes().unwrap());
@@ -853,14 +853,14 @@ fn publish_live_at(store: &mut CacheStore, key: [u8; 32], head: &str) {
 /// deleted without `git worktree prune`) must not permanently disable quota
 /// reclamation. [`crate::git::live_worktree_heads`] fails closed only on
 /// *blindness* (enumeration failing) — a single worktree whose HEAD will not
-/// resolve is skipped, not fatal — so reconciliation still demotes stale heads
+/// resolve is skipped, not fatal — so reconciliation still demotes drifted heads
 /// that no *resolvable* worktree sits on.
 ///
 /// Pre-fix, `into_repo()` on the broken worktree returned `Err`, `live_worktree_
 /// heads` propagated it, and [`reconcile_liveness`] returned before demoting
-/// anything: the stale-head generation stayed permanently live and the quota
+/// anything: the drift-head generation stayed permanently live and the quota
 /// reclaimed nothing. This asserts both halves — the live set is the resolvable
-/// subset (healthy worktree included, broken skipped, no error), and the stale
+/// subset (healthy worktree included, broken skipped, no error), and the drift
 /// generation is demoted and evicted while the live worktrees' generations
 /// survive.
 #[test]
@@ -927,7 +927,7 @@ fn broken_worktree_does_not_disable_reconciliation() {
         "healthy linked worktree HEAD present"
     );
 
-    // Half 2: reconciliation demotes a stale head no resolvable worktree sits
+    // Half 2: reconciliation demotes a drifted head no resolvable worktree sits
     // on, while both live worktrees' generations survive. A 1-byte cap makes the
     // quota pass evict every demoted (non-live) generation.
     enable_store();
@@ -937,11 +937,11 @@ fn broken_worktree_does_not_disable_reconciliation() {
     let mut store = CacheStore::open(&repo).expect("open store");
     let k_main = [1u8; 32];
     let k_healthy = [2u8; 32];
-    let k_stale = [3u8; 32];
-    let h_stale = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let k_drift = [3u8; 32];
+    let h_drift = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     publish_live_at(&mut store, k_main, &h_main);
     publish_live_at(&mut store, k_healthy, &h_healthy);
-    publish_live_at(&mut store, k_stale, h_stale);
+    publish_live_at(&mut store, k_drift, h_drift);
 
     // The production trigger, with the current worktree's (head, key).
     maybe_maintain(&repo, &mut store, &h_main, &k_main);
@@ -949,11 +949,11 @@ fn broken_worktree_does_not_disable_reconciliation() {
     assert!(
         matches!(
             store
-                .get_generation(&k_stale, SUMMARY_VERSION)
+                .get_generation(&k_drift, SUMMARY_VERSION)
                 .expect("get"),
             GetOutcome::Miss
         ),
-        "a generation at a stale head (no resolvable worktree) must be demoted and evicted",
+        "a generation at a drifted head (no resolvable worktree) must be demoted and evicted",
     );
     assert!(
         matches!(

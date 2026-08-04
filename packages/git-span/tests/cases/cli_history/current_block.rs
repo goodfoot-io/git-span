@@ -101,22 +101,22 @@ fn uncommitted_declaration_edit_surfaces_as_current_span_diff() -> Result<()> {
 
 
 #[test]
-fn changed_bytes_beneath_a_promoted_submodule_keep_stales_cause_in_both_formats() -> Result<()> {
+fn changed_bytes_beneath_a_promoted_submodule_keep_drifts_cause_in_both_formats() -> Result<()> {
     let repo = directory_promoted_to_submodule(false)?;
 
-    let stale_human = repo.run_span(["stale", "sp"])?;
-    assert_eq!(stale_human.status.code(), Some(1));
-    let stale_human = String::from_utf8_lossy(&stale_human.stdout);
+    let drift_human = repo.run_span(["drift", "sp"])?;
+    assert_eq!(drift_human.status.code(), Some(1));
+    let drift_human = String::from_utf8_lossy(&drift_human.stdout);
     assert!(
-        stale_human.contains("lib/f.txt#L1-L3 — submodule"),
-        "stale must retain the resolver's terminal cause:\n{stale_human}"
+        drift_human.contains("lib/f.txt#L1-L3 — submodule"),
+        "drift must retain the resolver's terminal cause:\n{drift_human}"
     );
 
-    let stale_json = repo.run_span(["stale", "sp", "--format=json"])?;
-    assert_eq!(stale_json.status.code(), Some(1));
-    let stale_json: Value = serde_json::from_slice(&stale_json.stdout)?;
-    let findings = stale_json["findings"].as_array().expect("stale findings");
-    assert_eq!(findings.len(), 1, "one promoted anchor: {stale_json:#}");
+    let drift_json = repo.run_span(["drift", "sp", "--format=json"])?;
+    assert_eq!(drift_json.status.code(), Some(1));
+    let drift_json: Value = serde_json::from_slice(&drift_json.stdout)?;
+    let findings = drift_json["findings"].as_array().expect("drift findings");
+    assert_eq!(findings.len(), 1, "one promoted anchor: {drift_json:#}");
     assert_eq!(findings[0]["anchored"]["path"], "lib/f.txt");
     assert_eq!(
         findings[0]["anchored"]["extent"],
@@ -131,7 +131,7 @@ fn changed_bytes_beneath_a_promoted_submodule_keep_stales_cause_in_both_formats(
     assert_eq!(
         anchors.len(),
         findings.len(),
-        "history and stale must agree anchor-for-anchor: {history:#}"
+        "history and drift must agree anchor-for-anchor: {history:#}"
     );
     assert_eq!(anchors[0]["path"], "lib/f.txt#L1-L3");
     assert_eq!(anchors[0]["unavailable"], "submodule");
@@ -157,23 +157,23 @@ fn changed_bytes_beneath_a_promoted_submodule_keep_stales_cause_in_both_formats(
 fn equal_bytes_beneath_a_promoted_submodule_remain_informational_only() -> Result<()> {
     let repo = directory_promoted_to_submodule(true)?;
 
-    let stale = repo.run_span(["stale", "sp"])?;
+    let drift = repo.run_span(["drift", "sp"])?;
     assert_eq!(
-        stale.status.code(),
+        drift.status.code(),
         Some(0),
-        "ResolvedPendingCommit does not count as stale"
+        "ResolvedPendingCommit does not count as drifted"
     );
-    let stale_human = String::from_utf8_lossy(&stale.stdout);
+    let drift_human = String::from_utf8_lossy(&drift.stdout);
     assert!(
-        stale_human.contains("lib/f.txt#L1-L3 — resolved, pending commit"),
-        "stale retains its informational line:\n{stale_human}"
+        drift_human.contains("lib/f.txt#L1-L3 — resolved, pending commit"),
+        "drift retains its informational line:\n{drift_human}"
     );
 
-    let stale_json = repo.run_span(["stale", "sp", "--format=json"])?;
-    assert_eq!(stale_json.status.code(), Some(0));
-    let stale_json: Value = serde_json::from_slice(&stale_json.stdout)?;
+    let drift_json = repo.run_span(["drift", "sp", "--format=json"])?;
+    assert_eq!(drift_json.status.code(), Some(0));
+    let drift_json: Value = serde_json::from_slice(&drift_json.stdout)?;
     assert_eq!(
-        stale_json["findings"][0]["status"]["code"],
+        drift_json["findings"][0]["status"]["code"],
         "RESOLVED_PENDING_COMMIT"
     );
 
@@ -210,11 +210,11 @@ fn clean_worktree_has_no_current_section() -> Result<()> {
     repo.run_git(["add", "-A"])?;
     repo.run_git(["commit", "-m", "re-anchor after source edit"])?;
 
-    let stale = repo.run_span(["stale", span])?;
+    let drift = repo.run_span(["drift", span])?;
     assert!(
-        stale.status.success(),
-        "expected a clean `git span stale` after re-anchor; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
+        drift.status.success(),
+        "expected a clean `git span drift` after re-anchor; got:\n{}",
+        String::from_utf8_lossy(&drift.stdout)
     );
 
     let json = history_json(&repo, span)?;
@@ -254,7 +254,7 @@ fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
 
 
 #[test]
-fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
+fn current_surfaces_committed_drift_agreeing_with_drift() -> Result<()> {
     let repo = TestRepo::new()?;
     let span = "c";
 
@@ -270,11 +270,11 @@ fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
     repo.write_file("src.txt", "ONE\nTWO\nthree\nfour\nfive\n")?;
     repo.commit_all("edit source without re-anchoring")?;
 
-    let stale = repo.run_span(["stale", span])?;
+    let drift = repo.run_span(["drift", span])?;
     assert!(
-        !stale.status.success(),
-        "expected `git span stale` to flag committed drift; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
+        !drift.status.success(),
+        "expected `git span drift` to flag committed drift; got:\n{}",
+        String::from_utf8_lossy(&drift.stdout)
     );
 
     let json = history_json(&repo, span)?;
@@ -283,7 +283,7 @@ fn current_surfaces_committed_drift_agreeing_with_stale() -> Result<()> {
         .expect("current anchors array");
     assert!(
         anchors.iter().any(|a| a["path"] == "src.txt#L1-L3"),
-        "history must agree with stale about which anchor drifts; got: {json:#}"
+        "history must agree with drift about which anchor drifts; got: {json:#}"
     );
     Ok(())
 }
@@ -311,12 +311,12 @@ fn current_moved_anchor_reports_a_proposal_not_a_completed_rename() -> Result<()
     )?;
     repo.commit_all("relocate the TARGET block downward")?;
 
-    let stale = repo.run_span(["stale", span])?;
+    let drift = repo.run_span(["drift", span])?;
     assert!(
-        String::from_utf8_lossy(&stale.stdout)
+        String::from_utf8_lossy(&drift.stdout)
             .to_lowercase()
             .contains("moved"),
-        "expected `git span stale` to classify the anchor as moved"
+        "expected `git span drift` to classify the anchor as moved"
     );
 
     let json = history_json(&repo, span)?;
@@ -326,7 +326,7 @@ fn current_moved_anchor_reports_a_proposal_not_a_completed_rename() -> Result<()
     assert_eq!(anchors.len(), 1, "one anchor moved; got: {json:#}");
     assert_eq!(
         anchors[0]["path"], "src.txt#L3-L5",
-        "`path` is the DECLARED address — the same string `git span stale` \
+        "`path` is the DECLARED address — the same string `git span drift` \
          prints and the only key that joins back to the `.span` file"
     );
     assert_eq!(
@@ -335,7 +335,7 @@ fn current_moved_anchor_reports_a_proposal_not_a_completed_rename() -> Result<()
     );
     assert_eq!(
         anchors[0]["content"], "TARGET-ONE\nTARGET-TWO\nTARGET-THREE\n",
-        "content is the relocated block, never a slice of the stale stored range"
+        "content is the relocated block, never a slice of the drifted stored range"
     );
 
     let diff = anchors[0]["diff"].as_str().expect("diff string");
@@ -381,11 +381,11 @@ fn committed_in_place_drift_is_visible_in_both_formats() -> Result<()> {
     repo.write_file("src.txt", "alpha\nBETA-CHANGED\ngamma\ndelta\n")?;
     repo.commit_all("edit inside the anchored range")?;
 
-    let stale = repo.run_span(["stale", span])?;
+    let drift = repo.run_span(["drift", span])?;
     assert!(
-        !stale.status.success(),
-        "expected `git span stale` to flag the drift; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
+        !drift.status.success(),
+        "expected `git span drift` to flag the drift; got:\n{}",
+        String::from_utf8_lossy(&drift.stdout)
     );
 
     let out = history_text(&repo, span)?;
@@ -393,7 +393,7 @@ fn committed_in_place_drift_is_visible_in_both_formats() -> Result<()> {
     assert!(
         head.contains("diff --git a/src.txt#L1-L3 b/src.txt#L1-L3"),
         "committed drift must appear in the default output, before the \
-         timeline — it is exactly what `stale` reports; got:\n{out}"
+         timeline — it is exactly what `drift` reports; got:\n{out}"
     );
     assert!(
         head.contains("-beta\n") && head.contains("+BETA-CHANGED\n"),
@@ -450,7 +450,7 @@ fn resolved_pending_reanchor_reports_only_the_declaration_diff() -> Result<()> {
     );
     assert!(
         current["anchors"].as_array().is_some_and(Vec::is_empty),
-        "ResolvedPendingCommit is informational in stale and must not create a current anchor: {json:#}"
+        "ResolvedPendingCommit is informational in drift and must not create a current anchor: {json:#}"
     );
     Ok(())
 }
@@ -574,11 +574,11 @@ fn uncommitted_declaration_with_drifted_anchor_is_a_header_only_drift() -> Resul
     repo.span_stdout(["why", span, "tracks the head block"])?;
     repo.write_file("src.txt", "alpha\nBETA-DRIFTED\ngamma\ndelta\n")?;
 
-    let stale = repo.run_span(["stale", span])?;
+    let drift = repo.run_span(["drift", span])?;
     assert!(
-        !stale.status.success(),
-        "expected `git span stale` to flag working-tree drift; got:\n{}",
-        String::from_utf8_lossy(&stale.stdout)
+        !drift.status.success(),
+        "expected `git span drift` to flag working-tree drift; got:\n{}",
+        String::from_utf8_lossy(&drift.stdout)
     );
 
     let json = history_json(&repo, span)?;

@@ -6,7 +6,7 @@
  * empty result is indistinguishable from "nothing is covered" — a failed
  * coverage query is therefore converted into a maximal, confidently-wrong
  * "every changed path is uncovered" hold, and the related-spans section
- * vanishes. The sibling `stale` executor already distinguishes the two cases:
+ * vanishes. The sibling `drift` executor already distinguishes the two cases:
  * empty stdout plus a non-empty stderr on a non-zero exit means the scan never
  * completed, and it throws `AdvisorScanError` so `evaluateAdvisor` can fail open with
  * the distinguishable `scan-failed` warning.
