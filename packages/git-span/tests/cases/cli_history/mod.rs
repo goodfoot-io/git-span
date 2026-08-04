@@ -15,15 +15,6 @@
 //! **aperture**). Both are recorded here, one line each, with the assertion
 //! that covers what is dropped or a sentence on why dropping it is safe.
 //!
-//! This is not hypothetical. The aperture question — "what was this oracle
-//! never handed?" — was written down during this wave and caught its fourth
-//! instance within the hour, biting a *fix* rather than the implementation:
-//! the key sweep below discards nothing in its return shape, but its aperture
-//! is the `current.anchors[]` heading it parses, so it simply never received a
-//! timeline anchor object, and the first timeline-only keys in the schema's
-//! life were about to land in an emitter with no contract above it and no
-//! sweep below it.
-//!
 //! | Oracle | Projection — what the shape discards | Aperture — what it is never handed |
 //! |---|---|---|
 //! | [`block_form`] | Everything but the form: addresses, hashes, hunk bodies. The sweeps re-read all three off the raw `diff` beside it. Reads only the header region (before `\n--- `), so a hunk body quoting a marker phrase cannot be mistaken for one | One block's patch string; it cannot see sibling blocks or the entry around them |
@@ -32,9 +23,6 @@
 //! | [`newest_commit_blocks`] | Hashes, hunks, `unavailable`, `rebound`'s payload — asserted directly off the JSON in the tests that care | Only `commits[0]` |
 //! | [`declared_pairs`] | The why-prose and every non-`rk64:` line of the declaration | One `.span` file at one rev; it says nothing about content at any address — [`read_address`] is the oracle for that |
 //! | [`current_forms`] | `path` and payloads, exactly as `newest_commit_forms` does | The `current` array only; timeline entries are outside it |
-//! | [`documented_anchor_fields`] | Every word of each field's prose — it compares *names*, not meanings, which is how a worked example contradicting its own rule survived (`no_documented_example_shows_a_rename_below_the_threshold` compares the values) | One heading's bullet list. Two adjacent lists exist and each is parsed alone, deliberately: one list vouching for the other's keys is how a sweep certifies a false document |
-//! | The key sweeps | Nothing from the objects they walk — both directions, no exemptions (the binary re-anchor fixture emits `unavailable`, closing the hatch the `current` sweep used to carry) | Each walks exactly one array against exactly one list, drawn from that array's own fixture enumeration ([`every_current_state`] / [`every_timeline_state`]). The aperture is no longer key names alone: [`documented_field_values`] extends it to the *value* space of `unavailable`, so a documented value with no producing fixture fails the same way a documented key would. A key sweep that never looks inside the values is how `range-past-eof` stayed documented-but-unreachable from `current[]` through eight rounds |
-//! | [`documented_field_values`] | Every word of the prose around the values, and every field but the one named — it reads `` `"…"` `` spans out of one bullet | One field's bullet in one array's list. It requires each documented value to have a producer; it cannot notice a value the product emits and the document never mentions (the key sweeps' other direction covers keys, not values) |
 //! | [`payload_fields`] | `path` and `diff` — deliberately. `path` is the join key every object differs in trivially, so including it would make any two objects "distinct" for free; `diff` is the patch string whose parsing `--format json` exists to spare consumers, and a discriminator recoverable only from a marker line inside it is not a contract | Two keys of one anchor object. It is the *narrowest* view a consumer might take, which is the point: distinguishability that survives this projection survives any wider one |
 //! | [`every_current_state`] | — | Current-block states only. `Rebound` is timeline-only and `Proposed` current-block-only, so this set structurally cannot reach every form |
 //! | [`every_timeline_state`] | — | Timeline states only, and only each fixture's *newest* entry is form-checked |
@@ -1385,110 +1373,6 @@ fn binary_reanchor_repo(span: &str) -> Result<TestRepo> {
     repo.commit_all("declare the binary pin")?;
     rewrite_declaration(&repo, span, "a.bin", "b.bin")?;
     Ok(repo)
-}
-
-
-/// The keys the normative field list in `docs/history-example-output.md`
-/// declares for one anchor array (`commits[].anchors[]` or
-/// `current.anchors[]`), read out of the document itself so the contract
-/// cannot be satisfied by a stale copy of it living in a test.
-///
-/// The two arrays get separate lists because their emitters have inverted
-/// presence rules — one list covering both would have to be vague enough to be
-/// true of neither, and a sweep against it would certify a false document.
-fn documented_anchor_fields(array: &str) -> Result<Vec<String>> {
-    let doc = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs")
-            .join("history-example-output.md"),
-    )?;
-    let heading = format!("### `{array}` field list (normative)");
-    let heading = heading.as_str();
-    let start = doc
-        .find(heading)
-        .unwrap_or_else(|| panic!("the field list heading {heading:?} is gone from the doc"));
-    let section = &doc[start + heading.len()..];
-    // Stop at the next heading of any level: the two field lists are adjacent
-    // `###` sections, so ending only at `## ` would silently merge them and
-    // let each list vouch for the other's keys.
-    let end = section
-        .find("\n## ")
-        .into_iter()
-        .chain(section.find("\n### "))
-        .min()
-        .unwrap_or(section.len());
-    let fields: Vec<String> = section[..end]
-        .lines()
-        .filter_map(|line| line.strip_prefix("- `"))
-        .filter_map(|rest| rest.split_once('`'))
-        .map(|(key, _)| key.to_string())
-        .collect();
-    assert!(!fields.is_empty(), "the field list parsed as empty");
-    Ok(fields)
-}
-
-
-/// The values one documented field's bullet enumerates, read out of the same
-/// normative list [`documented_anchor_fields`] reads its keys from.
-///
-/// The key sweeps compare *names*, which is an aperture one level too coarse: a
-/// documented value with no producer anywhere stays green as long as some other
-/// value keeps the key alive. `"range-past-eof"` was named on both normative
-/// lists and had zero occurrences in the entire test tree, because the binary
-/// fixture's `"binary"` was covering the key for it.
-fn documented_field_values(array: &str, field: &str) -> Result<Vec<String>> {
-    let doc = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs")
-            .join("history-example-output.md"),
-    )?;
-    let heading = format!("### `{array}` field list (normative)");
-    let start = doc
-        .find(heading.as_str())
-        .unwrap_or_else(|| panic!("the field list heading {heading:?} is gone from the doc"));
-    let section = &doc[start + heading.len()..];
-    let end = section
-        .find("\n## ")
-        .into_iter()
-        .chain(section.find("\n### "))
-        .min()
-        .unwrap_or(section.len());
-    // One bullet, from its own `- ` marker to the next one at column zero:
-    // continuation lines are indented, so the bullet keeps its wrapped text and
-    // stops before its sibling's.
-    let bullet_start = format!("- `{field}` — ");
-    let list = &section[..end];
-    let at = list
-        .find(bullet_start.as_str())
-        .unwrap_or_else(|| panic!("the {array} field list no longer documents `{field}`"));
-    let bullet = &list[at..];
-    let bullet_end = bullet[1..]
-        .find("\n- ")
-        .map(|i| i + 1)
-        .unwrap_or(bullet.len());
-    let bullet = &bullet[..bullet_end];
-
-    // Values are spelled as they appear in JSON, inside backticks: `"absent"`.
-    // The span must be exactly one quoted token — no whitespace, and the
-    // closing quote immediately followed by the closing backtick — so prose
-    // that merely quotes JSON (`"content": ""`) does not read as a value.
-    let mut values: Vec<String> = Vec::new();
-    for piece in bullet.split("`\"").skip(1) {
-        let Some((value, rest)) = piece.split_once('"') else {
-            continue;
-        };
-        if !rest.starts_with('`') || value.is_empty() || value.contains(char::is_whitespace) {
-            continue;
-        }
-        if !values.iter().any(|v| v == value) {
-            values.push(value.to_string());
-        }
-    }
-    assert!(
-        !values.is_empty(),
-        "the `{field}` bullet in the {array} list enumerates no values"
-    );
-    Ok(values)
 }
 
 
