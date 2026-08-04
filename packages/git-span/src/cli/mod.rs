@@ -102,6 +102,16 @@ pub enum Commands {
     /// root. Stage and commit the change with `git add .span && git commit`.
     Remove(RemoveArgs),
 
+    /// Replace one anchor on a span with another address, in a single
+    /// atomic transaction: either the old identity is retired and the
+    /// new identity installed together, or nothing changes.
+    ///
+    /// The old address must match an existing anchor exactly — `replace`
+    /// never falls back to additive behavior. To refresh an anchor's
+    /// content hash at an unchanged address, use `git span add` instead.
+    /// Stage and commit the change with `git add .span && git commit`.
+    Replace(ReplaceArgs),
+
     /// Read or stage the span's why — one or two complete present-tense
     /// clauses carrying decision-relevant nonlocal context.
     ///
@@ -312,6 +322,25 @@ pub struct RemoveArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct ReplaceArgs {
+    /// Span whose anchor to replace.
+    pub name: String,
+
+    /// Existing anchor to retire, as `<path>` or `<path>#L<start>-L<end>`
+    /// (must match exactly one anchor on the span).
+    pub old_anchor: String,
+
+    /// New anchor address to install in its place, as `<path>` or
+    /// `<path>#L<start>-L<end>` (validated like `add`; must differ from
+    /// the old address).
+    pub new_anchor: String,
+
+    /// Output format (human or json).
+    #[arg(long, value_enum, default_value_t = ReplaceFormat::Human)]
+    pub format: ReplaceFormat,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct WhyArgs {
     /// Span whose why text to read or stage.
     pub name: String,
@@ -376,6 +405,17 @@ pub enum HistoryFormat {
     /// Git-log-style text: newest-first commit entries with unified diffs.
     Human,
     /// `schema_version: 2` JSON carrying the identical raw patch strings.
+    Json,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ReplaceFormat {
+    /// Prose summary naming the retired address, installed address, and
+    /// the span's drift-free state.
+    Human,
+    /// JSON carrying `retired`, `installed`, `span`, and `drift_free`
+    /// (plus `drifted` when not drift-free).
     Json,
 }
 
@@ -466,6 +506,10 @@ pub fn dispatch(
         Commands::Remove(args) => {
             let _perf = crate::perf::span("command.remove");
             commit::run_remove(repo, args, span_root)
+        }
+        Commands::Replace(args) => {
+            let _perf = crate::perf::span("command.replace");
+            commit::run_replace(repo, args, span_root)
         }
         Commands::Why(args) => {
             let _perf = crate::perf::span("command.why");

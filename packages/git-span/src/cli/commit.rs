@@ -10,7 +10,7 @@
 
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
-use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, WhyArgs};
+use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, ReplaceArgs, WhyArgs};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::AnchorRecord;
 use crate::span_file::SpanFile;
@@ -792,6 +792,24 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
     }
 
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// replace
+// ---------------------------------------------------------------------------
+
+pub fn run_replace(_repo: &gix::Repository, args: ReplaceArgs, _span_root: &str) -> Result<i32> {
+    crate::validation::validate_span_name(&args.name)?;
+    Err(CliError {
+        subcommand: "replace",
+        summary: "`git span replace` is not implemented yet.".into(),
+        what_happened: "The replacement transaction is under construction.".into(),
+        next_steps: vec![NextStep::Bash(format!(
+            "git span add {} {}",
+            args.name, args.new_anchor
+        ))],
+    }
+    .into())
 }
 
 // ---------------------------------------------------------------------------
