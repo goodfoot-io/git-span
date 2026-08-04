@@ -1,217 +1,491 @@
 ---
 title: Writing Span Whys
-summary: How to write a good span "why" — one present-tense sentence defining the subsystem the anchors form — in long, medium, and short form, with good and bad examples and the reasoning behind the rules. A why routes attention when a hook surfaces it mid-task; rules, warnings, and co-change instructions belong in comments at the anchor sites, not in the why.
-aliases: [Span Whys, Good Why, Why Writing]
+summary: Evidence-based guidance for writing decision-preserving span context and completing its full lifecycle without stale whys or anchors.
+aliases: [Decision-Preserving Span Whys, Lifecycle-Safe Span Whys]
 tags: [guide, git-span]
-keywords: [why, span, anchor, implicit dependency, coupling, evergreen, hook]
+keywords: [why, span, anchor, hook, context, invariant, authority, migration, evidence gate, lifecycle, drift]
 ---
 
 # Writing span whys
 
-Every span carries a **why**: one sentence stored with the span that defines the
-subsystem its anchors form together. The why is read in an unusual place. Hooks
-surface it inline — along with the span's other anchors — the moment an agent
-reads or edits lines inside one anchor, in the middle of some other task, like
-adding a feature. That reading context drives every rule on this page.
+Every span carries a **why** that hooks surface when an agent reads or edits an
+anchored region. A useful why lets the agent quickly decide:
 
-The design principle: **a why is a router, not a work order.** Its one job is to
-let a reader who just touched an anchor decide, from the sentence alone, whether
-their edit lands inside the thing it names. If yes, they open the other anchors,
-where comments explain what must hold. If no, they move on and keep their focus
-on the task they were doing.
+1. Whether the relationship is relevant to the current work.
+2. Which nonlocal fact changes the safe decision.
+3. Whether evidence authorizes a lifecycle transition.
 
-## Definitions
+The recommended strategy is:
 
-Three lengths of the same definition. Use the long form when teaching or
-documenting, the medium form in skills and reference docs, the short form in
-help text and templates.
+> Write one or two complete, present-tense clauses that state the shared
+> relationship and give decisive facts clear modal or evidentiary force.
 
-### Long
+Labels such as `Source:` and `Removal gate:` are optional scanning aids. The
+important property is not labelled versus unlabelled formatting; it is whether
+the text unmistakably states what is intentional, required, permitted,
+authoritative, prohibited, or sufficient to change state.
 
-> A why is one sentence, written in the present tense, that defines the piece of
-> the system its anchors form together. Name the thing, then say what it does
-> across the anchors. Use role words — "the parser," "the doc," "the release
-> script" — instead of file names, and don't repeat the span's name. Write it as
-> a complete sentence with a subject and a verb, not a label followed by a colon.
->
-> The sentence has one job. When a tool shows it to someone in the middle of
-> another task, that person should be able to tell — from the sentence and the
-> lines they just touched — whether their edit lands inside the thing it names.
-> If yes, they open the other anchors, where comments explain what must hold. If
-> no, they move on. So be specific: name the real flow, value, or wording the
-> anchors share, not a vague theme.
->
-> A why is a definition, not an instruction. It never gives rules, warnings,
-> owners, review steps, or the story of a change — those belong in code comments
-> at the anchor sites, in commit messages, and in PRs. Because it only defines,
-> it stays true across rewrites and re-anchors. Rewrite it only when the thing
-> itself changes.
+When a gated transition occurs, finishing the work has three independent
+obligations:
 
-### Medium
+1. Make the correct behavior change.
+2. Update or retire the substantive why.
+3. Reconcile or retire every superseded anchor until `git span drift` reports
+   zero drift.
 
-> A why is one complete present-tense sentence that defines what its anchors
-> form together: name the thing in role words, not file names, and say what it
-> does across the anchors. Make it specific enough that someone who just edited
-> one anchor can tell whether their change touches what it names. It gives no
-> rules, warnings, or review steps — comments at the anchor sites do that — so
-> it stays true until the thing itself changes.
+Passing one obligation does not imply that the others passed.
 
-### Short
+## Definition
 
-> One present-tense sentence naming what the anchors form together — clear
-> enough to tell whether an edit lands inside it, with no rules or reminders
-> attached.
+> A span why is compact, durable, decision-relevant context shared by its exact
+> anchors. It states only nonlocal information that can prevent a plausible
+> wrong decision and cannot be inferred reliably from any one anchor.
 
-## Examples and the thinking behind them
+A why may identify authority, preserve an intentional difference, state an
+invariant, describe lifecycle state, define a completion gate, or name focused
+verification. It is not a task, change history, generic warning, command
+transcript, or replacement for an enforceable mechanism.
 
-### The test every why must pass
+Prefer one or two sentences. Aim for roughly 15–35 body tokens; use more when a
+workflow or lifecycle needs an observable evidence gate. Every clause must be
+relevant when activated from every member.
 
-Read the why and ask: **"Is my edit inside this?"** A good why lets you answer
-from the sentence and the lines you just touched. Every bad why on this page
-fails that test in one of three ways — it is too vague to check, it is an
-instruction instead of a definition, or it is a story about the past.
+## What the controlled trials support
 
-### Good examples
+Controlled synthetic-repository trials compared span whys across Codex and a
+second agent exposed through the local DeepSeek wrapper. The tasks were designed
+so that an apparently reasonable local edit could violate a nonlocal decision.
 
-Longer whys, earned by couplings with more parts:
+Earlier migration-cleanup trials produced these combined results:
 
-- "The password-reset flow runs from the endpoint that issues a one-time token,
-  through the email template that carries it, to the form handler that redeems
-  it, and the token expires after fifteen minutes."
-- "The retry policy for outbound webhooks is set by the backoff table, applied
-  by the queue worker that schedules each retry, and shown on the admin page as
-  a delivery's remaining attempts."
-- "The app's dark-mode palette is defined in the design-token file, generated
-  into CSS variables, and repeated by hand as the native splash screen's
-  background color."
+| Why strategy | Correct trials |
+| --- | ---: |
+| Router why plus local comments | 5/10 |
+| Terse labelled fragments | 8/10 |
+| Complete grammatical prose | 10/10 |
 
-Medium whys:
+The fragment failures treated `State:` and `Remove when:` as mutable notes,
+inferred migration completion from UUID-only callers and fixtures, and rewrote
+the span to fit the local cleanup.
 
-- "Product-listing pagination is a continuation-token flow defined by the API
-  and mirrored by each client library."
-- "The sign-up throttle counts attempts per address in the middleware and takes
-  its limit and time window from the settings file."
-- "The config loader reads environment variables first, then the project file,
-  then built-in defaults, and the setup guide describes that same order."
+A later ablation held the decision constant while changing its form:
 
-Short whys:
+| Why form | Correct trials |
+| --- | ---: |
+| Labels followed by complete clauses | 10/10 |
+| Neutral complete prose | 10/10 |
+| Prose explicitly excluding invalid local evidence | 10/10 |
 
-- "Checkout request flow that carries a charge attempt from the browser to the
-  Stripe-backed server."
-- "Session-timeout length shared by the login server and the mobile app."
-- "The onboarding checklist the app shows and the help-center article that
-  walks through it."
+Each 10/10 result pools five runs per agent. This establishes parity among
+complete-clause forms in that fixture, not that wording never matters. Across
+that ablation and an evidence-gate matrix, all 54 trials met the primary source
+oracle. The gate matrix was correct in 24/24 trials: compatibility remained
+when evidence was absent, incomplete, contradicted, or unavailable, and was
+removed when two clean releases satisfied the gate. One of the four valid
+removals nevertheless retained an obsolete substantive why, demonstrating why
+source and why correctness need separate scoring.
 
-What makes these work:
+A subsequent 48-run lifecycle trial crossed two agents, four evidence states,
+three why forms, and two repetitions. The forms were a complete gate, the same
+gate plus an explicit why-maintenance sentence, and a terse gate plus maintenance
+fragments. Codex ran `gpt-5.6-luna`; the wrapper was invoked with `opus`, which
+resolved to `deepseek-v4-flash`, so results should name both the requested and
+resolved model rather than treating them as identical.
 
-- **The verb carries the relationship.** "Is defined in… generated into…
-  repeated by hand" and "is set by… applied by… shown on" tell the reader
-  exactly how the anchors relate. This is why a why must be a full sentence
-  rather than a label with a colon — turning the label into a sentence forces
-  you to pick a verb, and the verb is what the reader classifies their edit
-  against.
-- **Role words survive renames.** "The email template" stays true when the file
-  moves; a file name in the why goes stale the day the file is renamed.
-- **The shared thing is named precisely.** "Expires after fifteen minutes,"
-  "the same background color," "that same order" — each names the concrete
-  flow, value, or wording the anchors share, so the reader can check it.
-- **Length matches the number of parts.** A why should be exactly as long as
-  the coupling has parties. The long examples earn their length by naming more
-  roles, not by adding warnings.
+| Lifecycle outcome | Result |
+| --- | ---: |
+| Correct source decision | 48/48 |
+| Unmet, invalidated, or unavailable: no edit and accurate why | 36/36 |
+| Gate met: compatibility removed and substantive why revised | 12/12 |
+| Gate met: all anchors reconciled with zero drift | 7/12 |
 
-### Bad examples
+All three forms reached 16/16 for source behavior and why semantics. The explicit
+maintenance sentence therefore showed no marginal benefit in this ceiling
+fixture. It should not be appended mechanically to every why. The terse form's
+16/16 also does not overturn the earlier discriminating result of 8/10 for
+fragments versus 10/10 for complete prose. Complete clauses remain the safer
+default when wording must carry decision force.
 
-A **work order** — rules, owners, and review steps instead of a definition:
+The five lifecycle failures were anchor-maintenance failures, all from the
+second-agent wrapper runs. Four added a new range anchor but left the obsolete
+whole-file anchor in place; one revised only the why and left the changed
+whole-file anchor unresolved. Codex reconciled 6/6 valid transitions; the
+wrapper reconciled 1/6. This is evidence about the tested workflows, not a
+general ranking of agents or why forms.
 
-> "The retry delays in the backoff table must match the admin page, and any
-> change here needs review from the platform team; don't touch the queue worker
-> without updating the table first, and re-run the load test afterward."
+Delivery evidence existed in 48/48 lifecycle runs. It was explicit in the 24
+wrapper event streams. In the 24 Codex runs it was strongly inferred from a
+precise restatement of the decisive gate immediately after anchor access and
+before any declaration read, because that interface did not serialize a
+separate hook event. Keep this distinction when reporting hook transport.
 
-This pulls the reader out of their task. It reads as an instruction to act,
-even when the touch was incidental. The facts it carries — the matching rule,
-the owner, the test step — belong in a comment at the backoff table, in
-CODEOWNERS, and in the PR checklist.
+These are small synthetic samples. They support a practical strategy, not a
+universal law:
 
-A **change story** — past tense, tied to one commit:
+> Use complete clauses with clear decision force, treat evidence gates as
+> bidirectional, and verify behavior, why state, and anchor state independently.
 
-> "Rewrote the password-reset flow so tokens now expire after fifteen minutes
-> instead of an hour; the old email template was removed and the form handler
-> was updated to match."
+## Use complete clauses
 
-A reader six months later cannot tell what is true now versus what was news at
-the time. The story belongs in the commit message; the why states only the
-standing result.
+Terse fragments may describe facts without saying how firmly they govern the
+current state:
 
-**Vague, even at length** — nothing a reader can check an edit against:
+```text
+State: write UUID; read UUID|int.
+Remove when: two zero-reference releases.
+```
 
-> "These files are all connected to how the app handles errors in different
-> places, and they relate in ways that matter, so changes in one area can
-> affect the others and should be handled carefully."
+Write the decision as a complete clause:
 
-Long but empty. No named flow, value, or wording means every reader must open
-every anchor just to decide whether their edit is relevant — the worst outcome
-for a sentence whose whole job is routing.
+```text
+State: Readers intentionally continue accepting integers.
+Removal gate: Integer support remains required until two completed releases have each reported zero legacy references.
+```
 
-**Vague plus a reminder:**
+Or omit the labels:
 
-> "This span tracks the sign-up throttle and makes sure attempts are handled
-> properly. Note that the limits may change soon and we should review them."
+```text
+New writes use UUIDs, while readers intentionally continue accepting integers until two completed releases have each reported zero legacy references.
+```
 
-"Properly" checks nothing, "tracks" restates that a span exists, and the
-reminder is a review instruction wearing a why's clothes.
+Both complete forms express standing repository state. Prefer verbs and
+modifiers whose force is hard to mistake:
 
-**File names and a bare rule:**
+- `is authoritative`
+- `intentionally differs`
+- `remains required until`
+- `must preserve`
+- `never exposes`
+- `may be removed only after`
 
-> "auth/middleware.ts and config/limits.json need to stay in sync."
+Avoid shorthand such as `current state`, `should match`, `remove later`, or
+bare lists of values. Compactness must not turn a decision into a status note.
 
-The anchors already say where; the why must say *what* — the subsystem those
-places form. "Stay in sync" names no thing and gives the reader nothing to
-verify. Same failure in miniature: "Keep these in sync."
+## Labels are optional
 
-**A pointer away from the code:**
+Use a small shared vocabulary when it makes several facts easier to scan:
 
-> "See PR #482 for context."
+- `Contract:`
+- `Source:` or `Authority:`
+- `Invariant:`
+- `Allow:` or `Difference:`
+- `Never:`
+- `State:`
+- `Removal gate:`
+- `Flow:`
+- `On edit:`
+- `Verify:`
 
-Useless without repository history, and unreadable in the one place whys are
-actually read — hook output in the middle of a task.
+Labels are authoring conventions, not a machine-readable schema. Follow them
+with complete clauses:
 
-**Restating the span name:**
+```text
+Authority: The protocol schema is authoritative, and clients conform to it.
+Difference: Mobile intentionally omits operations unavailable in the background.
+Removal gate: The fallback remains required until two releases report zero legacy use.
+```
 
-> "Tracks the checkout flow."
+Do not reduce the same content to ambiguous fragments:
 
-If the why only repeats the name, it adds nothing the span list didn't already
-show.
+```text
+Source: schema.json.
+Allow: mobile omissions.
+Remove when: zero use.
+```
 
-### Why rules and reminders are banned
+For a single decision, unlabelled prose is usually easier to read. Labels are
+most useful when they separate two or three independent dimensions of a shared
+workflow.
 
-The ban is not a style preference; it follows from where whys are read.
+## Make evidence gates operational and bidirectional
 
-- **The interrupt is paid on every firing.** Hooks surface the why on *any*
-  overlap with an anchor, and most touches are incidental to the coupling. A
-  definition lets the common case end in seconds — "my edit isn't inside this,
-  moving on." A work order invites the reader to switch tasks and make edits
-  nobody needed.
-- **Invariants belong where they are checked.** If the edit *is* relevant, the
-  reader opens the other anchors anyway — and a comment sitting at the anchor
-  site ("this wording is quoted verbatim in the advisor message and both doc
-  mirrors") arrives exactly when it is needed. Comments also live in the
-  reviewed diff next to the lines they govern, so normal review pressure keeps
-  them honest; a rule buried in a span file has no such pressure.
-- **Duplication drifts.** Stating the rule in both the why and a comment
-  guarantees the two copies eventually disagree.
-- **Definitions don't rot.** Invariants change more often than subsystem
-  identity. A why that only defines stays true across rewrites and re-anchors,
-  which is what makes it trustworthy when a hook injects it — the reader has no
-  cheap way to notice that a drifted why is lying.
+Lifecycle text must distinguish valid completion evidence from local clues.
+Prefer observable, durable evidence:
 
-The practical consequence for span authors: declaring a span isn't finished
-when the anchors and the why are written. Leave a comment at each load-bearing
-anchor site stating what must hold there. The why routes; the comments state
-the rules.
+```text
+The legacy reader remains required until two completed releases each report zero legacy references.
+```
+
+When agents could plausibly substitute invalid evidence, say so concisely:
+
+```text
+The legacy reader remains required until release telemetry satisfies the gate; current writers, fixtures, and callers do not establish completion.
+```
+
+Use the extra exclusion only when the tempting substitute is realistic. The
+wording ablation did not show it outperforming other complete clauses, so do
+not add it mechanically.
+
+A gate is bidirectional. It must prevent a premature transition and permit a
+legitimate one:
+
+```text
+Integer reads may be removed only after two completed releases each report zero legacy references; a newer legacy event invalidates the gate.
+```
+
+- With one clean release, preserve integer reads.
+- With two clean releases and no newer legacy event, removal is authorized.
+- With two clean releases followed by a newer legacy event, preserve integer
+  reads.
+- With unavailable telemetry, fail closed: preserve the behavior and report
+  that completion is unproven.
+
+Do not preserve temporary compatibility forever after the named evidence is
+satisfied. Conversely, do not treat local callers, current fixtures, or new
+write paths as substitutes for release evidence.
+
+## Complete the entire span lifecycle
+
+After a gate is satisfied and the behavior changes, the old why has completed
+its job. Rewrite it to describe the resulting standing relationship, or delete
+the span if no meaningful coupling remains:
+
+```text
+Before: Readers intentionally continue accepting integers until two completed releases each report zero legacy references.
+After: User IDs are UUID strings produced by the writer and consumed unchanged by the reader.
+```
+
+Updating the why is necessary but not sufficient. The declaration must also
+point only at current anchors. A content or range change can leave a former
+whole-file or line-range anchor stale even after a new range is added.
+
+For procedural mechanics, follow the git-span skill and command documentation.
+The essential invariant is:
+
+```text
+git span remove <name> <old-anchor>
+git span add <name> <new-anchor>
+git span drift <name>
+```
+
+`git span add` appends or refreshes the specified anchor; it does not retire a
+different anchor that the new one supersedes. Finish only when the scoped drift
+check exits successfully with zero drift. If the coupling itself no longer
+exists, retire the whole span rather than inventing a new relationship around
+leftover code.
+
+Do not put these CLI instructions into every why. The why should carry the
+decision; skills and repository documentation should carry repeatable
+maintenance procedure. Add a maintenance clause only when it conveys
+relationship-specific policy that generic tooling guidance cannot infer.
+
+## Write the smallest decision-preserving statement
+
+Begin with the relationship. Add only the fact that changes a plausible local
+decision.
+
+Router only:
+
+```text
+The Rust CLI and extension parse the same span declaration language.
+```
+
+Decision preserving:
+
+```text
+The Rust CLI and extension intentionally accept the same declarations, and parser edits remain incomplete until both pass the shared corpus.
+```
+
+Do not include every fact known about the subsystem. A why earns its hook
+activation by supplying information the anchor does not reliably provide.
+
+## Patterns
+
+### Temporary compatibility
+
+```text
+New writes use UUIDs, while readers intentionally continue accepting integers until two completed releases each report zero legacy references; newer legacy events invalidate the gate.
+```
+
+### Intentional asymmetry
+
+```text
+Refresh failures log out every client, but retry behavior intentionally differs: the web retries once and mobile never retries while backgrounded.
+```
+
+Name both the permitted difference and any surrounding behavior that must
+still agree. This prevents an exception from becoming permission for unrelated
+divergence.
+
+### Source of truth
+
+```text
+The refund eligibility catalog is authoritative, and billing code, UI, and documentation never broaden its policy independently.
+```
+
+Authority should identify both the winner and the consequence. Verify that the
+claim follows maintained policy, generation flow, ownership, or enforcement;
+do not invent authority merely to resolve disagreement.
+
+### Security prohibition
+
+```text
+Password-reset tokens remain confined to HTTPS request bodies and never enter URLs, logs, analytics, traces, or support events.
+```
+
+Name the protected data and prohibited representations precisely. “Never emit
+tokens” does not necessarily answer whether a redacted URL is allowed.
+
+### Shared performance budget
+
+```text
+Decode, resize, and cache stages share a 256 MB peak-memory ceiling for 100 images; buffering edits require the thumbnail-memory benchmark.
+```
+
+The benchmark enforces the number; the why supplies the nonlocal scope and
+when the focused check matters.
+
+### Distributed workflow
+
+```text
+Invoice delivery is at least once, uses the invoice ID for idempotency, and requires support replay to preserve that original key.
+```
+
+### Public and internal representations
+
+```text
+Public plans are Free, Pro, and Business, while internal billing codes intentionally remain private and never cross API, UI, or documentation boundaries.
+```
+
+### Written facts
+
+```text
+The finalized revenue dataset is authoritative, and every report section uses net USD millions with rounding only at display time.
+```
+
+Consistency alone is insufficient when all representations can repeat the same
+wrong fact.
+
+### Contextual verification
+
+```text
+The Rust CLI and extension accept the same declarations; parser edits require both implementations to pass the shared corpus.
+```
+
+Name a command only when it is stable and not readily discoverable. Make the
+trigger conditional so a read-only activation does not sound like a work
+order.
+
+## Keep activation safe
+
+Every hook activation interrupts another task. A why should be quick to
+classify and relevant from every anchor.
+
+- Anchor the smallest coherent regions governed by the same decision.
+- Do not instruct an agent to edit every anchor automatically.
+- Make edit-only checks conditional.
+- Split spans with different authorities, lifetimes, gates, or exceptions.
+- Avoid overlapping spans that restate the same decision.
+- Treat contradictory repository evidence as a staleness signal to resolve.
+- Report an unresolved conflict instead of silently choosing by hook order.
+
+An unrelated read should require no work. Clear conditional grammar such as
+“parser edits require” helps an agent distinguish durable context from an
+immediate instruction.
+
+## What does not belong in a why
+
+### Change history
+
+```text
+We switched IDs to UUIDs after integer collisions caused issue #482.
+```
+
+State the standing compatibility decision, not its story.
+
+### Generic span-maintenance procedure
+
+```text
+After editing, run remove, add, why, drift, tests, and status.
+```
+
+Keep generic commands in skills or repository instructions. A why should not
+spend its hook budget teaching routine CLI usage.
+
+### Vague warnings
+
+```text
+These files are important and should stay in sync.
+```
+
+Name the authority, invariant, permitted difference, or evidence gate.
+
+### Inferable implementation
+
+```text
+The worker calls sendInvoice and increments retryCount on failure.
+```
+
+Visible control flow does not justify injected context. State nonlocal delivery
+semantics instead.
+
+### Unconditional work orders
+
+```text
+Run all tests, update every client, and ask the platform team for review.
+```
+
+Broad workflow belongs in repository instructions, CI, or ownership controls.
+Include focused verification only when it is specific to the anchored decision
+and conditional on a relevant edit.
+
+### Unsupported or absolute lifecycle claims
+
+```text
+The fixture is authoritative.
+Never remove integer support.
+```
+
+Verify authority before recording it. Replace permanent prohibitions on
+temporary behavior with evidence-gated state transitions.
+
+## Prefer stronger mechanisms
+
+Use shared implementations, types, schemas, tests, linters, benchmarks, CI,
+or ownership rules when they can fully express and enforce the requirement. A
+span may supplement them with unique nonlocal decision context; it should not
+replace them.
+
+Do not create a span when one local comment reaches every relevant reader, a
+glob rule selects the real scope, the relationship is obvious from structure,
+or the association existed only for the current task.
+
+## Validation checklist
+
+Before accepting a why:
+
+1. Read every anchor from the final working tree.
+2. Name the plausible wrong local decision the why prevents.
+3. State the relationship in complete, present-tense clauses.
+4. Add only the required intentionality, authority, invariant, exception, or
+   evidence gate.
+5. Ensure each label is followed by a complete clause.
+6. Make temporary state removable through observable evidence.
+7. Distinguish valid completion evidence from tempting local substitutes when
+   needed.
+8. Make the gate authorize its valid transition as well as block invalid ones.
+9. After a transition, verify the behavior and update or retire the substantive
+   why.
+10. Retire every superseded anchor; remember that `add` does not replace a
+    different whole-file or range anchor.
+11. Require `git span drift` to exit successfully with zero drift.
+12. Simulate activation from every anchor, including an unrelated read.
+13. Verify every named source, metric, command, and document exists and is
+    current.
+14. Check for overlapping, stale, or conflicting spans.
+15. Remove inferable detail, generic CLI procedure, and unconditional work
+    orders.
+16. Confirm no executable or structural mechanism should replace the span.
+
+The final test is:
+
+> If an agent encounters any anchor independently, does this why preserve the
+> intended decision, permit valid state changes, and leave both its meaning and
+> anchor set accurate after the change?
 
 ## Related
 
+- [Evaluating Span Whys](evaluating-span-whys.md) — the controlled evaluation
+  method behind these recommendations.
 - [Git Span Documentation Touchpoints](../meta/git-span-documentation-touchpoints.md)
-  — the map of guidance surfaces (CLI help, man page, skills, agents, hook
-  templates) that must be walked when the recommended why-writing convention
-  changes.
+  — related documentation surfaces to review when this convention changes.
