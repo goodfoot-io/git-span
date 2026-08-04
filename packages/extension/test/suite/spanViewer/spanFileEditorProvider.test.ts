@@ -188,6 +188,24 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     assert.ok(opened, 'Expected a gitSpan.spanFileViewer tab to open (fallback pane) for non-span content');
   });
 
+  it('delegates a .span/ dotfile to the default text editor instead of showing the error webview', async () => {
+    const dotFilePath = path.join(spanDir, '.gitignore');
+    fs.writeFileSync(dotFilePath, '*.log\n');
+    const uri = vscode.Uri.file(dotFilePath);
+    testOnlyRenderOutcomes.delete(uri.toString());
+    testOnlyLastPostedDocument.delete(uri.toString());
+
+    await vscode.commands.executeCommand('vscode.openWith', uri, SPAN_FILE_VIEW_TYPE);
+
+    const asText = await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === uri.fsPath);
+    assert.ok(asText, 'Expected .span/.gitignore to open in a text editor, not the custom webview');
+    assert.strictEqual(
+      vscode.window.activeTextEditor?.document.getText(),
+      '*.log\n',
+      'Expected the text editor to show the dotfile content itself'
+    );
+  });
+
   it('posts a drifted anchor with the reverse-applied historical side, and ladder-resolved history pairs', async () => {
     // The worktree file: drifted at line 8, outside the newest commit's hunk.
     fs.writeFileSync(path.join(workspacePath, 'src.ts'), S3);
