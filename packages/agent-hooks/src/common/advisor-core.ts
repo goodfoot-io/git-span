@@ -1990,7 +1990,7 @@ function renderUncoveredReason(
     '',
     actionLine,
     '',
-    '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+    '`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range',
     '`git span why <name> "<why>"`',
     '',
     'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.'

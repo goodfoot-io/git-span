@@ -185,7 +185,7 @@ a line range wherever the covering row carries one, followed by that span's
 Dispatch a forked subagent to determine if this file carries implicit
 dependencies and to then use `git span` to document them:
 
-`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
+`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range
 `git span why <name> "<why>"`
 
 The "<why>" is one or two complete present-tense clauses stating the

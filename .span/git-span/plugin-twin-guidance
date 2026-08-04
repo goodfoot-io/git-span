@@ -1,0 +1,10 @@
+plugins-claude/git-span/agents/expert.md rk64:92119ed4ab0ea7af
+plugins-claude/git-span/skills/git-span/references/triage.md rk64:a8ece9491b0387d4
+plugins-claude/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
+plugins-claude/git-span/skills/reconcile/SKILL.md rk64:884fd2dae93f086b
+plugins-codex/git-span/agents/expert.md rk64:92119ed4ab0ea7af
+plugins-codex/git-span/skills/git-span/references/triage.md rk64:a8ece9491b0387d4
+plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
+plugins-codex/git-span/skills/reconcile/SKILL.md rk64:04bcfeea2b1f8f13
+
+The Claude plugin tree is the normative source for the expert, triage, whole-file-anchor, and reconcile guidance, and the Codex tree mirrors it; an edit to one side lands identically on the other, harness-specific fork-dispatch sections excepted.

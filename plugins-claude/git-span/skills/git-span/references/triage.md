@@ -13,6 +13,7 @@
 |---|---|
 | Moved | `git span drift --fix <name>` |
 | Changed; anchors still agree at the same address | `git span add <name> <same-anchor>`; preserve its exact shape |
+| Changed whole-file anchor; the file is still consumed as a unit | `git span add <name> <same-bare-path>`; whole-file stays whole-file |
 | Changed; logical region moved | Locate its new extent, then `remove <old-anchor>` before `add <new-anchor>` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor |
 | Lifecycle gate satisfied | Make the authorized change, revise or retire the why, and reconcile or retire superseded anchors |

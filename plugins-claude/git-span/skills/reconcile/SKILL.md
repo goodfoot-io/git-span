@@ -163,7 +163,7 @@ spans the fork owns and the structural context the main agent gathered in Phase 
 Reconcile these <N> drifted spans (component: <component-label> — connected via <shared-file>). Do not commit.
 
 ## <name-1>
-- CHANGED: <path>#L<N>-L<M>
+- CHANGED: <path>#L<N>-L<M> (bare <path> for a whole-file anchor)
 - Healthy: <paths>
 - Why: <from drift output>
 
@@ -199,8 +199,9 @@ For each assigned span:
 
 | Category | Action |
 |---|---|
-| Bytes shifted, meaning preserved | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
-| Anchors still agree; content updated at the same address | `git span add <name> '<path>#L<N>'` (refresh the exact existing anchor shape) |
+| Whole-file anchor CHANGED; the file is still consumed as a unit | `git span add <name> '<path>'` — re-add the same bare path; a whole-file anchor stays whole-file |
+| Range anchor CHANGED at the same address; the logical region did not move | `git span add <name> '<path>#L<start>-L<end>'` — re-add the exact existing range, nothing else |
+| Logical region genuinely moved to a new range | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
 | Relationship gone entirely | `git span delete <name>` |
@@ -208,10 +209,14 @@ For each assigned span:
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
 | Authority remains unclear or no intentional change explains drift | Stop and report — the user decides |
 
+Never add a narrower range just because edited code now looks locally narrower: an unchanged whole-file anchor stays whole-file and an unchanged range keeps its exact boundaries. If a span accidentally holds both a whole-file anchor and a range anchor for the same file, retire the one that no longer reflects the logical region and keep exactly one.
+
 For deletion syntax or why rules, invoke the corresponding `git-span:git-span`
 section.
 
 5. `git span drift <name>` — require exit 0 and zero drift for this span.
+
+Confirm the intended canonical address occurs exactly once, every superseded address is absent, and the why remains accurate.
 
 Confirm each CHANGED finding; never bulk re-add anchors. `add` does not retire a
 different address. Coordinate overlapping ranges. Stop on unconfirmed findings.

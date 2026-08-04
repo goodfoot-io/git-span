@@ -1660,6 +1660,106 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
+    it('a whole-file semantic edit renders the bare path and keeps the preserve-shape closing — never a fabricated `#L` range', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ start: 0, end: 0 })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED', start: 0, end: 0 })],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: whole-file semantic edit. start/end of 0 is the whole-file
+      // anchor, so the finding renders the bare path with zero `#L` marker —
+      // a fabricated range would bias a whole-file refresh toward a new range
+      // — and the closing keeps the preserve-shape rule.
+      expect(result.reason).toContain('└─ src/app.ts — changed');
+      expect(result.reason).not.toContain('app.ts#L');
+      expect(result.reason).toContain('preserve anchor shape');
+    });
+
+    it('a same-range hash refresh renders the exact range and never suggests remove-then-add', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: same-range hash refresh. The logical region did not move, so
+      // the message renders the exact `#L1-L10` boundaries, the closing's
+      // remove-then-add stays conditional on an address change (never a
+      // blanket prescription), and nothing in the message hints at movement.
+      expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
+      expect(result.reason).toContain(
+        'preserve anchor shape; if an address changed, remove its old anchor before adding the new one'
+      );
+      expect(result.reason).not.toContain('moved');
+    });
+
+    it('a genuine range move renders the destination range, not the stale pre-move address', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        // The moved finding's row carries the destination coordinates
+        // (`#L3-L7`), and the CHANGED finding at that same address is what the
+        // report surfaces — MOVED itself is positional, never debt (isDebt),
+        // so it can never annotate a bullet on its own.
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'MOVED', start: 3, end: 7 }),
+          driftRow({ status: 'CHANGED', start: 3, end: 7 })
+        ],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts#L3-L7', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: genuine range move. The message renders the destination
+      // range `#L3-L7` — the address the agent re-adds after retiring the old
+      // one — never a stale `#L1-L10`, and the closing gates the removal on
+      // the address change.
+      expect(result.reason).toContain('└─ src/app.ts #L3-L7 — changed');
+      expect(result.reason).not.toContain('app.ts#L1-L10');
+      expect(result.reason).toContain('if an address changed, remove its old anchor before adding the new one');
+    });
+
+    it('a span holding both a whole-file anchor and a range anchor on one file renders each distinctly', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ start: 0, end: 0 }), porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'CHANGED', start: 0, end: 0 }),
+          driftRow({ status: 'CHANGED' })
+        ],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts', '- src/app.ts#L1-L10', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: whole-file-plus-range duplication. Both anchors on the same
+      // file render distinctly — the stacked whole-file entry keeps its
+      // explicit `(whole file)` marker, the range keeps its `#L1-L10` column —
+      // so the agent can see the overlap and retire the one that no longer
+      // reflects the logical region.
+      expect(result.reason).toContain('src/app.ts (whole file) — changed');
+      expect(result.reason).toContain('#L1-L10 — changed');
+    });
+
     it("a 'report-only' uncovered preview with harness 'codex' names `spawn_agent` and the in-fork skill line", async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
@@ -1720,7 +1820,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         [
           'Dispatch a forked subagent to determine if these files carry implicit dependencies and to then use `git span` to document them:',
           '',
-          '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+          '`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range',
           '`git span why <name> "<why>"`',
           '',
           'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.',

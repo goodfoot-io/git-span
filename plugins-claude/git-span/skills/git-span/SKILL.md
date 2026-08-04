@@ -38,6 +38,7 @@ locate a changed anchor's new extent; `history` does not report that destination
 - `add` never retires what it supersedes. Moving an anchor to a new path/range is
   `remove <old-anchor>` then `add <new-anchor>`; skip `remove` and `drift` reports the old
   one as `Moved` forever.
+- A whole-file anchor stays whole-file on refresh: re-add the same bare path; never narrow it to a range because edited code looks locally narrower.
 - Anchor end-line must equal the file's *current* line count — `add` rejects
   `end=N exceeds file line count (M)`. Run `wc -l <path>` right before writing
   `#Lstart-Lend`, especially right after editing that file.
