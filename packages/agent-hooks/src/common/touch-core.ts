@@ -269,9 +269,9 @@ function driftHeader(driftedCount: number, kind: TouchInput['kind']): string {
 function driftFooter(driftedNames: string[]): string {
   if (driftedNames.length === 1) {
     const name = driftedNames[0];
-    return `Restore agreement before committing — docs follow deliberately committed code. Preserve anchor shape; if an address changed, remove its old anchor before adding the new one. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. If the fix needs a code change or the coupling no longer holds, tell the user instead.`;
+    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, remove its old anchor before adding the new one. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
   }
-  return 'For each out-of-date span: restore agreement before committing — docs follow deliberately committed code. Preserve anchor shape; if an address changed, remove its old anchor before adding the new one. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. If the fix needs a code change or a coupling no longer holds, tell the user instead.';
+  return 'For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, remove its old anchor before adding the new one. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.';
 }
 
 /** The {@link RangeLabel} for a porcelain row — `0-0` is the whole-file anchor. */

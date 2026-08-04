@@ -9,7 +9,7 @@ one batch's `drift --fix` can silently re-anchor the other's span too — see Go
 session's work, not yours — never attribute it to this batch's diff.
 
 ## Triage
-Dump whys through the CLI, then batch history lookups by path class:
+Dump whys through the CLI; run history once per span only when provenance is unclear:
 ```bash
 git span list
 ```
@@ -22,6 +22,7 @@ Classify each span, skip `clean`:
 | label-fragment | `Label: fragment` without a subject and verb | rewrite as a complete clause; keeping the label is optional |
 | work-order | generic procedure instead of decision context | remove the procedure; retain decisive nonlocal facts |
 | drift-claim | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
+| lifecycle-gate | behavior is conditional on named evidence | Verify the evidence. Preserve behavior and why when the gate is unmet, invalidated, or unavailable. When satisfied, make the authorized change, then revise or retire the why and every superseded anchor |
 | vague | true but generic; a leading blank line inside a triple-quoted why string is this class too (cosmetic, not meaningful) | tighten / strip the artifact |
 | drift-range | anchor content shifted but still the same logical site | `drift --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
 | mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | Find the real site, remove the old range, then add the new one |
@@ -51,7 +52,10 @@ Classify each span, skip `clean`:
    share a file and reads as false drift. Expect 0 drift. A span shown
    modified in `git status` with an empty `git diff HEAD -- <path>` is inert
    noise from another session, not a finding.
-7. A behavioral code fix is out of scope — report it, don't make it.
+7. Make behavior changes decided by a confirmed authority or satisfied gate;
+   otherwise stop on ambiguity. After a gate transition, revise or retire the why
+   and every superseded anchor. Preserve behavior and why when its evidence is
+   unmet, invalidated, or unavailable. Require scoped zero drift either way.
 
 ## Gotchas
 - `drift --fix` reconciles every span anchored to the file it touches, not
@@ -84,9 +88,9 @@ Classify each span, skip `clean`:
 | Delete | `git span delete <name>` when no real coupling remains; keep it only if you can confirm the relationship |
 
 ## Validation
-- Why rewrites and `.span/**` edits: no validation.
-- Comment-only source edits: no validation.
-- Any behavioral code change: out of scope — flag it instead.
+- Why, `.span/**`, and comment-only edits require no package checks; scoped
+  `git span drift <name>` must still exit 0 after every batch.
+- Behavioral changes require the repository's code validation.
 - End of campaign: full `git span drift` exit 0 and `git span doctor` clean.
 
 ## Report

@@ -1611,18 +1611,18 @@ function renderDriftReason(
   // anything, so there is nothing to retry.
   const lead =
     harness === 'claude'
-      ? 'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code)'
+      ? 'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)'
       : harness === 'codex'
-        ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code)'
-        : 'Bring the coupled files back into agreement (docs follow deliberately committed code)';
+        ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)'
+        : 'Bring the coupled files back into agreement (follow confirmed authority)';
   const tail =
     harness === 'generic'
       ? mode === 'may-hold'
-        ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
-        : `then reconcile: ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+        ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
+        : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
       : mode === 'may-hold'
-        ? `— ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
-        : `— ${action}. Load the \`git-span:reconcile\` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
+        ? `— ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
+        : `— ${action}. Load the \`git-span:reconcile\` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
   const closing = `${lead}${harness === 'generic' ? ',' : ''} ${tail}`;
   return [
     `This change leaves ${subject} out of date:`,

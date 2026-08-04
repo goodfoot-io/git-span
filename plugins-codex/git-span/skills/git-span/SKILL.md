@@ -20,16 +20,16 @@ After any `add`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
 
 The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
 reconcile commit is needed for it. Semantic drift — content no longer matching what a
-span asserts — needs your action: conform the lagging artifact (docs follow the
-committed code; code edits need the user's say-so) and fold it, with the `.span/`
+span asserts — needs your action: conform the lagging artifact when a confirmed authority
+or satisfied gate decides it; otherwise ask. Fold the fix, with the `.span/`
 refresh, into the **same commit** as the code change, never a follow-up. Before `git commit`/`git push` a `PreToolUse` advisor
 re-checks the changeset and holds the command once if real span debt remains; see
 `references/understanding-hook-output.md` § "Resolving a held commit".
 
 ## Trust boundary
-`git span drift`/`show`/`why`/`history` output is ground truth. Never re-derive it with
-`git log`, `git show <hash>`, or a raw `Read` of a `.span/*` file — act on the CLI's own
-output and stop.
+`git span drift`/`show`/`why`/`history` output is authoritative for span state. Do not
+read `.span/*` or reconstruct it with generic git. Use a targeted file diff only to
+locate a changed anchor's new extent; `history` does not report that destination.
 
 ## Core gotchas
 - `drift --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
@@ -82,9 +82,10 @@ operations unavailable in the background."
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```
 git span drift <name>                     # see which anchor(s) drifted and how
+git span history <name>                   # if intent or authority is unclear; covers every anchor
 # Moved (same content, new path):  git span drift --fix <name>   suffices
 # Changed, anchors still agree:    keep the SAME range unless the file's line count moved
-# Changed, doc lags committed code: rewrite the doc first; code fixes need the user's say-so
+# Changed, anchors disagree: conform the side a confirmed authority or satisfied gate decides
 git span remove <name> <old-anchor>       # only if path or range actually changed
 git span add <name> <new-anchor>          # wc -l <path> first
 git span why <name> "..."              # if relationship/lifecycle meaning changed
@@ -105,7 +106,6 @@ with `wc -l` and write the new range).
 A satisfied evidence gate authorizes its transition. Change the behavior, revise or retire
 the why, and reconcile or retire superseded anchors. `add` refreshes only the exact anchor;
 preserve its shape unless the logical region changed. Require scoped drift to exit 0.
-
 
 ## Where to go next
 Pick the first that fits:

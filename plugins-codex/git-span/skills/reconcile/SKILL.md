@@ -5,7 +5,7 @@ description: Reconcile drifted git spans surfaced by `git span drift`. Use when 
 
 <instructions>
 
-Reconcile every drifted span reported by `git span drift`. The workflow has two phases: **research** (read-only — identify what drifted and why) then **execution** (mutate `.span/` files to re-anchor, re-hash, or delete). The research phase is done inline by the main agent; the execution phase is handed to forked subagents.
+Reconcile every drifted span reported by `git span drift`. The workflow has two phases: **preparation and research** (auto-fix mechanical drift, then investigate) and **execution** (restore the relationship and reconcile its declaration). The main agent handles the first phase; forked subagents handle execution.
 
 Work is partitioned by **file-connected components** — clusters of drifted spans that share at least one anchored file. Within a component, only spans with overlapping ranges on the same file must be reconciled together; the rest of the component is independent. Across components, spans are fully independent. Each component maps to one or more forks, all running in parallel: an oversized component (too many spans for one fork) splits into cohesive sub-batches by topic/subsystem, as long as no split separates spans with overlapping ranges on a shared file. A span that shares no files with any other drifted span is a component of size one — still a valid fork unit.
 
@@ -13,11 +13,11 @@ Some steps reference sections of the `git-span:git-span` skill (e.g. "the comman
 
 ---
 
-## Phase 1 — Research (main agent, read-only)
+## Phase 1 — Preparation and research (main agent)
 
-Do not mutate any file. Every command in this phase is read-only.
+Only step 1 may mutate `.span/`; the remaining research is read-only.
 
-### 1. Auto-fix and commit before any research
+### 1. Auto-fix mechanical drift
 
 `--fix` is global (it touches all spans), so run it once before partitioning:
 
@@ -25,19 +25,9 @@ Do not mutate any file. Every command in this phase is read-only.
 git span drift --fix
 ```
 
-If `--fix` changed spans:
-- **`resolved, pending commit`**: commit source files first, then the span:
-  ```bash
-  git add <source-files> && git commit -m "Commit shifted source files"
-  git add .span && git commit -m "Re-anchor moved span anchors"
-  ```
-  *(If this status is unfamiliar, invoke `git-span:git-span` — the terminal-statuses section covers `resolved, pending commit`.)*
-- **Otherwise**: commit the span directly:
-  ```bash
-  git add .span && git commit -m "Re-anchor moved span anchors"
-  ```
-
-If `--fix` changed nothing, say so explicitly and note the reason (no MOVED or whitespace-equivalent CHANGED anchors). Do not proceed silently.
+If it changes `.span/`, commit that refresh with any uncommitted anchored source
+it records; if the source is already committed, commit `.span/` alone. Use one
+commit. Otherwise continue.
 
 ### 2. Run `git span drift` again
 
@@ -70,21 +60,6 @@ connected — they form one component. A drifted span whose anchored files each
 appear in only one drifted span is a component of size one. Spans that appear in
 the tree output but are not drifted are context the fork will use to understand
 what the correct line ranges should be.
-
-*(If the tree output format is unfamiliar, invoke `git-span:git-span` — the
-inspecting-spans section covers the nested markdown-list schema.)*
-
-*Example: `wiki/meta/update-order`, `git-span-touchpoints/cli-config`, and
-`wiki/meta/command-behavior-source-of-truth` all anchor `cli/mod.rs`, while
-`docs/merge-conflict-fix-contract` anchors `command-reference.md` and
-`terminal-statuses.md`, which no other drifted span anchors. Running
-`git span tree cli/mod.rs command-reference.md terminal-statuses.md --depth 1`
-in one call returns `cli/mod.rs` as a top-level tree with all three spans as
-children (one component) and `command-reference.md`/`terminal-statuses.md`
-merged onto their own clique line as a second, separate top-level tree (a
-second component) — the same result as three single-file calls, without
-manually cross-referencing the outputs. These two components can be forked in
-parallel.*
 
 Find the connected components of this graph. Each component is one unit of work.
 
@@ -129,7 +104,7 @@ will read the why from the same drift output.
 
 Classify each anchor as CHANGED or DELETED (from the drift output — no further
 classification yet). The forks will read the files, compare against history, and
-assign the final category (re-hash, range-shift, delete, code-fix-first, add-why).
+assign the final category (re-hash, range-shift, delete, gate-transition, add-why).
 
 **STOP if a DELETED anchor's file no longer exists on disk.** The fork can't
 investigate a deleted file — the main agent must handle this case inline:
@@ -174,7 +149,7 @@ oversized component). If there are N fork units, N forks run in parallel.
 **No worktree isolation** — fork units are disjoint by construction (spans with
 overlapping ranges on a shared file are never split across units), so forks
 touch disjoint `.span/` files. They share the main worktree without conflict.
-Only the main agent commits at the end.
+Only the main agent commits.
 
 Dispatch each fork unit with the `spawn_agent` tool, setting `fork_turns: "all"`
 so the fork runs to completion. Forks inherit the full conversation context
@@ -197,18 +172,16 @@ Each fork reads this section from context to know what to do. The main agent's
 
 For each assigned span:
 
-1. Read the current bytes at each drifted anchor location.
-2. Run `git span history <name>`; compare the leading live-drift diff
-   (`current` in `--format json`) against anchored content. Its `drift source`
-   line (JSON `sources`) says which resolver layers observed drift. `head` does
-   **not** prove the change is committed: a worktree-only declaration re-anchor
-   can produce it too. Inspect the declaration diff and timeline. If only the
-   declaration changed, inspect it and either commit or revert it rather than
-   searching timeline entries for a content commit that does not exist. A
-   line range lists sources as worktree → index → head; a whole-file anchor
-   lists index → worktree → head. A deliberate, committed change makes
-   that side authoritative (full policy:
-   `wiki/guides/reconciliation-authority.md`).
+1. Run `git span history <name>` once for all anchors. Use its live-drift diffs
+   to identify byte changes, `drift source` (`sources` in JSON) to identify layers, and its
+   declaration diff and timeline to establish provenance. `HEAD` alone does not
+   prove a committed change; a worktree-only declaration re-anchor can produce it.
+   If only the declaration changed, inspect it and either commit or revert it rather
+   than searching timeline entries for a content commit that does not exist.
+   History does not locate a CHANGED anchor's destination, so use a targeted
+   old/current file diff only when its logical region moved. Apply
+   `wiki/guides/reconciliation-authority.md` when authority remains unclear.
+2. Read current bytes at each drifted anchor.
 3. Write a concise confirmation of the relationship and its decisive nonlocal
    fact. Stop if you cannot.
 4. Classify and execute:
@@ -217,37 +190,32 @@ For each assigned span:
 |---|---|
 | Bytes shifted, meaning preserved | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
 | Anchors still agree; content updated at the same address | `git span add <name> '<path>#L<N>'` (refresh the exact existing anchor shape) |
-| Doc anchor lags a deliberate committed code change | Rewrite the doc to describe current reality, then re-anchor onto it; include the doc diff in your report |
+| One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
 | Relationship gone entirely | `git span delete <name>` |
 | Span has no why | Invoke the core skill's why rules, then use `git span why` |
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
-| Fix needs a code edit, the doc may be the intended contract, or the drift has no intentional commit | Stop and report — the user decides |
+| Authority remains unclear or no intentional change explains drift | Stop and report — the user decides |
 
-*(If deletion syntax is unfamiliar, invoke `git-span:git-span` — the
-command-reference section covers `git span delete`. If source code needs
-fixing or you need to write a why, invoke `git-span:git-span` — the
-"Declare a new coupling" recipe covers why-writing conventions.)*
+For deletion syntax or why rules, invoke the corresponding `git-span:git-span`
+section.
 
 5. `git span drift <name>` — require exit 0 and zero drift for this span.
 
-**Rules**: Never bulk re-add every anchor to clear the exit code. Each CHANGED
-finding requires its own relationship confirmation. `add` refreshes only the exact
-path/range specified; it does not retire a different superseded anchor. Coordinate ranges when
-multiple spans in the component anchor the same file. Stop and report if any
-finding cannot be confirmed. Do not commit.
+Confirm each CHANGED finding; never bulk re-add anchors. `add` does not retire a
+different address. Coordinate overlapping ranges. Stop on unconfirmed findings.
+Do not commit.
 
 ### After all forks complete
 
 ```bash
 git span drift     # must exit 0 with "0 drift"
 git span doctor    # must report "no findings"
-# conformed docs commit before the spans that re-anchor onto them:
-git add <conformed-doc-paths> && git commit -m "Conform docs to committed code"
-git add .span && git commit -m "Reconcile drifted spans"
+git add <changed-anchor-paths> .span
+git commit -m "Restore spanned relationships"
 ```
-Skip the doc commit when no fork conformed a doc. Surface every doc diff in
-the final report.
+Omit content paths when no anchor changed. Run required validation for every
+behavior change and surface every anchor diff in the final report.
 
 If any fork reported a failure, or `git span drift` is non-zero, handle the
 failing fork unit inline (its spans are isolated from the successful units by
@@ -257,5 +225,10 @@ definition, so only the failed unit needs rework).
 
 ## Git allowlist
 
-When resolving spans in a shared worktree, restrict to: `git span …`, edits to doc files your assigned spans anchor (doc-conform only), `git add .span[/<name>]`, `git add <conformed-doc>`, `git commit -m` (never `-a` or `--amend`), `git checkout <commit-ish> -- .span/<name>`, and read-only `git status`/`git diff`/`git log`/`git show`. Never edit code, never touch paths your spans don't anchor, never rewind HEAD.
+When resolving spans in a shared worktree, restrict to: `git span …`, edits to
+assigned anchors when confirmed authority or a satisfied gate decides them, required tests,
+`git add .span[/<name>]`, `git add <assigned-anchor>`, `git commit -m` (never
+`-a` or `--amend`), `git checkout <commit-ish> -- .span/<name>`, and read-only
+`git status`/`git diff`/`git log`/`git show`. Never touch unrelated paths or
+rewind HEAD.
 </instructions>

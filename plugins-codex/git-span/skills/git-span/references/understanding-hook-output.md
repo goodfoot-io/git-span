@@ -65,12 +65,12 @@ Stripe-backed server.
 
 ---
 
-Restore agreement before committing — docs follow deliberately committed
-code. Preserve anchor shape; if an address changed, remove its old anchor
+Restore agreement before committing. Follow confirmed authority. Preserve
+anchor shape; if an address changed, remove its old anchor
 before adding the new one. Update or retire the why only if its meaning
 changed. Require `git span drift billing/checkout-request-flow` to report
-zero, then check the other anchors. If the fix needs a code change or the
-coupling no longer holds, tell the user instead.
+zero, then check the other anchors. Conform a side only when confirmed authority
+or a satisfied gate decides it; report ambiguity or an obsolete coupling.
 </git-span>
 ```
 
@@ -164,13 +164,14 @@ Stripe-backed server.
 ---
 
 Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
-bring the coupled files back into agreement (docs follow deliberately
-committed code) — preserve anchor shape; if an address changed, remove its
+bring the coupled files back into agreement (follow confirmed authority) —
+preserve anchor shape; if an address changed, remove its
 old anchor before adding the new one; update or retire the why only if its
 meaning changed; require `git span drift billing/checkout-request-flow` to
 report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The
-hold will not fire again for the same debt state. If the fix needs a code
-change or a dependency no longer holds, tell the user instead.
+hold will not fire again for the same debt state. Conform a side only when
+confirmed authority or a satisfied gate decides it; report ambiguity or an
+obsolete dependency.
 ```
 
 With several drifted spans the sections stack, separated by `---`, the header
@@ -272,8 +273,8 @@ left to tell the agent that the status preview didn't already say.
    `fork_turns: "all"`, to bring the coupled files back into agreement
    (loading the `git-span:reconcile` skill in the fork), or just retry with
    the findings unchanged, since an identical set of findings is only held
-   on once. If the fix needs a code change or a dependency no longer holds,
-   tell the user instead.
+   on once. Conform a side only when confirmed authority or a satisfied gate
+   decides it; report ambiguity or an obsolete dependency.
 2. Uncovered writes: spawn a forked subagent with `spawn_agent`, setting
    `fork_turns: "all"`, to determine whether the uncovered files carry
    implicit dependencies and to use `git span` to document them (loading the

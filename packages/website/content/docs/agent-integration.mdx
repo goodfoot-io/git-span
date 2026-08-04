@@ -42,13 +42,13 @@ Stripe-backed server.
 ---
 
 Dispatch a forked subagent to bring the coupled files back into agreement
-(docs follow deliberately committed code) — preserve anchor shape; if an
+(follow confirmed authority) — preserve anchor shape; if an
 address changed, remove its old anchor before adding the new one; update or
 retire the why only if its meaning changed; require `git span drift
 checkout-flow` to report zero. Then retry. Load the `git-span:reconcile`
-skill in the fork. The hold will not fire again for the same debt state. If
-the fix needs a code change or a dependency no longer holds, tell the user
-instead.
+skill in the fork. The hold will not fire again for the same debt state.
+Conform a side only when confirmed authority or a satisfied gate decides it;
+report ambiguity or an obsolete dependency.
 ```
 
 The closing copy uses the Claude harness's vocabulary (`Agent` with `subagent_type: "fork"`); under Codex the same direction is spelled `spawn_agent` with `fork_turns: "all"`.
@@ -105,7 +105,7 @@ Separately, and with nothing to configure: the uncovered-writes list omits files
 
 ### Resolving a held commit
 
-1. Semantic drift: fix each listed span (`git span add` the drifted anchors, or `git span delete` if the coupling is gone), then retry the same commit — or just retry with the findings unchanged, since an identical set of findings is only held on once.
+1. Semantic drift: restore each relationship using confirmed authority or a satisfied gate, reconcile its why and anchors, and require scoped zero drift before retrying. An unchanged retry proceeds because the same findings are held only once.
 2. Uncovered writes: either declare the coupling (`git span add` then `git span why <name> "..."`) or just retry — a second attempt at an unchanged debt state passes.
 
 See [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans) for the full triage workflow.

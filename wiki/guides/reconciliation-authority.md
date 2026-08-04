@@ -1,6 +1,6 @@
 ---
 title: Reconciliation Authority
-summary: What to do with the drifted anchors `git span drift --fix` leaves drifting — decide which coupled artifact is the source of truth via git history, conform docs to intentional code changes automatically, and escalate to the user when the fix requires editing code or authority is ambiguous.
+summary: What to do with drift that `git span drift --fix` leaves behind — follow demonstrated authority, complete gate-authorized transitions, and escalate ambiguous changes.
 aliases: [Drift Authority, Docs Follow Source]
 tags: [guide, git-span]
 keywords: [reconcile, drift, authority, source of truth, fail closed, doc rewrite]
@@ -26,7 +26,8 @@ disagreement hides the drift signal without resolving it.
 When coupled artifacts disagree, decide which side is authoritative, then act
 by cost of error:
 
-1. **Locate authority via demonstrated intent.** `git span drift` reports the
+1. **Locate authority via the why and demonstrated intent.** A confirmed why may
+   name an authoritative anchor. `git span drift` reports the
    resolver layers that observed drift, but `HEAD` alone does not prove the
    declaration or content change was committed: a worktree-only declaration
    re-anchor can compare against `HEAD` and produce that source too. Inspect the
@@ -37,20 +38,24 @@ by cost of error:
    drifting behind a deliberate, committed code change means the doc is
    wrong. A code change with no coherent commit story may be a regression —
    the doc may be the truth.
-2. **Docs follow authoritative code automatically.** Rewrite the doc to
-   describe current reality — no "we used to" framing — without asking.
-3. **Escalate to the user** when the fix requires editing code, when the doc
-   is a contract or spec that may be the intended truth rather than a
-   description, or when the drift has no intentional commit behind it.
+2. **Conform the non-authoritative side automatically.** Validate code changes.
+   Without a confirmed contrary authority, docs follow deliberate committed code
+   and describe current reality without "we used to" framing.
+3. **Complete gate-authorized transitions.** When the named evidence satisfies
+   a lifecycle gate, make its behavior change, revise or retire its why, and
+   reconcile or retire every superseded anchor. Run the required code checks
+   and require scoped zero drift.
+4. **Escalate ambiguous authority.** This includes a possible contract whose
+   authority is not established and drift with no intentional change behind it.
 
 Fail closed on authority ambiguity, not on editing per se.
 
-## When conforming a doc
+## When conforming an anchor
 
 - Show the doc diff in the final report; the user reviews after, not before.
-- Commit content files first, then the re-anchored spans — anchors on
-  uncommitted source sit at `ResolvedPendingCommit` until the source commit
-  lands ([types.rs](../../packages/git-span/src/types.rs#L136-L138)).
+- Commit content and its `.span/` refresh together. Before that commit, anchors on
+  uncommitted source appear as `ResolvedPendingCommit`
+  ([types.rs](../../packages/git-span/src/types.rs#L136-L138)).
 - Keep the span's why across routine re-anchors; write a new one only when
   the subsystem itself changed
   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L118-L120)).

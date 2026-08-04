@@ -139,6 +139,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(block).toContain('Preserve anchor shape');
       expect(block).toContain('remove its old anchor before adding the new one');
       expect(block).toContain('`git span drift billing/checkout-request-flow` to report zero');
+      expect(block).toContain('Follow confirmed authority');
+      expect(block).toContain('Conform a side only when confirmed authority or a satisfied gate decides it');
 
       // Same span, same status, same session (same MemoStore instance) — the
       // render must not repeat.

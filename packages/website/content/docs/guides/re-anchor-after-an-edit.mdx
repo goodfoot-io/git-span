@@ -47,7 +47,7 @@ Added 0 anchors and resolved 1 in place to span `checkout-flow`.
 
 "Added 0 anchors" is not a failure — the in-place resolution is the point. The next `git span drift` run reports the anchor clean. This is also how you confirm an intentional content change that `drift` flagged: re-adding the anchor declares "yes, the new content is what the span should track."
 
-Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. A coupled doc that now lags the change is updated first (docs follow deliberately committed code); if bringing the anchors back into agreement would mean changing code, surface that decision instead of re-anchoring over it.
+Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. Conform a side only when confirmed authority or a satisfied gate decides it; otherwise surface the ambiguity instead of re-anchoring over disagreement. Without a confirmed contrary authority, a doc that lags deliberate committed code follows the code.
 
 ## Moved range: remove the old anchor, add the new one
 
@@ -75,6 +75,10 @@ Re-anchoring doesn't touch the `why`. Inherit it only while the relationship and
 ```bash
 git span why checkout-flow "The browser initiates the charge request that the server validates; the server contract is authoritative for accepted fields."
 ```
+
+When a satisfied gate authorizes a behavior change, complete it, revise or
+retire the why, retire every superseded anchor, and run the required code
+checks before requiring scoped zero drift.
 
 ## Commit
 

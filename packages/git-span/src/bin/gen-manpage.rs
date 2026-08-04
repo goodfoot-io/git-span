@@ -50,7 +50,15 @@ fn main() -> anyhow::Result<()> {
     // SEE ALSO section.
     write!(buf, "{}", SEE_ALSO_SECTION)?;
 
-    std::fs::write(&out_path, &buf)?;
+    let rendered = String::from_utf8(buf)?;
+    let mut normalized = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    normalized.push('\n');
+
+    std::fs::write(&out_path, normalized)?;
     Ok(())
 }
 

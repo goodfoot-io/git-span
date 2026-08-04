@@ -1506,7 +1506,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.decision).toBe('hold');
       if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code)'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)'
       );
       expect(result.reason).toContain('Then retry.');
       expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
@@ -1516,7 +1516,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // Full-string pin of the complete closing: one assertion covers the exact
       // reconciliation order, retry placement, and scoped drift requirement.
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1532,7 +1532,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.decision).toBe('hold');
       if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       expect(result.reason).toContain(
-        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code)'
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)'
       );
       expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
       expect(result.reason).not.toContain('Determine if');
@@ -1540,7 +1540,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // ships it: `spawn_agent` with `fork_turns: "all"` leads, followed by the
       // reconciliation order, retry, and skill line.
       expect(result.reason).toContain(
-        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1566,11 +1566,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.decision).toBe('hold');
         if (result.kind !== 'semantic-drift') throw new Error('unreachable');
         expect(result.reason).toContain(
-          'Bring the coupled files back into agreement (docs follow deliberately committed code), then reconcile'
+          'Bring the coupled files back into agreement (follow confirmed authority), then reconcile'
         );
         // Full-string pin of the byte-identical pre-harness closing.
         expect(result.reason).toContain(
-          'Bring the coupled files back into agreement (docs follow deliberately committed code), then reconcile: preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Retry the command; the hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+          'Bring the coupled files back into agreement (follow confirmed authority), then reconcile: preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
         );
         expect(result.reason).not.toContain('forked subagent');
       }
@@ -1602,7 +1602,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // the `<name>` placeholder path — both pinned here, in the closing.
       expect(result.reason).toContain('This change leaves implicit dependencies out of date:');
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift <name>` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift <name>` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1653,7 +1653,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind === 'semantic-drift-report') {
         // Full closing pinned: report-only omits retry and keeps the skill line.
         expect(result.reason).toContain(
-          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Load the `git-span:reconcile` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
         );
         expect(result.reason).not.toContain('then retry');
         expect(result.reason).not.toContain('You may retry this command directly');

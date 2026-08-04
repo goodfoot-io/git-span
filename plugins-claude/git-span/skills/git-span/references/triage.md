@@ -1,22 +1,24 @@
 # Multi-span / uncertain-coupling triage
 
-1. Batch history lookups by path class, not per file: one
-   `git log --all --full-history -- <src-path-1> <src-path-2> ...` for all source paths,
-   one more for all doc paths. Never one call per file.
-2. Read the CURRENT content at each anchor (the file itself) to judge whether the
-   coupling still describes something real.
-3. Classify each drifted span with `git span drift` and resolve by row:
+1. Run `git span drift` once. For each drifted span, run `git span history <name>`
+   once; it covers every anchor. Use its live-drift diffs to identify byte changes,
+   `drift source` (`sources` in JSON) to identify observing layers, and its timeline to
+   establish provenance. `HEAD` alone does not prove a change was committed.
+2. Read current anchor content and confirm the relationship. History does not locate a
+   CHANGED anchor's destination; use a targeted old/current file diff only when its
+   logical region moved.
+3. Resolve by row:
 
-| `drift` reports                          | resolution |
+| Finding | Resolution |
 |---|---|
-| Moved                                     | `git span drift --fix <name>` — unconditional for a pure move |
-| Changed, anchors still agree              | `grep -n <symbol>` (the identifier the span's `why` names) in the target file. If the hit falls inside the anchor's existing range, `add` the SAME range (hash refresh only) — do NOT pick a new range because the code now "looks like" it's about something else. Only a symbol that physically moved lines changes the range. |
-| Changed, doc anchor disagrees with a deliberate committed code change | Rewrite the doc to describe current reality, then `add`. Code-side fix, contract doc, or no intentional commit behind the drift → tell the user (see `wiki/guides/reconciliation-authority.md`) |
-| Changed, but the coupled feature is gone  | `git span delete <name>` — do not re-anchor onto unrelated content left behind at the same lines |
-| Not reported by `drift` at all            | undeclared coupling — declare it (SKILL.md) |
+| Moved | `git span drift --fix <name>` |
+| Changed; anchors still agree at the same address | `git span add <name> <same-anchor>`; preserve its exact shape |
+| Changed; logical region moved | Locate its new extent, then `remove <old-anchor>` before `add <new-anchor>` |
+| One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor |
+| Lifecycle gate satisfied | Make the authorized change, revise or retire the why, and reconcile or retire superseded anchors |
+| Authority unclear or no intentional change explains drift | Follow `wiki/guides/reconciliation-authority.md`; stop if ambiguity remains |
+| Coupling gone | `git span delete <name>`; do not re-anchor unrelated bytes |
+| No drift finding | Declare an undeclared coupling only if it meets the parent skill's eligibility rule |
 
-4. Stop at `git span drift`'s output for each verdict — do not additionally run
-   `git log`, `git show <hash>`, or read raw `.span/*` files once a row above resolves
-   the case.
-5. After all fixes, re-run `git span drift` with no filter: must exit 0.
-6. `git add .span && git commit -m "..."`.
+4. Require scoped zero drift after each span and full zero drift before commit.
+5. `git add .span && git commit -m "..."`.

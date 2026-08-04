@@ -28,6 +28,13 @@ fn generated_manpage_matches_checked_in_artifact() {
     let generated = std::fs::read(&tmp_path).expect("read generated manpage");
     let expected = std::fs::read(&checked_in).expect("read checked-in manpage");
 
+    assert!(
+        !generated
+            .split(|byte| *byte == b'\n')
+            .any(|line| line.last().is_some_and(u8::is_ascii_whitespace)),
+        "generated git-span.1 contains trailing whitespace"
+    );
+
     assert_eq!(
         generated, expected,
         "generated git-span.1 differs from checked-in artifact; run `yarn build:man` and commit the result"
