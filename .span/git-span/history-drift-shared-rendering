@@ -1,4 +1,4 @@
-packages/git-span/src/cli/drift_output.rs#L1618-L1681 rk64:1098504ab103f17d
+packages/git-span/src/cli/drift_output.rs#L1632-L1695 rk64:1098504ab103f17d
 packages/git-span/src/cli/history.rs#L1731-L2000 rk64:aff8e1140a2e5313
 packages/git-span/src/git.rs#L1187-L1229 rk64:1f027fadf4e20366
 
