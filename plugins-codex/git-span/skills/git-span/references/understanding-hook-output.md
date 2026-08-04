@@ -167,12 +167,14 @@ Stripe-backed server.
 
 ---
 
-Bring the coupled files back into agreement (docs follow deliberately
-committed code), then refresh — `git span add billing/checkout-request-flow
+Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
+bring the coupled files back into agreement (docs follow deliberately
+committed code) — `git span add billing/checkout-request-flow
 <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
-and retry. If the fix needs a code change or a dependency no longer holds,
-tell the user instead. You may retry this command directly; the hold will
-not fire again for the same debt state.
+then retry. Load the `git-span:reconcile` skill in the fork. If the fix
+needs a code change or a dependency no longer holds, tell the user instead.
+You may retry this command directly; the hold will not fire again for the
+same debt state.
 ```
 
 With several drifted spans the sections stack, separated by `---`, the header
@@ -192,8 +194,9 @@ a line range wherever the covering row carries one, followed by that span's
 <git-span>
 - src/new-module.ts
 
-Determine if this file carries implicit dependencies, then use `git span` to
-document them:
+Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
+determine if this file carries implicit dependencies and to then use
+`git span` to document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
 `git span why <name> "<why>"`
@@ -215,7 +218,7 @@ Stripe-backed server.
 
 If none exist, retry the command to proceed (one-time check).
 
-Load the `git-span:git-span` skill for guidance.
+Load the `git-span:git-span` skill in the fork.
 </git-span>
 ```
 
@@ -267,13 +270,17 @@ left to tell the agent that the status preview didn't already say.
 
 ### Resolving a held commit
 
-1. Semantic drift: fix each listed span the normal way (`git span add`
-   the drifted anchors, or `git span delete` if the coupling is gone), then
-   retry the same commit — or just retry with the findings unchanged, since
-   an identical set of findings is only held on once.
-2. Uncovered writes: either declare the coupling (`git span add` then
-   `git span why <name> "..."`) or just retry — the second attempt at an
-   unchanged debt state passes.
+1. Semantic drift: spawn a forked subagent with `spawn_agent`, setting
+   `fork_turns: "all"`, to bring the coupled files back into agreement
+   (loading the `git-span:reconcile` skill in the fork), or just retry with
+   the findings unchanged, since an identical set of findings is only held
+   on once. If the fix needs a code change or a dependency no longer holds,
+   tell the user instead.
+2. Uncovered writes: spawn a forked subagent with `spawn_agent`, setting
+   `fork_turns: "all"`, to determine whether the uncovered files carry
+   implicit dependencies and to use `git span` to document them (loading the
+   `git-span:git-span` skill in the fork), or just retry — the second
+   attempt at an unchanged debt state passes.
 3. Scan failure: resolve the underlying read/scan error if the span coupling
    still needs verifying — the command itself already proceeded.
 

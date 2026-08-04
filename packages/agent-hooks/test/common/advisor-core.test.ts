@@ -1512,6 +1512,12 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // The harness form replaces the generic "then refresh —" sentence, never
       // layering on top of it.
       expect(result.reason).not.toContain('then refresh');
+      // Full-string pin of the complete closing: one assertion covers the exact
+      // em-dash placement ("— then retry." between the action and the skill
+      // line), the sentence order, and the `git span` action spelling.
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+      );
     });
 
     it('a semantic-drift hold with harness \'codex\' names `spawn_agent` with `fork_turns: "all"`', async () => {
@@ -1530,6 +1536,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       );
       expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
       expect(result.reason).not.toContain('Determine if');
+      // Full-string pin of the complete closing, exactly as the Codex adapter
+      // ships it: `spawn_agent` with `fork_turns: "all"` leads, the action sits
+      // between em-dashes, and "— then retry." lands between the action and the
+      // skill line.
+      expect(result.reason).toContain(
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+      );
     });
 
     it("a semantic-drift hold with harness 'generic' or omitted keeps the pre-harness inline prose", async () => {
@@ -1556,8 +1569,44 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain(
           'Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh'
         );
+        // Full-string pin of the byte-identical pre-harness closing — the
+        // comma after "committed code)", the "then refresh — … — and retry."
+        // reconstruction, and the sentence order are all pinned in one string.
+        expect(result.reason).toContain(
+          'Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+        );
         expect(result.reason).not.toContain('forked subagent');
       }
+    });
+
+    it("a multi-span semantic-drift hold under harness 'claude' uses the plural '<name>' placeholder path", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ name: 'billing/checkout-request-flow', path: 'src/app.ts' }),
+          driftRow({ name: 'payments/refund-flow', path: 'src/refund.ts' })
+        ]
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/app.ts', 'src/refund.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'claude'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Two drifted spans: the lead turns plural and the action falls back to
+      // the `<name>` placeholder path — both pinned here, in the closing.
+      expect(result.reason).toContain('This change leaves implicit dependencies out of date:');
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+      );
     });
 
     it("a 'report-only' status preview with harness 'claude' directs a fork but never says retry", async () => {
@@ -1586,6 +1635,64 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
+    it("a 'report-only' status preview with harness 'codex' names `spawn_agent` but never says retry", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/app.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'report-only',
+        undefined,
+        'codex'
+      );
+
+      expect(result.kind).toBe('semantic-drift-report');
+      if (result.kind === 'semantic-drift-report') {
+        // Full closing pinned: the report-only tail drops "— then retry." and
+        // ends the action sentence with a period before the skill line.
+        expect(result.reason).toContain(
+          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."`. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+        );
+        expect(result.reason).not.toContain('then retry');
+        expect(result.reason).not.toContain('You may retry this command directly');
+      }
+    });
+
+    it("a 'report-only' uncovered preview with harness 'codex' names `spawn_agent` and the in-fork skill line", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/uncovered.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'report-only',
+        undefined,
+        'codex'
+      );
+
+      expect(result.kind).toBe('uncovered-writes-report');
+      if (result.kind === 'uncovered-writes-report') {
+        expect(result.reason).toContain(
+          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to determine if these files carry implicit dependencies and to then use `git span` to document them:'
+        );
+        expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+        // A status preview never held anything: no consider-once retry sentence.
+        expect(result.reason).not.toContain('retry the command to proceed');
+        expect(result.reason).not.toContain('skill for guidance');
+      }
+    });
+
     it("an uncovered-writes hold with harness 'claude' names the fork and swaps the skill line to 'in the fork'", async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
@@ -1609,6 +1716,25 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         'Dispatch a forked subagent to determine if these files carry implicit dependencies and to then use `git span` to document them:'
       );
       expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+      // Full-string pin of the complete closing sequence: the fork directive,
+      // the two `git span` commands, the "<why>" sentence, the one-time-check
+      // retry sentence, and the in-fork skill line — order and punctuation all
+      // pinned as one contiguous string.
+      expect(result.reason).toContain(
+        [
+          'Dispatch a forked subagent to determine if these files carry implicit dependencies and to then use `git span` to document them:',
+          '',
+          '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+          '`git span why <name> "<why>"`',
+          '',
+          'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.',
+          '',
+          'If none exist, retry the command to proceed (one-time check).',
+          '',
+          'Load the `git-span:git-span` skill in the fork.',
+          '</git-span>'
+        ].join('\n')
+      );
       expect(result.reason).not.toContain('skill for guidance');
     });
 
@@ -1657,6 +1783,30 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
       expect(result.reason).toContain(
         'Dispatch a forked subagent to determine if this file carries implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).not.toContain('these files carry');
+    });
+
+    it("the singular uncovered wording holds under harness 'codex' — 'this file carries', not 'these files carry'", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/uncovered.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'codex'
+      );
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to determine if this file carries implicit dependencies and to then use `git span` to document them:'
       );
       expect(result.reason).not.toContain('these files carry');
     });
@@ -1745,6 +1895,61 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(condensedUncovered.reason).toContain('Already flagged for git-span review above.');
         expect(condensedUncovered.reason).not.toContain('forked subagent');
         expect(condensedUncovered.reason).not.toContain('skill for guidance');
+      }
+    });
+
+    it('a may-hold retry under any harness resolves allow/already-presented with no reason — unchanged from generic', async () => {
+      const driftExecutors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+      const uncoveredExecutors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      for (const harness of ['generic', 'claude', 'codex'] as const) {
+        // The first may-hold pass holds with the harness-specific closing; the
+        // retry on the same debt state collapses to the harness-free
+        // allow/already-presented decision — the condensed decision never
+        // reads `harness`.
+        const driftMemo = createMemoryAdvisorMemoState();
+        const firstDrift = await evaluateAdvisor(
+          ['src/app.ts'],
+          REPO_ROOT,
+          driftExecutors,
+          driftMemo,
+          'may-hold',
+          undefined,
+          harness
+        );
+        expect(firstDrift.decision).toBe('hold');
+        expect(
+          await evaluateAdvisor(['src/app.ts'], REPO_ROOT, driftExecutors, driftMemo, 'may-hold', undefined, harness)
+        ).toEqual({ decision: 'allow', kind: 'already-presented' });
+
+        const uncoveredMemo = createMemoryAdvisorMemoState();
+        const firstUncovered = await evaluateAdvisor(
+          ['src/uncovered.ts', 'src/other.ts'],
+          REPO_ROOT,
+          uncoveredExecutors,
+          uncoveredMemo,
+          'may-hold',
+          undefined,
+          harness
+        );
+        expect(firstUncovered.decision).toBe('hold');
+        expect(
+          await evaluateAdvisor(
+            ['src/uncovered.ts', 'src/other.ts'],
+            REPO_ROOT,
+            uncoveredExecutors,
+            uncoveredMemo,
+            'may-hold',
+            undefined,
+            harness
+          )
+        ).toEqual({ decision: 'allow', kind: 'already-presented' });
       }
     });
   });

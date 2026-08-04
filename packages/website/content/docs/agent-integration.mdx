@@ -41,13 +41,15 @@ Stripe-backed server.
 
 ---
 
-Bring the coupled files back into agreement (docs follow deliberately
-committed code), then refresh — `git span add checkout-flow <path#Lstart-Lend>` /
-`git span why checkout-flow "..."` — and retry. If the fix needs a code
-change or a dependency no longer holds, tell the user instead. You may
-retry this command directly; the hold will not fire again for the same
-debt state.
+Dispatch a forked subagent to bring the coupled files back into agreement
+(docs follow deliberately committed code) — `git span add checkout-flow
+<path#Lstart-Lend>` / `git span why checkout-flow "..."` — then retry. Load
+the `git-span:reconcile` skill in the fork. If the fix needs a code change
+or a dependency no longer holds, tell the user instead. You may retry this
+command directly; the hold will not fire again for the same debt state.
 ```
+
+The closing copy uses the Claude harness's vocabulary (`Agent` with `subagent_type: "fork"`); under Codex the same direction is spelled `spawn_agent` with `fork_turns: "all"`.
 
 The `## <name>` header and the why sentence are the same shape `git span list` prints; the anchor list deliberately is not — where the CLI prints a flat `- path#Lstart-Lend` bullet run, the hook renders the span's full declared anchor list as a box-drawing tree grouped by shared path prefix. A directory holding a single entry folds onto that entry's line, so a branch only ever appears where two or more anchors actually share a prefix. A whole-file anchor is a bare path with no range column; where the same file also carries line ranges, it takes `(whole file)` in the range column so its own drift label can never be read as belonging to a neighbouring range. The CLI's own text format is untouched — only the hook's re-presentation of it groups, so `(whole file)` is a token you will see in a hold and never in `git span list` output.
 
@@ -57,8 +59,8 @@ The `## <name>` header and the why sentence are the same shape `git span list` p
 <git-span>
 - src/new-module.ts
 
-Determine if this file carries implicit dependencies, then use `git span` to
-document them:
+Dispatch a forked subagent to determine if this file carries implicit
+dependencies and to then use `git span` to document them:
 
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
 `git span why <name> "<why>"`
@@ -80,7 +82,7 @@ Stripe-backed server.
 
 If none exist, retry the command to proceed (one-time check).
 
-Load the `git-span:git-span` skill for guidance.
+Load the `git-span:git-span` skill in the fork.
 </git-span>
 ```
 

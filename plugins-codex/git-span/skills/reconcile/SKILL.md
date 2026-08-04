@@ -176,35 +176,24 @@ overlapping ranges on a shared file are never split across units), so forks
 touch disjoint `.span/` files. They share the main worktree without conflict.
 Only the main agent commits at the end.
 
-Dispatch each fork unit with a fork. Forks inherit the full conversation context
-(including this skill's instructions), so the prompt only needs to identify which
-spans the fork owns and the structural context the main agent gathered in Phase 1:
+Dispatch each fork unit with the `spawn_agent` tool, setting `fork_turns: "all"`
+so the fork runs to completion. Forks inherit the full conversation context
+(including this skill's instructions), so the `message` only needs to identify
+which spans the fork owns and the structural context the main agent gathered in
+Phase 1:
 
-```xml
-<invoke name="Agent">
-<parameter name="description" string="true">Reconcile <component-label> cluster</parameter>
-<parameter name="subagent_type" string="true">fork</parameter>
-<parameter name="prompt" string="true">
-Reconcile these <N> drifted spans (component: <component-label> — connected via <shared-file>). Do not commit.
-
-## <name-1>
-- CHANGED: <path>#L<N>-L<M>
-- Healthy: <paths>
-- Why: <from drift output>
-
-## <name-2>
-- CHANGED: <path> — <CHANGED|DELETED>
-- Why: <from drift output>
-
-(Context: these spans share <shared-file>. Non-drifted spans also anchoring it: <list>. <Range-overlap flag if any>.)
-</parameter>
-</invoke>
+```json
+{
+  "task_name": "reconcile <component-label> cluster",
+  "message": "Reconcile these <N> drifted spans (component: <component-label> — connected via <shared-file>). Do not commit.\n\n## <name-1>\n- CHANGED: <path>#L<N>-L<M>\n- Healthy: <paths>\n- Why: <from drift output>\n\n## <name-2>\n- CHANGED: <path> — <CHANGED|DELETED>\n- Why: <from drift output>\n\n(Context: these spans share <shared-file>. Non-drifted spans also anchoring it: <list>. <Range-overlap flag if any>.)",
+  "fork_turns": "all"
+}
 ```
 
 ### Fork procedure
 
 Each fork reads this section from context to know what to do. The main agent's
-prompt only designates which spans — the procedure is shared here.
+`spawn_agent` message only designates which spans — the procedure is shared here.
 
 For each assigned span:
 
