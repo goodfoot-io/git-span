@@ -133,6 +133,15 @@ describe('claude advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('To proceed anyway');
     expect(result.stdout.systemMessage).toContain(SPAN);
+    // The adapter passes harness `'claude'`, so the closing instruction names
+    // Claude's forked-subagent vocabulary rather than the inline-instruction
+    // prose a `'generic'` harness would render.
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'Dispatch a forked subagent to bring the coupled files back into agreement'
+    );
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'Load the `git-span:reconcile` skill in the fork.'
+    );
   });
 
   it('allows an identical retry after a semantic-drift deny (consider-once per debt-state digest)', async () => {

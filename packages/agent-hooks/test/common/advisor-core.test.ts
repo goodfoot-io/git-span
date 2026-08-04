@@ -1492,6 +1492,263 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     });
   });
 
+  describe('evaluateAdvisor — harness-specific closing instructions', () => {
+    it("a semantic-drift hold with harness 'claude' directs a forked subagent and names the reconcile skill", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', undefined, 'claude');
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code)'
+      );
+      expect(result.reason).toContain('— then retry.');
+      expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
+      // The harness form replaces the generic "then refresh —" sentence, never
+      // layering on top of it.
+      expect(result.reason).not.toContain('then refresh');
+    });
+
+    it('a semantic-drift hold with harness \'codex\' names `spawn_agent` with `fork_turns: "all"`', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', undefined, 'codex');
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code)'
+      );
+      expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
+      expect(result.reason).not.toContain('Determine if');
+    });
+
+    it("a semantic-drift hold with harness 'generic' or omitted keeps the pre-harness inline prose", async () => {
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+      const paths = ['src/app.ts'];
+
+      const omitted = await evaluateAdvisor(paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
+      const explicit = await evaluateAdvisor(
+        paths,
+        REPO_ROOT,
+        executors,
+        createMemoryAdvisorMemoState(),
+        'may-hold',
+        undefined,
+        'generic'
+      );
+
+      for (const result of [omitted, explicit]) {
+        expect(result.decision).toBe('hold');
+        if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+        expect(result.reason).toContain(
+          'Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh'
+        );
+        expect(result.reason).not.toContain('forked subagent');
+      }
+    });
+
+    it("a 'report-only' status preview with harness 'claude' directs a fork but never says retry", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/app.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'report-only',
+        undefined,
+        'claude'
+      );
+
+      expect(result.kind).toBe('semantic-drift-report');
+      if (result.kind === 'semantic-drift-report') {
+        expect(result.reason).toContain('Dispatch a forked subagent to bring the coupled files back into agreement');
+        expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
+        expect(result.reason).not.toContain('then retry');
+        expect(result.reason).not.toContain('You may retry this command directly');
+      }
+    });
+
+    it("an uncovered-writes hold with harness 'claude' names the fork and swaps the skill line to 'in the fork'", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/uncovered.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'claude'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to determine if these files carry implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+      expect(result.reason).not.toContain('skill for guidance');
+    });
+
+    it('an uncovered-writes hold with harness \'codex\' names `spawn_agent` with `fork_turns: "all"`', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/uncovered.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'codex'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to determine if these files carry implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+    });
+
+    it("the singular uncovered wording holds under harness 'claude' — 'this file carries', not 'these files carry'", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'src/other.ts' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/uncovered.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'claude'
+      );
+
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to determine if this file carries implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).not.toContain('these files carry');
+    });
+
+    it("an uncovered-writes hold with harness 'generic' or omitted keeps the pre-harness prose", async () => {
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+      const paths = ['src/uncovered.ts', 'src/other.ts'];
+
+      const omitted = await evaluateAdvisor(paths, REPO_ROOT, executors, createMemoryAdvisorMemoState());
+      const explicit = await evaluateAdvisor(
+        paths,
+        REPO_ROOT,
+        executors,
+        createMemoryAdvisorMemoState(),
+        'may-hold',
+        undefined,
+        'generic'
+      );
+
+      for (const result of [omitted, explicit]) {
+        expect(result.decision).toBe('hold');
+        if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+        expect(result.reason).toContain(
+          'Determine if these files carry implicit dependencies, then use `git span` to document them:'
+        );
+        expect(result.reason).toContain('Load the `git-span:git-span` skill for guidance.');
+        expect(result.reason).not.toContain('forked subagent');
+      }
+    });
+
+    it('the condensed already-seen forms are reminders and never read `harness`', async () => {
+      // A harness-aware drift retry still condenses to the bare-path reminder.
+      const driftMemo = createMemoryAdvisorMemoState();
+      const driftExecutors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+      const driftPaths = ['src/app.ts'];
+      await evaluateAdvisor(driftPaths, REPO_ROOT, driftExecutors, driftMemo, 'report-only', undefined, 'claude');
+      const condensedDrift = await evaluateAdvisor(
+        driftPaths,
+        REPO_ROOT,
+        driftExecutors,
+        driftMemo,
+        'report-only',
+        undefined,
+        'claude'
+      );
+      expect(condensedDrift.kind).toBe('semantic-drift-report');
+      if (condensedDrift.kind === 'semantic-drift-report') {
+        expect(condensedDrift.reason).toContain('Already flagged above — restore agreement');
+        expect(condensedDrift.reason).not.toContain('forked subagent');
+        expect(condensedDrift.reason).not.toContain('reconcile');
+      }
+
+      // A harness-aware uncovered retry still condenses to the one-line reminder.
+      const uncoveredMemo = createMemoryAdvisorMemoState();
+      const uncoveredExecutors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+      const uncoveredPaths = ['src/uncovered.ts', 'src/other.ts'];
+      await evaluateAdvisor(
+        uncoveredPaths,
+        REPO_ROOT,
+        uncoveredExecutors,
+        uncoveredMemo,
+        'report-only',
+        undefined,
+        'codex'
+      );
+      const condensedUncovered = await evaluateAdvisor(
+        uncoveredPaths,
+        REPO_ROOT,
+        uncoveredExecutors,
+        uncoveredMemo,
+        'report-only',
+        undefined,
+        'codex'
+      );
+      expect(condensedUncovered.kind).toBe('uncovered-writes-report');
+      if (condensedUncovered.kind === 'uncovered-writes-report') {
+        expect(condensedUncovered.reason).toContain('Already flagged for git-span review above.');
+        expect(condensedUncovered.reason).not.toContain('forked subagent');
+        expect(condensedUncovered.reason).not.toContain('skill for guidance');
+      }
+    });
+  });
+
   // -------------------------------------------------------------------------
   // mechanical-churn suppression (Phase 2 — skipped acceptance checks)
   //

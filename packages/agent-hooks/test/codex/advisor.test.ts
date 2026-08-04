@@ -137,6 +137,15 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
     expect(result.stdout.systemMessage).toContain(SPAN);
+    // The adapter passes harness `'codex'`, so the closing instruction names
+    // Codex's forked-subagent vocabulary rather than the inline-instruction
+    // prose a `'generic'` harness would render.
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`'
+    );
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'Load the `git-span:reconcile` skill in the fork.'
+    );
   });
 
   it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {

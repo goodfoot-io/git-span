@@ -67,13 +67,24 @@ export function createHandler(
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
-      const result = await evaluateAdvisor(changeset.paths, cwd, executors, memoFactory(cwd), mode, {
-        git,
-        range: changeset.range,
-        // The hook logger is the only place a suppressed file leaves a trace —
-        // the agent-facing output of a suppression is nothing at all.
-        logger: ctx.logger
-      });
+      // `'claude'` makes the closing instruction name Claude's forked-subagent
+      // vocabulary (`Agent` with `subagent_type: "fork"`); `'generic'` would
+      // keep the pre-harness inline-instruction prose.
+      const result = await evaluateAdvisor(
+        changeset.paths,
+        cwd,
+        executors,
+        memoFactory(cwd),
+        mode,
+        {
+          git,
+          range: changeset.range,
+          // The hook logger is the only place a suppressed file leaves a trace —
+          // the agent-facing output of a suppression is nothing at all.
+          logger: ctx.logger
+        },
+        'claude'
+      );
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the
         // one-time interruption is expressed as `permissionDecision: 'deny'`.

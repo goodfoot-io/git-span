@@ -740,6 +740,19 @@ export type AdvisorResult =
 export type AdvisorMode = 'may-hold' | 'report-only';
 
 /**
+ * Which harness's agent the closing instruction is written for. The action-
+ * oriented closings of {@link renderDriftReason} and
+ * {@link renderUncoveredReason} direct the agent to do the work inline by
+ * default (`'generic'`, the pre-harness prose, unchanged); `'claude'` and
+ * `'codex'` instead direct it to dispatch a forked subagent — Claude's
+ * `Agent` tool with `subagent_type: "fork"`, Codex's `spawn_agent` with
+ * `fork_turns: "all"` — since the research/reconcile task is self-contained
+ * and benefits from isolation. Informational closings (the condensed
+ * already-seen forms, environmental, scan-failed) do not read this value.
+ */
+export type AdvisorHarness = 'claude' | 'codex' | 'generic';
+
+/**
  * Evaluate the advisor for a resolved changeset: report the span debt the
  * changeset carries, and decide whether to hold the command once so that
  * report is read.
@@ -826,6 +839,10 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  *   {@link computeUncoveredPaths}. Omitting it disables suppression
  *   entirely — the pre-change behavior, and the safe direction: "forgot to
  *   wire it" degrades to today's behavior rather than to silence.
+ * @param harness The harness the closing instruction is written for (see
+ *   {@link AdvisorHarness}); `'generic'` (default) produces the pre-harness
+ *   prose unchanged. The Claude and Codex adapters pass their own values; a
+ *   third-party adapter passing nothing degrades to today's behavior.
  */
 export async function evaluateAdvisor(
   paths: string[],
@@ -833,7 +850,8 @@ export async function evaluateAdvisor(
   executors: AdvisorExecutors,
   memoState: AdvisorMemoState,
   mode: AdvisorMode = 'may-hold',
-  churn?: ChurnSuppression
+  churn?: ChurnSuppression,
+  harness: AdvisorHarness = 'generic'
 ): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
@@ -865,7 +883,13 @@ export async function evaluateAdvisor(
           decision: 'allow',
           kind: 'semantic-drift-report',
           findings: semantic,
-          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'report-only', seen)
+          reason: renderDriftReason(
+            semantic,
+            await fetchSpanBlocks(executors, semantic, cwd),
+            'report-only',
+            seen,
+            harness
+          )
         };
       }
       if (environmental.length > 0) {
@@ -888,7 +912,8 @@ export async function evaluateAdvisor(
           covering,
           await fetchSpanBlocks(executors, covering, cwd),
           'report-only',
-          seen
+          seen,
+          harness
         )
       };
     }
@@ -918,7 +943,13 @@ export async function evaluateAdvisor(
           decision: 'hold',
           kind: 'semantic-drift',
           findings: semantic,
-          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold')
+          reason: renderDriftReason(
+            semantic,
+            await fetchSpanBlocks(executors, semantic, cwd),
+            'may-hold',
+            false,
+            harness
+          )
         };
       }
     }
@@ -978,7 +1009,14 @@ export async function evaluateAdvisor(
       decision: 'hold',
       kind: 'uncovered-writes',
       uncovered,
-      reason: renderUncoveredReason(uncovered, covering, await fetchSpanBlocks(executors, covering, cwd), 'may-hold')
+      reason: renderUncoveredReason(
+        uncovered,
+        covering,
+        await fetchSpanBlocks(executors, covering, cwd),
+        'may-hold',
+        false,
+        harness
+      )
     };
   } catch (err) {
     // A scan that could not COMPLETE is not a clean result, but it is not
@@ -1543,13 +1581,17 @@ function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
  * The full-span checklist a semantic-drift `hold` (or, in `'report-only'` mode,
  * a `status` advisory) renders into `reason`. The closing sentence drops "—
  * then retry" in `'report-only'` mode: a `status` check never held anything, so
- * there is nothing to retry.
+ * there is nothing to retry. The `harness` selects who the closing directs to
+ * do the work: inline (`'generic'`, unchanged), or a forked subagent
+ * (`'claude'`/`'codex'`). The condensed already-seen form below is a reminder,
+ * not a tasking, and never reads `harness`.
  */
 function renderDriftReason(
   findings: DriftPorcelainRow[],
   blocksText: string,
   mode: AdvisorMode = 'may-hold',
-  alreadySeen = false
+  alreadySeen = false,
+  harness: AdvisorHarness = 'generic'
 ): string {
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
@@ -1560,10 +1602,28 @@ function renderDriftReason(
     const closing = `Already flagged above — restore agreement at the drifted locations or update the description.`;
     return [`This change still leaves ${subject} out of date:`, ...renderPathRun(paths), '', closing].join('\n');
   }
-  const closing =
-    mode === 'may-hold'
-      ? `Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
-      : `Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
+  // Who the closing directs to do the work: inline by default (`'generic'`, the
+  // pre-harness prose, unchanged); a forked subagent for `'claude'` (Claude's
+  // `Agent` tool with `subagent_type: "fork"`) and `'codex'` (`spawn_agent`
+  // with `fork_turns: "all"`), since the reconcile task is self-contained and
+  // benefits from isolation while the parent session continues. The mode still
+  // controls the retry framing: a `'report-only'` status check never held
+  // anything, so there is nothing to retry.
+  const lead =
+    harness === 'claude'
+      ? 'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code)'
+      : harness === 'codex'
+        ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code)'
+        : 'Bring the coupled files back into agreement (docs follow deliberately committed code)';
+  const tail =
+    harness === 'generic'
+      ? mode === 'may-hold'
+        ? `then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
+        : `then refresh — ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+      : mode === 'may-hold'
+        ? `— ${action} — then retry. Load the \`git-span:reconcile\` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
+        : `— ${action}. Load the \`git-span:reconcile\` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
+  const closing = `${lead}${harness === 'generic' ? ',' : ''} ${tail}`;
   return [
     `This change leaves ${subject} out of date:`,
     '',
@@ -1858,14 +1918,18 @@ function renderRelatedSpansSection(
  * changeset, not itself part of what's flagged or consider-once'd. Both forms
  * pass the same `uncovered`/`covering` pair, so both rank and cap identically
  * — a condensed retry reordering the message it condenses would be its own
- * defect.
+ * defect. The `harness` selects who the action line directs to do the work:
+ * inline (`'generic'`, unchanged), or a forked subagent (`'claude'`/`'codex'`).
+ * The condensed already-seen form is a reminder, not a tasking, and never
+ * reads `harness`.
  */
 function renderUncoveredReason(
   uncovered: string[],
   covering: PorcelainRow[],
   coveringBlocksText: string,
   mode: AdvisorMode = 'may-hold',
-  alreadySeen = false
+  alreadySeen = false,
+  harness: AdvisorHarness = 'generic'
 ): string {
   const lines = uncovered.map((path) => `- ${path}`);
   if (alreadySeen) {
@@ -1874,13 +1938,18 @@ function renderUncoveredReason(
     body.push('</git-span>');
     return body.join('\n');
   }
+  const subject = uncovered.length === 1 ? 'this file carries' : 'these files carry';
+  const actionLine =
+    harness === 'generic'
+      ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:`
+      : harness === 'claude'
+        ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`
+        : `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
     '<git-span>',
     ...lines,
     '',
-    uncovered.length === 1
-      ? 'Determine if this file carries implicit dependencies, then use `git span` to document them:'
-      : 'Determine if these files carry implicit dependencies, then use `git span` to document them:',
+    actionLine,
     '',
     '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
     '`git span why <name> "<why>"`',
@@ -1891,7 +1960,13 @@ function renderUncoveredReason(
   if (mode === 'may-hold') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
   }
-  body.push('', 'Load the `git-span:git-span` skill for guidance.', '</git-span>');
+  body.push(
+    '',
+    harness === 'generic'
+      ? 'Load the `git-span:git-span` skill for guidance.'
+      : 'Load the `git-span:git-span` skill in the fork.',
+    '</git-span>'
+  );
   return body.join('\n');
 }
 

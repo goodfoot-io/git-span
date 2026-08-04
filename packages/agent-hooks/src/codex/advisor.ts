@@ -107,13 +107,24 @@ export function createHandler(
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
-      const result = await evaluateAdvisor(changeset.paths, cwd, executors, memoFactory(cwd), mode, {
-        git,
-        range: changeset.range,
-        // The hook logger is the only place a suppressed file leaves a trace —
-        // the agent-facing output of a suppression is nothing at all.
-        logger: ctx.logger
-      });
+      // `'codex'` makes the closing instruction name Codex's forked-subagent
+      // vocabulary (`spawn_agent` with `fork_turns: "all"`); `'generic'` would
+      // keep the pre-harness inline-instruction prose.
+      const result = await evaluateAdvisor(
+        changeset.paths,
+        cwd,
+        executors,
+        memoFactory(cwd),
+        mode,
+        {
+          git,
+          range: changeset.range,
+          // The hook logger is the only place a suppressed file leaves a trace —
+          // the agent-facing output of a suppression is nothing at all.
+          logger: ctx.logger
+        },
+        'codex'
+      );
       if (result.decision !== 'hold') {
         // Environmental drift and a failed drift scan both allow
         // (fail-open) but must not be swallowed: log and surface the reason as
