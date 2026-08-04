@@ -1,1 +1,3 @@
 * text eol=lf
+# Binary SQLite index — its \r bytes are payload, not line endings; never normalize.
+wiki-index.sqlite -text
