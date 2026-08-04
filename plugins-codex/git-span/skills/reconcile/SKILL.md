@@ -1,6 +1,6 @@
 ---
 name: reconcile
-description: Reconcile drifted git spans surfaced by `git span drift`. Use when asked to "reconcile drifted spans", "fix drifted spans", "resolve span drift", "clean up drifted spans", or when `git span drift` exits non-zero with drift.
+description: Reconcile drifted git spans surfaced by `git span drift`. Use when asked to "reconcile drifted spans", "reconcile stale spans", "fix drifted spans", "fix stale spans", "resolve span drift", "clean up drifted spans", "clean up stale spans", or when `git span drift` exits non-zero with drift.
 ---
 
 <instructions>
@@ -49,7 +49,7 @@ The remaining findings are CHANGED (beyond whitespace) and DELETED. Group them b
 
 ### 3. Build the file-sharing graph and find connected components
 
-The `git span drift` output already lists every anchor for every drifted span (drift
+The `git span drift` output already lists every anchor for every drifted span (drifted
 ones marked `— changed`/`— deleted`, healthy ones unmarked). Use that directly —
 no need to run `git span show` on each span.
 

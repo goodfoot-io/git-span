@@ -119,7 +119,7 @@ function serialize() {
     //
     // The second assertion (`f.js#L6-L8`) will **FAIL** against the current
     // unfixed code because the lookup at drift_fix.rs L664-L674 silently
-    // misses the second anchor's record mid-merge, leaving the old drift
+    // misses the second anchor's record mid-merge, leaving the old stale
     // extent on disk while the diagnostic reports it as "moved to L6-L8".
     assert!(
         span.contains("f.js#L3-L5"),

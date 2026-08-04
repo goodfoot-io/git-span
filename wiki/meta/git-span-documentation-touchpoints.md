@@ -17,7 +17,7 @@ anchoring both trees.
 
 ## Command Behavior Source Of Truth
 
-The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L40-L195). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-span/src/cli/mod.rs#L437-L501) in the same file routes parsed commands to their handlers.
+The primary source of truth for top-level CLI behavior is the Clap configuration in [packages/git-span/src/cli/mod.rs](/packages/git-span/src/cli/mod.rs#L42-L197). That block defines the `Cli` struct, the `Commands` enum, and the help text for every subcommand. The [dispatch function](/packages/git-span/src/cli/mod.rs#L439-L503) in the same file routes parsed commands to their handlers.
 
 The pre-classification logic that makes `git span <name>` route to `Commands::Show` rather than failing as an unknown subcommand lives in [packages/git-span/src/main.rs](/packages/git-span/src/main.rs#L49-L100). That block is what resolves the ambiguity between a span name positional and a subcommand name before Clap parses the arguments. The reserved subcommand set it checks against is defined in [packages/git-span/src/validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 
@@ -60,7 +60,7 @@ move as one unit across:
   plugin trees (`plugins-claude/` and `plugins-codex/`).
 - [finding-span-candidates.md](/plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md),
   in both plugin trees.
-- Clap `after_help` in [cli/mod.rs](/packages/git-span/src/cli/mod.rs#L46-L46).
+- Clap `after_help` in [cli/mod.rs](/packages/git-span/src/cli/mod.rs#L48-L48).
 - `DESCRIPTION_SECTION` in [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs) —
   run `yarn build:man` after, never edit `man/git-span.1` directly.
 

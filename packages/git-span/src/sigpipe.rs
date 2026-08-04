@@ -31,7 +31,8 @@
 /// RAII guard that ignores `SIGPIPE` for as long as it is alive.
 ///
 /// Construct one around any write to a subprocess pipe whose peer may already
-/// be gone. Dropping it restores `SIG_DFL` once no guard remains.
+/// be gone. Dropping it restores the disposition that was in place before the
+/// outermost guard was entered, once no guard remains.
 pub(crate) struct SigpipeIgnored {
     _private: (),
 }

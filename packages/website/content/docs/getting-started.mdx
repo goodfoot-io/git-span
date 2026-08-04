@@ -3,7 +3,7 @@ title: Getting started
 description: Install the git-span CLI, then wire it into Claude Code or OpenAI Codex.
 ---
 
-git-span is a CLI. Day to day, it's your coding agent that runs it — declaring spans, checking `git span stale`, reconciling drift — while you review the results. Install the binary first, then install the plugin for whichever agent runtime you use.
+git-span is a CLI. Day to day, it's your coding agent that runs it — declaring spans, checking `git span drift`, reconciling drift — while you review the results. Install the binary first, then install the plugin for whichever agent runtime you use.
 
 ## Install the CLI
 
@@ -88,4 +88,4 @@ git span doctor
 - [Agent integration](/docs/agent-integration) — what the plugin actually wires up: the touch hook, the commit advisor, the skills, and the expert subagent.
 - [Concepts](/docs/concepts) — spans, anchors, drift, and the why, defined precisely.
 - [Command reference](/docs/commands) — every subcommand, grouped by task.
-- [Guides](/docs/guides/reconcile-stale-spans) — task-shaped walkthroughs: reconciling drift, re-anchoring, mining history for span candidates.
+- [Guides](/docs/guides/reconcile-drifted-spans) — task-shaped walkthroughs: reconciling drift, re-anchoring, mining history for span candidates.

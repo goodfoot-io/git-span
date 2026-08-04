@@ -442,14 +442,14 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
                         .filter_map(|l| l.strip_prefix('-'))
                         .map(|l| format!("{l}\n"))
                         .collect();
-                    if !recorded_lines.is_empty() {
-                        if let Some(still_there) = read_address(&repo, a_side) {
-                            assert!(
-                                !still_there.contains(&recorded_lines),
-                                "{label}: the block claims these lines were \
-                                 edited away, but {a_side} still holds them:\n{diff}"
-                            );
-                        }
+                    if !recorded_lines.is_empty()
+                        && let Some(still_there) = read_address(&repo, a_side)
+                    {
+                        assert!(
+                            !still_there.contains(&recorded_lines),
+                            "{label}: the block claims these lines were \
+                             edited away, but {a_side} still holds them:\n{diff}"
+                        );
                     }
                 }
                 // ORACLE — the recorded bindings in the two declaration
@@ -519,15 +519,13 @@ fn current_block_invariants_hold_in_every_state() -> Result<()> {
             if anchor.get("proposed").is_none()
                 && !matches!(form, BlockForm::Deleted)
                 && !path_is_filtered(&repo, path)?
-            {
-                if let (Some(content), Some(actual)) =
+                && let (Some(content), Some(actual)) =
                     (anchor["content"].as_str(), read_address(&repo, path))
-                {
-                    assert_eq!(
-                        content, actual,
-                        "{label}: `content` must be the bytes at `path`"
-                    );
-                }
+            {
+                assert_eq!(
+                    content, actual,
+                    "{label}: `content` must be the bytes at `path`"
+                );
             }
 
             // The marker appears exactly where the structured field does, and

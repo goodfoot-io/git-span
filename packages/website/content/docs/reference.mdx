@@ -12,7 +12,7 @@ $ git span add BadName web/f.ts
 error: invalid name: `BadName` segment `BadName` must start with a-z or 0-9 (kebab-case segments separated by `/` (e.g. `<slug>`, `<category>/<slug>`, or `<category>/<subcategory>/<identifier-slug>`); lowercase a-z, 0-9, and `-`; each segment must start with a letter or digit)
 ```
 
-A number of names are reserved because they collide with subcommands or other tokens, including `add`, `remove`, `commit`, `why`, `restore`, `revert`, `delete`, `move`, `stale`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`, `list`, `help`, `pre-commit`, `advice`, `rewrite`, and `hooks`. This list is not exhaustive.
+A number of names are reserved because they collide with subcommands or other tokens, including `add`, `remove`, `commit`, `why`, `restore`, `revert`, `delete`, `move`, `drift`, `tree`, `fetch`, `push`, `doctor`, `log`, `config`, `list`, `help`, `pre-commit`, `advice`, `rewrite`, and `hooks`. This list is not exhaustive.
 
 ## Anchors
 
@@ -35,7 +35,7 @@ Before writing any `#L<start>-L<end>` range by hand, run `wc -l <path>` and chec
 ## The `.span/` directory
 
 <Callout type="info">
-Treat `.span/` as internal. Inspect span state through `git span show`, `list`, `stale`, and `history` — never by reading files under `.span/` directly or reconstructing state from `git log`/`git show`. Those commands are the source of truth for what's current; the raw files are an implementation detail that can change.
+Treat `.span/` as internal. Inspect span state through `git span show`, `list`, `drift`, and `history` — never by reading files under `.span/` directly or reconstructing state from `git log`/`git show`. Those commands are the source of truth for what's current; the raw files are an implementation detail that can change.
 </Callout>
 
 At a high level, the span root holds one file per span, named after its slug — a nested name like `category/slug` creates a subdirectory. Each span file holds one `<path>#L<start>-L<end> <algorithm>:<hash>` line per anchor, a blank line, then the why as trailing prose.
@@ -54,14 +54,14 @@ A handful of helper files live alongside the span files:
 | Command | Exit code | Meaning |
 |---|---|---|
 | Any subcommand | 0 | Success |
-| `stale` | 0 | No drift found, or `--no-exit-code` passed while drift is present |
-| `stale` | 1 | Drift found (`Changed`/`Moved` anchors), or an interior-anchor integrity violation |
+| `drift` | 0 | No drift found, or `--no-exit-code` passed while drift is present |
+| `drift` | 1 | Drift found (`Changed`/`Moved` anchors), or an interior-anchor integrity violation |
 | `add` / `why` / etc. | 1 | Operational or validation error (invalid name, out-of-range anchor, and similar) |
 | Any command | 2 | A clap usage error — bad flag, missing required argument |
 | `merge-driver` | 0 | Fully resolved |
 | `merge-driver` | 1 | Partial resolution (residue markers written) |
 
-The interior-anchor integrity case is never maskable by `stale --no-exit-code` — it always exits 1, even when no anchor drifted.
+The interior-anchor integrity case is never maskable by `drift --no-exit-code` — it always exits 1, even when no anchor drifted.
 
 ## Configuration
 

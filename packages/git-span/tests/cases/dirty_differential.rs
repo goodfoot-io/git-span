@@ -492,7 +492,7 @@ fn conflict_parity() -> Result<()> {
 // Unreadable file: alpha's anchored source is replaced by a directory (a typed
 // `Unreadable`, distinct from `Absent`). Resolving over it is a hard resolver
 // error; the new store must surface it IDENTICALLY to the authoritative full
-// resolve — a resolver error stays an error, never masked as a drift/fresh
+// resolve — a resolver error stays an error, never masked as a drifted/fresh
 // cache result (`notes/correctness-contract.md` "Fail-Closed"). stderr and exit
 // code are compared, not just stdout.
 // ─────────────────────────────────────────────────────────────────────────────

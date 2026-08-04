@@ -219,7 +219,7 @@ export interface SurfaceDeps {
  * The pipeline: `git span list <path> --porcelain` → keep line-ranged anchors on
  * the same file that intersect the range and are not `.hookignore`-suppressed →
  * drop slugs already surfaced this session (memo) → render `git span list
- * <names…>` → append a `git span history <name>` pointer for any already-drift
+ * <names…>` → append a `git span history <name>` pointer for any already-drifted
  * span. On success the surfaced names are recorded in the memo. Executor and
  * drift-probe failures are logged and degrade to null / the plain block; they
  * never throw.

@@ -31,7 +31,7 @@ Key flags:
 
 - `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of `HEAD`.
 
-Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `stale` flagged on a range that didn't move — after checking that the span's other anchors still agree with the new content; a coupled doc that now lags is updated first.
+Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `drift` flagged on a range that didn't move — after checking that the span's other anchors still agree with the new content; a coupled doc that now lags is updated first.
 
 Exits 1 on an invalid name or an out-of-range anchor. Does not commit — stage and commit the change yourself with `git add .span && git commit`.
 
@@ -96,7 +96,7 @@ git span tree <globs...>
 
 Traces blast radius: renders a clique-grouped impact tree rooted at the files matched by the given paths/globs. From the matched anchor paths, the tree expands outward through span co-occurrence to the files each could affect; files that all anchor the same span collapse onto a single comma-separated line.
 
-Roots are file paths and globs only — resolved repo-relative, no CWD-relative joining — and unlike `list`/`stale`, `tree` does not accept `#L<start>-L<end>` line-range addresses or bare span names. At least one argument is required; a pattern matching no anchored file is an error.
+Roots are file paths and globs only — resolved repo-relative, no CWD-relative joining — and unlike `list`/`drift`, `tree` does not accept `#L<start>-L<end>` line-range addresses or bare span names. At least one argument is required; a pattern matching no anchored file is an error.
 
 Key flags:
 
@@ -109,7 +109,7 @@ Key flags:
 git span history <name>
 ```
 
-Shows a timeline of a span file's git history, newest to oldest, `git log -p` style: each qualifying commit's declaration diff and a unified diff per anchor (rename-aware by content similarity: a re-anchor whose old and new content pair at ≥ 50% similarity — git's `-M` default — renders as a rename, a sub-threshold re-anchor renders as a deleted anchor plus a new anchor, and a re-anchor whose recorded side cannot be read — binary or unrecoverable content — renders `rename from`/`rename to` lines with no similarity claim, the move asserted by the declaration itself), plus an optional leading, headerless section for the span's *live* drift against its declaration. That section is not working-tree-only: it covers every resolver layer `git span stale` reports, and each block carries a `drift source` line (JSON: a `sources` array over `HEAD`/`INDEX`/`WORKTREE`) naming the layers that observed drift. The resolver sequence is preserved: line ranges use `WORKTREE` → `INDEX` → `HEAD`, while whole-file anchors use `INDEX` → `WORKTREE` → `HEAD`. `HEAD` is an observational layer, not proof that the declaration or content change was committed; inspect the declaration diff and timeline, then commit or revert a worktree-only declaration edit as appropriate.
+Shows a timeline of a span file's git history, newest to oldest, `git log -p` style: each qualifying commit's declaration diff and a unified diff per anchor (rename-aware by content similarity: a re-anchor whose old and new content pair at ≥ 50% similarity — git's `-M` default — renders as a rename, a sub-threshold re-anchor renders as a deleted anchor plus a new anchor, and a re-anchor whose recorded side cannot be read — binary or unrecoverable content — renders `rename from`/`rename to` lines with no similarity claim, the move asserted by the declaration itself), plus an optional leading, headerless section for the span's *live* drift against its declaration. That section is not working-tree-only: it covers every resolver layer `git span drift` reports, and each block carries a `drift source` line (JSON: a `sources` array over `HEAD`/`INDEX`/`WORKTREE`) naming the layers that observed drift. The resolver sequence is preserved: line ranges use `WORKTREE` → `INDEX` → `HEAD`, while whole-file anchors use `INDEX` → `WORKTREE` → `HEAD`. `HEAD` is an observational layer, not proof that the declaration or content change was committed; inspect the declaration diff and timeline, then commit or revert a worktree-only declaration edit as appropriate.
 
 Key flags:
 
@@ -120,22 +120,22 @@ When `--limit` drops older qualifying commits, the command still prints the requ
 
 ## Audit and automate
 
-### stale
+### drift
 
 ```bash
-git span stale [paths...]
+git span drift [paths...]
 ```
 
 Reports anchors whose content has drifted from their anchored state. `paths` may be file paths, globs, or span names; omit them to scan all spans.
 
 Key flags:
 
-- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 stale across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `porcelain` and `json` print **nothing** on a clean scan — no header row, no `{"findings": []}` — empty stdout plus exit 0 is the clean signal.
+- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 drift across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `porcelain` and `json` print **nothing** on a clean scan — no header row, no `{"findings": []}` — empty stdout plus exit 0 is the clean signal.
 - `--no-exit-code` — exit 0 even when drift is found (report-only mode). Does not mask the interior-anchor integrity case below.
 - `--fix` — re-anchors drift in place. See the callout below for what it actually does. Only supported with `--format human`.
 
 <Callout type="warn">
-`--fix` re-anchors `Moved` anchors unconditionally — pure line shifts and file renames alike — and whitespace-equivalent `Changed` anchors (indentation-only edits), tagging them `resolved, pending commit — auto-updated` on the run that fixes them. Meaning-altering `Changed` drift — content differs beyond whitespace — is always left for you to resolve with `git span add`; re-running `--fix` will not touch it. After `--fix`, re-run `git span stale` and re-anchor anything still drifting yourself. `--fix` never commits; it only rewrites `.span/` worktree files — stage and commit with `git add .span && git commit`.
+`--fix` re-anchors `Moved` anchors unconditionally — pure line shifts and file renames alike — and whitespace-equivalent `Changed` anchors (indentation-only edits), tagging them `resolved, pending commit — auto-updated` on the run that fixes them. Meaning-altering `Changed` drift — content differs beyond whitespace — is always left for you to resolve with `git span add`; re-running `--fix` will not touch it. After `--fix`, re-run `git span drift` and re-anchor anything still drifting yourself. `--fix` never commits; it only rewrites `.span/` worktree files — stage and commit with `git add .span && git commit`.
 </Callout>
 
 Exit codes: 0 (no drift, or `--no-exit-code` with drift present), 1 (drift found, or an interior-anchor integrity violation — the latter is never maskable by `--no-exit-code`).
@@ -154,7 +154,7 @@ Audits the local span setup — reports span count and findings, plus store size
 git span merge-driver <base> <ours> <theirs> <marker-len>
 ```
 
-Resolves `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files (`%O`/`%A`/`%B`) and the conflict marker length (`%L`) from git, and resolves only what's structurally derivable without trusting the worktree, which may be mid-merge. Same-anchor range/hash divergence is deferred: minimal conflict markers are written and the command exits non-zero so `git span stale --fix` can finish authoritatively.
+Resolves `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files (`%O`/`%A`/`%B`) and the conflict marker length (`%L`) from git, and resolves only what's structurally derivable without trusting the worktree, which may be mid-merge. Same-anchor range/hash divergence is deferred: minimal conflict markers are written and the command exits non-zero so `git span drift --fix` can finish authoritatively.
 
 Register it in `.gitattributes`:
 

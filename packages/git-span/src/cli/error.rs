@@ -117,11 +117,22 @@ pub fn from_lib_error(
 
 /// Wrap a resolver failure into the curated shape for `drift`/`history`.
 ///
-/// The resolver reads HEAD trees and blobs directly; when one of those reads
-/// fails the repository itself is unreadable (a damaged or incomplete object
-/// store), never a per-anchor condition — per-anchor states all resolve to
-/// classifications, not errors. Both commands fail closed before rendering
-/// anything, so the remediation is repository repair, not span surgery.
+/// This is the catch-all for `Error::Git` — "some git read failed" — and it is
+/// important that the prose says only that. It used to open by asserting that
+/// the object store was damaged or incomplete and lead with `git fsck`, which
+/// was a diagnosis the error carries no evidence for. `Error::Git` is raised by
+/// dozens of call sites, and the ones users actually hit are mundane: an unborn
+/// branch on a freshly initialized repository reaches this template and is told
+/// its objects may be corrupt, after which `git fsck` exits 0 and reports a
+/// perfectly healthy repository — leaving the user with a contradiction and a
+/// standing invitation to re-fetch or restore from backup over a repo that was
+/// never broken. Destructive-adjacent advice has to be earned by evidence.
+///
+/// So: state the failure, quote the underlying error (which does name the real
+/// cause), and offer `fsck` as one hypothesis among several rather than the
+/// conclusion. Conditions that *do* have a specific diagnosis — a content
+/// filter that could not be started, most of all — must be routed to their own
+/// classification or their own curated error and never reach here.
 pub fn resolver_read_error(
     subcommand: &'static str,
     lib_error: impl std::fmt::Display,
@@ -132,18 +143,64 @@ pub fn resolver_read_error(
         lib_error,
         vec![
             NextStep::Prose(
-                "A repository read failed while resolving anchors, so no drift \
-                 classification can be trusted. This usually means the object \
-                 store is damaged or incomplete. Diagnose it:"
+                "A git read failed while resolving anchors, so no drift \
+                 classification can be trusted. The error above names what \
+                 failed — start there: a repository with no commits yet, an \
+                 unreadable HEAD, or a missing external tool are all more \
+                 common than a damaged repository."
+                    .into(),
+            ),
+            NextStep::Prose(
+                "If the error points at a missing or unreadable object, check \
+                 the object store:"
                     .into(),
             ),
             NextStep::Bash("git fsck".into()),
             NextStep::Prose(
-                "If fsck reports missing or corrupt objects, restore them \
-                 (for example by re-fetching from a remote or restoring from a \
-                 backup), then retry."
+                "Only if fsck reports missing or corrupt objects is repair the \
+                 answer — restore them by re-fetching from a remote or from a \
+                 backup, then retry. A clean fsck means the cause is the one \
+                 named above, not the object store."
                     .into(),
             ),
+        ],
+    )
+}
+
+/// Wrap a content-filter driver failure into its own curated shape.
+///
+/// The backstop for a filter failure that escapes as a hard error rather than
+/// resolving to a per-anchor `ContentUnavailable(FilterFailed)`. Everything the
+/// remediation needs is local: the driver's name, and the fact that
+/// `.gitattributes` is what pulled it in. Nothing here mentions the object
+/// store, `git fsck`, re-fetching, or backups, because none of those bear on a
+/// program that is not installed.
+pub fn filter_driver_error(
+    subcommand: &'static str,
+    filter: &str,
+    lib_error: impl std::fmt::Display,
+) -> CliError {
+    from_lib_error(
+        subcommand,
+        format!("content filter `{filter}` could not be run."),
+        lib_error,
+        vec![
+            NextStep::Prose(format!(
+                "A path in this repository is routed through the `{filter}` \
+                 content filter by `.gitattributes`, and git-span cannot read \
+                 that path without it. The repository itself is fine — this is \
+                 a missing or misconfigured filter driver. Check how it is \
+                 configured:"
+            )),
+            NextStep::Bash(format!("git config --get-regexp '^filter\\.{filter}\\.'")),
+            NextStep::Prose(format!(
+                "Install the driver so the configured command is runnable. If \
+                 the filter is no longer needed, drop the `filter={filter}` \
+                 attribute from `.gitattributes`, or unset the driver:"
+            )),
+            NextStep::Bash(format!(
+                "git config --unset filter.{filter}.clean\ngit config --unset filter.{filter}.smudge\ngit config --unset filter.{filter}.process"
+            )),
         ],
     )
 }

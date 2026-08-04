@@ -7,5 +7,5 @@ packages/git-span/src/cli/mod.rs#L416-L484 rk64:5b9207836bf44861
 packages/git-span/src/main.rs#L49-L100 rk64:9bb62b4928980a81
 packages/git-span/src/main.rs#L50-L113 rk64:c2226c84060cd865
 packages/git-span/src/validation.rs#L7-L28 rk64:c18c24e920bf2420
-wiki/meta/git-span-documentation-touchpoints.md#L14-L20 rk64:83ee2784f12f2371
+wiki/meta/git-span-documentation-touchpoints.md#L14-L20 rk64:87bf627f4a185901
 

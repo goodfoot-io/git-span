@@ -53,9 +53,7 @@ fn corrupted_head_repo() -> Result<TestRepo> {
         "tree {tree_oid} should be a loose object at {tree_path:?}"
     );
     // Loose objects are written read-only; lift that before truncating.
-    let mut perms = std::fs::metadata(&tree_path)?.permissions();
-    perms.set_readonly(false);
-    std::fs::set_permissions(&tree_path, perms)?;
+    support::make_writable(&tree_path)?;
     std::fs::write(&tree_path, b"garbage")?;
 
     Ok(repo)

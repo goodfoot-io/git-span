@@ -9,9 +9,9 @@
   },
   "bin": "./src/bin/discover.ts",
   "scripts": {
-    "test": "vitest run",
+    "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && vitest run",
     "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test && jsdoczoom -l",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && tsgo --noEmit"
   },
   "dependencies": {
     "tsx": "^4.19.3"

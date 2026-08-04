@@ -43,12 +43,12 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "node scripts/build/build-production.js",
-    "build": "vsce package --no-dependencies --follow-symlinks && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
-    "build:testing": "node scripts/build/build-testing.js",
-    "test": "node --import tsx test/runTest.ts",
+    "vscode:prepublish": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-production.js",
+    "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && vsce package --no-dependencies --follow-symlinks && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
+    "build:testing": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-testing.js",
+    "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node --import tsx test/runTest.ts",
     "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && tsgo --noEmit",
     "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo"
   },
   "devDependencies": {

@@ -345,6 +345,30 @@ pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Clear the read-only bit on `path` so it can be rewritten — loose git
+/// objects, for instance, are written read-only. On Unix the owner-write bit
+/// is OR'd into the existing mode rather than going through
+/// `Permissions::set_readonly(false)`, which would leave the file *world*
+/// writable.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn make_writable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o200);
+    std::fs::set_permissions(path, perms)
+}
+
+/// Clear the read-only bit on `path`. On Windows read-only is a single file
+/// attribute with no mode bits behind it, so `set_readonly` is the API.
+#[cfg(windows)]
+pub fn make_writable(path: &Path) -> std::io::Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(path, perms)
+}
+
 /// The signal that terminated `status`, if any. Always `None` on Windows,
 /// where processes are not signal-terminated.
 #[allow(dead_code)]

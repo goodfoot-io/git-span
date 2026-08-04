@@ -69,6 +69,7 @@ fn build_fixture() -> Fixture {
                 content_hash: hash,
             }],
             why: "bench".to_string(),
+            config: git_span_core::SpanConfig::default(),
         };
         std::fs::write(p.join(".span").join(format!("bench-{i}")), mf.serialize())
             .expect("write span file");

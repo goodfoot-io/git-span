@@ -2,8 +2,8 @@
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use git_span::cli::{self, Cli, Commands, ShowArgs};
-use git_span::validation::RESERVED_SPAN_NAMES;
+use git_span::cli::{self, Cli, CliError, Commands, NextStep, ShowArgs};
+use git_span::validation::{RETIRED_SPAN_NAMES, is_reserved_span_name};
 
 fn main() {
     // Slice 6a: restore the default Unix SIGPIPE handler so a broken
@@ -49,8 +49,8 @@ fn run() -> Result<i32> {
     // §10.2: `git span` with no arg lists every span; `git span <name>`
     // is a positional show. Clap can't distinguish a bare-name positional
     // from a subcommand, so we pre-classify before invoking the parser.
-    // A token on the §10.2 reserved list is a subcommand; anything else
-    // is a span name and routes to `Commands::Show`.
+    // A reserved or retired token is a subcommand; anything else is a span
+    // name and routes to `Commands::Show`.
     //
     // Repo discovery happens after parsing so `--help` and any other
     // clap-handled flag works outside a git repo.
@@ -72,10 +72,41 @@ fn run() -> Result<i32> {
     }
 
     let first_non_opt = args.get(idx);
+
+    // A retired subcommand answers with its replacement rather than running.
+    // This must come before the bare-name classification below: a retired
+    // token is reserved, so it would otherwise be spliced into `show` and
+    // reported as a missing *span*, sending the user to `git span list` —
+    // which enumerates spans and can never mention the new subcommand. The
+    // refusal is unconditional and ignores the rest of the argv, so
+    // `git span stale --format porcelain` gets the rename too rather than a
+    // clap usage error about flags on a command that no longer exists.
+    if let Some((retired, replacement)) = RETIRED_SPAN_NAMES
+        .iter()
+        .find(|(retired, _)| Some(*retired) == first_non_opt.map(String::as_str))
+    {
+        return Err(CliError {
+            subcommand: retired,
+            summary: format!("this subcommand was retired; use `git span {replacement}`."),
+            what_happened: format!(
+                "`git span {retired}` no longer exists and has no alias — it was renamed to \
+                 `git span {replacement}`. `{retired}` is still reserved, so it is not being \
+                 read as a span name either."
+            ),
+            next_steps: vec![NextStep::Bash(format!("git span {replacement}"))],
+        }
+        .into());
+    }
+
+    // `is_reserved_span_name` — not the bare reserved list — so this
+    // classification and `validate_span_name` can never disagree about which
+    // tokens are span names. A retired token is unreachable here (the refusal
+    // above returns first), but the two rules staying in lockstep is what
+    // stopped `stale` from being routed to `show` in the first place.
     let is_bare_name = first_non_opt.is_some_and(|first| {
         !first.starts_with('-')
-            && !RESERVED_SPAN_NAMES.contains(&first.as_str())
-            && !matches!(first.as_str(), "show" | "help" | "--help" | "-h")
+            && !is_reserved_span_name(first)
+            && !matches!(first.as_str(), "help" | "--help" | "-h")
     });
 
     if is_bare_name {

@@ -1053,6 +1053,11 @@ fn newest_commit_blocks(repo: &TestRepo, span: &str) -> Result<Vec<(String, Bloc
 }
 
 
+/// One entry of [`every_timeline_state`]: the state's label, the repository
+/// standing in that state, the declared address to read, and the block forms
+/// the newest commit entry must render for it.
+type TimelineState = (&'static str, TestRepo, &'static str, Vec<BlockForm>);
+
 /// One repository per shape a *timeline* anchor block can take, with the block
 /// forms its newest commit entry must render.
 ///
@@ -1068,7 +1073,7 @@ fn newest_commit_blocks(repo: &TestRepo, span: &str) -> Result<Vec<(String, Bloc
 /// The expected forms are written out per fixture rather than derived, so a
 /// change in what a state renders shows up here as a diff rather than as a
 /// sweep that quietly checks a different thing.
-fn every_timeline_state() -> Result<Vec<(&'static str, TestRepo, &'static str, Vec<BlockForm>)>> {
+fn every_timeline_state() -> Result<Vec<TimelineState>> {
     let committed_drift = {
         let repo = drifted_repo("tdrift")?;
         repo.commit_all("edit the anchored block")?;
@@ -1803,7 +1808,7 @@ fn sole_anchor_in<'a>(container: &'a Value, address: &str, whose: &str) -> &'a V
         .as_array()
         .unwrap_or_else(|| panic!("{whose}: no anchors array in {container:#}"))
         .iter()
-        .find(|a| a["path"] == Value::from(address))
+        .find(|a| a["path"] == address)
         .unwrap_or_else(|| {
             panic!("{whose}: no object at {address}; the fixture stopped reaching this state:\n{container:#}")
         })

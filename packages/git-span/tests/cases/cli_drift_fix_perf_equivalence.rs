@@ -485,7 +485,7 @@ fn golden_named_scope_single_warning() -> Result<()> {
 // poisoned span `zzz-poison` carrying an interior anchor (path under `.span/`).
 //
 // Without the fallback, the scoped splice would reuse `aaa-victim`'s pre-fix
-// `SpanResolved` (or reuse drift `worktree_diffs`), risking a drift
+// `SpanResolved` (or reuse stale `worktree_diffs`), risking a stale drift
 // status. With the Finding-2 fallback, the presence of the interior anchor
 // forces a full whole-corpus re-resolve, so `aaa-victim`'s post-fix status is
 // rendered correctly — identical to what a full re-resolve produces.

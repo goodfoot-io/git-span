@@ -150,7 +150,7 @@
 //! | A timeline entry | The two sides have equal bodies **and** the same reason for having none ([`crate::cli::unified_diff::render`]) | `a_change_of_unavailable_reason_renders_an_entry`. Two bodyless sides used to compare equal whatever they were: truncating a file past its declared range and then deleting the file is a change the render dropped entirely. Narrow on purpose — only two *both-bodyless* sides with differing reasons count; nothing else about change detection reads a reason |
 //! | The rebinding block | Always — this path never renders one | Deliberate: a rebinding is a transition between two *committed* declaration states. The current block already renders a committed rebinding's live drift honestly, one in-place diff per anchor |
 //!
-//! Declared anchor ranges are taken at face value at every commit — a drift
+//! Declared anchor ranges are taken at face value at every commit — a stale
 //! range extracting "wrong" content *is* the drift being visualized. Anchor
 //! diffs are always computed between extracted snapshots, never by clipping a
 //! file's real commit patch to a line range.
@@ -418,7 +418,7 @@ pub struct CurrentSection {
 ///
 /// Both payloads are mandatory by construction: `diff` is always rendered
 /// (header-only when content is byte-identical but the recorded hash is
-/// drift — that mismatch *is* the finding), and exactly one of
+/// drifted — that mismatch *is* the finding), and exactly one of
 /// `content`/`unavailable` describes the live snapshot. This is what keeps
 /// the human and JSON renderers emitting the same entry set: an anchor that
 /// `git span drift` reports can never silently vanish from the default

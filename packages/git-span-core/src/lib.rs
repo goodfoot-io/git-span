@@ -30,8 +30,9 @@ pub use span_file::{
     merge_span_files,
 };
 pub use validation::{
-    SPAN_NAME_RULE, RESERVED_SPAN_NAMES, validate_anchor_id, validate_span_name,
-    validate_span_name_shape, validate_repo_relative_path,
+    SPAN_NAME_RULE, RESERVED_SPAN_NAMES, RETIRED_SPAN_NAMES, is_reserved_span_name,
+    retired_replacement, validate_anchor_id, validate_span_name, validate_span_name_shape,
+    validate_repo_relative_path,
 };
 
 /// The extent of a pinned anchor: either the whole file, or an inclusive

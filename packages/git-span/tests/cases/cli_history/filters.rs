@@ -128,9 +128,11 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
 
         // The other surface over the same resolver has always been right about
         // this state; the two must not describe one repository two ways.
-        // `drift` reports it as `content unavailable (filter failed)` where it
-        // can resolve at all and errors out where it cannot — either way it
-        // attributes the state to the filter, and never to a missing file.
+        // `drift` reports it as ``content unavailable (filter `<name>` failed)``,
+        // attributing the state to the named filter and never to a missing
+        // file. It no longer errors out on any of these configurations — see
+        // `cases::filter_driver_failure`, which pins that the whole scan
+        // survives one file's unreadable driver.
         let out = repo.run_span(["drift"])?;
         let drift = format!(
             "{}{}",

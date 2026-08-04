@@ -2220,7 +2220,7 @@ mod tests {
 
     /// When the index changes between `EngineState` construction and `finish`,
     /// the returned `SourceLayers` must carry `index_changed = true` so callers
-    /// can distinguish a racy scan from a genuine drift/clean verdict. Before
+    /// can distinguish a racy scan from a genuine drifted/clean verdict. Before
     /// the fix for card main-199-2, `finish` only printed a stderr warning and
     /// the signal was lost.
     #[test]

@@ -80,6 +80,33 @@ export class AdvisorScanError extends Error {
   }
 }
 
+/**
+ * Raised when the installed `git-span` binary does not understand the command
+ * the hooks issue — the hook bundle and the binary install through independent
+ * channels, so a plugin newer than the binary is a routine state, not a corner
+ * case.
+ *
+ * This is deliberately *not* an {@link AdvisorScanError}. A scan error means the
+ * scan started and aborted on something in the repository; this means the scan
+ * never had a chance to start, and nothing about the repository is implicated.
+ * Conflating the two hands the user the CLI's own argument-parser diagnostic —
+ * which names whatever subcommand clap guessed at, a command the user never
+ * ran — instead of the one fact that resolves it: upgrade the binary.
+ *
+ * `installedVersion` is the version the probe read back, or `null` when even
+ * `git span --version` could not be run or parsed.
+ */
+export class AdvisorIncompatibleCliError extends Error {
+  readonly detail: string;
+  readonly installedVersion: string | null;
+  constructor(detail: string, installedVersion: string | null) {
+    super(`the installed git-span binary does not support this command: ${detail}`);
+    this.name = 'AdvisorIncompatibleCliError';
+    this.detail = detail;
+    this.installedVersion = installedVersion;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Command parsing
 // ---------------------------------------------------------------------------
@@ -668,11 +695,30 @@ export interface AdvisorMemoState {
  *   hold on: it re-reports whatever debt exists on every call, exactly like
  *   `git status` itself does for the working tree.
  */
+/**
+ * Why an `allow`/`scan-failed` result happened. Both fail open, and both are
+ * surfaced the same way by the adapters (a warning carrying `reason`) — the
+ * discriminant exists because the two have nothing else in common:
+ *
+ * - `'aborted'` — the scan ran against this repository and could not finish.
+ *   The cause is in the repository, and the remedy is to fix whatever the CLI
+ *   reported.
+ * - `'incompatible-cli'` — the installed `git-span` binary does not understand
+ *   the command the hooks issue, so no scan ran at all. The cause is version
+ *   skew between the plugin bundle and the binary, and the only remedy is to
+ *   upgrade the binary. Nothing about the repository is implicated.
+ *
+ * The kind stays `'scan-failed'` rather than splitting into a third kind so the
+ * adapters keep one branch for "allowed without verifying"; the discriminant
+ * lets a caller that cares tell them apart without parsing prose.
+ */
+export type ScanFailureCause = 'aborted' | 'incompatible-cli';
+
 export type AdvisorResult =
   | { decision: 'allow'; kind: 'silent' }
   | { decision: 'allow'; kind: 'already-presented' }
   | { decision: 'allow'; kind: 'environmental'; conditions: DriftPorcelainRow[]; reason: string }
-  | { decision: 'allow'; kind: 'scan-failed'; reason: string }
+  | { decision: 'allow'; kind: 'scan-failed'; cause: ScanFailureCause; reason: string }
   | { decision: 'allow'; kind: 'semantic-drift-report'; findings: DriftPorcelainRow[]; reason: string }
   | { decision: 'allow'; kind: 'uncovered-writes-report'; uncovered: string[]; reason: string }
   | { decision: 'hold'; kind: 'semantic-drift'; findings: DriftPorcelainRow[]; reason: string }
@@ -939,8 +985,24 @@ export async function evaluateAdvisor(
     // debt either — there is nothing here for a user to resolve by editing a
     // span. Fail OPEN with a distinguishable `scan-failed` warning instead of
     // silently reading the aborted scan's empty result as clean.
+    if (err instanceof AdvisorIncompatibleCliError) {
+      // Version skew, not a repository problem: same fail-open decision, but a
+      // reason that names the binary and the upgrade rather than pointing the
+      // user at a scan error they cannot act on.
+      return {
+        decision: 'allow',
+        kind: 'scan-failed',
+        cause: 'incompatible-cli',
+        reason: renderIncompatibleCliReason(err)
+      };
+    }
     if (err instanceof AdvisorScanError) {
-      return { decision: 'allow', kind: 'scan-failed', reason: renderScanFailedReason(err.detail) };
+      return {
+        decision: 'allow',
+        kind: 'scan-failed',
+        cause: 'aborted',
+        reason: renderScanFailedReason(err.detail)
+      };
     }
     // Fail open: any other internal/CLI error resolves to allow. The advisor must
     // never brick a commit on its own failure.
@@ -1559,6 +1621,42 @@ function renderScanFailedReason(detail: string): string {
 }
 
 /**
+ * The advisory an `allow`/`scan-failed`/`incompatible-cli` result renders into
+ * `reason`. Deliberately does not lead with the CLI's own stderr: that text
+ * names whichever subcommand the binary's argument parser guessed at, which is
+ * never the command the user ran and reliably sends readers looking for a
+ * problem in their repository. Lead with the diagnosis and the remedy, and keep
+ * the raw diagnostic at the bottom for whoever is debugging the hook itself.
+ */
+function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
+  const installed = err.installedVersion;
+  const lagging =
+    installed !== null && !isOlderThan(installed, REQUIRED_GIT_SPAN_VERSION)
+      ? // Binary is at or past what this plugin was built against, yet it
+        // rejected the command — the plugin is the stale artifact.
+        'the git-span plugin is older than the binary and is still issuing a retired command'
+      : 'the git-span binary is older than the plugin and does not know this command yet';
+  return [
+    'The implicit-dependency check could not run, so this change was NOT verified.',
+    '',
+    `The installed git-span binary reports ${installed ?? 'no readable version'}; this plugin`,
+    `expects ${REQUIRED_GIT_SPAN_VERSION} or compatible. They install through separate channels, so`,
+    `they can drift apart — here, ${lagging}.`,
+    '',
+    'Bring them back in line, then retry:',
+    '',
+    '    npm install -g git-span@latest    # upgrade the binary',
+    '    # and update the git-span plugin from the marketplace',
+    '',
+    'The command proceeds anyway. Nothing is wrong with this repository — but until',
+    'the two are aligned, span drift is not being checked and spans are not being',
+    'auto-reanchored on edit.',
+    '',
+    `git-span reported: ${err.detail}`
+  ].join('\n');
+}
+
+/**
  * Most spans the related-spans section lists before it truncates. Chosen from
  * the tail of this repository's measured distribution (median 2 qualifying
  * spans, p90 7, p99 15, max 41) rather than to maximize a hit rate: it engages
@@ -2021,6 +2119,108 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
   };
 }
 
+// ---------------------------------------------------------------------------
+// Binary/plugin version skew
+// ---------------------------------------------------------------------------
+
+/**
+ * The oldest `git-span` binary that understands every command the executors
+ * below issue — currently the release that renamed the `stale` subcommand to
+ * `drift`. The hook bundle and the binary install through independent channels
+ * (the plugin marketplace and npm respectively), so "plugin newer than binary"
+ * is an ordinary state for however long a user waits between the two upgrades,
+ * not an exotic misconfiguration.
+ *
+ * Keep this at the version that introduced the newest command or flag the
+ * executors depend on, not at the current release: raising it past what the
+ * executors actually need turns a working binary into a reported failure.
+ */
+export const REQUIRED_GIT_SPAN_VERSION = '1.0.142';
+
+/**
+ * Whether a CLI failure is the argument parser rejecting the command outright
+ * rather than the command running and failing.
+ *
+ * clap writes these on stderr and exits 2; the exact wording differs across
+ * clap versions and across which token it choked on, so this matches the stable
+ * `error: <shape>` prefixes rather than whole sentences. Requiring a `Usage:`
+ * line as well keeps a repository-level error that happens to contain one of
+ * these words from being read as skew — a usage block is only ever printed by
+ * the parser.
+ */
+function isArgumentParseFailure(stderr: string): boolean {
+  if (!/^\s*(usage|Usage):/m.test(stderr)) return false;
+  return /error:\s+(unexpected argument|unrecognized subcommand|invalid subcommand|unknown (?:argument|subcommand)|the subcommand .* wasn't recognized|unexpected value)/i.test(
+    stderr
+  );
+}
+
+/** Parsed `x.y.z` triple, or `null` for anything that is not one. */
+function parseSemverTriple(text: string): [number, number, number] | null {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** `true` when `version` is strictly older than `floor`; `false` if either is unparseable. */
+function isOlderThan(version: string, floor: string): boolean {
+  const a = parseSemverTriple(version);
+  const b = parseSemverTriple(floor);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
+}
+
+/**
+ * The installed binary's version, or `null` if it could not be read.
+ *
+ * Probed lazily — only once a command has already failed — rather than checked
+ * up front on every hook invocation. A hook process is short-lived and runs on
+ * every tool use, so an unconditional `git span --version` would spend a
+ * subprocess on every edit to answer a question that matters only on the
+ * failure path.
+ */
+function probeGitSpanVersion(repoRoot: string, timeoutMs: number): string | null {
+  try {
+    const out = execFileSync('git', ['span', '--version'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
+    });
+    const triple = parseSemverTriple(out);
+    return triple ? triple.join('.') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Classify a non-zero `git span` exit into the error the advisor should raise.
+ *
+ * The signal is the shape of the failure, not the direction of the version
+ * gap. Skew fires both ways and the *lagging plugin* direction is the more
+ * common one in the field: the binary updates through npm's postinstall, which
+ * runs whenever a project's dependencies are installed, while the plugin waits
+ * on a marketplace sync. A binary that is newer than the plugin rejects a
+ * retired subcommand exactly as an older binary rejects a new flag — same exit
+ * 2, same usage block, same dead advisor. Gating on "installed is older than
+ * the floor" would classify only half of it and hand the other half back to the
+ * scan-failure message that says nothing useful.
+ *
+ * The version is probed for the message rather than for the verdict, so the
+ * reader can see the gap and which side of it they are on. `null` (no binary on
+ * PATH, unparseable output) still classifies as skew — the parse failure is the
+ * evidence; the version is the detail.
+ */
+function classifyCliFailure(detail: string, repoRoot: string, timeoutMs: number): Error {
+  if (!isArgumentParseFailure(detail)) return new AdvisorScanError(detail);
+  return new AdvisorIncompatibleCliError(detail, probeGitSpanVersion(repoRoot, timeoutMs));
+}
+
 /** The production {@link AdvisorExecutors}: scoped `git span` fix/drift/list at the repo root. */
 export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): AdvisorExecutors {
   return {
@@ -2038,8 +2238,19 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
       } catch (err) {
         // `git span drift` exits 1 on drift even after healing, and non-zero on
         // genuine failure; either way the subsequent `drift` read is the source
-        // of truth, so the exit code is ignored here.
-        void err;
+        // of truth, so the exit code is ignored here — with one exception.
+        //
+        // A binary that cannot parse the command never healed anything, and the
+        // `drift` read that follows is about to fail the same way. Swallowing it
+        // here means auto-reanchoring stops dead with no signal whatsoever, which
+        // is precisely the state a user upgrading their plugin ahead of their
+        // binary lands in. Raise it so the reason reaches them.
+        const stderr = (err as { stderr?: string }).stderr;
+        const stderrText = typeof stderr === 'string' ? stderr.trim() : '';
+        if (stderrText.length > 0) {
+          const classified = classifyCliFailure(stderrText, repoRoot, timeoutMs);
+          if (classified instanceof AdvisorIncompatibleCliError) throw classified;
+        }
       }
     },
     drift: async (paths, cwd) => {
@@ -2064,12 +2275,16 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
         //    empty stdout. An empty result here is NOT "clean" — the scan never
         //    ran to completion — so signal it distinctly rather than parsing to
         //    `[]`, which would read as a clean pass and silently allow the commit.
+        //  - Version skew: the binary's argument parser rejected the command
+        //    before any scan ran. Shaped exactly like a hard scan failure on the
+        //    wire, but the cause is the install, not the repository —
+        //    `classifyCliFailure` separates the two.
         const stdout = (err as { stdout?: string }).stdout;
         const stderr = (err as { stderr?: string }).stderr;
         const stdoutText = typeof stdout === 'string' ? stdout : '';
         const stderrText = typeof stderr === 'string' ? stderr : '';
         if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new AdvisorScanError(stderrText.trim());
+          throw classifyCliFailure(stderrText.trim(), repoRoot, timeoutMs);
         }
         out = stdoutText;
       }

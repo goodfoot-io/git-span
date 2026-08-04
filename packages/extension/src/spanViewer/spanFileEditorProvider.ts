@@ -236,7 +236,7 @@ function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoThemeKind {
  * re-posts `lastPosted`. This keeps the error state recoverable: a later
  * watcher-triggered render that succeeds posts its document into the panel,
  * which hands it to the Monaco webview to render. The panel deliberately does
- * not post `'ready'` itself -- the host would answer by re-posting a drift
+ * not post `'ready'` itself -- the host would answer by re-posting a stale
  * `lastPosted`, bouncing it straight back here into a reload loop.
  *
  * Always offers "Reopen as Text," per the card's requirement that a span's
@@ -964,7 +964,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
      * so a watcher-triggered re-render (e.g. the user saved an edit in a
      * "Reopen as Text" tab) matches anchors and reconstructs `span_diff`s
      * against the current text -- never the open-time snapshot, which would
-     * post drift addresses and degrade every diff card to 'unavailable'.
+     * post drifted addresses and degrade every diff card to 'unavailable'.
      *
      * @returns The set of filesystem paths watched for this render (the span
      *   file plus every anchor's real file, dangling or not), or `null` when

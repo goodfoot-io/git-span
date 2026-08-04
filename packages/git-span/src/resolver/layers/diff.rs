@@ -401,7 +401,24 @@ fn collect_index_worktree_changes(
                 });
                 continue;
             }
-            Err(e) => return Err(Error::Git(format!("read `{rel}`: {e}"))),
+            // A read that failed because this path's content filter could not
+            // be run is a condition of *this path*, and the anchor layer
+            // already has a classification for it
+            // (`ContentUnavailable(FilterFailed)`, naming the driver). Aborting
+            // the scan here instead threw away every other span's report while
+            // still exiting 1 — indistinguishable from "drift found", so the
+            // truncation was invisible. Skip the entry and let the anchor layer
+            // speak: an anchor on this path gets the accurate per-file verdict,
+            // and an anchor anywhere else gets its report.
+            //
+            // Only filter failures degrade. A read that failed for any other
+            // reason has no per-anchor classification waiting for it, so
+            // dropping it silently would be a real fail-open — those still
+            // abort.
+            Err(e) => match filter_driver_for(repo, &rel) {
+                Some(_) => continue,
+                None => return Err(Error::Git(format!("read `{rel}`: {e}"))),
+            },
         };
         let new_id = git::hash_blob(&bytes)?;
         if new_id != entry.id {
@@ -535,6 +552,20 @@ fn worktree_change_to_entry(
 /// `filter=lfs` or `text`. Returns `Ok(None)` when the file is missing.
 /// Symlinks return the link target as bytes (git's blob form for a
 /// symlink entry). Non-`ErrorKind::NotFound` IO errors surface.
+/// The non-core `filter=<name>` driver `.gitattributes` puts on `rel`, if any.
+///
+/// `None` covers three cases that all mean the same thing to the caller: no
+/// `filter` attribute, a core filter the engine handles itself, and an
+/// attribute lookup that failed. The last one is deliberately lumped in with
+/// the others — if we cannot establish that a driver is involved, we must not
+/// use "a driver is involved" as grounds for dropping a failed read.
+fn filter_driver_for(repo: &gix::Repository, rel: &str) -> Option<String> {
+    match crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel)) {
+        Ok(Some(name)) if !crate::types::is_core_filter(&name) => Some(name),
+        _ => None,
+    }
+}
+
 fn read_worktree_cleaned(
     repo: &gix::Repository,
     abs: &std::path::Path,

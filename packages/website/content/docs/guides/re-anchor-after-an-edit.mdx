@@ -6,10 +6,10 @@ description: Update a span's anchors after a deliberate code change — in place
 ## When to use this
 
 <Callout type="info">
-Under an agent session, a pure line-shift (the span still describes the same content, just at a new range) is healed automatically — the touch hook re-anchors it the moment the edit lands, and no manual step or extra commit is needed. This guide is for what that hook can't do on its own: content itself changed in a way that needs a human or agent judgment call about whether the coupling still holds, or you're re-anchoring outside a hooked session (CI, a human-authored commit, `stale --fix` run by hand).
+Under an agent session, a pure line-shift (the span still describes the same content, just at a new range) is healed automatically — the touch hook re-anchors it the moment the edit lands, and no manual step or extra commit is needed. This guide is for what that hook can't do on its own: content itself changed in a way that needs a human or agent judgment call about whether the coupling still holds, or you're re-anchoring outside a hooked session (CI, a human-authored commit, `drift --fix` run by hand).
 </Callout>
 
-Use this when you've deliberately changed the code a span anchors — moved a function, changed its size, or otherwise made its old line range wrong — and `git span stale` now reports it as drifted. This guide covers the manual re-anchor step. If you haven't triaged the drift yet, start with [Reconcile stale spans](/docs/guides/reconcile-stale-spans).
+Use this when you've deliberately changed the code a span anchors — moved a function, changed its size, or otherwise made its old line range wrong — and `git span drift` now reports it as drifted. This guide covers the manual re-anchor step. If you haven't triaged the drift yet, start with [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans).
 
 ## Find the new range
 
@@ -45,20 +45,20 @@ Added 0 anchors and resolved 1 in place to span `checkout-flow`.
 - resolved in-place: `checkout-flow` `web/checkout.tsx#L4-L6` (hash changed)
 ```
 
-"Added 0 anchors" is not a failure — the in-place resolution is the point. The next `git span stale` run reports the anchor clean. This is also how you confirm an intentional content change that `stale` flagged: re-adding the anchor declares "yes, the new content is what the span should track."
+"Added 0 anchors" is not a failure — the in-place resolution is the point. The next `git span drift` run reports the anchor clean. This is also how you confirm an intentional content change that `drift` flagged: re-adding the anchor declares "yes, the new content is what the span should track."
 
 Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. A coupled doc that now lags the change is updated first (docs follow deliberately committed code); if bringing the anchors back into agreement would mean changing code, surface that decision instead of re-anchoring over it.
 
 ## Moved range: add the new anchor, remove the old one
 
-If the code moved to a different range, add the new address and drop the stale one:
+If the code moved to a different range, add the new address and drop the drifted one:
 
 ```bash
 git span add checkout-flow web/checkout.tsx#L6-L8
 git span remove checkout-flow web/checkout.tsx#L4-L6
 ```
 
-`add` stages the new anchor into the span; `remove` drops the stale one. Order doesn't matter — both edit the span file under the span root.
+`add` stages the new anchor into the span; `remove` drops the drifted one. Order doesn't matter — both edit the span file under the span root.
 
 Check the result:
 
@@ -84,5 +84,5 @@ git add .span && git commit
 
 ## See also
 
-- [Reconcile stale spans](/docs/guides/reconcile-stale-spans) for the full triage workflow, including when `stale --fix` can do this automatically.
+- [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans) for the full triage workflow, including when `drift --fix` can do this automatically.
 - [Concepts](/docs/concepts) for the definitions of span, anchor, and why.

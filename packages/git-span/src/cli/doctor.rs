@@ -64,6 +64,29 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         }
     }
 
+    // Reserved-name surfacing: the reserved list grows between releases, so a
+    // span created under a legal name can wake up carrying one that is now
+    // reserved. Such a span still reads, but every write to it (`add`,
+    // `remove`, `why`) refuses — an audit command that stayed silent would
+    // leave the user to discover it mid-edit, with no hint that the *name* is
+    // the problem. Report it here, with the escape.
+    for name in &names {
+        if !crate::validation::is_reserved_span_name(name) {
+            continue;
+        }
+        let retired = crate::validation::retired_replacement(name)
+            .map(|replacement| {
+                format!(" `{name}` was retired as a subcommand; `git span {replacement}` replaced it.")
+            })
+            .unwrap_or_default();
+        findings.push(format!(
+            "span `{name}` carries a name reserved by this version of git-span, so it can be \
+             read and deleted but not edited (`add`, `remove`, and `why` refuse it).{retired} \
+             Rename it — `git mv {span_root}/{name} {span_root}/<new-name>` — or drop it with \
+             `git span delete {name}`."
+        ));
+    }
+
     // Interior-anchor surfacing: a span that parses cleanly may still carry a
     // hand-edited anchor pointing inside the span root. Surface each such
     // anchor as a loud, actionable, per-span finding (parse stays pure so the
@@ -73,12 +96,24 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     }
 
     let exit = if findings.is_empty() {
-        println!("span doctor: {n_spans} spans checked, no findings.{IDEMPOTENT_TAG}");
+        println!(
+            "span doctor: {n_spans} {} checked, no findings.{IDEMPOTENT_TAG}",
+            if n_spans == 1 { "span" } else { "spans" }
+        );
         0
     } else {
         println!("# span doctor");
         println!();
-        println!("{n_spans} spans checked, {} findings.", findings.len());
+        let n_findings = findings.len();
+        println!(
+            "{n_spans} {} checked, {n_findings} {}.",
+            if n_spans == 1 { "span" } else { "spans" },
+            if n_findings == 1 {
+                "finding"
+            } else {
+                "findings"
+            }
+        );
         println!();
         println!("## Findings");
         println!();

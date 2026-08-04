@@ -279,8 +279,26 @@ pub enum Error {
     ConcurrentUpdate { expected: String, found: String },
 
     /// Span name is on the §10.2 reserved list (collides with a subcommand).
-    #[error("reserved span name: {0}")]
+    ///
+    /// The message names the escape hatch as well as the rule — see
+    /// `git_span_core::Error::ReservedName`, whose text this mirrors
+    /// byte-for-byte.
+    #[error(
+        "reserved span name: {0} — `{0}` is a git-span subcommand or reserved token, so it \
+         cannot be used as a span name. A span already named `{0}` predates the reservation: \
+         it is still readable, and `git span delete {0}` still removes it. To keep its \
+         contents, move `.span/{0}` to a free name first."
+    )]
     ReservedName(String),
+
+    /// Span name was a git-span subcommand in an earlier release (mirrors
+    /// `git_span_core::Error::RetiredName`).
+    #[error(
+        "retired span name: {name} — `git span {name}` was retired; use `git span \
+         {replacement}` instead. The name stays reserved, so it cannot be used as a span \
+         name either."
+    )]
+    RetiredName { name: String, replacement: String },
 
     /// Span name or anchor id violates the §3.5 ref-legal rules.
     #[error("invalid name: {0}")]
@@ -314,7 +332,13 @@ pub enum Error {
     /// outside the slice-2 core-filter allowlist. The engine surfaces
     /// this as `AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
     /// See `docs/drift-layers-slices.md` "Standing rules" — fail loud.
-    #[error("filter not implemented: {filter}")]
+    /// The wording is "could not be started", not "not implemented": the
+    /// process protocol *is* implemented and a working driver resolves
+    /// anchors fine. What failed is this repository's configured driver —
+    /// missing binary, non-executable wrapper, unconfigured key. "Not
+    /// implemented" sent readers looking for a git-span gap that does not
+    /// exist.
+    #[error("content filter `{filter}` could not be started")]
     FilterFailed { filter: String },
 
     /// On-disk catalog blob has a format version that doesn't match what
@@ -377,6 +401,9 @@ impl From<git_span_core::Error> for Error {
     fn from(e: git_span_core::Error) -> Self {
         match e {
             git_span_core::Error::ReservedName(s) => Error::ReservedName(s),
+            git_span_core::Error::RetiredName { name, replacement } => {
+                Error::RetiredName { name, replacement }
+            }
             git_span_core::Error::InvalidName(s) => Error::InvalidName(s),
             git_span_core::Error::InvalidSpanFile(s) => Error::InvalidSpanFile(s),
             git_span_core::Error::SpanConflict(s) => Error::SpanConflict(s),

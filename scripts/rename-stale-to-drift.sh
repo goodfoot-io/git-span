@@ -141,6 +141,11 @@ EXCLUDE_FILES=(
     packages/git-span/scripts/cleanup-stale-target.sh
     # `pruneStaleSessions` over month-old advisor session directories.
     packages/agent-hooks/test/common/memo-store.test.ts
+    # One-shot, already-applied mesh->span rebrand script; its allowlist and
+    # command references record what actually existed/ran at rebrand time
+    # (e.g. `packages/git-mesh/src/cli/stale_fix.rs`, `git span stale --fix`).
+    # Renaming "stale" inside it falsifies that historical record.
+    scripts/rebrand-mesh-to-span.sh
 )
 
 # git-grep pathspec: the allowlist, minus this script and the excluded files.

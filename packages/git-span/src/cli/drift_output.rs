@@ -30,6 +30,16 @@ use std::collections::HashSet;
 fn curate_resolver_failure(e: crate::Error) -> anyhow::Error {
     match e {
         crate::Error::Git(_) => resolver_read_error("drift", e).into(),
+        // A filter failure should have resolved to a per-anchor
+        // `ContentUnavailable(FilterFailed)` long before here; the routes that
+        // used to abort the scan now degrade. This arm is the backstop for a
+        // route that has not been found yet — it costs nothing and it keeps
+        // such a route from landing on the generic repository-read template,
+        // which is the one outcome that actively misleads.
+        crate::Error::FilterFailed { ref filter } => {
+            let curated = crate::cli::filter_driver_error("drift", filter, &e);
+            curated.into()
+        }
         _ => e.into(),
     }
 }
@@ -1268,13 +1278,17 @@ fn describe_finding_lower(f: &Finding) -> String {
         }
         AnchorStatus::ContentUnavailable(reason) => {
             let src = src_phrase(f.source);
-            let detail = match reason {
-                UnavailableReason::LfsNotFetched => "LFS not fetched",
-                UnavailableReason::LfsNotInstalled => "LFS not installed",
-                UnavailableReason::PromisorMissing => "promisor missing",
-                UnavailableReason::SparseExcluded => "sparse excluded",
-                UnavailableReason::FilterFailed { .. } => "filter failed",
-                UnavailableReason::IoError { .. } => "I/O error",
+            // Naming the driver is the only actionable fact this row can
+            // carry; see the twin match in `drift_label.rs`.
+            let detail: String = match reason {
+                UnavailableReason::LfsNotFetched => "LFS not fetched".into(),
+                UnavailableReason::LfsNotInstalled => "LFS not installed".into(),
+                UnavailableReason::PromisorMissing => "promisor missing".into(),
+                UnavailableReason::SparseExcluded => "sparse excluded".into(),
+                UnavailableReason::FilterFailed { filter } => {
+                    format!("filter `{filter}` failed")
+                }
+                UnavailableReason::IoError { .. } => "I/O error".into(),
             };
             if src.is_empty() {
                 format!("content unavailable ({detail})")

@@ -26,29 +26,29 @@ The why is the payload. Everything else — invariants, caveats, ownership, revi
 
 Span data lives in a `.span/` directory at the repo root (or wherever the span root resolves to), committed alongside your code with ordinary git commands: `git add .span && git commit`. It is **managed through the CLI** — `git span add`, `remove`, `why`, `delete` — not hand-edited. The files under `.span/` use an internal storage format, not the TOML-style view `git span show` renders; treat that internal format as private to the tool.
 
-## Drift and staleness
+## Drift
 
-An anchor has drifted when the code it points at no longer matches what was recorded. `git span stale` reports drift with one of these statuses:
+An anchor has drifted when the code it points at no longer matches what was recorded. `git span drift` reports drift with one of these statuses:
 
 - **Changed** — the anchored content differs from what was recorded, in place.
 - **Moved** — the anchored content was found at a different location (a shifted line range).
-- **Resolved, pending commit** — a `--fix` run already rewrote this anchor in the worktree, but the rewrite isn't committed yet. This is a distinct, non-drift state: it's tallied with fresh anchors and doesn't affect `stale`'s exit code. Immediately after the `--fix` run that produced it, it's tagged "— auto-updated"; on later `stale` runs, until you commit, it shows as "resolved, pending commit" with no suffix.
+- **Resolved, pending commit** — a `--fix` run already rewrote this anchor in the worktree, but the rewrite isn't committed yet. This is a distinct, non-drift state: it's tallied with fresh anchors and doesn't affect `drift`'s exit code. Immediately after the `--fix` run that produced it, it's tagged "— auto-updated"; on later `drift` runs, until you commit, it shows as "resolved, pending commit" with no suffix.
 
-A span with any stale anchor has its **entire anchor list printed**, not just the drifted ones — anchors with no drift appear with no status suffix, alongside their stale siblings.
+A span with any drifted anchor has its **entire anchor list printed**, not just the drifted ones — anchors with no drift appear with no status suffix, alongside their drifted siblings.
 
-`git span stale` exits `0` on a clean scan and `1` when it finds drift (or an internal integrity violation, which `--no-exit-code` cannot mask). Reconciling drift starts with a decision, not a command: work out which side of the coupling changed deliberately (`git span history` and the drift-attributing commit in `stale` output show this), then bring the other side back into agreement — a doc that lags deliberately committed code is updated to match — before re-anchoring with `git span add`. Re-anchoring records the current content as the new baseline without any semantic check, so re-anchoring over a live disagreement hides the drift signal without resolving it. `git span stale --fix` handles the mechanically safe cases (`Moved` and whitespace-equivalent `Changed` anchors), without committing; see the [reconcile guide](/docs/guides/reconcile-stale-spans) for the walkthrough and its reliability caveats.
+`git span drift` exits `0` on a clean scan and `1` when it finds drift (or an internal integrity violation, which `--no-exit-code` cannot mask). Reconciling drift starts with a decision, not a command: work out which side of the coupling changed deliberately (`git span history` and the drift-attributing commit in `drift` output show this), then bring the other side back into agreement — a doc that lags deliberately committed code is updated to match — before re-anchoring with `git span add`. Re-anchoring records the current content as the new baseline without any semantic check, so re-anchoring over a live disagreement hides the drift signal without resolving it. `git span drift --fix` handles the mechanically safe cases (`Moved` and whitespace-equivalent `Changed` anchors), without committing; see the [reconcile guide](/docs/guides/reconcile-drifted-spans) for the walkthrough and its reliability caveats.
 
 <Callout type="warn">
-Span command output is ground truth. Don't re-derive a span's state by reading raw `git log`, `git show`, or the files under `.span/` directly — use `git span show`, `list`, `stale`, and `history`, which account for staging, worktree state, and internal formatting that raw git output doesn't reflect.
+Span command output is ground truth. Don't re-derive a span's state by reading raw `git log`, `git show`, or the files under `.span/` directly — use `git span show`, `list`, `drift`, and `history`, which account for staging, worktree state, and internal formatting that raw git output doesn't reflect.
 </Callout>
 
 ## Automation lifecycle
 
 Beyond manual use, git-span is meant to run unattended at a few points in a repo's lifecycle:
 
-- **CI**: run `git span stale` and fail the build on a non-zero exit — see [CI & git integration](/docs/ci) for the wiring. A plain local `git commit` hook works the same way for a workflow with no agent hooks at all.
-- **Merge driver**: `.span/` files can conflict like any other tracked file during a merge; git-span registers a merge driver that resolves what's structurally derivable and leaves genuine same-anchor divergence for `git span stale --fix` to finish.
+- **CI**: run `git span drift` and fail the build on a non-zero exit — see [CI & git integration](/docs/ci) for the wiring. A plain local `git commit` hook works the same way for a workflow with no agent hooks at all.
+- **Merge driver**: `.span/` files can conflict like any other tracked file during a merge; git-span registers a merge driver that resolves what's structurally derivable and leaves genuine same-anchor divergence for `git span drift --fix` to finish.
 - **Agent touch hook**: a `PostToolUse` hook (Claude Code and Codex) fires after each read/edit/write, healing pure positional drift inline and surfacing genuine semantic drift as context — it never blocks the tool call.
-- **Agent commit advisor**: a `PreToolUse` hook on the shell tool holds `git commit`/`git push` once per distinct debt state when the changeset carries real span debt — semantic staleness, or a changed file no span covers — so the report gets read; an identical retry proceeds. It reports rather than enforces: a scan that fails to complete holds nothing, warning that span debt wasn't verified and letting the command through.
+- **Agent commit advisor**: a `PreToolUse` hook on the shell tool holds `git commit`/`git push` once per distinct debt state when the changeset carries real span debt — semantic drift, or a changed file no span covers — so the report gets read; an identical retry proceeds. It reports rather than enforces: a scan that fails to complete holds nothing, warning that span debt wasn't verified and letting the command through.
 
 See [Agent integration](/docs/agent-integration) for the touch hook and advisor in detail, [CI & git integration](/docs/ci) for CI and the merge driver, and the [reference page](/docs/reference) for the storage model and exit codes.

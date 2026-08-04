@@ -544,7 +544,11 @@ fn every_null_hash_state_is_distinguishable_from_structured_fields() -> Result<(
         ),
     ];
 
-    let mut payloads: Vec<(&str, &str, (Option<String>, Option<String>))> = Vec::new();
+    /// One route's owned [`payload_fields`] pair, held across the loop so the
+    /// routes can be compared against each other after every one has run.
+    type OwnedPayload = (Option<String>, Option<String>);
+
+    let mut payloads: Vec<(&str, &str, OwnedPayload)> = Vec::new();
     for (state, route, repo, span, address) in &routes {
         let json = history_json(repo, span)?;
         let anchors = json["current"]["anchors"]
@@ -555,7 +559,7 @@ fn every_null_hash_state_is_distinguishable_from_structured_fields() -> Result<(
         // have actually produced its object.
         let anchor = anchors
             .iter()
-            .find(|a| a["path"] == Value::from(*address))
+            .find(|a| a["path"] == *address)
             .unwrap_or_else(|| {
                 panic!("{route}: no object at {address}; the fixture no longer reaches this state:\n{json:#}")
             });

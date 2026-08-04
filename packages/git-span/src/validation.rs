@@ -10,6 +10,15 @@ use crate::Result;
 /// Subcommands and reserved tokens that cannot be used as span names.
 pub use git_span_core::RESERVED_SPAN_NAMES;
 
+/// Subcommands retired in an earlier release, paired with their replacement.
+pub use git_span_core::RETIRED_SPAN_NAMES;
+
+/// True when a name is unavailable as a span name — reserved or retired.
+pub use git_span_core::is_reserved_span_name;
+
+/// The replacement subcommand for a retired name.
+pub use git_span_core::retired_replacement;
+
 /// Span-name shape rule text (kebab-case segments separated by `/`).
 pub use git_span_core::SPAN_NAME_RULE;
 

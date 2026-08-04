@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 /// Subcommands and reserved tokens that cannot be used as span names.
 pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "add",
+    "show",
     "remove",
     "commit",
     "why",
@@ -32,6 +33,34 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "history",
 ];
 
+/// Tokens that were git-span subcommands in an earlier release, paired with
+/// the token that replaced them. This repository keeps no aliases, so a
+/// retired name must not run — but it also must not be mistaken for an
+/// ordinary span name, or the CLI answers a renamed subcommand with "no span
+/// named `<x>`" and points the user at `git span list`, which enumerates
+/// spans and can never mention the replacement. A retired name is therefore
+/// reserved exactly like a live subcommand, and the CLI answers it with the
+/// rename.
+pub const RETIRED_SPAN_NAMES: &[(&str, &str)] = &[("stale", "drift")];
+
+/// The replacement token for `name`, when `name` is a retired subcommand.
+pub fn retired_replacement(name: &str) -> Option<&'static str> {
+    RETIRED_SPAN_NAMES
+        .iter()
+        .find(|(retired, _)| *retired == name)
+        .map(|(_, replacement)| *replacement)
+}
+
+/// True when `name` cannot be used as a span name: a live subcommand or
+/// reserved token ([`RESERVED_SPAN_NAMES`]), or a retired subcommand
+/// ([`RETIRED_SPAN_NAMES`]).
+///
+/// The check is on the whole name, so a hierarchical name whose first
+/// segment happens to be reserved (`drift/foo`) is unaffected.
+pub fn is_reserved_span_name(name: &str) -> bool {
+    RESERVED_SPAN_NAMES.contains(&name) || retired_replacement(name).is_some()
+}
+
 /// Span-name shape: one or more kebab-case segments separated by `/`. The
 /// recommended hierarchical form is `<category>/<subcategory>/<identifier-slug>`,
 /// but a bare slug or any depth `>= 1` is accepted.
@@ -41,7 +70,19 @@ pub const SPAN_NAME_RULE: &str = "kebab-case segments separated by `/` (e.g. `<s
      and `-`; each segment must start with a letter or digit";
 
 /// Validate a span name against the reserved list and the kebab-case naming rule.
+///
+/// This is the **create-time** rule: it answers "may this name be written?".
+/// Operations that reduce the reserved surface — deleting a span, or renaming
+/// one away from a reserved name — must validate only
+/// [`validate_span_name_shape`], because the name they act on may predate its
+/// reservation and refusing it would leave the span permanently frozen.
 pub fn validate_span_name(name: &str) -> Result<()> {
+    if let Some(replacement) = retired_replacement(name) {
+        return Err(Error::RetiredName {
+            name: name.to_string(),
+            replacement: replacement.to_string(),
+        });
+    }
     if RESERVED_SPAN_NAMES.contains(&name) {
         return Err(Error::ReservedName(name.to_string()));
     }
@@ -206,6 +247,58 @@ mod tests {
             validate_span_name("history"),
             Err(Error::ReservedName(_))
         ));
+    }
+
+    /// A retired subcommand is refused with its replacement named, not with
+    /// the generic reserved-name error — the whole point of keeping it
+    /// reserved is that the CLI can answer with the rename.
+    #[test]
+    fn retired_name_is_rejected_and_names_its_replacement() {
+        let err = validate_span_name("stale").expect_err("`stale` was retired");
+        assert!(
+            matches!(&err, Error::RetiredName { name, replacement }
+                if name == "stale" && replacement == "drift"),
+            "expected RetiredName{{stale -> drift}}, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("git span drift"),
+            "the message must name the replacement, got: {err}"
+        );
+        assert_eq!(retired_replacement("stale"), Some("drift"));
+        assert_eq!(retired_replacement("stail"), None);
+    }
+
+    /// Reserved and retired names are both unavailable, and the check is on
+    /// the whole name — a hierarchical name whose first segment is reserved
+    /// stays legal.
+    #[test]
+    fn is_reserved_covers_reserved_and_retired_but_not_hierarchies() {
+        assert!(is_reserved_span_name("drift"));
+        assert!(is_reserved_span_name("show"));
+        assert!(is_reserved_span_name("stale"));
+        assert!(!is_reserved_span_name("drift/nested"));
+        assert!(!is_reserved_span_name("stale-anchors"));
+    }
+
+    /// The shape rule is the gate for operations that *reduce* the reserved
+    /// surface (delete, rename away). It must accept a reserved name so an
+    /// already-existing span carrying one is never frozen.
+    #[test]
+    fn shape_rule_accepts_reserved_and_retired_names() {
+        assert!(validate_span_name_shape("drift").is_ok());
+        assert!(validate_span_name_shape("stale").is_ok());
+    }
+
+    /// The reserved-name refusal must carry the escape, not just the rule:
+    /// a span that predates the reservation has no other way out.
+    #[test]
+    fn reserved_name_message_names_the_escape() {
+        let err = validate_span_name("drift").expect_err("`drift` is reserved");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("git span delete drift"),
+            "the message must name the escape, got: {msg}"
+        );
     }
 
     #[test]

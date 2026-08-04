@@ -6,7 +6,7 @@
 //! `git`.
 
 use crate::span_file_reader::SpanFileReader;
-use crate::validation::validate_span_name;
+use crate::validation::{validate_span_name, validate_span_name_shape};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -140,7 +140,13 @@ pub fn delete_span(repo: &gix::Repository, name: &str) -> Result<()> {
 }
 
 pub fn delete_span_in(repo: &gix::Repository, name: &str, span_root: &str) -> Result<()> {
-    validate_span_name(name)?;
+    // Shape only, deliberately. `validate_span_name` is the *create-time*
+    // rule and includes the reserved list, which grows between releases: a
+    // span created when its name was legal would otherwise become
+    // undeletable the moment the name was reserved, with no CLI escape at
+    // all. Delete reduces the reserved surface, so the reserved list has no
+    // business gating it — only path safety (the shape rule) does.
+    validate_span_name_shape(name)?;
     let reader = SpanFileReader::new(repo, span_root.to_string());
     if reader.read_effective(name)?.is_none() {
         return Err(Error::SpanNotFound(name.into()));
@@ -159,8 +165,14 @@ pub fn rename_span(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
 }
 
 pub fn rename_span_in(repo: &gix::Repository, old: &str, new: &str, span_root: &str) -> Result<()> {
+    // The destination is a name being *written*, so it faces the full
+    // create-time rule; the source is only being vacated, so it faces the
+    // shape rule alone. Renaming away from a name that became reserved after
+    // the span was created is the supported migration, and gating it on the
+    // reserved list would refuse exactly the operation that fixes the
+    // problem.
     validate_span_name(new)?;
-    validate_span_name(old)?;
+    validate_span_name_shape(old)?;
 
     let reader = SpanFileReader::new(repo, span_root.to_string());
     let Some(file) = reader.read_effective(old)? else {

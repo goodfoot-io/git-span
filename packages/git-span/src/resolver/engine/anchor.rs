@@ -798,7 +798,29 @@ pub(crate) fn resolve_anchor_inner(
         // identical to the un-memoized form — only the disk/ODB reads are
         // cached, so the fingerprints below match exactly what a fresh
         // `read_worktree_normalized` / `read_git_text` pair would produce.
-        let wt_bytes = concurrent.worktree_bytes(repo, &mut local.custom_filters, &wt_path)?;
+        //
+        // A driver failure on this read is a per-anchor condition, not a
+        // reason to abandon the run. `filter_short_circuit` deliberately
+        // declines to short-circuit when `filter.<name>.process` is
+        // configured — the custom reader is supposed to handle it — so when
+        // that driver is missing or dies, the failure surfaces *here*, ahead
+        // of the deepest-layer switch that knows how to classify it. Left as
+        // `?` it aborted the whole resolve, taking every other span's report
+        // with it and rendering as a repository-read failure. The content is
+        // unavailable for this anchor and available for every other one, so
+        // say exactly that, the same way the Worktree arm below does.
+        let wt_bytes = match concurrent.worktree_bytes(repo, &mut local.custom_filters, &wt_path) {
+            Ok(b) => b,
+            Err(Error::FilterFailed { filter }) => {
+                return Ok(unavailable(
+                    anchor_id,
+                    &r,
+                    anchored,
+                    UnavailableReason::FilterFailed { filter },
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         let extent = AnchorExtent::LineRange {
             start: anchored_start,
             end: anchored_end,

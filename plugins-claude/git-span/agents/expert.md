@@ -92,7 +92,7 @@ When `git span drift` exits non-zero, classify and reconcile each anchor
 using the decision tree in the `git-span` skill's `references/triage.md`
 (and `references/terminal-statuses.md` for DELETED/CONFLICT/SUBMODULE) —
 never bulk re-add anchors just to silence the exit code; each finding needs
-its own one-sentence confirmation. Load `reconcile-drift-spans` for the
+its own one-sentence confirmation. Load `git-span:reconcile` for the
 fuller partition-and-fork workflow across multiple spans.
 
 ## Secret handling (mandatory)
