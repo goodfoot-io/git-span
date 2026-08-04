@@ -234,6 +234,65 @@ EXCLUSIONS=(
     '.span/marketing/homepage-engine-asset-types|.hdr is stale from a removed HDRI import|1'
     '.span/.advisorignore|for staleness detection|1'
     '.span/website-metadata-image-pipeline|reconcile-stale-spans.png|1'
+
+    # Retirement machinery: the retired `stale` token in RETIRED_SPAN_NAMES,
+    # the refusal's comments, and the tests that pin the rename. These lines
+    # are the whole point of the retirement — rewriting them would un-pin the
+    # guarantee that `stale` is refused and never routed to `show`.
+    'packages/git-span-core/src/validation.rs|("stale", "drift")|1'
+    'packages/git-span-core/src/validation.rs|`stale` was retired|1'
+    'packages/git-span-core/src/validation.rs|name == "stale" && replacement == "drift"|1'
+    'packages/git-span-core/src/validation.rs|stale -> drift|1'
+    'packages/git-span-core/src/validation.rs|retired_replacement("stale")|1'
+    'packages/git-span-core/src/validation.rs|is_reserved_span_name("stale")|1'
+    'packages/git-span-core/src/validation.rs|is_reserved_span_name("stale-anchors")|1'
+    'packages/git-span-core/src/validation.rs|validate_span_name_shape("stale")|1'
+    'packages/git-span/src/main.rs|git span stale --format porcelain|1'
+    'packages/git-span/src/main.rs|stopped `stale` from being routed to `show`|1'
+    'packages/git-span/src/main.rs|must also reach `git span help stale`|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|when `stale` was renamed to|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|Removing `stale` from the reserved list|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|was spliced into `show`|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|`git span stale` still does not run|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|`git span stale` must name its replacement|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|retired_stale_names_drift_and_does_not_run|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|run_span(["stale"])?;|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|must not be misreported as a missing span|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|flags that `stale` used to|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|retired_stale_with_flags_still_gets_the_rename|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|vec!["stale", "--format", "porcelain"]|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|vec!["stale", "--fix"]|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|vec!["--perf", "stale"]|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|run_span(["add", "stale"|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|`git span help stale` must not fall through|1'
+    "packages/git-span/tests/cases/retired_and_reserved_names.rs|unrecognized subcommand 'stale'|1"
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|run_span(["help", "stale"])|1'
+    'packages/git-span/tests/cases/retired_and_reserved_names.rs|`help stale` must not reach clap|1'
+
+    # Version-skew commentary: "stale" is the *plugin* being the stale
+    # artifact after the binary moved on, or the old subcommand name in the
+    # history of the version probe — the skew story is about which side
+    # rotted, so the word is the subject.
+    'packages/agent-hooks/src/common/advisor-core.ts|the plugin is the stale artifact|1'
+    'packages/agent-hooks/src/common/advisor-core.ts|renamed the `stale` subcommand|1'
+    'packages/agent-hooks/test/common/advisor-version-skew.test.ts|says which side is stale|1'
+    'plugins-claude/git-span/hooks/bin/advisor.mjs|the plugin is the stale artifact|1'
+    'plugins-codex/git-span/hooks/advisor.mjs|the plugin is the stale artifact|1'
+
+    # Restored deliberate prose: sentences re-instated verbatim after the
+    # rename because "stale" is the point of the sentence (the old extent a
+    # mid-merge lookup left behind, the pre-fix worktree diff reuse, the
+    # dead webview message that must not be re-posted).
+    'packages/extension/src/spanViewer/spanFileEditorProvider.ts|re-posting a stale|1'
+    'packages/git-span/tests/cases/cli_drift_fix_mid_merge.rs|leaving the old stale|1'
+    'packages/git-span/tests/cases/cli_drift_fix_perf_equivalence.rs|risking a stale drift|1'
+    'packages/git-span/src/cli/history.rs|a stale|1'
+
+    # Reconcile skill trigger phrases: the description deliberately keeps the
+    # pre-rename wording so a user who still says "stale spans" is routed to
+    # the drift reconciler.
+    'plugins-claude/git-span/skills/reconcile/SKILL.md|"fix stale spans"|1'
+    'plugins-codex/git-span/skills/reconcile/SKILL.md|"fix stale spans"|1'
 )
 
 # ---------------------------------------------------------------------------
@@ -621,6 +680,11 @@ for entry in "${PREPASS_CURATED[@]}"; do
     pat=$(printf '%s' "$entry" | cut -d'|' -f3)
     want=$(printf '%s' "$entry" | cut -d'|' -f4)
     got=$(grep -cE -- "$pat" "$file" 2>/dev/null || true)
+    # A curated file the rename deleted (e.g. `cli_stale_renderers.rs`)
+    # makes grep fail, leaving `got` empty and `[ -ne ]` an arithmetic
+    # error; default to 0 so the MISS branch fires instead of skipping
+    # silently.
+    got=${got:-0}
     if [ "$got" -ne "$want" ]; then
         say "CURATED MISS ($got matches, want $want): $file :: $label"
         MISS=1

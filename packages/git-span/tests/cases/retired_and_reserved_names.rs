@@ -92,6 +92,28 @@ fn retired_stale_with_flags_still_gets_the_rename() -> Result<()> {
     Ok(())
 }
 
+/// `git span help stale` must not fall through to clap's help machinery:
+/// clap resolves `help`'s argument as a subcommand name, so without the
+/// guard it answers "unrecognized subcommand 'stale'" — exit 2, and never
+/// names the replacement. The refusal must reach the help form too.
+#[test]
+fn help_for_retired_subcommand_still_gets_the_rename() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_span(["help", "stale"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("git span drift"),
+        "the refusal must name the replacement, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unrecognized subcommand"),
+        "`help stale` must not reach clap, got: {stderr}"
+    );
+    Ok(())
+}
+
 /// A typo is not a retired name: `stail` remains an ordinary missing span, so
 /// the two mistakes stay distinguishable from their output alone.
 #[test]

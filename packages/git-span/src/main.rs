@@ -81,9 +81,21 @@ fn run() -> Result<i32> {
     // refusal is unconditional and ignores the rest of the argv, so
     // `git span stale --format porcelain` gets the rename too rather than a
     // clap usage error about flags on a command that no longer exists.
+    //
+    // The refusal must also reach `git span help stale`: clap's `help`
+    // subcommand resolves its argument as a subcommand name, so a retired
+    // token hides one position further right — without the peek below it
+    // reaches clap as an "unrecognized subcommand" (exit 2) and never
+    // names the replacement.
+    let retirement_probe = if first_non_opt.map(String::as_str) == Some("help") {
+        args.get(idx + 1)
+    } else {
+        first_non_opt
+    };
+
     if let Some((retired, replacement)) = RETIRED_SPAN_NAMES
         .iter()
-        .find(|(retired, _)| Some(*retired) == first_non_opt.map(String::as_str))
+        .find(|(retired, _)| Some(*retired) == retirement_probe.map(String::as_str))
     {
         return Err(CliError {
             subcommand: retired,

@@ -2205,11 +2205,15 @@ function probeGitSpanVersion(repoRoot: string, timeoutMs: number): string | null
  * gap. Skew fires both ways and the *lagging plugin* direction is the more
  * common one in the field: the binary updates through npm's postinstall, which
  * runs whenever a project's dependencies are installed, while the plugin waits
- * on a marketplace sync. A binary that is newer than the plugin rejects a
- * retired subcommand exactly as an older binary rejects a new flag — same exit
- * 2, same usage block, same dead advisor. Gating on "installed is older than
- * the floor" would classify only half of it and hand the other half back to the
- * scan-failure message that says nothing useful.
+ * on a marketplace sync. An older binary rejects a new flag with exit 2 and a
+ * usage block, which the shape gate below recognizes as skew. The retirement
+ * machinery this card adds emits exit 1 with prose naming the replacement
+ * (`git span drift`) and no usage block, so a lagging-plugin future would
+ * surface as a scan failure rather than skew — the shape gate alone does not
+ * cover that case, and the version probe is the signal available there.
+ * Gating on "installed is older than the floor" would classify only half of it
+ * and hand the other half back to the scan-failure message that says nothing
+ * useful.
  *
  * The version is probed for the message rather than for the verdict, so the
  * reader can see the gap and which side of it they are on. `null` (no binary on
