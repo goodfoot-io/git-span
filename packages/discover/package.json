@@ -1,6 +1,6 @@
 {
   "name": "discover",
-  "version": "1.0.142",
+  "version": "1.0.143",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
