@@ -1,34 +1,30 @@
 /**
- * Reproduction: the `list` executor must not classify a deleted tracked path
- * in the changeset as a scan infrastructure failure.
+ * Reproduction: a status changeset carrying a deleted tracked path must not
+ * abort the advisor's implicit-dependency scan into the "could not run"
+ * advisory.
  *
  * A routine `rm` of a tracked file (staged or not) makes `git diff --name-only`
- * list it — a deletion is a working-tree modification — so the changeset handed
- * to the coverage scan carries a path that no longer exists on disk. The
- * coverage query `git span list --porcelain <paths>` fails hard on such a path
- * (exit 1, empty stdout, an error on stderr naming the deleted path), and the
- * `list` executor converts that shape into `AdvisorScanError`
- * (`advisor-core.ts`, ~L2393-L2399), which `evaluateAdvisor` surfaces as the
- * `scan-failed` "could not run" advisory on every status-kind check — instead
- * of the scan proceeding quietly over the surviving paths.
+ * list it — a deletion is a working-tree modification — so the status changeset
+ * resolved by {@link resolveChangeset} carries a path that no longer exists on
+ * disk. The coverage queries `git span drift <paths>` and
+ * `git span list --porcelain <paths>` fail hard on such a path (exit 1, empty
+ * stdout, an error on stderr naming the deleted path), and the executors
+ * convert that shape into an {@link AdvisorScanError}; {@link evaluateAdvisor}
+ * then fails open with the `scan-failed` "could not run" advisory instead of
+ * scanning quietly over the surviving paths. A deleted path has no content
+ * whose implicit dependencies could be documented, so it should never reach
+ * the scan in the first place.
  *
- * The invariant under test: a deleted path never aborts the coverage scan. A
- * path absent from the working tree can never be covered by a span — it has no
- * content whose implicit dependencies could be documented — so it should
- * contribute zero coverage (an empty result for the missing paths), not abort
- * the read for the rest of the changeset.
- *
- * The test drives `executors.list` directly rather than the full
- * `evaluateAdvisor` flow because the full flow runs the `drift` executor
- * first, and `git span drift` fails hard on the same deleted-path shape — an
- * `evaluateAdvisor`-level test aborts in `drift` before the `list` executor
- * ever runs, so it cannot discriminate this hypothesis: that the defect is in
- * the `list` executor's failure classification. The changeset itself is built
- * the way the advisor builds it — a real `git diff --name-only` read over a
- * fixture whose tracked `src/app.ts` was `rm`'d while `src/util.ts` was
- * edited. A lone deletion would reproduce nothing — the coverage scan
- * short-circuits on changesets of fewer than two paths — so the fixture pairs
- * the deletion with the surviving path the scan must proceed over.
+ * The invariant under test is the observable contract of the advisor's own
+ * changeset flow: a status changeset containing a deleted tracked path must
+ * not abort the coverage scan. The fix that satisfies it belongs upstream of
+ * both scan queries — {@link resolveChangeset} drops paths absent from the
+ * working tree before the changeset reaches evaluation — so the test drives
+ * the real pipeline end to end: a real temp repo, the real `GitExecutor` (so
+ * the deleted path actually enters the changeset), and the real `git span`
+ * CLI. The fixture pairs the deletion with a surviving modified file, because
+ * a lone deletion would reproduce nothing — the coverage scan short-circuits
+ * on changesets of fewer than two paths.
  *
  * Skipped in full when `git span` is not on PATH.
  */
@@ -37,7 +33,13 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createDefaultAdvisorExecutors } from '../../src/common/advisor-core.js';
+import {
+  type AdvisorMemoState,
+  createDefaultAdvisorExecutors,
+  createDefaultGitExecutor,
+  evaluateAdvisor,
+  resolveChangeset
+} from '../../src/common/advisor-core.js';
 
 const hasGitSpan = (() => {
   try {
@@ -50,7 +52,21 @@ const hasGitSpan = (() => {
 
 const suite = hasGitSpan ? describe : describe.skip;
 
-suite('createDefaultAdvisorExecutors().list — deleted tracked path in the changeset', () => {
+/** An in-memory AdvisorMemoState — report-only evaluation never reads or writes it. */
+function createMemoryAdvisorMemoState(): AdvisorMemoState {
+  const digests = new Set<string>();
+  return {
+    has(digest: string): boolean {
+      return digests.has(digest);
+    },
+    record(digest: string): boolean {
+      digests.add(digest);
+      return true;
+    }
+  };
+}
+
+suite('status changeset containing a deleted tracked path does not abort the coverage scan', () => {
   let repoRoot: string;
 
   beforeEach(() => {
@@ -128,16 +144,25 @@ suite('createDefaultAdvisorExecutors().list — deleted tracked path in the chan
     expect(stderr.trim().length).toBeGreaterThan(0);
   });
 
-  it('treats the deleted path as zero coverage instead of aborting the coverage read', async () => {
-    const executors = createDefaultAdvisorExecutors();
-    // The changeset the advisor would scan: the deleted path plus the survivor.
-    const changed = changedPaths();
-    expect(changed).toContain('src/app.ts');
-    expect(changed).toContain('src/util.ts');
-    // The deleted path cannot be covered by any span — it has no file and no
-    // anchor — so the batch must resolve (empty here: no spans exist in the
-    // fixture) rather than reject with `AdvisorScanError` and abort the scan
-    // for the rest of the changeset.
-    await expect(executors.list(changed, repoRoot)).resolves.toEqual([]);
+  it('does not abort the coverage scan when the status changeset carries a deleted tracked path', async () => {
+    // The real pipeline: resolveChangeset feeds the status changeset straight
+    // into the report-only evaluation, exactly as the status adapter does.
+    const changeset = await resolveChangeset('status', false, repoRoot, createDefaultGitExecutor());
+    // Fixture sanity (true before and after a fix): the surviving change is
+    // what the scan must proceed over. On the current code the changeset also
+    // carries `src/app.ts` — the deleted path — which aborts the scan below.
+    expect(changeset.paths).toContain('src/util.ts');
+
+    const result = await evaluateAdvisor(
+      changeset.paths,
+      repoRoot,
+      createDefaultAdvisorExecutors(),
+      createMemoryAdvisorMemoState(),
+      'report-only'
+    );
+    // The deleted path has no content whose implicit dependencies could be
+    // documented — the scan must proceed over the surviving paths, never
+    // abort with the "could not run" advisory.
+    expect(result.kind).not.toBe('scan-failed');
   });
 });
