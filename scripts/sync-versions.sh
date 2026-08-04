@@ -86,7 +86,8 @@ for rel in \
   packages/extension/package.json \
   packages/website/package.json \
   packages/agent-hooks/package.json \
-  packages/git-span-core/package.json; do
+  packages/git-span-core/package.json \
+  packages/discover/package.json; do
   pkg_json="$REPO_ROOT/$rel"
   if [ -f "$pkg_json" ]; then
     current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$pkg_json','utf8')).version)")
