@@ -481,8 +481,9 @@ fn capture_stdout(repo: &Path, args: &[&str], cache_off: bool) -> Vec<u8> {
 /// Assert that cache-on output equals cache-off output for the given args.
 /// Compares stdout, the stderr contract, and exit status: none of these
 /// oracle invocations pass `--perf`/`--perf-trace` (the only documented
-/// source of intentional cache-state-dependent stderr output — see
-/// `packages/git-span/docs/profiling.md`), so stderr is expected to be
+/// source of intentional cache-state-dependent stderr output — see the
+/// wiki page "Profiling git span drift" under `wiki/guides/`), so stderr
+/// is expected to be
 /// byte-identical between cache-on and cache-off exactly like stdout.
 fn assert_oracle(repo: &Path, op_name: &str, args: &[&str]) {
     // For drift cold oracle: ensure cache is absent for both runs.

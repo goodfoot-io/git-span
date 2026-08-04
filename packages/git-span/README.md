@@ -16,7 +16,7 @@ A configured filter driver's resolved executable (e.g. a `git-lfs` install) is c
 
 ## Profiling
 
-Perf investigation tooling is documented in [`./docs/profiling.md`](./docs/profiling.md):
+Perf investigation tooling is documented in [Profiling `git span drift`](../../wiki/guides/profiling-git-span-drift.md):
 
 - **Flame graph capture** — `perf record` + `inferno-flamegraph` recipe for identifying hot functions.
 - **`--perf-trace <path>`** — opt-in per-anchor wall-clock CSV emitter for `git span drift`; CSV schema, usage constraints, and quick analysis snippets are documented there.

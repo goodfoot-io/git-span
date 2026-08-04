@@ -1,14 +1,20 @@
+---
+title: Profiling git span drift
+summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
+aliases: [git-span profiling, perf trace, cache-path counters, perf-trace]
+---
+
 # Profiling `git span drift`
 
 Three complementary tools cover the common perf questions:
 
 1. **`perf record` + `inferno-flamegraph`** — self-time profile. "Which functions are hot?"
 2. **`git span drift --perf-trace <path>`** — per-anchor wall-clock distribution. "Is the runtime uniform across many anchors, or concentrated in a few?"
-3. **`--perf` / `GIT_SPAN_PERF=1` cache-path counters** — "which cache path did this run take, and why?" See [Cache-path counters](#cache-path-counters-perf--git_span_perf1) below.
+3. **`--perf` / `GIT_SPAN_PERF=1` cache-path counters** — "which cache path did this run take, and why?" See [Cache-path counters](#cache-path-counters) below.
 
-Both `perf` and `inferno` are pre-installed in the devcontainer image
-([`./.devcontainer/Dockerfile`](./.devcontainer/Dockerfile)) — no `apt install` or
-`cargo install` step is needed on a fresh rebuild.
+The benchmarks tell you *how fast* and *whether output is correct*; these tools tell you *where the time goes*. Reach for them when a benchmark in [Running the git-span benchmarks](./running-git-span-benchmarks.md) surfaces a regression and you need to localize it.
+
+Both `perf` and `inferno` come with the devcontainer on a fresh rebuild — `linux-perf` in the image ([`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile#L10-L22)) and `inferno` via the post-create routine ([`.devcontainer/post-create.sh`](../../.devcontainer/post-create.sh#L97-L102)) — so no `apt install` or `cargo install` step is needed.
 
 ## Flame graph capture
 
@@ -39,7 +45,7 @@ The devcontainer image does not set this at startup — many hardened hosts reje
 git span drift --perf-trace /tmp/trace.csv
 ```
 
-Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag is opt-in; without it, no per-anchor instrumentation runs.
+Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L250-L256)) is opt-in; without it, no per-anchor instrumentation runs.
 
 ### CSV schema
 
@@ -49,8 +55,8 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag is opt-in; 
 | `anchor_id` | string | Anchor identifier within the span |
 | `anchor_sha` | hex | Commit SHA the anchor is pinned to |
 | `path` | string | File path the anchor references |
-| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../src/resolver/engine/anchor.rs) |
-| `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../src/resolver/engine/anchor.rs) |
+| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L460-L1495) |
+| `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../../packages/git-span/src/resolver/engine/anchor.rs#L1844-L1908) |
 | `status` | enum | One of `Fresh`, `Moved`, `Changed`, `Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
 Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
@@ -66,7 +72,7 @@ git span drift --perf-trace /tmp/trace.csv          # OK: full scan
 git span drift --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format.
+The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L114-L121)).
 
 ### Quick analyses
 
@@ -92,26 +98,26 @@ awk -F, 'NR>1 && $5 > 50000 {print $5"\t"$1"\t"$2}' /tmp/trace.csv | sort -rn
 
 When `--perf-trace` is absent, the resolver does not capture per-anchor traces; the session's trace buffer stays `None` and the per-anchor loop pays a single `Option::is_some()` check per iteration. When the flag is set, each anchor adds one `Instant::now()` (already captured for the existing `per_anchor_us` summary), a snapshot of the fast-path counter, and a `Vec::push` of ~80 bytes — well under 1 ms total on a 2,600-anchor workspace.
 
-## Cache-path counters (`--perf` / `GIT_SPAN_PERF=1`)
+## Cache-path counters
 
 **`--perf-trace` intentionally forces full resolution** for its per-anchor wall-clock profiling — bypassing every cache tier is what lets it attribute time to `resolve_anchor_inner` uniformly. It stays that way; it answers "where does resolver time go on a full scan," not "which cache path did this run take."
 
-The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`src/perf.rs`](../src/perf.rs)):
+The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`perf.rs`](../../packages/git-span/src/perf.rs#L1-L80)):
 
 ```bash
 GIT_SPAN_PERF=1 git span drift --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
 ```
 
 These counters are THE cache diagnostics surface. There is one cache — the
-SQLite store (`<git_dir>/span/store.db`, see [`resolver/store`](../src/resolver/store/mod.rs)) —
+SQLite store (`<git_dir>/span/store.db`, see [`resolver/store`](../../packages/git-span/src/resolver/store/mod.rs#L1-L20)) —
 and the `cache-path.*` family reports everything it does: which path a run
 took, why it bypassed, what it published, and what the bounded quota reclaimed.
 The Phase 7 cutover deleted both legacy caches (`resolver/cache`,
 `resolver/cache_v2`) and their `cache.l1-*` / `cache.l2-*` counter families;
 nothing contrasts against this surface anymore.
 
-Every line is emitted via the same [`crate::perf::note`](../src/perf.rs) /
-[`crate::perf::counter`](../src/perf.rs) calls every other `--perf` diagnostic
+Every line is emitted via the same [`crate::perf::note`](../../packages/git-span/src/perf.rs#L69-L74) /
+[`crate::perf::counter`](../../packages/git-span/src/perf.rs#L58-L63) calls every other `--perf` diagnostic
 uses — plain, gated output — so they cost nothing when `--perf`/`GIT_SPAN_PERF=1`
 is off. `note` lines are free-form text; `counter` lines carry an integer value.
 
