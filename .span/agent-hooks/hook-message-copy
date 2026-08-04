@@ -1,8 +1,8 @@
 packages/agent-hooks/README.md#L5-L8 rk64:c700e0a4c1d9d7d6
-packages/agent-hooks/src/common/advisor-core.ts#L1602-L1952 rk64:397c4402ed562035
-packages/agent-hooks/src/common/touch-core.ts#L246-L275 rk64:49bd4bc548ecea54
-packages/website/content/docs/agent-integration.mdx rk64:5e2d697afd1a8bc0
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:8ecf8b8b84a2fc8a
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:4a5004a84683a822
+packages/agent-hooks/src/common/advisor-core.ts#L1602-L1957 rk64:9f0e905c822949d1
+packages/agent-hooks/src/common/touch-core.ts#L246-L275 rk64:8fa2764d7126382c
+packages/website/content/docs/agent-integration.mdx rk64:719886ff7e48a9cd
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:509ca9a7420bb639
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:acdd3bb581f6daa5
 
-The drifted-span footer copy rendered by the touch hook and the commit advisor is described by the package README's behaviour prose and quoted verbatim by the website's agent-integration doc and both plugin trees' understanding-hook-output references.
+The shared hook-core messages are authoritative, and the package README, website agent-integration guide, and both plugin references preserve their user-facing meaning and any text identified as verbatim.

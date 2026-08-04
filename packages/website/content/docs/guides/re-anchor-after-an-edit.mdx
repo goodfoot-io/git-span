@@ -49,16 +49,16 @@ Added 0 anchors and resolved 1 in place to span `checkout-flow`.
 
 Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. A coupled doc that now lags the change is updated first (docs follow deliberately committed code); if bringing the anchors back into agreement would mean changing code, surface that decision instead of re-anchoring over it.
 
-## Moved range: add the new anchor, remove the old one
+## Moved range: remove the old anchor, add the new one
 
-If the code moved to a different range, add the new address and drop the drifted one:
+If the code moved to a different range, remove the drifted address before recording the new one:
 
 ```bash
-git span add checkout-flow web/checkout.tsx#L6-L8
 git span remove checkout-flow web/checkout.tsx#L4-L6
+git span add checkout-flow web/checkout.tsx#L6-L8
 ```
 
-`add` stages the new anchor into the span; `remove` drops the drifted one. Order doesn't matter — both edit the span file under the span root.
+`add` never retires a different anchor, so remove the exact old address before recording a new one.
 
 Check the result:
 
@@ -68,12 +68,12 @@ git span show checkout-flow
 
 Confirm the span now lists the new range and no longer lists the old one.
 
-## The why is inherited
+## Inherit the why only while it remains true
 
-Re-anchoring doesn't touch the span's `why` — it carries forward unchanged, which is correct for a routine re-anchor where the subsystem's meaning hasn't changed. Only write a new why if the edit changed what the subsystem *is*, not just where it lives:
+Re-anchoring doesn't touch the `why`. Inherit it only while the relationship and lifecycle state remain true; otherwise revise or retire it:
 
 ```bash
-git span why checkout-flow "Updated definition of the subsystem, if it actually changed."
+git span why checkout-flow "The browser initiates the charge request that the server validates; the server contract is authoritative for accepted fields."
 ```
 
 ## Commit
@@ -81,6 +81,8 @@ git span why checkout-flow "Updated definition of the subsystem, if it actually 
 ```bash
 git add .span && git commit
 ```
+
+Before committing, run scoped `git span drift checkout-flow` and require zero drift. `add` refreshes only the exact path/range specified; it does not retire a different superseded anchor.
 
 ## See also
 

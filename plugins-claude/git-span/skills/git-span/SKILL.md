@@ -8,7 +8,7 @@ description: Track, declare, and reconcile implicit semantic couplings — file/
 ```
 git span drift [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
 git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
-git span why <name> ["..."]           # bare = read; positional or stdin = write, after add/remove
+git span why <name> ["..."]           # bare = read; positional or stdin = write
 git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
 git span delete <name>                   # whole span gone; NAME only, no anchor args
 git span list [<target>...] [--oneline]  # positional filter on name or path
@@ -64,7 +64,7 @@ output and stop.
 ### Declare a new coupling
 ```
 git span add <name> <anchor>...
-git span why <name> "<one present-tense sentence naming the subsystem and what it does across the anchors>"
+git span why <name> "<complete present-tense clauses carrying decisive nonlocal context>"
 git add .span && git commit -m "..."
 ```
 Before `add`: name one edit at one anchor that silently breaks or falsifies another — code
@@ -72,12 +72,12 @@ behavior, doc accuracy, or a review obligation — with no compiler, test, or bu
 it. If you cannot, there is no span; the exception is a covering span `wiki check --fix`
 creates, which the wiki tooling requires regardless.
 
-The why is a definition, not a work order: a complete sentence (subject + verb, never
-`label:`) in role words, not file names, specific enough that someone who just edited one
-anchor can tell whether their change lands inside it. Rules, warnings, and review steps go
-in comments at the load-bearing anchor sites; a span isn't done until those exist. Good
-example: "Product-listing pagination is a continuation-token flow defined by the API and
-mirrored by each client library."
+Write one or two complete present-tense clauses in role words. State the relationship and
+any decisive nonlocal authority, invariant, permitted difference, lifecycle state,
+evidence gate, or focused conditional verification. Labels are optional but must introduce
+complete clauses. Omit generic work orders and CLI procedure. Example: "The API schema is
+authoritative, and each client preserves its field semantics; mobile intentionally omits
+operations unavailable in the background."
 
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```
@@ -87,7 +87,7 @@ git span drift <name>                     # see which anchor(s) drifted and how
 # Changed, doc lags committed code: rewrite the doc first; code fixes need the user's say-so
 git span remove <name> <old-anchor>       # only if path or range actually changed
 git span add <name> <new-anchor>          # wc -l <path> first
-git span why <name> "..."              # only if the relationship itself changed
+git span why <name> "..."              # if relationship/lifecycle meaning changed
 git span drift <name>                     # must exit 0 before commit
 git add .span && git commit -m "..."
 ```
@@ -101,6 +101,10 @@ git add .span && git commit -m "..."
 ```
 If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
 with `wc -l` and write the new range).
+
+A satisfied evidence gate authorizes its transition. Change the behavior, revise or retire
+the why, and reconcile or retire superseded anchors. `add` refreshes only the exact anchor;
+preserve its shape unless the logical region changed. Require scoped drift to exit 0.
 
 ## Where to go next
 Pick the first that fits:
@@ -133,5 +137,3 @@ Pick the first that fits:
     `references/triage.md`.
 15. Sweeping `.span/**` (or a large slice of it) up to the why-writing standard, not just
     one drifted span → `references/why-cleanup-campaign.md`.
-
-

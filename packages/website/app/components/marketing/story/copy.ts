@@ -110,7 +110,7 @@ export const PHASE_COPY: Record<PhaseId, PhaseCopyEntry> = {
   second: {
     prose: {
       headline: 'Spans document these indirect connections and monitor changes.',
-      body: 'A span gives the connection a name, identifies the files and line ranges involved, and explains why those sections belong together. It lives in .span/ as ordinary tracked text, so it can be reviewed, committed, and shared with the code. Content hashes of the range are stored to detect changes.'
+      body: 'A span gives the connection a name, identifies the files and line ranges involved, and records the nonlocal fact that changes a safe decision. It lives in .span/ as ordinary tracked text, so it can be reviewed, committed, and shared with the code. Content hashes of the range are stored to detect changes.'
     },
     caption:
       'The engine settles back into its exploded view as the color drains away from the ring gear, the pistons, and the rear cover and the ring gear shrinks back to its normal size; once everything is back in place, a box of green glass fades in tightly around the three of them'

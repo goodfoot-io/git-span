@@ -22,9 +22,9 @@ ls path/to/file1 path/to/file2   # check existence
 
 1. **Read the why.** `git span why <name>` — what subsystem does this span
    define?
-2. **Inspect each current anchor and define the subsystem in one present-tense
-   sentence.** Open the file at the recorded path and line range with `Read`
-   (whole file, for whole-file anchors). If you cannot write that sentence, you
+2. **Inspect each current anchor and confirm the relationship plus its decisive
+   nonlocal fact.** Open the file at the recorded path and line range with `Read`
+   (whole file, for whole-file anchors). If you cannot state that context, you
    have not confirmed — inspect further or `git span delete <name>`.
 3. **Decide:**
    - Relationship still holds at a new location → re-anchor at the new extent
@@ -32,11 +32,11 @@ ls path/to/file1 path/to/file2   # check existence
      "Re-anchor + retire" recipe in SKILL.md).
    - The related code diverged → fix it first, then re-anchor. Both sides land
      in the same commit.
-   - The subsystem itself changed → write a new why
+   - The relationship or lifecycle state changed → revise or retire the why
      (`git span why <name> "..."`), then re-anchor.
    - The relationship no longer exists → `git span delete <name>`.
    - Several spans need this at once → `references/triage.md`.
-4. **Persist:**
+4. **Verify and persist:** require `git span drift <name>` to exit 0, then
    ```bash
    git add .span && git commit -m "Re-anchor <name>"
    ```

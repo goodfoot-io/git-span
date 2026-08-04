@@ -12,7 +12,7 @@ End-to-end loop for creating or updating a wiki page:
 
 1. Write or edit the page (frontmatter with `title` + `summary`, fragment links to source).
 2. Run `wiki check --fix <page>` to auto-pin fragment-link SHAs and create covering spans for line-ranged fragment links.
-3. Consolidate the created spans per *coupling* — the fragment plus the sites whose contract it actually states — never per source file. Write meaningful `why` text — not `[why]`: one present-tense sentence defining the subsystem the anchors form together, no rules or reminders (see [Writing Span Whys](../../wiki/guides/writing-span-whys.md)).
+3. Consolidate created spans per *coupling*, never per source file. Replace `[why]` with one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. See [Writing Span Whys](../../wiki/guides/writing-span-whys.md).
 4. `git span add` requires every anchored path to exist in HEAD. If the wiki page is one of the anchors (it usually is), the page must be committed before `git span add`. The wiki page itself does **not** need to be committed for `wiki check` wikilink resolution — `repo_inventory` unions tracked paths with untracked-Added items.
 5. Commit each new span with `git add .span && git commit`.
 6. Run `wiki check <page>` — should exit clean.

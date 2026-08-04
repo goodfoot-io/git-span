@@ -1,4 +1,4 @@
-README.md#L18-L55 rk64:6557e9d83111243e
-wiki/meta/git-span-documentation-touchpoints.md#L26-L36 rk64:907c68641f2b59bc
+README.md#L18-L55 rk64:167f6f69eb8d5299
+wiki/meta/git-span-documentation-touchpoints.md#L35-L101 rk64:919f4d65baa20214
 
-The README CLI section, the website's agent integration doc, the git-span skill, and the man page are the operator- and agent-facing documentation surfaces that the touchpoints page's Operator-Facing Documentation section names as most likely to drift when the CLI contract changes.
+The touchpoints why-guidance inventory is authoritative for the README, website, plugin, marketplace, and live-report surfaces that must remain aligned.

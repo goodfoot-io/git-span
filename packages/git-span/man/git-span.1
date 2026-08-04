@@ -18,26 +18,18 @@ Each
 .B span
 anchors the participating anchors and carries a durable
 .I why
-\[em] one present-tense sentence that defines the subsystem the anchored set
-forms together and stays true across a rewrite of either side.
+\[em] compact, decision-relevant context shared by the anchored set.
 .PP
 The standing question at commit time: did this change create or rely on a
 coupling that is not visible from the lines themselves?
 .PP
 .B Writing the why.
-Write one complete sentence, in the present tense, that defines the subsystem
-the anchors form together: name the thing, then say what it does across the
-anchors.
-Give it a subject and a verb \[em] never a label followed by a colon \[em] and
-name the thing in role\-words (\(lqthe doc,\(rq \(lqthe parser,\(rq
-\(lqthe runbook,\(rq \(lqthe migration\(rq) rather than repeating filenames.
-A why is read when a hook surfaces it mid\-task, so make it specific enough
-that a reader who just edited one anchor can tell from the sentence alone
-whether their change lands inside the thing it names.
-Do not restate the span name or embed incidental implementation details, and
-keep invariants, caveats, ownership, and review triggers out of the why \[em]
-those belong in comments at the anchor sites, in commit messages, CODEOWNERS,
-and PR descriptions.
+Write one or two complete present\-tense clauses in role words. State the
+relationship and any decisive nonlocal authority, invariant, permitted difference,
+lifecycle state, evidence gate, or focused conditional verification. Labels such
+as \(lqAuthority:\(rq and \(lqRemoval gate:\(rq are optional but must introduce
+complete clauses. Include only facts relevant from every anchor. Omit the span
+name, incidental implementation detail, generic work orders, and CLI procedure.
 .PP
 .B Re\-anchoring on drift.
 When
@@ -53,13 +45,15 @@ semantic check, so re\-anchoring over a live disagreement conceals it.
 When agreement would require a code change, when the doc may be the intended
 contract rather than a description, or when no deliberate commit explains
 the drift, surface the decision instead of re\-anchoring.
-Because a why only defines, it is inherited across routine re-anchors: if the
-subsystem still holds, re-anchor with
+Inherit the why only while it remains true. For a routine re-anchor, use
 .B git span add
-and commit, leaving the why alone.
+without changing the why.
 Rewrite it with
 .B git span why
-only when the subsystem itself has changed.
+when the relationship or lifecycle state changes. A satisfied gate authorizes
+its transition; revise or retire the why and every superseded anchor. Require scoped
+.B git span drift
+to report zero drift.
 .PP
 Each span is an ordinary tracked file under the span root (default
 .IR .span ,
@@ -117,7 +111,7 @@ git\-span\-remove(1)
 Remove anchors from a span, editing the span file under the span root. Stage and commit the change with `git add .span && git commit`
 .TP
 git\-span\-why(1)
-Read or stage the span\*(Aqs why — one complete present\-tense sentence defining the subsystem the anchors form together
+Read or stage the span\*(Aqs why — one or two complete present\-tense clauses carrying decision\-relevant nonlocal context
 .TP
 git\-span\-delete(1)
 Delete a span

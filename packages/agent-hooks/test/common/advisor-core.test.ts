@@ -405,7 +405,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain('└─ api/charge.ts #L30-L76\n');
         expect(result.reason).not.toContain('- src/app.ts#L1-L10');
         expect(result.reason).toContain('Checkout request flow');
-        expect(result.reason).toContain('git span add billing/checkout-request-flow');
+        expect(result.reason).toContain('remove its old anchor before adding the new one');
+        expect(result.reason).toContain('git span drift billing/checkout-request-flow');
       }
     });
 
@@ -1507,16 +1508,15 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).toContain(
         'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code)'
       );
-      expect(result.reason).toContain('— then retry.');
+      expect(result.reason).toContain('Then retry.');
       expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
-      // The harness form replaces the generic "then refresh —" sentence, never
+      // The harness form replaces the generic "then reconcile" sentence, never
       // layering on top of it.
       expect(result.reason).not.toContain('then refresh');
       // Full-string pin of the complete closing: one assertion covers the exact
-      // em-dash placement ("— then retry." between the action and the skill
-      // line), the sentence order, and the `git span` action spelling.
+      // reconciliation order, retry placement, and scoped drift requirement.
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
       );
     });
 
@@ -1537,11 +1537,10 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).toContain('Load the `git-span:reconcile` skill in the fork.');
       expect(result.reason).not.toContain('Determine if');
       // Full-string pin of the complete closing, exactly as the Codex adapter
-      // ships it: `spawn_agent` with `fork_turns: "all"` leads, the action sits
-      // between em-dashes, and "— then retry." lands between the action and the
-      // skill line.
+      // ships it: `spawn_agent` with `fork_turns: "all"` leads, followed by the
+      // reconciliation order, retry, and skill line.
       expect(result.reason).toContain(
-        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
       );
     });
 
@@ -1567,13 +1566,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.decision).toBe('hold');
         if (result.kind !== 'semantic-drift') throw new Error('unreachable');
         expect(result.reason).toContain(
-          'Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh'
+          'Bring the coupled files back into agreement (docs follow deliberately committed code), then reconcile'
         );
-        // Full-string pin of the byte-identical pre-harness closing — the
-        // comma after "committed code)", the "then refresh — … — and retry."
-        // reconstruction, and the sentence order are all pinned in one string.
+        // Full-string pin of the byte-identical pre-harness closing.
         expect(result.reason).toContain(
-          'Bring the coupled files back into agreement (docs follow deliberately committed code), then refresh — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+          'Bring the coupled files back into agreement (docs follow deliberately committed code), then reconcile: preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Retry the command; the hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
         );
         expect(result.reason).not.toContain('forked subagent');
       }
@@ -1605,7 +1602,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // the `<name>` placeholder path — both pinned here, in the closing.
       expect(result.reason).toContain('This change leaves implicit dependencies out of date:');
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — then retry. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift <name>` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
       );
     });
 
@@ -1654,10 +1651,9 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       expect(result.kind).toBe('semantic-drift-report');
       if (result.kind === 'semantic-drift-report') {
-        // Full closing pinned: the report-only tail drops "— then retry." and
-        // ends the action sentence with a period before the skill line.
+        // Full closing pinned: report-only omits retry and keeps the skill line.
         expect(result.reason).toContain(
-          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — `git span add billing/checkout-request-flow <path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."`. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
+          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (docs follow deliberately committed code) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Load the `git-span:reconcile` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.'
         );
         expect(result.reason).not.toContain('then retry');
         expect(result.reason).not.toContain('You may retry this command directly');
@@ -1727,7 +1723,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
           '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
           '`git span why <name> "<why>"`',
           '',
-          'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.',
+          'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.',
           '',
           'If none exist, retry the command to proceed (one-time check).',
           '',

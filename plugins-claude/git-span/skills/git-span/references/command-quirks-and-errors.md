@@ -30,8 +30,9 @@ updated) usually means the target name was mistyped — check with
 
 A why is optional on `add` too — `git span add` succeeds without one — but
 strongly recommended. Write one before or alongside the commit that
-introduces the span; it is inherited across routine re-anchors, so only write
-a new one when the subsystem itself changes.
+introduces the span. It is inherited across routine re-anchors only while the
+relationship and lifecycle state remain true; revise or retire it when either
+changes.
 
 ## One malformed `.span/` file can break the whole repo's view, not just its own span
 

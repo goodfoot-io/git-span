@@ -1,6 +1,6 @@
 packages/git-span/src/cli/mod.rs#L1-L32 rk64:ac84602a8180dd3a
 packages/git-span/src/main.rs#L49-L156 rk64:49bcd3a7ade7baec
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee
-wiki/meta/git-span-documentation-touchpoints.md#L114-L117 rk64:cf01ed4c47cd3cc1
+wiki/meta/git-span-documentation-touchpoints.md#L205-L208 rk64:ebb291173f93a500
 
-The touchpoints page's References section is the direct-navigation list to the CLI-surface source files it discusses in prose elsewhere — cli/mod.rs's Clap config, main.rs's dispatch, and validation.rs's reserved-name set.
+The touchpoints reference list provides direct navigation to the canonical why guide and the CLI behavior sources discussed by the page.

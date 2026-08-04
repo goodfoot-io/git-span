@@ -45,6 +45,11 @@ export default defineConfig(async ({ command }) => ({
   optimizeDeps: {
     include: optimizeInclude
   },
+  build: {
+    // EngineScene is a desktop-only dynamic import, so its Three.js payload is not part of the
+    // initial or mobile bundle. Keep a budget above its current 1.59 MB emitted size.
+    chunkSizeWarningLimit: 1700
+  },
   environments: {
     ssr: {
       optimizeDeps: {

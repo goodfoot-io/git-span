@@ -1596,10 +1596,10 @@ function renderDriftReason(
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
-  const action = `\`git span add ${name} <path#Lstart-Lend>\` / \`git span why ${name} "..."\``;
+  const action = `preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
-    const closing = `Already flagged above — restore agreement at the drifted locations or update the description.`;
+    const closing = `Already flagged above — restore agreement and require scoped zero drift; update or retire the why only if its meaning changed.`;
     return [`This change still leaves ${subject} out of date:`, ...renderPathRun(paths), '', closing].join('\n');
   }
   // Who the closing directs to do the work: inline by default (`'generic'`, the
@@ -1618,10 +1618,10 @@ function renderDriftReason(
   const tail =
     harness === 'generic'
       ? mode === 'may-hold'
-        ? `then refresh — ${action} — and retry. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
-        : `then refresh — ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+        ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
+        : `then reconcile: ${action}. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
       : mode === 'may-hold'
-        ? `— ${action} — then retry. Load the \`git-span:reconcile\` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead. You may retry this command directly; the hold will not fire again for the same debt state.`
+        ? `— ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. If the fix needs a code change or a dependency no longer holds, tell the user instead.`
         : `— ${action}. Load the \`git-span:reconcile\` skill in the fork. If the fix needs a code change or a dependency no longer holds, tell the user instead.`;
   const closing = `${lead}${harness === 'generic' ? ',' : ''} ${tail}`;
   return [
@@ -1954,7 +1954,7 @@ function renderUncoveredReason(
     '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
     '`git span why <name> "<why>"`',
     '',
-    'The "<why>" is a single present-tense sentence naming what the ranges form together, specific enough to tell whether an edit lands inside it, with no rules or reminders.'
+    'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.'
   ];
   body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
   if (mode === 'may-hold') {

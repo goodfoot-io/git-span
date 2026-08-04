@@ -209,17 +209,19 @@ For each assigned span:
    lists index → worktree → head. A deliberate, committed change makes
    that side authoritative (full policy:
    `wiki/guides/reconciliation-authority.md`).
-3. Write a one-sentence confirmation of the relationship. Stop if you cannot.
+3. Write a concise confirmation of the relationship and its decisive nonlocal
+   fact. Stop if you cannot.
 4. Classify and execute:
 
 | Category | Action |
 |---|---|
 | Bytes shifted, meaning preserved | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
-| Anchors still agree; content updated | `git span remove <name> '<path>#L<N>'` then `git span add <name> '<path>#L<N>'` (re-hash) |
+| Anchors still agree; content updated at the same address | `git span add <name> '<path>#L<N>'` (refresh the exact existing anchor shape) |
 | Doc anchor lags a deliberate committed code change | Rewrite the doc to describe current reality, then re-anchor onto it; include the doc diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
 | Relationship gone entirely | `git span delete <name>` |
-| Span has no why | `git span why <name> "<one present-tense sentence naming what the anchors form together>"` |
+| Span has no why | Invoke the core skill's why rules, then use `git span why` |
+| Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
 | Fix needs a code edit, the doc may be the intended contract, or the drift has no intentional commit | Stop and report — the user decides |
 
 *(If deletion syntax is unfamiliar, invoke `git-span:git-span` — the
@@ -227,11 +229,11 @@ command-reference section covers `git span delete`. If source code needs
 fixing or you need to write a why, invoke `git-span:git-span` — the
 "Declare a new coupling" recipe covers why-writing conventions.)*
 
-5. `git span drift` — confirm this span no longer appears (ignore spans
-   assigned to other components).
+5. `git span drift <name>` — require exit 0 and zero drift for this span.
 
 **Rules**: Never bulk re-add every anchor to clear the exit code. Each CHANGED
-finding requires its own one-sentence confirmation. Coordinate ranges when
+finding requires its own relationship confirmation. `add` refreshes only the exact
+path/range specified; it does not retire a different superseded anchor. Coordinate ranges when
 multiple spans in the component anchor the same file. Stop and report if any
 finding cannot be confirmed. Do not commit.
 

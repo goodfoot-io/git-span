@@ -65,11 +65,12 @@ Stripe-backed server.
 
 ---
 
-Restore agreement across the anchors before committing — docs follow
-deliberately committed code — then refresh: `git span add billing/checkout-request-flow
-<path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
-and check the other anchors for knock-on changes. If the fix needs a code
-change or the coupling no longer holds, tell the user instead.
+Restore agreement before committing — docs follow deliberately committed
+code. Preserve anchor shape; if an address changed, remove its old anchor
+before adding the new one. Update or retire the why only if its meaning
+changed. Require `git span drift billing/checkout-request-flow` to report
+zero, then check the other anchors. If the fix needs a code change or the
+coupling no longer holds, tell the user instead.
 </git-span>
 ```
 
@@ -90,13 +91,8 @@ implicit dependencies out of date:` for more than one. A read never edited
 anything — it only surfaces drift that was already there — so its drifted
 header names the dependency instead of the touch: `This file has an implicit
 dependency out of date:` (singular) or `This file has implicit dependencies
-out of date:` (plural). With several drifted spans the footer generalizes:
-"For each out-of-date span above: restore agreement across the anchors
-before committing — docs follow deliberately committed code — then refresh:
-`git span
-add <name> <path#Lstart-Lend>` / `git span why <name> "..."` — and check the
-other anchors for knock-on changes. If a fix needs a code change or a
-coupling no longer holds, tell the user instead." The block carries
+out of date:` (plural). With several drifted spans, apply the footer to each
+span and use `git span drift <name>` for the final zero-drift check. The block carries
 everything needed to act — anchors, statuses, and the description — so no
 follow-up `git span` read is required.
 
@@ -169,12 +165,12 @@ Stripe-backed server.
 
 Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
 bring the coupled files back into agreement (docs follow deliberately
-committed code) — `git span add billing/checkout-request-flow
-<path#Lstart-Lend>` / `git span why billing/checkout-request-flow "..."` —
-then retry. Load the `git-span:reconcile` skill in the fork. If the fix
-needs a code change or a dependency no longer holds, tell the user instead.
-You may retry this command directly; the hold will not fire again for the
-same debt state.
+committed code) — preserve anchor shape; if an address changed, remove its
+old anchor before adding the new one; update or retire the why only if its
+meaning changed; require `git span drift billing/checkout-request-flow` to
+report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The
+hold will not fire again for the same debt state. If the fix needs a code
+change or a dependency no longer holds, tell the user instead.
 ```
 
 With several drifted spans the sections stack, separated by `---`, the header
@@ -201,9 +197,11 @@ determine if this file carries implicit dependencies and to then use
 `git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
 `git span why <name> "<why>"`
 
-The "<why>" is a single present-tense sentence naming what the ranges form
-together, specific enough to tell whether an edit lands inside it, with no
-rules or reminders.
+The "<why>" is one or two complete present-tense clauses stating the
+relationship and any decisive nonlocal authority, invariant, permitted
+difference, lifecycle state, evidence gate, or focused conditional verification.
+Labels are optional but must introduce complete clauses. Omit generic work
+orders and CLI procedure.
 
 ---
 

@@ -135,8 +135,10 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(block).not.toContain('- src/app.ts#L1-L10');
       expect(block).toContain(WHY);
       expect(block).toContain('\n\n---\n\n');
-      expect(block).toContain('Restore agreement across the anchors before committing');
-      expect(block).toContain('`git span add billing/checkout-request-flow <path#Lstart-Lend>`');
+      expect(block).toContain('Restore agreement before committing');
+      expect(block).toContain('Preserve anchor shape');
+      expect(block).toContain('remove its old anchor before adding the new one');
+      expect(block).toContain('`git span drift billing/checkout-request-flow` to report zero');
 
       // Same span, same status, same session (same MemoStore instance) — the
       // render must not repeat.

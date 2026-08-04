@@ -45,7 +45,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-span",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A span holds the anchors — line-anchor or whole-file, in code or prose — coupled by nothing a schema, type, test, or build/generator step enforces, and carries a `why`: one complete present-tense sentence defining the subsystem those anchors form together, specific enough that a reader who just edited one anchor can tell whether their change lands inside it. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in comments at the anchor sites, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
+    after_help = "A span holds code or prose anchors coupled by nothing a schema, type, test, or build/generator step enforces. Its `why` uses one or two complete present-tense clauses to state the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Inherit a why only while it remains true; after a gated transition, revise or retire it and reconcile superseded anchors until scoped drift is zero.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
 )]
 pub struct Cli {
     /// Emit performance timings for major git-span operation groups to stderr.
@@ -102,22 +102,17 @@ pub enum Commands {
     /// root. Stage and commit the change with `git add .span && git commit`.
     Remove(RemoveArgs),
 
-    /// Read or stage the span's why — one complete present-tense
-    /// sentence defining the subsystem the anchors form together.
+    /// Read or stage the span's why — one or two complete present-tense
+    /// clauses carrying decision-relevant nonlocal context.
     ///
-    /// Write a definition, not an instruction: name the thing in
-    /// role words rather than file names and say what it does
-    /// across the anchors, as a sentence with a subject and a verb
-    /// — never a label followed by a colon (e.g. "Checkout request
-    /// flow that carries a charge attempt from the browser to the
-    /// Stripe-backed server."). Make it specific enough that a
-    /// reader who just edited one anchor can tell whether their
-    /// change lands inside what it names. Leave invariants,
-    /// caveats, ownership, and review triggers to comments at the
-    /// anchor sites, commit messages, CODEOWNERS, and PR
-    /// descriptions. The why is evergreen and inherited across
-    /// routine re-anchors; only write a new one when the subsystem
-    /// itself changes.
+    /// State the relationship plus any decisive authority,
+    /// invariant, permitted difference, lifecycle state, evidence gate,
+    /// or focused conditional verification. Use role words rather than
+    /// file names and give every clause a subject and verb. Labels such
+    /// as `Authority:` or `Removal gate:` are optional, but must introduce
+    /// complete clauses. Omit generic work orders and CLI procedure.
+    /// Inherit the why only while it remains true; revise or retire it
+    /// when the relationship or lifecycle state changes.
     ///
     /// Bare `git span why <name>` prints the current why; a
     /// positional argument writes a new why into the span file;
@@ -317,15 +312,11 @@ pub struct RemoveArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct WhyArgs {
-    /// Span whose why text to read or stage. The why defines the
-    /// subsystem the anchors form together.
+    /// Span whose why text to read or stage.
     pub name: String,
 
-    /// Why text to write into the span. One complete present-tense
-    /// sentence defining the subsystem the anchors form together —
-    /// no rules, warnings, or review steps; evergreen and inherited
-    /// across routine re-anchors. Omit to read from stdin (when
-    /// piped) or print the current why (when stdin is a terminal).
+    /// Why text to write. Omit to read from piped stdin or print the
+    /// current why when stdin is a terminal.
     pub why_text: Option<String>,
 }
 

@@ -1,8 +1,6 @@
 # Corpus-wide why cleanup campaign
 
-For sweeping every span in `.span/**` up to the writing-span-whys standard (one
-present-tense sentence, subject+verb, role words, no rules/warnings/review steps —
-those live in comments at anchor sites). Batch 3-6 spans per pass; multiple batches
+Apply the parent skill's why standard across `.span/**`. Batch 3-6 spans per pass; batches
 can run in parallel if their span sets don't share anchor files (a shared file means
 one batch's `drift --fix` can silently re-anchor the other's span too — see Gotchas).
 
@@ -11,23 +9,22 @@ one batch's `drift --fix` can silently re-anchor the other's span too — see Go
 session's work, not yours — never attribute it to this batch's diff.
 
 ## Triage
-Dump whys in one pass, batch history lookups by path class (not per file):
+Dump whys through the CLI, then batch history lookups by path class:
 ```bash
-cd .span && for f in $(find . -type f ! -name "*.sh" ! -name ".*" ! -name dispatcher.log); do
-  echo "=== $f ==="; awk 'flag{print} /^$/{flag=1}' "$f"; done
+git span list
 ```
 Classify each span, skip `clean`:
 
 | Class | Signal | Action |
 |---|---|---|
-| clean | complete present-tense sentence, factually accurate, no colon/rules | skip — don't polish wording for its own sake |
+| clean | meets the parent skill's standard and is accurate at every anchor | skip — don't polish |
 | empty | why is blank | write one |
-| label-colon | `Label: description` instead of a sentence | rewrite as subject+verb |
-| work-order | carries invariants, "must change/stay in sync", review triggers — even as a trailing clause on an otherwise-clean sentence | trim the instruction, keep only the definition |
+| label-fragment | `Label: fragment` without a subject and verb | rewrite as a complete clause; keeping the label is optional |
+| work-order | generic procedure instead of decision context | remove the procedure; retain decisive nonlocal facts |
 | drift-claim | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | vague | true but generic; a leading blank line inside a triple-quoted why string is this class too (cosmetic, not meaningful) | tighten / strip the artifact |
 | drift-range | anchor content shifted but still the same logical site | `drift --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
-| mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | `grep -n <symbol from the why>` in the target file to find the real site, then re-anchor (add new range, remove old) |
+| mis-anchored | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | Find the real site, remove the old range, then add the new one |
 | duplicate/overlap | two spans assert the same coupling | consolidate (Operations table) |
 | generated-output | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
 | mirror-bundle | ≥2 basename pairs of *near-identical copies* across two roots differing by one path segment, no anchored enforcer. Surfaces that restate one rule in their own register are distinct roles, not this class | keep ONE span (`add` rejects directory roots). Parity check exists: anchor the normative side's files plus the check. No check: the span *is* the parity mechanism — keep both sides of each pair, name the normative direction in the why, and recommend building a check; dropping the mirror side removes the only drift detection. Tree too large to enumerate (dozens of pairs): anchor one representative pair and say in the why it stands for the tree. Never split per pair, never delete |
@@ -41,12 +38,9 @@ Classify each span, skip `clean`:
    near-whole-file range (hundreds+ lines), skip full reads: check the header/doc
    comment plus `grep` for the why's specific nouns (function/counter names)
    instead of reading it all.
-3. Draft whys. Check every factual clause against current anchor bytes.
-4. Comment retrofit for a work-order tail's dropped rule: necessary only if
-   NO anchor and no doc already states that specific rule (not just related
-   context). If the anchor's file format can't carry comments (JSON, etc.),
-   the retrofit must land on a sibling anchor or an already-documenting file —
-   confirm one exists rather than skipping silently.
+3. Draft whys. Verify every clause against current anchors or evidence named by a gate.
+4. Relocate removed procedure only when a load-bearing site needs it. Keep decisive
+   nonlocal context in the why.
 5. Apply: all `git span why <name> "..."` in one chained command, then
    comment edits, then re-anchoring (comments before re-anchoring so one pass
    covers both). A comment edit that shifts an anchor's line count needs its
@@ -65,7 +59,7 @@ Classify each span, skip `clean`:
   only your target.
 - `drift --fix` no-ops ("Reconciled 0 spans") on a non-trivial change even
   when it *looks* like a pure shift — don't retry it; re-anchor manually
-  (`add` new range, `remove` old) once.
+  (remove the old range, then add the new one) once.
 - Anchor ranges can drift between your inspect step and your fix step
   (another concurrent edit, or your own earlier comment insert) — re-run
   `git span <name>` immediately before `git span remove` to get the live
@@ -82,11 +76,12 @@ Classify each span, skip `clean`:
 |---|---|
 | Rewrite/write why | `git span why <name> "..."` |
 | Re-anchor, pure line-shift | `git span drift --fix` |
-| Re-anchor, range/content changed | `git span add <name> <path#Lnew>` then `git span remove <name> <path#Lold>` — add appends, never replaces |
+| Refresh changed content at the same logical address | `git span add <name> <path#Lsame>` — preserve the exact existing anchor shape |
+| Re-anchor, path/range identity changed | `git span remove <name> <path#Lold>` then `git span add <name> <path#Lnew>` — add appends, never replaces |
 | Re-hash whole-file anchor | `git span add <name> <path>` |
 | Consolidate duplicates | `git span add` the loser's anchors onto the keeper, then `git span delete <loser>`; merge the whys into one definition |
 | Rename | `git mv .span/<old> .span/<new>` |
-| Delete | `git span delete <name>` when no real coupling remains — if you can write the definition sentence after inspecting the anchors, keep it instead |
+| Delete | `git span delete <name>` when no real coupling remains; keep it only if you can confirm the relationship |
 
 ## Validation
 - Why rewrites and `.span/**` edits: no validation.

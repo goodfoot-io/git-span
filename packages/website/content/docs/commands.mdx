@@ -47,12 +47,12 @@ Removes anchors from a span, editing the span file under the span root. Each anc
 
 ```bash
 git span why <name>
-git span why <name> "<sentence>"
+git span why <name> "<why>"
 ```
 
-Reads or stages a span's why — a one-sentence definition of the subsystem, flow, or concern the anchors collectively form. Bare `git span why <name>` prints the current why. A positional argument writes a new why into the span file; piped stdin also writes. Commit with `git add .span && git commit`.
+Reads or stages a span's why. Use one or two complete present-tense clauses for the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Bare `git span why <name>` prints; a positional argument or piped stdin writes. Commit the span file.
 
-The why is evergreen: it's inherited across routine re-anchors, and you only write a new one when the subsystem itself changes.
+The why is inherited across routine re-anchors only while its meaning remains true. Revise or retire it when the relationship or lifecycle state changes.
 
 ### delete
 

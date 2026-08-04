@@ -1,6 +1,6 @@
 # git span
 
-`git span` tracks implicit semantic dependencies — line-range or whole-file anchors coupled by nothing a schema, type, test, or build/generator step enforces. Each span names its anchors, optionally carries a `why` — one present-tense sentence defining the subsystem they form together (recommended on every span), and surfaces drift via `git span drift` when those anchors diverge from their anchored state.
+`git span` tracks implicit semantic dependencies — line-range or whole-file anchors coupled by nothing a schema, type, test, or build/generator step enforces. Each span names its anchors, should carry a compact, decision-relevant `why`, and surfaces drift via `git span drift` when anchors diverge from their recorded state.
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git span drift --help` for flag reference.
 

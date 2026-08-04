@@ -1,6 +1,6 @@
 packages/git-span/docs/history-example-output.md rk64:46c5551d4a4235dc
 packages/git-span/src/cli/history.rs rk64:0fbc156251a21857
-packages/git-span/src/cli/mod.rs#L380-L411 rk64:82b005e1a9ce01c1
+packages/git-span/src/cli/mod.rs#L371-L402 rk64:82b005e1a9ce01c1
 packages/git-span/tests/cases/cli_history/current_block.rs rk64:20a62a23638db74b
 packages/git-span/tests/cases/cli_history/dates.rs rk64:d7f85b8dee251d7a
 packages/git-span/tests/cases/cli_history/documented_contract.rs rk64:a385ed7fb21c6564
