@@ -839,6 +839,16 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       })
     );
 
+    // Mirror `is_span_name_segment()` in `packages/git-span/src/span_file_reader.rs`: dot-prefixed
+    // names are config artifacts (.gitignore, .gitattributes, .hookignore, .advisorignore);
+    // *.EDITMSG files are editor scratch; *.log files are dispatcher runtime diagnostics. None of
+    // these will ever parse as a span — delegate to the default text editor without a parse attempt.
+    const fileName = path.basename(document.uri.fsPath);
+    if (fileName.startsWith('.') || fileName.endsWith('.EDITMSG') || fileName.endsWith('.log')) {
+      void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+      return;
+    }
+
     const opened = await readSpanFile(document.uri);
     if (disposed) {
       return;
