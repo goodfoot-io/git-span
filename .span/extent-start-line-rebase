@@ -1,4 +1,4 @@
 packages/extension/src/spanViewer/patchReconstruction.ts#L186-L207 rk64:45d2a87e89e684b4
 packages/git-span/src/cli/unified_diff.rs#L1-L6 rk64:103040ce3ceb3b72
 
-The  rebase in reconstructOriginal inverts the CLI's  hunk coordinate convention
+The CLI's anchor pseudo-diffs render hunk headers in absolute file coordinates, and reconstructOriginal must stay their inverse by subtracting extentStartLine - 1 before splicing hunks.

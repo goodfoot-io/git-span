@@ -1,3 +1,4 @@
+packages/git-span/src/resolver/engine/mod.rs#L407-L426 rk64:66c2955892705385
 packages/git-span/src/resolver/session.rs#L11-L2013 rk64:ca80842a3faf5748
 
-Engine-wide shared session state that powers one drift run: the reverse-indexed HEAD walk, the Tier 2 amortized LineIndex per-file cache for rk64 freshness hashing, and per-run anchor-status and perf counters threaded through every anchor resolution.
+The drift engine constructs one ConcurrentSession per resolve run and threads it through every resolve_anchor_inner call; anchor resolutions must consume its reverse-walk output and cached line indexes rather than rebuild them per anchor.

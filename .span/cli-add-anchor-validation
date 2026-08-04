@@ -1,3 +1,3 @@
 packages/git-span/src/cli/commit.rs#L423-L484 rk64:fa7a7995b6b5c6f7
 
-run_add() invokes reject_anchor_inside_span_root immediately after validate_repo_relative_path to reject span-directory anchors at CLI argument time, providing immediate UX feedback before any I/O.
+run_add rejects span-directory anchors at CLI argument time: reject_anchor_inside_span_root runs immediately after path validation and before any span-file I/O, so the error is immediate and a poisoned span is never written.

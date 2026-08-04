@@ -2,4 +2,4 @@ package.json#L30-L30 rk64:9ed9e94c793e83d7
 scripts/bump.sh#L37-L43 rk64:06b3f2199dbf9b32
 scripts/sync-versions.sh#L54-L76 rk64:05e35dd805df9756
 
-Version bump workflow that synchronizes package versions across the monorepo and refreshes the lockfile after bumping the source package.
+packages/git-span/package.json is the authoritative version source; bump.sh rewrites it, then sync-versions.sh aligns the CLI's optionalDependencies and yarn install refreshes the lockfile, so version changes must run through the yarn bump script.
