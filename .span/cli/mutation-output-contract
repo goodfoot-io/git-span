@@ -1,7 +1,7 @@
-packages/git-span/src/cli/commit.rs#L667-L686 rk64:c82df180b9b32ad2
-packages/git-span/src/cli/commit.rs#L1214-L1267 rk64:44e75a532a577973
-packages/git-span/src/cli/commit.rs#L1560-L1655 rk64:ff5bd3519ca27ce1
-packages/git-span/src/cli/commit.rs#L1727-L1818 rk64:1ea4243347bad57b
+packages/git-span/src/cli/commit.rs#L715-L734 rk64:c82df180b9b32ad2
+packages/git-span/src/cli/commit.rs#L1262-L1315 rk64:44e75a532a577973
+packages/git-span/src/cli/commit.rs#L1608-L1703 rk64:ff5bd3519ca27ce1
+packages/git-span/src/cli/commit.rs#L1775-L1866 rk64:1ea4243347bad57b
 packages/git-span/tests/cases/cli_exit_codes.rs#L1-L112 rk64:532f9a16d9798421
 packages/git-span/tests/cases/cli_history/mod.rs#L187-L200 rk64:f1eb5d09f6e553ff
 packages/git-span/tests/cases/cli_reconcile_output.rs#L24-L597 rk64:0b59d545aa28b599
