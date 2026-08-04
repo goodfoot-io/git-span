@@ -4,8 +4,8 @@ packages/git-span/src/cli/mod.rs#L46-L174 rk64:01f4e5400f80b938
 packages/git-span/src/cli/mod.rs#L393-L445 rk64:137708cfa3b03e1f
 packages/git-span/src/cli/mod.rs#L410-L470 rk64:604c8cf35e01bf3d
 packages/git-span/src/cli/mod.rs#L416-L484 rk64:5b9207836bf44861
-packages/git-span/src/main.rs#L49-L131 rk64:5f113891e8ad5ac3
-packages/git-span/src/main.rs#L50-L144 rk64:12ebffefec81ab15
+packages/git-span/src/main.rs#L49-L143 rk64:ebfafe74c31817b1
+packages/git-span/src/main.rs#L50-L156 rk64:ea8627519bd42715
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee
 wiki/meta/git-span-documentation-touchpoints.md#L14-L20 rk64:87bf627f4a185901
 
