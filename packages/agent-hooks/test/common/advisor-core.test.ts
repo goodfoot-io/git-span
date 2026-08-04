@@ -1952,16 +1952,60 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         ).toEqual({ decision: 'allow', kind: 'already-presented' });
       }
     });
+
+    it('a churn-suppressed uncovered hold still renders the harness closing (harness × churn)', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+      const git = createFakeGitExecutor({
+        changedHunks: async (): Promise<FileDiff[]> => [
+          {
+            path: 'package.json',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['  "version": "1.0.140",'], added: ['  "version": "1.0.141",'] }]
+          },
+          {
+            path: 'src/app.ts',
+            binary: false,
+            structural: false,
+            hunks: [{ removed: ['const x = 1;'], added: ['const x = 2;'] }]
+          }
+        ]
+      });
+      const paths = ['package.json', 'src/app.ts'];
+
+      const result = await evaluateAdvisor(
+        paths,
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        { git, range: { kind: 'staged' } },
+        'claude'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      // Churn suppression shrank the uncovered set to the semantic file; the
+      // hold still renders the harness's fork direction.
+      expect(result.uncovered).toEqual(['src/app.ts']);
+      expect(result.reason).toContain(
+        'Dispatch a forked subagent to determine if this file carries implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+    });
   });
 
   // -------------------------------------------------------------------------
-  // mechanical-churn suppression (Phase 2 — skipped acceptance checks)
+  // mechanical-churn suppression
   //
-  // `evaluateAdvisor`'s `churn` parameter is declared (Phase 1) but not yet
-  // consumed (`void churn;`) — the integration lands in a later phase. These
-  // checks fake `changedHunks` the same way the other four GitExecutor
-  // methods are already faked above, and are all `.skip` until that
-  // integration is implemented.
+  // `evaluateAdvisor`'s `churn` parameter carries the suppression surface
+  // (git + range), consumed by `computeUncoveredPaths` to drop mechanical-only
+  // hunks from the uncovered set. These checks fake `changedHunks` the same
+  // way the other four GitExecutor methods are faked above, and all run live.
   // -------------------------------------------------------------------------
 
   describe('evaluateAdvisor — mechanical-churn suppression', () => {
