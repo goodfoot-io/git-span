@@ -120,7 +120,7 @@ Run `yarn build` in `packages/agent-hooks` to regenerate:
 Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:
 
-- refresh the exact anchor when identity is unchanged;
+- refresh the exact anchor when identity is unchanged — whole-file stays whole-file and a range keeps its exact boundaries;
 - remove the old anchor before adding a changed path or range;
 - update or retire a stale why; and
 - require scoped zero drift.
@@ -152,6 +152,7 @@ Relevant declarations include:
 - `agent-hooks/hook-message-copy`
 - `git-span-touchpoints/cli-config`
 - `git-span/span-eligibility-clause`
+- `git-span/plugin-twin-guidance`
 - `website/specimen-hardwrap-coupling`
 - `wiki/meta/command-behavior-source-of-truth`
 - `wiki/meta/operator-facing-documentation`
