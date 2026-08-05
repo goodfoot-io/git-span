@@ -34,6 +34,7 @@
  * Codex build's seconds conversion at emit remains correct.
  */
 
+import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import { abspathAgainst } from '../common/agent-hooks-common.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
@@ -251,13 +252,18 @@ export function createHandler(
     // fail-open, same as the apply_patch path below.
     if (tool_name === 'Bash' || tool_name === 'exec_command' || tool_name === 'exec') {
       let command: string | null = null;
+      let workdir: string | null = null;
       if (tool_name === 'Bash') {
         // The harness already unwrapped the code-mode envelope — the command is
         // in `tool_input.command`, exactly as the Claude adapter receives it.
         const raw = (input.tool_input as Record<string, unknown> | null)?.command;
         command = typeof raw === 'string' ? raw : null;
       } else {
-        command = narrowExecCommand(input.tool_input)?.cmd ?? null;
+        // The classic `exec_command` envelope carries `workdir` beside `cmd`
+        // (plan §8) — thread it through like the code-mode envelope below.
+        const classic = narrowExecCommand(input.tool_input);
+        command = classic?.cmd ?? null;
+        workdir = classic?.workdir ?? null;
       }
       if (command === null && tool_name === 'exec') {
         // Code-mode `exec` wraps the same call in JS source. A matched call
@@ -278,16 +284,26 @@ export function createHandler(
           );
         }
         command = codeMode.cmd;
+        workdir = codeMode.workdir;
       }
       if (!command) return undefined;
 
-      const matches = parseCommandDetailed(command, { cwd });
+      // Plan §8: a workdir present and free of `$`/backtick absolutizes against
+      // the envelope's own `input.cwd` — the shell tool resolves a relative
+      // workdir against that same base — and is the single frame for the whole
+      // touch (parse base, absolutization, scope check, and the touch record's
+      // cwd, which the executors drive their git span runs from). A
+      // template-literal workdir (containing `$`/backtick) is unresolvable and
+      // falls back to hook `cwd`.
+      const effectiveCwd = workdir !== null && !/[`$]/.test(workdir) ? resolvePath(cwd, workdir) : cwd;
+
+      const matches = parseCommandDetailed(command, { cwd: effectiveCwd });
       const blocks: string[] = [];
       for (const match of matches) {
         if (match.status !== 'resolved') continue;
         const span = match.span;
-        const absPath = abspathAgainst(cwd, span.absolutePath);
-        const scope = resolveTouchScope(cwd, absPath);
+        const absPath = abspathAgainst(effectiveCwd, span.absolutePath);
+        const scope = resolveTouchScope(effectiveCwd, absPath);
         if (!scope) continue;
         let touchInput: {
           kind: 'read' | 'write';
@@ -302,12 +318,12 @@ export function createHandler(
           // `>` overwrites: whole-file scope so deleted spans beyond the new
           // EOF are surfaced. `>>` appends: narrow to the appended lines.
           const written = span.redirect === '>' ? '' : (span.body ?? '');
-          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written };
+          touchInput = { kind: 'write', sessionId, cwd: effectiveCwd, filePath: absPath, written };
         } else {
           touchInput = {
             kind: 'read',
             sessionId,
-            cwd,
+            cwd: effectiveCwd,
             filePath: absPath,
             offset: span.lineStart,
             limit: span.lineEnd - span.lineStart + 1
