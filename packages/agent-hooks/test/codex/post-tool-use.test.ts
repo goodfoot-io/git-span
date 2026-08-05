@@ -467,4 +467,157 @@ describe('codex post-tool-use touch signal', () => {
       repo.cleanup();
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Response-derived shell read touches (Phase 3e): the tool_response is a
+  // second evidence source for grep/ripgrep and git diff/show/log -p
+  // commands whose read windows live in the output, not the command text.
+  // String and object envelopes must normalize to the same spans, and a
+  // truncated response must fail closed.
+  // -------------------------------------------------------------------------
+
+  describe('response-derived shell read touches', () => {
+    /** A 500-line mod.rs whose `list` fake anchors SPAN at lines 39-189. */
+    function writeModRs(root: string): string {
+      const filePath = join(root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      return filePath;
+    }
+
+    it('a bare-string tool_response drives a response-derived read touch (Bash envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: [driftRow('CHANGED')]
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: `${filePath}:50:alpha\n`
+        };
+
+        const result = toResult(await handler(input as never, { logger } as never));
+        expect(calls.fix).toBe(0); // read path never heals
+        expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('object-wrapped tool_response shapes drive the same touch (classic exec_command envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        for (const toolResponse of [
+          { output: `${filePath}:50:alpha\n`, exitCode: 0 },
+          { stdout: `${filePath}:50:alpha\n`, stderr: '' },
+          { content: `${filePath}:50:alpha\n` },
+          { text: `${filePath}:50:alpha\n` }
+        ]) {
+          const { executors, calls } = makeExecutors({
+            list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+            drift: [driftRow('CHANGED')]
+          });
+          const handler = createHandler(executors, inMemoryMemoFactory());
+          const input = {
+            ...postInput(repo.root, null),
+            tool_name: 'exec_command',
+            tool_input: { arguments: JSON.stringify({ cmd: `rg -n alpha ${filePath}`, workdir: repo.root }) },
+            tool_response: toolResponse
+          };
+
+          const result = toResult(await handler(input as never, { logger } as never));
+          expect(calls.fix).toBe(0); // read path never heals
+          expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toContain(SPAN);
+        }
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('a truncated object tool_response fails closed to no response-derived touch', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: [driftRow('CHANGED')]
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: {
+            stdout: `${filePath}:50:alpha\n`,
+            stderr: '',
+            rawOutputPath: '/tmp/large.out',
+            interrupted: false
+          }
+        };
+
+        const result = await handler(input as never, { logger } as never);
+        // The truncated flag fails closed: the preview is never parsed into
+        // a touch, and the command itself has no command-derived idiom.
+        expect(result).toBeUndefined();
+        expect(calls.list).toBe(0);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('merges command-derived and response-derived spans, deduping the surface via the memo (Bash envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        // `git log -p -L 39,60:mod.rs` is at once a command-derived read
+        // idiom (parseCommandDetailed resolves the literal -L range) and a
+        // diff-form git log (parseResponse decodes the patch response) —
+        // the two evidence sources merge into overlapping read touches on
+        // one file.
+        const command = `git log -p -L 39,60:${filePath}`;
+        const diffResponse = [
+          `diff --git a/${filePath} b/${filePath}`,
+          'index 551e09f4..48593813 100644',
+          `--- a/${filePath}`,
+          `+++ b/${filePath}`,
+          '@@ -39,6 +39,6 @@',
+          ' line 39',
+          ' line 40',
+          '-line 41',
+          '+line 41 CHANGED',
+          ' line 42',
+          ' line 43',
+          ' line 44',
+          ''
+        ].join('\n');
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: []
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command },
+          tool_response: diffResponse
+        };
+
+        const result = toResult(await handler(input as never, { logger } as never));
+        expect(calls.fix).toBe(0); // both sources are reads
+        expect(calls.list).toBe(2); // one touch per merged source
+        const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+        expect(ctx).toContain(SPAN);
+        // The response-derived hunk overlaps the command-derived range on
+        // the same span; the per-session memo dedupes the duplicate surface.
+        expect(ctx.match(/## billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+      } finally {
+        repo.cleanup();
+      }
+    });
+  });
 });

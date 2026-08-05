@@ -27,6 +27,7 @@ import {
 } from '@goodfoot/claude-code-hooks';
 import { derivePath } from '../common/agent-hooks-common.js';
 import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
+import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -41,6 +42,54 @@ type ToolInput = Record<string, unknown>;
 function positiveIntField(toolInput: ToolInput, field: string): number | undefined {
   const raw = toolInput[field];
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined;
+}
+
+/** The Bash `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
+type NormalizedToolResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'exitStatus' | 'truncated'>;
+
+/**
+ * Normalize a Bash `tool_response` envelope into the shared parser's input
+ * fields (notes/response-envelope-shapes.md). Tolerated shapes: a bare
+ * string (legacy `tool_result`); the deployed CLI's object
+ * `{stdout, stderr, rawOutputPath?, interrupted, timedOutAfterMs?, …}`; the
+ * older `{output, success, exitCode, filePath}` object; and a
+ * `[{type:'text',text}]` content-block array. `rawOutputPath` set (the
+ * inline stdout is only a preview), `interrupted`, or `timedOutAfterMs`
+ * marks the response truncated — the parser fails closed on the flag and
+ * parses nothing. Legacy `exitCode` becomes `exitStatus` (metadata only;
+ * never a gate). Fail closed: any other shape yields `null` and the branch
+ * degrades to today's command-only parsing.
+ */
+function normalizeToolResponse(toolResponse: unknown): NormalizedToolResponse | null {
+  if (typeof toolResponse === 'string') return { stdout: toolResponse };
+  if (Array.isArray(toolResponse)) {
+    const text: string[] = [];
+    for (const block of toolResponse) {
+      if (block !== null && typeof block === 'object') {
+        const value = (block as { text?: unknown }).text;
+        if (typeof value === 'string') text.push(value);
+      }
+    }
+    return { stdout: text.join('') };
+  }
+  if (toolResponse !== null && typeof toolResponse === 'object') {
+    const record = toolResponse as Record<string, unknown>;
+    if (typeof record.stdout === 'string') {
+      return {
+        stdout: record.stdout,
+        stderr: typeof record.stderr === 'string' ? record.stderr : undefined,
+        truncated:
+          record.rawOutputPath !== undefined || record.interrupted === true || record.timedOutAfterMs !== undefined
+      };
+    }
+    if (typeof record.output === 'string') {
+      return {
+        stdout: record.output,
+        exitStatus: typeof record.exitCode === 'number' ? record.exitCode : undefined
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -118,6 +167,33 @@ export function createHandler(
         }
         const output = await runTouchHook(touch, executors, memo);
         if (output.additionalContext) blocks.push(output.additionalContext);
+      }
+      // The tool_response is a second evidence source: response-derivable
+      // commands (grep/ripgrep with numbered output, git diff/show/log -p,
+      // git blame -L) locate their read windows in the output, which the
+      // command text alone cannot. Normalize the envelope, merge its spans
+      // with the command-derived ones, and run each as a read touch; the
+      // memo dedupes duplicate surfaces across the two sources. An
+      // unrecognized envelope degrades to command-only parsing.
+      const response = normalizeToolResponse(input.tool_response);
+      if (response !== null) {
+        for (const span of parseResponse({ command, cwd, ...response })) {
+          const scope = resolveTouchScope(cwd, span.absolutePath);
+          if (!scope) continue;
+          const output = await runTouchHook(
+            {
+              kind: 'read',
+              sessionId,
+              cwd,
+              filePath: span.absolutePath,
+              offset: span.lineStart,
+              limit: span.lineEnd - span.lineStart + 1
+            },
+            executors,
+            memo
+          );
+          if (output.additionalContext) blocks.push(output.additionalContext);
+        }
       }
       if (blocks.length === 0) return null;
       const combined = blocks.join('');

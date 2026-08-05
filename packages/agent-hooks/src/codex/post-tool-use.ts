@@ -38,6 +38,7 @@ import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import { abspathAgainst } from '../common/agent-hooks-common.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
+import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -187,21 +188,52 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
   return { matched: false, cmd: null, workdir: null };
 }
 
+/** The shell `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
+type NormalizedShellResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'exitStatus' | 'truncated'>;
+
 /**
- * Tolerantly pull the tool's textual output out of a `tool_response` of
- * uncertain shape (SDK-typed `unknown`): a bare string (today's Codex) is
- * returned as-is; an object is probed for the first {@link RESPONSE_TEXT_FIELDS}
- * entry that holds a string. Returns `null` when no text can be recovered
- * (unknown object shape, `null`, or a non-string/non-object), which the caller
- * treats as an *unrecognized* — not *failed* — response.
+ * Tolerantly normalize the tool's textual output and metadata out of a
+ * `tool_response` of uncertain shape (SDK-typed `unknown`): a bare string
+ * (today's Codex) is used as-is; a text-block array joins its blocks; an
+ * object is probed for the first {@link RESPONSE_TEXT_FIELDS} entry that
+ * holds a string, carrying along `stderr`, `exitCode`/`exitStatus`, and the
+ * truncation markers (`rawOutputPath` set / `interrupted` /
+ * `timedOutAfterMs`) when the envelope has them — the same normalization the
+ * Claude adapter applies to its Bash envelope. Returns `null` when no text
+ * can be recovered (unknown object shape, `null`, or a non-string/
+ * non-object), which the caller treats as an *unrecognized* — not *failed* —
+ * response.
  */
-function extractResponseText(toolResponse: unknown): string | null {
-  if (typeof toolResponse === 'string') return toolResponse;
+function normalizeShellResponse(toolResponse: unknown): NormalizedShellResponse | null {
+  if (typeof toolResponse === 'string') return { stdout: toolResponse };
+  if (Array.isArray(toolResponse)) {
+    const text: string[] = [];
+    for (const block of toolResponse) {
+      if (block !== null && typeof block === 'object') {
+        const value = (block as { text?: unknown }).text;
+        if (typeof value === 'string') text.push(value);
+      }
+    }
+    return { stdout: text.join('') };
+  }
   if (toolResponse !== null && typeof toolResponse === 'object') {
     const record = toolResponse as Record<string, unknown>;
     for (const field of RESPONSE_TEXT_FIELDS) {
       const value = record[field];
-      if (typeof value === 'string') return value;
+      if (typeof value === 'string') {
+        return {
+          stdout: value,
+          stderr: typeof record.stderr === 'string' ? record.stderr : undefined,
+          exitStatus:
+            typeof record.exitCode === 'number'
+              ? record.exitCode
+              : typeof record.exitStatus === 'number'
+                ? record.exitStatus
+                : undefined,
+          truncated:
+            record.rawOutputPath !== undefined || record.interrupted === true || record.timedOutAfterMs !== undefined
+        };
+      }
     }
   }
   return null;
@@ -219,9 +251,9 @@ function extractResponseText(toolResponse: unknown): string | null {
  *   that never applied.
  */
 export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | 'failure' | 'unknown' {
-  const text = extractResponseText(toolResponse);
-  if (text === null) return 'unknown';
-  return text.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
+  const normalized = normalizeShellResponse(toolResponse);
+  if (normalized === null) return 'unknown';
+  return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
 }
 
 /** A reader that always declines, forcing the parser to whole-file anchors. */
@@ -331,6 +363,34 @@ export function createHandler(
         }
         const output = await runTouchHook(touchInput as TouchInput, executors, memo);
         if (output.additionalContext) blocks.push(output.additionalContext);
+      }
+      // The tool_response is a second evidence source for the shell:
+      // response-derivable commands (grep/ripgrep with numbered output,
+      // git diff/show/log -p, git blame -L) locate their read windows in the
+      // output, which the command text alone cannot. Normalize the envelope,
+      // merge its spans with the command-derived ones, and run each as a
+      // read touch; the memo dedupes duplicate surfaces across the sources.
+      // An unrecognized envelope degrades to command-only parsing.
+      const response = normalizeShellResponse(input.tool_response);
+      if (response !== null) {
+        for (const span of parseResponse({ command, cwd, ...response })) {
+          const absPath = abspathAgainst(cwd, span.absolutePath);
+          const scope = resolveTouchScope(cwd, absPath);
+          if (!scope) continue;
+          const output = await runTouchHook(
+            {
+              kind: 'read',
+              sessionId,
+              cwd,
+              filePath: absPath,
+              offset: span.lineStart,
+              limit: span.lineEnd - span.lineStart + 1
+            },
+            executors,
+            memo
+          );
+          if (output.additionalContext) blocks.push(output.additionalContext);
+        }
       }
       if (blocks.length === 0) return undefined;
       const combined = blocks.join('');

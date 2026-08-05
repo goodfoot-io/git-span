@@ -850,15 +850,25 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
         lineStart: Number.parseInt(m?.[2] ?? '0', 10),
         lineEnd: Number.parseInt(m?.[2] ?? '0', 10)
       };
+      // Dropping the final record removes exactly its line from its file's
+      // spans. The oracle's coalesced spans do not map one-to-one to output
+      // records — adjacent matches in one file merge (src/d.ts's lines 3
+      // and 4 are a single span), so subtracting the whole span that holds
+      // the final line would also drop its neighbor's match. Split the
+      // containing span around the removed line instead.
       const expectedWithoutFinal = sortedSpans(
-        resolveExpected(s).filter(
-          (sp) =>
-            !(
-              sp.absolutePath === finalSpan.absolutePath &&
-              sp.lineStart === finalSpan.lineStart &&
-              sp.lineEnd === finalSpan.lineEnd
-            )
-        )
+        resolveExpected(s).flatMap((sp) => {
+          if (sp.absolutePath !== finalSpan.absolutePath) return [sp];
+          if (finalSpan.lineStart < sp.lineStart || finalSpan.lineStart > sp.lineEnd) return [sp];
+          const spans: ResolvedSpan[] = [];
+          if (finalSpan.lineStart > sp.lineStart) {
+            spans.push({ lineStart: sp.lineStart, lineEnd: finalSpan.lineStart - 1, absolutePath: sp.absolutePath });
+          }
+          if (finalSpan.lineStart < sp.lineEnd) {
+            spans.push({ lineStart: finalSpan.lineStart + 1, lineEnd: sp.lineEnd, absolutePath: sp.absolutePath });
+          }
+          return spans;
+        })
       );
       // Every real record ends with a newline; slicing it off leaves the
       // final record unterminated — its match must not touch.
@@ -933,7 +943,7 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
   // -------------------------------------------------------------------------
 
   describe('adapter envelope normalization contract (Phase 3e)', () => {
-    it.skip('every documented envelope shape feeds the same normalized fields and the same spans', () => {
+    it('every documented envelope shape feeds the same normalized fields and the same spans', () => {
       const f = fixture('rg-recursive');
       // notes/response-envelope-shapes.md documents the shapes the adapters
       // receive: a bare string (Codex today, and Claude's legacy

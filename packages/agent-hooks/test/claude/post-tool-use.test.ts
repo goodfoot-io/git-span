@@ -307,4 +307,142 @@ describe('claude post-tool-use touch signal', () => {
     // was not threaded into the touch.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
   });
+
+  // -------------------------------------------------------------------------
+  // Response-derived Bash read touches (Phase 3e): the tool_response is a
+  // second evidence source for grep/ripgrep and git diff/show/log -p
+  // commands whose read windows live in the output, not the command text.
+  // Every documented envelope shape must normalize to the same spans
+  // (notes/response-envelope-shapes.md), and a truncated response must fail
+  // closed — the inline stdout of a rawOutputPath spill is only a preview.
+  // -------------------------------------------------------------------------
+
+  describe('response-derived Bash read touches', () => {
+    /** A 500-line mod.rs whose `list` fake anchors SPAN at lines 39-189. */
+    function writeModRs(): string {
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      return filePath;
+    }
+
+    it('string, current-object, legacy-object, and text-block-array envelopes drive the same read touch', async () => {
+      const filePath = writeModRs();
+      const envelopes: unknown[] = [
+        `${filePath}:50:alpha\n`,
+        { stdout: `${filePath}:50:alpha\n`, stderr: '', rawOutputPath: undefined, interrupted: false },
+        { output: `${filePath}:50:alpha\n`, success: true, exitCode: 0, filePath: undefined },
+        [{ type: 'text', text: `${filePath}:50:alpha\n` }]
+      ];
+      for (const toolResponse of envelopes) {
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: [driftRow('CHANGED')]
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = postInput({
+          cwd: repo.root,
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: toolResponse
+        });
+
+        const result = toResult(await handler(input as never, { logger }));
+        expect(calls.fix).toBe(0); // read path never heals
+        expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toContain(SPAN);
+      }
+    });
+
+    it('a response-derived touch is windowed to the response lines, not whole-file', async () => {
+      const filePath = writeModRs();
+      const { executors } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        drift: [driftRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = postInput({
+        cwd: repo.root,
+        tool_name: 'Bash',
+        tool_input: { command: `rg -n alpha ${filePath}` },
+        tool_response: `${filePath}:400:alpha\n`
+      });
+
+      const result = toResult(await handler(input as never, { logger }));
+      // Line 400 sits outside the span's 39-189 anchor; a whole-file-scoped
+      // touch would surface it, so its absence proves the touch window came
+      // from the response record.
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    });
+
+    it('a rawOutputPath-spilled, interrupted, or timed-out Bash response invents no touches', async () => {
+      const filePath = writeModRs();
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        drift: [driftRow('CHANGED')]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const stdout = `${filePath}:50:alpha\n`;
+      for (const toolResponse of [
+        { stdout, stderr: '', rawOutputPath: '/tmp/large.out', interrupted: false },
+        { stdout, stderr: '', interrupted: true },
+        { stdout, stderr: '', timedOutAfterMs: 60_000 }
+      ]) {
+        const input = postInput({
+          cwd: repo.root,
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: toolResponse
+        });
+
+        const result = toResult(await handler(input as never, { logger }));
+        // The truncated flag fails closed: the preview is never parsed into
+        // a touch, and the command itself has no command-derived idiom.
+        expect(calls.list, JSON.stringify(toolResponse)).toBe(0);
+        expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+      }
+    });
+
+    it('merges command-derived and response-derived spans, deduping the surface via the memo', async () => {
+      const filePath = writeModRs();
+      // `git log -p -L 39,60:mod.rs` is at once a command-derived read idiom
+      // (parseCommandDetailed resolves the literal -L range) and a diff-form
+      // git log (parseResponse decodes the patch response) — the two
+      // evidence sources merge into overlapping read touches on one file.
+      const command = `git log -p -L 39,60:${filePath}`;
+      const diffResponse = [
+        `diff --git a/${filePath} b/${filePath}`,
+        'index 551e09f4..48593813 100644',
+        `--- a/${filePath}`,
+        `+++ b/${filePath}`,
+        '@@ -39,6 +39,6 @@',
+        ' line 39',
+        ' line 40',
+        '-line 41',
+        '+line 41 CHANGED',
+        ' line 42',
+        ' line 43',
+        ' line 44',
+        ''
+      ].join('\n');
+      const { executors, calls } = makeExecutors({
+        list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+        drift: []
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const input = postInput({
+        cwd: repo.root,
+        tool_name: 'Bash',
+        tool_input: { command },
+        tool_response: diffResponse
+      });
+
+      const result = toResult(await handler(input as never, { logger }));
+      expect(calls.fix).toBe(0); // both sources are reads
+      expect(calls.list).toBe(2); // one touch per merged source
+      const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+      expect(ctx).toContain(SPAN);
+      // The response-derived hunk overlaps the command-derived range on the
+      // same span; the per-session memo dedupes the duplicate surface.
+      expect(ctx.match(/## billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+    });
+  });
 });
