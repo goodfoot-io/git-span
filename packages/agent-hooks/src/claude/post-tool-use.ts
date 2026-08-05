@@ -46,6 +46,7 @@ import {
   classifyCommandForSnapshot,
   compareSnapshot,
   type ReadFile,
+  recordHasPathCoverageGap,
   type SiblingSnapshot,
   type SnapshotBudgets,
   type SnapshotFile,
@@ -251,25 +252,34 @@ function readSiblingRecord(
 }
 
 /**
- * Append a diagnostic to a live record's gaps so the consume that follows
- * carries it: a consumed sibling with a gap is read as coverage-unknowable by
- * later ambiguity checks (fail closed), while a consumed sibling with an
- * empty post and no gap would read as "consumed without changing P" — a false
- * clean. The record is parsed with plain JSON.parse (the store serializes
- * bigint mtimeNs as strings, so a plain round-trip preserves them) and the
- * consume's own read then revives it. Fail open: if the record cannot be
- * re-read or rewritten, the consume below still closes the window and the
- * logger warn carries the diagnostic.
+ * Append diagnostics to a live record's gaps so the consume that follows
+ * carries them: a consumed sibling carrying a path-coverage gap is read as
+ * coverage-unknowable by later ambiguity checks (fail closed), while a
+ * consumed sibling with an empty post and no coverage gap would read as
+ * "consumed without changing P" — a false clean. The callers append the
+ * compare-phase gaps (touched-files cap cuts, wall exhaustion, the abort
+ * failure) before the consume; the consult's coverage-gap predicate is
+ * kind-based, so a diagnostic-only gap (exclusion, coarse-scope) never opens
+ * the family. The record is parsed with plain JSON.parse (the store
+ * serializes bigint mtimeNs as strings, so a plain round-trip preserves
+ * them) and the consume's own read then revives it. One read+write serves
+ * the whole batch — the touched-files cap can cut many paths. Fail open: if
+ * the record cannot be re-read or rewritten, the consume below still closes
+ * the window and the logger warn carries the diagnostic.
  */
-function appendRecordGap(sessionId: string, toolUseId: string, gap: string, logger: CoreLogger): void {
+function appendRecordGap(sessionId: string, toolUseId: string, gaps: string[], logger: CoreLogger): void {
   try {
     const file = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(toolUseId)}.json`);
     const raw = JSON.parse(readFileSync(file, 'utf8')) as unknown;
     if (raw === null || typeof raw !== 'object' || (raw as SnapshotRecord).version !== 1) return;
     const rec = raw as SnapshotRecord;
-    if (rec.gaps.includes(gap)) return;
-    rec.gaps.push(gap);
-    writeFileSync(file, JSON.stringify(rec));
+    let changed = false;
+    for (const gap of gaps) {
+      if (rec.gaps.includes(gap)) continue;
+      rec.gaps.push(gap);
+      changed = true;
+    }
+    if (changed) writeFileSync(file, JSON.stringify(rec));
   } catch (err) {
     logger.warn(`git-span record-gap append failed open: ${String(err)}`);
   }
@@ -299,7 +309,10 @@ function siblingsForPath(
       createdAt: record.createdAt,
       consumed: record.consumed,
       consumedAt: record.consumedAt,
-      coverageGap: record.gaps.length > 0,
+      // Kind-based, never ANY-gap: an exclusion or precision-loss diagnostic
+      // (binary/oversize, coarse-scope) does not make the sibling's coverage
+      // unknowable — only the path-coverage family does.
+      coverageGap: recordHasPathCoverageGap(record),
       pre: record.files[path] ?? null,
       post: record.post?.[path] ?? null
     });
@@ -502,13 +515,26 @@ export async function snapshotBashBranch(
       }
     }
 
-    // Budget exhaustion with zero attributions is logger-only today; the user
-    // must see why no <git-span> block appeared.
-    if (scopes.length === 0 && compared.gaps.some((g) => g.includes('post-side wall budget exhausted'))) {
+    // Wall-budget exhaustion is transcript-visible whether it struck before
+    // any attribution or partway through — the user must see why attribution
+    // is absent OR partial, never a silent tail of dropped paths.
+    if (compared.gaps.some((g) => g.includes('post-side wall budget exhausted'))) {
       notes.push(
-        'git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced'
+        scopes.length === 0
+          ? 'git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced'
+          : `git-span: the post-side wall budget was exhausted partway — ${scopes.length} path(s) attributed, the rest dropped`
       );
     }
+
+    // The compare-phase gaps land on the record before the consume (same funnel
+    // as the abort catch): a path cut by the touched-files cap or the wall
+    // budget leaves no post entry, and without its persisted gap a later
+    // consumed-after consult would read post(P)=null as "consumed without
+    // changing P" — the phantom-attribution hole. The persisted gap makes it
+    // coverage-unknowable instead (fail closed). Diagnostic-only compare gaps
+    // (coarse-scope, zero-hunk, diff cost floor) persist too but never match
+    // the coverage-gap family the consult reads.
+    if (compared.gaps.length > 0) appendRecordGap(sessionId, toolUseId, compared.gaps, logger);
   } catch (err) {
     // Belt-and-braces: an unexpected throw in the compare path must still
     // close the record window — an unconsumed record poisons every later
@@ -518,7 +544,7 @@ export async function snapshotBashBranch(
     // P".
     const failureGap = `snapshot compare aborted: ${String(err)}`;
     logger.warn(`git-span ${failureGap}`);
-    appendRecordGap(sessionId, toolUseId, failureGap, logger);
+    appendRecordGap(sessionId, toolUseId, [failureGap], logger);
     store.consume(sessionId, toolUseId, postMap);
     return {
       kind: 'done',

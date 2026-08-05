@@ -864,6 +864,112 @@ describe('classifyCommandForSnapshot', () => {
         reason: 'opaque'
       });
     });
+
+    it('the pager scan covers every leading assignment, not just the first', () => {
+      expect(classifyCommandForSnapshot('HOME=/tmp GIT_PAGER=tee git log', scratch).decision).toEqual({
+        kind: 'snapshot',
+        reason: 'opaque'
+      });
+    });
+
+    it('a non-family assignment does not force a snapshot: FOO=bar git diff stays read-only', () => {
+      expect(classifyCommandForSnapshot('FOO=bar git diff', scratch).decision).toEqual({
+        kind: 'no-snapshot',
+        reason: 'read-only'
+      });
+    });
+  });
+
+  describe('git command-assignment redirects — the env-redirect family in command text fails closed', () => {
+    // The repo/index/object-store redirects: the command runs in a DIFFERENT
+    // repo (or with a different index/object store) than the hook cwd, so the
+    // cwd-scoped config read sees the wrong source and the diff-exec keys go
+    // unread — fail closed on the diff-rendering subcommands. The ambient
+    // forms are self-correcting (the classifier's subprocesses inherit the
+    // hook env) but GIT_DIR ambiently hijacks the -C top-level check, so these
+    // fixtures unset the family in the ambient env rather than rely on it.
+    const ambientUnset = {
+      GIT_DIR: undefined,
+      GIT_WORK_TREE: undefined,
+      GIT_OBJECT_DIRECTORY: undefined,
+      GIT_INDEX_FILE: undefined,
+      GIT_CONFIG_GLOBAL: undefined,
+      GIT_CONFIG_SYSTEM: undefined,
+      XDG_CONFIG_HOME: undefined
+    };
+
+    it('GIT_DIR=<other> git diff — the repo is redirected: opaque', () => {
+      withEnv(ambientUnset, () => {
+        expect(classifyCommandForSnapshot('GIT_DIR=/other/.git git diff', scratch).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+      });
+    });
+
+    it('GIT_DIR + GIT_WORK_TREE as a pair — opaque on git log too', () => {
+      withEnv(ambientUnset, () => {
+        expect(
+          classifyCommandForSnapshot('GIT_DIR=/other/.git GIT_WORK_TREE=/other git log', scratch).decision
+        ).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+      });
+    });
+
+    it('GIT_OBJECT_DIRECTORY and GIT_INDEX_FILE — the object store and index are redirected: opaque', () => {
+      withEnv(ambientUnset, () => {
+        expect(classifyCommandForSnapshot('GIT_OBJECT_DIRECTORY=/other/objects git diff', scratch).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+        expect(classifyCommandForSnapshot('GIT_INDEX_FILE=/other/index git show', scratch).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+      });
+    });
+
+    it('GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM/XDG_CONFIG_HOME/HOME in command text repoint the effective config: opaque', () => {
+      withEnv(ambientUnset, () => {
+        for (const cmd of [
+          'GIT_CONFIG_GLOBAL=/other/gitconfig git diff',
+          'GIT_CONFIG_SYSTEM=/other/systemconfig git diff',
+          'XDG_CONFIG_HOME=/other/xdg git log',
+          'HOME=/other/home git show'
+        ]) {
+          expect(classifyCommandForSnapshot(cmd, scratch).decision, cmd).toEqual({
+            kind: 'snapshot',
+            reason: 'opaque'
+          });
+        }
+      });
+    });
+
+    it('the GIT_CONFIG_COUNT pair form injects config entries into the command — the pair, not the count, is what execs', () => {
+      withEnv(ambientUnset, () => {
+        expect(
+          classifyCommandForSnapshot(
+            'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/evil.sh git diff',
+            scratch
+          ).decision
+        ).toEqual({ kind: 'snapshot', reason: 'opaque' });
+      });
+    });
+
+    it('any member of the redirect family triggers — a lone key or value pair member fails closed too', () => {
+      withEnv(ambientUnset, () => {
+        expect(classifyCommandForSnapshot('GIT_CONFIG_KEY_0=diff.external git diff', scratch).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+        expect(classifyCommandForSnapshot('GIT_CONFIG_VALUE_0=/tmp/evil.sh git log', scratch).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+      });
+    });
   });
 
   describe('git read-only config channels (repo/global config, command text)', () => {
@@ -1395,6 +1501,29 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => g.includes('src/new.ts'))).toBe(true);
   });
 
+  it('a binary/oversize exclusion in a repo does NOT drop a create candidate (the exclusion is not a coverage gap)', () => {
+    // The repo contains a PNG and a huge file: both excluded from the walk
+    // consistently pre/post, so no ambiguity is introduced — the create
+    // candidate's pre-absence is real evidence, never a budget cut.
+    const result = compareSnapshot(
+      compareInput({
+        record: record({ gaps: ['binary file excluded: assets/logo.png', 'oversize file excluded: data/huge.txt'] }),
+        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
+      })
+    );
+    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
+  });
+
+  it('an exclusion whose FILE NAME contains a gap phrase still does not drop the create candidate (anchored to the prefix)', () => {
+    const result = compareSnapshot(
+      compareInput({
+        record: record({ gaps: ['binary file excluded: notes/wall budget.md'] }),
+        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
+      })
+    );
+    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
+  });
+
   it('a line-hash gap (coarse entries) does NOT disqualify a create candidate', () => {
     // A coarse entry still records the file in pre with its byte hash, which
     // is all the pre-evidence a create needs — only a path-coverage gap
@@ -1755,7 +1884,7 @@ describe('git -C/--git-dir target the repo the exec-config read sees', () => {
   });
 });
 
-describe('recordHasPathCoverageGap — the pre-walk gap family the guard reads', () => {
+describe('recordHasPathCoverageGap — the gap family the guard and the consult read', () => {
   it('every current pre-walk path-coverage gap form matches (a rephrase breaks this fixture, not the guard)', () => {
     for (const gap of [
       'file-count budget exceeded: 5120/5000',
@@ -1767,14 +1896,57 @@ describe('recordHasPathCoverageGap — the pre-walk gap family the guard reads',
     }
   });
 
+  it('every compare-phase path-coverage gap form matches — they persist onto the record at consume', () => {
+    // These gaps are appended to the record by the post handlers before the
+    // consume; a later sibling consult must read the record as
+    // coverage-unknowable, never as "consumed without changing P".
+    for (const gap of [
+      'touched-files cap 2 exceeded: src/b.ts not attributed',
+      'post-side wall budget exhausted: attributed 1/5, unattributed src/b.ts, src/c.ts',
+      'post-walk coverage gap: src/a.ts dropped — may be a budget-excluded file, no phantom delete',
+      'pre-walk coverage gap: src/new.ts dropped — may be a budget-excluded file, no phantom create',
+      'unreadable at compare: src/a.ts dropped without attribution',
+      'snapshot compare aborted: boom'
+    ]) {
+      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(true);
+    }
+  });
+
   it('the line-hash form is range-precision loss only and never matches the family', () => {
     expect(recordHasPathCoverageGap(record({ gaps: ['line-hash budget exceeded: 3 files recorded coarse'] }))).toBe(
       false
     );
   });
 
+  it('the precision-loss compare diagnostics are attributed-with-diagnostics, never coverage gaps', () => {
+    // Those paths ARE attributed and their post state IS recorded, so a
+    // missing post entry still means "unchanged" — the family must not open.
+    for (const gap of [
+      'coarse-scope: src/a.ts has no line hashes, whole-file scope',
+      'zero-hunk collision: src/a.ts byte hash changed but line hashes identical, whole-file scope',
+      'diff cost floor exceeded: src/a.ts, whole-file scope'
+    ]) {
+      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(false);
+    }
+  });
+
   it('the per-file exclusion diagnostics name the path but never match the family', () => {
     expect(recordHasPathCoverageGap(record({ gaps: ['binary file excluded: src/app.bin'] }))).toBe(false);
     expect(recordHasPathCoverageGap(record({ gaps: ['oversize file excluded: src/big.txt'] }))).toBe(false);
+  });
+
+  it('an exclusion naming a file that itself contains a gap phrase never matches (the match is anchored to the prefix)', () => {
+    // The interpolation-proof assertion: an unanchored scan would let a user
+    // file named like a gap phrase open the family — and with it drop every
+    // create candidate and defer every sibling consult in the repo.
+    for (const gap of [
+      'binary file excluded: notes/wall budget.md',
+      'oversize file excluded: src/file-count budget exceeded.txt',
+      'oversize file excluded: repo walk truncated.txt',
+      'binary file excluded: src/post-side wall budget exhausted.log',
+      'binary file excluded: src/touched-files cap 5 exceeded.md'
+    ]) {
+      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(false);
+    }
   });
 });

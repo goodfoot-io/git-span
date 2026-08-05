@@ -1,9 +1,9 @@
 packages/agent-hooks/src/claude/snapshot.ts#L30-L58 rk64:366b6051f9494405
 packages/agent-hooks/src/codex/snapshot.ts#L21-L50 rk64:34f8e378a39aab5d
 packages/agent-hooks/src/common/snapshot-core.ts#L188-L240 rk64:d8dc52250d5d2fa0
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L280-L350 rk64:ae3fbd9e0b44822e
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L228-L318 rk64:9333a0b40fdb3ea8
-packages/agent-hooks/test/common/snapshot-core.test.ts#L575-L1004 rk64:830ec9a76e214d4d
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1499-L1515 rk64:fd178ca16ba73787
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L287-L357 rk64:ae3fbd9e0b44822e
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L236-L326 rk64:9333a0b40fdb3ea8
+packages/agent-hooks/test/common/snapshot-core.test.ts#L575-L1004 rk64:79166d35e558dc3d
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1628-L1644 rk64:fd178ca16ba73787
 
 classifyCommandForSnapshot is the single classifier the PreToolUse snapshot adapters call, and the PostToolUse comparison must call the same classifier per the plan, so both sides always agree on whether a snapshot should exist; the adapters branch on the same SnapshotDecision kinds and fail open by returning null, never by classifying differently. The classifier fixture matrix, the Post-side missing-record warn, and both harness PreToolUse sections pin that agreement as the skipped evidence gate Phase 3 must satisfy.

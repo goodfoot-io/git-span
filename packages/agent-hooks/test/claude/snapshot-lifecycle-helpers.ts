@@ -137,7 +137,10 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-lifecycle-script',
   'sess-lifecycle-ttl-edit',
   'sess-lifecycle-ttl-live',
-  'sess-lifecycle-ttl-old'
+  'sess-lifecycle-ttl-old',
+  'sess-lifecycle-capcut',
+  'sess-lifecycle-binary',
+  'sess-lifecycle-partialbudget'
 ];
 
 /**
@@ -169,7 +172,10 @@ export const CODEX_SESSION_IDS: readonly string[] = [
   'sess-codex-rename',
   'sess-codex-stop',
   'sess-codex-subagent',
-  'sess-codex-ttl'
+  'sess-codex-ttl',
+  'sess-codex-capcut',
+  'sess-codex-binary',
+  'sess-codex-partialbudget'
 ];
 
 /**

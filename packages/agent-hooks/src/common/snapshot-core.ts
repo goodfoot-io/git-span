@@ -267,6 +267,16 @@ const OUTPUT_FLAG = /^(?:-o|--output|--output-file)(?:=|$)/;
 
 /** The git exec-channel config keys, in `-c KEY=val` command text. */
 const EXEC_CONFIG_KEY = /^diff\.(?:external|.*\.(?:textconv|command))$/;
+/**
+ * Command-text env assignments that repoint git's repo/index/object/config
+ * sources. Any member makes the config the diff-exec keys come from unknowable
+ * to the hook's cwd-scoped read. The scan covers every leading assignment
+ * (each `KEY=val` token is whitespace-delimited); `GIT_CONFIG_COUNT` alone is
+ * inert, but the KEY/VALUE pair forms are what inject config entries, so the
+ * family matches each member and the fixtures pin the pair form.
+ */
+const GIT_REDIRECT_ASSIGNMENT =
+  /(?:^|\s)(?:GIT_DIR|GIT_WORK_TREE|GIT_OBJECT_DIRECTORY|GIT_INDEX_FILE|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_[0-9]+|GIT_CONFIG_VALUE_[0-9]+|XDG_CONFIG_HOME|HOME)=/;
 
 /** One `git config --get-regexp` scoped to exactly the exec keys (the classifier's only subprocess). */
 const EXEC_CONFIG_PATTERN = '^(diff\\.external|diff\\..*\\.(textconv|command))$';
@@ -507,11 +517,20 @@ function classifyGitExec(argv: string[], assignments: string, cwd: string): 'rea
   }
   const rendersDiff = subcommand === 'diff' || subcommand === 'log' || subcommand === 'show';
   // Command-text pager forms force opaque (the pager program is env-dependent);
-  // ambient PAGER/GIT_PAGER are inert because the hook's stdout is a pipe.
-  if (/^(?:GIT_PAGER|PAGER)=/.test(assignments)) return 'opaque';
+  // ambient PAGER/GIT_PAGER are inert because the hook's stdout is a pipe. The
+  // scan covers every leading assignment, not just the first.
+  if (/(?:^|\s)(?:GIT_PAGER|PAGER)=/.test(assignments)) return 'opaque';
   // GIT_EXTERNAL_DIFF executes an external diff program on diff/log/show
   // unconditionally — unlike the pager, it is not terminal-gated.
-  if (rendersDiff && /^GIT_EXTERNAL_DIFF=/.test(assignments)) return 'opaque';
+  if (rendersDiff && /(?:^|\s)GIT_EXTERNAL_DIFF=/.test(assignments)) return 'opaque';
+  // The command-assignment redirect family: any member repoints the repo, the
+  // index, the object store, or the effective config, so the cwd-scoped read
+  // below sees the wrong config source — fail closed on the diff-rendering
+  // subcommands, the only ones with an exec channel. (The ambient forms are
+  // self-correcting for the config read because the classifier's subprocesses
+  // inherit the hook env; GIT_DIR additionally hijacks the -C top-level check,
+  // which is exactly why the assignment forms must fail closed instead.)
+  if (rendersDiff && GIT_REDIRECT_ASSIGNMENT.test(assignments)) return 'opaque';
   // `git -c diff.external=…` — the config channel in command text, visible without a read.
   if (rendersDiff) {
     for (let j = 0; j < argv.length; j += 1) {
@@ -1414,17 +1433,28 @@ export interface CompareSnapshotResult {
  * post-side work's own start — so a command's runtime never exhausts it;
  * only the comparison's own cost can. The changed-path count is capped by
  * `budgets.maxTouchedFiles`; beyond it, coverage-gap diagnostics and no
- * touches.
+ * touches — and the cut gaps persist onto the record at consume, so a later
+ * sibling's null-post read of a cut path fails closed (coverage-unknowable),
+ * never reads "consumed without changing P".
  */
 /**
  * Whether a record's gaps include a path-coverage gap — some paths were never
- * recorded (file-count/total-bytes/wall-budget cuts, truncated walks). The
- * line-hash budget cut is NOT one: a coarse entry still records the file's
- * byte hash, which is all the pre-evidence a create candidate needs. The
- * same gap-family feed that predicate here; the store's index mirrored the
- * family as its `covered` column until that mirror was removed as dead.
+ * recorded (file-count/total-bytes/wall-budget cuts, truncated walks) or the
+ * comparison stopped before recording a path's post state (touched-files cap,
+ * post-side wall exhaustion, unreadable-at-compare, an aborted comparison).
+ * The line-hash budget cut is NOT one: a coarse entry still records the file's
+ * byte hash, which is all the pre-evidence a create candidate needs. Nor are
+ * the precision-loss compare diagnostics (coarse-scope / zero-hunk collision /
+ * diff cost floor) — those paths ARE attributed and their post state is
+ * recorded, so a missing post entry still means "unchanged". Every match is
+ * anchored to the emitter's fixed prefix: gap strings interpolate user file
+ * names (exclusion diagnostics, cap-cut paths), so an unanchored scan would
+ * let a file named like a gap phrase open the family. The same gap-family
+ * feed the predicate here; the store's index mirrored the family as its
+ * `covered` column until that mirror was removed as dead.
  */
-const PATH_COVERAGE_GAP = /file-count budget|total-bytes budget|wall budget|truncat/i;
+const PATH_COVERAGE_GAP =
+  /^(?:file-count budget exceeded:|total-bytes budget exceeded:|pre-side wall budget exceeded:|post-side wall budget exhausted:|repo walk truncated:|touched-files cap \d+ exceeded:|post-walk coverage gap:|pre-walk coverage gap:|unreadable at compare:|snapshot compare aborted:)/;
 
 export function recordHasPathCoverageGap(record: { gaps: string[] }): boolean {
   return record.gaps.some((g) => PATH_COVERAGE_GAP.test(g));

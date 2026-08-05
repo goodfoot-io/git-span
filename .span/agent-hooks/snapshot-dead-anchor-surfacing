@@ -1,4 +1,4 @@
 packages/agent-hooks/src/common/agent-hooks-common.ts#L225-L253 rk64:f311ec1059cae231
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L733-L888 rk64:155ca96ce2074fd1
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L740-L895 rk64:155ca96ce2074fd1
 
 the touch pipeline surfaces deleted-path spans through the real git span CLI's dead-anchor behavior — list reaches deleted anchors with exit 0, drift reports them as debt, and --fix leaves them for a human — and agent-hooks-common's drift-row debt classification is the invariant the pipeline consumes; the span-death acceptance section pins that coupling end to end against the CLI as the nonlocal authority.
