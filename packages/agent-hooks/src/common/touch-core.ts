@@ -751,11 +751,16 @@ function buildBlock(sections: string[], header: string, footer: string): string 
 // Touch hook entry point
 // ---------------------------------------------------------------------------
 
-/** Whether a covering row is in scope for the recovered range. */
-function intersects(row: PorcelainRow, range: LineRange | 'whole-file'): boolean {
-  if (range === 'whole-file') return true;
+/**
+ * Whether a covering row is in scope for the touched ranges. A `'whole-file'`
+ * scope (an unreadable write, a read without offset/limit, or an
+ * observed create/delete/truncate) keeps every covering anchor; otherwise the
+ * row must intersect at least one observed post-state range.
+ */
+function intersectsAny(row: PorcelainRow, ranges: LineRange[] | 'whole-file'): boolean {
+  if (ranges === 'whole-file') return true;
   if (row.start === 0 && row.end === 0) return true; // whole-file anchor
-  return rangesIntersect(range, { start: row.start, end: row.end });
+  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
 }
 
 /**
@@ -822,9 +827,23 @@ function onTouchedFile(row: PorcelainRow, filePath: string): boolean {
 }
 
 /**
- * Compute the merged `<git-span>` block for the touch, or `null` when there is
+ * One scope's surface computation result: the sections it renders, the
+ * header/footer its section run belongs under, and the memo keys to record.
+ * A batch of scopes joins the sections under the first non-null scope's
+ * header/footer — one block, not one per scope.
+ */
+interface SurfaceParts {
+  sections: string[];
+  header: string;
+  footer: string;
+  toRecord: string[];
+}
+
+/**
+ * Compute the surfaced spans for one touched file, or `null` when there is
  * nothing worth surfacing. Shared by both paths; the write path passes a
- * recovered range for precision, the read path scopes file-wide.
+ * recovered range for precision, the read path scopes file-wide, and the
+ * snapshot batch passes exact observed post-state ranges.
  *
  * A span renders as a full human-format section (name, all anchors with
  * drifted ones status-suffixed, why) when its name has not been surfaced this
@@ -832,18 +851,22 @@ function onTouchedFile(row: PorcelainRow, filePath: string): boolean {
  * span first seen healthy re-renders in full when drift later appears. A span
  * whose only drift is positional (`MOVED`/`RESOLVED_PENDING_COMMIT` — never
  * `isDebt`) is filtered out entirely: positional drift never surfaces.
+ *
+ * The drift list is scoped to the touched file by the single-path caller; a
+ * batch passes the shared repo-wide drift (one `drift` call per tool call).
  */
-async function computeSurface(
+async function computeSurfaceParts(
   input: TouchInput,
   executors: TouchExecutors,
   memo: MemoStore,
-  range: LineRange | 'whole-file'
-): Promise<string | null> {
+  range: LineRange[] | 'whole-file',
+  driftRows?: DriftPorcelainRow[]
+): Promise<SurfaceParts | null> {
   const covering = await executors.list(input.filePath, input.cwd);
   if (covering.length === 0) return null;
 
   // Group every anchor by span; a span is in scope when one of its anchors on
-  // the touched file intersects the recovered range.
+  // the touched file intersects the touched ranges.
   const anchorsByName = new Map<string, PorcelainRow[]>();
   for (const row of covering) {
     const rows = anchorsByName.get(row.name) ?? [];
@@ -851,13 +874,12 @@ async function computeSurface(
     anchorsByName.set(row.name, rows);
   }
   const touchedNames = [...anchorsByName.keys()].filter((name) =>
-    (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersects(row, range))
+    (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
   );
   if (touchedNames.length === 0) return null;
 
-  const driftRows = await executors.drift([input.filePath], input.cwd);
   const driftByName = new Map<string, DriftPorcelainRow[]>();
-  for (const row of driftRows) {
+  for (const row of driftRows ?? (await executors.drift([input.filePath], input.cwd))) {
     const rows = driftByName.get(row.name) ?? [];
     rows.push(row);
     driftByName.set(row.name, rows);
@@ -891,7 +913,23 @@ async function computeSurface(
   const fileName = basename(input.filePath);
   const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return buildBlock(sections, header, footer);
+  return { sections, header, footer, toRecord };
+}
+
+/**
+ * Compute the merged `<git-span>` block for a single-path touch, or `null`
+ * when there is nothing worth surfacing. The single-path caller scopes the
+ * drift to the touched file itself.
+ */
+async function computeSurface(
+  input: TouchInput,
+  executors: TouchExecutors,
+  memo: MemoStore,
+  range: LineRange[] | 'whole-file'
+): Promise<string | null> {
+  const parts = await computeSurfaceParts(input, executors, memo, range);
+  if (parts === null) return null;
+  return buildBlock(parts.sections, parts.header, parts.footer);
 }
 
 /**
@@ -917,12 +955,13 @@ async function computeSurface(
  * - **Snapshot path** (`scopes` given): the multi-path variant driven by the
  *   snapshot comparison instead of static parsing — one heal pass across all
  *   changed paths, one repo-wide drift, per-scope surface computation against
- *   the shared session memo, blocks joined. Phase 1: `Not Implemented` — the
- *   scope list is never populated until the Phase 3 snapshot pass.
+ *   the shared session memo, blocks joined under one header/footer.
  *
  * Fails open: any executor rejection or internal error yields
  * `additionalContext: null` (no signal, editing never blocked) rather than
- * throwing. `treeModified` reflects a successful `--fix` even when the
+ * throwing. The `written` XOR `observed` violation is the one fail-closed
+ * exception — checked before the fail-open branch so a contract violation is
+ * never half-run. `treeModified` reflects a successful `--fix` even when the
  * subsequent surface computation fails.
  */
 export async function runTouchHook(
@@ -932,17 +971,43 @@ export async function runTouchHook(
   probeCache?: RealityProbeCache,
   scopes?: ObservedWriteScope[]
 ): Promise<TouchOutput> {
+  if (input.kind === 'write' && input.observed !== undefined && input.written.length > 0) {
+    // Exactly one of `written` / `observed` may be set — a touch with both is
+    // a contract violation and must not half-run the static path.
+    throw new Error('touch write carries both written and observed: exactly one must be set');
+  }
   if (scopes !== undefined && scopes.length > 0) {
-    // Phase 3 (touch-core observed ranges): the snapshot path's multi-path
-    // touch — one heal pass across all changed paths, one repo-wide drift,
-    // per-scope surface against the shared session memo, blocks joined, under
-    // the post-side wall budget and touched-files cap. Stubbed in Phase 1:
-    // the snapshot adapters never reach it.
-    throw new Error('Not Implemented');
+    // The snapshot path's multi-path touch: one heal pass across all changed
+    // paths, one repo-wide drift, per-scope surface computation against the
+    // shared session memo, blocks joined under a single header/footer.
+    let treeModified = false;
+    try {
+      const fix = await executors.fix(scopes[0]!.filePath, input.cwd);
+      treeModified = fix.modified;
+      const driftRows = await executors.drift([], input.cwd);
+      const sections: string[] = [];
+      let header: string | null = null;
+      let footer: string | null = null;
+      for (const scope of scopes) {
+        const scopeInput: TouchInput = { ...input, filePath: scope.filePath };
+        const range: LineRange[] | 'whole-file' = scope.observed.wholeFile ? 'whole-file' : scope.observed.changed;
+        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
+        if (parts === null) continue;
+        if (header === null) {
+          header = parts.header;
+          footer = parts.footer;
+        }
+        sections.push(...parts.sections);
+      }
+      if (sections.length === 0) return { additionalContext: null, treeModified };
+      return { additionalContext: buildBlock(sections, header!, footer!), treeModified };
+    } catch {
+      return { additionalContext: null, treeModified };
+    }
   }
   let treeModified = false;
   try {
-    let range: LineRange | 'whole-file' = 'whole-file';
+    let range: LineRange[] | 'whole-file' = 'whole-file';
     if (input.kind === 'write') {
       const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
       const outcome = evaluateWriteGate(input, probe);
@@ -951,9 +1016,19 @@ export async function runTouchHook(
       }
       const fix = await executors.fix(input.filePath, input.cwd);
       treeModified = fix.modified;
-      range = input.range ?? recoverRangeFromDisk(input.written, input.filePath);
+      if (input.range !== undefined) {
+        range = [input.range];
+      } else if (input.observed !== undefined) {
+        // Exact post-state ranges — no disk read: the snapshot already knows
+        // them (recoverRangeFromDisk exists to locate a *written body*).
+        range = input.observed.wholeFile ? 'whole-file' : input.observed.changed;
+      } else {
+        const recovered = recoverRangeFromDisk(input.written, input.filePath);
+        range = recovered === 'whole-file' ? 'whole-file' : [recovered];
+      }
     } else {
-      range = recoverReadRange(input.offset, input.limit, input.filePath);
+      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
+      range = recovered === 'whole-file' ? 'whole-file' : [recovered];
     }
     const additionalContext = await computeSurface(input, executors, memo, range);
     return { additionalContext, treeModified };
@@ -1016,9 +1091,10 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
           timeout: timeoutMs
         });
       } catch (err) {
-        void err; // `git span drift` exits 1 on drift even when `--fix` healed something, and
-        // non-zero on genuine failure; the snapshot diff is the source of
+        // `git span drift` exits 1 on drift even when `--fix` healed something,
+        // and non-zero on genuine failure; the snapshot diff is the source of
         // truth for whether the tree changed, so the exit code is ignored here.
+        void err;
       }
       const after = spanStatusSnapshot(resolved.repoRoot);
       return { modified: before !== after };

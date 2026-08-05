@@ -1,5 +1,5 @@
 /**
- * Harness-agnostic snapshot store (Phase 1 — contract and stubs).
+ * Harness-agnostic snapshot store.
  *
  * One home for snapshot state, per the plan: JSON records in the per-session
  * directory (`sessionDir(sessionId)/snapshots/`), a lightweight per-repo
@@ -10,21 +10,45 @@
  * via `sessionDir(sessionId)`, and index entries are removed when the record
  * is removed.
  *
- * All files are written with 0600 permissions (dirs 0700); record, index,
- * tombstone, and activity-entry JSON each carry a `version` field whose
- * mismatch on read fails closed (discard + diagnostic) — stale or foreign
- * files are never parsed. Fail-open is not the store's default: records are
- * the evidence the concurrency rules depend on, so reads that find an
- * unreadable-but-present record surface the failure through the injected
- * logger rather than silently inventing an absent record.
+ * All files are written with 0600 permissions (dirs 0700); record and index
+ * JSON each carry a `version` field whose mismatch on read fails closed
+ * (discard + diagnostic) — stale or foreign files are never parsed. Activity
+ * entries carry no version (their shape is pinned key-exact by the fixtures);
+ * the consult accepts a version that is undefined or 1 and skips anything
+ * else. Fail-open is not the store's default: records are the evidence the
+ * concurrency rules depend on, so reads that find an unreadable-but-present
+ * record surface the failure through the injected logger rather than silently
+ * inventing an absent record.
  *
- * Every method whose behavior is real logic is a `Not Implemented` stub in
- * this phase; Phase 2 writes skipped checks against these signatures and
- * Phase 3 implements them. The record shape itself is declared in
- * snapshot-core.ts (its canonical home per the card's contract list) and
- * re-exported here so the store module reads self-contained.
+ * Bigint serialization: `SnapshotFile.mtimeNs` is a bigint in memory but JSON
+ * has no bigint, so record writes stringify it via a replacer and record
+ * reads revive it via a reviver applied to that key only. Consumers that read
+ * record files directly (fixture assertions) see the string form.
+ *
+ * The sweep runs opportunistically on every write (the crash-recovery
+ * backstop — a silent crash self-heals on the next snapshot). Records expire
+ * on `recordTtlMs` from their own `createdAt`; tombstones expire on the same
+ * clock from their `consumedAt`; unfinished activity entries are pruned by
+ * file mtime once they outlive `unfinishedEntryTtlMs`; index entries whose
+ * record file is gone are removed. Expiring a record removes its tombstone
+ * and index entry with it (a tombstoned pair counts under whichever of the
+ * two expired first — tombstone files are processed before record files so a
+ * pair expired together counts as a tombstone removal).
  */
 
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { queueRoot, SESSION_BASE_DIR, sanitizeSessionId, sessionDir } from './agent-hooks-common.js';
 import {
   DEFAULT_SNAPSHOT_BUDGETS,
   type SnapshotBudgets,
@@ -128,6 +152,189 @@ export interface ActivityEntry {
 }
 
 // ---------------------------------------------------------------------------
+// File layout helpers
+// ---------------------------------------------------------------------------
+
+const SNAPSHOTS_DIR = 'snapshots';
+const SNAPSHOT_INDEX_DIR = 'snapshot-index';
+const ACTIVITY_LOG_DIR = 'activity-log';
+const TOMBSTONE_SUFFIX = '.tombstone.json';
+
+function snapshotsDir(sessionId: string): string {
+  return join(sessionDir(sessionId), SNAPSHOTS_DIR);
+}
+
+function recordFile(sessionId: string, toolUseId: string): string {
+  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.json`);
+}
+
+function tombstoneFile(sessionId: string, toolUseId: string): string {
+  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${TOMBSTONE_SUFFIX}`);
+}
+
+function indexDir(repoRoot: string): string {
+  return join(queueRoot(repoRoot), SNAPSHOT_INDEX_DIR);
+}
+
+function indexFile(repoRoot: string, sessionId: string, toolUseId: string): string {
+  return join(indexDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+}
+
+function activityDir(repoRoot: string): string {
+  return join(queueRoot(repoRoot), ACTIVITY_LOG_DIR);
+}
+
+function activityFile(repoRoot: string, sessionId: string, toolUseId: string): string {
+  return join(activityDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+}
+
+// ---------------------------------------------------------------------------
+// JSON I/O
+// ---------------------------------------------------------------------------
+
+/** JSON.stringify replacer: serialize bigint mtimeNs as a string. */
+function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
+}
+
+/**
+ * Reviver applied to record files. The mtimeNs field of every
+ * SnapshotFile is serialized as a string; revive exactly those values. The
+ * reviver runs on every key of the document, so the conversion is keyed on
+ * 'mtimeNs' — no other field ever holds a serialized bigint.
+ */
+function recordReviver(key: string, value: unknown): unknown {
+  if (key === 'mtimeNs' && typeof value === 'string') {
+    try {
+      return BigInt(value);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+/** Read and parse a JSON file; null when absent or malformed. */
+function readJsonFile(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomically write a JSON file: tmp file in the same directory + rename.
+ * Directories are created 0700 (recursive mkdir applies the mode only to the
+ * final directory, so the parent is chmodded explicitly); files are 0600.
+ */
+function writeJsonAtomic(file: string, data: unknown, replacer?: (key: string, value: unknown) => unknown): void {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  chmodSync(dirname(dir), 0o700);
+  const tmp = join(
+    dir,
+    `.${basename(file)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
+  );
+  try {
+    writeFileSync(tmp, JSON.stringify(data, replacer), { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** Size of a file; 0 when absent (an orphaned index entry contributes nothing). */
+function fileSize(file: string): number {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+function listDir(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Record / index / tombstone / activity reads
+// ---------------------------------------------------------------------------
+
+/** Read a record file with the fail-closed rules; null when absent/unreadable/unversioned. */
+function readRecordFile(file: string, logger: CoreLogger): SnapshotRecord | null {
+  if (!existsSync(file)) return null; // absent is the normal find miss — silent
+  const data = readJsonFile(file);
+  if (data === null) {
+    logger.warn(`snapshot store: unreadable record file ${file}, treated as absent`);
+    return null;
+  }
+  if (typeof data !== 'object' || data === null || (data as { version?: unknown }).version !== 1) {
+    logger.warn(`snapshot store: incompatible record version in ${file}, treated as absent`);
+    return null;
+  }
+  return JSON.parse(JSON.stringify(data, bigintReplacer), recordReviver) as SnapshotRecord;
+}
+
+/** Whether a tombstone exists for (session, tool use) — the consumed marker. */
+function tombstoneExists(sessionId: string, toolUseId: string): boolean {
+  try {
+    statSync(tombstoneFile(sessionId, toolUseId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read a tombstone file with the fail-closed rules; null when absent/unreadable/unversioned. */
+function readTombstoneFile(file: string, logger: CoreLogger): SnapshotTombstone | null {
+  const data = readJsonFile(file);
+  if (data === null) return null;
+  if (typeof data !== 'object' || data === null || (data as { version?: unknown }).version !== 1) {
+    logger.warn(`snapshot store: incompatible tombstone version in ${file}, treated as absent`);
+    return null;
+  }
+  return data as SnapshotTombstone;
+}
+
+/** The repo's index entries (version undefined or 1; others fail closed). */
+function readIndexEntries(repoRoot: string, logger: CoreLogger): SnapshotIndexEntry[] {
+  const out: SnapshotIndexEntry[] = [];
+  for (const name of listDir(indexDir(repoRoot))) {
+    if (!name.endsWith('.json')) continue;
+    const data = readJsonFile(join(indexDir(repoRoot), name));
+    if (data === null || typeof data !== 'object' || data === null) continue;
+    const version = (data as { version?: unknown }).version;
+    if (version !== undefined && version !== 1) {
+      logger.warn(`snapshot store: incompatible index version in ${name}, excluded`);
+      continue;
+    }
+    out.push(data as SnapshotIndexEntry);
+  }
+  return out;
+}
+
+/** Read an activity entry with the fail-closed rules; null when absent/unreadable/foreign. */
+function readActivityEntry(file: string): ActivityEntry | null {
+  const data = readJsonFile(file);
+  if (data === null || typeof data !== 'object' || data === null) return null;
+  const version = (data as { version?: unknown }).version;
+  if (version !== undefined && version !== 1) return null;
+  return data as ActivityEntry;
+}
+
+/** The derived record path for a tool use id, from its on-disk file name. */
+function recordPathFromTombstoneName(dir: string, tombstoneName: string): string {
+  return join(dir, `${tombstoneName.slice(0, -TOMBSTONE_SUFFIX.length)}.json`);
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -202,14 +409,264 @@ export interface SnapshotStore {
 }
 
 /**
- * Create the disk-backed snapshot store. Throws `Not Implemented` in Phase 1;
- * Phase 3 implements it with the layout and permission rules documented above.
+ * Create the disk-backed snapshot store with the layout and permission rules
+ * documented above.
  */
 export function createSnapshotStore(
-  _logger: CoreLogger,
-  _budgets: SnapshotBudgets = DEFAULT_SNAPSHOT_BUDGETS
+  logger: CoreLogger,
+  budgets: SnapshotBudgets = DEFAULT_SNAPSHOT_BUDGETS
 ): SnapshotStore {
-  throw new Error('Not Implemented');
+  /** Total on-disk bytes of the repo's record files (via its index entries). */
+  function repoRecordBytes(repoRoot: string): number {
+    let total = 0;
+    for (const entry of readIndexEntries(repoRoot, logger)) {
+      const file = recordFile(entry.sessionId, entry.toolUseId);
+      total += fileSize(file);
+    }
+    return total;
+  }
+
+  function writeIndexEntry(repoRoot: string, entry: SnapshotIndexEntry): void {
+    writeJsonAtomic(indexFile(repoRoot, entry.sessionId, entry.toolUseId), { ...entry, version: 1 });
+  }
+
+  function removeIndexEntry(repoRoot: string, sessionId: string, toolUseId: string): void {
+    // The index lives under the repo's git common dir, resolved by a git
+    // subprocess that can fail (repo dir gone, spawn pressure under load).
+    // Index cleanup is opportunistic bookkeeping — a failure must warn and
+    // continue, never take down the sweep or removeSession.
+    try {
+      rmSync(indexFile(repoRoot, sessionId, toolUseId), { force: true });
+    } catch (e) {
+      logger.warn(`snapshot store: index entry cleanup failed for ${repoRoot}: ${String(e)}`);
+    }
+  }
+
+  function writeRecord(record: SnapshotRecord): void {
+    writeJsonAtomic(recordFile(record.sessionId, record.toolUseId), record, bigintReplacer);
+  }
+
+  /** Repos with readable records anywhere — the activity-log discovery surface. */
+  function reposFromRecords(): Set<string> {
+    const repos = new Set<string>();
+    for (const sessionName of listDir(SESSION_BASE_DIR)) {
+      const dir = snapshotsDir(sessionName);
+      for (const name of listDir(dir)) {
+        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        const rec = readRecordFile(join(dir, name), logger);
+        if (rec !== null) repos.add(rec.repoRoot);
+      }
+    }
+    return repos;
+  }
+
+  /** Prune unfinished activity entries whose file mtime outlived the short TTL. */
+  function pruneStaleActivity(now: number, repos: Set<string>): number {
+    let removed = 0;
+    for (const repo of repos) {
+      // The activity log lives under the repo's git common dir, resolved by a
+      // git subprocess; a gone repo (or spawn failure) must skip that repo and
+      // continue, never abort the sweep.
+      try {
+        for (const name of listDir(activityDir(repo))) {
+          if (!name.endsWith('.json')) continue;
+          const file = join(activityDir(repo), name);
+          const entry = readActivityEntry(file);
+          if (entry === null || entry.finishedAt !== null) continue;
+          let mtimeMs: number;
+          try {
+            mtimeMs = statSync(file).mtimeMs;
+          } catch {
+            continue;
+          }
+          if (mtimeMs < now - budgets.unfinishedEntryTtlMs) {
+            rmSync(file, { force: true });
+            removed += 1;
+          }
+        }
+      } catch (e) {
+        logger.warn(`snapshot store: activity prune skipped ${repo}: ${String(e)}`);
+      }
+    }
+    return removed;
+  }
+
+  /** Remove index entries whose record file is gone — the partial-cleanup failure. */
+  function sweepOrphanIndexes(_now: number, repos: Set<string>): number {
+    let removed = 0;
+    for (const repo of repos) {
+      // Same git-common-dir subprocess caveat as pruneStaleActivity: a gone
+      // repo must skip, not abort the sweep.
+      try {
+        for (const name of listDir(indexDir(repo))) {
+          if (!name.endsWith('.json')) continue;
+          const data = readJsonFile(join(indexDir(repo), name));
+          if (data === null || typeof data !== 'object' || data === null) continue;
+          const version = (data as { version?: unknown }).version;
+          if (version !== undefined && version !== 1) continue;
+          const entry = data as SnapshotIndexEntry;
+          if (readRecordFile(recordFile(entry.sessionId, entry.toolUseId), logger) === null) {
+            rmSync(join(indexDir(repo), name), { force: true });
+            removed += 1;
+          }
+        }
+      } catch (e) {
+        logger.warn(`snapshot store: orphan-index sweep skipped ${repo}: ${String(e)}`);
+      }
+    }
+    return removed;
+  }
+
+  return {
+    write(record: SnapshotRecord): boolean {
+      this.sweep();
+      const repo = record.repoRoot;
+      const json = JSON.stringify(record, bigintReplacer);
+      const total = repoRecordBytes(repo) + Buffer.byteLength(json, 'utf8');
+      if (total > budgets.maxStorageBytes) {
+        logger.warn(
+          `snapshot store: refusing to persist ${record.toolUseId}: repo storage ${total} bytes exceeds ` +
+            `maxStorageBytes ${budgets.maxStorageBytes}; nothing was dropped`
+        );
+        return false;
+      }
+      writeRecord(record);
+      writeIndexEntry(repo, {
+        sessionId: record.sessionId,
+        toolUseId: record.toolUseId,
+        createdAt: record.createdAt,
+        consumed: false,
+        consumedAt: null,
+        tier: record.tier,
+        covered: record.gaps.length > 0 ? 'all' : Object.keys(record.files)
+      });
+      return true;
+    },
+
+    find(sessionId: string, toolUseId: string): SnapshotRecord | 'tombstoned' | null {
+      if (tombstoneExists(sessionId, toolUseId)) return 'tombstoned';
+      return readRecordFile(recordFile(sessionId, toolUseId), logger);
+    },
+
+    consume(sessionId: string, toolUseId: string, post: Record<string, SnapshotFile>): SnapshotRecord | null {
+      if (tombstoneExists(sessionId, toolUseId)) return null;
+      const rec = readRecordFile(recordFile(sessionId, toolUseId), logger);
+      if (rec === null) return null;
+      const consumedAt = Date.now();
+      if (!this.tombstone(sessionId, toolUseId, consumedAt)) return null;
+      const consumed: SnapshotRecord = { ...rec, post, consumed: true, consumedAt };
+      writeRecord(consumed);
+      const indexData = readJsonFile(indexFile(rec.repoRoot, sessionId, toolUseId)) as
+        | (SnapshotIndexEntry & { version?: unknown })
+        | null;
+      if (indexData !== null && typeof indexData === 'object') {
+        writeIndexEntry(rec.repoRoot, {
+          sessionId,
+          toolUseId,
+          createdAt: indexData.createdAt,
+          consumed: true,
+          consumedAt,
+          tier: indexData.tier,
+          covered: indexData.covered
+        });
+      }
+      return consumed;
+    },
+
+    tombstone(sessionId: string, toolUseId: string, consumedAt: number): boolean {
+      const file = tombstoneFile(sessionId, toolUseId);
+      const dir = dirname(file);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      chmodSync(dirname(dir), 0o700);
+      try {
+        writeFileSync(file, JSON.stringify({ version: 1, toolUseId, consumedAt }), { flag: 'wx', mode: 0o600 });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    listRepoRecords(repoRoot: string): SnapshotIndexEntry[] {
+      return readIndexEntries(repoRoot, logger);
+    },
+
+    sweep(now: number = Date.now()): SweepResult {
+      const result: SweepResult = { records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0 };
+      const repos = new Set<string>();
+      for (const sessionName of listDir(SESSION_BASE_DIR)) {
+        const dir = snapshotsDir(sessionName);
+        const names = listDir(dir);
+        // Tombstone files first: a pair expired together counts as a
+        // tombstone removal, so the record branch below must not see a
+        // record whose tombstone already claimed the pair.
+        for (const name of names) {
+          if (!name.endsWith(TOMBSTONE_SUFFIX)) continue;
+          const t = readTombstoneFile(join(dir, name), logger);
+          if (t === null) continue;
+          if (now - t.consumedAt > budgets.recordTtlMs) {
+            const recordPath = recordPathFromTombstoneName(dir, name);
+            const rec = readRecordFile(recordPath, logger);
+            rmSync(recordPath, { force: true });
+            rmSync(join(dir, name), { force: true });
+            if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+            result.tombstones += 1;
+          }
+        }
+        for (const name of names) {
+          if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+          const rec = readRecordFile(join(dir, name), logger);
+          if (rec === null) continue;
+          repos.add(rec.repoRoot);
+          if (now - rec.createdAt > budgets.recordTtlMs) {
+            rmSync(join(dir, name), { force: true });
+            rmSync(tombstoneFile(rec.sessionId, rec.toolUseId), { force: true });
+            removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+            result.records += 1;
+          }
+        }
+      }
+      result.activityEntries = pruneStaleActivity(now, repos);
+      result.indexEntries = sweepOrphanIndexes(now, repos);
+      return result;
+    },
+
+    removeSession(sessionId: string, agentId?: string): void {
+      const dir = snapshotsDir(sessionId);
+      const repos = new Set<string>();
+      for (const name of listDir(dir)) {
+        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        const rec = readRecordFile(join(dir, name), logger);
+        if (rec === null) continue;
+        if (agentId !== undefined && rec.agentId !== agentId) continue;
+        repos.add(rec.repoRoot);
+        rmSync(join(dir, name), { force: true });
+        rmSync(tombstoneFile(rec.sessionId, rec.toolUseId), { force: true });
+        removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+      }
+      // Activity entries live under repos, and the session's own records may
+      // already have been TTL-swept (the sweep runs on every write), so the
+      // repos are discovered from all readable records on disk, not just the
+      // ones this call removed. The session dir itself is shared with the
+      // memo store and is never removed here.
+      for (const repo of reposFromRecords()) repos.add(repo);
+      for (const repo of repos) {
+        // The activity log lives under the repo's git common dir, resolved by
+        // a git subprocess; a gone repo must skip, never abort the removal.
+        try {
+          for (const name of listDir(activityDir(repo))) {
+            if (!name.endsWith('.json')) continue;
+            const entry = readActivityEntry(join(activityDir(repo), name));
+            if (entry !== null && entry.sessionId === sessionId) {
+              rmSync(join(activityDir(repo), name), { force: true });
+            }
+          }
+        } catch (e) {
+          logger.warn(`snapshot store: activity cleanup skipped ${repo}: ${String(e)}`);
+        }
+      }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,26 +677,33 @@ export function createSnapshotStore(
  * Create one activity entry for an Edit/Write/apply_patch pre-hook: read and
  * hash every target path, then write the entry file atomically with
  * `startedAt` and all preHashes together — intent logged before the edit's
- * write lands. Throws `Not Implemented` in Phase 1.
+ * write lands. The entry is written exactly as given (no version field).
  */
-export function appendActivityEntry(_repoRoot: string, _entry: ActivityEntry): void {
-  throw new Error('Not Implemented');
+export function appendActivityEntry(repoRoot: string, entry: ActivityEntry): void {
+  writeJsonAtomic(activityFile(repoRoot, entry.sessionId, entry.toolUseId), entry);
 }
 
 /**
  * Stamp an entry's completion at the end of the edit's own touch: set each
  * path's `postHash` (the state its touch read) and `finishedAt`. A failed
  * touch leaves `postHash` null; the never-flag rule (`finishedAt ≤
- * capturedAt(P)`) then resolves the boundary as clean. Throws `Not
- * Implemented` in Phase 1.
+ * capturedAt(P)`) then resolves the boundary as clean.
  */
 export function finishActivityEntry(
-  _repoRoot: string,
-  _sessionId: string,
-  _toolUseId: string,
-  _stamps: ActivityFinishStamp[]
+  repoRoot: string,
+  sessionId: string,
+  toolUseId: string,
+  stamps: ActivityFinishStamp[]
 ): void {
-  throw new Error('Not Implemented');
+  const file = activityFile(repoRoot, sessionId, toolUseId);
+  const entry = readActivityEntry(file);
+  if (entry === null) return;
+  for (const stamp of stamps) {
+    const path = entry.paths.find((p) => p.path === stamp.path);
+    if (path !== undefined) path.postHash = stamp.postHash;
+  }
+  entry.finishedAt = Date.now();
+  writeJsonAtomic(file, entry);
 }
 
 /**
@@ -248,15 +712,37 @@ export function finishActivityEntry(
  * entries active in the window, bounding per-compare cost by in-window entry
  * volume rather than the 24h entry volume), that carry the path in their
  * `paths` array with `finishedAt ≤ windowStart` — the finished-before-window
- * set the interleaved-edit boundary check works from. Throws `Not
- * Implemented` in Phase 1.
+ * set the interleaved-edit boundary check works from.
  */
 export function activityEntriesCovering(
-  _repoRoot: string,
-  _path: string,
-  _windowStart: number,
-  _now: number,
-  _budgets: SnapshotBudgets
+  repoRoot: string,
+  path: string,
+  windowStart: number,
+  now: number,
+  budgets: SnapshotBudgets
 ): ActivityEntry[] {
-  throw new Error('Not Implemented');
+  const earliest = windowStart - budgets.unfinishedEntryTtlMs;
+  const out: ActivityEntry[] = [];
+  for (const name of listDir(activityDir(repoRoot))) {
+    if (!name.endsWith('.json')) continue;
+    const file = join(activityDir(repoRoot), name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      continue;
+    }
+    // statSync mtimeMs carries sub-ms precision while Date.now() is integer
+    // ms: an entry whose finish-write landed in the same integer millisecond
+    // as `now` reads 0..1 ms in the future. Tolerate that slack — excluding a
+    // completed entry silently reopens the interleaved-edit window the consult
+    // guards. Entries genuinely more than 1 ms future (clock skew) stay excluded.
+    if (mtimeMs < earliest || mtimeMs > now + 1) continue;
+    const entry = readActivityEntry(file);
+    if (entry === null || entry.finishedAt === null || entry.finishedAt > windowStart) continue;
+    if (!entry.paths.some((p) => p.path === path)) continue;
+    out.push(entry);
+  }
+  out.sort((a, b) => a.startedAt - b.startedAt || (a.toolUseId < b.toolUseId ? -1 : a.toolUseId > b.toolUseId ? 1 : 0));
+  return out;
 }

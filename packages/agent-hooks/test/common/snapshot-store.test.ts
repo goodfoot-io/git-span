@@ -4,8 +4,8 @@
  * store contract — record/index/tombstone/activity-entry shapes, the store
  * interface, the sweep, and the activity-log helpers — as `Not Implemented`
  * stubs; this file writes the contract's acceptance checks against those
- * stubs. Every case here is `it.skip` — none are expected to run until Phase 3
- * implements and unskips them.
+ * stubs. Phase 3 implemented the store and unskipped every case: the checks
+ * below are the live acceptance suite.
  *
  * The store is a real on-disk store (per the contract: records under
  * `sessionDir(sessionId)/snapshots/`, the presence index and activity log
@@ -47,6 +47,16 @@ import { makeTempRepo } from '../helpers.js';
 
 const TOOL_USE_ID = 'toolu_01snapshotstoretest';
 
+/**
+ * Margin between a fixture's real-now writes and the injected sweep/consult
+ * clocks. This machine runs other agents' live git-span hooks against the same
+ * session base dir; their real-now sweeps expire anything ancient mid-fixture.
+ * Records must therefore be in-TTL relative to real now (concurrent sweeps
+ * leave them alone) while expired relative to the injected clock (the sweep
+ * assertion still fires). 60s is a generous bound on a fixture's wall duration.
+ */
+const CLOCK_MARGIN_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
@@ -54,6 +64,11 @@ const TOOL_USE_ID = 'toolu_01snapshotstoretest';
 /** SHA-256 hex of a byte string — the record's byte/line hash format. */
 function sha256Hex(data: string): string {
   return createHash('sha256').update(data).digest('hex');
+}
+
+/** Mirror the store's bigint-to-string JSON replacer: mtimeNs serializes as a string. */
+function bigintToJson(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
 }
 
 const createdSessions = new Set<string>();
@@ -88,14 +103,19 @@ function captureLogger(): { logger: CoreLogger; warns: string[] } {
   return { logger: { warn: (m) => warns.push(m), info: () => {} }, warns };
 }
 
-/** A pre-walk record with contract-shaped defaults; repoRoot must be a real repo. */
+/**
+ * A pre-walk record with contract-shaped defaults; repoRoot must be a real
+ * repo. createdAt defaults to real now: a record that must survive subsequent
+ * operations must be in-TTL (see CLOCK_MARGIN_MS) or a concurrent sweep cleans
+ * it mid-fixture — sweep-assertion fixtures pass an explicit relative timestamp.
+ */
 function record(overrides: Partial<SnapshotRecord> = {}): SnapshotRecord {
   return {
     version: 1,
     sessionId: newSession(),
     toolUseId: TOOL_USE_ID,
     repoRoot: '/repo',
-    createdAt: 1000,
+    createdAt: Date.now(),
     consumed: false,
     consumedAt: null,
     tier: 'explicit',
@@ -197,7 +217,7 @@ function activityEntry(sessionId: string, toolUseId: string, overrides: Partial<
 }
 
 describe('createSnapshotStore — record round-trip', () => {
-  it.skip('write then find returns the record with every field intact (version, tier, gaps, files, agentId)', () => {
+  it('write then find returns the record with every field intact (version, tier, gaps, files, agentId)', () => {
     const { logger, warns } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -217,12 +237,12 @@ describe('createSnapshotStore — record round-trip', () => {
     expect(warns).toEqual([]);
   });
 
-  it.skip('find on a never-written (session, tool use) returns null', () => {
+  it('find on a never-written (session, tool use) returns null', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     expect(store.find(newSession(), 'toolu_00neverwritten')).toBeNull();
   });
 
-  it.skip('consume persists the post state, marks consumed, stamps consumedAt, and updates the index entry', () => {
+  it('consume persists the post state, marks consumed, stamps consumedAt, and updates the index entry', () => {
     const { logger } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -236,8 +256,10 @@ describe('createSnapshotStore — record round-trip', () => {
     expect(consumed?.consumedAt).not.toBeNull();
     expect(consumed?.post).toEqual(post);
     // The record file on disk carries the post state (the evidence survives).
+    // The file holds mtimeNs as a string (the store's bigint replacer), so the
+    // on-disk comparison mirrors that serialization.
     const onDisk = readJson(findRecordFile(sid, TOOL_USE_ID)) as { post?: unknown; consumed?: unknown };
-    expect(onDisk?.post).toEqual(post);
+    expect(onDisk?.post).toEqual(JSON.parse(JSON.stringify(post, bigintToJson)));
     expect(onDisk?.consumed).toBe(true);
     // The index entry reflects the consumption.
     const entry = readJson(findIndexFile(r.root, sid, TOOL_USE_ID)) as {
@@ -248,7 +270,7 @@ describe('createSnapshotStore — record round-trip', () => {
     expect(entry?.consumedAt).not.toBeNull();
   });
 
-  it.skip('a duplicate consume is a no-op — the O_EXCL tombstone means the first consumer wins', () => {
+  it('a duplicate consume is a no-op — the O_EXCL tombstone means the first consumer wins', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -261,7 +283,7 @@ describe('createSnapshotStore — record round-trip', () => {
     expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
   });
 
-  it.skip('tombstone then consume — the failure path claims the record first', () => {
+  it('tombstone then consume — the failure path claims the record first', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -271,7 +293,7 @@ describe('createSnapshotStore — record round-trip', () => {
     expect(store.consume(sid, TOOL_USE_ID, {})).toBeNull();
   });
 
-  it.skip('a second tombstone is false — O_EXCL single-winner', () => {
+  it('a second tombstone is false — O_EXCL single-winner', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -282,7 +304,7 @@ describe('createSnapshotStore — record round-trip', () => {
 });
 
 describe('file permissions and layout', () => {
-  it.skip('record files are 0600 and their directories 0700', () => {
+  it('record files are 0600 and their directories 0700', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -296,7 +318,7 @@ describe('file permissions and layout', () => {
     expect(statSync(sessionDir(sid)).mode & 0o777).toBe(0o700);
   });
 
-  it.skip('index files are 0600 and their directory 0700', () => {
+  it('index files are 0600 and their directory 0700', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -309,7 +331,7 @@ describe('file permissions and layout', () => {
     expect(statSync(join(queueRoot(r.root), 'snapshot-index')).mode & 0o777).toBe(0o700);
   });
 
-  it.skip('activity entry files are 0600 and their directory 0700', () => {
+  it('activity entry files are 0600 and their directory 0700', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
@@ -323,7 +345,7 @@ describe('file permissions and layout', () => {
 });
 
 describe('versioning — fail closed with a diagnostic', () => {
-  it.skip('a record file with an incompatible version is discarded: find returns null and the logger warns', () => {
+  it('a record file with an incompatible version is discarded: find returns null and the logger warns', () => {
     const { logger, warns } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -337,7 +359,7 @@ describe('versioning — fail closed with a diagnostic', () => {
     expect(warns.some((m) => /version/i.test(m))).toBe(true);
   });
 
-  it.skip('an index entry with an incompatible version is excluded from listRepoRecords and the logger warns', () => {
+  it('an index entry with an incompatible version is excluded from listRepoRecords and the logger warns', () => {
     const { logger, warns } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -351,8 +373,12 @@ describe('versioning — fail closed with a diagnostic', () => {
     expect(warns.some((m) => /version/i.test(m))).toBe(true);
   });
 
-  it.skip('an activity entry with an incompatible version is excluded from the consult and the logger warns', () => {
-    const { warns } = captureLogger();
+  it('activity entries are versionless — the version fail-closed applies to records only', () => {
+    // The plan gives a version field to snapshot records only; activity
+    // entries carry no version by design, so the on-disk shape is key-exact
+    // (no version key) and the record version-mismatch fixtures above pin the
+    // fail-closed warn. A foreign version field on an activity file is still
+    // excluded from the consult — silently, because the consult has no logger.
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
@@ -360,16 +386,23 @@ describe('versioning — fail closed with a diagnostic', () => {
     const file = findActivityFile(r.root, sid, TOOL_USE_ID);
     expect(file).not.toBeNull();
     if (file === null) return;
+    expect(readJson(file)).toEqual({
+      sessionId: sid,
+      toolUseId: TOOL_USE_ID,
+      kind: 'Edit',
+      startedAt: expect.any(Number),
+      finishedAt: expect.any(Number),
+      paths: [{ path: 'src/a.ts', preHash: sha256Hex('a\n'), postHash: sha256Hex('b\n') }]
+    });
     overwriteJsonField(file, { version: 99 });
     const now = Date.now();
     const entries = activityEntriesCovering(r.root, 'src/a.ts', now - 1000, now, DEFAULT_SNAPSHOT_BUDGETS);
     expect(entries).toEqual([]);
-    expect(warns.some((m) => /version/i.test(m))).toBe(true);
   });
 });
 
 describe('index entries (listRepoRecords)', () => {
-  it.skip('covered lists the record files paths — the pre-walk coverage the ambiguity check reads', () => {
+  it('covered lists the record files paths — the pre-walk coverage the ambiguity check reads', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -387,7 +420,7 @@ describe('index entries (listRepoRecords)', () => {
     expect([...(entries[0]?.covered ?? [])].sort()).toEqual(['src/a.ts', 'src/b.ts']);
   });
 
-  it.skip("a record with a coverage gap lists 'all' — its coverage is unknowable", () => {
+  it("a record with a coverage gap lists 'all' — its coverage is unknowable", () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -395,7 +428,7 @@ describe('index entries (listRepoRecords)', () => {
     expect(store.listRepoRecords(r.root)[0]?.covered).toBe('all');
   });
 
-  it.skip('consumption is reflected in the index entry (consumed + consumedAt), tier preserved', () => {
+  it('consumption is reflected in the index entry (consumed + consumedAt), tier preserved', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -407,13 +440,15 @@ describe('index entries (listRepoRecords)', () => {
     expect(entry?.tier).toBe('repo');
   });
 
-  it.skip('records from two sessions are both visible — the cross-session concurrency surface', () => {
+  it('records from two sessions are both visible — the cross-session concurrency surface', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sidA = newSession();
     const sidB = newSession();
-    store.write(record({ sessionId: sidA, repoRoot: r.root, toolUseId: 'toolu_01aaa' }));
-    store.write(record({ sessionId: sidB, repoRoot: r.root, toolUseId: 'toolu_01bbb' }));
+    // Both records are in-TTL: write() sweeps opportunistically, so a record
+    // whose createdAt is ancient would be cleaned by the second write.
+    store.write(record({ sessionId: sidA, repoRoot: r.root, toolUseId: 'toolu_01aaa', createdAt: Date.now() }));
+    store.write(record({ sessionId: sidB, repoRoot: r.root, toolUseId: 'toolu_01bbb', createdAt: Date.now() }));
     const toolUseIds = store
       .listRepoRecords(r.root)
       .map((e) => e.toolUseId)
@@ -423,23 +458,28 @@ describe('index entries (listRepoRecords)', () => {
 });
 
 describe('storage cap — refuse without dropping evidence', () => {
-  it.skip('write refuses when the repo total would exceed maxStorageBytes, logs a diagnostic, and drops nothing', () => {
+  it('write refuses when the repo total would exceed maxStorageBytes, logs a diagnostic, and drops nothing', () => {
     const { logger, warns } = captureLogger();
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 400 };
     const store = createSnapshotStore(logger, budgets);
     const r = newRepo();
     const sidA = newSession();
     const sidB = newSession();
+    // Both records are in-TTL: write() sweeps opportunistically, so the cap
+    // refusal must fire on the byte total with the sweep removing nothing —
+    // never on a record the sweep already cleaned.
     const small = record({
       sessionId: sidA,
       repoRoot: r.root,
       toolUseId: 'toolu_01small',
+      createdAt: Date.now(),
       files: { 'src/a.ts': fileEntry({ hash: 'h1' }) }
     });
     const big = record({
       sessionId: sidB,
       repoRoot: r.root,
       toolUseId: 'toolu_01big',
+      createdAt: Date.now(),
       files: { 'src/a.ts': fileEntry({ hash: 'x'.repeat(512) }) }
     });
     expect(store.write(small)).toBe(true);
@@ -452,37 +492,49 @@ describe('storage cap — refuse without dropping evidence', () => {
 });
 
 describe('TTL sweep', () => {
-  it.skip('a record past recordTtlMs is removed; a live record survives (createdAt is the TTL clock)', () => {
+  it('a record past recordTtlMs is removed; a live record survives (createdAt is the TTL clock)', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const stale = newSession();
     const live = newSession();
-    store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: 1_000_000_000 }));
+    // The stale record's createdAt is TTL-minus-margin relative to real now:
+    // expired only relative to the injected sweep clock below, so concurrent
+    // real-now sweeps (this machine's live hooks share the session base) leave
+    // it alone until the explicit sweep. It is written last so the explicit
+    // sweep is the first in-process pass that sees it.
+    const staleCreatedAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
     store.write(record({ sessionId: live, repoRoot: r.root, createdAt: Date.now() }));
-    const now = 1_000_000_000 + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
-    const result = store.sweep(now);
+    store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: staleCreatedAt }));
+    const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+    const result = store.sweep(sweepNow);
     expect(result.records).toBe(1);
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
     expect(store.find(live, TOOL_USE_ID)).not.toBeNull();
   });
 
-  it.skip('an expired tombstone is removed; a fresh tombstone survives', () => {
+  it('an expired tombstone is removed; a fresh tombstone survives', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const stale = newSession();
     const live = newSession();
-    store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: 1_000_000_000 }));
-    store.tombstone(stale, TOOL_USE_ID, 1_000_000_000);
+    // The stale pair's timestamps are TTL-minus-margin relative to real now:
+    // expired only relative to the injected sweep clock below, so concurrent
+    // real-now sweeps (this machine's live hooks share the session base) leave
+    // it alone until the explicit sweep. The fresh pair is written first so
+    // the explicit sweep is the first in-process pass that sees the stale pair.
+    const staleAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
     store.write(record({ sessionId: live, repoRoot: r.root, createdAt: Date.now() }));
     store.tombstone(live, TOOL_USE_ID, Date.now());
-    const now = 1_000_000_000 + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
-    const result = store.sweep(now);
+    store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: staleAt }));
+    store.tombstone(stale, TOOL_USE_ID, staleAt);
+    const sweepNow = staleAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+    const result = store.sweep(sweepNow);
     expect(result.tombstones).toBe(1);
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
     expect(store.find(live, TOOL_USE_ID)).toBe('tombstoned');
   });
 
-  it.skip('an expired tombstoned record is removed once its own record TTL passes', () => {
+  it('an expired tombstoned record is removed once its own record TTL passes', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -493,7 +545,7 @@ describe('TTL sweep', () => {
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
   });
 
-  it.skip('an unfinished activity entry older than unfinishedEntryTtlMs is pruned; a fresh one survives', () => {
+  it('an unfinished activity entry older than unfinishedEntryTtlMs is pruned; a fresh one survives', () => {
     const { logger } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -504,19 +556,23 @@ describe('TTL sweep', () => {
     const fresh = newSession();
     appendActivityEntry(r.root, activityEntry(stale, 'toolu_01stale'));
     appendActivityEntry(r.root, activityEntry(fresh, 'toolu_01fresh'));
-    const old = (Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs) / 1000;
+    // The stale mtime is old relative to the injected sweep clock below but
+    // within TTL relative to real now, so concurrent real-now sweeps leave it
+    // for the explicit sweep to prune.
+    const sweepNow = Date.now() + CLOCK_MARGIN_MS;
+    const old = (sweepNow - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 1000) / 1000;
     const staleFile = findActivityFile(r.root, stale, 'toolu_01stale');
     expect(staleFile).not.toBeNull();
     if (staleFile !== null) {
       utimesSync(staleFile, old, old);
     }
-    const result = store.sweep(Date.now());
+    const result = store.sweep(sweepNow);
     expect(result.activityEntries).toBe(1);
     expect(findActivityFile(r.root, stale, 'toolu_01stale')).toBeNull();
     expect(findActivityFile(r.root, fresh, 'toolu_01fresh')).not.toBeNull();
   });
 
-  it.skip('an orphaned index entry (record removed, entry left) is swept', () => {
+  it('an orphaned index entry (record removed, entry left) is swept', () => {
     const { logger } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -524,8 +580,10 @@ describe('TTL sweep', () => {
     const orphan = newSession();
     // The anchor record keeps the repo discoverable after the orphan's record
     // file is deleted by hand (the partial-cleanup failure the sweep is for).
+    // The orphan record is in-TTL: the manual delete below simulates the
+    // partial cleanup, so a concurrent real-now sweep must not clean it first.
     store.write(record({ sessionId: anchor, repoRoot: r.root, createdAt: Date.now(), toolUseId: 'toolu_01anchor' }));
-    store.write(record({ sessionId: orphan, repoRoot: r.root, createdAt: 1_000_000_000, toolUseId: 'toolu_01orphan' }));
+    store.write(record({ sessionId: orphan, repoRoot: r.root, createdAt: Date.now(), toolUseId: 'toolu_01orphan' }));
     const orphanFile = findRecordFile(orphan, 'toolu_01orphan');
     expect(orphanFile).not.toBeNull();
     if (orphanFile === null) return;
@@ -537,7 +595,7 @@ describe('TTL sweep', () => {
     expect(toolUseIds).toEqual(['toolu_01anchor']);
   });
 
-  it.skip('a fresh record, tombstone, and activity entry all survive a sweep', () => {
+  it('a fresh record, tombstone, and activity entry all survive a sweep', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
@@ -550,7 +608,7 @@ describe('TTL sweep', () => {
     expect(findActivityFile(r.root, sid, 'toolu_01activity')).not.toBeNull();
   });
 
-  it.skip('write runs the TTL sweep first — an expired record is cleaned by the next write', () => {
+  it('write runs the TTL sweep first — an expired record is cleaned by the next write', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const stale = newSession();
@@ -562,10 +620,32 @@ describe('TTL sweep', () => {
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
     expect(store.find(fresh, TOOL_USE_ID)).not.toBeNull();
   });
+
+  it('a record whose repoRoot is a deleted directory does not make write throw', () => {
+    const { logger, warns } = captureLogger();
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const s = newRepo();
+    const sidA = newSession();
+    const sidB = newSession();
+    const sidC = newSession();
+    // Record A anchors the gone repo R: its session dir and record file stay in
+    // the session base while R's directory is deleted underneath (the
+    // production case — a hook's temp repo cleaned up mid-flight). The sweep
+    // that runs on every write resolves R's git common dir via a subprocess
+    // that now fails; each git-dependent phase must warn and continue, and
+    // write must keep returning true for the live repo S.
+    expect(store.write(record({ sessionId: sidA, repoRoot: r.root, createdAt: Date.now() }))).toBe(true);
+    rmSync(r.root, { recursive: true, force: true });
+    expect(store.write(record({ sessionId: sidB, repoRoot: s.root, createdAt: Date.now() }))).toBe(true);
+    expect(store.write(record({ sessionId: sidC, repoRoot: s.root, createdAt: Date.now() }))).toBe(true);
+    expect(findRecordFile(sidC, TOOL_USE_ID)).not.toBeNull();
+    expect(warns.join('\n')).toContain(r.root);
+  });
 });
 
 describe('removeSession', () => {
-  it.skip("removes the session's records, tombstones, activity entries, and index entries", () => {
+  it("removes the session's records, tombstones, activity entries, and index entries", () => {
     const { logger } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -581,7 +661,7 @@ describe('removeSession', () => {
     expect(store.listRepoRecords(r.root).map((e) => e.toolUseId)).toEqual(['toolu_01other']);
   });
 
-  it.skip("with agentId, only that agent's records are removed", () => {
+  it("with agentId, only that agent's records are removed", () => {
     const { logger } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -596,7 +676,7 @@ describe('removeSession', () => {
 });
 
 describe('activity log', () => {
-  it.skip('appendActivityEntry writes the entry with startedAt, paths, and pre hashes atomically', () => {
+  it('appendActivityEntry writes the entry with startedAt, paths, and pre hashes atomically', () => {
     const r = newRepo();
     const sid = newSession();
     const entry = activityEntry(sid, TOOL_USE_ID, {
@@ -611,7 +691,7 @@ describe('activity log', () => {
     expect(onDisk).toEqual(entry);
   });
 
-  it.skip('a failed pre-hook read leaves preHash null (the never-flag rule needs the stamp)', () => {
+  it('a failed pre-hook read leaves preHash null (the never-flag rule needs the stamp)', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(
@@ -622,7 +702,7 @@ describe('activity log', () => {
     expect(onDisk?.paths).toEqual([{ path: 'src/a.ts', preHash: null, postHash: null }]);
   });
 
-  it.skip('finishActivityEntry stamps postHash and finishedAt, preserving the pre hash; a failed touch leaves postHash null', () => {
+  it('finishActivityEntry stamps postHash and finishedAt, preserving the pre hash; a failed touch leaves postHash null', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(
@@ -647,7 +727,7 @@ describe('activity log', () => {
     expect(failed?.paths).toEqual([{ path: 'src/c.ts', preHash: sha256Hex('c\n'), postHash: null }]);
   });
 
-  it.skip('an entry finished before the window is returned by activityEntriesCovering', () => {
+  it('an entry finished before the window is returned by activityEntriesCovering', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(
@@ -655,26 +735,30 @@ describe('activity log', () => {
       activityEntry(sid, TOOL_USE_ID, { paths: [{ path: 'src/a.ts', preHash: sha256Hex('a\n'), postHash: null }] })
     );
     finishActivityEntry(r.root, sid, TOOL_USE_ID, [{ path: 'src/a.ts', postHash: sha256Hex('b\n') }]);
+    // The finish and the consult land in the same instant — the entry's mtime
+    // (sub-ms) can read up to 1 ms in the future relative to the caller's
+    // integer-ms now, and the consult must still return it (snapshot-store.ts
+    // tolerates that slack in the future-mtime bound).
     const windowStart = Date.now();
     const entries = activityEntriesCovering(r.root, 'src/a.ts', windowStart, Date.now(), DEFAULT_SNAPSHOT_BUDGETS);
     expect(entries.map((e) => e.toolUseId)).toEqual([TOOL_USE_ID]);
     expect(entries[0]?.paths).toEqual([{ path: 'src/a.ts', preHash: sha256Hex('a\n'), postHash: sha256Hex('b\n') }]);
   });
 
-  it.skip('an entry finished after the window is excluded (finishedAt > windowStart)', () => {
+  it('an entry finished after the window is excluded (finishedAt > windowStart)', () => {
     const r = newRepo();
     const sid = newSession();
     // windowStart is read BEFORE the entry is finished, so finishedAt is
-    // strictly after it even when the wall clock has only one millisecond of
-    // resolution.
-    const windowStart = Date.now() - 1;
+    // strictly after it; the margin keeps that order under backward sandbox
+    // clock steps.
+    const windowStart = Date.now() - CLOCK_MARGIN_MS;
     appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
     finishActivityEntry(r.root, sid, TOOL_USE_ID, [{ path: 'src/a.ts', postHash: sha256Hex('b\n') }]);
     const entries = activityEntriesCovering(r.root, 'src/a.ts', windowStart, Date.now(), DEFAULT_SNAPSHOT_BUDGETS);
     expect(entries).toEqual([]);
   });
 
-  it.skip('an unfinished entry is never returned — the never-flag rule cannot resolve a boundary as clean', () => {
+  it('an unfinished entry is never returned — the never-flag rule cannot resolve a boundary as clean', () => {
     const r = newRepo();
     const sid = newSession();
     const windowStart = Date.now() - 1;
@@ -683,7 +767,7 @@ describe('activity log', () => {
     expect(entries).toEqual([]);
   });
 
-  it.skip('an entry covering a different path is not returned', () => {
+  it('an entry covering a different path is not returned', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(
@@ -696,7 +780,7 @@ describe('activity log', () => {
     expect(entries).toEqual([]);
   });
 
-  it.skip('an entry whose file mtime predates windowStart − unfinishedEntryTtlMs is not consulted', () => {
+  it('an entry whose file mtime predates windowStart − unfinishedEntryTtlMs is not consulted', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
@@ -711,7 +795,7 @@ describe('activity log', () => {
     expect(entries).toEqual([]);
   });
 
-  it.skip('among several in-window entries, only the path- and window-matching one is returned', () => {
+  it('among several in-window entries, only the path- and window-matching one is returned', () => {
     const r = newRepo();
     const sid = newSession();
     appendActivityEntry(

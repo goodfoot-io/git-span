@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/snapshot-core.ts#L430-L492 rk64:219c40b773050199
+packages/agent-hooks/src/common/snapshot-core.ts#L1451-L1513 rk64:219c40b773050199
 packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L926-L1137 rk64:7ade7aaa52ae9de2
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L637-L725 rk64:1a6eaa919b2aa9e8
 packages/agent-hooks/test/common/snapshot-core.test.ts#L1003-L1187 rk64:94ef4bb230b4c1d1

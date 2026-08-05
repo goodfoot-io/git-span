@@ -1,12 +1,12 @@
 packages/agent-hooks/src/claude/post-tool-use-failure.ts#L20-L52 rk64:16464aa0ff2f7405
-packages/agent-hooks/src/common/snapshot-core.ts#L358-L426 rk64:1d19542e1092ff66
+packages/agent-hooks/src/common/snapshot-core.ts#L1273-L1341 rk64:1d19542e1092ff66
 packages/agent-hooks/src/common/touch-core.ts#L156-L189 rk64:7deffdb44694d2ec
 packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L309-L686 rk64:cfec4e8197fcaae9
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L288-L487 rk64:5f50238b9229f944
 packages/agent-hooks/test/common/snapshot-core.test.ts#L299-L462 rk64:57babeda89f50761
 packages/agent-hooks/test/common/snapshot-core.test.ts#L527-L572 rk64:20af2d855eef2ba6
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1188-L1460 rk64:97a330d41c9a60af
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1478-L1508 rk64:de6de79273601bf2
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1192-L1464 rk64:97a330d41c9a60af
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1482-L1512 rk64:de6de79273601bf2
 packages/agent-hooks/test/common/touch-core-observed.test.ts rk64:84d9dd9afef8c960
 
 compareSnapshot is the authoritative pre/post comparison whose output touch-core's observed-scope path consumes, and the Claude PostToolUseFailure handler must run the same comparison as PostToolUse whenever a record exists — partial mutations of a failed command are never silently lost and is_interrupt gates nothing. The diff oracle, hunk/rename mapping, compareSnapshot matrix, observed XOR written invariant, and both harness PostToolUse/failure sections pin that contract as the skipped evidence gate Phase 3 must satisfy.

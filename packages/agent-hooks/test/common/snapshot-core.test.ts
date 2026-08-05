@@ -4,8 +4,8 @@
  * snapshot contract surface — budgets, record shapes, and the pure functions —
  * as `Not Implemented` stubs; this file writes the contract's acceptance
  * checks against those stubs so the Phase 3 implementation has a fixed target.
- * Every case here is `it.skip` — none are expected to run (the stubs throw);
- * Phase 3 unskips them one by one while implementing minimally against each.
+ * Phase 3 implemented the module and unskipped every case: the checks below
+ * are the live acceptance suite.
  *
  * The diff oracle is `git diff --no-index -U0` on generated pre/post pairs:
  * the property tests assert `diffLineHashes` reproduces git's xdiff hunk
@@ -73,6 +73,11 @@ const COARSE_MTIME = 1_780_000_000_000_000_000n;
 /** SHA-256 hex of a byte string — the record's byte/line hash format. */
 function sha256Hex(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
+}
+
+/** Mirror the store's bigint-to-string JSON replacer: mtimeNs serializes as a string. */
+function bigintToJson(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
 }
 
 /**
@@ -217,6 +222,11 @@ function parseGitHunks(diffOutput: string): DiffHunk[] {
  * The oracle: `git diff --no-index -U0` on the two files. Exit 1 is the
  * files-differ signal (the diff text is on stdout); exit 0 with no output
  * means identical. Only the hunk headers are consumed.
+ *
+ * The git process runs with cwd OUTSIDE any repository (`dir` is a bare temp
+ * dir): an in-repo cwd would apply the repo's .gitattributes (e.g. the
+ * git-span repo's `* text=auto`), which normalizes CRLF to LF and would make
+ * git report CRLF-vs-LF pairs identical instead of different content.
  */
 function runGitDiffOracle(pre: string, post: string, dir: string): DiffHunk[] {
   const prePath = join(dir, 'pre.txt');
@@ -225,7 +235,10 @@ function runGitDiffOracle(pre: string, post: string, dir: string): DiffHunk[] {
   writeFileSync(postPath, post);
   let stdout = '';
   try {
-    stdout = execFileSync('git', ['diff', '--no-index', '-U0', '--', prePath, postPath], { encoding: 'utf8' });
+    stdout = execFileSync('git', ['diff', '--no-index', '-U0', '--', prePath, postPath], {
+      cwd: dir,
+      encoding: 'utf8'
+    });
   } catch (err) {
     const status = (err as { status?: number }).status;
     if (status !== 1) throw err;
@@ -297,91 +310,91 @@ function expectGitDiffMatch(pre: string, post: string): void {
 }
 
 describe('diffLineHashes — git diff --no-index -U0 oracle', () => {
-  it.skip('pure insertion at the start of the file', () => {
+  it('pure insertion at the start of the file', () => {
     expectGitDiffMatch('b\nc\n', 'a\nb\nc\n');
   });
 
-  it.skip('pure insertion in the middle of the file', () => {
+  it('pure insertion in the middle of the file', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nX\nb\nc\n');
   });
 
-  it.skip('pure insertion at the end of the file (git reports the last-line coordinate)', () => {
+  it('pure insertion at the end of the file (git reports the last-line coordinate)', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nb\nc\nd\n');
   });
 
-  it.skip('pure deletion at the start of the file', () => {
+  it('pure deletion at the start of the file', () => {
     expectGitDiffMatch('a\nb\nc\n', 'b\nc\n');
   });
 
-  it.skip('pure deletion in the middle of the file', () => {
+  it('pure deletion in the middle of the file', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nc\n');
   });
 
-  it.skip('pure deletion at the end of the file', () => {
+  it('pure deletion at the end of the file', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nb\n');
   });
 
-  it.skip('a single-line replacement', () => {
+  it('a single-line replacement', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nX\nc\n');
   });
 
-  it.skip('adjacent replacements merge into one hunk under -U0', () => {
+  it('adjacent replacements merge into one hunk under -U0', () => {
     expectGitDiffMatch('a\nb\nc\nd\n', 'x\ny\nc\nd\n');
   });
 
-  it.skip('duplicated lines: deletion between copies of the same line', () => {
+  it('duplicated lines: deletion between copies of the same line', () => {
     expectGitDiffMatch('x\ny\nx\nz\n', 'x\nx\nz\n');
   });
 
-  it.skip('duplicated lines: replacement of one copy of a duplicated line', () => {
+  it('duplicated lines: replacement of one copy of a duplicated line', () => {
     expectGitDiffMatch('x\ny\nx\nz\n', 'x\ny\nX\nz\n');
   });
 
-  it.skip('missing final newline on the pre side only', () => {
+  it('missing final newline on the pre side only', () => {
     expectGitDiffMatch('a\nb', 'a\nb\n');
   });
 
-  it.skip('missing final newline on the post side only', () => {
+  it('missing final newline on the post side only', () => {
     expectGitDiffMatch('a\nb\n', 'a\nb');
   });
 
-  it.skip('missing final newline on both sides with a content change', () => {
+  it('missing final newline on both sides with a content change', () => {
     expectGitDiffMatch('a\nb', 'a\nX');
   });
 
-  it.skip('CRLF round-trip with a replacement', () => {
+  it('CRLF round-trip with a replacement', () => {
     expectGitDiffMatch('a\r\nb\r\nc\r\n', 'a\r\nX\r\nc\r\n');
   });
 
-  it.skip('CRLF and LF variants of the same logical lines are different content', () => {
+  it('CRLF and LF variants of the same logical lines are different content', () => {
     expectGitDiffMatch('a\nb\n', 'a\r\nb\r\n');
   });
 
-  it.skip('empty pre file (all insertions)', () => {
+  it('empty pre file (all insertions)', () => {
     expectGitDiffMatch('', 'a\nb\n');
   });
 
-  it.skip('empty post file (all deletions)', () => {
+  it('empty post file (all deletions)', () => {
     expectGitDiffMatch('a\nb\n', '');
   });
 
-  it.skip('both files empty — no hunks', () => {
+  it('both files empty — no hunks', () => {
     expectGitDiffMatch('', '');
   });
 
-  it.skip('identical files — no hunks', () => {
+  it('identical files — no hunks', () => {
     expectGitDiffMatch('a\nb\nc\n', 'a\nb\nc\n');
   });
 
-  it.skip('single-line files', () => {
+  it('single-line files', () => {
     expectGitDiffMatch('a\n', 'b\n');
   });
 
-  it.skip('every line replaced', () => {
+  it('every line replaced', () => {
     expectGitDiffMatch('a\nb\nc\n', 'x\ny\nz\n');
   });
 
-  it.skip('matches the oracle on seeded generated pairs (property test)', () => {
+  it('matches the oracle on seeded generated pairs (property test)', () => {
     // Small alphabet → duplicated lines (the tie-breaking regime), CRLF and
     // missing-final-newline alternated by seed so every mode is exercised.
     const rand = mulberry32(20260804);
@@ -391,7 +404,7 @@ describe('diffLineHashes — git diff --no-index -U0 oracle', () => {
     }
   });
 
-  it.skip('identical line-hash arrays diff to zero hunks (the injected-collision seam)', () => {
+  it('identical line-hash arrays diff to zero hunks (the injected-collision seam)', () => {
     // The seam: diffLineHashes operates on opaque hash strings, so two
     // DIFFERENT lines mapped to the SAME hash string (a collision) diff as
     // identical — this is the zero-hunk input the comparison must catch by
@@ -402,35 +415,35 @@ describe('diffLineHashes — git diff --no-index -U0 oracle', () => {
 });
 
 describe('hunksToPostRanges', () => {
-  it.skip('a pure insertion maps to an exact post-state range', () => {
+  it('a pure insertion maps to an exact post-state range', () => {
     expect(hunksToPostRanges([{ preStart: 0, preLines: 0, postStart: 1, postLines: 3 }])).toEqual({
       changed: [{ start: 1, end: 3 }],
       wholeFile: false
     });
   });
 
-  it.skip('a mid-file insertion maps to the inserted post lines', () => {
+  it('a mid-file insertion maps to the inserted post lines', () => {
     expect(hunksToPostRanges([{ preStart: 5, preLines: 0, postStart: 6, postLines: 2 }])).toEqual({
       changed: [{ start: 6, end: 7 }],
       wholeFile: false
     });
   });
 
-  it.skip('a single-line modification maps to its post line', () => {
+  it('a single-line modification maps to its post line', () => {
     expect(hunksToPostRanges([{ preStart: 2, preLines: 1, postStart: 2, postLines: 1 }])).toEqual({
       changed: [{ start: 2, end: 2 }],
       wholeFile: false
     });
   });
 
-  it.skip('a multi-line modification maps to the full post block', () => {
+  it('a multi-line modification maps to the full post block', () => {
     expect(hunksToPostRanges([{ preStart: 1, preLines: 2, postStart: 1, postLines: 2 }])).toEqual({
       changed: [{ start: 1, end: 2 }],
       wholeFile: false
     });
   });
 
-  it.skip('multiple insertion/modification hunks map to multiple exact ranges', () => {
+  it('multiple insertion/modification hunks map to multiple exact ranges', () => {
     const hunks: DiffHunk[] = [
       { preStart: 1, preLines: 1, postStart: 1, postLines: 1 },
       { preStart: 5, preLines: 0, postStart: 6, postLines: 2 }
@@ -444,14 +457,14 @@ describe('hunksToPostRanges', () => {
     });
   });
 
-  it.skip('any delete-only hunk forces whole-file scope (no post coordinate for deleted lines)', () => {
+  it('any delete-only hunk forces whole-file scope (no post coordinate for deleted lines)', () => {
     expect(hunksToPostRanges([{ preStart: 3, preLines: 2, postStart: 0, postLines: 0 }])).toEqual({
       changed: [],
       wholeFile: true
     });
   });
 
-  it.skip('a mixed deletion+insertion set still forces whole-file scope', () => {
+  it('a mixed deletion+insertion set still forces whole-file scope', () => {
     const hunks: DiffHunk[] = [
       { preStart: 1, preLines: 1, postStart: 1, postLines: 0 },
       { preStart: 5, preLines: 0, postStart: 4, postLines: 2 }
@@ -461,7 +474,7 @@ describe('hunksToPostRanges', () => {
 });
 
 describe('hashFile', () => {
-  it.skip('records byte hash, size, mtimeNs, capturedAt, and ordered terminator-inclusive line hashes', () => {
+  it('records byte hash, size, mtimeNs, capturedAt, and ordered terminator-inclusive line hashes', () => {
     const now = 1000;
     const result = hashFile(hashInput({ now }));
     expect(result).toEqual({
@@ -473,20 +486,20 @@ describe('hashFile', () => {
     });
   });
 
-  it.skip('returns null for a missing file (stat fails)', () => {
+  it('returns null for a missing file (stat fails)', () => {
     expect(hashFile(hashInput({ stat: () => null }))).toBeNull();
   });
 
-  it.skip('returns null for an unreadable file (read fails)', () => {
+  it('returns null for an unreadable file (read fails)', () => {
     expect(hashFile(hashInput({ read: () => null }))).toBeNull();
   });
 
-  it.skip('a file over the per-file byte cap is excluded (null), never recorded', () => {
+  it('a file over the per-file byte cap is excluded (null), never recorded', () => {
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxBytesPerFile: 5 };
     expect(hashFile(hashInput({ budgets, read: () => Buffer.from('1234567890') }))).toBeNull();
   });
 
-  it.skip('a file over the per-file line cap is recorded coarse — byte hash only, no lines', () => {
+  it('a file over the per-file line cap is recorded coarse — byte hash only, no lines', () => {
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxLineHashesPerFile: 2 };
     const result = hashFile(hashInput({ budgets }));
     expect(result).toEqual({
@@ -498,24 +511,24 @@ describe('hashFile', () => {
     });
   });
 
-  it.skip('a depleted per-record line budget forces coarse regardless of the per-file cap', () => {
+  it('a depleted per-record line budget forces coarse regardless of the per-file cap', () => {
     const result = hashFile(hashInput({ remainingLineBudget: 0 }));
     expect(result?.coarse).toBe(true);
     expect(result?.lines).toBeUndefined();
   });
 
-  it.skip('line hashes include the terminator: a missing final newline round-trips', () => {
+  it('line hashes include the terminator: a missing final newline round-trips', () => {
     expect(hashLines('a\nb')).toEqual([sha256Hex('a\n'), sha256Hex('b')]);
     expect(hashLines('a\nb\n')).toEqual([sha256Hex('a\n'), sha256Hex('b\n')]);
     expect(sha256Hex('b')).not.toBe(sha256Hex('b\n'));
   });
 
-  it.skip('line hashes include the terminator: CRLF round-trips', () => {
+  it('line hashes include the terminator: CRLF round-trips', () => {
     expect(hashLines('a\r\nb\r\n')).toEqual([sha256Hex('a\r\n'), sha256Hex('b\r\n')]);
     expect(hashLines('a\r\nb\r\n')).not.toEqual(hashLines('a\nb\n'));
   });
 
-  it.skip('an empty file records zero lines', () => {
+  it('an empty file records zero lines', () => {
     const result = hashFile(
       hashInput({ read: () => Buffer.from(''), stat: () => ({ size: 0, mtimeNs: TRUSTED_MTIME }) })
     );
@@ -525,7 +538,7 @@ describe('hashFile', () => {
 });
 
 describe('pairRenames', () => {
-  it.skip('pairs pre-absent/post-present paths with an identical byte hash', () => {
+  it('pairs pre-absent/post-present paths with an identical byte hash', () => {
     const pre = new Map<string, SnapshotFile>([
       ['a.txt', fileEntry({ hash: 'h1' })],
       ['b.txt', fileEntry({ hash: 'h2' })]
@@ -537,7 +550,7 @@ describe('pairRenames', () => {
     expect(pairRenames(pre, post)).toEqual([{ from: 'a.txt', to: 'c.txt' }]);
   });
 
-  it.skip('content ties (duplicate hashes) are left as delete+create, never paired', () => {
+  it('content ties (duplicate hashes) are left as delete+create, never paired', () => {
     const pre = new Map<string, SnapshotFile>([
       ['a1.txt', fileEntry({ hash: 'hX' })],
       ['a2.txt', fileEntry({ hash: 'hX' })]
@@ -549,13 +562,13 @@ describe('pairRenames', () => {
     expect(pairRenames(pre, post)).toEqual([]);
   });
 
-  it.skip('no identical hash — no pairing', () => {
+  it('no identical hash — no pairing', () => {
     const pre = new Map<string, SnapshotFile>([['a.txt', fileEntry({ hash: 'h1' })]]);
     const post = new Map<string, SnapshotFile>([['c.txt', fileEntry({ hash: 'h2' })]]);
     expect(pairRenames(pre, post)).toEqual([]);
   });
 
-  it.skip('a unique pair among tied hashes still pairs', () => {
+  it('a unique pair among tied hashes still pairs', () => {
     const pre = new Map<string, SnapshotFile>([
       ['a.txt', fileEntry({ hash: 'hU' })],
       ['a1.txt', fileEntry({ hash: 'hX' })],
@@ -592,7 +605,7 @@ describe('classifyCommandForSnapshot', () => {
       readOnlyRepo = makeTempRepo().root;
     });
 
-    it.skip('provably read-only commands classify read-only (no snapshot, empty tier-1)', () => {
+    it('provably read-only commands classify read-only (no snapshot, empty tier-1)', () => {
       const readOnlyCommands = [
         'ls',
         'grep foo bar.txt',
@@ -613,7 +626,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('git status needs no config gate — read-only even with an external diff configured', () => {
+    it('git status needs no config gate — read-only even with an external diff configured', () => {
       const repo = repoWithConfig([['diff.external', 'ext-diff']]);
       try {
         expect(classifyCommandForSnapshot('git status', repo.root).decision).toEqual({
@@ -625,7 +638,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('ambient PAGER does not tax git log — the pager channel is inert because hook stdout is a pipe', () => {
+    it('ambient PAGER does not tax git log — the pager channel is inert because hook stdout is a pipe', () => {
       withEnv({ PAGER: 'less' }, () => {
         expect(classifyCommandForSnapshot('git log', scratch).decision).toEqual({
           kind: 'no-snapshot',
@@ -636,20 +649,20 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('covered-write fast path — no snapshot, exact ranges already available', () => {
-    it.skip('a pure single-quoted heredoc write is statically covered (the fast-path skip)', () => {
+    it('a pure single-quoted heredoc write is statically covered (the fast-path skip)', () => {
       const target = join(scratch, 'out.txt');
       const plan = classifyCommandForSnapshot(`cat > ${target} <<'EOF'\nalpha\nbeta\nEOF\n`, scratch);
       expect(plan.decision).toEqual({ kind: 'no-snapshot', reason: 'statically-covered' });
       expect(plan.tier1Targets).toEqual([]);
     });
 
-    it.skip('a pure single-quoted heredoc append is statically covered', () => {
+    it('a pure single-quoted heredoc append is statically covered', () => {
       const target = join(scratch, 'out.txt');
       const plan = classifyCommandForSnapshot(`cat >> ${target} <<'EOF'\nalpha\nEOF\n`, scratch);
       expect(plan.decision).toEqual({ kind: 'no-snapshot', reason: 'statically-covered' });
     });
 
-    it.skip('an unquoted expansion anywhere in the command disqualifies the fast path', () => {
+    it('an unquoted expansion anywhere in the command disqualifies the fast path', () => {
       // The heredoc write itself is inert, but `$(make)` may write elsewhere —
       // the whole command is no longer provably expansion-free, so the
       // covered-write label never attaches to it.
@@ -660,20 +673,20 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('redirects on read-only tools force a snapshot', () => {
-    it.skip('ls > f — the read-only label dies with the redirection', () => {
+    it('ls > f — the read-only label dies with the redirection', () => {
       const plan = classifyCommandForSnapshot(`ls > ${join(scratch, 'listing.txt')}`, scratch);
       expect(plan.decision.kind).toBe('snapshot');
       // The target is a literal redirect target: a tier-1 capture.
       expect(plan.tier1Targets).toEqual([join(scratch, 'listing.txt')]);
     });
 
-    it.skip('git status > f forces a snapshot', () => {
+    it('git status > f forces a snapshot', () => {
       expect(classifyCommandForSnapshot(`git status > ${join(scratch, 'status.txt')}`, scratch).decision.kind).toBe(
         'snapshot'
       );
     });
 
-    it.skip('echo hi > f forces a snapshot', () => {
+    it('echo hi > f forces a snapshot', () => {
       expect(classifyCommandForSnapshot(`echo hi > ${join(scratch, 'out.txt')}`, scratch).decision.kind).toBe(
         'snapshot'
       );
@@ -681,19 +694,19 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('unquoted expansion forces a snapshot', () => {
-    it.skip('echo $(make) > f — the subcommand may write elsewhere', () => {
+    it('echo $(make) > f — the subcommand may write elsewhere', () => {
       const plan = classifyCommandForSnapshot(`echo $(make) > ${join(scratch, 'out.txt')}`, scratch);
       expect(plan.decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
       expect(plan.tier1Targets).toEqual([join(scratch, 'out.txt')]);
     });
 
-    it.skip('FOO=$(gen) cmd > f — assignment-level substitution', () => {
+    it('FOO=$(gen) cmd > f — assignment-level substitution', () => {
       expect(classifyCommandForSnapshot(`FOO=$(gen) make > ${join(scratch, 'out.txt')}`, scratch).decision.kind).toBe(
         'snapshot'
       );
     });
 
-    it.skip('cat $ARGS > f — variable target, the subcommand may write elsewhere', () => {
+    it('cat $ARGS > f — variable target, the subcommand may write elsewhere', () => {
       expect(classifyCommandForSnapshot(`cat $ARGS > ${join(scratch, 'out.txt')}`, scratch).decision.kind).toBe(
         'snapshot'
       );
@@ -701,39 +714,39 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('tilde and background are opaque', () => {
-    it.skip('cat > ~/f — an unexpanded tilde resolves to the wrong literal path', () => {
+    it('cat > ~/f — an unexpanded tilde resolves to the wrong literal path', () => {
       const plan = classifyCommandForSnapshot("cat > ~/notes.txt <<'EOF'\nbody\nEOF\n", scratch);
       expect(plan.decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
       // The tilde target is unresolvable: never a tier-1 target.
       expect(plan.tier1Targets).toEqual([]);
     });
 
-    it.skip('a background job (&) can write after the hook returns', () => {
+    it('a background job (&) can write after the hook returns', () => {
       expect(classifyCommandForSnapshot('make &', scratch).decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
       expect(classifyCommandForSnapshot('sleep 1 &', scratch).decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
     });
   });
 
   describe('argument-executing wrappers are opaque', () => {
-    it.skip('env python3 gen.py — the wrapped subcommand writes', () => {
+    it('env python3 gen.py — the wrapped subcommand writes', () => {
       expect(classifyCommandForSnapshot('env python3 gen.py', scratch).decision.kind).toBe('snapshot');
     });
 
-    it.skip('xargs rm — arguments execute under the wrapper', () => {
+    it('xargs rm — arguments execute under the wrapper', () => {
       expect(classifyCommandForSnapshot('find . -name "*.tmp" | xargs rm', scratch).decision.kind).toBe('snapshot');
     });
 
-    it.skip('sudo make install', () => {
+    it('sudo make install', () => {
       expect(classifyCommandForSnapshot('sudo make install', scratch).decision.kind).toBe('snapshot');
     });
 
-    it.skip('time python3 gen.py', () => {
+    it('time python3 gen.py', () => {
       expect(classifyCommandForSnapshot('time python3 gen.py', scratch).decision.kind).toBe('snapshot');
     });
   });
 
   describe('output-targeting flags disqualify the read-only label', () => {
-    it.skip('sort -o out.txt in.txt', () => {
+    it('sort -o out.txt in.txt', () => {
       const plan = classifyCommandForSnapshot(
         `sort -o ${join(scratch, 'out.txt')} ${join(scratch, 'in.txt')}`,
         scratch
@@ -744,7 +757,7 @@ describe('classifyCommandForSnapshot', () => {
       expect(plan.tier1Targets).toEqual([]);
     });
 
-    it.skip('git diff --output=out.patch', () => {
+    it('git diff --output=out.patch', () => {
       const plan = classifyCommandForSnapshot(`git diff --output=${join(scratch, 'out.patch')}`, scratch);
       expect(plan.decision.kind).toBe('snapshot');
       expect(plan.tier1Targets).toEqual([]);
@@ -752,7 +765,7 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('git write subcommands are never read-only', () => {
-    it.skip('config, add, commit, checkout, reset, merge', () => {
+    it('config, add, commit, checkout, reset, merge', () => {
       const writeCommands = [
         'git config user.name x',
         'git add src/a.ts',
@@ -768,7 +781,7 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('heredoc delimiter quote styles', () => {
-    it.skip("<<'EOF' is inert: the body is literal data and the fast path applies", () => {
+    it("<<'EOF' is inert: the body is literal data and the fast path applies", () => {
       const target = join(scratch, 'out.txt');
       expect(classifyCommandForSnapshot(`cat > ${target} <<'EOF'\nbody\nEOF\n`, scratch).decision).toEqual({
         kind: 'no-snapshot',
@@ -776,7 +789,7 @@ describe('classifyCommandForSnapshot', () => {
       });
     });
 
-    it.skip('bare <<EOF is opaque: the body may execute and is never the literal written content', () => {
+    it('bare <<EOF is opaque: the body may execute and is never the literal written content', () => {
       const target = join(scratch, 'out.txt');
       expect(classifyCommandForSnapshot(`cat > ${target} <<EOF\nbody\nEOF\n`, scratch).decision).toEqual({
         kind: 'snapshot',
@@ -784,7 +797,7 @@ describe('classifyCommandForSnapshot', () => {
       });
     });
 
-    it.skip('<<"EOF" is opaque: the body may execute and is never the literal written content', () => {
+    it('<<"EOF" is opaque: the body may execute and is never the literal written content', () => {
       const target = join(scratch, 'out.txt');
       expect(classifyCommandForSnapshot(`cat > ${target} <<"EOF"\nbody\nEOF\n`, scratch).decision).toEqual({
         kind: 'snapshot',
@@ -792,7 +805,7 @@ describe('classifyCommandForSnapshot', () => {
       });
     });
 
-    it.skip('an unquoted-delimiter body with $(...) forces a snapshot and never feeds the literal body as written', () => {
+    it('an unquoted-delimiter body with $(...) forces a snapshot and never feeds the literal body as written', () => {
       const target = join(scratch, 'out.txt');
       const cmd = `cat > ${target} <<EOF\n$(make > ${join(scratch, 'generated.txt')})\nEOF\n`;
       const plan = classifyCommandForSnapshot(cmd, scratch);
@@ -803,7 +816,7 @@ describe('classifyCommandForSnapshot', () => {
       expect(plan.decision).not.toEqual({ kind: 'no-snapshot', reason: 'statically-covered' });
     });
 
-    it.skip('a backtick in an unquoted-delimiter body forces a snapshot', () => {
+    it('a backtick in an unquoted-delimiter body forces a snapshot', () => {
       const target = join(scratch, 'out.txt');
       const cmd = `cat > ${target} <<EOF\n\`gen\`\nEOF\n`;
       expect(classifyCommandForSnapshot(cmd, scratch).decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
@@ -811,14 +824,14 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('git read-only exec channels', () => {
-    it.skip('GIT_EXTERNAL_DIFF in command text opens the exec channel: git diff forces a snapshot', () => {
+    it('GIT_EXTERNAL_DIFF in command text opens the exec channel: git diff forces a snapshot', () => {
       expect(classifyCommandForSnapshot('GIT_EXTERNAL_DIFF=ext-diff git diff', scratch).decision).toEqual({
         kind: 'snapshot',
         reason: 'opaque'
       });
     });
 
-    it.skip('ambient GIT_EXTERNAL_DIFF opens the exec channel: git diff forces a snapshot', () => {
+    it('ambient GIT_EXTERNAL_DIFF opens the exec channel: git diff forces a snapshot', () => {
       withEnv({ GIT_EXTERNAL_DIFF: 'ext-diff' }, () => {
         expect(classifyCommandForSnapshot('git diff', scratch).decision).toEqual({
           kind: 'snapshot',
@@ -827,7 +840,7 @@ describe('classifyCommandForSnapshot', () => {
       });
     });
 
-    it.skip('ambient GIT_EXTERNAL_DIFF with --no-ext-diff: disarmed, read-only again', () => {
+    it('ambient GIT_EXTERNAL_DIFF with --no-ext-diff: disarmed, read-only again', () => {
       withEnv({ GIT_EXTERNAL_DIFF: 'ext-diff' }, () => {
         expect(classifyCommandForSnapshot('git diff --no-ext-diff', scratch).decision).toEqual({
           kind: 'no-snapshot',
@@ -836,14 +849,14 @@ describe('classifyCommandForSnapshot', () => {
       });
     });
 
-    it.skip("PAGER='tee pager.out' git log — a pager-forcing form classifies opaque (the pager program is env-dependent)", () => {
+    it("PAGER='tee pager.out' git log — a pager-forcing form classifies opaque (the pager program is env-dependent)", () => {
       expect(classifyCommandForSnapshot("PAGER='tee pager.out' git log", scratch).decision).toEqual({
         kind: 'snapshot',
         reason: 'opaque'
       });
     });
 
-    it.skip('GIT_PAGER in command text also forces a snapshot on git log', () => {
+    it('GIT_PAGER in command text also forces a snapshot on git log', () => {
       expect(classifyCommandForSnapshot("GIT_PAGER='tee pager.out' git log", scratch).decision).toEqual({
         kind: 'snapshot',
         reason: 'opaque'
@@ -852,7 +865,7 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('git read-only config channels (repo/global config, command text)', () => {
-    it.skip('a repo config with diff.external makes git diff/log/show opaque', () => {
+    it('a repo config with diff.external makes git diff/log/show opaque', () => {
       const repo = repoWithConfig([['diff.external', 'ext-diff']]);
       try {
         for (const cmd of ['git diff', 'git log', 'git show']) {
@@ -866,7 +879,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('a global config with diff.external makes git diff opaque', () => {
+    it('a global config with diff.external makes git diff opaque', () => {
       const cfgDir = mkdtempSync(join(tmpdir(), 'snapshot-global-config-'));
       const cfgPath = join(cfgDir, 'gitconfig');
       try {
@@ -887,7 +900,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('a diff.<driver>.textconv config makes git diff opaque', () => {
+    it('a diff.<driver>.textconv config makes git diff opaque', () => {
       const repo = repoWithConfig([['diff.foo.textconv', 'cat']]);
       try {
         expect(classifyCommandForSnapshot('git diff', repo.root).decision).toEqual({
@@ -899,14 +912,14 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('git -c diff.external=x diff — the config channel in command text is visible without a read', () => {
+    it('git -c diff.external=x diff — the config channel in command text is visible without a read', () => {
       expect(classifyCommandForSnapshot('git -c diff.external=x diff', scratch).decision).toEqual({
         kind: 'snapshot',
         reason: 'opaque'
       });
     });
 
-    it.skip('git diff --no-ext-diff disarms the config channel (canonical post-subcommand position)', () => {
+    it('git diff --no-ext-diff disarms the config channel (canonical post-subcommand position)', () => {
       const repo = repoWithConfig([['diff.external', 'ext-diff']]);
       try {
         expect(classifyCommandForSnapshot('git diff --no-ext-diff', repo.root).decision).toEqual({
@@ -918,7 +931,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('git --no-ext-diff diff — the pre-subcommand form is a usage error (exit 129) and does NOT disarm', () => {
+    it('git --no-ext-diff diff — the pre-subcommand form is a usage error (exit 129) and does NOT disarm', () => {
       const repo = repoWithConfig([['diff.external', 'ext-diff']]);
       try {
         // The disarm token is parsed only in the subcommand's argument
@@ -934,7 +947,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('git diff --no-textconv disarms a textconv driver', () => {
+    it('git diff --no-textconv disarms a textconv driver', () => {
       const repo = repoWithConfig([['diff.foo.textconv', 'cat']]);
       try {
         expect(classifyCommandForSnapshot('git diff --no-textconv', repo.root).decision).toEqual({
@@ -948,7 +961,7 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('symlinked heredoc targets fail the fast-path condition', () => {
-    it.skip('a symlinked heredoc target resolves the write elsewhere — forces a snapshot', () => {
+    it('a symlinked heredoc target resolves the write elsewhere — forces a snapshot', () => {
       const dir = mkdtempSync(join(tmpdir(), 'snapshot-symlink-'));
       try {
         const realTarget = join(dir, 'real-target.txt');
@@ -962,7 +975,7 @@ describe('classifyCommandForSnapshot', () => {
       }
     });
 
-    it.skip('a symlinked ancestor directory also fails the fast-path condition', () => {
+    it('a symlinked ancestor directory also fails the fast-path condition', () => {
       const dir = mkdtempSync(join(tmpdir(), 'snapshot-symlink-ancestor-'));
       try {
         const realDir = mkdtempSync(join(tmpdir(), 'snapshot-symlink-real-'));
@@ -977,7 +990,7 @@ describe('classifyCommandForSnapshot', () => {
   });
 
   describe('opaque tools — snapshot, target unknown', () => {
-    it.skip('interpreters, in-place editors, formatters, and project tools classify opaque', () => {
+    it('interpreters, in-place editors, formatters, and project tools classify opaque', () => {
       const opaqueCommands = [
         'python3 gen.py',
         'node build.js',
@@ -1003,13 +1016,17 @@ describe('classifyCommandForSnapshot', () => {
 describe('applyAmbiguityRules — the full ambiguity table', () => {
   const mine = record({ files: { 'src/a.ts': fileEntry({ hash: 'my-pre' }) } });
 
-  it.skip('unconsumed sibling created after mine — ambiguous (its write window has not provably ended)', () => {
-    const verdict = applyAmbiguityRules(mine, [sibling({ createdAt: 2000, consumed: false })], 'src/a.ts');
+  it('unconsumed sibling created after mine — ambiguous (its write window has not provably ended)', () => {
+    const verdict = applyAmbiguityRules(
+      mine,
+      [sibling({ createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })],
+      'src/a.ts'
+    );
     expect(verdict.ambiguous).toBe(true);
     if (verdict.ambiguous) expect(verdict.siblingToolUseId).toBe('sibling-1');
   });
 
-  it.skip('unconsumed sibling created before mine — ambiguous (pre order and pre equality are irrelevant)', () => {
+  it('unconsumed sibling created before mine — ambiguous (pre order and pre equality are irrelevant)', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [sibling({ createdAt: 500, consumed: false, pre: fileEntry({ hash: 'same-as-mine' }) })],
@@ -1018,7 +1035,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict.ambiguous).toBe(true);
   });
 
-  it.skip('consumed sibling created after mine with post(P) != pre(P) — ambiguous (it changed P during overlap)', () => {
+  it('consumed sibling created after mine with post(P) != pre(P) — ambiguous (it changed P during overlap)', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
@@ -1035,7 +1052,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict.ambiguous).toBe(true);
   });
 
-  it.skip('consumed sibling created after mine with post(P) = pre(P) — not ambiguous (disjoint)', () => {
+  it('consumed sibling created after mine with post(P) = pre(P) — not ambiguous (disjoint)', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
@@ -1052,7 +1069,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict).toEqual({ ambiguous: false });
   });
 
-  it.skip('consumed sibling created before mine with pre(P) = post(P) — not ambiguous (it never changed P)', () => {
+  it('consumed sibling created before mine with pre(P) = post(P) — not ambiguous (it never changed P)', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
@@ -1069,7 +1086,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict).toEqual({ ambiguous: false });
   });
 
-  it.skip('consumed sibling created before mine with post(P) = my pre(P) — not ambiguous (its write landed before my baseline)', () => {
+  it('consumed sibling created before mine with post(P) = my pre(P) — not ambiguous (its write landed before my baseline)', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
@@ -1086,7 +1103,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict).toEqual({ ambiguous: false });
   });
 
-  it.skip('consumed sibling created before mine, pre(P) != post(P), consumedAt <= my createdAt — not ambiguous (its whole window ended before my baseline)', () => {
+  it('consumed sibling created before mine, pre(P) != post(P), consumedAt <= my createdAt — not ambiguous (its whole window ended before my baseline)', () => {
     // The plan's sequential third-party fixture: opaque call A changed P and
     // an Edit landed between A and B — A's consumedAt predates B's createdAt,
     // so nothing makes B's post-diff ambiguous (the false positive a
@@ -1107,7 +1124,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict).toEqual({ ambiguous: false });
   });
 
-  it.skip('consumed sibling created before mine, pre(P) != post(P), consumedAt > my createdAt — ambiguous (its window extends past my baseline)', () => {
+  it('consumed sibling created before mine, pre(P) != post(P), consumedAt > my createdAt — ambiguous (its window extends past my baseline)', () => {
     // The plan's same-file-both-calls scenario: whichever call completes
     // first sees the other's change in a window past its baseline — both
     // fail closed, never both attribute, never a wrong-call attribution.
@@ -1128,7 +1145,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     if (verdict.ambiguous) expect(verdict.siblingToolUseId).toBe('sibling-1');
   });
 
-  it.skip('a gapped unconsumed sibling covers every path — overlap must be assumed', () => {
+  it('a gapped unconsumed sibling covers every path — overlap must be assumed', () => {
     // Its coverage is unknowable: even a sibling whose per-path view is
     // null makes every changed path ambiguous (the truncated-sibling hole).
     const verdict = applyAmbiguityRules(
@@ -1139,7 +1156,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict.ambiguous).toBe(true);
   });
 
-  it.skip('any ambiguous sibling makes the path ambiguous, even after a clean sibling', () => {
+  it('any ambiguous sibling makes the path ambiguous, even after a clean sibling', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
@@ -1151,7 +1168,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           pre: fileEntry({ hash: 's' }),
           post: fileEntry({ hash: 's' })
         }),
-        sibling({ toolUseId: 'dirty', createdAt: 2200, consumed: false })
+        sibling({ toolUseId: 'dirty', createdAt: 2200, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })
       ],
       'src/a.ts'
     );
@@ -1159,15 +1176,15 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     if (verdict.ambiguous) expect(verdict.siblingToolUseId).toBe('dirty');
   });
 
-  it.skip('siblings are evaluated in deterministic order — createdAt, ties broken by toolUseId', () => {
+  it('siblings are evaluated in deterministic order — createdAt, ties broken by toolUseId', () => {
     // Both unconsumed: either alone makes the path ambiguous, but the
     // verdict must name the deterministically-first sibling — every
     // consumer of an entangled path reaches the same verdict.
     const verdict = applyAmbiguityRules(
       mine,
       [
-        sibling({ toolUseId: 'z-tool', createdAt: 2000, consumed: false }),
-        sibling({ toolUseId: 'a-tool', createdAt: 2000, consumed: false })
+        sibling({ toolUseId: 'z-tool', createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) }),
+        sibling({ toolUseId: 'a-tool', createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })
       ],
       'src/a.ts'
     );
@@ -1175,7 +1192,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     if (verdict.ambiguous) expect(verdict.siblingToolUseId).toBe('a-tool');
   });
 
-  it.skip('a sibling not covering the path does not make it ambiguous', () => {
+  it('a sibling not covering the path does not make it ambiguous', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [sibling({ createdAt: 2000, consumed: false, pre: null, post: null })],
@@ -1186,7 +1203,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
 });
 
 describe('compareSnapshot', () => {
-  it.skip('a path whose (size, mtimeNs) both match its pre entry is skipped without a re-read', () => {
+  it('a path whose (size, mtimeNs) both match its pre entry is skipped without a re-read', () => {
     const read = vi.fn(() => null);
     const result = compareSnapshot(
       compareInput({
@@ -1201,7 +1218,7 @@ describe('compareSnapshot', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it.skip('a zero sub-second mtimeNs never proves non-change: a same-second content change is re-hashed and caught', () => {
+  it('a zero sub-second mtimeNs never proves non-change: a same-second content change is re-hashed and caught', () => {
     // Second-granularity clock: a write within the same second does not
     // advance mtime, so a size+mtime pair-match would skip a real change.
     // The pre entry's zero sub-second part forces the re-hash.
@@ -1231,7 +1248,7 @@ describe('compareSnapshot', () => {
     });
   });
 
-  it.skip('a byte-hash-equal re-read is unchanged — chmod/mtime-only noise never attributes', () => {
+  it('a byte-hash-equal re-read is unchanged — chmod/mtime-only noise never attributes', () => {
     const read = vi.fn(() => Buffer.from('a\nb\nc\n'));
     const result = compareSnapshot(
       compareInput({
@@ -1257,7 +1274,7 @@ describe('compareSnapshot', () => {
     expect(result.attributions.size).toBe(0);
   });
 
-  it.skip('a changed path attributes exact post-state ranges from the line-hash diff', () => {
+  it('a changed path attributes exact post-state ranges from the line-hash diff', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({
@@ -1286,7 +1303,7 @@ describe('compareSnapshot', () => {
     });
   });
 
-  it.skip('a pre-recorded path absent from disk is a delete candidate', () => {
+  it('a pre-recorded path absent from disk is a delete candidate', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({ files: { 'src/a.ts': fileEntry() } }),
@@ -1296,7 +1313,7 @@ describe('compareSnapshot', () => {
     expect(result.attributions.get('src/a.ts')).toEqual({ kind: 'deleted' });
   });
 
-  it.skip('a pre-only path under a post coverage gap is dropped, never a phantom delete', () => {
+  it('a pre-only path under a post coverage gap is dropped, never a phantom delete', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({ files: { 'src/a.ts': fileEntry() } }),
@@ -1308,7 +1325,7 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => g.includes('src/a.ts'))).toBe(true);
   });
 
-  it.skip('a post-only path is a create candidate when the pre walk had no path-coverage gap', () => {
+  it('a post-only path is a create candidate when the pre walk had no path-coverage gap', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({ files: {} }),
@@ -1318,7 +1335,7 @@ describe('compareSnapshot', () => {
     expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
   });
 
-  it.skip('a post-only path under a pre path-coverage gap is dropped with the gap diagnostic (it may be a budget-excluded file)', () => {
+  it('a post-only path under a pre path-coverage gap is dropped with the gap diagnostic (it may be a budget-excluded file)', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({ gaps: ['file-count budget exceeded: 5120/5000'] }),
@@ -1329,7 +1346,7 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => g.includes('src/new.ts'))).toBe(true);
   });
 
-  it.skip('a line-hash gap (coarse entries) does NOT disqualify a create candidate', () => {
+  it('a line-hash gap (coarse entries) does NOT disqualify a create candidate', () => {
     // A coarse entry still records the file in pre with its byte hash, which
     // is all the pre-evidence a create needs — only a path-coverage gap
     // disqualifies.
@@ -1348,7 +1365,7 @@ describe('compareSnapshot', () => {
     expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
   });
 
-  it.skip('a pre-absent/post-present path with an identical unique byte hash pairs as a rename', () => {
+  it('a pre-absent/post-present path with an identical unique byte hash pairs as a rename', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({ files: { 'old.ts': fileEntry({ hash: 'same-hash', size: 5 }) } }),
@@ -1360,7 +1377,7 @@ describe('compareSnapshot', () => {
     expect(result.attributions.has('old.ts')).toBe(false);
   });
 
-  it.skip('a changed coarse file attributes whole-file scope with a coarse-scope diagnostic', () => {
+  it('a changed coarse file attributes whole-file scope with a coarse-scope diagnostic', () => {
     const result = compareSnapshot(
       compareInput({
         record: record({
@@ -1382,7 +1399,7 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => /coarse-scope/i.test(g))).toBe(true);
   });
 
-  it.skip('a zero-hunk collision (line hashes identical, byte hash different) falls back to whole-file with a diagnostic', () => {
+  it('a zero-hunk collision (line hashes identical, byte hash different) falls back to whole-file with a diagnostic', () => {
     // Injected hash seam: the pre and post line-hash arrays are identical
     // (colliding) while the byte hash differs — the diff yields zero hunks
     // and attribution must never silently shrink.
@@ -1408,7 +1425,7 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => /collision|zero-hunk/i.test(g))).toBe(true);
   });
 
-  it.skip('post-side wall-budget exhaustion stops adding scopes and records the attributed/unattributed split', () => {
+  it('post-side wall-budget exhaustion stops adding scopes and records the attributed/unattributed split', () => {
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, postSideWallSeconds: 1 };
     const result = compareSnapshot(
       compareInput({
@@ -1432,7 +1449,7 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => /budget/i.test(g) && g.includes('src/a.ts') && g.includes('src/c.ts'))).toBe(true);
   });
 
-  it.skip('the touched-files cap bounds the changed-path count; beyond it, diagnostics and no touches', () => {
+  it('the touched-files cap bounds the changed-path count; beyond it, diagnostics and no touches', () => {
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxTouchedFiles: 1 };
     const pre: Record<string, SnapshotFile> = {
       'src/a.ts': fileEntry({ hash: 'h1', mtimeNs: TRUSTED_MTIME, lines: hashLines('a\n') }),
@@ -1459,7 +1476,7 @@ describe('compareSnapshot', () => {
 });
 
 describe('post side agreement and the observed/written invariant', () => {
-  it.skip('the Post side warns when the classifier says a snapshot should exist but the record is absent', () => {
+  it('the Post side warns when the classifier says a snapshot should exist but the record is absent', () => {
     // The SAME classifier runs at Pre and Post; when it concludes `snapshot`
     // but the store finds no record, the Post hook must warn with a
     // diagnostic (the pre-hook skipped or its write failed) before falling
@@ -1475,7 +1492,7 @@ describe('post side agreement and the observed/written invariant', () => {
     expect(warns).toEqual([]);
   });
 
-  it.skip("the observed XOR written invariant: a snapshot-attributed touch feeds observed with written: ''", () => {
+  it("the observed XOR written invariant: a snapshot-attributed touch feeds observed with written: ''", () => {
     // The snapshot path's construction site: exact post-state ranges in
     // `observed`, the empty `written` sentinel ("no locatable block") — never
     // both, never the literal body of an executed heredoc.
@@ -1507,7 +1524,7 @@ describe('post side agreement and the observed/written invariant', () => {
 });
 
 describe('budgets', () => {
-  it.skip('the shipped defaults are exactly the plan-mandated values', () => {
+  it('the shipped defaults are exactly the plan-mandated values', () => {
     expect(DEFAULT_SNAPSHOT_BUDGETS).toEqual({
       maxFiles: 5000,
       maxBytesPerFile: 1024 * 1024,
@@ -1523,7 +1540,7 @@ describe('budgets', () => {
     });
   });
 
-  it.skip('a binary file (NUL in the first 8 KiB) is never recorded — excluded at the hash seam', () => {
+  it('a binary file (NUL in the first 8 KiB) is never recorded — excluded at the hash seam', () => {
     // The tier-2 walker's eligibility rule (NUL scan of the first 8 KiB)
     // lands at the hash seam: a NUL-containing file must not produce a
     // record entry, so its content never enters the snapshot.
@@ -1533,7 +1550,7 @@ describe('budgets', () => {
     ).toBeNull();
   });
 
-  it.skip('storage coherence: a worst-case record stays well under the global storage cap', () => {
+  it('storage coherence: a worst-case record stays well under the global storage cap', () => {
     // Worst case = the per-record line budget fully consumed: 200,000 line
     // hashes (64 hex chars each) across files at the per-file cap. At ~66 B
     // per stored line hash that bounds a record to ~15 MB, so the 64 MiB
@@ -1558,7 +1575,9 @@ describe('budgets', () => {
     }
     expect(lineCount).toBe(DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerRecord);
     const worstCase = record({ files });
-    const bytes = Buffer.byteLength(JSON.stringify(worstCase), 'utf8');
+    // Serialized the way the store serializes it (mtimeNs as a string via the
+    // bigint replacer) — the property pinned is the worst-case ON-DISK size.
+    const bytes = Buffer.byteLength(JSON.stringify(worstCase, bigintToJson), 'utf8');
     expect(bytes).toBeLessThan(DEFAULT_SNAPSHOT_BUDGETS.maxStorageBytes);
   });
 });

@@ -85,7 +85,10 @@ function writeInput(overrides: Partial<TouchWriteInput> = {}): TouchWriteInput {
     sessionId: SESSION_ID,
     cwd: REPO_ROOT,
     filePath: `${REPO_ROOT}/src/app.ts`,
-    written: 'export const app = 1;\n',
+    // The `written` XOR `observed` invariant (header + "fails closed" test):
+    // an observed touch carries exactly one — an empty written body here, so
+    // `writeInput({ observed })` alone never trips the violation check.
+    written: '',
     ...overrides
   };
 }
@@ -147,7 +150,7 @@ function makeExecutors(
 // Skipped acceptance checks
 // ---------------------------------------------------------------------------
 
-describe.skip('touch-core observed write ranges (Phase 2 — skipped)', () => {
+describe('touch-core observed write ranges', () => {
   describe('observed ranges scope the touch precisely', () => {
     it('scopes the touch to the exact post-state changed ranges, excluding spans outside them', async () => {
       const memo = createMemoryMemoStore();
