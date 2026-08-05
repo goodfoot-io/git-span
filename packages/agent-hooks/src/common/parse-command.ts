@@ -9,14 +9,15 @@
  * unconstrained syntax), grep -n/-A/-B/-C (the window is anchored to match
  * position, which is data-dependent, not in the command text), embedded
  * python3/node heredoc scripts (a different language's AST, not a shell
- * concern), sed -i (no line-addressed usage observed — all pattern-only
- * substitutions with no static range), plain `echo`/`printf` redirects (rare
- * and semantically ambiguous in the corpus).
+ * concern), plain `echo`/`printf` redirects (rare and semantically ambiguous
+ * in the corpus). The write-touch families (sed -i, patch/git apply, and the
+ * §5.3–§5.5 families) are separate grammars below.
  */
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { basename, join as joinPath, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
 import { type SimpleCommand, splitTopLevel, stripLeadingAssignments, type Token, tokenize } from './shell-split.js';
+import { type PathStrip, parseUnifiedDiffRange } from './unified-diff.js';
 
 /**
  * The explicit operation kind of a resolved span. The adapters translate from
@@ -918,13 +919,13 @@ function matchRedirectFamily(
 }
 
 // ---------------------------------------------------------------------------
-// The file-mutation family grammars (plan §5.3–§5.5): cp/install/mv/git mv and
-// rm/git rm/truncate. They share the §5 fail-closed rules: leading env
-// assignments (stripped by the walk) and one `command`/`env` wrapper are
-// skipped (mechanically certain); any other wrapper is unresolved; a
-// leading-`-` token that is not a known option is treated as an option; `--`
-// makes the rest operands; globbed or variable paths are unresolved;
-// directory-shaped source operands fail closed.
+// The file-mutation family grammars (plan §5.3–§5.7): cp/install/mv/git mv,
+// rm/git rm/truncate, sed -i in-place edits, and patch/git apply. They share
+// the §5 fail-closed rules: leading env assignments (stripped by the walk)
+// and one `command`/`env` wrapper are skipped (mechanically certain); any
+// other wrapper is unresolved; a leading-`-` token that is not a known option
+// is treated as an option; `--` makes the rest operands; globbed or variable
+// paths are unresolved; directory-shaped source operands fail closed.
 // ---------------------------------------------------------------------------
 
 /** Wrapper words that obscure the wrapped command's argv (plan §5): a family command behind one is unresolved, never guessed. */
@@ -1374,14 +1375,6 @@ function matchRmTruncate(
   }
 }
 
-/** The `git apply` shape: whether the command is `git ... apply`, plus its `-C` directory (null when none or unresolvable — the paths then resolve against the current directory). */
-function gitApplyShape(argv: string[]): { isApply: boolean; dir: string | null } {
-  if (argv[0] !== 'git') return { isApply: false, dir: null };
-  const sub = findGitSubcommand(argv.slice(1));
-  if (sub === null || sub.subcommand !== 'apply') return { isApply: false, dir: null };
-  return { isApply: true, dir: sub.cDirUnresolvable ? null : sub.cDir };
-}
-
 /**
  * The heredoc write grammar (plan §5.2) for the host families whose bodies are
  * content: `cat` (body → the content redirects), `tee` (body → the operands),
@@ -1476,146 +1469,555 @@ function classifyHeredocOpener(
     emitContentRedirects();
     return;
   }
-  const applyShape = host === 'git' ? gitApplyShape(argv) : { isApply: false, dir: null };
-  if (host === 'patch' || applyShape.isApply) {
-    const targets = classifyPatchText(body);
-    if (targets === null) return; // malformed or empty patch text → fail closed
-    for (const t of targets) {
-      const absolutePath = resolveTarget(results, 'heredoc-write', t.path, applyShape.dir ?? currentDir);
-      if (absolutePath === null) continue;
-      results.push({
-        status: 'resolved',
-        idiom: 'heredoc-write',
-        span: {
-          operation: t.operation,
-          absolutePath,
-          simpleCommandIndex,
-          join,
-          ...(t.lineStart !== undefined ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {})
-        }
-      });
-    }
+  if (host === 'patch' || host === 'git') {
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join, results);
     return;
   }
   // Non-family host: the body is not attributable content — no write touch.
 }
 
 // ---------------------------------------------------------------------------
-// Patch-text classification (plan §5.7), consumed by the heredoc grammar: a
-// minimal, range-preserving unified-diff parse. Hunks of a file whose pre/post
-// line counts match union into an exact range; any count-changing hunk, or any
-// structural uncertainty, degrades to a whole-file modify. Malformed or empty
-// patch text classifies null (fail closed).
+// The sed -i grammar (plan §5.6), the first consumer of exact ranges: a
+// substitution-only script with numeric addresses modifies the addressed
+// lines; anything less statically certain is a whole-file modify. The
+// suffix/script disambiguation and the segment classification below are the
+// whole of it — everything else follows the shared §5 fail-closed rules.
 // ---------------------------------------------------------------------------
 
-interface PatchTarget {
-  path: string;
-  operation: 'modify' | 'create-overwrite' | 'delete' | 'rename-copy';
-  lineStart?: number;
-  lineEnd?: number;
-}
+/** A numeric-addressed substitution segment (`N`, `N,M`) — the only form with an exact range. */
+const NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+/** An unaddressed substitution segment — line-count-preserving, whole file addressed. */
+const UNRESTRICTED_SUBSTITUTION = /^[sy]/;
 
-function stripGitPrefix(p: string): string {
-  return p.startsWith('a/') || p.startsWith('b/') ? p.slice(2) : p;
-}
-
-function classifyPatchText(patchText: string): PatchTarget[] | null {
-  const results: PatchTarget[] = [];
-  let sawBlock = false;
-  let current: {
-    path: string;
-    kind: 'modify' | 'new' | 'deleted';
-    hunks: Array<{ start: number; end: number }>;
-    countChanging: boolean;
-  } | null = null;
-  let pendingKind: 'new' | 'deleted' | null = null;
-  let renameFrom: string | null = null;
-  let renameTo: string | null = null;
-  let binary = false;
-
-  const finish = (): void => {
-    if (current !== null) {
-      if (current.kind === 'new') results.push({ path: current.path, operation: 'create-overwrite' });
-      else if (current.kind === 'deleted') results.push({ path: current.path, operation: 'delete' });
-      else if (binary) results.push({ path: current.path, operation: 'modify' });
-      else if (current.hunks.length === 0) {
-        // A header-only block with no hunks: nothing statically known.
-      } else if (current.countChanging) results.push({ path: current.path, operation: 'modify' });
-      else {
-        const start = Math.min(...current.hunks.map((h) => h.start));
-        const end = Math.max(...current.hunks.map((h) => h.end));
-        results.push({ path: current.path, operation: 'modify', lineStart: start, lineEnd: end });
-      }
-      current = null;
-    }
-    if (renameFrom !== null) results.push({ path: renameFrom, operation: 'delete' });
-    if (renameTo !== null) results.push({ path: renameTo, operation: 'rename-copy' });
-    renameFrom = null;
-    renameTo = null;
-    binary = false;
-  };
-
-  for (const line of patchText.split('\n')) {
-    if (line.startsWith('--- ')) {
-      sawBlock = true;
-      if (current !== null) finish();
-      current = {
-        path: stripGitPrefix(line.slice(4)),
-        kind: pendingKind ?? 'modify',
-        hunks: [],
-        countChanging: false
-      };
-      pendingKind = null;
-      continue;
-    }
-    if (line.startsWith('+++ ')) {
-      sawBlock = true;
-      const path = stripGitPrefix(line.slice(4));
-      if (current === null) current = { path, kind: pendingKind ?? 'modify', hunks: [], countChanging: false };
-      else if (path === '/dev/null') current.kind = 'deleted';
-      else current.path = path;
-      pendingKind = null;
-      continue;
-    }
-    if (line.startsWith('new file mode')) {
-      pendingKind = 'new';
-      continue;
-    }
-    if (line.startsWith('deleted file mode')) {
-      pendingKind = 'deleted';
-      continue;
-    }
-    if (line.startsWith('rename from ')) {
-      sawBlock = true;
-      if (current !== null) finish();
-      renameFrom = stripGitPrefix(line.slice('rename from '.length));
-      continue;
-    }
-    if (line.startsWith('rename to ')) {
-      sawBlock = true;
-      renameTo = stripGitPrefix(line.slice('rename to '.length));
-      continue;
-    }
-    if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
-      sawBlock = true;
-      binary = true;
-      continue;
-    }
-    const hunk = line.match(HUNK_HEADER);
-    if (hunk) {
-      sawBlock = true;
-      const preStart = Number.parseInt(hunk[1], 10);
-      const preCount = hunk[2] === undefined ? 1 : Number.parseInt(hunk[2], 10);
-      const postCount = hunk[4] === undefined ? 1 : Number.parseInt(hunk[4], 10);
-      if (current === null) return null; // a hunk without a file header → malformed
-      if (preCount !== postCount) current.countChanging = true;
-      if (preCount > 0) current.hunks.push({ start: preStart, end: preStart + preCount - 1 });
+function matchSedInplace(
+  argv: string[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === 'sed') {
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join, results);
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === 'sed') {
+      pushUnresolved(results, 'sed-inplace', wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
   }
-  finish();
-  return sawBlock ? results : null;
+}
+
+/**
+ * The sed -i operand grammar: `-i` bare, `-iSUFFIX` attached, or a separate
+ * suffix word resolved by the standard disambiguation — the word after `-i`
+ * is the suffix only when it does not start with `-` and a script plus at
+ * least one file operand still follow it (the BSD separate-suffix reading;
+ * GNU's attached-only reading otherwise). An attached or disambiguated suffix
+ * is a backup: a non-empty suffix emits an additional create-overwrite touch
+ * on `<file><SUFFIX>`; an empty suffix (which the quote-aware tokenizer drops
+ * entirely — `sed -i '' f` and `sed -i f` tokenize alike) creates no backup.
+ *
+ * The script is the script argument plus every `-e` argument, split on `;`.
+ * Segments that are all numeric-addressed substitutions yield the exact range
+ * [min start, min(max end, EOF)] (per file, EOF from the post-edit count);
+ * segments that are all substitutions — any numeric/unaddressed mix — are
+ * still line-count-preserving, so the whole file is addressed ([1, EOF]);
+ * any count-changing, pattern-addressed, step, or `$`-addressed segment is a
+ * whole-file modify with no range. An absent script (no script argument, no
+ * `-e`) is unresolved.
+ */
+function matchSedInplaceArgs(
+  args: string[],
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  let suffix: string | null = null;
+  let sawInplace = false;
+  let i = 0;
+  const eScripts: string[] = [];
+  // The script/file split of the positionals is derived after the scan: the
+  // first positional is the script argument only when no `-e` script exists —
+  // with `-e` present every positional is a file (GNU sed reads the script
+  // from `-e` then, not from the first positional).
+  const positionals: string[] = [];
+  // Files pushed outside the positional path: `sed -i f` (script absent).
+  const files: string[] = [];
+  let afterDashDash = false;
+
+  while (i < args.length) {
+    const a = args[i];
+    if (afterDashDash) {
+      positionals.push(a);
+      i += 1;
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      i += 1;
+      continue;
+    }
+    if (a === '-n') {
+      i += 1;
+      continue;
+    }
+    if (a === '-e') {
+      const v = args[i + 1];
+      if (v === undefined) {
+        pushUnresolved(results, 'sed-inplace', a, 'the -e flag is left valueless');
+        return;
+      }
+      eScripts.push(v);
+      i += 2;
+      continue;
+    }
+    if (a === '-i') {
+      sawInplace = true;
+      const w = args[i + 1];
+      if (w === undefined) {
+        // `sed -i` with nothing after: no suffix, no script — the absent-script
+        // check below resolves this unresolved.
+        i += 1;
+        continue;
+      }
+      if (w.startsWith('-')) {
+        // The word after -i is an option, never a suffix.
+        i += 1;
+        continue;
+      }
+      const restAfter = args.slice(i + 2);
+      if (restAfter.length >= 2) {
+        // The BSD separate-suffix reading: w is the suffix, and a script plus
+        // at least one file operand still follow.
+        suffix = w;
+        i += 2;
+        continue;
+      }
+      if (restAfter.length === 0) {
+        // `sed -i f`: w is the last token — no script can follow, so w is the
+        // file operand with the script absent (GNU instead reads w as a script
+        // and errors; either way the edit does not happen).
+        files.push(w);
+        i += 2;
+        continue;
+      }
+      // One token after w: w is the script argument (or a file, when `-e`
+      // scripts are present) and the token is a file — consume both, so
+      // neither falls through to the positional path again.
+      positionals.push(w, restAfter[0]);
+      i += 3;
+      continue;
+    }
+    if (a.startsWith('-i') && a.length > 2) {
+      sawInplace = true;
+      suffix = a.slice(2);
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('-')) {
+      // Unknown option — never a script or file.
+      i += 1;
+      continue;
+    }
+    positionals.push(a);
+    i += 1;
+  }
+
+  if (!sawInplace) return; // not an in-place edit at all
+  const scriptArg = eScripts.length === 0 ? (positionals[0] ?? null) : null;
+  if (scriptArg !== null) files.push(...positionals.slice(1));
+  else files.push(...positionals);
+  const segments: string[] = [];
+  if (scriptArg !== null) segments.push(...scriptArg.split(';'));
+  for (const s of eScripts) segments.push(...s.split(';'));
+  if (segments.length === 0) {
+    pushUnresolved(results, 'sed-inplace', files[0] ?? 'sed', 'no script (absent or empty script argument)');
+    return;
+  }
+
+  // Segment classification: exact when every segment is a numeric-addressed
+  // substitution; explicit whole-file [1, EOF] when every segment is still a
+  // substitution (any unaddressed/numeric mix); no range otherwise.
+  let allNumeric = true;
+  let allSubstitution = true;
+  let minStart = Infinity;
+  let maxEnd = 0;
+  for (const segment of segments) {
+    const m = segment.match(NUMERIC_SUBSTITUTION);
+    if (m === null) {
+      allNumeric = false;
+      if (!UNRESTRICTED_SUBSTITUTION.test(segment)) allSubstitution = false;
+      continue;
+    }
+    const s = Number.parseInt(m[1], 10);
+    const e = m[2] === undefined ? s : Number.parseInt(m[2], 10);
+    minStart = Math.min(minStart, s);
+    maxEnd = Math.max(maxEnd, e);
+  }
+
+  for (const f of files) {
+    if (looksUnresolvable(f)) {
+      pushUnresolved(results, 'sed-inplace', f, 'path contains an unexpanded shell variable or glob');
+      continue;
+    }
+    const absolutePath = resolvePath(dir, f);
+    if (allNumeric || allSubstitution) {
+      const total = countFileLines(absolutePath);
+      if (total === null) {
+        pushUnresolved(
+          results,
+          'sed-inplace',
+          absolutePath,
+          'could not determine end-of-file line count (file unreadable, empty, or missing)'
+        );
+        continue;
+      }
+      const start = allNumeric ? minStart : 1;
+      const end = allNumeric ? Math.min(maxEnd, total) : total;
+      if (start > end) continue; // the addressed range lies beyond EOF — nothing is modified
+      results.push({
+        status: 'resolved',
+        idiom: 'sed-inplace',
+        span: { operation: 'modify', lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join }
+      });
+    } else {
+      results.push({
+        status: 'resolved',
+        idiom: 'sed-inplace',
+        span: { operation: 'modify', absolutePath, simpleCommandIndex, join }
+      });
+    }
+    if (suffix !== null && suffix !== '') {
+      results.push({
+        status: 'resolved',
+        idiom: 'sed-inplace',
+        span: { operation: 'create-overwrite', absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join }
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The patch / git apply grammar (plan §5.7). Patch text sources, in order of
+// recognition: a literal patch-file operand (`git apply <file>` — a `patch`
+// operand is a target file, not a source, and is ignored), the stdin `<`
+// source (`patch -pN < file`, `git apply - < file`), or a heredoc body
+// (classifyPatchHeredoc, §5.2). Read-only modes (`--check`/`--stat`/
+// `--numstat`/`--summary`, `patch --dry-run`) and index-only `--cached` touch
+// nothing; `--directory` fails closed (it rewrites patch paths). A command
+// with no statically known source (piped or terminal stdin, a variable patch
+// path) is unresolved. Targets and ranges come from the new
+// range-preserving unified-diff parser (unified-diff.ts).
+// ---------------------------------------------------------------------------
+
+/** The shared `patch`/`git apply` option surface (plan §5.7): strip level, read-only and index-only modes, `--directory`, and operands. */
+interface PatchApplyParts {
+  strip: PathStrip;
+  readOnly: boolean;
+  cachedOnly: boolean;
+  directory: boolean;
+  operands: string[];
+}
+
+function patchApplyParts(args: string[], isGitApply: boolean): PatchApplyParts {
+  let strip: PathStrip = isGitApply ? 1 : 'auto';
+  let readOnly = false;
+  let cachedOnly = false;
+  let directory = false;
+  const operands: string[] = [];
+  let afterDashDash = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (isGitApply) {
+      if (a === '--check' || a === '--stat' || a === '--numstat' || a === '--summary') {
+        readOnly = true;
+        continue;
+      }
+      if (a === '--cached') {
+        cachedOnly = true;
+        continue;
+      }
+      if (a === '--index' || a === '-R' || a === '--reverse' || a === '--unsafe-paths' || a === '--reject') continue;
+      if (a === '--directory') {
+        directory = true;
+        continue;
+      }
+      if (a.startsWith('--directory=')) {
+        directory = true;
+        continue;
+      }
+      if (a === '-p') {
+        const v = args[i + 1];
+        if (v !== undefined && /^\d+$/.test(v)) {
+          strip = Number.parseInt(v, 10);
+          i += 1;
+        }
+        continue;
+      }
+      if (/^-p\d+$/.test(a)) {
+        strip = Number.parseInt(a.slice(2), 10);
+        continue;
+      }
+      if (a.startsWith('-')) continue;
+      operands.push(a);
+      continue;
+    }
+    // patch
+    if (a === '--dry-run') {
+      readOnly = true;
+      continue;
+    }
+    if (a === '-N' || a === '--forward') continue;
+    if (a === '-p') {
+      const v = args[i + 1];
+      if (v !== undefined && /^\d+$/.test(v)) {
+        strip = Number.parseInt(v, 10);
+        i += 1;
+      }
+      continue;
+    }
+    if (/^-p\d+$/.test(a)) {
+      strip = Number.parseInt(a.slice(2), 10);
+      continue;
+    }
+    if (a.startsWith('-')) continue;
+    operands.push(a);
+  }
+  return { strip, readOnly, cachedOnly, directory, operands };
+}
+
+/** The patch text at `absolutePath`, or null when it can't be read. */
+function readPatchFile(absolutePath: string): string | null {
+  try {
+    return readFileSync(absolutePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Emit the write touches for a `patch`/`git apply` command with a statically
+ * known patch-text source. `targetDir` is where the patch's target paths
+ * resolve (the git `-C` directory for `git apply`, the current directory
+ * otherwise); `shellDir` is where the shell's stdin `<` redirect target
+ * resolves — a redirect is shell-side, so `git -C` never affects it.
+ */
+function emitPatchTargets(
+  args: string[],
+  isGitApply: boolean,
+  host: string,
+  targetDir: string,
+  shellDir: string,
+  redirects: RedirectInfo[],
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const parts = patchApplyParts(args, isGitApply);
+  if (parts.readOnly || parts.cachedOnly) return; // read-only / index-only — no touches
+  if (parts.directory) {
+    pushUnresolved(results, 'patch-write', '--directory', '--directory rewrites patch paths');
+    return;
+  }
+
+  let patchText: string | null = null;
+  let source: string | null = null;
+  // 1. A literal patch-file operand (git apply only; a patch operand is a
+  //    target file, not a source — ignored).
+  if (isGitApply) {
+    const operand = parts.operands.find((o) => o !== '-');
+    if (operand !== undefined) {
+      if (looksUnresolvable(operand)) {
+        pushUnresolved(results, 'patch-write', operand, 'path contains an unexpanded shell variable or glob');
+        return;
+      }
+      source = resolvePath(targetDir, operand);
+      patchText = readPatchFile(source);
+      if (patchText === null) {
+        pushUnresolved(results, 'patch-write', source, 'patch file unreadable or missing');
+        return;
+      }
+    }
+  }
+  // 2. The stdin `<` source (patch and git apply).
+  if (patchText === null) {
+    const stdin = redirects.find((r) => r.op === '<');
+    if (stdin !== undefined && stdin.target !== null) {
+      if (looksUnresolvable(stdin.target)) {
+        pushUnresolved(results, 'patch-write', stdin.target, 'path contains an unexpanded shell variable or glob');
+        return;
+      }
+      source = resolvePath(shellDir, stdin.target);
+      patchText = readPatchFile(source);
+      if (patchText === null) {
+        pushUnresolved(results, 'patch-write', source, 'patch text unreadable or missing');
+        return;
+      }
+    }
+  }
+  // 3. No statically known source: stdin is dynamic (terminal, pipe, variable).
+  if (patchText === null) {
+    pushUnresolved(results, 'patch-write', host, 'no statically known patch text source (stdin is dynamic)');
+    return;
+  }
+
+  const targets = parseUnifiedDiffRange(patchText, parts.strip);
+  if (targets === null) {
+    pushUnresolved(results, 'patch-write', source ?? host, 'malformed or empty patch text');
+    return;
+  }
+  for (const t of targets) {
+    const absolutePath = resolveTarget(results, 'patch-write', t.path, targetDir);
+    if (absolutePath === null) continue;
+    results.push({
+      status: 'resolved',
+      idiom: 'patch-write',
+      span: {
+        operation: t.operation,
+        absolutePath,
+        simpleCommandIndex,
+        join,
+        ...(t.lineStart !== undefined ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {})
+      }
+    });
+  }
+}
+
+/**
+ * The patch/git apply grammar in the main walk: `patch` reads patch text from
+ * stdin or a `<` redirect; `git apply` additionally accepts a patch-file
+ * operand and resolves targets against its `-C` directory. A wrapped
+ * `patch`/`apply` is unresolved — the wrapper obscures the argv.
+ */
+function matchPatchApply(
+  argv: string[],
+  redirects: RedirectInfo[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === 'patch') {
+    emitPatchTargets(
+      rest.slice(1),
+      false,
+      'patch',
+      dirForResolution,
+      dirForResolution,
+      redirects,
+      simpleCommandIndex,
+      join,
+      results
+    );
+    return;
+  }
+  if (command === 'git') {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || sub.subcommand !== 'apply') return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(results, 'patch-write', 'apply', 'git -C target contains an unresolved shell variable');
+      return;
+    }
+    emitPatchTargets(
+      rest.slice(1).slice(sub.subIdx + 1),
+      true,
+      'apply',
+      sub.cDir ?? dirForResolution,
+      dirForResolution,
+      redirects,
+      simpleCommandIndex,
+      join,
+      results
+    );
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === 'patch' || wrapped === 'apply') {
+      pushUnresolved(results, 'patch-write', wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
+    }
+  }
+}
+
+/**
+ * The heredoc patch-text grammar (plan §5.7): a `patch`/`git apply` heredoc
+ * body is patch text. The opener's own options still apply — `--dry-run`/
+ * `--check`/`--stat`/`--numstat`/`--summary`/`--cached` make the body
+ * read-only (no touches), `--directory` fails closed, and `-pN` sets the
+ * header strip level.
+ */
+function classifyPatchHeredoc(
+  argv: string[],
+  body: string,
+  currentDir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  let isGitApply = false;
+  let args: string[];
+  let dir = currentDir;
+  if (command === 'patch') {
+    args = rest.slice(1);
+  } else if (command === 'git') {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || sub.subcommand !== 'apply') return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(results, 'patch-write', 'apply', 'git -C target contains an unresolved shell variable');
+      return;
+    }
+    isGitApply = true;
+    args = rest.slice(1).slice(sub.subIdx + 1);
+    dir = sub.cDir ?? currentDir;
+  } else {
+    return;
+  }
+  const parts = patchApplyParts(args, isGitApply);
+  if (parts.readOnly || parts.cachedOnly) return;
+  if (parts.directory) {
+    pushUnresolved(results, 'patch-write', '--directory', '--directory rewrites patch paths');
+    return;
+  }
+  const targets = parseUnifiedDiffRange(body, parts.strip);
+  if (targets === null) {
+    pushUnresolved(results, 'patch-write', 'heredoc', 'malformed or empty patch text');
+    return;
+  }
+  for (const t of targets) {
+    const absolutePath = resolveTarget(results, 'patch-write', t.path, dir);
+    if (absolutePath === null) continue;
+    results.push({
+      status: 'resolved',
+      idiom: 'patch-write',
+      span: {
+        operation: t.operation,
+        absolutePath,
+        simpleCommandIndex,
+        join,
+        ...(t.lineStart !== undefined ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {})
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1829,6 +2231,8 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
     matchCopyMoveFamily(argv, currentDir, i, joinOf(simple), results);
     matchRmTruncate(argv, currentDir, i, joinOf(simple), results);
+    matchSedInplace(argv, currentDir, i, joinOf(simple), results);
+    matchPatchApply(argv, redirects, currentDir, i, joinOf(simple), results);
     pipeEchoContent = literalContent(argv) ?? null;
   }
 

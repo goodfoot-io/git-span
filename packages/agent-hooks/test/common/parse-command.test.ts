@@ -922,132 +922,132 @@ describe('truncate (§5.5)', () => {
 });
 
 describe('sed -i in-place edits (§5.6)', () => {
-  it.skip('a numeric address range scopes the modify to the exact range', () => {
+  it('a numeric address range scopes the modify to the exact range', () => {
     expect(parseCommand(`sed -i '2,4s/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a single numeric address is a single-line range', () => {
+  it('a single numeric address is a single-line range', () => {
     expect(parseCommand(`sed -i '3s/x/y/' ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 3, lineEnd: 3, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a pattern address is a whole-file modify', () => {
+  it('a pattern address is a whole-file modify', () => {
     expect(parseCommand(`sed -i '/x/s/y/z/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a count-changing script (2d) is a whole-file modify', () => {
+  it('a count-changing script (2d) is a whole-file modify', () => {
     expect(parseCommand(`sed -i '2d' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('an attached suffix: modify + backup create-overwrite on f.bak', () => {
+  it('an attached suffix: modify + backup create-overwrite on f.bak', () => {
     expect(parseCommand(`sed -i.bak 's/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'twenty.txt.bak'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a separate suffix: modify + backup create-overwrite on f.bak', () => {
+  it('a separate suffix: modify + backup create-overwrite on f.bak', () => {
     expect(parseCommand(`sed -i .bak 's/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'twenty.txt.bak'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('an empty separate suffix is an in-place modify with no backup', () => {
+  it('an empty separate suffix is an in-place modify with no backup', () => {
     expect(parseCommand(`sed -i '' 's/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('script-first: the script is never a suffix, f is the file', () => {
+  it('script-first: the script is never a suffix, f is the file', () => {
     expect(parseCommand(`sed -i 's/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('-e script: modify on f', () => {
+  it('-e script: modify on f', () => {
     expect(parseCommand(`sed -i -e 's/x/y/' ${join(dir, 'twenty.txt')}`)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('sed -i without a script is unresolved', () => {
+  it('sed -i without a script is unresolved', () => {
     expectUnresolved(`sed -i '' ${join(dir, 'twenty.txt')}`, 'sed-inplace');
   });
 });
 
 describe('patch and git apply (§5.7)', () => {
-  it.skip('git apply <file>: hunks resolve targets, ranges from the hunk headers', () => {
+  it('git apply <file>: hunks resolve targets, ranges from the hunk headers', () => {
     expect(parseCommand(`git apply ${join(dir, 'p.diff')}`, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git apply - < file: the stdin < source is read as patch text', () => {
+  it('git apply - < file: the stdin < source is read as patch text', () => {
     expect(parseCommand(`git apply - < ${join(dir, 'p.diff')}`, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('patch -p1 < file', () => {
+  it('patch -p1 < file', () => {
     expect(parseCommand(`patch -p1 < ${join(dir, 'p.diff')}`, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a heredoc patch body resolves the hunk targets', () => {
+  it('a heredoc patch body resolves the hunk targets', () => {
     const cmd = `patch -p1 <<'EOF'\n${PATCH_NOTES_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('read-only modes: --check / --stat / --numstat / --summary touch nothing', () => {
+  it('read-only modes: --check / --stat / --numstat / --summary touch nothing', () => {
     expect(parseCommand(`git apply --check ${join(dir, 'p.diff')}`, dir)).toEqual([]);
     expect(parseCommand(`git apply --stat ${join(dir, 'p.diff')}`, dir)).toEqual([]);
     expect(parseCommand(`git apply --numstat ${join(dir, 'p.diff')}`, dir)).toEqual([]);
     expect(parseCommand(`git apply --summary ${join(dir, 'p.diff')}`, dir)).toEqual([]);
   });
 
-  it.skip('patch --dry-run is read-only', () => {
+  it('patch --dry-run is read-only', () => {
     expect(parseCommand(`patch --dry-run < ${join(dir, 'p.diff')}`, dir)).toEqual([]);
   });
 
-  it.skip('git apply --cached: the index write touches nothing', () => {
+  it('git apply --cached: the index write touches nothing', () => {
     expect(parseCommand(`git apply --cached ${join(dir, 'p.diff')}`, dir)).toEqual([]);
   });
 
-  it.skip('git apply --index applies to the tree and the index → modify', () => {
+  it('git apply --index applies to the tree and the index → modify', () => {
     expect(parseCommand(`git apply --index ${join(dir, 'p.diff')}`, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('patch -N: patch options are compatible', () => {
+  it('patch -N: patch options are compatible', () => {
     expect(parseCommand(`patch -N < ${join(dir, 'p.diff')}`, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('--directory=sub fails closed (unresolved)', () => {
+  it('--directory=sub fails closed (unresolved)', () => {
     expectUnresolved(`git apply --directory=sub ${join(dir, 'p.diff')}`, 'patch-write');
   });
 
-  it.skip('a binary patch resolves a whole-file modify', () => {
+  it('a binary patch resolves a whole-file modify', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_BINARY_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'img.bin'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a rename patch resolves source delete + dest rename-copy', () => {
+  it('a rename patch resolves source delete + dest rename-copy', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_RENAME_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'old.txt'), simpleCommandIndex: 0 },
@@ -1055,43 +1055,43 @@ describe('patch and git apply (§5.7)', () => {
     ]);
   });
 
-  it.skip('a deleted-file header resolves delete', () => {
+  it('a deleted-file header resolves delete', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_DELETED_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'gone.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a +++ /dev/null-only deletion (diff -u style) resolves delete', () => {
+  it('a +++ /dev/null-only deletion (diff -u style) resolves delete', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_DEVNULL_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'gone.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a new-file header resolves create-overwrite', () => {
+  it('a new-file header resolves create-overwrite', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_NEW_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'new.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a count-changing hunk resolves a whole-file modify', () => {
+  it('a count-changing hunk resolves a whole-file modify', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_GROWING_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('patch f: the operand is a target, not a patch — no source, no touch', () => {
+  it('patch f: the operand is a target, not a patch — no source, no touch', () => {
     expect(parseCommand(`patch ${join(dir, 'notes.txt')}`)).toEqual([]);
   });
 
-  it.skip('a variable patch path is unresolved', () => {
+  it('a variable patch path is unresolved', () => {
     expectUnresolved('git apply "$PATCH_FILE"', 'patch-write');
   });
 
-  it.skip('a piped patch (git diff | git apply) is unresolved', () => {
+  it('a piped patch (git diff | git apply) is unresolved', () => {
     expect(parseCommand('git diff | git apply')).toEqual([]);
     expectUnresolved('git diff | git apply', 'patch-write');
   });
