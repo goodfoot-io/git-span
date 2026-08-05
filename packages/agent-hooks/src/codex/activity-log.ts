@@ -21,6 +21,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
+import type { AnchorSpec } from '../common/agent-hooks-common.js';
 import { abspathAgainst, resolveRepoRoot } from '../common/agent-hooks-common.js';
 import { type ActivityPathStamp, appendActivityEntry } from '../common/snapshot-store.js';
 import { resolveTouchScope } from '../common/span-surface.js';
@@ -40,9 +41,9 @@ function preHashOf(absPath: string): string | null {
 }
 
 /** The patch anchors' scopes + pre-hashes; null when nothing is scoped to the repo. */
-function patchStamps(command: string, cwd: string): ActivityPathStamp[] | null {
+function patchStamps(anchors: AnchorSpec[], cwd: string): ActivityPathStamp[] | null {
   const stamps: ActivityPathStamp[] = [];
-  for (const anchor of parseApplyPatch(command, noRangeRecovery)) {
+  for (const anchor of anchors) {
     const absPath = abspathAgainst(cwd, anchor.path);
     const scope = resolveTouchScope(cwd, absPath);
     if (!scope) continue;
@@ -60,7 +61,20 @@ export default preToolUseHook(
       if (command === null) return undefined;
       const repoRoot = resolveRepoRoot(input.cwd ?? '');
       if (!repoRoot) return undefined;
-      const stamps = patchStamps(command, input.cwd ?? '');
+      // Degenerate apply_patch: a write-classified patch whose content parses
+      // to zero anchors has no path an activity entry could bound — the entry
+      // cannot resolve any concurrency boundary, so none is created, but the
+      // write is then invisible to the interleaving rules and an overlapping
+      // Bash call may double-attribute it. The warn is the sound minimal fix:
+      // no entry at all beats an entry that implies coverage it cannot have.
+      const anchors = parseApplyPatch(command, noRangeRecovery);
+      if (anchors.length === 0) {
+        ctx.logger.warn(
+          `git-span activity-log: apply_patch ${input.tool_use_id} parsed to zero anchors; no activity entry created — an overlapping Bash call may double-attribute this write`
+        );
+        return undefined;
+      }
+      const stamps = patchStamps(anchors, input.cwd ?? '');
       if (stamps === null) return undefined;
       // Intent logged before the patch's write lands: startedAt plus every
       // target path's preHash together, so the PostToolUse stamp keys

@@ -38,29 +38,45 @@ function preHashOf(absPath: string): string | null {
   }
 }
 
-/** The edit paths' scopes + pre-hashes; null when nothing is scoped to the repo. */
-function editStamps(toolName: string, toolInput: unknown, cwd: string): ActivityPathStamp[] | null {
-  const stamps: ActivityPathStamp[] = [];
+/**
+ * The edit paths' scopes + pre-hashes; null when nothing is scoped to the
+ * repo. `zeroAnchorPatch` flags a write-classified apply_patch whose content
+ * parsed to zero anchors — the handler warns because an entry with no paths
+ * cannot bound any concurrency boundary, so the patch's write becomes
+ * invisible to the interleaving rules and an overlapping Bash call may
+ * double-attribute it. No entry at all beats an entry that implies coverage
+ * it cannot have.
+ */
+function editStamps(
+  toolName: string,
+  toolInput: unknown,
+  cwd: string
+): { stamps: ActivityPathStamp[] | null; zeroAnchorPatch: boolean } {
   if (toolName === 'apply_patch') {
     // Defensive matcher: apply_patch is Codex's edit tool, but the matcher
     // guards against the shape arriving here — parse its anchors like the
     // Codex adapter does, sharing the pure apply-patch parser.
     const raw = (toolInput as Record<string, unknown> | null)?.command;
-    if (typeof raw !== 'string') return null;
-    for (const anchor of parseApplyPatch(raw, noRangeRecovery)) {
+    if (typeof raw !== 'string') return { stamps: null, zeroAnchorPatch: false };
+    const anchors = parseApplyPatch(raw, noRangeRecovery);
+    if (anchors.length === 0) return { stamps: null, zeroAnchorPatch: true };
+    const stamps: ActivityPathStamp[] = [];
+    for (const anchor of anchors) {
       const absPath = abspathAgainst(cwd, anchor.path);
       const scope = resolveTouchScope(cwd, absPath);
       if (!scope) continue;
       stamps.push({ path: scope.repoRelPath, preHash: preHashOf(absPath), postHash: null });
     }
-  } else {
-    const absPath = derivePath(toolInput as Record<string, unknown>, cwd);
-    if (absPath === null) return null;
-    const scope = resolveTouchScope(cwd, absPath);
-    if (!scope) return null;
-    stamps.push({ path: scope.repoRelPath, preHash: preHashOf(absPath), postHash: null });
+    return { stamps: stamps.length > 0 ? stamps : null, zeroAnchorPatch: false };
   }
-  return stamps.length > 0 ? stamps : null;
+  const absPath = derivePath(toolInput as Record<string, unknown>, cwd);
+  if (absPath === null) return { stamps: null, zeroAnchorPatch: false };
+  const scope = resolveTouchScope(cwd, absPath);
+  if (!scope) return { stamps: null, zeroAnchorPatch: false };
+  return {
+    stamps: [{ path: scope.repoRelPath, preHash: preHashOf(absPath), postHash: null }],
+    zeroAnchorPatch: false
+  };
 }
 
 export default preToolUseHook(
@@ -70,7 +86,13 @@ export default preToolUseHook(
       if (!input.session_id || !input.tool_use_id) return null;
       const repoRoot = resolveRepoRoot(input.cwd ?? '');
       if (!repoRoot) return null;
-      const stamps = editStamps(input.tool_name, input.tool_input, input.cwd ?? '');
+      const { stamps, zeroAnchorPatch } = editStamps(input.tool_name, input.tool_input, input.cwd ?? '');
+      if (zeroAnchorPatch) {
+        ctx.logger.warn(
+          `git-span activity-log: apply_patch ${input.tool_use_id} parsed to zero anchors; no activity entry created — an overlapping Bash call may double-attribute this write`
+        );
+        return null;
+      }
       if (stamps === null) return null;
       // Intent logged before the edit's write lands: startedAt plus every
       // target path's preHash together, so the PostToolUse stamp keys

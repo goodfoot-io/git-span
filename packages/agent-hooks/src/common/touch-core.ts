@@ -953,9 +953,10 @@ async function computeSurface(
  * re-probing; direct callers get a per-call cache seeded with the touched
  * path when the target is `'absent'`.
  * - **Snapshot path** (`scopes` given): the multi-path variant driven by the
- *   snapshot comparison instead of static parsing — one heal pass across all
- *   changed paths, one repo-wide drift, per-scope surface computation against
- *   the shared session memo, blocks joined under one header/footer.
+ *   snapshot comparison instead of static parsing — one scoped `--fix` per
+ *   changed path (one heal pass across all of them), one repo-wide drift,
+ *   per-scope surface computation against the shared session memo, blocks
+ *   joined under one header/footer.
  *
  * Fails open: any executor rejection or internal error yields
  * `additionalContext: null` (no signal, editing never blocked) rather than
@@ -978,12 +979,16 @@ export async function runTouchHook(
   }
   if (scopes !== undefined && scopes.length > 0) {
     // The snapshot path's multi-path touch: one heal pass across all changed
-    // paths, one repo-wide drift, per-scope surface computation against the
-    // shared session memo, blocks joined under a single header/footer.
+    // paths — a scoped `--fix` per path (N subprocess pairs, bounded by
+    // budgets.maxTouchedFiles = 100; acceptable for a Bash write), one
+    // repo-wide drift, per-scope surface computation against the shared
+    // session memo, blocks joined under a single header/footer.
     let treeModified = false;
     try {
-      const fix = await executors.fix(scopes[0]!.filePath, input.cwd);
-      treeModified = fix.modified;
+      for (const scope of scopes) {
+        const fix = await executors.fix(scope.filePath, input.cwd);
+        treeModified = treeModified || fix.modified;
+      }
       const driftRows = await executors.drift([], input.cwd);
       const sections: string[] = [];
       let header: string | null = null;

@@ -114,6 +114,9 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-interleave-walktail-unequal',
   'sess-lifecycle',
   'sess-lifecycle-absent',
+  'sess-lifecycle-budget',
+  'sess-lifecycle-costfloor',
+  'sess-lifecycle-defer',
   'sess-lifecycle-delete',
   'sess-lifecycle-dirty',
   'sess-lifecycle-dirty2',
@@ -124,6 +127,8 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-lifecycle-failure-none',
   'sess-lifecycle-failure-norecord',
   'sess-lifecycle-failure-plain',
+  'sess-lifecycle-norecord',
+  'sess-lifecycle-orphan',
   'sess-lifecycle-formatter',
   'sess-lifecycle-generated',
   'sess-lifecycle-pre-readonly',
@@ -144,6 +149,8 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
  */
 export const CODEX_SESSION_IDS: readonly string[] = [
   'sess-codex',
+  'sess-codex-applypatch',
+  'sess-codex-defer',
   'sess-codex-delete',
   'sess-codex-dirty',
   'sess-codex-duplicate',
@@ -153,6 +160,8 @@ export const CODEX_SESSION_IDS: readonly string[] = [
   'sess-codex-interleave-neverflag',
   'sess-codex-interleave-unfinished',
   'sess-codex-later',
+  'sess-codex-norecord',
+  'sess-codex-orphan',
   'sess-codex-pre-envelope',
   'sess-codex-pre-readonly',
   'sess-codex-pre-record',
@@ -290,15 +299,19 @@ export interface FakeExecutorHandle {
   executors: TouchExecutors;
   calls: { fix: number; list: number; drift: number; why: number };
   driftArgs: string[][];
+  /** The per-call filePath arguments to fix (one fix per attributed scope). */
+  fixPaths: string[];
 }
 
 /** An executor fake with call counters, mirroring the existing test fakes. */
 export function makeExecutors(opts: FakeExecutorOpts = {}): FakeExecutorHandle {
   const calls = { fix: 0, list: 0, drift: 0, why: 0 };
   const driftArgs: string[][] = [];
+  const fixPaths: string[] = [];
   const executors: TouchExecutors = {
-    fix: async (): Promise<TouchFixResult> => {
+    fix: async (filePath: string): Promise<TouchFixResult> => {
       calls.fix += 1;
+      fixPaths.push(filePath);
       return { modified: opts.fixModified ?? false };
     },
     list: async (filePath: string): Promise<PorcelainRow[]> => {
@@ -315,5 +328,5 @@ export function makeExecutors(opts: FakeExecutorOpts = {}): FakeExecutorHandle {
       return WHY;
     }
   };
-  return { executors, calls, driftArgs };
+  return { executors, calls, driftArgs, fixPaths };
 }

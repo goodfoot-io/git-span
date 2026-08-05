@@ -121,12 +121,15 @@ function makeExecutors(
   executors: TouchExecutors;
   calls: { fix: number; list: number; drift: number; why: number };
   driftArgs: string[][];
+  fixPaths: string[];
 } {
   const calls = { fix: 0, list: 0, drift: 0, why: 0 };
   const driftArgs: string[][] = [];
+  const fixPaths: string[] = [];
   const executors: TouchExecutors = {
-    fix: async (): Promise<TouchFixResult> => {
+    fix: async (filePath: string): Promise<TouchFixResult> => {
       calls.fix += 1;
+      fixPaths.push(filePath);
       return { modified: opts.fixModified ?? false };
     },
     list: async (filePath: string): Promise<PorcelainRow[]> => {
@@ -143,7 +146,7 @@ function makeExecutors(
       return WHY;
     }
   };
-  return { executors, calls, driftArgs };
+  return { executors, calls, driftArgs, fixPaths };
 }
 
 // ---------------------------------------------------------------------------
@@ -277,9 +280,9 @@ describe('touch-core observed write ranges', () => {
   });
 
   describe('runTouchHook scope list — the multi-path snapshot touch', () => {
-    it('batches changed paths: one heal pass, one repo-wide drift, per-scope list, blocks joined', async () => {
+    it('batches changed paths: one heal pass across all of them, one repo-wide drift, per-scope list, blocks joined', async () => {
       const memo = createMemoryMemoStore();
-      const { executors, calls, driftArgs } = makeExecutors({
+      const { executors, calls, driftArgs, fixPaths } = makeExecutors({
         rows: (filePath) =>
           filePath.endsWith('/src/a.ts')
             ? [porcelainRow({ name: SPAN_A, path: 'src/a.ts', start: 1, end: 5 })]
@@ -297,9 +300,13 @@ describe('touch-core observed write ranges', () => {
 
       const output = await runTouchHook(writeInput(), executors, memo, scopes);
 
-      // One heal pass across the whole batch (N files cost ~2 subprocesses plus
-      // one list per surfaced span, never 4N) and one repo-wide drift.
-      expect(calls.fix).toBe(1);
+      // One scoped fix call per changed path (each is a `git span drift <file>
+      // --fix` subprocess pair, so N paths cost ~2N subprocesses — bounded by
+      // budgets.maxTouchedFiles = 100, acceptable for a Bash write) and one
+      // repo-wide drift. Every changed file's positional debt is healed; a
+      // fix that ignored all but the first scope would leave the rest deferred.
+      expect(calls.fix).toBe(2);
+      expect(fixPaths).toEqual([`${REPO_ROOT}/src/a.ts`, `${REPO_ROOT}/src/b.ts`]);
       expect(calls.drift).toBe(1);
       expect(driftArgs).toEqual([[]]); // repo-wide — no per-scope path args
       expect(calls.list).toBe(2); // per-scope surface computation

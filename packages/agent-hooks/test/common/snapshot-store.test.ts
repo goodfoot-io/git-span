@@ -451,32 +451,6 @@ describe('versioning — fail closed with a diagnostic', () => {
 });
 
 describe('index entries (listRepoRecords)', () => {
-  it('covered lists the record files paths — the pre-walk coverage the ambiguity check reads', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
-    const r = newRepo();
-    const sid = newSession();
-    store.write(
-      record({
-        sessionId: sid,
-        repoRoot: r.root,
-        files: { 'src/a.ts': fileEntry(), 'src/b.ts': fileEntry() }
-      })
-    );
-    const entries = store.listRepoRecords(r.root);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.sessionId).toBe(sid);
-    expect(entries[0]?.toolUseId).toBe(TOOL_USE_ID);
-    expect([...(entries[0]?.covered ?? [])].sort()).toEqual(['src/a.ts', 'src/b.ts']);
-  });
-
-  it("a record with a coverage gap lists 'all' — its coverage is unknowable", () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
-    const r = newRepo();
-    const sid = newSession();
-    store.write(record({ sessionId: sid, repoRoot: r.root, gaps: ['pre-walk truncated'] }));
-    expect(store.listRepoRecords(r.root)[0]?.covered).toBe('all');
-  });
-
   it('consumption is reflected in the index entry (consumed + consumedAt), tier preserved', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -618,6 +592,39 @@ describe('TTL sweep', () => {
     // for the explicit sweep to prune.
     const sweepNow = Date.now() + CLOCK_MARGIN_MS;
     const old = (sweepNow - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 1000) / 1000;
+    const staleFile = findActivityFile(r.root, stale, 'toolu_01stale');
+    expect(staleFile).not.toBeNull();
+    if (staleFile !== null) {
+      utimesSync(staleFile, old, old);
+    }
+    const result = store.sweep(sweepNow);
+    expect(result.activityEntries).toBe(1);
+    expect(findActivityFile(r.root, stale, 'toolu_01stale')).toBeNull();
+    expect(findActivityFile(r.root, fresh, 'toolu_01fresh')).not.toBeNull();
+  });
+
+  it('a finished activity entry older than recordTtlMs is pruned; a fresh finished entry survives', () => {
+    // A crashed session's end hook never runs, so its finished entries would
+    // leak forever — the record TTL is their backstop, and the prune can never
+    // remove an entry the consult would still read (the consult window is
+    // bounded by the far shorter unfinishedEntryTtlMs).
+    const { logger } = captureLogger();
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    // A record anchors the repo so the sweep can discover its activity log.
+    const anchor = newSession();
+    store.write(record({ sessionId: anchor, repoRoot: r.root, createdAt: Date.now() }));
+    const stale = newSession();
+    const fresh = newSession();
+    appendActivityEntry(r.root, activityEntry(stale, 'toolu_01stale'));
+    finishActivityEntry(r.root, stale, 'toolu_01stale', [{ path: 'src/a.ts', postHash: sha256Hex('b\n') }]);
+    appendActivityEntry(r.root, activityEntry(fresh, 'toolu_01fresh'));
+    finishActivityEntry(r.root, fresh, 'toolu_01fresh', [{ path: 'src/a.ts', postHash: sha256Hex('b\n') }]);
+    // The stale mtime is old relative to the injected sweep clock below but
+    // within TTL relative to real now, so concurrent real-now sweeps leave it
+    // for the explicit sweep to prune.
+    const sweepNow = Date.now() + CLOCK_MARGIN_MS;
+    const old = (sweepNow - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - 1000) / 1000;
     const staleFile = findActivityFile(r.root, stale, 'toolu_01stale');
     expect(staleFile).not.toBeNull();
     if (staleFile !== null) {
@@ -829,8 +836,44 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
     // any concurrent reader.
     const dir = join(sessionDir(sid), 'snapshots');
     expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(true);
-    // The trash's mtime is the rename instant (real now); once it ages past
-    // the trash TTL a later sweep unlinks it.
+    // The store stamps the trash's mtime to the rename instant at trashFile
+    // time (a bare rename would keep this file's backdated write mtime); once
+    // that stamped mtime ages past the trash TTL a later sweep unlinks it.
+    const later = Date.now() + TRASH_TTL_MS + SWEEP_READ_MARGIN_MS + 1000;
+    store.sweep(later);
+    expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(false);
+  });
+
+  it('the trash TTL is measured from the rename instant, not the record write: a 24h-old record is trashed with a fresh mtime, then emptied by a later sweep', () => {
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    // A record whose createdAt AND file mtime are 24h old — the sweep's
+    // primary population. Without the rename-instant mtime stamp, the same
+    // pass that trashes it would read the trash as 24h-expired and unlink it
+    // ~0 ms after the rename, in the same sweep, defeating the keepalive.
+    store.write(
+      record({ sessionId: sid, repoRoot: r.root, createdAt: Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs })
+    );
+    const file = findRecordFile(sid, TOOL_USE_ID);
+    expect(file).not.toBeNull();
+    if (file === null) return;
+    const old = (Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs) / 1000;
+    utimesSync(file, old, old);
+    const now = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
+    expect(store.sweep(now).records).toBe(1);
+    expect(store.find(sid, TOOL_USE_ID)).toBeNull();
+    const dir = join(sessionDir(sid), 'snapshots');
+    const trashName = readdirSync(dir).find((n) => n.startsWith('.') && n.includes('.trash-'));
+    expect(trashName).toBeDefined();
+    // The trash's mtime is the rename instant (real now, within a second of
+    // this assertion), so the 60s keepalive applies to the sweep's own
+    // removals — the trash survives this pass and the inode stays alive for
+    // any reader that opened the record before the rename.
+    if (trashName !== undefined) {
+      expect(Math.abs(Date.now() - statSync(join(dir, trashName)).mtimeMs)).toBeLessThan(1000);
+    }
+    // Once the stamped mtime ages past the trash TTL, a later sweep empties it.
     const later = Date.now() + TRASH_TTL_MS + SWEEP_READ_MARGIN_MS + 1000;
     store.sweep(later);
     expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(false);

@@ -1,7 +1,7 @@
 /**
- * Skipped acceptance checks for the Codex harness snapshot lifecycle (card
- * main-213, Phase 2): the same lifecycle as the Claude harness (card's plan),
- * through the committed codex adapter modules (src/codex/snapshot.ts,
+ * Acceptance checks for the Codex harness snapshot lifecycle (card
+ * main-213): the same lifecycle as the Claude harness (card's plan), through
+ * the committed codex adapter modules (src/codex/snapshot.ts,
  * src/codex/post-tool-use.ts, src/codex/stop.ts, src/codex/subagent-stop.ts)
  * — plus the platform asymmetry:
  *
@@ -14,21 +14,21 @@
  * - Stop removes the whole session's snapshot state; SubagentStop removes
  *   only the records carrying the subagent's agent_id.
  *
- * Phase 1 shipped the contract surfaces as `Not Implemented` stubs — none of
- * these tests run today (`describe.skip`); Phase 3 implements the stubs and
- * unskips them one by one. Fixtures that need the real `git span` CLI are
- * additionally gated with `it.skipIf(!hasGitSpan)`, mirroring
- * porcelain-contract.test.ts. The ambiguity-table rows and the activity-log
- * interleaving outcomes are shared infrastructure covered in the Claude
- * lifecycle file; this file mirrors the essential concurrency cases and the
- * never-flag / bounded-double / unfinished ordering outcomes.
+ * These fixtures run against the implemented adapters (Phase 3). Fixtures
+ * that need the real `git span` CLI are gated with
+ * `it.skipIf(!hasGitSpan)`, mirroring porcelain-contract.test.ts. The
+ * ambiguity-table rows and the activity-log interleaving outcomes are shared
+ * infrastructure covered in the Claude lifecycle file; this file mirrors the
+ * essential concurrency cases and the never-flag / bounded-double /
+ * unfinished ordering outcomes.
  */
 
 import { execFileSync } from 'node:child_process';
-import { renameSync, rmSync, utimesSync } from 'node:fs';
+import { existsSync, renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import activityLogHook from '../../src/codex/activity-log.js';
 import { createHandler as createPostToolUseHandler, SNAPSHOT_POST_MATCHER } from '../../src/codex/post-tool-use.js';
 import {
   createHandler as createSnapshotPreHook,
@@ -37,7 +37,7 @@ import {
 } from '../../src/codex/snapshot.js';
 import stopHook from '../../src/codex/stop.js';
 import subagentStopHook from '../../src/codex/subagent-stop.js';
-import { sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
+import { queueRoot, sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
 import { applyAmbiguityRules, DEFAULT_SNAPSHOT_BUDGETS, type SnapshotRecord } from '../../src/common/snapshot-core.js';
 import {
   type ActivityEntry,
@@ -198,10 +198,10 @@ async function withRepo<T>(fn: (repo: TestRepo) => Promise<T>): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Skipped acceptance checks
+// The lifecycle acceptance checks
 // ---------------------------------------------------------------------------
 
-describe('codex harness snapshot lifecycle (Phase 2)', () => {
+describe('codex harness snapshot lifecycle', () => {
   // The store persists tombstones for `recordTtlMs` after consumption; a
   // previously consumed (session, tool_use_id) would fail every call closed
   // on a re-run. The fixture's ids are fixed and unique per test, so purge
@@ -1029,6 +1029,137 @@ describe('codex harness snapshot lifecycle (Phase 2)', () => {
         if (record === null || record === 'tombstoned') throw new Error('record missing');
         expect(record.files['src/big.txt']).toBeUndefined();
         expect(record.gaps).toContain('oversize file excluded: src/big.txt');
+      });
+    });
+  });
+
+  describe('H. wave-A hardening mirrors — deferral notes, record-less diagnostics, degenerate apply_patch', () => {
+    it('an unconsumed orphan sibling defers attribution with a transcript-visible note; removing the orphan lets the next capture attribute', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-defer';
+        const tuId = 'tu-codex-defer-1';
+        const orphanSession = 'sess-codex-orphan';
+        const orphanTu = 'tu-codex-orphan-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const store = createSnapshotStore(logger);
+        // Both calls captured src/app.ts at the same pre state; the orphan's
+        // PostToolUse never arrives (Codex has no failure event either), so
+        // its write window has not provably ended and mine must fail closed.
+        store.write(
+          makeRecord({
+            sessionId: orphanSession,
+            toolUseId: orphanTu,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW - 1000,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        store.write(
+          makeRecord({
+            sessionId,
+            toolUseId: tuId,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
+        const { executors, calls } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger } as never);
+        const block = toResult(raw);
+        // The deferral is transcript-visible — the model loop sees WHY the
+        // path produced no attribution, never a silent drop.
+        expect(block).toContain('attribution deferred: src/app.ts');
+        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
+        expect(block).toContain(`(session ${orphanSession})`);
+        expect(block).not.toContain('## billing/checkout-request-flow');
+        expect(calls.fix).toBe(0);
+        // The orphan is removed (session teardown); a fresh capture of the
+        // same call now attributes cleanly.
+        purgeSessions([orphanSession, sessionId]);
+        flushPurgedSessions();
+        store.write(
+          makeRecord({
+            sessionId,
+            toolUseId: tuId,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        const raw2 = await handler(input as never, { logger } as never);
+        const block2 = toResult(raw2);
+        expect(block2).toContain('## billing/checkout-request-flow');
+        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+      });
+    });
+
+    it('a decided-but-recordless PostToolUse surfaces a transcript-visible note alongside the static fallback', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-norecord';
+        const tuId = 'tu-codex-norecord-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const { executors } = makeExecutors();
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger } as never);
+        const block = toResult(raw);
+        expect(block).toContain('snapshot record unavailable');
+        expect(block).toContain('were not snapshot-attributed');
+      });
+    });
+
+    it('a write-classified apply_patch that parses to zero anchors warns naming the call and creates no activity entry', async () => {
+      // Degenerate apply_patch: the content is not a patch at all, so no path
+      // could be bounded by an activity entry. The entry is not created — an
+      // entry with no paths would imply coverage it cannot have — and the
+      // blind spot is named on the logger, never silent.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-applypatch';
+        const tuId = 'tu-applypatch-zero';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const { logger, notes } = noteCapturingLogger();
+        const input = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_name: 'apply_patch',
+          tool_input: { command: 'not an apply patch at all' }
+        });
+        const result = await activityLogHook(input as never, { logger } as never);
+        expect(result).toBeUndefined();
+        expect(notes.some((n) => n.includes('apply_patch') && n.includes(tuId) && n.includes('zero anchors'))).toBe(
+          true
+        );
+        const activityFile = join(
+          queueRoot(repo.root),
+          'activity-log',
+          `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(tuId)}.json`
+        );
+        expect(existsSync(activityFile)).toBe(false);
       });
     });
   });

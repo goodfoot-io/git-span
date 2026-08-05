@@ -831,12 +831,17 @@ export interface ObservedWriteRanges {
 
 // ---------------------------------------------------------------------------
 // Diff internals — a faithful port of libxdiff (git v2.47.3 xdiffi.c /
-// xprepare.c), restricted to the exact-overlap regime: for the fixture's
-// inputs the mxcost floor (256) and the >256-cost heuristics are unreachable,
-// and the XDF_INDENT_HEURISTIC scoring branch of xdl_change_compact is
-// verified to have no effect on the fixture's pairs, so both are omitted.
-// Verified byte-exact against `git diff --no-index -U0` on the fixture's
-// 21 explicit cases plus 300 seeded generated pairs.
+// xprepare.c), restricted to the exact-overlap regime: the mxcost floor (256)
+// and the >256-cost heuristics are out of scope, and the XDF_INDENT_HEURISTIC
+// scoring branch of xdl_change_compact is verified to have no effect on the
+// fixture's pairs, so both are omitted. The mxcost floor is NOT unreachable —
+// a heavily fragmented write (many small edits, e.g. a large reorder) can
+// exceed 256 edits in one box and splitBox throws
+// {@link SnapshotDiffCostFloorError}; compareSnapshot catches it and falls
+// back to whole-file attribution, and the harness branch's belt-and-braces
+// consume is the backstop for anything else. Verified byte-exact against
+// `git diff --no-index -U0` on the fixture's 21 explicit cases plus 300
+// seeded generated pairs.
 // ---------------------------------------------------------------------------
 
 const XDL_MAX_EQLIMIT = 1024;
@@ -972,9 +977,16 @@ function cleanupRecords(lines1: string[], lines2: string[]) {
  * [off1, lim1) x [off2, lim2) in effective-sequence coordinates. Both paths
  * index the same diagonal space (no mirrored k-axes); in-domain reads are
  * always fresh because each round writes its extension sentinels first.
- * Throws if the exact path exceeds 256 edits — the mxcost/heuristic fallbacks
- * xdiff would use are out of scope (unreachable for the fixture's inputs).
+ * Throws {@link SnapshotDiffCostFloorError} if the exact path exceeds 256
+ * edits — the mxcost/heuristic fallbacks xdiff would use are out of scope,
+ * and compareSnapshot degrades such a box to whole-file attribution.
  */
+export class SnapshotDiffCostFloorError extends Error {
+  constructor(ec: number) {
+    super(`splitBox exceeded the exact-regime cost floor (ec=${ec})`);
+    this.name = 'SnapshotDiffCostFloorError';
+  }
+}
 function splitBox(
   seq1: string[],
   seq2: string[],
@@ -1041,7 +1053,7 @@ function splitBox(
     }
 
     if (ec >= 256) {
-      throw new Error(`splitBox exceeded the exact-regime cost floor (ec=${ec})`);
+      throw new SnapshotDiffCostFloorError(ec);
     }
   }
 }
@@ -1350,8 +1362,19 @@ export interface CompareSnapshotInput {
   stat: StatFile;
   /** Injected byte read: null when a path is absent/unreadable. */
   read: ReadFile;
-  /** The current clock instant, for the post-side wall budget. */
-  now: number;
+  /**
+   * The instant the post-side work began (the handler's `now` captured at
+   * post-side entry, before the post walk). The wall budget measures elapsed
+   * time since THIS instant — the comparison's own cost — never since the
+   * record's `createdAt`, which includes the whole command runtime and would
+   * zero out attribution for any opaque write command longer than the budget.
+   */
+  wallStart: number;
+  /**
+   * Injectable wall clock for the post-side wall budget, defaulting to
+   * Date.now. Injectable so fixtures can pin the budget deterministically.
+   */
+  wallClock?: () => number;
 }
 
 /** The comparison's outcome: per-path attributions plus coverage diagnostics. */
@@ -1387,7 +1410,9 @@ export interface CompareSnapshotResult {
  * changed coarse files degrade to whole-file scope with a `coarse-scope`
  * diagnostic. The post-side wall budget is checked per scope before any
  * diff/touch work; on exhaustion the comparison stops adding scopes and
- * records a diagnostic. The changed-path count is capped by
+ * records a diagnostic. The budget's clock starts at `wallStart` — the
+ * post-side work's own start — so a command's runtime never exhausts it;
+ * only the comparison's own cost can. The changed-path count is capped by
  * `budgets.maxTouchedFiles`; beyond it, coverage-gap diagnostics and no
  * touches.
  */
@@ -1395,9 +1420,9 @@ export interface CompareSnapshotResult {
  * Whether a record's gaps include a path-coverage gap — some paths were never
  * recorded (file-count/total-bytes/wall-budget cuts, truncated walks). The
  * line-hash budget cut is NOT one: a coarse entry still records the file's
- * byte hash, which is all the pre-evidence a create candidate needs. Shared
- * with the store, which keys the index's `covered` column off the same
- * predicate family.
+ * byte hash, which is all the pre-evidence a create candidate needs. The
+ * same gap-family feed that predicate here; the store's index mirrored the
+ * family as its `covered` column until that mirror was removed as dead.
  */
 const PATH_COVERAGE_GAP = /file-count budget|total-bytes budget|wall budget|truncat/i;
 
@@ -1406,7 +1431,8 @@ export function recordHasPathCoverageGap(record: { gaps: string[] }): boolean {
 }
 
 export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotResult {
-  const { record, post, postGaps, budgets, stat, read, now } = input;
+  const { record, post, postGaps, budgets, stat, read, wallStart } = input;
+  const clock = input.wallClock ?? Date.now;
   const attributions = new Map<string, PathAttribution>();
   const gaps: string[] = [];
   const prePaths = Object.keys(record.files);
@@ -1416,7 +1442,10 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
   const renameTargets = new Set(renamePairs.map((p) => p.to));
   for (const p of renamePairs) attributions.set(p.to, { kind: 'rename', from: p.from });
   const wallMs = budgets.postSideWallSeconds * 1000;
-  const wallExhausted = (): boolean => now - record.createdAt > wallMs;
+  // The budget measures the comparison's own elapsed time since the post-side
+  // work began — never the record's age (createdAt is the pre-walk start, so
+  // record-age elapsed includes the whole command runtime).
+  const wallExhausted = (): boolean => clock() - wallStart > wallMs;
   let changedCount = 0;
 
   for (let i = 0; i < prePaths.length; i += 1) {
@@ -1471,7 +1500,22 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
       gaps.push(`coarse-scope: ${path} has no line hashes, whole-file scope`);
       continue;
     }
-    const hunks = diffLineHashes(preEntry.lines ?? [], contentLines(content));
+    let hunks: DiffHunk[];
+    try {
+      hunks = diffLineHashes(preEntry.lines ?? [], contentLines(content));
+    } catch (err) {
+      if (err instanceof SnapshotDiffCostFloorError) {
+        // The exact-regime diff has a 256-edit cost floor per box; a heavily
+        // fragmented write can exceed it. Fall back to whole-file scope with a
+        // diagnostic — mirroring the zero-hunk collision handling — so the
+        // attribution never shrinks silently and the compare never aborts
+        // with an unconsumed record.
+        attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
+        gaps.push(`diff cost floor exceeded: ${path}, whole-file scope`);
+        continue;
+      }
+      throw err;
+    }
     if (hunks.length === 0) {
       // Byte hash changed but every line hash matched — a line-hash collision.
       // Never let it silently shrink attribution: whole-file scope + diagnostic.
@@ -1534,9 +1578,13 @@ export interface SiblingSnapshot {
  * The table's verdict for one changed path against one sibling, top-down;
  * the first matching row decides (see the plan's ambiguity table). Any
  * ambiguous sibling makes the path ambiguous — the path is dropped whole,
- * before any diff or range work.
+ * before any diff or range work. An ambiguous verdict names the deciding
+ * sibling (toolUseId + sessionId) so the harness can surface a
+ * transcript-visible deferral note the model loop can act on.
  */
-export type AmbiguityVerdict = { ambiguous: false } | { ambiguous: true; reason: string; siblingToolUseId: string };
+export type AmbiguityVerdict =
+  | { ambiguous: false }
+  | { ambiguous: true; reason: string; siblingToolUseId: string; siblingSessionId: string };
 
 /**
  * The concurrency ambiguity check for one changed path P (my pre ≠ now):
@@ -1548,7 +1596,10 @@ export type AmbiguityVerdict = { ambiguous: false } | { ambiguous: true; reason:
  * - unconsumed (before or after mine) → ambiguous — its write window has not
  *   provably ended, regardless of pre order or pre equality.
  * - consumed, created after mine: post(P) ≠ pre(P) → ambiguous; post(P) =
- *   pre(P) → not ambiguous.
+ *   pre(P) → not ambiguous. A missing post entry (post(P) = null) reads as
+ *   "consumed without changing P" ONLY when the sibling carries no coverage
+ *   gap — under a gap its post walk may have dropped P (the post-walk
+ *   coverage-gap guard), so post:null means unknowable, not clean.
  * - consumed, created before mine: pre(P) = post(P) → not ambiguous (it never
  *   changed P); post(P) = my pre(P) → not ambiguous (its write provably
  *   landed before my baseline); pre(P) ≠ post(P) and consumedAt ≤ my
@@ -1578,19 +1629,35 @@ export function applyAmbiguityRules(mine: SnapshotRecord, siblings: SiblingSnaps
       return {
         ambiguous: true,
         reason: `unconsumed sibling ${sib.toolUseId} may still write ${path}`,
-        siblingToolUseId: sib.toolUseId
+        siblingToolUseId: sib.toolUseId,
+        siblingSessionId: sib.sessionId
       };
     }
     const preHash = sib.pre?.hash ?? null;
     const postHash = sib.post?.hash ?? null;
     if (sib.createdAt > mine.createdAt) {
-      // Consumed after mine: post(P) = pre(P) (or no post entry — consumed
-      // without changing P) proves the windows are disjoint.
-      if (postHash === null || postHash === preHash) continue;
+      // Consumed after mine: post(P) = pre(P) proves the windows are
+      // disjoint. A missing post entry proves "consumed without changing P"
+      // only without a coverage gap — under a gap the sibling's post walk may
+      // have dropped P (the post-walk coverage-gap guard), so post:null means
+      // its end state is unknowable, never clean.
+      if (postHash === null) {
+        if (sib.coverageGap) {
+          return {
+            ambiguous: true,
+            reason: `sibling ${sib.toolUseId} consumed with a coverage gap and no post state for ${path} — its end state is unknowable`,
+            siblingToolUseId: sib.toolUseId,
+            siblingSessionId: sib.sessionId
+          };
+        }
+        continue;
+      }
+      if (postHash === preHash) continue;
       return {
         ambiguous: true,
         reason: `sibling ${sib.toolUseId} changed ${path} in a window overlapping mine`,
-        siblingToolUseId: sib.toolUseId
+        siblingToolUseId: sib.toolUseId,
+        siblingSessionId: sib.sessionId
       };
     }
     // Consumed before mine, top-down:
@@ -1600,7 +1667,8 @@ export function applyAmbiguityRules(mine: SnapshotRecord, siblings: SiblingSnaps
     return {
       ambiguous: true,
       reason: `sibling ${sib.toolUseId} changed ${path} in a window extending past my baseline`,
-      siblingToolUseId: sib.toolUseId
+      siblingToolUseId: sib.toolUseId,
+      siblingSessionId: sib.sessionId
     };
   }
   return { ambiguous: false };

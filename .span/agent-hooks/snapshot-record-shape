@@ -1,12 +1,10 @@
 packages/agent-hooks/src/common/snapshot-core.ts#L88-L101 rk64:14bd5f4f3f3a233f
 packages/agent-hooks/src/common/snapshot-core.ts#L122-L181 rk64:ab33c55979bfbf93
-packages/agent-hooks/src/common/snapshot-store.ts#L66-L75 rk64:19367420390ba99a
+packages/agent-hooks/src/common/snapshot-store.ts#L70-L79 rk64:19367420390ba99a
 packages/agent-hooks/test/claude/snapshot-lifecycle-helpers.ts rk64:17ef8fc01810fa69
-packages/agent-hooks/test/common/snapshot-core.test.ts#L463-L526 rk64:c2e41b31230abf70
-packages/agent-hooks/test/common/snapshot-core.test.ts#L464-L527 rk64:c2e41b31230abf70
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1513-L1568 rk64:e11b695b473a0394
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1514-L1569 rk64:e11b695b473a0394
+packages/agent-hooks/test/common/snapshot-core.test.ts#L465-L528 rk64:c2e41b31230abf70
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1631-L1686 rk64:e11b695b473a0394
 packages/agent-hooks/test/common/snapshot-store.test.ts#L248-L419 rk64:45d9f2d7a9b492a8
-packages/agent-hooks/test/common/snapshot-store.test.ts#L494-L522 rk64:3ca5a89c9f1cd9ec
+packages/agent-hooks/test/common/snapshot-store.test.ts#L468-L496 rk64:3ca5a89c9f1cd9ec
 
 snapshot-core.ts is the canonical home of the snapshot record shape and budget defaults per the plan, and snapshot-store.ts re-exports SnapshotFile/SnapshotRecord, persists records under the version field failing closed on mismatch, and fixes the budgets at store creation — a shape, version, or budget-default change must cross both. The Phase 2 acceptance checks (hashFile, round-trip, permissions, version fail-closed, storage-cap refusal, budget defaults) and the shared lifecycle fixtures pin that contract as the skipped evidence gate a Phase 3 implementation must satisfy.

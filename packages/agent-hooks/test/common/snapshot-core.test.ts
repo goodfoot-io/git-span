@@ -146,7 +146,8 @@ function compareInput(overrides: Partial<CompareSnapshotInput> = {}): CompareSna
     budgets: DEFAULT_SNAPSHOT_BUDGETS,
     stat: () => null,
     read: () => null,
-    now: 1500,
+    wallStart: 1500,
+    wallClock: () => 1500,
     ...overrides
   };
 }
@@ -1070,6 +1071,53 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     expect(verdict).toEqual({ ambiguous: false });
   });
 
+  it('consumed sibling created after mine with a coverage gap and no post state — ambiguous (post:null under a gap is unknowable, never clean)', () => {
+    // The consumed-after clean shortcut reads post(P) = pre(P) as "disjoint";
+    // with post:null it reads "consumed without changing P" — but only when
+    // the sibling's post walk covered the path. Under a coverage gap the
+    // sibling's walk may have dropped P entirely (the post-walk coverage-gap
+    // guard), so post:null means its end state is unknowable and the path
+    // must fail closed — the sibling may have written P last.
+    const verdict = applyAmbiguityRules(
+      mine,
+      [
+        sibling({
+          createdAt: 2000,
+          consumed: true,
+          consumedAt: 2100,
+          coverageGap: true,
+          pre: fileEntry({ hash: 'sib-pre' }),
+          post: null
+        })
+      ],
+      'src/a.ts'
+    );
+    expect(verdict.ambiguous).toBe(true);
+    if (verdict.ambiguous) {
+      expect(verdict.siblingToolUseId).toBe('sibling-1');
+      expect(verdict.siblingSessionId).toBe('sibling-session');
+      expect(verdict.reason).toMatch(/unknowable/i);
+    }
+  });
+
+  it('consumed sibling created after mine without a gap and no post state — not ambiguous (post:null proves it never changed P)', () => {
+    const verdict = applyAmbiguityRules(
+      mine,
+      [
+        sibling({
+          createdAt: 2000,
+          consumed: true,
+          consumedAt: 2100,
+          coverageGap: false,
+          pre: fileEntry({ hash: 'sib-pre' }),
+          post: null
+        })
+      ],
+      'src/a.ts'
+    );
+    expect(verdict).toEqual({ ambiguous: false });
+  });
+
   it('consumed sibling created before mine with pre(P) = post(P) — not ambiguous (it never changed P)', () => {
     const verdict = applyAmbiguityRules(
       mine,
@@ -1426,7 +1474,50 @@ describe('compareSnapshot', () => {
     expect(result.gaps.some((g) => /collision|zero-hunk/i.test(g))).toBe(true);
   });
 
-  it('post-side wall-budget exhaustion stops adding scopes and records the attributed/unattributed split', () => {
+  it('a diff cost-floor overflow (heavy fragmentation) falls back to whole-file scope with a diagnostic', () => {
+    // The exact-regime diff has a 256-edit cost floor per box; a heavily
+    // fragmented write — every one of 300 lines displaced, e.g. a full
+    // reorder by a generator — exceeds it. The compare must not abort: it
+    // falls back to whole-file scope with a diagnostic, mirroring the
+    // zero-hunk collision handling, so attribution never silently shrinks
+    // and the record never goes unconsumed.
+    const preContent = Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join('');
+    const postContent = Array.from({ length: 300 }, (_, i) => `line ${299 - i}\n`).join('');
+    const result = compareSnapshot(
+      compareInput({
+        record: record({
+          files: {
+            'src/gen.ts': fileEntry({
+              hash: 'pre-hash',
+              size: preContent.length,
+              mtimeNs: TRUSTED_MTIME,
+              lines: hashLines(preContent)
+            })
+          }
+        }),
+        post: new Map([
+          [
+            'src/gen.ts',
+            fileEntry({ hash: 'post-hash', size: postContent.length, mtimeNs: TRUSTED_MTIME + 5n, capturedAt: 1500 })
+          ]
+        ]),
+        read: () => Buffer.from(postContent)
+      })
+    );
+    expect(result.attributions.get('src/gen.ts')).toEqual({
+      kind: 'changed',
+      observed: { changed: [], wholeFile: true }
+    });
+    expect(result.gaps.some((g) => /diff cost floor exceeded/i.test(g))).toBe(true);
+  });
+
+  it('the post-side wall budget is anchored at the wall start, not the record age: a long-ago record with a fresh wall start still attributes', () => {
+    // The budget measures the comparison's own elapsed time since the post-side
+    // work began (wallStart) — never the record's age. createdAt is the
+    // pre-walk start, so record-age elapsed would include the whole command
+    // runtime: a long-running command must not starve its own attribution. A
+    // record created 100 s ago with a just-started post-side pass attributes
+    // every path (frozen clock: zero elapsed).
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, postSideWallSeconds: 1 };
     const result = compareSnapshot(
       compareInput({
@@ -1438,10 +1529,36 @@ describe('compareSnapshot', () => {
             'src/c.ts': fileEntry({ hash: 'h3', mtimeNs: TRUSTED_MTIME })
           }
         }),
-        // Wall budget exhausted well before the first scope: nothing may be
-        // attributed, and the diagnostic must name exactly which paths were
-        // and were not attributed — never a bare fail-open.
-        now: 1000 + 100_000,
+        wallStart: 1000 + 100_000,
+        wallClock: () => 1000 + 100_000,
+        budgets,
+        stat: () => null
+      })
+    );
+    expect(result.attributions.size).toBe(3);
+    expect(result.gaps.some((g) => /budget/i.test(g))).toBe(false);
+  });
+
+  it('a wall start far in the past exhausts the budget even for a brand-new record, and the diagnostic names the unattributed split', () => {
+    // The converse pin: the record's age is irrelevant — only the elapsed
+    // compare time counts. A record created at the very instant the post-side
+    // work began still exhausts when the wall clock has since advanced 2 s
+    // past a 1 s budget: nothing may be attributed, and the diagnostic must
+    // name exactly which paths were and were not attributed — never a bare
+    // fail-open.
+    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, postSideWallSeconds: 1 };
+    const result = compareSnapshot(
+      compareInput({
+        record: record({
+          createdAt: 1000 + 100_000,
+          files: {
+            'src/a.ts': fileEntry({ hash: 'h1', mtimeNs: TRUSTED_MTIME }),
+            'src/b.ts': fileEntry({ hash: 'h2', mtimeNs: TRUSTED_MTIME }),
+            'src/c.ts': fileEntry({ hash: 'h3', mtimeNs: TRUSTED_MTIME })
+          }
+        }),
+        wallStart: 1000 + 100_000,
+        wallClock: () => 1000 + 100_000 + 2_000,
         budgets,
         stat: () => null
       })
@@ -1468,7 +1585,7 @@ describe('compareSnapshot', () => {
         post,
         budgets,
         read: () => Buffer.from('x\n'),
-        now: 1500
+        wallStart: 1500
       })
     );
     expect(result.attributions.size).toBe(1);

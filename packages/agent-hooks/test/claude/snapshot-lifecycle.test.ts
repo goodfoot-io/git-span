@@ -1,15 +1,14 @@
 /**
- * Skipped acceptance checks for the Claude harness snapshot lifecycle (card
- * main-213, Phase 2): the full PreToolUse → PostToolUse / PostToolUseFailure →
+ * Acceptance checks for the Claude harness snapshot lifecycle (card
+ * main-213): the full PreToolUse → PostToolUse / PostToolUseFailure →
  * SessionEnd flow through the committed adapter modules (src/claude/snapshot.ts,
  * src/claude/post-tool-use.ts, src/claude/post-tool-use-failure.ts,
  * src/claude/session-end.ts) and the shared store/activity-log contract.
  *
- * Phase 1 shipped the contract surfaces as `Not Implemented` stubs — none of
- * these tests run today (`describe.skip`); Phase 3 implements the stubs and
- * unskips them one by one. Fixtures that need the real `git span` CLI are
- * additionally gated with `it.skipIf(!hasGitSpan)` so they fail visibly when
- * the CLI is missing, mirroring porcelain-contract.test.ts.
+ * These fixtures run against the implemented adapters (Phase 3). Fixtures
+ * that need the real `git span` CLI are gated with
+ * `it.skipIf(!hasGitSpan)` so they fail visibly when the CLI is missing,
+ * mirroring porcelain-contract.test.ts.
  *
  * The lifecycle contract, per the plan:
  *
@@ -251,10 +250,10 @@ async function withRepo<T>(fn: (repo: TestRepo) => Promise<T>): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Skipped acceptance checks
+// The lifecycle acceptance checks
 // ---------------------------------------------------------------------------
 
-describe('claude harness snapshot lifecycle (Phase 2)', () => {
+describe('claude harness snapshot lifecycle', () => {
   // The store persists tombstones for `recordTtlMs` after consumption; a
   // previously consumed (session, tool_use_id) would fail every call closed
   // on a re-run. The fixture's ids are fixed and unique per test, so purge
@@ -443,7 +442,7 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
         // `make generate` rewrote src/a.ts and created src/b.ts.
         writeFile(repo.root, 'src/a.ts', '// a generated\n');
         writeFile(repo.root, 'src/b.ts', '// b generated\n');
-        const { executors, calls, driftArgs } = makeExecutors({
+        const { executors, calls, driftArgs, fixPaths } = makeExecutors({
           rows: (filePath) =>
             filePath.endsWith('/src/a.ts')
               ? [porcelainRow({ name: SPAN_A, path: 'src/a.ts', start: 1, end: 5 })]
@@ -456,11 +455,15 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
-        // One heal pass across the batch, one repo-wide drift, per-path list —
-        // never a per-file fix/drift per changed path.
+        // One scoped heal pass per attributed path (each fix scoped to its
+        // own filePath), one repo-wide drift, per-path list — never a single
+        // unscoped fix for the whole batch.
         expect(block).toContain('## billing/checkout-request-flow');
         expect(block).toContain('## billing/payment-created-flow');
-        expect(calls.fix).toBe(1);
+        expect(calls.fix).toBe(2);
+        expect(fixPaths).toHaveLength(2);
+        expect(fixPaths).toContain(`${repo.root}/src/a.ts`);
+        expect(fixPaths).toContain(`${repo.root}/src/b.ts`);
         expect(calls.drift).toBe(1);
         expect(driftArgs).toEqual([[]]);
         expect(calls.list).toBe(2);
@@ -1588,7 +1591,8 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
         budgets: DEFAULT_SNAPSHOT_BUDGETS,
         stat,
         read,
-        now: BASE_NOW
+        wallStart: BASE_NOW,
+        wallClock: () => BASE_NOW
       });
       expect(result.attributions.get('src/app.ts')?.kind).toBe('changed');
       expect(reads).toBe(1);
@@ -1617,10 +1621,195 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
         budgets: DEFAULT_SNAPSHOT_BUDGETS,
         stat,
         read,
-        now: BASE_NOW
+        wallStart: BASE_NOW,
+        wallClock: () => BASE_NOW
       });
       expect(result.attributions.has('src/app.ts')).toBe(false);
       expect(reads).toBe(0);
+    });
+  });
+
+  describe('H. wave-A hardening — cost floor, deferral notes, visible diagnostics', () => {
+    it('a heavily fragmented generation exceeds the diff cost floor: whole-file fallback, record still consumed', async () => {
+      // A full 300-line reorder displaces every line — the exact-regime diff
+      // exceeds its 256-edit cost floor. The compare must not abort with an
+      // unconsumed record: whole-file scope plus a diagnostic, exactly like a
+      // zero-hunk collision, and the window closes normally.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-costfloor';
+        const tuId = 'tu-costfloor-1';
+        const preContent = fileLines(300);
+        const postContent = `${preContent.trimEnd().split('\n').reverse().join('\n')}\n`;
+        writeFile(repo.root, 'src/gen.ts', preContent);
+        gitAddCommit(repo.root, 'add gen.ts');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        const input = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'python3 scripts/gen.py' }
+        });
+        await pre(input as never, { logger });
+        writeFile(repo.root, 'src/gen.ts', postContent);
+        const { executors, calls } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/gen.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/gen.ts', start: 1, end: 300 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/gen.ts', start: 1, end: 300 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const raw = await handler(input as never, { logger });
+        const block = toResult(raw);
+        // Whole-file scope surfaces the span across the whole reordered file.
+        expect(block).toContain('## billing/checkout-request-flow');
+        expect(calls.fix).toBe(1);
+        // The belt-and-braces contract: the record is consumed with a gap,
+        // never left live to poison a later sibling's ambiguity read.
+        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+      });
+    });
+
+    it('an unconsumed orphan sibling defers attribution with a transcript-visible note; removing the orphan lets the next capture attribute', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-defer';
+        const tuId = 'tu-defer-1';
+        const orphanSession = 'sess-lifecycle-orphan';
+        const orphanTu = 'tu-orphan-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const store = createSnapshotStore(logger);
+        // Both calls captured src/app.ts at the same pre state; the orphan's
+        // PostToolUse never arrives, so its write window has not provably
+        // ended and mine must fail closed (the existing live-record contract).
+        store.write(
+          makeRecord({
+            sessionId: orphanSession,
+            toolUseId: orphanTu,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW - 1000,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        store.write(
+          makeRecord({
+            sessionId,
+            toolUseId: tuId,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
+        const { executors, calls } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger });
+        const block = toResult(raw);
+        // The deferral is transcript-visible: the model loop sees WHY the
+        // path produced no attribution — a logger-only warn is invisible to it.
+        expect(block).toContain('attribution deferred: src/app.ts');
+        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
+        expect(block).toContain(`(session ${orphanSession})`);
+        expect(block).not.toContain('## billing/checkout-request-flow');
+        expect(calls.fix).toBe(0);
+        // The orphan is removed (session teardown); a fresh capture of the
+        // same call now attributes cleanly.
+        purgeSessions([orphanSession, sessionId]);
+        flushPurgedSessions();
+        store.write(
+          makeRecord({
+            sessionId,
+            toolUseId: tuId,
+            repoRoot: repo.root,
+            createdAt: BASE_NOW,
+            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
+          })
+        );
+        const raw2 = await handler(input as never, { logger });
+        const block2 = toResult(raw2);
+        expect(block2).toContain('## billing/checkout-request-flow');
+        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+      });
+    });
+
+    it('a decided-but-recordless PostToolUse surfaces a transcript-visible note alongside the static fallback', async () => {
+      // The pre-walk failed open (or never ran): the Post side must explain
+      // the missing snapshot attribution in the transcript, not just warn on
+      // a logger the model loop never reads. The static path still runs.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-norecord';
+        const tuId = 'tu-norecord-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const { executors } = makeExecutors();
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger });
+        const block = toResult(raw);
+        expect(block).toContain('snapshot record unavailable');
+        expect(block).toContain('were not snapshot-attributed');
+      });
+    });
+
+    it('post-side wall-budget exhaustion is transcript-visible: the note appears, no git-span block is produced', async () => {
+      // A zero-second wall budget with a post walk that cannot complete in a
+      // single millisecond (40 files of ~800 KiB force real hashing time):
+      // the compare exhausts before the first scope, nothing is attributed,
+      // and the block explains itself instead of silently disappearing.
+      const saved = process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
+      process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '0';
+      try {
+        await withRepo(async (repo) => {
+          const sessionId = 'sess-lifecycle-budget';
+          const tuId = 'tu-budget-1';
+          const payload = 'x'.repeat(800 * 1024);
+          for (let i = 0; i < 40; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
+          gitAddCommit(repo.root, 'add generated sources');
+          const logger = new Logger();
+          const pre = createSnapshotPreHook();
+          const input = preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'python3 scripts/gen.py' }
+          });
+          await pre(input as never, { logger });
+          // One byte flips in the first file — a real write to attribute.
+          writeFile(repo.root, 'src/gen0.ts', `${payload}y`);
+          const { executors, calls } = makeExecutors();
+          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+          const raw = await handler(input as never, { logger });
+          const block = toResult(raw);
+          expect(block).toContain('post-side wall budget was exhausted before any file could be attributed');
+          expect(block).not.toContain('## billing');
+          expect(calls.fix).toBe(0);
+          // Fail-closed: the window still closes with the record consumed.
+          expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        });
+      } finally {
+        if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
+        else process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = saved;
+      }
     });
   });
 });

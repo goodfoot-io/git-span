@@ -29,11 +29,14 @@
  * backstop — a silent crash self-heals on the next snapshot). Records expire
  * on `recordTtlMs` from their own `createdAt`; tombstones expire on the same
  * clock from their `consumedAt`; unfinished activity entries are pruned by
- * file mtime once they outlive `unfinishedEntryTtlMs`; index entries whose
- * record file is gone are removed. Expiring a record removes its tombstone
- * and index entry with it (a tombstoned pair counts under whichever of the
- * two expired first — tombstone files are processed before record files so a
- * pair expired together counts as a tombstone removal).
+ * file mtime once they outlive `unfinishedEntryTtlMs`, and finished activity
+ * entries by file mtime once they outlive `recordTtlMs` — a crashed session's
+ * end hook never runs, so the record TTL is the crash-recovery backstop for
+ * the whole store surface; index entries whose record file is gone are
+ * removed. Expiring a record removes its tombstone and index entry with it (a
+ * tombstoned pair counts under whichever of the two expired first — tombstone
+ * files are processed before record files so a pair expired together counts
+ * as a tombstone removal).
  *
  * The sweep's passes read files that other sessions' processes are writing,
  * and on the session filesystem (virtiofs) a read landing on a file being
@@ -59,6 +62,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -81,11 +85,6 @@ export type { SnapshotFile, SnapshotRecord } from './snapshot-core.js';
 /**
  * One entry of the per-repo snapshot presence index
  * (`<git-common>/git-span/snapshot-index/<sanitized-session>__<sanitized-tool_use_id>.json`).
- * The path-coverage list lets the ambiguity check cheaply know which paths a
- * sibling record's pre walk covered: paths not listed could not have been
- * changed by that sibling's command, so they are not ambiguous. A record
- * carrying a coverage gap lists `'all'` — its coverage is unknowable, and the
- * ambiguity rules treat it as covering every path.
  */
 export interface SnapshotIndexEntry {
   sessionId: string;
@@ -95,8 +94,6 @@ export interface SnapshotIndexEntry {
   consumed: boolean;
   consumedAt: number | null;
   tier: SnapshotTier;
-  /** Repo-relative paths the record's pre walk covered, or 'all' when the walk was incomplete. */
-  covered: string[] | 'all';
 }
 
 /**
@@ -221,11 +218,13 @@ export const SWEEP_READ_MARGIN_MS = 5_000;
 /**
  * Trash retention. Removals rename the state file to a trash name in the same
  * directory instead of unlinking it in place, and the trash pass unlinks
- * trashed files once their mtime (the rename instant) is older than this. The
- * rename keeps the inode alive for any fd another process already opened (the
- * abort above is close-after-unlink; a rename-away leaves the inode present),
- * and the retention is far longer than any hook-process read can hold an fd,
- * so the trash-pass unlink never lands under a reader.
+ * trashed files once their mtime — stamped to the rename instant by
+ * {@link trashFile}, so the TTL is genuinely measured from the rename — is
+ * older than this. The rename keeps the inode alive for any fd another
+ * process already opened (the abort above is close-after-unlink; a
+ * rename-away leaves the inode present), and the retention is far longer than
+ * any hook-process read can hold an fd, so the trash-pass unlink never lands
+ * under a reader.
  */
 export const TRASH_TTL_MS = 60_000;
 
@@ -242,14 +241,30 @@ function isTrashName(name: string): boolean {
 /**
  * Remove a state file without unlinking it in place: rename it to a trash name
  * in the same directory (same fs — rename cannot fail on EXDEV), where the
- * trash pass unlinks it after TRASH_TTL_MS. `'absent'` (already removed by a
+ * trash pass unlinks it after TRASH_TTL_MS. The trash file's mtime is stamped
+ * to the rename instant — a bare rename preserves the inode's mtime (the
+ * original write instant), so a TTL-expired file trashed by the sweep would
+ * read as TTL-expired trash and be unlinked ~0 ms after the rename, in the
+ * same pass, defeating the keepalive entirely (the sweep's primary population
+ * is exactly that: 24h-old records). `'absent'` (already removed by a
  * concurrent sweep) and `'failed'` (the rename could not run) are
  * distinguished so callers can keep their warn-on-failure diagnostics without
  * warning on benign double-removal.
  */
 function trashFile(file: string): 'trashed' | 'absent' | 'failed' {
   try {
-    renameSync(file, join(dirname(file), `.${basename(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`));
+    const trashPath = join(dirname(file), `.${basename(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`);
+    renameSync(file, trashPath);
+    // Stamp the rename instant (best-effort: a concurrent removal racing the
+    // rename leaves the original mtime — the trash then expires early, not
+    // late, and only in a race that removes the file anyway; the rename
+    // itself succeeded, so the removal stands).
+    try {
+      const now = Date.now() / 1000;
+      utimesSync(trashPath, now, now);
+    } catch (err) {
+      void err;
+    }
     return 'trashed';
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'failed';
@@ -490,8 +505,9 @@ export interface SnapshotStore {
 
   /**
    * TTL sweep (records `recordTtlMs`, unfinished activity entries
-   * `unfinishedEntryTtlMs`, tombstones and orphaned index entries): the
-   * crash-recovery backstop, run opportunistically on each snapshot write.
+   * `unfinishedEntryTtlMs`, finished activity entries `recordTtlMs`,
+   * tombstones and orphaned index entries): the crash-recovery backstop, run
+   * opportunistically on each snapshot write.
    */
   sweep(now?: number): SweepResult;
 
@@ -550,6 +566,13 @@ export function createSnapshotStore(
    * process may be mid-consume on one of them); a deferred record's repo is
    * discovered by a later cleanup, and its activity entries then age into the
    * TTL prune — retention is never wrong attribution.
+   *
+   * Accepted residual: a repo whose last record TTL-expires is never visited
+   * again — activity dirs live in per-repo git common dirs and there is no
+   * enumeration path for them (repos are discovered only from live records).
+   * A crashed session's finished entries in such a repo therefore outlive
+   * their own 24h prune. This is accepted: the entries are tiny files, and
+   * cleanup is best-effort exactly as for records in a repo deleted outright.
    */
   function reposFromRecords(): Set<string> {
     const repos = new Set<string>();
@@ -566,7 +589,16 @@ export function createSnapshotStore(
     return repos;
   }
 
-  /** Prune unfinished activity entries whose file mtime outlived the short TTL. */
+  /**
+   * Prune activity entries whose file mtime outlived their TTL: unfinished
+   * entries the short `unfinishedEntryTtlMs` (their finish may still land, so
+   * only genuinely-abandoned in-flight entries go), finished entries the
+   * record TTL `recordTtlMs` — a crashed session's end hook never runs, so
+   * its finished entries would otherwise leak forever. The prune can never
+   * remove an entry the consult ({@link activityEntriesCovering}) would still
+   * read: the consult window is bounded by `unfinishedEntryTtlMs`, far
+   * shorter than the 24h record TTL.
+   */
   function pruneStaleActivity(now: number, repos: Set<string>): number {
     let removed = 0;
     for (const repo of repos) {
@@ -582,14 +614,15 @@ export function createSnapshotStore(
           // before the read (the entry's own mtime still decides the TTL).
           if (isRecentlyWritten(file, now)) continue;
           const entry = readActivityEntry(file);
-          if (entry === null || entry.finishedAt !== null) continue;
+          if (entry === null) continue;
           let mtimeMs: number;
           try {
             mtimeMs = statSync(file).mtimeMs;
           } catch {
             continue;
           }
-          if (mtimeMs < now - budgets.unfinishedEntryTtlMs) {
+          const ttlMs = entry.finishedAt !== null ? budgets.recordTtlMs : budgets.unfinishedEntryTtlMs;
+          if (mtimeMs < now - ttlMs) {
             trashFile(file);
             removed += 1;
           }
@@ -664,8 +697,7 @@ export function createSnapshotStore(
         createdAt: record.createdAt,
         consumed: false,
         consumedAt: null,
-        tier: record.tier,
-        covered: record.gaps.length > 0 ? 'all' : Object.keys(record.files)
+        tier: record.tier
       });
       return true;
     },
@@ -693,8 +725,7 @@ export function createSnapshotStore(
           createdAt: indexData.createdAt,
           consumed: true,
           consumedAt,
-          tier: indexData.tier,
-          covered: indexData.covered
+          tier: indexData.tier
         });
       }
       return consumed;

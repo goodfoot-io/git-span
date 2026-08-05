@@ -357,17 +357,67 @@ export function sessionDir(sessionId: string): string {
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * Retention for pruned session dirs, mirroring the snapshot store's
+ * `TRASH_TTL_MS` discipline: a pruned dir is renamed away (an atomic same-fs
+ * rename — never an in-place recursive unlink) and the unlink happens only
+ * once the rename mtime aged past this, long after any hook-process read of
+ * the dir's files closed. 60s of keepalive is far longer than any synchronous
+ * read holds an fd.
+ */
+const SESSION_TRASH_TTL_MS = 60_000;
+
+const SESSION_TRASH_MARKER = '.trash-session-';
+
+/**
+ * Where pruned session dirs wait out their TTL — outside
+ * {@link SESSION_BASE_DIR} (the same filesystem), so no sweep or session
+ * enumeration ever reads the trashed state.
+ */
+const SESSION_TRASH_DIR = nodePath.join(nodePath.dirname(SESSION_BASE_DIR), 'session-trash');
+
+/**
  * Opportunistically prune per-session state directories under
  * {@link SESSION_BASE_DIR} whose mtime is older than `maxAgeMs` (default 30
  * days). A directory's mtime advances whenever an entry inside it is
  * created/renamed/removed, so an active session (memo writes) stays fresh;
  * only genuinely abandoned sessions age out.
  *
+ * A pruned directory is renamed to {@link SESSION_TRASH_DIR}, never unlinked
+ * in place: an in-place recursive `rmSync` can abort a concurrent reader of
+ * the dir's files (the node-on-virtiofs close-after-unlink assertion the
+ * snapshot store's removals guard against — the snapshot sweep reads every
+ * session dir on each write, including a 30-day-idle one whose records no
+ * sweep has reached since they were written). The trash pass unlinks renamed
+ * dirs once their stamped rename mtime aged past
+ * {@link SESSION_TRASH_TTL_MS}, long after any reader closed.
+ *
  * Best-effort and non-throwing: called opportunistically from hook read/write
  * paths, not a separate cron-like mechanism, so a failure here must never
  * block the caller's actual work.
  */
 export function pruneStaleSessions(now: number = Date.now(), maxAgeMs: number = THIRTY_DAYS_MS): void {
+  // Unlink trashed dirs whose rename mtime aged past the TTL first, so a
+  // freshly-renamed dir below is never a candidate in the same call.
+  try {
+    for (const entry of fs.readdirSync(SESSION_TRASH_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.includes(SESSION_TRASH_MARKER)) continue;
+      const trashPath = nodePath.join(SESSION_TRASH_DIR, entry.name);
+      // Vanished between readdir and stat (a concurrent prune's unlink), or
+      // removal failed — skip it. A best-effort prune must never throw into
+      // the caller's hot path.
+      try {
+        const stat = fs.statSync(trashPath);
+        if (now - stat.mtimeMs > SESSION_TRASH_TTL_MS) {
+          fs.rmSync(trashPath, { recursive: true, force: true });
+        }
+      } catch (err) {
+        void err;
+      }
+    }
+  } catch (err) {
+    // Trash root absent or unreadable — nothing to unlink.
+    void err;
+  }
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(SESSION_BASE_DIR, { withFileTypes: true });
@@ -380,11 +430,24 @@ export function pruneStaleSessions(now: number = Date.now(), maxAgeMs: number = 
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs.rmSync(dirPath, { recursive: true, force: true });
+        fs.mkdirSync(SESSION_TRASH_DIR, { recursive: true, mode: 0o700 });
+        const trashPath = nodePath.join(
+          SESSION_TRASH_DIR,
+          `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
+        );
+        fs.renameSync(dirPath, trashPath);
+        // A rename preserves the dir's mtime (the 30-day-old one); stamp the
+        // rename instant so the trash TTL is genuinely measured from the
+        // rename — otherwise the next call's trash pass would unlink it
+        // moments later, under a reader that may still hold an fd.
+        fs.utimesSync(trashPath, now / 1000, now / 1000);
       }
-    } catch {
-      // Vanished between readdir and stat, or removal failed — skip it. A
+    } catch (err) {
+      // Vanished between readdir and stat, or the rename/stamp failed (a
+      // concurrent prune won the race, or EXDEV against an unusual mount) —
+      // skip it; a failed rename retains the dir (retention over removal). A
       // best-effort prune must never throw into the caller's hot path.
+      void err;
     }
   }
 }
